@@ -1,0 +1,36 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5692:5672"
+      - "15692:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    # Performance-optimiert: keine Disk-Persistenz fuer fairen Vergleich
+    # Aber auch MIT Persistenz testen (realistischer Betrieb)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6399:6379"
+    # appendonly yes = AOF Persistenz (realistischer Betrieb)
+    command: valkey-server --appendonly yes --save "" --maxmemory 512mb --maxmemory-policy noeviction
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: valkey-cli ping | grep -q PONG
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:
+  valkey_data:
