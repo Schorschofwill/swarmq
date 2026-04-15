@@ -117,6 +117,7 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 ```
 src/swarmq/<modul>.py          → tests/unit/test_<modul>.py
 src/swarmq/broker/rabbitmq.py  → tests/unit/broker/test_rabbitmq.py
+docs/solutions/                — dokumentierte Lösungen zu vergangenen Problemen (Bugs, Best Practices, Async-Patterns), nach Kategorie organisiert mit YAML-Frontmatter (module, tags, problem_type)
 ```
 
 Drei conftest.py Ebenen:
