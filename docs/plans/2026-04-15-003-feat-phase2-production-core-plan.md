@@ -149,7 +149,7 @@ flowchart TD
 
 ## Implementation Units
 
-- [ ] **Unit 2.6: structlog Logging Setup**
+- [x] **Unit 2.6: structlog Logging Setup**
 
 **Goal:** Non-blocking strukturiertes Logging mit contextvars für Task-Kontext und JSON-Output.
 
@@ -190,7 +190,7 @@ flowchart TD
 
 ---
 
-- [ ] **Unit 2.1: Delivery Modes (AT_LEAST_ONCE + FIRE_AND_FORGET)**
+- [x] **Unit 2.1: Delivery Modes (AT_LEAST_ONCE + FIRE_AND_FORGET)**
 
 **Goal:** FIRE_AND_FORGET Mode: Ack sofort bei Empfang, vor der Ausführung. AT_LEAST_ONCE bleibt wie bisher (Ack nach Execution + Result-Write).
 
@@ -228,7 +228,7 @@ flowchart TD
 
 ---
 
-- [ ] **Unit 2.2+2.3: Retry-System und DLQ-Routing**
+- [x] **Unit 2.2+2.3: Retry-System und DLQ-Routing**
 
 **Goal:** Tasks mit Retry-Konfiguration werden bei Fehler automatisch mit Backoff retried. Nach max_retries → DLQ ({queue}.XQ). Retry/NoRetry Exceptions werden korrekt behandelt.
 
@@ -292,7 +292,7 @@ flowchart TD
 
 ---
 
-- [ ] **Unit 2.4: Soft/Hard Timeouts**
+- [x] **Unit 2.4: Soft/Hard Timeouts**
 
 **Goal:** Soft-Timeout unterbricht Task mit fangbarer Exception (löst Retry aus). Hard-Timeout cancelt Task unkonditionell (nack + requeue).
 
@@ -337,7 +337,7 @@ flowchart TD
 
 ---
 
-- [ ] **Unit 2.5: Graceful Shutdown**
+- [x] **Unit 2.5: Graceful Shutdown**
 
 **Goal:** Worker fährt bei SIGTERM/SIGINT sauber herunter — laufende Tasks abschließen, prefetched Messages zurückgeben, Connections schließen.
 
@@ -387,7 +387,7 @@ flowchart TD
 
 ---
 
-- [ ] **Unit 2.E2E: Phase 2 End-to-End Tests**
+- [x] **Unit 2.E2E: Phase 2 End-to-End Tests**
 
 **Goal:** E2E-Verifikation aller Phase-2-Features mit echtem RabbitMQ + Valkey.
 
