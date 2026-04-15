@@ -19,6 +19,7 @@ from swarmq.exceptions import (
 from swarmq.logging import sanitize_url
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, encode_result
+from swarmq.task import DeliveryMode
 
 logger = structlog.get_logger()
 
@@ -106,6 +107,11 @@ class Worker:
                 await self._broker.nack(message, requeue=False)
                 return
 
+            # 5b. FIRE_AND_FORGET: ack immediately before execution
+            task_info = task_class.task_info
+            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                await self._broker.ack(message)
+
             # 6. Create task instance, run lifecycle
             task_instance = task_class()
             result_value = None
@@ -117,12 +123,16 @@ class Worker:
             except Exception as exc:
                 is_error = True
                 error_message = str(exc)
+                if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                    logger.error("fire_and_forget_error", error=error_message)
             else:
                 try:
                     result_value = await task_instance.run(*args, **kwargs)
                 except Exception as exc:
                     is_error = True
                     error_message = str(exc)
+                    if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                        logger.error("fire_and_forget_error", error=error_message)
                 else:
                     try:
                         await task_instance.post_execution()
@@ -130,6 +140,12 @@ class Worker:
                         is_error = True
                         error_message = str(exc)
                         result_value = None
+                        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                            logger.error("fire_and_forget_error", error=error_message)
+
+            # For FIRE_AND_FORGET with errors: skip result/retry pipeline
+            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and is_error:
+                return
 
             # Build result dict
             result_data = {
@@ -153,15 +169,18 @@ class Worker:
                 result_bytes = encode_result(result_data)
 
             # 8. Resolve result_ttl
-            task_info = task_class.task_info
             result_ttl = task_info.result_ttl
             if result_ttl is None:
-                result_ttl = self._config.result_ttl
+                if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                    result_ttl = 0
+                else:
+                    result_ttl = self._config.result_ttl
             if result_ttl is None:
                 result_ttl = 86400
 
             if result_ttl == 0:
-                await self._broker.ack(message)
+                if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                    await self._broker.ack(message)
                 return
 
             # 9-11. Store result + ack/nack
@@ -171,10 +190,12 @@ class Worker:
                 )
             except BackendConnectionError:
                 logger.error("backend_connection_error")
-                await self._broker.nack(message, requeue=True)
+                if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                    await self._broker.nack(message, requeue=True)
                 return
 
-            await self._broker.ack(message)
+            if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                await self._broker.ack(message)
 
         finally:
             # 12. Release semaphore

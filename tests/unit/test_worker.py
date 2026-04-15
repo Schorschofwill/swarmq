@@ -18,7 +18,7 @@ from swarmq.exceptions import (
 )
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
-from swarmq.task import Task, TaskInfo
+from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 
 
@@ -652,3 +652,191 @@ async def test_start_logs_startup_report(broker, backend, config):
         assert "registered_tasks" in call_kwargs
         assert "broker_url" in call_kwargs
         assert "backend_url" in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Delivery Modes (Unit 2.1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_acks_before_execution(broker, backend, config):
+    """FIRE_AND_FORGET acks the message BEFORE task execution begins."""
+    ack_happened_before_run = False
+
+    class FnfTask(Task):
+        task_info = TaskInfo(
+            name="fnf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET
+        )
+
+        async def run(self) -> str:
+            nonlocal ack_happened_before_run
+            # At the time run() executes, ack should already have been called
+            ack_happened_before_run = broker.ack.await_count > 0
+            return "done"
+
+    reg = TaskRegistry()
+    reg.register(FnfTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(_default_payload(name="fnf", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    assert ack_happened_before_run is True
+    # ack should have been called exactly once
+    broker.ack.assert_awaited_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_at_least_once_acks_after_execution(broker, backend, config):
+    """AT_LEAST_ONCE acks the message AFTER execution + result-write."""
+    ack_count_during_run = -1
+
+    class AloTask(Task):
+        task_info = TaskInfo(
+            name="alo", queues=["default"], delivery=DeliveryMode.AT_LEAST_ONCE
+        )
+
+        async def run(self) -> str:
+            nonlocal ack_count_during_run
+            ack_count_during_run = broker.ack.await_count
+            return "ok"
+
+    reg = TaskRegistry()
+    reg.register(AloTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(_default_payload(name="alo", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    # ack must NOT have been called during run()
+    assert ack_count_during_run == 0
+    # ack must be called after result stored
+    broker.ack.assert_awaited_once_with(msg)
+    assert backend.store_result.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_with_explicit_result_ttl_stores_result(broker, backend, config):
+    """FIRE_AND_FORGET with explicit result_ttl=3600 stores the result."""
+
+    class FnfWithTtlTask(Task):
+        task_info = TaskInfo(
+            name="fnf_ttl",
+            queues=["default"],
+            delivery=DeliveryMode.FIRE_AND_FORGET,
+            result_ttl=3600,
+        )
+
+        async def run(self) -> str:
+            return "stored"
+
+    reg = TaskRegistry()
+    reg.register(FnfWithTtlTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(_default_payload(name="fnf_ttl", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    # Result MUST be stored with the explicit TTL
+    assert backend.store_result.await_count == 1
+    call_args = backend.store_result.call_args
+    assert call_args[0][2] == 3_600_000  # ttl_ms = 3600 * 1000
+    stored = decode_result(call_args[0][1])
+    assert stored["result"] == "stored"
+    assert stored["is_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_without_result_ttl_skips_storage(broker, backend, config):
+    """FIRE_AND_FORGET with result_ttl=None defaults to result_ttl=0, skipping storage."""
+
+    class FnfNoTtlTask(Task):
+        task_info = TaskInfo(
+            name="fnf_no_ttl",
+            queues=["default"],
+            delivery=DeliveryMode.FIRE_AND_FORGET,
+            # result_ttl defaults to None
+        )
+
+        async def run(self) -> str:
+            return "not stored"
+
+    reg = TaskRegistry()
+    reg.register(FnfNoTtlTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(_default_payload(name="fnf_no_ttl", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    # Result must NOT be stored
+    backend.store_result.assert_not_awaited()
+    # Ack already happened early (FIRE_AND_FORGET)
+    broker.ack.assert_awaited_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_exception_logged_no_nack(broker, backend, config):
+    """FIRE_AND_FORGET task that throws: exception is logged, nack is NOT called."""
+
+    class FnfFailTask(Task):
+        task_info = TaskInfo(
+            name="fnf_fail",
+            queues=["default"],
+            delivery=DeliveryMode.FIRE_AND_FORGET,
+        )
+
+        async def run(self) -> None:
+            raise RuntimeError("fnf boom")
+
+    reg = TaskRegistry()
+    reg.register(FnfFailTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(_default_payload(name="fnf_fail", args=[], kwargs={}))
+
+    with patch("swarmq.worker.logger") as mock_logger:
+        await w._handle_message(msg)
+
+        # Error must be logged
+        mock_logger.error.assert_called()
+
+    # nack must NOT be called (message was already acked)
+    broker.nack.assert_not_awaited()
+    # ack was called exactly once (the early ack)
+    broker.ack.assert_awaited_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
+    """TaskInfo without explicit delivery defaults to AT_LEAST_ONCE (backwards compatible)."""
+
+    class DefaultDeliveryTask(Task):
+        task_info = TaskInfo(name="default_delivery", queues=["default"])
+
+        async def run(self) -> str:
+            return "ok"
+
+    # Verify the default at the TaskInfo level
+    assert DefaultDeliveryTask.task_info.delivery is DeliveryMode.AT_LEAST_ONCE
+
+    # Verify runtime behavior: ack happens AFTER result storage (AT_LEAST_ONCE)
+    ack_count_during_run = -1
+
+    class DefaultDeliveryTask2(Task):
+        task_info = TaskInfo(name="default_delivery2", queues=["default"])
+
+        async def run(self) -> str:
+            nonlocal ack_count_during_run
+            ack_count_during_run = broker.ack.await_count
+            return "ok"
+
+    reg = TaskRegistry()
+    reg.register(DefaultDeliveryTask2)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(_default_payload(name="default_delivery2", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    assert ack_count_during_run == 0  # not acked during execution
+    broker.ack.assert_awaited_once_with(msg)  # acked after
