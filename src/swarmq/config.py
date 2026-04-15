@@ -16,6 +16,7 @@ class SwarmQConfig:
     queues: list[str] = field(default_factory=lambda: ["default"])
     concurrency: int = 10
     log_level: str = "INFO"
+    log_json: bool = True
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -41,6 +42,10 @@ class SwarmQConfig:
         env_log_level = os.environ.get("SWARMQ_LOG_LEVEL", "")
         if env_log_level:
             self.log_level = env_log_level
+
+        env_log_json = os.environ.get("SWARMQ_LOG_JSON", "")
+        if env_log_json:
+            self.log_json = env_log_json.lower() in ("true", "1", "yes")
 
         # Validation
         if not self.broker_url:

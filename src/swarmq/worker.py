@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import os
+import sys
+
+import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -13,10 +16,11 @@ from swarmq.exceptions import (
     ResultSerializationError,
     TaskNotFoundError,
 )
+from swarmq.logging import sanitize_url
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, encode_result
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class Worker:
@@ -46,6 +50,17 @@ class Worker:
                 prefetch_count=self._config.concurrency,
             )
 
+        logger.info(
+            "worker_started",
+            pid=os.getpid(),
+            python_version=sys.version,
+            queues=self._config.queues,
+            concurrency=self._config.concurrency,
+            registered_tasks=sorted(self._registry.get_all()),
+            broker_url=sanitize_url(self._config.broker_url),
+            backend_url=sanitize_url(self._config.backend_url),
+        )
+
     async def stop(self) -> None:
         """Close broker and backend connections."""
         await self._broker.close()
@@ -67,9 +82,18 @@ class Worker:
             args = payload["args"]
             kwargs = payload["kwargs"]
         except Exception as exc:
-            logger.error("Failed to deserialize message: %s", exc)
+            logger.error("deserialize_failed", error=str(exc))
             await self._broker.nack(message, requeue=False)
             return
+
+        # Bind structured context for all log calls during this task
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(
+            task_id=task_id,
+            task_name=task_name,
+            queue=queue,
+            worker_id=id(self),
+        )
 
         # 3. Acquire semaphore
         await self._semaphore.acquire()
@@ -78,7 +102,7 @@ class Worker:
             try:
                 task_class = self._registry.get(task_name)
             except TaskNotFoundError:
-                logger.error("Task %r not found in registry", task_name)
+                logger.error("task_not_found")
                 await self._broker.nack(message, requeue=False)
                 return
 
@@ -119,7 +143,7 @@ class Worker:
             try:
                 result_bytes = encode_result(result_data)
             except ResultSerializationError as exc:
-                logger.error("Result serialization failed: %s", exc)
+                logger.error("result_serialization_failed", error=str(exc))
                 result_data = {
                     "task": {"id": task_id, "queue": queue, "name": task_name},
                     "is_error": True,
@@ -146,10 +170,7 @@ class Worker:
                     task_id, result_bytes, result_ttl * 1000
                 )
             except BackendConnectionError:
-                logger.error(
-                    "Backend connection error storing result for task %s",
-                    task_id,
-                )
+                logger.error("backend_connection_error")
                 await self._broker.nack(message, requeue=True)
                 return
 
@@ -158,3 +179,4 @@ class Worker:
         finally:
             # 12. Release semaphore
             self._semaphore.release()
+            structlog.contextvars.clear_contextvars()

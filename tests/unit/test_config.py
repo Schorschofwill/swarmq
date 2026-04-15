@@ -105,3 +105,24 @@ def test_empty_broker_url_raises():
 def test_empty_backend_url_raises():
     with pytest.raises(ConfigurationError):
         SwarmQConfig(broker_url="redis://localhost", backend_url="")
+
+
+def test_config_log_json_default_true():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.log_json is True
+
+
+def test_config_log_json_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_LOG_JSON", "false")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.log_json is False
+
+
+def test_config_log_json_env_true(monkeypatch):
+    monkeypatch.setenv("SWARMQ_LOG_JSON", "true")
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        log_json=False,
+    )
+    assert cfg.log_json is True

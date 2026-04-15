@@ -179,6 +179,41 @@ class TestSwarmQDoubleExit:
         assert backend.close.await_count == 2
 
 
+class TestSwarmQLogging:
+    def test_init_calls_setup_logging(self, broker, backend):
+        with patch("swarmq.app.setup_logging") as mock_setup:
+            mock_listener = MagicMock()
+            mock_setup.return_value = mock_listener
+
+            app = SwarmQ(broker, backend)
+
+            mock_setup.assert_called_once_with(
+                app.config.log_level, app.config.log_json
+            )
+            assert app._log_listener is mock_listener
+
+    def test_init_stores_listener_for_shutdown(self, broker, backend):
+        with patch("swarmq.app.setup_logging") as mock_setup:
+            mock_listener = MagicMock()
+            mock_setup.return_value = mock_listener
+
+            app = SwarmQ(broker, backend)
+
+            assert app._log_listener is mock_listener
+
+    @pytest.mark.anyio()
+    async def test_aexit_stops_log_listener(self, broker, backend):
+        with patch("swarmq.app.setup_logging") as mock_setup:
+            mock_listener = MagicMock()
+            mock_setup.return_value = mock_listener
+
+            app = SwarmQ(broker, backend)
+            await app.__aenter__()
+            await app.__aexit__(None, None, None)
+
+            mock_listener.stop.assert_called_once()
+
+
 class TestSwarmQStartWorker:
     @pytest.mark.anyio()
     async def test_start_worker_creates_and_starts_worker(self, broker, backend):

@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -592,3 +593,62 @@ async def test_result_ttl_falls_back_to_config(worker, backend):
     # AddTask has result_ttl=None, config default is 86400
     call_args = backend.store_result.call_args
     assert call_args[0][2] == 86_400_000
+
+
+# ---------------------------------------------------------------------------
+# structlog integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_message_binds_contextvars(broker, backend, config):
+    """_handle_message binds task_id, task_name, queue via structlog.contextvars."""
+    captured_ctx = {}
+
+    class CapTask(Task):
+        task_info = TaskInfo(name="captask", queues=["default"])
+
+        async def run(self) -> str:
+            captured_ctx.update(structlog.contextvars.get_contextvars())
+            return "ok"
+
+    reg = TaskRegistry()
+    reg.register(CapTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    structlog.contextvars.clear_contextvars()
+
+    msg = _make_message(
+        _default_payload(task_id="ctx-123", name="captask", queue="myqueue", args=[], kwargs={})
+    )
+    await w._handle_message(msg)
+
+    assert captured_ctx["task_id"] == "ctx-123"
+    assert captured_ctx["task_name"] == "captask"
+    assert captured_ctx["queue"] == "myqueue"
+
+    # After finally block, contextvars should be cleared
+    ctx = structlog.contextvars.get_contextvars()
+    assert "task_id" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_start_logs_startup_report(broker, backend, config):
+    """Worker.start() logs a startup report with INFO level."""
+    reg = TaskRegistry()
+    reg.register(AddTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    with patch("swarmq.worker.logger") as mock_logger:
+        await w.start()
+
+        mock_logger.info.assert_called_once()
+        call_args, call_kwargs = mock_logger.info.call_args
+        assert call_args[0] == "worker_started"
+        assert "pid" in call_kwargs
+        assert "python_version" in call_kwargs
+        assert "queues" in call_kwargs
+        assert "concurrency" in call_kwargs
+        assert "registered_tasks" in call_kwargs
+        assert "broker_url" in call_kwargs
+        assert "backend_url" in call_kwargs

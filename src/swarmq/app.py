@@ -8,6 +8,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 from swarmq.config import SwarmQConfig
+from swarmq.logging import setup_logging
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task
 from swarmq.worker import Worker
@@ -32,6 +33,7 @@ class SwarmQ:
         self.registry = TaskRegistry()
         for task_class in Task._registered_tasks:
             self.registry.register(task_class)
+        self._log_listener = setup_logging(self.config.log_level, self.config.log_json)
         self.client = Client(broker, backend, registry=self.registry)
 
     async def __aenter__(self) -> SwarmQ:
@@ -46,6 +48,7 @@ class SwarmQ:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.broker.close()
         await self.backend.close()
+        self._log_listener.stop()
 
     async def schedule(self, task_name: str, *args: Any, **kwargs: Any) -> str:
         return await self.client.schedule(task_name, *args, **kwargs)
