@@ -51,6 +51,23 @@ class SwarmQ:
         await self.backend.close()
         self._log_listener.stop()
 
+    async def schedule_many(
+        self,
+        tasks: list[tuple[str, tuple, dict]],
+        queue: str | None = None,
+    ) -> list[str]:
+        return await self.client.schedule_many(tasks, queue=queue)
+
+    async def get_results(
+        self,
+        task_ids: list[str],
+        timeout: float = 10,
+        poll_interval: float = 0.005,
+    ) -> list[Any]:
+        return await self.client.get_results(
+            task_ids, timeout=timeout, poll_interval=poll_interval,
+        )
+
     async def schedule(self, task_name: str, *args: Any, **kwargs: Any) -> str:
         return await self.client.schedule(task_name, *args, **kwargs)
 

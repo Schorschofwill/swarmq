@@ -398,3 +398,93 @@ async def test_get_result_cancelled_error_propagates(client, backend):
 
     with pytest.raises(asyncio.CancelledError):
         await client.get_result("task-cancel", timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# 22. schedule_many() publishes N tasks and returns N task_ids
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_schedule_many_returns_ids_and_publishes(client, broker):
+    tasks = [
+        ("add", (1, 2), {}),
+        ("add", (3, 4), {"extra": 5}),
+        ("add", (5, 6), {}),
+    ]
+    task_ids = await client.schedule_many(tasks, queue="math")
+
+    assert len(task_ids) == 3
+    for tid in task_ids:
+        parsed = uuid.UUID(tid)
+        assert parsed.version == 7
+
+    assert broker.publish.await_count == 3
+
+    # Verify each publish got the right queue and task_id
+    for i, call in enumerate(broker.publish.await_args_list):
+        assert call[0][0] == "math"
+        payload = decode_json(call[0][1])
+        assert payload["task"]["id"] == task_ids[i]
+        assert payload["task"]["name"] == "add"
+
+
+# ---------------------------------------------------------------------------
+# 23. schedule_many([]) returns empty list, no publishes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_schedule_many_empty_list(client, broker):
+    task_ids = await client.schedule_many([], queue="math")
+
+    assert task_ids == []
+    broker.publish.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 24. get_results() returns all results in order
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_results_returns_all_in_order(client, backend):
+    data_a = encode_result({"result": "alpha", "is_error": False})
+    data_b = encode_result({"result": "beta", "is_error": False})
+    data_c = encode_result({"result": "gamma", "is_error": False})
+
+    # First poll: none ready; second poll: all ready
+    backend.get_results_batch = AsyncMock(
+        side_effect=[
+            [None, None, None],
+            [data_a, data_b, data_c],
+        ]
+    )
+
+    results = await client.get_results(["a", "b", "c"], timeout=2, poll_interval=0.01)
+    assert results == ["alpha", "beta", "gamma"]
+
+
+# ---------------------------------------------------------------------------
+# 25. get_results() timeout raises ResultNotReadyError
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_results_timeout_raises(client, backend):
+    backend.get_results_batch = AsyncMock(return_value=[None, None])
+
+    with pytest.raises(ResultNotReadyError):
+        await client.get_results(["x", "y"], timeout=0.05, poll_interval=0.01)
+
+
+# ---------------------------------------------------------------------------
+# 26. schedule_many() resolves queue from registry
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_schedule_many_resolves_queue_from_registry(client, broker, registry):
+    tasks = [("add", (1, 2), {})]
+    task_ids = await client.schedule_many(tasks)
+
+    assert len(task_ids) == 1
+    call_args = broker.publish.await_args
+    assert call_args[0][0] == "math"  # resolved from TaskInfo.queues[0]
+    payload = decode_json(call_args[0][1])
+    assert payload["task"]["queue"] == "math"

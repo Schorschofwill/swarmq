@@ -122,6 +122,88 @@ class Client:
 
         raise ResultNotReadyError(task_id)
 
+    async def schedule_many(
+        self,
+        tasks: list[tuple[str, tuple, dict]],
+        queue: str | None = None,
+    ) -> list[str]:
+        """Submit multiple tasks for execution and return their task_ids.
+
+        Each element of *tasks* is a (task_name, args, kwargs) tuple.
+        All messages are published concurrently via asyncio.gather.
+        """
+        if not tasks:
+            return []
+
+        task_ids: list[str] = []
+        coros = []
+        for task_name, args, kwargs in tasks:
+            # --- validation (registry mode only) ---
+            if self._registry is not None:
+                if not self._registry.has(task_name):
+                    raise TaskNotFoundError(task_name)
+
+            # --- queue resolution chain ---
+            resolved_queue = queue
+            if resolved_queue is None and self._registry is not None:
+                entry = self._registry.get_entry(task_name)
+                resolved_queue = entry.task_info.queues[0]
+            if resolved_queue is None:
+                raise ValueError(
+                    "No queue specified and no registry available to resolve one"
+                )
+
+            task_id = str(uuid.uuid7())
+            task_ids.append(task_id)
+            message = {
+                "task": {
+                    "id": task_id,
+                    "queue": resolved_queue,
+                    "name": task_name,
+                },
+                "args": list(args),
+                "kwargs": kwargs,
+            }
+            coros.append(self._broker.publish(resolved_queue, encode_json(message)))
+
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for r in results:
+            if isinstance(r, BaseException):
+                raise r
+
+        return task_ids
+
+    async def get_results(
+        self,
+        task_ids: list[str],
+        timeout: float = 10,
+        poll_interval: float = 0.005,
+    ) -> list[Any]:
+        """Retrieve results for multiple tasks using MGET-based batch polling.
+
+        Polls every *poll_interval* seconds until all results are available
+        or *timeout* is exceeded.
+        """
+        if not task_ids:
+            return []
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        while loop.time() < deadline:
+            raw_list = await self._backend.get_results_batch(task_ids)
+            if all(r is not None for r in raw_list):
+                return [self._unpack(r) for r in raw_list]
+            await asyncio.sleep(poll_interval)
+
+        missing = [
+            tid for tid, raw in zip(task_ids, raw_list)
+            if raw is None
+        ]
+        raise ResultNotReadyError(
+            f"Timeout waiting for task_ids: {missing}"
+        )
+
     async def run(
         self,
         task_name: str,
