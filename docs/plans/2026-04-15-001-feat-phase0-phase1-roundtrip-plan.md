@@ -217,7 +217,7 @@ sequenceDiagram
 
 ### Phase 0 — Projektstruktur
 
-- [ ] **Unit 0.1: pyproject.toml und Verzeichnisstruktur**
+- [x] **Unit 0.1: pyproject.toml und Verzeichnisstruktur**
 
 **Goal:** Projekt-Scaffolding mit allen Dependencies, Extras, Entry-Point und Tool-Konfiguration. Alle Verzeichnisse und `__init__.py` Dateien.
 
@@ -258,7 +258,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 0.2: docker-compose.yml**
+- [x] **Unit 0.2: docker-compose.yml**
 
 **Goal:** RabbitMQ 4.x und Valkey 8.x als lokale Entwicklungsinfrastruktur.
 
@@ -289,7 +289,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 0.3: conftest.py Hierarchie und pytest-Setup**
+- [x] **Unit 0.3: conftest.py Hierarchie und pytest-Setup**
 
 **Goal:** Test-Infrastruktur mit 3 conftest-Ebenen und Basis-Fixtures.
 
@@ -328,7 +328,7 @@ sequenceDiagram
 
 ### Phase 1 — Foundation
 
-- [ ] **Unit 1.1: Exception-Hierarchie**
+- [x] **Unit 1.1: Exception-Hierarchie**
 
 **Goal:** Phase-1-Exceptions als Basis für Fehlerbehandlung im gesamten System.
 
@@ -373,7 +373,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.2: Konfigurationsklasse**
+- [x] **Unit 1.2: Konfigurationsklasse**
 
 **Goal:** Zentrale Konfiguration mit Env-Var-Auflösung und Validierung.
 
@@ -417,7 +417,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.3: Serialisierung (JSON + msgpack)**
+- [x] **Unit 1.3: Serialisierung (JSON + msgpack)**
 
 **Goal:** JSON-Serialisierung für Broker-Messages und msgpack-Serialisierung für Results.
 
@@ -470,7 +470,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.4: Task-Basisklasse und TaskInfo**
+- [x] **Unit 1.4: Task-Basisklasse und TaskInfo**
 
 **Goal:** Task-Basisklasse mit Lifecycle-Hooks und TaskInfo als frozen dataclass.
 
@@ -526,7 +526,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.5: TaskRegistry**
+- [x] **Unit 1.5: TaskRegistry**
 
 **Goal:** Registry für Task-Klassen mit Duplikat-Erkennung und Lookup.
 
@@ -571,7 +571,7 @@ sequenceDiagram
 
 ### Phase 1 — Broker & Backend
 
-- [ ] **Unit 1.6: RabbitMQ Broker**
+- [x] **Unit 1.6: RabbitMQ Broker**
 
 **Goal:** RabbitMQ-Broker mit Connection-Management, Queue-Deklaration (3-Queue-Topologie), Publish und Consume.
 
@@ -622,7 +622,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.6b: RabbitMQ Broker Integration-Tests**
+- [x] **Unit 1.6b: RabbitMQ Broker Integration-Tests**
 
 **Goal:** Integration-Tests die den Broker mit echtem RabbitMQ verifizieren.
 
@@ -654,7 +654,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.7: Valkey Backend**
+- [x] **Unit 1.7: Valkey Backend**
 
 **Goal:** Valkey-Backend mit Connection-Management, Result-Storage und Result-Retrieval.
 
@@ -699,7 +699,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.7b: Valkey Backend Integration-Tests**
+- [x] **Unit 1.7b: Valkey Backend Integration-Tests**
 
 **Goal:** Integration-Tests die das Backend mit echtem Valkey verifizieren.
 
@@ -729,7 +729,7 @@ sequenceDiagram
 
 ### Phase 1 — Application
 
-- [ ] **Unit 1.8: Worker (Consumer-Loop)**
+- [x] **Unit 1.8: Worker (Consumer-Loop)**
 
 **Goal:** Einzelner Worker-Prozess der Tasks aus RabbitMQ empfängt, ausführt und Ergebnisse in Valkey speichert.
 
@@ -796,7 +796,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.9: Client-API**
+- [x] **Unit 1.9: Client-API**
 
 **Goal:** Client-API zum Einreihen von Tasks und Abrufen von Ergebnissen.
 
@@ -849,7 +849,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.10: SwarmQ App-Klasse**
+- [x] **Unit 1.10: SwarmQ App-Klasse**
 
 **Goal:** Zentrale App-Klasse die Broker, Backend, Config und Registry zusammenbringt.
 
@@ -895,7 +895,7 @@ sequenceDiagram
 
 ---
 
-- [ ] **Unit 1.E2E: End-to-End Roundtrip**
+- [x] **Unit 1.E2E: End-to-End Roundtrip**
 
 **Goal:** Vollständiger End-to-End Test: Task definieren → schedule → Worker ausführen → Result abrufen.
 
