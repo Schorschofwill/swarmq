@@ -16,7 +16,7 @@ from pathlib import Path
 RESULTS_DIR = Path(__file__).parent / "results"
 
 # Systems using RabbitMQ as broker
-RABBITMQ_SYSTEMS = {"swarmq", "swarmq-quorum", "swarmq-classic"}
+RABBITMQ_SYSTEMS = {"swarmq", "swarmq-quorum", "swarmq-classic", "taskiq-rmq"}
 # Systems using Redis/Valkey as broker
 REDIS_SYSTEMS = {"taskiq", "celery", "dramatiq"}
 

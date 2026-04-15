@@ -52,10 +52,12 @@ def get_systems() -> dict[str, type]:
     """Static registry of available systems."""
     from systems.swarmq_sys import SwarmQSystem
     from systems.taskiq_sys import TaskIQSystem
+    from systems.taskiq_rmq_sys import TaskIQRabbitMQSystem
 
     return {
         "swarmq": SwarmQSystem,
         "taskiq": TaskIQSystem,
+        "taskiq-rmq": TaskIQRabbitMQSystem,
     }
 
 
