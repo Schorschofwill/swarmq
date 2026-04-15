@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from benchmarks.comparison.systems.base import TaskQueueSystem
+    from systems.base import TaskQueueSystem
 
 
 # ---------------------------------------------------------------------------

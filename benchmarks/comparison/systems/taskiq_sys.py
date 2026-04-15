@@ -15,7 +15,7 @@ from typing import Any
 
 from taskiq.receiver import Receiver
 
-from benchmarks.comparison.workers.taskiq_worker import (
+from workers.taskiq_worker import (
     broker,
     cpu_task,
     failing_task,
@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 # Map benchmark task names to the decorated task objects so that
 # ``enqueue()`` can dispatch by string name.
 _TASK_REGISTRY: dict[str, Any] = {
+    # Support both SwarmQ-style names (used by scenarios) and TaskIQ-native names
+    "noop": noop_task,
     "noop_task": noop_task,
     "io_task": io_task,
     "cpu_task": cpu_task,
@@ -56,6 +58,7 @@ class TaskIQSystem:
     def __init__(self) -> None:
         self._receiver: Receiver | None = None
         self._worker_task: asyncio.Task[None] | None = None
+        self._finish_event: asyncio.Event | None = None
 
     # ------------------------------------------------------------------
     # Protocol: setup / teardown
@@ -64,7 +67,7 @@ class TaskIQSystem:
     async def setup(self) -> None:
         """Start the broker (opens connections to Redis/Valkey)."""
         await broker.startup()
-        logger.info("TaskIQ broker started (url=%s)", broker.url)
+        logger.info("TaskIQ broker started")
 
     async def teardown(self) -> None:
         """Shut down the broker, flush db=1 to leave a clean state."""
@@ -95,13 +98,14 @@ class TaskIQSystem:
             logger.warning("Worker already running — skipping start_worker()")
             return
 
+        self._finish_event = asyncio.Event()
         self._receiver = Receiver(broker)
 
         async def _run_receiver() -> None:
             """Long-running coroutine that listens for and processes tasks."""
             assert self._receiver is not None  # noqa: S101
             try:
-                await self._receiver.listen()
+                await self._receiver.listen(self._finish_event)
             except asyncio.CancelledError:
                 logger.debug("TaskIQ receiver cancelled")
             except Exception:
@@ -114,18 +118,27 @@ class TaskIQSystem:
         logger.info("TaskIQ worker started (in-process receiver)")
 
     async def stop_worker(self) -> None:
-        """Cancel the receiver task and wait for it to wind down."""
+        """Signal the receiver to stop and wait for it to wind down."""
         if self._worker_task is None:
             return
 
-        self._worker_task.cancel()
+        # Signal the receiver to finish gracefully
+        if self._finish_event is not None:
+            self._finish_event.set()
+
+        # Wait briefly, then cancel if still running
         try:
-            await self._worker_task
-        except asyncio.CancelledError:
-            pass
+            await asyncio.wait_for(self._worker_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
 
         self._worker_task = None
         self._receiver = None
+        self._finish_event = None
         logger.info("TaskIQ worker stopped")
 
     # ------------------------------------------------------------------

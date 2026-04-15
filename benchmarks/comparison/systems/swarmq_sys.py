@@ -41,7 +41,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
 
-from benchmarks.comparison.workers.swarmq_worker import create_task_classes
+from workers.swarmq_worker import create_task_classes
 
 # Default connection URLs for the benchmark environment.
 _DEFAULT_BROKER_URL = "amqp://guest:guest@localhost:5682/"
