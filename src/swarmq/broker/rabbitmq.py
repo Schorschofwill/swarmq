@@ -6,8 +6,9 @@ from swarmq.exceptions import BrokerConnectionError
 
 
 class RabbitMQBroker:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, queue_type: str = "quorum") -> None:
         self._url = url
+        self._queue_type = queue_type
         self._connection = None
         self._publish_channel = None
         self._consume_channel = None
@@ -29,7 +30,7 @@ class RabbitMQBroker:
             queue_name,
             durable=True,
             arguments={
-                "x-queue-type": "quorum",
+                "x-queue-type": self._queue_type,
                 "x-dead-letter-exchange": "",
                 "x-dead-letter-routing-key": f"{queue_name}.XQ",
             },
@@ -39,7 +40,7 @@ class RabbitMQBroker:
             f"{queue_name}.DQ",
             durable=True,
             arguments={
-                "x-queue-type": "quorum",
+                "x-queue-type": self._queue_type,
                 "x-dead-letter-exchange": "",
                 "x-dead-letter-routing-key": queue_name,
             },
@@ -49,7 +50,7 @@ class RabbitMQBroker:
             f"{queue_name}.XQ",
             durable=True,
             arguments={
-                "x-queue-type": "quorum",
+                "x-queue-type": self._queue_type,
             },
         )
 

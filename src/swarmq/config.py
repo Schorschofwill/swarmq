@@ -19,6 +19,7 @@ class SwarmQConfig:
     log_json: bool = True
     retry_max_delay: float = 3600.0
     shutdown_timeout: int = 30
+    queue_type: str = "quorum"
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -57,6 +58,10 @@ class SwarmQConfig:
         if env_shutdown_timeout:
             self.shutdown_timeout = int(env_shutdown_timeout)
 
+        env_queue_type = os.environ.get("SWARMQ_QUEUE_TYPE", "")
+        if env_queue_type:
+            self.queue_type = env_queue_type
+
         # Validation
         if not self.broker_url:
             msg = "broker_url must not be empty"
@@ -77,4 +82,9 @@ class SwarmQConfig:
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if self.log_level not in valid_levels:
             msg = f"log_level must be one of {sorted(valid_levels)}, got {self.log_level!r}"
+            raise ConfigurationError(msg)
+
+        valid_queue_types = {"quorum", "classic"}
+        if self.queue_type not in valid_queue_types:
+            msg = f"queue_type must be one of {sorted(valid_queue_types)}, got {self.queue_type!r}"
             raise ConfigurationError(msg)

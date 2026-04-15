@@ -167,3 +167,76 @@ class TestValkeyBackendKeyFormat:
         backend = ValkeyBackend("valkey://localhost:6379/0")
         task_id = "550e8400-e29b-41d4-a716-446655440000"
         assert backend._key(task_id) == f"sq:result:{task_id}"
+
+
+class TestValkeyBackendPublishNotification:
+    async def test_publish_notification_calls_publish_with_correct_channel(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.publish_notification("task-123")
+
+        mock_client.publish.assert_awaited_once_with("sq:notify:task-123", "done")
+
+
+class TestValkeyBackendGetResultsBatch:
+    async def test_get_results_batch_calls_mget_with_correct_keys(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.mget.return_value = [b"r1", b"r2", b"r3"]
+
+        result = await backend.get_results_batch(["a", "b", "c"])
+
+        mock_client.mget.assert_awaited_once_with(
+            "sq:result:a", "sq:result:b", "sq:result:c"
+        )
+        assert result == [b"r1", b"r2", b"r3"]
+
+    async def test_get_results_batch_empty_list_returns_empty(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        result = await backend.get_results_batch([])
+
+        mock_client.mget.assert_not_awaited()
+        assert result == []
+
+
+class TestValkeyBackendPublishNotificationError:
+    async def test_publish_notification_swallows_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.publish.side_effect = ValkeyError("publish failed")
+
+        # Should NOT raise -- fire-and-forget
+        await backend.publish_notification("task-123")
+
+
+class TestValkeyBackendGetResultsBatchError:
+    async def test_get_results_batch_wraps_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.mget.side_effect = ValkeyError("mget failed")
+
+        with pytest.raises(BackendConnectionError):
+            await backend.get_results_batch(["a", "b"])
+
+
+class TestValkeyBackendGetResultsBatchPartial:
+    async def test_get_results_batch_returns_none_for_missing_keys(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.mget.return_value = [b"data-a", None, b"data-c"]
+
+        result = await backend.get_results_batch(["a", "missing", "c"])
+
+        mock_client.mget.assert_awaited_once_with(
+            "sq:result:a", "sq:result:missing", "sq:result:c"
+        )
+        assert result == [b"data-a", None, b"data-c"]

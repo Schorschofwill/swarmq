@@ -1,10 +1,13 @@
 """Valkey result backend for SwarmQ."""
 
+import structlog
 import valkey.asyncio
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import ValkeyError
 
 from swarmq.exceptions import BackendConnectionError
+
+logger = structlog.get_logger()
 
 
 class ValkeyBackend:
@@ -44,5 +47,20 @@ class ValkeyBackend:
     async def delete_result(self, task_id: str) -> None:
         try:
             await self._client.delete(self._key(task_id))
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def publish_notification(self, task_id: str) -> None:
+        try:
+            await self._client.publish(f"sq:notify:{task_id}", "done")
+        except Exception:
+            logger.warning("publish_notification failed", task_id=task_id, exc_info=True)
+
+    async def get_results_batch(self, task_ids: list[str]) -> list[bytes | None]:
+        if not task_ids:
+            return []
+        keys = [self._key(task_id) for task_id in task_ids]
+        try:
+            return await self._client.mget(*keys)
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc

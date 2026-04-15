@@ -30,6 +30,7 @@ class SwarmQ:
             backend_url=backend._url,
             **config_kwargs,
         )
+        self.broker._queue_type = self.config.queue_type
         self.registry = TaskRegistry()
         for task_class in Task._registered_tasks:
             self.registry.register(task_class)

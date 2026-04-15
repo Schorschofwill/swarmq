@@ -151,3 +151,37 @@ def test_config_retry_max_delay_explicit():
         retry_max_delay=1800.0,
     )
     assert cfg.retry_max_delay == 1800.0
+
+
+# ---------------------------------------------------------------------------
+# queue_type (Unit 5)
+# ---------------------------------------------------------------------------
+
+
+def test_config_queue_type_default_quorum():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.queue_type == "quorum"
+
+
+def test_config_queue_type_classic_valid():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        queue_type="classic",
+    )
+    assert cfg.queue_type == "classic"
+
+
+def test_config_queue_type_invalid_raises():
+    with pytest.raises(ConfigurationError, match="queue_type"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            queue_type="invalid",
+        )
+
+
+def test_config_queue_type_env_var_overrides_default(monkeypatch):
+    monkeypatch.setenv("SWARMQ_QUEUE_TYPE", "classic")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.queue_type == "classic"
