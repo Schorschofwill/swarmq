@@ -11,6 +11,9 @@ class DeliveryMode(enum.Enum):
     FIRE_AND_FORGET = "fire_and_forget"
 
 
+_VALID_BACKOFF_STRATEGIES = {"exponential", "linear", "fixed"}
+
+
 @dataclass(frozen=True)
 class TaskInfo:
     name: str
@@ -19,6 +22,10 @@ class TaskInfo:
     hard_timeout: int | None = None
     delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE
     result_ttl: int | None = None
+    max_retries: int = 0
+    retry_backoff: str = "exponential"
+    retry_exceptions: tuple[type[BaseException], ...] | None = None
+    retry_base_delay: float = 1.0
 
     def __init__(
         self,
@@ -28,6 +35,10 @@ class TaskInfo:
         hard_timeout: int | None = None,
         delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE,
         result_ttl: int | None = None,
+        max_retries: int = 0,
+        retry_backoff: str = "exponential",
+        retry_exceptions: list[type[BaseException]] | None = None,
+        retry_base_delay: float = 1.0,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -35,6 +46,14 @@ class TaskInfo:
         object.__setattr__(self, "hard_timeout", hard_timeout)
         object.__setattr__(self, "delivery", delivery)
         object.__setattr__(self, "result_ttl", result_ttl)
+        object.__setattr__(self, "max_retries", max_retries)
+        object.__setattr__(self, "retry_backoff", retry_backoff)
+        object.__setattr__(
+            self,
+            "retry_exceptions",
+            tuple(retry_exceptions) if retry_exceptions is not None else None,
+        )
+        object.__setattr__(self, "retry_base_delay", retry_base_delay)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -50,6 +69,11 @@ class TaskInfo:
             and self.hard_timeout <= self.soft_timeout
         ):
             raise ValueError("hard_timeout must be greater than soft_timeout")
+        if self.retry_backoff not in _VALID_BACKOFF_STRATEGIES:
+            raise ValueError(
+                f"retry_backoff must be one of {sorted(_VALID_BACKOFF_STRATEGIES)}, "
+                f"got {self.retry_backoff!r}"
+            )
 
 
 class Task:

@@ -17,6 +17,7 @@ class SwarmQConfig:
     concurrency: int = 10
     log_level: str = "INFO"
     log_json: bool = True
+    retry_max_delay: float = 3600.0
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -46,6 +47,10 @@ class SwarmQConfig:
         env_log_json = os.environ.get("SWARMQ_LOG_JSON", "")
         if env_log_json:
             self.log_json = env_log_json.lower() in ("true", "1", "yes")
+
+        env_retry_max_delay = os.environ.get("SWARMQ_RETRY_MAX_DELAY", "")
+        if env_retry_max_delay:
+            self.retry_max_delay = float(env_retry_max_delay)
 
         # Validation
         if not self.broker_url:

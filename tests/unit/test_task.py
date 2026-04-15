@@ -159,3 +159,39 @@ def test_clear_registered_tasks_resets():
     assert len(Task._registered_tasks) >= 1
     Task._clear_registered_tasks()
     assert Task._registered_tasks == []
+
+
+# ---------------------------------------------------------------------------
+# Retry fields (Unit 2.2)
+# ---------------------------------------------------------------------------
+
+
+def test_taskinfo_retry_fields_defaults():
+    """TaskInfo retry fields have correct defaults."""
+    info = TaskInfo(name="task", queues=["q"])
+    assert info.max_retries == 0
+    assert info.retry_backoff == "exponential"
+    assert info.retry_exceptions is None
+    assert info.retry_base_delay == 1.0
+
+
+def test_taskinfo_retry_fields_explicit():
+    """TaskInfo retry fields can be set explicitly."""
+    info = TaskInfo(
+        name="task",
+        queues=["q"],
+        max_retries=5,
+        retry_backoff="linear",
+        retry_exceptions=[ValueError, ConnectionError],
+        retry_base_delay=2.5,
+    )
+    assert info.max_retries == 5
+    assert info.retry_backoff == "linear"
+    assert info.retry_exceptions == (ValueError, ConnectionError)
+    assert info.retry_base_delay == 2.5
+
+
+def test_taskinfo_invalid_retry_backoff_raises():
+    """Invalid retry_backoff strategy raises ValueError."""
+    with pytest.raises(ValueError, match="retry_backoff"):
+        TaskInfo(name="task", queues=["q"], retry_backoff="invalid")

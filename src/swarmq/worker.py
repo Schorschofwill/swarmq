@@ -9,11 +9,14 @@ import sys
 import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backoff import calculate_backoff
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import (
     BackendConnectionError,
+    NoRetry,
     ResultSerializationError,
+    Retry,
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
@@ -117,12 +120,14 @@ class Worker:
             result_value = None
             is_error = False
             error_message = ""
+            task_exception = None
 
             try:
                 await task_instance.pre_execution()
             except Exception as exc:
                 is_error = True
                 error_message = str(exc)
+                task_exception = exc
                 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                     logger.error("fire_and_forget_error", error=error_message)
             else:
@@ -131,6 +136,7 @@ class Worker:
                 except Exception as exc:
                     is_error = True
                     error_message = str(exc)
+                    task_exception = exc
                     if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                         logger.error("fire_and_forget_error", error=error_message)
                 else:
@@ -139,6 +145,7 @@ class Worker:
                     except Exception as exc:
                         is_error = True
                         error_message = str(exc)
+                        task_exception = exc
                         result_value = None
                         if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                             logger.error("fire_and_forget_error", error=error_message)
@@ -146,6 +153,19 @@ class Worker:
             # For FIRE_AND_FORGET with errors: skip result/retry pipeline
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and is_error:
                 return
+
+            # Retry logic (AT_LEAST_ONCE only)
+            if (
+                is_error
+                and task_exception is not None
+                and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
+                and task_info.max_retries > 0
+            ):
+                should_retry = await self._evaluate_retry(
+                    message, task_info, task_exception, queue, error_message
+                )
+                if should_retry:
+                    return
 
             # Build result dict
             result_data = {
@@ -201,3 +221,82 @@ class Worker:
             # 12. Release semaphore
             self._semaphore.release()
             structlog.contextvars.clear_contextvars()
+
+    async def _evaluate_retry(
+        self,
+        message,
+        task_info,
+        exc: Exception,
+        queue: str,
+        error_message: str,
+    ) -> bool:
+        """Evaluate whether to retry a failed task.
+
+        Returns True if the message was handled (retried or sent to DLQ),
+        meaning the caller should return early. Returns False if the
+        caller should proceed with normal error-result storage.
+        """
+        # 1. NoRetry -> direct DLQ
+        if isinstance(exc, NoRetry):
+            await self._send_to_dlq(message, queue, error_message)
+            return True
+
+        # 2. Check retry_exceptions filter
+        if task_info.retry_exceptions is not None:
+            if not isinstance(exc, task_info.retry_exceptions):
+                await self._send_to_dlq(message, queue, error_message)
+                return True
+
+        # 3. Read retry count from message headers
+        retry_count = message.headers.get("x-swarmq-retry-count", 0)
+
+        # 4. Check if retries exhausted
+        if retry_count >= task_info.max_retries:
+            await self._send_to_dlq(message, queue, error_message)
+            return True
+
+        # 5. Calculate delay
+        if isinstance(exc, Retry) and exc.delay is not None:
+            delay_seconds = exc.delay
+        else:
+            delay_seconds = calculate_backoff(
+                retry_count,
+                task_info.retry_backoff,
+                task_info.retry_base_delay,
+                self._config.retry_max_delay,
+            )
+
+        delay_ms = int(delay_seconds * 1000)
+
+        # 6. Publish to delay queue with incremented retry count
+        headers = {
+            "x-swarmq-retry-count": retry_count + 1,
+            "x-swarmq-traceback": error_message,
+        }
+        await self._broker.publish_to_delay_queue(
+            queue, message.body, delay_ms=delay_ms, headers=headers
+        )
+        await self._broker.ack(message)
+        logger.info(
+            "task_retrying",
+            retry_count=retry_count + 1,
+            max_retries=task_info.max_retries,
+            delay_ms=delay_ms,
+        )
+        return True
+
+    async def _send_to_dlq(
+        self,
+        message,
+        queue: str,
+        error_message: str,
+    ) -> None:
+        """Store error result, publish to .XQ, and ack original message."""
+        headers = {
+            "x-swarmq-traceback": error_message,
+        }
+        await self._broker.publish_to_dead_letter_queue(
+            queue, message.body, headers=headers
+        )
+        await self._broker.ack(message)
+        logger.warning("task_sent_to_dlq", error=error_message)

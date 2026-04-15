@@ -178,3 +178,67 @@ class TestRabbitMQBrokerClose:
         # Should not raise when called without a connection
         await broker.close()
         await broker.close()
+
+
+class TestRabbitMQBrokerPublishToDelayQueue:
+    async def test_publish_to_delay_queue_sends_to_dq_with_ttl(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock()
+        mock_exchange = broker._publish_channel.default_exchange
+
+        await broker.publish_to_delay_queue(
+            "tasks", b'{"task": "data"}', delay_ms=5000, headers={"x-swarmq-retry-count": 1}
+        )
+
+        mock_exchange.publish.assert_awaited_once()
+        publish_call = mock_exchange.publish.call_args
+        message = publish_call.args[0]
+        assert isinstance(message, aio_pika.Message)
+        assert message.body == b'{"task": "data"}'
+        assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
+        assert message.expiration == "5000"
+        assert message.headers["x-swarmq-retry-count"] == 1
+        assert publish_call.kwargs["routing_key"] == "tasks.DQ"
+
+    async def test_publish_to_delay_queue_without_headers(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock()
+        mock_exchange = broker._publish_channel.default_exchange
+
+        await broker.publish_to_delay_queue("tasks", b"body", delay_ms=1000)
+
+        publish_call = mock_exchange.publish.call_args
+        message = publish_call.args[0]
+        assert message.expiration == "1000"
+        assert publish_call.kwargs["routing_key"] == "tasks.DQ"
+
+
+class TestRabbitMQBrokerPublishToDeadLetterQueue:
+    async def test_publish_to_dead_letter_queue_sends_to_xq(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock()
+        mock_exchange = broker._publish_channel.default_exchange
+
+        await broker.publish_to_dead_letter_queue(
+            "tasks", b'{"error": "data"}', headers={"x-swarmq-traceback": "boom"}
+        )
+
+        mock_exchange.publish.assert_awaited_once()
+        publish_call = mock_exchange.publish.call_args
+        message = publish_call.args[0]
+        assert isinstance(message, aio_pika.Message)
+        assert message.body == b'{"error": "data"}'
+        assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
+        assert message.headers["x-swarmq-traceback"] == "boom"
+        assert publish_call.kwargs["routing_key"] == "tasks.XQ"
+
+    async def test_publish_to_dead_letter_queue_without_headers(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock()
+        mock_exchange = broker._publish_channel.default_exchange
+
+        await broker.publish_to_dead_letter_queue("tasks", b"body")
+
+        publish_call = mock_exchange.publish.call_args
+        message = publish_call.args[0]
+        assert publish_call.kwargs["routing_key"] == "tasks.XQ"

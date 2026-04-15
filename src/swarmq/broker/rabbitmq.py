@@ -63,6 +63,40 @@ class RabbitMQBroker:
             routing_key=queue_name,
         )
 
+    async def publish_to_delay_queue(
+        self,
+        queue_name: str,
+        message_body: bytes,
+        delay_ms: int,
+        headers: dict | None = None,
+    ) -> None:
+        msg = aio_pika.Message(
+            body=message_body,
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            expiration=str(delay_ms),
+            headers=headers or {},
+        )
+        await self._publish_channel.default_exchange.publish(
+            msg,
+            routing_key=f"{queue_name}.DQ",
+        )
+
+    async def publish_to_dead_letter_queue(
+        self,
+        queue_name: str,
+        message_body: bytes,
+        headers: dict | None = None,
+    ) -> None:
+        msg = aio_pika.Message(
+            body=message_body,
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            headers=headers or {},
+        )
+        await self._publish_channel.default_exchange.publish(
+            msg,
+            routing_key=f"{queue_name}.XQ",
+        )
+
     async def consume(self, queue_name: str, callback, prefetch_count: int) -> None:
         await self._consume_channel.set_qos(prefetch_count=prefetch_count)
         queue = await self._consume_channel.get_queue(queue_name)

@@ -126,3 +126,28 @@ def test_config_log_json_env_true(monkeypatch):
         log_json=False,
     )
     assert cfg.log_json is True
+
+
+# ---------------------------------------------------------------------------
+# retry_max_delay (Unit 2.2)
+# ---------------------------------------------------------------------------
+
+
+def test_config_retry_max_delay_default():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.retry_max_delay == 3600.0
+
+
+def test_config_retry_max_delay_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_RETRY_MAX_DELAY", "7200.0")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.retry_max_delay == 7200.0
+
+
+def test_config_retry_max_delay_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        retry_max_delay=1800.0,
+    )
+    assert cfg.retry_max_delay == 1800.0

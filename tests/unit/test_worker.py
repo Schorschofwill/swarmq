@@ -13,7 +13,9 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import (
     BackendConnectionError,
+    NoRetry,
     ResultSerializationError,
+    Retry,
     TaskNotFoundError,
 )
 from swarmq.registry import TaskRegistry
@@ -26,10 +28,11 @@ from swarmq.worker import Worker
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_message(payload: dict) -> MagicMock:
+def _make_message(payload: dict, headers: dict | None = None) -> MagicMock:
     """Create a mock AMQP message with JSON-encoded body."""
     msg = MagicMock()
     msg.body = encode_json(payload)
+    msg.headers = headers or {}
     msg.ack = AsyncMock()
     msg.nack = AsyncMock()
     return msg
@@ -67,6 +70,8 @@ def broker():
     b.ack = AsyncMock()
     b.nack = AsyncMock()
     b.close = AsyncMock()
+    b.publish_to_delay_queue = AsyncMock()
+    b.publish_to_dead_letter_queue = AsyncMock()
     return b
 
 
@@ -840,3 +845,304 @@ async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
 
     assert ack_count_during_run == 0  # not acked during execution
     broker.ack.assert_awaited_once_with(msg)  # acked after
+
+
+# ---------------------------------------------------------------------------
+# Retry System (Unit 2.2 + 2.3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_first_failure_publishes_to_delay_queue(broker, backend, config):
+    """Task with max_retries=3, first failure -> message published to .DQ with correct TTL."""
+
+    class RetryTask(Task):
+        task_info = TaskInfo(
+            name="retry_task", queues=["default"], max_retries=3, retry_base_delay=1.0
+        )
+
+        async def run(self) -> None:
+            raise RuntimeError("transient")
+
+    reg = TaskRegistry()
+    reg.register(RetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="retry_task", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    # Should publish to delay queue, not store error result
+    broker.publish_to_delay_queue.assert_awaited_once()
+    call_kwargs = broker.publish_to_delay_queue.call_args
+    queue_name = call_kwargs[0][0]
+    assert queue_name == "default"
+    # delay_ms should be within jitter bounds: base=1.0, attempt=0
+    # exponential: 1.0 * 2^0 * jitter(1,2) = [1.0, 2.0] seconds = [1000, 2000] ms
+    delay_ms = call_kwargs.kwargs["delay_ms"]
+    assert 1000 <= delay_ms <= 2000
+    # Original message acked
+    broker.ack.assert_awaited_once_with(msg)
+    # No error result stored
+    backend.store_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_count_incremented_in_headers(broker, backend, config):
+    """x-swarmq-retry-count header is incremented from 0 to 1 on first retry."""
+
+    class RetryTask(Task):
+        task_info = TaskInfo(
+            name="retry_inc", queues=["default"], max_retries=3, retry_base_delay=1.0
+        )
+
+        async def run(self) -> None:
+            raise RuntimeError("fail")
+
+    reg = TaskRegistry()
+    reg.register(RetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    # First attempt (retry_count=0 in headers)
+    msg = _make_message(
+        _default_payload(name="retry_inc", args=[], kwargs={}),
+        headers={"x-swarmq-retry-count": 0},
+    )
+    await w._handle_message(msg)
+
+    call_kwargs = broker.publish_to_delay_queue.call_args
+    headers = call_kwargs.kwargs["headers"]
+    assert headers["x-swarmq-retry-count"] == 1
+
+    # Second attempt (retry_count=1 in headers)
+    broker.publish_to_delay_queue.reset_mock()
+    broker.ack.reset_mock()
+    msg2 = _make_message(
+        _default_payload(name="retry_inc", args=[], kwargs={}),
+        headers={"x-swarmq-retry-count": 1},
+    )
+    await w._handle_message(msg2)
+
+    call_kwargs2 = broker.publish_to_delay_queue.call_args
+    headers2 = call_kwargs2.kwargs["headers"]
+    assert headers2["x-swarmq-retry-count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_retries_exhausted_sends_to_dlq(broker, backend, config):
+    """After max_retries exhausted -> published to .XQ, original acked."""
+
+    class RetryTask(Task):
+        task_info = TaskInfo(
+            name="retry_exhaust", queues=["default"], max_retries=2
+        )
+
+        async def run(self) -> None:
+            raise RuntimeError("still broken")
+
+    reg = TaskRegistry()
+    reg.register(RetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    # Simulate retry_count=2 (== max_retries) -> exhausted
+    msg = _make_message(
+        _default_payload(name="retry_exhaust", args=[], kwargs={}),
+        headers={"x-swarmq-retry-count": 2},
+    )
+    await w._handle_message(msg)
+
+    # Should publish to DLQ
+    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    dlq_call = broker.publish_to_dead_letter_queue.call_args
+    assert dlq_call[0][0] == "default"  # queue_name
+    # Should NOT publish to delay queue
+    broker.publish_to_delay_queue.assert_not_awaited()
+    # Original message acked
+    broker.ack.assert_awaited_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_retry_exception_overrides_backoff_delay(broker, backend, config):
+    """raise Retry(delay=60) -> retry with 60s delay, overriding backoff calculation."""
+
+    class RetryDelayTask(Task):
+        task_info = TaskInfo(
+            name="retry_delay", queues=["default"], max_retries=3, retry_base_delay=1.0
+        )
+
+        async def run(self) -> None:
+            raise Retry(delay=60)
+
+    reg = TaskRegistry()
+    reg.register(RetryDelayTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="retry_delay", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    broker.publish_to_delay_queue.assert_awaited_once()
+    call_kwargs = broker.publish_to_delay_queue.call_args
+    delay_ms = call_kwargs.kwargs["delay_ms"]
+    # Should be exactly 60 seconds = 60000 ms (no jitter)
+    assert delay_ms == 60000
+    broker.ack.assert_awaited_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_noretry_exception_sends_to_dlq_directly(broker, backend, config):
+    """raise NoRetry('bad input') -> direct DLQ, no retry regardless of max_retries."""
+
+    class NoRetryTask(Task):
+        task_info = TaskInfo(
+            name="noretry_task", queues=["default"], max_retries=10
+        )
+
+        async def run(self) -> None:
+            raise NoRetry("bad input")
+
+    reg = TaskRegistry()
+    reg.register(NoRetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="noretry_task", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    # Should go to DLQ directly
+    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    # Should NOT retry
+    broker.publish_to_delay_queue.assert_not_awaited()
+    broker.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_retry_exceptions_mismatch_sends_to_dlq(broker, backend, config):
+    """retry_exceptions=[ConnectionError], ValueError raised -> DLQ, no retry."""
+
+    class FilteredRetryTask(Task):
+        task_info = TaskInfo(
+            name="filtered_retry",
+            queues=["default"],
+            max_retries=5,
+            retry_exceptions=[ConnectionError],
+        )
+
+        async def run(self) -> None:
+            raise ValueError("not retryable")
+
+    reg = TaskRegistry()
+    reg.register(FilteredRetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="filtered_retry", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    # ValueError is not in retry_exceptions -> DLQ
+    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    broker.publish_to_delay_queue.assert_not_awaited()
+    broker.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_retry_exceptions_match_retries(broker, backend, config):
+    """retry_exceptions=[ConnectionError], ConnectionError raised -> retry."""
+
+    class FilteredRetryTask(Task):
+        task_info = TaskInfo(
+            name="filtered_retry_match",
+            queues=["default"],
+            max_retries=5,
+            retry_exceptions=[ConnectionError],
+        )
+
+        async def run(self) -> None:
+            raise ConnectionError("connection lost")
+
+    reg = TaskRegistry()
+    reg.register(FilteredRetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="filtered_retry_match", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    # ConnectionError matches retry_exceptions -> retry
+    broker.publish_to_delay_queue.assert_awaited_once()
+    broker.publish_to_dead_letter_queue.assert_not_awaited()
+    broker.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_max_retries_zero_no_retry_stores_error(broker, backend, config):
+    """max_retries=0 (default) -> no retry, error-result stored and acked."""
+
+    class NoRetryDefaultTask(Task):
+        task_info = TaskInfo(name="no_retry_default", queues=["default"])
+        # max_retries defaults to 0
+
+        async def run(self) -> None:
+            raise RuntimeError("error without retry")
+
+    reg = TaskRegistry()
+    reg.register(NoRetryDefaultTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="no_retry_default", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    # No retry, no DLQ — just store error result and ack
+    broker.publish_to_delay_queue.assert_not_awaited()
+    broker.publish_to_dead_letter_queue.assert_not_awaited()
+    backend.store_result.assert_awaited_once()
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is True
+    assert "error without retry" in stored["error_message"]
+    broker.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_not_retried(broker, backend, config):
+    """FIRE_AND_FORGET tasks are never retried, even with max_retries > 0."""
+
+    class FnfRetryTask(Task):
+        task_info = TaskInfo(
+            name="fnf_retry",
+            queues=["default"],
+            delivery=DeliveryMode.FIRE_AND_FORGET,
+            max_retries=5,
+        )
+
+        async def run(self) -> None:
+            raise RuntimeError("fnf failure")
+
+    reg = TaskRegistry()
+    reg.register(FnfRetryTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    msg = _make_message(
+        _default_payload(name="fnf_retry", args=[], kwargs={}),
+        headers={},
+    )
+    await w._handle_message(msg)
+
+    # FIRE_AND_FORGET: no retry, no DLQ publish, no error result
+    broker.publish_to_delay_queue.assert_not_awaited()
+    broker.publish_to_dead_letter_queue.assert_not_awaited()
+    backend.store_result.assert_not_awaited()
+    # Ack happened once (the early FIRE_AND_FORGET ack)
+    broker.ack.assert_awaited_once()
