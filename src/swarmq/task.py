@@ -74,6 +74,8 @@ class TaskInfo:
                 f"retry_backoff must be one of {sorted(_VALID_BACKOFF_STRATEGIES)}, "
                 f"got {self.retry_backoff!r}"
             )
+        if self.retry_base_delay < 0:
+            raise ValueError("retry_base_delay must be >= 0")
 
 
 class Task:

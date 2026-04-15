@@ -120,10 +120,9 @@ async def test_retry_exhaustion_dlq(rabbitmq_url: str, valkey_url: str) -> None:
             # Each retry: 0.3s delay in DQ + processing time. Total ~3s should be plenty.
             await asyncio.sleep(3.0)
 
-            # After retries exhausted, message goes to DLQ — no result stored
-            # (worker calls _send_to_dlq which does NOT store a result, just
-            # publishes to .XQ and acks the original message)
-            with pytest.raises(ResultNotReadyError):
+            # After retries exhausted, message goes to DLQ — error result stored
+            # so the caller gets a clear error instead of hanging
+            with pytest.raises(TaskError, match="always fails"):
                 await app.get_result(task_id, timeout=0)
 
             # Task ran 3 times total: 1 initial + 2 retries

@@ -101,9 +101,10 @@ class Worker:
         await self._broker.cancel_consume()
 
         # 2. Wait for in-flight tasks to complete
-        if self._active_tasks:
+        tasks_snapshot = set(self._active_tasks)
+        if tasks_snapshot:
             _done, pending = await asyncio.wait(
-                self._active_tasks,
+                tasks_snapshot,
                 timeout=self._config.shutdown_timeout,
             )
 
@@ -273,7 +274,7 @@ class Worker:
                 and task_info.max_retries > 0
             ):
                 should_retry = await self._evaluate_retry(
-                    message, task_info, task_exception, queue, error_message
+                    message, task_info, task_exception, queue, task_id, task_name, error_message
                 )
                 if should_retry:
                     return
@@ -346,6 +347,8 @@ class Worker:
         task_info,
         exc: Exception,
         queue: str,
+        task_id: str,
+        task_name: str,
         error_message: str,
     ) -> bool:
         """Evaluate whether to retry a failed task.
@@ -356,13 +359,13 @@ class Worker:
         """
         # 1. NoRetry -> direct DLQ
         if isinstance(exc, NoRetry):
-            await self._send_to_dlq(message, queue, error_message)
+            await self._send_to_dlq(message, queue, task_id, task_name, error_message)
             return True
 
         # 2. Check retry_exceptions filter
         if task_info.retry_exceptions is not None:
             if not isinstance(exc, task_info.retry_exceptions):
-                await self._send_to_dlq(message, queue, error_message)
+                await self._send_to_dlq(message, queue, task_id, task_name, error_message)
                 return True
 
         # 3. Read retry count from message headers
@@ -370,7 +373,7 @@ class Worker:
 
         # 4. Check if retries exhausted
         if retry_count >= task_info.max_retries:
-            await self._send_to_dlq(message, queue, error_message)
+            await self._send_to_dlq(message, queue, task_id, task_name, error_message)
             return True
 
         # 5. Calculate delay
@@ -391,10 +394,18 @@ class Worker:
             "x-swarmq-retry-count": retry_count + 1,
             "x-swarmq-traceback": error_message,
         }
-        await self._broker.publish_to_delay_queue(
-            queue, message.body, delay_ms=delay_ms, headers=headers
-        )
-        await self._broker.ack(message)
+        try:
+            await self._broker.publish_to_delay_queue(
+                queue, message.body, delay_ms=delay_ms, headers=headers
+            )
+            await self._broker.ack(message)
+        except Exception as broker_exc:
+            logger.error("retry_publish_failed", error=str(broker_exc))
+            try:
+                await self._broker.nack(message, requeue=True)
+            except Exception:
+                pass
+            return True
         logger.info(
             "task_retrying",
             retry_count=retry_count + 1,
@@ -407,14 +418,41 @@ class Worker:
         self,
         message,
         queue: str,
+        task_id: str,
+        task_name: str,
         error_message: str,
     ) -> None:
-        """Store error result, publish to .XQ, and ack original message."""
+        """Store error result in backend, publish to .XQ, and ack original message."""
+        # Store error result so callers of get_result() get a response
+        result_data = {
+            "task": {"id": task_id, "queue": queue, "name": task_name},
+            "is_error": True,
+            "error_message": error_message,
+            "result": None,
+        }
+        try:
+            from swarmq.serialization import encode_result
+
+            result_bytes = encode_result(result_data)
+            result_ttl = self._config.result_ttl or 86400
+            await self._backend.store_result(
+                task_id, result_bytes, result_ttl * 1000
+            )
+        except Exception as store_exc:
+            logger.warning("dlq_result_store_failed", error=str(store_exc))
+
         headers = {
             "x-swarmq-traceback": error_message,
         }
-        await self._broker.publish_to_dead_letter_queue(
-            queue, message.body, headers=headers
-        )
-        await self._broker.ack(message)
+        try:
+            await self._broker.publish_to_dead_letter_queue(
+                queue, message.body, headers=headers
+            )
+            await self._broker.ack(message)
+        except Exception as broker_exc:
+            logger.error("dlq_publish_failed", error=str(broker_exc))
+            try:
+                await self._broker.nack(message, requeue=True)
+            except Exception:
+                pass
         logger.warning("task_sent_to_dlq", error=error_message)
