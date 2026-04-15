@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import os
+import signal
 import sys
 
 import structlog
@@ -28,6 +30,14 @@ from swarmq.task import DeliveryMode
 logger = structlog.get_logger()
 
 
+class WorkerState(enum.Enum):
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    DRAINING = "DRAINING"
+    SHUTTING_DOWN = "SHUTTING_DOWN"
+    STOPPED = "STOPPED"
+
+
 class Worker:
     def __init__(
         self,
@@ -41,9 +51,12 @@ class Worker:
         self._registry = registry
         self._config = config
         self._semaphore = asyncio.Semaphore(config.concurrency)
+        self._active_tasks: set[asyncio.Task] = set()
+        self._state = WorkerState.STARTING
+        self._shutdown_event = asyncio.Event()
 
     async def start(self) -> None:
-        """Connect broker + backend, declare queues, start consuming."""
+        """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
         await self._backend.connect()
 
@@ -54,6 +67,13 @@ class Worker:
                 self._on_message,
                 prefetch_count=self._config.concurrency,
             )
+
+        self._state = WorkerState.RUNNING
+
+        # Register signal handlers for graceful shutdown
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGTERM, self._request_shutdown)
+        loop.add_signal_handler(signal.SIGINT, self._request_shutdown)
 
         logger.info(
             "worker_started",
@@ -66,14 +86,54 @@ class Worker:
             backend_url=sanitize_url(self._config.backend_url),
         )
 
+        # Block until shutdown is requested
+        await self._shutdown_event.wait()
+        await self._execute_shutdown()
+
     async def stop(self) -> None:
         """Close broker and backend connections."""
         await self._broker.close()
         await self._backend.close()
 
+    async def _execute_shutdown(self) -> None:
+        """Execute the graceful shutdown sequence."""
+        # 1. DRAINING: stop accepting new messages
+        await self._broker.cancel_consume()
+
+        # 2. Wait for in-flight tasks to complete
+        if self._active_tasks:
+            _done, pending = await asyncio.wait(
+                self._active_tasks,
+                timeout=self._config.shutdown_timeout,
+            )
+
+            # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
+            if pending:
+                self._state = WorkerState.SHUTTING_DOWN
+                for task in pending:
+                    task.cancel()
+                await asyncio.wait(pending, timeout=1)
+
+        # 4. Close connections
+        self._state = WorkerState.SHUTTING_DOWN
+        await self._broker.close()
+        await self._backend.close()
+
+        # 5. STOPPED
+        self._state = WorkerState.STOPPED
+
+    def _request_shutdown(self) -> None:
+        """Request a graceful shutdown. Idempotent — safe to call multiple times."""
+        if self._state is not WorkerState.RUNNING:
+            return
+        self._state = WorkerState.DRAINING
+        self._shutdown_event.set()
+
     async def _on_message(self, message) -> None:
         """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
-        asyncio.create_task(self._handle_message(message))
+        task = asyncio.create_task(self._handle_message(message))
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
 
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
@@ -103,6 +163,11 @@ class Worker:
         # 3. Acquire semaphore
         await self._semaphore.acquire()
         try:
+            # 3b. Check if shutdown is in progress — requeue message
+            if self._shutdown_event.is_set():
+                await self._broker.nack(message, requeue=True)
+                return
+
             # 4-5. Look up task in registry
             try:
                 task_class = self._registry.get(task_name)

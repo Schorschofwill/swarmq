@@ -18,6 +18,7 @@ class SwarmQConfig:
     log_level: str = "INFO"
     log_json: bool = True
     retry_max_delay: float = 3600.0
+    shutdown_timeout: int = 30
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -51,6 +52,10 @@ class SwarmQConfig:
         env_retry_max_delay = os.environ.get("SWARMQ_RETRY_MAX_DELAY", "")
         if env_retry_max_delay:
             self.retry_max_delay = float(env_retry_max_delay)
+
+        env_shutdown_timeout = os.environ.get("SWARMQ_SHUTDOWN_TIMEOUT", "")
+        if env_shutdown_timeout:
+            self.shutdown_timeout = int(env_shutdown_timeout)
 
         # Validation
         if not self.broker_url:

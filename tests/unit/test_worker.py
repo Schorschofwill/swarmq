@@ -70,6 +70,7 @@ def broker():
     b.ack = AsyncMock()
     b.nack = AsyncMock()
     b.close = AsyncMock()
+    b.cancel_consume = AsyncMock()
     b.publish_to_delay_queue = AsyncMock()
     b.publish_to_dead_letter_queue = AsyncMock()
     return b
@@ -525,6 +526,8 @@ async def test_on_message_creates_task(worker, broker, backend):
 
 @pytest.mark.asyncio
 async def test_start_connects_and_declares_queues(worker, broker, backend):
+    # Trigger shutdown immediately so start() returns
+    worker._shutdown_event.set()
     await worker.start()
 
     broker.connect.assert_awaited_once()
@@ -559,6 +562,8 @@ async def test_start_declares_all_config_queues(broker, backend):
     reg.register(MultiTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=cfg)
 
+    # Trigger shutdown immediately so start() returns
+    w._shutdown_event.set()
     await w.start()
 
     declared = {call.args[0] for call in broker.declare_queue.call_args_list}
@@ -646,6 +651,8 @@ async def test_start_logs_startup_report(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     with patch("swarmq.worker.logger") as mock_logger:
+        # Trigger shutdown immediately so start() returns
+        w._shutdown_event.set()
         await w.start()
 
         mock_logger.info.assert_called_once()

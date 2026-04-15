@@ -11,6 +11,7 @@ class RabbitMQBroker:
         self._connection = None
         self._publish_channel = None
         self._consume_channel = None
+        self._consumer_tags: list[tuple] = []  # list of (queue, consumer_tag)
 
     async def connect(self) -> None:
         if self._connection is not None:
@@ -100,7 +101,14 @@ class RabbitMQBroker:
     async def consume(self, queue_name: str, callback, prefetch_count: int) -> None:
         await self._consume_channel.set_qos(prefetch_count=prefetch_count)
         queue = await self._consume_channel.get_queue(queue_name)
-        await queue.consume(callback)
+        consumer_tag = await queue.consume(callback)
+        self._consumer_tags.append((queue, consumer_tag))
+
+    async def cancel_consume(self) -> None:
+        """Cancel all active consumers to stop receiving new messages."""
+        for queue, consumer_tag in self._consumer_tags:
+            await queue.cancel(consumer_tag)
+        self._consumer_tags.clear()
 
     async def ack(self, message) -> None:
         await message.ack()
