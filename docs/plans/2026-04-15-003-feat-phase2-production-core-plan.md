@@ -4,6 +4,7 @@ type: feat
 status: active
 date: 2026-04-15
 origin: docs/brainstorms/implementation-order-requirements.md
+deepened: 2026-04-15
 ---
 
 # feat: Phase 2 — Produktionsfähiger Kern
@@ -73,8 +74,12 @@ Phase 1 liefert einen funktionalen Roundtrip, ist aber nicht produktionsfähig: 
 - **Retry via Delay Queue (.DQ):** Retry-Message wird in {queue}.DQ publiziert mit per-message TTL (= Backoff-Delay). RabbitMQ DLX routet sie nach TTL-Ablauf zurück in die Main-Queue. Kein Polling, kein Scheduler nötig.
 - **Exponential Backoff mit Full Jitter als Default:** `delay = base * (2^attempt) * random(1.0, 2.0)`. Verhindert Thundering Herd nach Massenfehlern. `secrets.SystemRandom()` für kryptographisch sichere Jitter-Werte (verhindert synchronized Retries über Worker hinweg).
 - **Soft-Timeout via asyncio.wait_for:** Wirft `asyncio.TimeoutError`, wird vom Worker als SoftTimeoutError behandelt und löst Retry aus. Task kann im Timeout-Handler aufräumen.
-- **Hard-Timeout via separaten Watchdog-Task:** `asyncio.create_task` mit `asyncio.sleep(hard_timeout)` + `task.cancel()`. Kann nicht gefangen werden (CancelledError propagiert). Worker nacked mit requeue=True.
+- **Hard-Timeout via separaten Watchdog-Task:** `asyncio.create_task` mit `asyncio.sleep(hard_timeout)` + `task.cancel()`. Kann nicht gefangen werden (CancelledError propagiert). **Hard-Timeout routed durch den Retry-Pfad** (retry_count inkrementieren, Backoff, DLQ nach max_retries) statt blindem nack(requeue=True) — verhindert Endlosschleifen bei Tasks die immer > hard_timeout brauchen.
+- **FIRE_AND_FORGET Guard:** Gesamter Retry/Nack-Block ist explizit mit `if delivery == AT_LEAST_ONCE:` gegated. Bei FIRE_AND_FORGET: Exceptions nur loggen, kein Broker-Call auf bereits geackte Message. Hard-Timeout-Watchdog bei FIRE_AND_FORGET: nur cancel, kein nack.
+- **post_execution wird bei Soft-Timeout NICHT aufgerufen:** `asyncio.wait_for` cancelled die innere Coroutine. Task-Autoren müssen `try/finally` in `run()` für kritisches Cleanup verwenden. Dies ist ein dokumentiertes API-Constraint.
+- **Backoff-Cap:** `retry_max_delay: float = 3600.0` (1 Stunde) in Config. Exponential Backoff wird bei diesem Wert gekappt.
 - **Graceful Shutdown als 4-Zustandsmaschine:** RUNNING→DRAINING→SHUTTING_DOWN→STOPPED. Signal-Handler setzt Event, Worker stoppt Consumer, wartet auf laufende Tasks (mit Drain-Timeout), nacked prefetched Messages, schließt Connections.
+- **In-flight Task-Tracking via `_active_tasks: set[asyncio.Task]`:** `_on_message` speichert den `create_task`-Return in einem Set, `add_done_callback(discard)` entfernt fertige Tasks. Drain nutzt `asyncio.wait(self._active_tasks, timeout)` statt Semaphore-Tracking. Semaphore bleibt für Concurrency-Control, aber das Task-Set ist der autoritative Tracker für Shutdown.
 - **TaskInfo-Felder für Retry erweitern:** `max_retries` (default 0), `retry_backoff` (default "exponential"), `retry_exceptions` (default None = alle), `retry_base_delay` (default 1.0s). Diese Felder existieren noch NICHT in task.py — sie werden in Unit 2.2+2.3 hinzugefügt. Die Spezifikation (aufgabe.md Abschnitt 4.1) definiert sie bereits.
 - **Result-TTL=0 bei FIRE_AND_FORGET erzwingen:** Wenn delivery=FIRE_AND_FORGET und result_ttl nicht explizit gesetzt, wird result_ttl=0 als Default verwendet (kein Result-Storage). Konsistent mit der Spec.
 
@@ -236,7 +241,6 @@ flowchart TD
 - Modify: `src/swarmq/broker/rabbitmq.py` (publish_to_delay_queue Methode)
 - Modify: `src/swarmq/task.py` (TaskInfo Retry-Felder)
 - Modify: `src/swarmq/config.py` (globale Retry-Defaults)
-- Modify: `src/swarmq/exceptions.py` (SoftTimeoutError hinzufügen)
 - Test: `tests/unit/test_worker.py`
 - Test: `tests/unit/broker/test_rabbitmq.py`
 
@@ -244,6 +248,7 @@ flowchart TD
 
 **Approach:**
 - **TaskInfo erweitern:** `max_retries: int = 0`, `retry_backoff: str = "exponential"`, `retry_exceptions: list[type] | None = None`, `retry_base_delay: float = 1.0`
+- **Config erweitern:** `retry_max_delay: float = 3600.0` (globaler Backoff-Cap, 1 Stunde)
 - **Retry-State in Message-Headers:** `x-swarmq-retry-count` (int), `x-swarmq-original-queue` (str). Beim Publish initial auf 0 setzen.
 - **Worker Retry-Logik in _handle_message:**
   1. Exception fangen
@@ -258,7 +263,7 @@ flowchart TD
   - fixed: `base`
 - **Broker.publish_to_delay_queue(queue_name, message, delay_ms):** Publiziert in {queue}.DQ mit per-message TTL (`expiration` Header). RabbitMQ DLX routet nach Ablauf zurück in Main-Queue.
 - **DLQ-Routing:** Für DLQ-Messages: Error-Result mit Traceback speichern, dann Message explizit in {queue}.XQ publizieren und Original-Message acken. Explizites Publish statt nack(requeue=false) weil: (a) die DLX-Routing auf der Main-Queue zeigt auf .XQ, was bei Retry-Messages die aus .DQ kommen nicht greift, und (b) explizites Publish gibt volle Kontrolle über die DLQ-Message-Headers (Traceback, Original-Queue, Retry-Count).
-- **SoftTimeoutError** zu exceptions.py hinzufügen (wird von Unit 2.4 verwendet, hier schon definieren)
+- **SoftTimeoutError** wird in Unit 2.4 definiert (nicht hier — wird erst dort verwendet)
 
 **Patterns to follow:**
 - `docs/recherche-retry-dlq.md` (Backoff-Formeln, Header-basierter State)
@@ -297,13 +302,16 @@ flowchart TD
 
 **Files:**
 - Modify: `src/swarmq/worker.py`
+- Modify: `src/swarmq/exceptions.py` (SoftTimeoutError hinzufügen)
 - Test: `tests/unit/test_worker.py`
 
 **Execution note:** Test-first — beginne mit Soft-Timeout-Test (asyncio.wait_for).
 
 **Approach:**
+- **SoftTimeoutError** zu exceptions.py hinzufügen als `SoftTimeoutError(SwarmQError)`
 - **Soft-Timeout:** Wenn `task_info.soft_timeout` gesetzt: `await asyncio.wait_for(task.run(*args, **kwargs), timeout=soft_timeout)`. Fängt `asyncio.TimeoutError`, wirft `SoftTimeoutError`. Worker behandelt SoftTimeoutError wie eine retry-fähige Exception.
-- **Hard-Timeout:** Wenn `task_info.hard_timeout` gesetzt: Separater Watchdog-Task `asyncio.create_task(self._hard_timeout_watchdog(task_coro, hard_timeout))`. Nach hard_timeout: `task_coro.cancel()`. Worker fängt CancelledError → nack(requeue=True), loggt WARNING.
+- **Hard-Timeout:** Wenn `task_info.hard_timeout` gesetzt: Separater Watchdog-Task `asyncio.create_task(self._hard_timeout_watchdog(task_coro, hard_timeout))`. Nach hard_timeout: `task_coro.cancel()`. Worker fängt CancelledError → **routed durch den Retry-Pfad** (retry_count inkrementieren, DLQ nach max_retries) statt blindem nack(requeue=True). Verhindert Endlosschleifen bei permanent-timeouting Tasks.
+- **FIRE_AND_FORGET + Hard-Timeout:** Watchdog cancelt den Task, aber kein nack (Message bereits geackt). Nur loggen.
 - **Beide Timeouts parallel:** Soft-Timeout läuft im asyncio.wait_for, Hard-Timeout als separater Watchdog. Soft löst vor Hard aus (wenn beide gesetzt, ist hard > soft per TaskInfo-Validierung).
 - **Nur run() wird timed:** pre_execution und post_execution haben keine Timeout-Begrenzung (sind für Setup/Cleanup gedacht).
 
@@ -313,12 +321,14 @@ flowchart TD
 **Test scenarios:**
 - Happy path: Task mit soft_timeout=1s und run() dauert 2s → SoftTimeoutError
 - Happy path: SoftTimeoutError löst Retry aus (wenn max_retries > 0)
-- Happy path: Task mit hard_timeout=2s und run() dauert 3s → CancelledError → nack(requeue=True)
+- Happy path: Task mit hard_timeout=2s und run() dauert 3s → CancelledError → Retry-Pfad (retry_count inkrementiert)
 - Happy path: Task ohne Timeouts → kein Timeout-Verhalten (Rückwärtskompatibilität)
 - Happy path: Soft-Timeout fängt und Task kann aufräumen (pre_execution → run timeout → post_execution NICHT aufgerufen)
 - Error path: Hard-Timeout bei einem Task der Soft-Timeout ignoriert → unkonditioneller Cancel
 - Edge case: Soft < Hard → Soft feuert zuerst, Hard wird abgebrochen wenn Task durch Retry-Logic endet
 - Edge case: Nur hard_timeout gesetzt (kein soft) → nur Hard-Timeout aktiv
+- Edge case: Hard-Timeout nach max_retries erschöpft → DLQ (nicht Endlosschleife)
+- Edge case: FIRE_AND_FORGET + Hard-Timeout → Task gecancelt, nur geloggt, kein nack
 
 **Verification:**
 - Hängende Tasks werden durch Timeouts unterbrochen
@@ -347,8 +357,8 @@ flowchart TD
 - **Signal-Handler:** `loop.add_signal_handler(SIGTERM, ...)` und `loop.add_signal_handler(SIGINT, ...)` in Worker.start(). Handler setzt `_shutdown_event: asyncio.Event`.
 - **Shutdown-Sequenz:**
   1. RUNNING → DRAINING: Consumer stoppen (broker.cancel_consume), keine neuen Messages
-  2. DRAINING: Warten auf laufende Tasks mit Drain-Timeout (config.shutdown_timeout, Default 30s). Semaphore-Tracking: wenn alle Slots frei → alle Tasks fertig.
-  3. DRAINING → SHUTTING_DOWN: Drain-Timeout abgelaufen → laufende Tasks canceln (Hard-Cancel)
+  2. DRAINING: Warten auf laufende Tasks mit Drain-Timeout (config.shutdown_timeout, Default 30s). `asyncio.wait(self._active_tasks, timeout=shutdown_timeout)` — Task-Set ist der autoritative Tracker (nicht Semaphore allein).
+  3. DRAINING → SHUTTING_DOWN: Drain-Timeout abgelaufen → verbleibende Tasks in `_active_tasks` canceln via `task.cancel()`
   4. SHUTTING_DOWN: Prefetched aber unbearbeitete Messages nack(requeue=True). Broker close, Backend close.
   5. SHUTTING_DOWN → STOPPED: Cleanup fertig.
 - **Config erweitern:** `shutdown_timeout: int = 30`
@@ -406,7 +416,7 @@ flowchart TD
 
 - **Interaction graph:** Worker._handle_message wird erheblich erweitert: Delivery-Mode-Branching → Retry/DLQ-Routing → Timeout-Enforcement. Alle Pfade nutzen structlog. Graceful Shutdown greift in Worker.start() ein.
 - **Error propagation:** Erweitert: Task-Exception → Retry-Check → Backoff-Publish zu .DQ ODER DLQ zu .XQ ODER Error-Result. SoftTimeoutError wird wie retry-fähige Exception behandelt.
-- **State lifecycle risks:** Retry-Count in Message-Headers: bei Broker-Restart gehen laufende Retry-Ketten verloren (Messages in .DQ bleiben erhalten, aber neue Retry-Attempts starten bei 0). Akzeptabel für Phase 2.
+- **State lifecycle risks:** Retry-Count in Message-Headers: bei Broker-Restart gehen laufende Retry-Ketten verloren (Messages in .DQ bleiben erhalten, aber neue Retry-Attempts starten bei 0). Akzeptabel für Phase 2. **Shutdown-Interaktion:** Wenn Shutdown zwischen publish-to-DQ und ack-of-original passiert, wird die Original-Message requeued → ein zusätzlicher Attempt über max_retries hinaus. At-least-once-konsistent, kein Datenverlust.
 - **API surface parity:** TaskInfo bekommt neue Felder (max_retries, retry_backoff, etc.). Rückwärtskompatibel da alle Defaults beibehalten werden (max_retries=0 = kein Retry).
 - **Integration coverage:** E2E-Tests (Unit 2.E2E) verifizieren Retry-Timing, DLQ-Routing und Shutdown-Verhalten.
 - **Unchanged invariants:** Client-API (schedule, get_result, run) ändert sich NICHT. Phase-1 Public API bleibt vollständig kompatibel.
