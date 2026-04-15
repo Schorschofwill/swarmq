@@ -76,21 +76,51 @@ class Client:
         timeout: float = 10,
         polling: float = 0.2,
     ) -> Any:
-        """Poll the backend for a task result."""
+        """Retrieve a task result using Pub/Sub with polling fallback.
+
+        Flow for timeout > 0:
+          1. Initial GET check (catches fast tasks / race window)
+          2. Pub/Sub wait via backend.subscribe_and_wait
+          3. Polling fallback (5ms interval) if Pub/Sub misses
+        """
+        _FALLBACK_POLL = 0.005  # 5ms polling for fallback
+
+        # --- timeout=0: single GET, no Pub/Sub ---
         if timeout == 0:
             raw = await self._backend.get_result(task_id)
             if raw is None:
                 raise ResultNotReadyError(task_id)
             return self._unpack(raw)
 
-        deadline = asyncio.get_running_loop().time() + timeout
-        while True:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        # --- Step 1: Initial check ---
+        raw = await self._backend.get_result(task_id)
+        if raw is not None:
+            return self._unpack(raw)
+
+        # --- Step 2: Pub/Sub wait ---
+        remaining = deadline - loop.time()
+        if remaining > 0:
+            channel = f"sq:notify:{task_id}"
+            pubsub_timeout = min(1.0, remaining)
+            notified = await self._backend.subscribe_and_wait(
+                channel, timeout=pubsub_timeout,
+            )
+            if notified:
+                raw = await self._backend.get_result(task_id)
+                if raw is not None:
+                    return self._unpack(raw)
+
+        # --- Step 3: Polling fallback ---
+        while loop.time() < deadline:
             raw = await self._backend.get_result(task_id)
             if raw is not None:
                 return self._unpack(raw)
-            if asyncio.get_running_loop().time() >= deadline:
-                raise ResultNotReadyError(task_id)
-            await asyncio.sleep(polling)
+            await asyncio.sleep(_FALLBACK_POLL)
+
+        raise ResultNotReadyError(task_id)
 
     async def run(
         self,
