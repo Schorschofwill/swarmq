@@ -38,7 +38,7 @@ Die Phase 0+1 Implementierung ist funktional korrekt (178 Tests grün, E2E-Round
 
 ## Implementation Units
 
-- [ ] **Unit 1: Worker Semaphore-Deadlock beheben (P0)**
+- [x] **Unit 1: Worker Semaphore-Deadlock beheben (P0)**
 
 **Goal:** Worker._on_message darf nicht direkt im aio-pika Callback blockieren.
 
@@ -69,7 +69,7 @@ Die Phase 0+1 Implementierung ist funktional korrekt (178 Tests grün, E2E-Round
 
 ---
 
-- [ ] **Unit 2: ValkeyBackend Error-Wrapping (P1)**
+- [x] **Unit 2: ValkeyBackend Error-Wrapping (P1)**
 
 **Goal:** Alle I/O-Methoden in ValkeyBackend wrappen Valkey-Exceptions in BackendConnectionError.
 
@@ -96,7 +96,7 @@ Die Phase 0+1 Implementierung ist funktional korrekt (178 Tests grün, E2E-Round
 
 ---
 
-- [ ] **Unit 3: Connect-Guard für Broker und Backend (P1)**
+- [x] **Unit 3: Connect-Guard für Broker und Backend (P1)**
 
 **Goal:** `connect()` ist idempotent — mehrfaches Aufrufen leakt keine Connections.
 
@@ -124,7 +124,7 @@ Die Phase 0+1 Implementierung ist funktional korrekt (178 Tests grün, E2E-Round
 
 ---
 
-- [ ] **Unit 4: __aenter__ Cleanup bei partiellem Connect (P1)**
+- [x] **Unit 4: __aenter__ Cleanup bei partiellem Connect (P1)**
 
 **Goal:** Wenn backend.connect() in __aenter__ fehlschlägt, wird die bereits geöffnete Broker-Connection geschlossen.
 
@@ -148,7 +148,7 @@ Die Phase 0+1 Implementierung ist funktional korrekt (178 Tests grün, E2E-Round
 
 ---
 
-- [ ] **Unit 5: get_event_loop → get_running_loop (P1)**
+- [x] **Unit 5: get_event_loop → get_running_loop (P1)**
 
 **Goal:** Deprecated asyncio.get_event_loop() durch get_running_loop() ersetzen.
 
@@ -171,7 +171,7 @@ Die Phase 0+1 Implementierung ist funktional korrekt (178 Tests grün, E2E-Round
 
 ---
 
-- [ ] **Unit 6: decode_result type_hint entfernen + registry.get_entry() Guard (P2)**
+- [x] **Unit 6: decode_result type_hint entfernen + registry.get_entry() Guard (P2)**
 
 **Goal:** Dead Parameter entfernen und fehlenden Error-Guard hinzufügen.
 
