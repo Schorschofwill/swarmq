@@ -115,7 +115,7 @@ def worker(broker, backend, registry, config):
 async def test_happy_path_message_processed_and_acked(worker, broker, backend):
     msg = _make_message(_default_payload())
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     broker.ack.assert_awaited_once_with(msg)
     assert backend.store_result.await_count == 1
@@ -136,7 +136,7 @@ async def test_happy_path_message_processed_and_acked(worker, broker, backend):
 async def test_return_value_serialized_in_result_dict(worker, backend):
     msg = _make_message(_default_payload(args=[10, 20]))
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["result"] == 30
@@ -171,7 +171,7 @@ async def test_pre_and_post_execution_called(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="lifecycle", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     assert call_order == ["pre", "run", "post"]
 
@@ -215,7 +215,7 @@ async def test_semaphore_limits_concurrency(broker, backend, config):
         _make_message(_default_payload(task_id=f"t-{i}", name="slow", args=[], kwargs={}))
         for i in range(6)
     ]
-    await asyncio.gather(*(w._on_message(m) for m in messages))
+    await asyncio.gather(*(w._handle_message(m) for m in messages))
 
     assert max_concurrent <= concurrency
 
@@ -238,7 +238,7 @@ async def test_result_ttl_zero_skips_store(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="nostore", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     backend.store_result.assert_not_awaited()
     broker.ack.assert_awaited_once_with(msg)
@@ -262,7 +262,7 @@ async def test_task_exception_stores_error_result(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="fail", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
@@ -298,7 +298,7 @@ async def test_pre_execution_raises_skips_post(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="prefail", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     assert post_called is False
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -328,7 +328,7 @@ async def test_post_execution_raises_overwrites_success(broker, backend, config)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="postfail", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
@@ -354,7 +354,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="badresult", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
@@ -372,7 +372,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
 async def test_unknown_task_nacked_no_requeue(worker, broker, backend):
     msg = _make_message(_default_payload(name="nonexistent"))
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     broker.nack.assert_awaited_once_with(msg, requeue=False)
     broker.ack.assert_not_awaited()
@@ -391,7 +391,7 @@ async def test_backend_error_nacks_with_requeue(worker, broker, backend):
     )
     msg = _make_message(_default_payload())
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     broker.nack.assert_awaited_once_with(msg, requeue=True)
     broker.ack.assert_not_awaited()
@@ -406,7 +406,7 @@ async def test_backend_error_nacks_with_requeue(worker, broker, backend):
 async def test_invalid_json_nacked_no_requeue(worker, broker, backend):
     msg = _make_raw_message(b"not valid json {{{")
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     broker.nack.assert_awaited_once_with(msg, requeue=False)
     broker.ack.assert_not_awaited()
@@ -423,7 +423,7 @@ async def test_missing_task_name_nacked_no_requeue(worker, broker, backend):
     payload = {"task": {"id": "abc", "queue": "default"}, "args": [], "kwargs": {}}
     msg = _make_message(payload)
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     broker.nack.assert_awaited_once_with(msg, requeue=False)
     broker.ack.assert_not_awaited()
@@ -448,7 +448,7 @@ async def test_none_return_stored(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="nonetask", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["result"] is None
@@ -485,11 +485,30 @@ async def test_semaphore_released_on_error(broker, backend, config):
 
     # If semaphore leaks, second message would hang forever
     await asyncio.wait_for(
-        asyncio.gather(w._on_message(msg1), w._on_message(msg2)),
+        asyncio.gather(w._handle_message(msg1), w._handle_message(msg2)),
         timeout=2.0,
     )
 
     assert broker.ack.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 16. _on_message spawns a task instead of blocking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_message_creates_task(worker, broker, backend):
+    """_on_message should return immediately, spawning _handle_message as a task."""
+    msg = _make_message(_default_payload())
+
+    await worker._on_message(msg)
+
+    # The spawned task hasn't run yet; give the event loop a tick
+    await asyncio.sleep(0)
+
+    broker.ack.assert_awaited_once_with(msg)
+    assert backend.store_result.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +577,7 @@ async def test_result_ttl_from_task_info(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     msg = _make_message(_default_payload(name="ttltask", args=[], kwargs={}))
-    await w._on_message(msg)
+    await w._handle_message(msg)
 
     call_args = backend.store_result.call_args
     assert call_args[0][2] == 300_000  # ttl_ms = result_ttl * 1000
@@ -568,7 +587,7 @@ async def test_result_ttl_from_task_info(broker, backend, config):
 async def test_result_ttl_falls_back_to_config(worker, backend):
     msg = _make_message(_default_payload())
 
-    await worker._on_message(msg)
+    await worker._handle_message(msg)
 
     # AddTask has result_ttl=None, config default is 86400
     call_args = backend.store_result.call_args

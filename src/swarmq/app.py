@@ -36,7 +36,11 @@ class SwarmQ:
 
     async def __aenter__(self) -> SwarmQ:
         await self.broker.connect()
-        await self.backend.connect()
+        try:
+            await self.backend.connect()
+        except BaseException:
+            await self.broker.close()
+            raise
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

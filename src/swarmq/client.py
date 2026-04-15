@@ -83,12 +83,12 @@ class Client:
                 raise ResultNotReadyError(task_id)
             return self._unpack(raw)
 
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
             raw = await self._backend.get_result(task_id)
             if raw is not None:
                 return self._unpack(raw)
-            if asyncio.get_event_loop().time() >= deadline:
+            if asyncio.get_running_loop().time() >= deadline:
                 raise ResultNotReadyError(task_id)
             await asyncio.sleep(polling)
 

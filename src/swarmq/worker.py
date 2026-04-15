@@ -52,7 +52,11 @@ class Worker:
         await self._backend.close()
 
     async def _on_message(self, message) -> None:
-        """Core message handler callback."""
+        """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
+        asyncio.create_task(self._handle_message(message))
+
+    async def _handle_message(self, message) -> None:
+        """Core message handler logic."""
         # 1-2. Deserialize message body
         try:
             payload = decode_json(message.body)

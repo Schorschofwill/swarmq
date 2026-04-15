@@ -85,6 +85,19 @@ class TestSwarmQContextManager:
         backend.close.assert_awaited_once()
 
 
+class TestSwarmQPartialConnectFailure:
+    @pytest.mark.anyio()
+    async def test_backend_connect_failure_closes_broker(self, broker, backend):
+        backend.connect.side_effect = ConnectionError("backend down")
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConnectionError, match="backend down"):
+            await app.__aenter__()
+
+        broker.connect.assert_awaited_once()
+        broker.close.assert_awaited_once()
+
+
 class TestSwarmQDelegation:
     @pytest.mark.anyio()
     async def test_schedule_delegates_to_client(self, broker, backend):

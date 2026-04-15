@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
+from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.exceptions import BackendConnectionError
@@ -99,6 +100,51 @@ class TestValkeyBackendDeleteResult:
         await backend.delete_result("abc-123")
 
         mock_client.delete.assert_awaited_once_with("sq:result:abc-123")
+
+
+class TestValkeyBackendStoreResultError:
+    async def test_store_result_wraps_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.set.side_effect = ValkeyError("write failed")
+
+        with pytest.raises(BackendConnectionError):
+            await backend.store_result("abc-123", b'{"result": 42}', 3600000)
+
+
+class TestValkeyBackendGetResultError:
+    async def test_get_result_wraps_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.get.side_effect = ValkeyError("read failed")
+
+        with pytest.raises(BackendConnectionError):
+            await backend.get_result("abc-123")
+
+
+class TestValkeyBackendDeleteResultError:
+    async def test_delete_result_wraps_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+        mock_client.delete.side_effect = ValkeyError("delete failed")
+
+        with pytest.raises(BackendConnectionError):
+            await backend.delete_result("abc-123")
+
+
+class TestValkeyBackendConnectGuard:
+    async def test_connect_twice_only_calls_from_url_once(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+
+        with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client) as mock_from_url:
+            await backend.connect()
+            await backend.connect()
+
+        mock_from_url.assert_called_once()
 
 
 class TestValkeyBackendConnectError:

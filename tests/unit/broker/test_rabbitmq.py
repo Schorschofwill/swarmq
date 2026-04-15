@@ -135,6 +135,19 @@ class TestRabbitMQBrokerAckNack:
         mock_message.nack.assert_awaited_once_with(requeue=True)
 
 
+class TestRabbitMQBrokerConnectGuard:
+    async def test_connect_twice_only_calls_connect_robust_once(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_connection = AsyncMock()
+        mock_connection.channel.side_effect = [AsyncMock(), AsyncMock()]
+
+        with patch("swarmq.broker.rabbitmq.aio_pika.connect_robust", return_value=mock_connection) as mock_connect:
+            await broker.connect()
+            await broker.connect()
+
+        mock_connect.assert_awaited_once()
+
+
 class TestRabbitMQBrokerConnectError:
     async def test_connect_wraps_connection_error_in_broker_error(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")

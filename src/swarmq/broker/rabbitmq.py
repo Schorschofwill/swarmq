@@ -13,6 +13,8 @@ class RabbitMQBroker:
         self._consume_channel = None
 
     async def connect(self) -> None:
+        if self._connection is not None:
+            return
         try:
             self._connection = await aio_pika.connect_robust(self._url)
         except Exception as exc:

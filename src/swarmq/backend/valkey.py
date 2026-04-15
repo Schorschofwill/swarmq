@@ -2,6 +2,7 @@
 
 import valkey.asyncio
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
+from valkey.exceptions import ValkeyError
 
 from swarmq.exceptions import BackendConnectionError
 
@@ -12,6 +13,8 @@ class ValkeyBackend:
         self._client: valkey.asyncio.Valkey | None = None
 
     async def connect(self) -> None:
+        if self._client is not None:
+            return
         try:
             self._client = valkey.asyncio.Valkey.from_url(self._url)
             await self._client.ping()
@@ -27,10 +30,19 @@ class ValkeyBackend:
         return f"sq:result:{task_id}"
 
     async def store_result(self, task_id: str, result_data: bytes, ttl_ms: int) -> None:
-        await self._client.set(self._key(task_id), result_data, px=ttl_ms)
+        try:
+            await self._client.set(self._key(task_id), result_data, px=ttl_ms)
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
 
     async def get_result(self, task_id: str) -> bytes | None:
-        return await self._client.get(self._key(task_id))
+        try:
+            return await self._client.get(self._key(task_id))
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
 
     async def delete_result(self, task_id: str) -> None:
-        await self._client.delete(self._key(task_id))
+        try:
+            await self._client.delete(self._key(task_id))
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc

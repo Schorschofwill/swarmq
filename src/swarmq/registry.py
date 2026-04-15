@@ -46,6 +46,8 @@ class TaskRegistry:
             raise TaskNotFoundError(task_name) from None
 
     def get_entry(self, task_name: str) -> RegistryEntry:
+        if task_name not in self._entries:
+            raise TaskNotFoundError(task_name)
         return self._entries[task_name]
 
     def get_all(self) -> dict[str, type[Task]]:

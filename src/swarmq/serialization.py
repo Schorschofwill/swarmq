@@ -108,7 +108,7 @@ def encode_result(obj: Any) -> bytes:
         ) from exc
 
 
-def decode_result(data: bytes, type_hint: type | None = None) -> Any:
+def decode_result(data: bytes) -> Any:
     """Deserialize msgpack bytes."""
     try:
         return msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook)

@@ -120,6 +120,12 @@ def test_duplicate_task_name_raises_configuration_error():
         registry.register(SecondTask)
 
 
+def test_get_entry_unknown_raises_task_not_found_error():
+    registry = TaskRegistry()
+    with pytest.raises(TaskNotFoundError):
+        registry.get_entry("unknown")
+
+
 def test_registry_is_initially_empty():
     registry = TaskRegistry()
     assert registry.get_all() == {}
