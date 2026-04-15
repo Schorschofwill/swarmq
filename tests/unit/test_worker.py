@@ -510,8 +510,9 @@ async def test_on_message_creates_task(worker, broker, backend):
 
     await worker._on_message(msg)
 
-    # The spawned task hasn't run yet; give the event loop a tick
-    await asyncio.sleep(0)
+    # The spawned task hasn't run yet; give the event loop enough ticks
+    # to complete (including internal create_task for run coroutine)
+    await asyncio.sleep(0.01)
 
     broker.ack.assert_awaited_once_with(msg)
     assert backend.store_result.await_count == 1

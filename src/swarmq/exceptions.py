@@ -43,6 +43,10 @@ class Retry(SwarmQError):
         super().__init__()
 
 
+class SoftTimeoutError(SwarmQError):
+    pass
+
+
 class NoRetry(SwarmQError):
     def __init__(self, reason: str = "") -> None:
         self.reason = reason

@@ -17,6 +17,7 @@ from swarmq.exceptions import (
     NoRetry,
     ResultSerializationError,
     Retry,
+    SoftTimeoutError,
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
@@ -131,14 +132,54 @@ class Worker:
                 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                     logger.error("fire_and_forget_error", error=error_message)
             else:
+                run_coro = task_instance.run(*args, **kwargs)
+                if task_info.soft_timeout is not None:
+                    run_coro = asyncio.wait_for(
+                        run_coro, timeout=task_info.soft_timeout
+                    )
+
+                run_task = asyncio.create_task(run_coro)
+
+                watchdog = None
+                if task_info.hard_timeout is not None:
+                    watchdog = asyncio.create_task(
+                        self._hard_timeout_watchdog(
+                            run_task, task_info.hard_timeout
+                        )
+                    )
+
                 try:
-                    result_value = await task_instance.run(*args, **kwargs)
+                    result_value = await run_task
+                except asyncio.TimeoutError:
+                    soft_err = SoftTimeoutError(
+                        f"soft timeout after {task_info.soft_timeout}s"
+                    )
+                    is_error = True
+                    error_message = f"SoftTimeoutError: {soft_err}"
+                    task_exception = soft_err
+                    if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                        logger.error(
+                            "fire_and_forget_error", error=error_message
+                        )
+                except asyncio.CancelledError:
+                    hard_err_msg = (
+                        f"hard timeout after {task_info.hard_timeout}s"
+                    )
+                    is_error = True
+                    error_message = hard_err_msg
+                    task_exception = RuntimeError(hard_err_msg)
+                    if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                        logger.error(
+                            "fire_and_forget_error", error=error_message
+                        )
                 except Exception as exc:
                     is_error = True
                     error_message = str(exc)
                     task_exception = exc
                     if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                        logger.error("fire_and_forget_error", error=error_message)
+                        logger.error(
+                            "fire_and_forget_error", error=error_message
+                        )
                 else:
                     try:
                         await task_instance.post_execution()
@@ -148,7 +189,12 @@ class Worker:
                         task_exception = exc
                         result_value = None
                         if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                            logger.error("fire_and_forget_error", error=error_message)
+                            logger.error(
+                                "fire_and_forget_error", error=error_message
+                            )
+                finally:
+                    if watchdog is not None and not watchdog.done():
+                        watchdog.cancel()
 
             # For FIRE_AND_FORGET with errors: skip result/retry pipeline
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and is_error:
@@ -221,6 +267,13 @@ class Worker:
             # 12. Release semaphore
             self._semaphore.release()
             structlog.contextvars.clear_contextvars()
+
+    async def _hard_timeout_watchdog(
+        self, run_task: asyncio.Task, timeout: float
+    ) -> None:
+        """Sleep for *timeout* seconds, then cancel *run_task*."""
+        await asyncio.sleep(timeout)
+        run_task.cancel()
 
     async def _evaluate_retry(
         self,
