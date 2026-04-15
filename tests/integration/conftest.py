@@ -57,13 +57,14 @@ def check_docker():
 
 
 @pytest.fixture(autouse=True)
-def flush_valkey():
-    """Flush the Valkey test database after each test.
-
-    TODO: Replace with a real ``valkey.asyncio`` flush once valkey-py is
-    wired up.
-    """
+async def flush_valkey():
+    """Flush the Valkey test database after each test."""
     yield
     # --- teardown ---
-    # async with valkey.from_url(valkey_url) as client:
-    #     await client.flushdb()
+    import valkey.asyncio as aio_valkey
+
+    client = aio_valkey.Valkey.from_url(f"valkey://{_VALKEY_HOST}:{_VALKEY_PORT}/0")
+    try:
+        await client.flushdb()
+    finally:
+        await client.aclose()
