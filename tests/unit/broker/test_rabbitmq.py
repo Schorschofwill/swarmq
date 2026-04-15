@@ -16,6 +16,18 @@ class TestRabbitMQBrokerInit:
         assert broker._url == "amqp://guest:guest@localhost/"
         assert broker._connection is None
 
+    def test_default_queue_type_is_quorum(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        assert broker._queue_type == "quorum"
+
+    def test_custom_queue_type(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/", queue_type="classic")
+        assert broker._queue_type == "classic"
+
+    def test_explicit_quorum_queue_type(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/", queue_type="quorum")
+        assert broker._queue_type == "quorum"
+
 
 class TestRabbitMQBrokerConnect:
     async def test_connect_creates_connection_and_channels(self):
@@ -94,6 +106,18 @@ class TestRabbitMQBrokerDeclareQueue:
         )
         with pytest.raises(BrokerConnectionError, match="Existing queue"):
             await broker.declare_queue("tasks")
+
+    async def test_declare_queue_uses_classic_when_configured(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/", queue_type="classic")
+        broker._publish_channel = AsyncMock()
+        broker._connection = AsyncMock()
+
+        await broker.declare_queue("tasks")
+
+        calls = broker._publish_channel.declare_queue.call_args_list
+        assert len(calls) == 3
+        for c in calls:
+            assert c.kwargs["arguments"]["x-queue-type"] == "classic"
 
 
 class TestRabbitMQBrokerGetQueueDepth:

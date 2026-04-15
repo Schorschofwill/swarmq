@@ -1,0 +1,43 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5682:5672"
+      - "15682:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2g
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6389:6379"
+    command: valkey-server --appendonly no --save "" --maxmemory 512mb --maxmemory-policy noeviction
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: valkey-cli ping | grep -q PONG
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2g
+
+volumes:
+  rabbitmq_data:
+  valkey_data:

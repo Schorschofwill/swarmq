@@ -1,0 +1,14 @@
+# SwarmQ (editable install from repo root)
+-e ../..
+
+# Benchmark target libraries
+taskiq[redis]>=0.11
+taskiq-aio-pika>=0.4
+
+# Shared dependencies
+aio-pika>=9.0
+valkey[libvalkey]>=6.0
+uvloop>=0.21
+
+# Metrics
+psutil>=5.9
