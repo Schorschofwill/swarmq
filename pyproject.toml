@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "swarmq"
+version = "0.1.0"
+description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
+requires-python = ">=3.14"
+dependencies = [
+    "msgspec",
+    "msgpack",
+    "structlog",
+    "aio-pika",
+    "valkey[libvalkey]",
+]
+
+[project.optional-dependencies]
+fast = ["orjson"]
+metrics = ["prometheus_client"]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+    "pytest-cov",
+    "mypy",
+    "ruff",
+]
+
+[project.scripts]
+swarmq = "swarmq.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swarmq"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 30
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+    "e2e: end-to-end tests",
+    "slow: slow-running tests",
+]
+
+[tool.mypy]
+strict = true
+packages = ["swarmq"]
+mypy_path = "src"
+
+[tool.ruff]
+target-version = "py314"
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific rules
+]
