@@ -1,5 +1,7 @@
 """Valkey result backend for SwarmQ."""
 
+import asyncio
+
 import structlog
 import valkey.asyncio
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
@@ -64,3 +66,23 @@ class ValkeyBackend:
             return await self._client.mget(*keys)
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
+
+    def create_pubsub(self) -> valkey.asyncio.client.PubSub:
+        return self._client.pubsub()
+
+    async def subscribe_and_wait(self, channel: str, timeout: float) -> bool:
+        pubsub = self.create_pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout)
+            return msg is not None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+            except Exception:
+                pass

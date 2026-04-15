@@ -1,6 +1,7 @@
 """Unit tests for ValkeyBackend."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
@@ -240,3 +241,94 @@ class TestValkeyBackendGetResultsBatchPartial:
             "sq:result:a", "sq:result:missing", "sq:result:c"
         )
         assert result == [b"data-a", None, b"data-c"]
+
+
+class TestValkeyBackendCreatePubsub:
+    def test_create_pubsub_returns_pubsub_from_client(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_pubsub = AsyncMock()
+        mock_client.pubsub = Mock(return_value=mock_pubsub)
+        backend._client = mock_client
+
+        result = backend.create_pubsub()
+
+        mock_client.pubsub.assert_called_once()
+        assert result is mock_pubsub
+
+
+class TestValkeyBackendSubscribeAndWaitMessage:
+    async def test_subscribe_and_wait_returns_true_on_message(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_pubsub = AsyncMock()
+        mock_client.pubsub = Mock(return_value=mock_pubsub)
+        mock_pubsub.get_message.return_value = {"type": "message", "data": b"done"}
+        backend._client = mock_client
+
+        result = await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
+
+        assert result is True
+        mock_pubsub.subscribe.assert_awaited_once_with("sq:notify:task-1")
+        mock_pubsub.get_message.assert_awaited_once_with(
+            ignore_subscribe_messages=True, timeout=5.0
+        )
+
+
+class TestValkeyBackendSubscribeAndWaitTimeout:
+    async def test_subscribe_and_wait_returns_false_on_timeout(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_pubsub = AsyncMock()
+        mock_client.pubsub = Mock(return_value=mock_pubsub)
+        mock_pubsub.get_message.return_value = None
+        backend._client = mock_client
+
+        result = await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
+
+        assert result is False
+
+
+class TestValkeyBackendSubscribeAndWaitValkeyError:
+    async def test_subscribe_and_wait_returns_false_on_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_pubsub = AsyncMock()
+        mock_client.pubsub = Mock(return_value=mock_pubsub)
+        mock_pubsub.subscribe.side_effect = ValkeyError("connection lost")
+        backend._client = mock_client
+
+        result = await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
+
+        assert result is False
+
+
+class TestValkeyBackendSubscribeAndWaitCleanup:
+    async def test_subscribe_and_wait_always_calls_unsubscribe_and_aclose(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_pubsub = AsyncMock()
+        mock_client.pubsub = Mock(return_value=mock_pubsub)
+        mock_pubsub.get_message.side_effect = ValkeyError("read error")
+        backend._client = mock_client
+
+        await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
+
+        mock_pubsub.unsubscribe.assert_awaited_once_with("sq:notify:task-1")
+        mock_pubsub.aclose.assert_awaited_once()
+
+
+class TestValkeyBackendSubscribeAndWaitCancelledError:
+    async def test_subscribe_and_wait_propagates_cancelled_error_after_cleanup(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_pubsub = AsyncMock()
+        mock_client.pubsub = Mock(return_value=mock_pubsub)
+        mock_pubsub.get_message.side_effect = asyncio.CancelledError()
+        backend._client = mock_client
+
+        with pytest.raises(asyncio.CancelledError):
+            await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
+
+        mock_pubsub.unsubscribe.assert_awaited_once_with("sq:notify:task-1")
+        mock_pubsub.aclose.assert_awaited_once()

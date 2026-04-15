@@ -326,6 +326,11 @@ class Worker:
                     await self._broker.nack(message, requeue=True)
                 return
 
+            try:
+                await self._backend.publish_notification(task_id)
+            except Exception:
+                pass
+
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 await self._broker.ack(message)
 
@@ -438,6 +443,7 @@ class Worker:
             await self._backend.store_result(
                 task_id, result_bytes, result_ttl * 1000
             )
+            await self._backend.publish_notification(task_id)
         except Exception as store_exc:
             logger.warning("dlq_result_store_failed", error=str(store_exc))
 
