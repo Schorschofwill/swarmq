@@ -1,0 +1,167 @@
+"""Unit tests for RabbitMQBroker."""
+
+from unittest.mock import AsyncMock, call, patch
+
+import aio_pika
+import pytest
+
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.exceptions import BrokerConnectionError
+
+
+class TestRabbitMQBrokerInit:
+    def test_stores_url_and_has_no_connection(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+
+        assert broker._url == "amqp://guest:guest@localhost/"
+        assert broker._connection is None
+
+
+class TestRabbitMQBrokerConnect:
+    async def test_connect_creates_connection_and_channels(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_connection = AsyncMock()
+        mock_publish_channel = AsyncMock()
+        mock_consume_channel = AsyncMock()
+        mock_connection.channel.side_effect = [mock_publish_channel, mock_consume_channel]
+
+        with patch("swarmq.broker.rabbitmq.aio_pika.connect_robust", return_value=mock_connection) as mock_connect:
+            await broker.connect()
+
+        mock_connect.assert_awaited_once_with("amqp://guest:guest@localhost/")
+        assert mock_connection.channel.await_count == 2
+        assert broker._publish_channel is mock_publish_channel
+        assert broker._consume_channel is mock_consume_channel
+
+
+class TestRabbitMQBrokerDeclareQueue:
+    @pytest.fixture()
+    def connected_broker(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock()
+        broker._consume_channel = AsyncMock()
+        broker._connection = AsyncMock()
+        return broker
+
+    async def test_declare_queue_creates_three_queues_with_correct_args(self, connected_broker):
+        broker = connected_broker
+
+        await broker.declare_queue("tasks")
+
+        calls = broker._publish_channel.declare_queue.call_args_list
+        assert len(calls) == 3
+
+        # Main queue: tasks
+        main_call = calls[0]
+        assert main_call.args[0] == "tasks"
+        assert main_call.kwargs["durable"] is True
+        main_args = main_call.kwargs["arguments"]
+        assert main_args["x-queue-type"] == "quorum"
+        assert main_args["x-dead-letter-exchange"] == ""
+        assert main_args["x-dead-letter-routing-key"] == "tasks.XQ"
+
+        # Delay queue: tasks.DQ
+        delay_call = calls[1]
+        assert delay_call.args[0] == "tasks.DQ"
+        assert delay_call.kwargs["durable"] is True
+        delay_args = delay_call.kwargs["arguments"]
+        assert delay_args["x-queue-type"] == "quorum"
+        assert delay_args["x-dead-letter-exchange"] == ""
+        assert delay_args["x-dead-letter-routing-key"] == "tasks"
+
+        # Dead-letter queue: tasks.XQ
+        dlq_call = calls[2]
+        assert dlq_call.args[0] == "tasks.XQ"
+        assert dlq_call.kwargs["durable"] is True
+        dlq_args = dlq_call.kwargs["arguments"]
+        assert dlq_args["x-queue-type"] == "quorum"
+
+
+class TestRabbitMQBrokerPublish:
+    async def test_publish_sends_message_with_persistent_delivery(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock()
+        mock_exchange = broker._publish_channel.default_exchange
+
+        await broker.publish("tasks", b'{"task": "data"}')
+
+        mock_exchange.publish.assert_awaited_once()
+        publish_call = mock_exchange.publish.call_args
+        message = publish_call.args[0]
+        assert isinstance(message, aio_pika.Message)
+        assert message.body == b'{"task": "data"}'
+        assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
+        assert publish_call.kwargs["routing_key"] == "tasks"
+
+
+class TestRabbitMQBrokerConsume:
+    async def test_consume_sets_qos_and_starts_consuming(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._consume_channel = AsyncMock()
+        mock_queue = AsyncMock()
+        broker._consume_channel.get_queue.return_value = mock_queue
+        callback = AsyncMock()
+
+        await broker.consume("tasks", callback, prefetch_count=10)
+
+        broker._consume_channel.set_qos.assert_awaited_once_with(prefetch_count=10)
+        broker._consume_channel.get_queue.assert_awaited_once_with("tasks")
+        mock_queue.consume.assert_awaited_once_with(callback)
+
+
+class TestRabbitMQBrokerAckNack:
+    async def test_ack_delegates_to_message(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_message = AsyncMock()
+
+        await broker.ack(mock_message)
+
+        mock_message.ack.assert_awaited_once()
+
+    async def test_nack_delegates_to_message_with_requeue_false(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_message = AsyncMock()
+
+        await broker.nack(mock_message)
+
+        mock_message.nack.assert_awaited_once_with(requeue=False)
+
+    async def test_nack_delegates_to_message_with_requeue_true(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_message = AsyncMock()
+
+        await broker.nack(mock_message, requeue=True)
+
+        mock_message.nack.assert_awaited_once_with(requeue=True)
+
+
+class TestRabbitMQBrokerConnectError:
+    async def test_connect_wraps_connection_error_in_broker_error(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+
+        with patch(
+            "swarmq.broker.rabbitmq.aio_pika.connect_robust",
+            side_effect=ConnectionError("refused"),
+        ):
+            with pytest.raises(BrokerConnectionError):
+                await broker.connect()
+
+
+class TestRabbitMQBrokerClose:
+    async def test_close_closes_connection(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_connection = AsyncMock()
+        broker._connection = mock_connection
+
+        await broker.close()
+
+        mock_connection.close.assert_awaited_once()
+        assert broker._connection is None
+
+    async def test_close_is_idempotent(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._connection = None
+
+        # Should not raise when called without a connection
+        await broker.close()
+        await broker.close()
