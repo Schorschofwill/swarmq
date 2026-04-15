@@ -6,11 +6,15 @@ import asyncio
 import uuid
 from typing import Any
 
+import structlog
+
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
+
+logger = structlog.get_logger()
 
 
 class Client:
@@ -95,32 +99,53 @@ class Client:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        # --- Step 1: Initial check ---
-        raw = await self._backend.get_result(task_id)
-        if raw is not None:
-            return self._unpack(raw)
+        # --- Step 1: Subscribe first (before initial check to close race window) ---
+        channel = f"sq:notify:{task_id}"
+        pubsub = self._backend.create_pubsub()
+        try:
+            await pubsub.subscribe(channel)
+        except Exception:
+            pubsub = None  # Pub/Sub unavailable, fall through to polling
 
-        # --- Step 2: Pub/Sub wait ---
-        remaining = deadline - loop.time()
-        if remaining > 0:
-            channel = f"sq:notify:{task_id}"
-            pubsub_timeout = min(1.0, remaining)
-            notified = await self._backend.subscribe_and_wait(
-                channel, timeout=pubsub_timeout,
-            )
-            if notified:
-                raw = await self._backend.get_result(task_id)
-                if raw is not None:
-                    return self._unpack(raw)
-
-        # --- Step 3: Polling fallback ---
-        while loop.time() < deadline:
+        try:
+            # --- Step 2: Initial check (result may already be in Valkey) ---
             raw = await self._backend.get_result(task_id)
             if raw is not None:
                 return self._unpack(raw)
-            await asyncio.sleep(_FALLBACK_POLL)
 
-        raise ResultNotReadyError(task_id)
+            # --- Step 3: Pub/Sub wait (subscription is already active) ---
+            if pubsub is not None:
+                remaining = deadline - loop.time()
+                pubsub_timeout = min(1.0, remaining) if remaining > 0 else 0
+                if pubsub_timeout > 0:
+                    pub_deadline = loop.time() + pubsub_timeout
+                    while loop.time() < pub_deadline:
+                        try:
+                            msg = await pubsub.get_message(
+                                ignore_subscribe_messages=True, timeout=0.05,
+                            )
+                            if msg is not None:
+                                raw = await self._backend.get_result(task_id)
+                                if raw is not None:
+                                    return self._unpack(raw)
+                        except Exception:
+                            break  # Pub/Sub error, fall through to polling
+
+            # --- Step 4: Polling fallback ---
+            while loop.time() < deadline:
+                raw = await self._backend.get_result(task_id)
+                if raw is not None:
+                    return self._unpack(raw)
+                await asyncio.sleep(_FALLBACK_POLL)
+
+            raise ResultNotReadyError(task_id)
+        finally:
+            if pubsub is not None:
+                try:
+                    await pubsub.unsubscribe(channel)
+                    await pubsub.aclose()
+                except Exception:
+                    pass
 
     async def schedule_many(
         self,
@@ -167,9 +192,22 @@ class Client:
             coros.append(self._broker.publish(resolved_queue, encode_json(message)))
 
         results = await asyncio.gather(*coros, return_exceptions=True)
-        for r in results:
-            if isinstance(r, BaseException):
-                raise r
+        errors = [
+            (i, r) for i, r in enumerate(results) if isinstance(r, BaseException)
+        ]
+        if errors:
+            # Log partially-submitted task_ids so they can be recovered
+            submitted = [
+                task_ids[i] for i, r in enumerate(results)
+                if not isinstance(r, BaseException)
+            ]
+            if submitted:
+                logger.warning(
+                    "schedule_many_partial_failure",
+                    submitted_task_ids=submitted,
+                    failed_count=len(errors),
+                )
+            raise errors[0][1]
 
         return task_ids
 
@@ -189,6 +227,7 @@ class Client:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        raw_list: list[bytes | None] = [None] * len(task_ids)
 
         while loop.time() < deadline:
             raw_list = await self._backend.get_results_batch(task_ids)

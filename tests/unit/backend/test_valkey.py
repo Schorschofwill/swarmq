@@ -270,8 +270,9 @@ class TestValkeyBackendSubscribeAndWaitMessage:
 
         assert result is True
         mock_pubsub.subscribe.assert_awaited_once_with("sq:notify:task-1")
-        mock_pubsub.get_message.assert_awaited_once_with(
-            ignore_subscribe_messages=True, timeout=5.0
+        # With polling loop, get_message is called with timeout=0.05 (not 5.0)
+        mock_pubsub.get_message.assert_awaited_with(
+            ignore_subscribe_messages=True, timeout=0.05
         )
 
 

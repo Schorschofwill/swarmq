@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -29,7 +29,11 @@ def broker():
 def backend():
     b = AsyncMock()
     b.get_result = AsyncMock(return_value=None)
-    b.subscribe_and_wait = AsyncMock(return_value=False)
+    # Pub/Sub mock: create_pubsub returns a mock PubSub that times out by default
+    mock_pubsub = AsyncMock()
+    mock_pubsub.get_message = AsyncMock(return_value=None)  # no notification
+    b.create_pubsub = Mock(return_value=mock_pubsub)
+    b._mock_pubsub = mock_pubsub  # expose for test assertions
     return b
 
 
@@ -272,15 +276,18 @@ async def test_client_mode_no_registry_explicit_queue(
 
 @pytest.mark.asyncio
 async def test_get_result_pubsub_notification_fetches_result(client, backend):
-    """subscribe_and_wait returns True -> GET fetches result."""
+    """Pub/Sub notification received -> GET fetches result."""
     result_data = encode_result({"result": "pubsub-ok", "is_error": False})
     # Initial check returns None, then after notification returns result
     backend.get_result = AsyncMock(side_effect=[None, result_data])
-    backend.subscribe_and_wait = AsyncMock(return_value=True)
+    # Mock pubsub to return a message on first get_message call
+    backend._mock_pubsub.get_message = AsyncMock(
+        return_value={"type": "message", "data": b"done"}
+    )
 
     value = await client.get_result("task-pub", timeout=5)
     assert value == "pubsub-ok"
-    backend.subscribe_and_wait.assert_awaited_once()
+    backend.create_pubsub.assert_called_once()
     # First call is the initial check, second is after notification
     assert backend.get_result.await_count == 2
 
@@ -297,8 +304,7 @@ async def test_get_result_initial_check_finds_result(client, backend):
 
     value = await client.get_result("task-fast", timeout=5)
     assert value == "fast"
-    # subscribe_and_wait should NOT have been called
-    backend.subscribe_and_wait.assert_not_awaited()
+    # Pub/Sub subscribe was called but result was found before waiting
     backend.get_result.assert_awaited_once()
 
 
@@ -308,16 +314,17 @@ async def test_get_result_initial_check_finds_result(client, backend):
 
 @pytest.mark.asyncio
 async def test_get_result_pubsub_miss_falls_back_to_polling(client, backend):
-    """subscribe_and_wait returns False -> polling loop finds result."""
+    """Pub/Sub times out -> polling loop finds result."""
     result_data = encode_result({"result": "polled", "is_error": False})
-    # Initial check: None, after pub/sub miss poll returns None, then result
-    backend.get_result = AsyncMock(side_effect=[None, None, result_data])
-    backend.subscribe_and_wait = AsyncMock(return_value=False)
+    # Initial check: None, pub/sub times out, polling finds result eventually
+    # Need enough None values for 1s pub/sub wait + polling attempts
+    side_effects = [None] * 50 + [result_data]
+    backend.get_result = AsyncMock(side_effect=side_effects)
+    # Pub/Sub get_message returns None (timeout) — already the default from fixture
 
     value = await client.get_result("task-poll", timeout=5)
     assert value == "polled"
-    backend.subscribe_and_wait.assert_awaited_once()
-    assert backend.get_result.await_count >= 3
+    assert backend.get_result.await_count >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +339,11 @@ async def test_get_result_pubsub_error_result_raises_task_error(client, backend)
         "is_error": True,
         "error_message": "boom",
     })
-    backend.get_result = AsyncMock(side_effect=[None, result_data])
-    backend.subscribe_and_wait = AsyncMock(return_value=True)
+    # Initial check returns None, after Pub/Sub notification GET returns error result
+    backend.get_result = AsyncMock(side_effect=[None, result_data, result_data])
+    backend._mock_pubsub.get_message = AsyncMock(
+        return_value={"type": "message", "data": b"done"}
+    )
 
     with pytest.raises(TaskError, match="boom"):
         await client.get_result("task-err", timeout=5)
@@ -352,7 +362,7 @@ async def test_get_result_timeout_zero_no_pubsub(client, backend):
         await client.get_result("task-id", timeout=0)
 
     backend.get_result.assert_awaited_once()
-    backend.subscribe_and_wait.assert_not_awaited()
+    backend.create_pubsub.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +373,6 @@ async def test_get_result_timeout_zero_no_pubsub(client, backend):
 async def test_get_result_overall_timeout_raises(client, backend):
     """Full timeout exhausted -> ResultNotReadyError."""
     backend.get_result = AsyncMock(return_value=None)
-    backend.subscribe_and_wait = AsyncMock(return_value=False)
 
     with pytest.raises(ResultNotReadyError):
         await client.get_result("task-timeout", timeout=0.05)
@@ -375,15 +384,17 @@ async def test_get_result_overall_timeout_raises(client, backend):
 
 @pytest.mark.asyncio
 async def test_get_result_pubsub_failure_falls_back(client, backend):
-    """subscribe_and_wait returning False (error) triggers polling fallback."""
+    """Pub/Sub subscribe failure triggers polling fallback."""
     result_data = encode_result({"result": "recovered", "is_error": False})
     # Initial check None, then polling finds it
     backend.get_result = AsyncMock(side_effect=[None, result_data])
-    backend.subscribe_and_wait = AsyncMock(return_value=False)
+    # Make pubsub.subscribe raise — simulates Pub/Sub unavailable
+    mock_pubsub = AsyncMock()
+    mock_pubsub.subscribe = AsyncMock(side_effect=Exception("pubsub unavailable"))
+    backend.create_pubsub = Mock(return_value=mock_pubsub)
 
     value = await client.get_result("task-recover", timeout=5)
     assert value == "recovered"
-    backend.subscribe_and_wait.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -392,9 +403,10 @@ async def test_get_result_pubsub_failure_falls_back(client, backend):
 
 @pytest.mark.asyncio
 async def test_get_result_cancelled_error_propagates(client, backend):
-    """CancelledError from subscribe_and_wait propagates without catching."""
+    """CancelledError during Pub/Sub wait propagates without catching."""
     backend.get_result = AsyncMock(return_value=None)
-    backend.subscribe_and_wait = AsyncMock(side_effect=asyncio.CancelledError)
+    # Make get_message raise CancelledError
+    backend._mock_pubsub.get_message = AsyncMock(side_effect=asyncio.CancelledError)
 
     with pytest.raises(asyncio.CancelledError):
         await client.get_result("task-cancel", timeout=5)

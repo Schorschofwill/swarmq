@@ -55,7 +55,7 @@ class ValkeyBackend:
     async def publish_notification(self, task_id: str) -> None:
         try:
             await self._client.publish(f"sq:notify:{task_id}", "done")
-        except Exception:
+        except (ValkeyError, OSError):
             logger.warning("publish_notification failed", task_id=task_id, exc_info=True)
 
     async def get_results_batch(self, task_ids: list[str]) -> list[bytes | None]:
@@ -71,11 +71,26 @@ class ValkeyBackend:
         return self._client.pubsub()
 
     async def subscribe_and_wait(self, channel: str, timeout: float) -> bool:
+        """Subscribe to a Pub/Sub channel and wait for a message.
+
+        Returns True if a message was received, False on timeout or error.
+        Always cleans up (unsubscribe + close) in finally.
+        """
         pubsub = self.create_pubsub()
         try:
             await pubsub.subscribe(channel)
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout)
-            return msg is not None
+            # Poll with short intervals to catch messages reliably.
+            # A single get_message() call can miss messages that arrive
+            # between subscribe and the call.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while loop.time() < deadline:
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=0.05,
+                )
+                if msg is not None:
+                    return True
+            return False
         except asyncio.CancelledError:
             raise
         except Exception:
