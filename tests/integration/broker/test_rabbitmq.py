@@ -28,15 +28,16 @@ async def broker(rabbitmq_url: str):
     yield b
 
     # Teardown: delete every queue that was declared during the test.
-    for qname in declared_queues:
-        try:
-            ch = await b._connection.channel()
-            q = await ch.get_queue(qname, ensure=False)
-            await q.delete(if_empty=False, if_unused=False)
-            await ch.close()
-        except Exception:  # noqa: BLE001
-            pass
-    await b.close()
+    if b._connection is not None and not b._connection.is_closed:
+        for qname in declared_queues:
+            try:
+                ch = await b._connection.channel()
+                q = await ch.get_queue(qname, ensure=False)
+                await q.delete(if_empty=False, if_unused=False)
+                await ch.close()
+            except Exception:  # noqa: BLE001
+                pass
+        await b.close()
 
 
 # -- helpers -----------------------------------------------------------------

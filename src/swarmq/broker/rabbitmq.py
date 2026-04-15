@@ -74,7 +74,7 @@ class RabbitMQBroker:
         msg = aio_pika.Message(
             body=message_body,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-            expiration=str(delay_ms),
+            expiration=delay_ms / 1000,
             headers=headers or {},
         )
         await self._publish_channel.default_exchange.publish(

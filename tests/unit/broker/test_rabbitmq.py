@@ -196,7 +196,7 @@ class TestRabbitMQBrokerPublishToDelayQueue:
         assert isinstance(message, aio_pika.Message)
         assert message.body == b'{"task": "data"}'
         assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
-        assert message.expiration == "5000"
+        assert message.expiration == 5.0
         assert message.headers["x-swarmq-retry-count"] == 1
         assert publish_call.kwargs["routing_key"] == "tasks.DQ"
 
@@ -209,7 +209,7 @@ class TestRabbitMQBrokerPublishToDelayQueue:
 
         publish_call = mock_exchange.publish.call_args
         message = publish_call.args[0]
-        assert message.expiration == "1000"
+        assert message.expiration == 1.0
         assert publish_call.kwargs["routing_key"] == "tasks.DQ"
 
 
