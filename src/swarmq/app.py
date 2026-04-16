@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from swarmq.backend.valkey import ValkeyBackend
@@ -11,7 +12,7 @@ from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.registry import TaskRegistry
-from swarmq.signals import Signal, SignalDispatcher
+from swarmq.signals import AsyncHandler, Signal, SignalDispatcher
 from swarmq.task import Task
 from swarmq.worker import Worker
 
@@ -54,7 +55,9 @@ class SwarmQ:
         """Register a middleware to run for every task lifecycle event."""
         self._middlewares.append(middleware)
 
-    def on_signal(self, signal: Signal):  # type: ignore[no-untyped-def]
+    def on_signal(
+        self, signal: Signal
+    ) -> Callable[[AsyncHandler], AsyncHandler]:
         """Return a decorator that registers a handler for ``signal``."""
         return self._signal_dispatcher.on_signal(signal)
 

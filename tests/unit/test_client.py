@@ -12,7 +12,7 @@ from swarmq.client import Client
 from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
 from swarmq.serialization import decode_json, encode_result
 from swarmq.signals import Signal
-from swarmq.task import Task, TaskInfo
+from swarmq.task import DeliveryMode, Task, TaskInfo
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +679,7 @@ class TestClientMiddlewareAndSignals:
         assert pre_msg["queue"] == "math"
         assert pre_msg["args"] == [10, 20]
         assert pre_msg["kwargs"] == {"extra": "foo"}
+        assert pre_msg["delivery_mode"] == "at_least_once"
 
         # post_enqueue receives the same canonical message_dict
         post_msg = middleware_chain.run_post_enqueue.await_args[0][0]
@@ -687,6 +688,7 @@ class TestClientMiddlewareAndSignals:
         assert post_msg["queue"] == "math"
         assert post_msg["args"] == [10, 20]
         assert post_msg["kwargs"] == {"extra": "foo"}
+        assert post_msg["delivery_mode"] == "at_least_once"
 
     # ------------------------------------------------------------------
     # 8. Backward compat: no middleware/signals registered -> client works as before
@@ -830,3 +832,68 @@ class TestClientMiddlewareAndSignals:
         assert spy.pre_calls[0]["task_name"] == "add"
         # Internal factory returns the same chain every time.
         assert client._get_chain() is static_chain
+
+
+# ---------------------------------------------------------------------------
+# delivery_mode resolution in message_dict
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
+    """Registered task with FIRE_AND_FORGET -> message_dict has that value."""
+    from swarmq.middleware import Middleware, MiddlewareChain
+
+    captured: list[dict] = []
+
+    class CaptureMiddleware(Middleware):
+        async def pre_enqueue(self, message: dict) -> None:
+            captured.append(dict(message))
+
+    # Registry mock whose TaskInfo has FIRE_AND_FORGET delivery
+    r = MagicMock()
+    r.has = MagicMock(return_value=True)
+    entry = MagicMock()
+    entry.task_info = TaskInfo(
+        name="fire",
+        queues=["ff"],
+        delivery=DeliveryMode.FIRE_AND_FORGET,
+    )
+    r.get_entry = MagicMock(return_value=entry)
+
+    chain = MiddlewareChain([CaptureMiddleware()])
+    client = Client(
+        broker=broker,
+        backend=backend,
+        registry=r,
+        middleware_chain=chain,
+    )
+
+    await client.schedule("fire", 1, 2)
+
+    assert len(captured) == 1
+    assert captured[0]["delivery_mode"] == "fire_and_forget"
+
+
+@pytest.mark.asyncio
+async def test_schedule_default_delivery_mode_without_registry(broker, backend):
+    """No registry + explicit queue -> default delivery_mode is 'at_least_once'."""
+    from swarmq.middleware import Middleware, MiddlewareChain
+
+    captured: list[dict] = []
+
+    class CaptureMiddleware(Middleware):
+        async def pre_enqueue(self, message: dict) -> None:
+            captured.append(dict(message))
+
+    chain = MiddlewareChain([CaptureMiddleware()])
+    client = Client(
+        broker=broker,
+        backend=backend,
+        middleware_chain=chain,
+    )
+
+    await client.schedule("any.task", 1, queue="my-q")
+
+    assert len(captured) == 1
+    assert captured[0]["delivery_mode"] == "at_least_once"

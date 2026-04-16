@@ -12,7 +12,7 @@ import structlog
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
-from swarmq.middleware import MiddlewareChain
+from swarmq.middleware import MessageContext, MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
 from swarmq.signals import Signal, SignalDispatcher
@@ -89,11 +89,14 @@ class Client:
             if not self._registry.has(task_name):
                 raise TaskNotFoundError(task_name)
 
-        # --- queue resolution chain ---
+        # --- queue resolution chain + delivery_mode resolution ---
         resolved_queue = queue
-        if resolved_queue is None and self._registry is not None:
+        delivery_mode = "at_least_once"
+        if self._registry is not None:
             entry = self._registry.get_entry(task_name)
-            resolved_queue = entry.task_info.queues[0]
+            if resolved_queue is None:
+                resolved_queue = entry.task_info.queues[0]
+            delivery_mode = entry.task_info.delivery.value
         if resolved_queue is None:
             raise ValueError(
                 "No queue specified and no registry available to resolve one"
@@ -112,12 +115,13 @@ class Client:
         }
 
         # Canonical message_dict for middleware hooks (worker-agnostic schema).
-        message_dict = {
+        message_dict: MessageContext = {
             "task_id": task_id,
             "task_name": task_name,
             "queue": resolved_queue,
             "args": list(args),
             "kwargs": kwargs,
+            "delivery_mode": delivery_mode,
         }
 
         # Resolve the middleware chain once per schedule() call — the factory
@@ -226,7 +230,7 @@ class Client:
             return []
 
         task_ids: list[str] = []
-        message_dicts: list[dict[str, Any]] = []
+        message_dicts: list[MessageContext] = []
         encoded_messages: list[bytes] = []
         resolved_queues: list[str] = []
         task_names: list[str] = []
@@ -245,11 +249,14 @@ class Client:
                 if not self._registry.has(task_name):
                     raise TaskNotFoundError(task_name)
 
-            # --- queue resolution chain ---
+            # --- queue resolution chain + delivery_mode resolution ---
             resolved_queue = queue
-            if resolved_queue is None and self._registry is not None:
+            delivery_mode = "at_least_once"
+            if self._registry is not None:
                 entry = self._registry.get_entry(task_name)
-                resolved_queue = entry.task_info.queues[0]
+                if resolved_queue is None:
+                    resolved_queue = entry.task_info.queues[0]
+                delivery_mode = entry.task_info.delivery.value
             if resolved_queue is None:
                 raise ValueError(
                     "No queue specified and no registry available to resolve one"
@@ -271,12 +278,13 @@ class Client:
             }
             encoded_messages.append(encode_json(message))
 
-            message_dict = {
+            message_dict: MessageContext = {
                 "task_id": task_id,
                 "task_name": task_name,
                 "queue": resolved_queue,
                 "args": list(args),
                 "kwargs": kwargs,
+                "delivery_mode": delivery_mode,
             }
             message_dicts.append(message_dict)
 

@@ -1553,6 +1553,51 @@ class TestWorkerMiddlewareAndSignals:
         broker.publish_to_dead_letter_queue.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_on_retry_message_dict_retry_count_matches_parameter(
+        self, broker, backend, config
+    ):
+        """message['retry_count'] in on_retry call equals the explicit retry_count parameter."""
+
+        class RetryingTask(Task):
+            task_info = TaskInfo(
+                name="retry_sync",
+                queues=["default"],
+                max_retries=5,
+                retry_base_delay=1.0,
+            )
+
+            async def run(self) -> None:
+                raise RuntimeError("transient")
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(RetryingTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        # Start with retry_count=2 in headers -> next attempt is 3
+        msg = _make_message(
+            _default_payload(name="retry_sync", args=[], kwargs={}),
+            headers={"x-swarmq-retry-count": 2},
+        )
+        await w._handle_message(msg)
+
+        mw_chain.run_on_retry.assert_awaited_once()
+        call = mw_chain.run_on_retry.call_args
+        message_dict = call.args[0]
+        retry_count_param = call.kwargs["retry_count"]
+
+        # Both the dict and the explicit parameter should agree.
+        assert message_dict["retry_count"] == retry_count_param
+        assert retry_count_param == 3
+
+    @pytest.mark.asyncio
     async def test_task_started_signal_dispatched(self, broker, backend, config):
         """TASK_STARTED is dispatched with task_id + task_name before execution."""
         from swarmq.signals import Signal

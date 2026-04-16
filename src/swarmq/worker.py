@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 
+import aio_pika
 import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
@@ -24,11 +25,11 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
-from swarmq.middleware import MiddlewareChain
+from swarmq.middleware import MessageContext, MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, encode_result
 from swarmq.signals import Signal, SignalDispatcher
-from swarmq.task import DeliveryMode
+from swarmq.task import DeliveryMode, TaskInfo
 
 logger = structlog.get_logger()
 
@@ -203,7 +204,7 @@ class Worker:
 
             # Build canonical message_dict for middleware + track retry_count
             retry_count = message.headers.get("x-swarmq-retry-count", 0)
-            message_dict = {
+            message_dict: MessageContext = {
                 "task_id": task_id,
                 "task_name": task_name,
                 "queue": queue,
@@ -430,14 +431,14 @@ class Worker:
 
     async def _evaluate_retry(
         self,
-        message,
-        task_info,
+        message: aio_pika.abc.AbstractIncomingMessage,
+        task_info: TaskInfo,
         exc: Exception,
         queue: str,
         task_id: str,
         task_name: str,
         error_message: str,
-        message_dict: dict | None = None,
+        message_dict: MessageContext | None = None,
     ) -> bool:
         """Evaluate whether to retry a failed task.
 
@@ -479,15 +480,18 @@ class Worker:
 
         # 5b. Middleware + signal hooks fire BEFORE publish_to_delay_queue
         if message_dict is None:
-            message_dict = {
-                "task_id": task_id,
-                "task_name": task_name,
-                "queue": queue,
-                "args": [],
-                "kwargs": {},
-                "delivery_mode": task_info.delivery.value,
-                "retry_count": retry_count,
-            }
+            message_dict = MessageContext(
+                task_id=task_id,
+                task_name=task_name,
+                queue=queue,
+                args=[],
+                kwargs={},
+                delivery_mode=task_info.delivery.value,
+                retry_count=retry_count,
+            )
+        # Synchronize retry_count in message_dict with the on_retry parameter:
+        # both represent the NEW attempt number (the retry we're about to do).
+        message_dict["retry_count"] = retry_count + 1
         await self._middleware_chain.run_on_retry(
             message_dict,
             exception=exc,
@@ -543,8 +547,6 @@ class Worker:
             "result": None,
         }
         try:
-            from swarmq.serialization import encode_result
-
             result_bytes = encode_result(result_data)
             result_ttl = self._config.result_ttl or 86400
             await self._backend.store_result(

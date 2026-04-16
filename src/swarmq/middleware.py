@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class MessageContext(TypedDict):
+    """Canonical message context passed to middleware hooks.
+
+    Client-side hooks (``pre_enqueue`` / ``post_enqueue``) do not populate
+    ``retry_count`` — that field is only present in worker-side hooks
+    (``pre_execute`` / ``post_execute`` / ``on_error`` / ``on_retry``).
+
+    Note: ``TypedDict`` is a ``dict`` at runtime, so existing middleware
+    using ``message['task_id']`` continues to work unchanged.
+    """
+
+    task_id: str
+    task_name: str
+    queue: str
+    args: list[Any]
+    kwargs: dict[str, Any]
+    delivery_mode: str
+    retry_count: NotRequired[int]
 
 
 async def _swallow(
@@ -33,24 +53,28 @@ class Middleware:
     Subclasses override only the hooks they care about.
     """
 
-    async def pre_enqueue(self, message: dict) -> None:
+    async def pre_enqueue(self, message: MessageContext) -> None:
         """Called before a message is enqueued. Raising aborts the enqueue."""
 
-    async def post_enqueue(self, message: dict) -> None:
+    async def post_enqueue(self, message: MessageContext) -> None:
         """Called after a message was enqueued. Errors are logged, not raised."""
 
-    async def pre_execute(self, message: dict) -> None:
+    async def pre_execute(self, message: MessageContext) -> None:
         """Called before task execution. Errors are logged, not raised."""
 
-    async def post_execute(self, message: dict, result: Any = None) -> None:
+    async def post_execute(
+        self, message: MessageContext, result: Any = None
+    ) -> None:
         """Called after successful task execution. Errors are logged, not raised."""
 
-    async def on_error(self, message: dict, exception: BaseException) -> None:
+    async def on_error(
+        self, message: MessageContext, exception: BaseException
+    ) -> None:
         """Called when task execution raised. Errors are logged, not raised."""
 
     async def on_retry(
         self,
-        message: dict,
+        message: MessageContext,
         exception: BaseException,
         retry_count: int,
         delay: float,
@@ -64,26 +88,28 @@ class MiddlewareChain:
     def __init__(self, middlewares: list[Middleware]) -> None:
         self._middlewares = list(middlewares)
 
-    async def run_pre_enqueue(self, message: dict) -> None:
+    async def run_pre_enqueue(self, message: MessageContext) -> None:
         """Forward order. Exceptions propagate (prevent enqueue)."""
         for mw in self._middlewares:
             await mw.pre_enqueue(message)
 
-    async def run_post_enqueue(self, message: dict) -> None:
+    async def run_post_enqueue(self, message: MessageContext) -> None:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
             await _swallow(
                 "post_enqueue", mw, lambda mw=mw: mw.post_enqueue(message)
             )
 
-    async def run_pre_execute(self, message: dict) -> None:
+    async def run_pre_execute(self, message: MessageContext) -> None:
         """Forward order. Errors logged, not propagated."""
         for mw in self._middlewares:
             await _swallow(
                 "pre_execute", mw, lambda mw=mw: mw.pre_execute(message)
             )
 
-    async def run_post_execute(self, message: dict, result: Any = None) -> None:
+    async def run_post_execute(
+        self, message: MessageContext, result: Any = None
+    ) -> None:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
             await _swallow(
@@ -91,7 +117,7 @@ class MiddlewareChain:
             )
 
     async def run_on_error(
-        self, message: dict, exception: BaseException
+        self, message: MessageContext, exception: BaseException
     ) -> None:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
@@ -101,7 +127,7 @@ class MiddlewareChain:
 
     async def run_on_retry(
         self,
-        message: dict,
+        message: MessageContext,
         exception: BaseException,
         retry_count: int,
         delay: float,
