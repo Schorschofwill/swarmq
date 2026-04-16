@@ -71,7 +71,7 @@ Phase 3a ist funktional korrekt (370 Tests grün), aber das Review hat strukture
 
 ## Implementation Units
 
-- [ ] **Unit 1: Middleware-Chain Live-Zugriff im Client (P1 F1)**
+- [x] **Unit 1: Middleware-Chain Live-Zugriff im Client (P1 F1)**
 
 **Goal:** Client ruft die aktuelle Middleware-Chain dynamisch ab, statt einen Snapshot bei `__init__` zu halten.
 
@@ -103,7 +103,7 @@ Phase 3a ist funktional korrekt (370 Tests grün), aber das Review hat strukture
 
 ---
 
-- [ ] **Unit 2: Watchdog-Cancel in äußerem try/finally (P1 F2)**
+- [x] **Unit 2: Watchdog-Cancel in äußerem try/finally (P1 F2)**
 
 **Goal:** Hard-Timeout-Watchdog wird bei ALLEN Task-Ausgangswegen (Erfolg, Exception, Timeout, Cancel) gecancelt.
 
@@ -134,7 +134,7 @@ Phase 3a ist funktional korrekt (370 Tests grün), aber das Review hat strukture
 
 ---
 
-- [ ] **Unit 3: on_signal Return Type + message_dict Schema Fixes (P1 F3, P2 F4, F5)**
+- [x] **Unit 3: on_signal Return Type + message_dict Schema Fixes (P1 F3, P2 F4, F5)**
 
 **Goal:** Type-Annotation korrigieren, Schema-Inkonsistenzen zwischen Client/Worker message_dict beheben.
 
@@ -166,7 +166,7 @@ Phase 3a ist funktional korrekt (370 Tests grün), aber das Review hat strukture
 
 ---
 
-- [ ] **Unit 4: MessageContext TypedDict + Type-Cleanup (P2 F6, F7, F8)**
+- [x] **Unit 4: MessageContext TypedDict + Type-Cleanup (P2 F6, F7, F8)**
 
 **Goal:** Middleware-Hook-Signaturen nutzen TypedDict, `_evaluate_retry` bekommt Type-Annotations, Dead Import entfernen.
 
@@ -207,7 +207,7 @@ Phase 3a ist funktional korrekt (370 Tests grün), aber das Review hat strukture
 
 ---
 
-- [ ] **Unit 5: publish_notification Logging (P3 F9)**
+- [x] **Unit 5: publish_notification Logging (P3 F9)**
 
 **Goal:** Bare `except Exception: pass` durch Warning-Log ersetzen für Operator-Sichtbarkeit.
 
