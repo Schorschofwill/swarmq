@@ -37,6 +37,19 @@ class ValkeyBackend:
     def _cancel_key(self, task_id: str) -> str:
         return f"sq:cancel:{task_id}"
 
+    # ---- Scheduler key helpers (Unit 5) ------------------------------------
+    def _sched_zset_key(self) -> str:
+        return "sq:sched:zset"
+
+    def _sched_defs_key(self) -> str:
+        return "sq:sched:defs"
+
+    def _sched_fired_key(self, schedfire_key: str) -> str:
+        return f"sq:sched:fired:{schedfire_key}"
+
+    def _sched_handover_key(self, owner_token: str) -> str:
+        return f"sq:sched:handover:{owner_token}"
+
     async def store_result(self, task_id: str, result_data: bytes, ttl_ms: int) -> None:
         try:
             await self._client.set(self._key(task_id), result_data, px=ttl_ms)
@@ -109,6 +122,130 @@ class ValkeyBackend:
             logger.warning(
                 "cancel_flag_delete_failed", task_id=task_id, error=str(exc)
             )
+
+    # -----------------------------------------------------------------------
+    # Scheduler persistence operations (Unit 5)
+    # -----------------------------------------------------------------------
+
+    async def zadd_schedule(self, schedule_name: str, fire_ts_ms: int) -> None:
+        """Insert / update the fire-time of a schedule in the sorted-set."""
+        try:
+            await self._client.zadd(
+                self._sched_zset_key(), {schedule_name: fire_ts_ms}
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def zrem_schedule(self, schedule_name: str) -> None:
+        """Drop a schedule from the zset. No-op when it is not present."""
+        try:
+            await self._client.zrem(self._sched_zset_key(), schedule_name)
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def zrangebyscore_schedules(
+        self, max_score_ms: int, limit: int
+    ) -> list[bytes]:
+        """Return schedule names whose fire-ts is <= *max_score_ms*.
+
+        Read-only; does NOT claim/remove. The Lua commit-script is the
+        only mutation path (see Unit 6).
+        """
+        try:
+            return await self._client.zrangebyscore(
+                self._sched_zset_key(), "-inf", max_score_ms,
+                start=0, num=limit,
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def hset_schedule_def(
+        self, schedule_name: str, def_json: bytes
+    ) -> None:
+        try:
+            await self._client.hset(
+                self._sched_defs_key(), schedule_name, def_json
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def hget_schedule_def(self, schedule_name: str) -> bytes | None:
+        try:
+            return await self._client.hget(
+                self._sched_defs_key(), schedule_name
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def hdel_schedule_def(self, schedule_name: str) -> None:
+        try:
+            await self._client.hdel(self._sched_defs_key(), schedule_name)
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def hgetall_schedule_defs(self) -> dict[bytes, bytes]:
+        try:
+            return await self._client.hgetall(self._sched_defs_key())
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def set_schedfire_dedup(
+        self, schedfire_key: str, ttl_ms: int
+    ) -> bool:
+        """Consumer-side dedup for scheduled-fire messages.
+
+        Returns ``True`` when this is the first delivery observed for the
+        given schedfire-key (SETNX succeeded), ``False`` on duplicate.
+        Caller uses the boolean to decide whether to run or ack+skip the
+        message. TTL must be configured to cover the retry horizon
+        (``scheduler_dedup_ttl >= retry_max_delay``, enforced at config
+        validation, Review-Finding P1-1).
+        """
+        try:
+            result = await self._client.set(
+                self._sched_fired_key(schedfire_key), "1",
+                nx=True, px=ttl_ms,
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return bool(result)
+
+    async def set_schedfire_handover_marker(
+        self, owner_token: str, ttl_ms: int
+    ) -> None:
+        """Leader marker set right before graceful release.
+
+        Incoming leader observing this key decides it is a clean HANDOVER
+        rather than a FAILOVER (Review-Finding P2-1). TTL 5s is a narrow
+        window — long enough for a standby to see it in its next poll
+        cycle, short enough that a stale marker cannot mislead a later
+        acquire.
+        """
+        try:
+            await self._client.set(
+                self._sched_handover_key(owner_token), "1", px=ttl_ms,
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def get_and_del_schedfire_handover_marker(self) -> bool:
+        """Consume any handover marker set by a previous leader.
+
+        Returns ``True`` if at least one ``sq:sched:handover:*`` key
+        existed (and was deleted), ``False`` otherwise. The outgoing
+        leader sets the marker under its own owner-token, so the key
+        name is not known ahead of time — we scan and delete.
+        """
+        found_any = False
+        try:
+            async for key in self._client.scan_iter(
+                match="sq:sched:handover:*", count=100,
+            ):
+                await self._client.delete(key)
+                found_any = True
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return found_any
 
     async def subscribe_and_wait(self, channel: str, timeout: float) -> bool:
         """Subscribe to a Pub/Sub channel and wait for a message.

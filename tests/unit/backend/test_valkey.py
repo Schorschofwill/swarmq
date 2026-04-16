@@ -435,3 +435,247 @@ class TestValkeyBackendClearCancelFlag:
         # Must not raise
         result = await backend.clear_cancel_flag("task-abc")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Schedule operations (Unit 5)
+# ---------------------------------------------------------------------------
+
+
+class TestValkeyBackendScheduleKeys:
+    """Key-format helpers are the single source of truth for schedule
+    persistence layout. Test them independently from the I/O methods."""
+
+    def test_sched_zset_key(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert backend._sched_zset_key() == "sq:sched:zset"
+
+    def test_sched_defs_key(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert backend._sched_defs_key() == "sq:sched:defs"
+
+    def test_sched_fired_key(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert (
+            backend._sched_fired_key("cron_a:1234567890")
+            == "sq:sched:fired:cron_a:1234567890"
+        )
+
+    def test_sched_handover_key(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert (
+            backend._sched_handover_key("owner-tok-42")
+            == "sq:sched:handover:owner-tok-42"
+        )
+
+
+class TestValkeyBackendZAddSchedule:
+    async def test_zadd_schedule_calls_zadd(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.zadd_schedule("cron_a", 1_700_000_000_000)
+
+        mock_client.zadd.assert_awaited_once_with(
+            "sq:sched:zset", {"cron_a": 1_700_000_000_000}
+        )
+
+    async def test_zadd_schedule_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.zadd.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.zadd_schedule("cron_a", 1)
+
+
+class TestValkeyBackendZRemSchedule:
+    async def test_zrem_schedule_calls_zrem(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.zrem_schedule("cron_a")
+
+        mock_client.zrem.assert_awaited_once_with("sq:sched:zset", "cron_a")
+
+    async def test_zrem_schedule_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.zrem.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.zrem_schedule("cron_a")
+
+
+class TestValkeyBackendZRangeByScore:
+    async def test_zrangebyscore_schedules_reads_only(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.zrangebyscore.return_value = [b"cron_a", b"cron_b"]
+        backend._client = mock_client
+
+        result = await backend.zrangebyscore_schedules(1_700_000_000_000, 100)
+
+        mock_client.zrangebyscore.assert_awaited_once_with(
+            "sq:sched:zset", "-inf", 1_700_000_000_000, start=0, num=100
+        )
+        assert result == [b"cron_a", b"cron_b"]
+
+    async def test_zrangebyscore_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.zrangebyscore.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.zrangebyscore_schedules(0, 100)
+
+
+class TestValkeyBackendHashDefs:
+    async def test_hset_schedule_def_calls_hset(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.hset_schedule_def("cron_a", b'{"x":1}')
+
+        mock_client.hset.assert_awaited_once_with(
+            "sq:sched:defs", "cron_a", b'{"x":1}'
+        )
+
+    async def test_hget_schedule_def_calls_hget(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.hget.return_value = b'{"x":1}'
+        backend._client = mock_client
+
+        result = await backend.hget_schedule_def("cron_a")
+
+        mock_client.hget.assert_awaited_once_with("sq:sched:defs", "cron_a")
+        assert result == b'{"x":1}'
+
+    async def test_hdel_schedule_def_calls_hdel(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.hdel_schedule_def("cron_a")
+
+        mock_client.hdel.assert_awaited_once_with("sq:sched:defs", "cron_a")
+
+    async def test_hgetall_schedule_defs_calls_hgetall(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.hgetall.return_value = {b"cron_a": b'{"x":1}'}
+        backend._client = mock_client
+
+        result = await backend.hgetall_schedule_defs()
+
+        mock_client.hgetall.assert_awaited_once_with("sq:sched:defs")
+        assert result == {b"cron_a": b'{"x":1}'}
+
+    async def test_hset_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.hset.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.hset_schedule_def("cron_a", b"x")
+
+
+class TestValkeyBackendSchedfireDedup:
+    async def test_set_schedfire_dedup_returns_true_when_new(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.return_value = True
+        backend._client = mock_client
+
+        result = await backend.set_schedfire_dedup(
+            "cron_a:1700000000000", 60_000
+        )
+
+        mock_client.set.assert_awaited_once_with(
+            "sq:sched:fired:cron_a:1700000000000", "1", nx=True, px=60_000
+        )
+        assert result is True
+
+    async def test_set_schedfire_dedup_returns_false_on_duplicate(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.return_value = None  # NX already exists
+        backend._client = mock_client
+
+        result = await backend.set_schedfire_dedup(
+            "cron_a:1700000000000", 60_000
+        )
+        assert result is False
+
+    async def test_set_schedfire_dedup_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.set_schedfire_dedup("cron_a:1", 60_000)
+
+
+class TestValkeyBackendHandoverMarker:
+    async def test_set_handover_marker_sets_key_with_ttl(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.set_schedfire_handover_marker("owner-42", 5_000)
+
+        mock_client.set.assert_awaited_once_with(
+            "sq:sched:handover:owner-42", "1", px=5_000
+        )
+
+    async def test_get_and_del_handover_marker_returns_true_when_any_exist(self):
+        """Incoming leader GETs+DELs any handover key. Returns True if at
+        least one existed (clean handover), False otherwise (failover)."""
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        # SCAN yields one handover key, DEL reports 1
+        mock_client.scan_iter = Mock(return_value=_async_iter(
+            [b"sq:sched:handover:owner-42"]
+        ))
+        mock_client.delete.return_value = 1
+        backend._client = mock_client
+
+        result = await backend.get_and_del_schedfire_handover_marker()
+        assert result is True
+        mock_client.delete.assert_awaited_once_with(b"sq:sched:handover:owner-42")
+
+    async def test_get_and_del_handover_marker_returns_false_when_none(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.scan_iter = Mock(return_value=_async_iter([]))
+        backend._client = mock_client
+
+        result = await backend.get_and_del_schedfire_handover_marker()
+        assert result is False
+        mock_client.delete.assert_not_awaited()
+
+    async def test_set_handover_marker_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.set_schedfire_handover_marker("tok", 5_000)
+
+
+def _async_iter(items):
+    """Helper: async generator from a list, for mocking scan_iter."""
+    async def gen():
+        for item in items:
+            yield item
+    return gen()

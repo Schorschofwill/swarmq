@@ -627,7 +627,7 @@ Reihenfolge).
 
 ---
 
-- [ ] **Unit 5: ValkeyBackend — Schedule-Operations**
+- [x] **Unit 5: ValkeyBackend — Schedule-Operations**
 
 **Goal:** Neue Methoden auf `ValkeyBackend` für Schedule-Store +
 Consumer-Dedup:
