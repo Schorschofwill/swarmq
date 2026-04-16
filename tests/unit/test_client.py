@@ -11,6 +11,7 @@ import pytest
 from swarmq.client import Client
 from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
 from swarmq.serialization import decode_json, encode_result
+from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
 
@@ -500,3 +501,242 @@ async def test_schedule_many_resolves_queue_from_registry(client, broker, regist
     assert call_args[0][0] == "math"  # resolved from TaskInfo.queues[0]
     payload = decode_json(call_args[0][1])
     assert payload["task"]["queue"] == "math"
+
+
+# ---------------------------------------------------------------------------
+# Middleware + Signals integration (Unit 5)
+# ---------------------------------------------------------------------------
+
+
+class TestClientMiddlewareAndSignals:
+    """Client integration for Middleware hooks and Signals."""
+
+    @pytest.fixture
+    def middleware_chain(self):
+        chain = MagicMock()
+        chain.run_pre_enqueue = AsyncMock()
+        chain.run_post_enqueue = AsyncMock()
+        return chain
+
+    @pytest.fixture
+    def signal_dispatcher(self):
+        dispatcher = MagicMock()
+        dispatcher.dispatch = AsyncMock()
+        return dispatcher
+
+    @pytest.fixture
+    def client_with_hooks(
+        self, broker, backend, registry, middleware_chain, signal_dispatcher,
+    ):
+        return Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=middleware_chain,
+            signal_dispatcher=signal_dispatcher,
+        )
+
+    # ------------------------------------------------------------------
+    # 1. pre_enqueue is called before broker.publish
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_pre_enqueue_called_before_publish(
+        self, client_with_hooks, broker, middleware_chain,
+    ):
+        call_order = []
+        middleware_chain.run_pre_enqueue = AsyncMock(
+            side_effect=lambda msg: call_order.append("pre_enqueue")
+        )
+        broker.publish = AsyncMock(
+            side_effect=lambda *a, **kw: call_order.append("publish")
+        )
+
+        await client_with_hooks.schedule("add", 1, 2, queue="math")
+
+        assert call_order == ["pre_enqueue", "publish"]
+        middleware_chain.run_pre_enqueue.assert_awaited_once()
+
+    # ------------------------------------------------------------------
+    # 2. post_enqueue is called after broker.publish
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_post_enqueue_called_after_publish(
+        self, client_with_hooks, broker, middleware_chain,
+    ):
+        call_order = []
+        broker.publish = AsyncMock(
+            side_effect=lambda *a, **kw: call_order.append("publish")
+        )
+        middleware_chain.run_post_enqueue = AsyncMock(
+            side_effect=lambda msg: call_order.append("post_enqueue")
+        )
+
+        await client_with_hooks.schedule("add", 1, 2, queue="math")
+
+        assert call_order == ["publish", "post_enqueue"]
+        middleware_chain.run_post_enqueue.assert_awaited_once()
+
+    # ------------------------------------------------------------------
+    # 3. TASK_ENQUEUED signal dispatched after publish with correct kwargs
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_task_enqueued_signal_dispatched_with_fields(
+        self, client_with_hooks, broker, signal_dispatcher,
+    ):
+        task_id = await client_with_hooks.schedule("add", 1, 2, queue="math")
+
+        signal_dispatcher.dispatch.assert_awaited_once()
+        call = signal_dispatcher.dispatch.await_args
+        # First positional arg is the Signal enum
+        assert call[0][0] is Signal.TASK_ENQUEUED
+        # kwargs contain task_id, task_name, queue
+        assert call[1]["task_id"] == task_id
+        assert call[1]["task_name"] == "add"
+        assert call[1]["queue"] == "math"
+
+    # ------------------------------------------------------------------
+    # 4. pre_enqueue raises -> broker.publish NOT called, exception propagates
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_pre_enqueue_raises_blocks_publish(
+        self, client_with_hooks, broker, middleware_chain,
+        signal_dispatcher,
+    ):
+        middleware_chain.run_pre_enqueue = AsyncMock(
+            side_effect=RuntimeError("veto")
+        )
+
+        with pytest.raises(RuntimeError, match="veto"):
+            await client_with_hooks.schedule("add", 1, 2, queue="math")
+
+        broker.publish.assert_not_awaited()
+        middleware_chain.run_post_enqueue.assert_not_awaited()
+        signal_dispatcher.dispatch.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # 5. schedule_many: pre_enqueue called for each task
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_schedule_many_pre_enqueue_per_task(
+        self, client_with_hooks, middleware_chain,
+    ):
+        tasks = [
+            ("add", (1, 2), {}),
+            ("add", (3, 4), {}),
+            ("add", (5, 6), {}),
+        ]
+        await client_with_hooks.schedule_many(tasks, queue="math")
+
+        assert middleware_chain.run_pre_enqueue.await_count == 3
+
+    # ------------------------------------------------------------------
+    # 6. schedule_many: post_enqueue and TASK_ENQUEUED called per task after gather
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_schedule_many_post_enqueue_and_signal_per_task(
+        self, client_with_hooks, middleware_chain, signal_dispatcher,
+    ):
+        tasks = [
+            ("add", (1, 2), {}),
+            ("add", (3, 4), {}),
+            ("add", (5, 6), {}),
+        ]
+        task_ids = await client_with_hooks.schedule_many(tasks, queue="math")
+
+        assert middleware_chain.run_post_enqueue.await_count == 3
+        assert signal_dispatcher.dispatch.await_count == 3
+        dispatched_task_ids = [
+            c[1]["task_id"] for c in signal_dispatcher.dispatch.await_args_list
+        ]
+        assert set(dispatched_task_ids) == set(task_ids)
+        for call in signal_dispatcher.dispatch.await_args_list:
+            assert call[0][0] is Signal.TASK_ENQUEUED
+            assert call[1]["task_name"] == "add"
+            assert call[1]["queue"] == "math"
+
+    # ------------------------------------------------------------------
+    # 7. message_dict contains all canonical fields
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_message_dict_contains_canonical_fields(
+        self, client_with_hooks, middleware_chain,
+    ):
+        task_id = await client_with_hooks.schedule(
+            "add", 10, 20, queue="math", extra="foo",
+        )
+
+        # pre_enqueue receives the canonical message_dict
+        pre_msg = middleware_chain.run_pre_enqueue.await_args[0][0]
+        assert pre_msg["task_id"] == task_id
+        assert pre_msg["task_name"] == "add"
+        assert pre_msg["queue"] == "math"
+        assert pre_msg["args"] == [10, 20]
+        assert pre_msg["kwargs"] == {"extra": "foo"}
+
+        # post_enqueue receives the same canonical message_dict
+        post_msg = middleware_chain.run_post_enqueue.await_args[0][0]
+        assert post_msg["task_id"] == task_id
+        assert post_msg["task_name"] == "add"
+        assert post_msg["queue"] == "math"
+        assert post_msg["args"] == [10, 20]
+        assert post_msg["kwargs"] == {"extra": "foo"}
+
+    # ------------------------------------------------------------------
+    # 8. Backward compat: no middleware/signals registered -> client works as before
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_backward_compat_no_hooks(self, broker, backend, registry):
+        """Client without middleware_chain/signal_dispatcher works unchanged."""
+        plain_client = Client(broker=broker, backend=backend, registry=registry)
+        task_id = await plain_client.schedule("add", 1, 2, queue="math")
+
+        parsed = uuid.UUID(task_id)
+        assert parsed.version == 7
+        broker.publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backward_compat_schedule_many_no_hooks(
+        self, broker, backend, registry,
+    ):
+        plain_client = Client(broker=broker, backend=backend, registry=registry)
+        tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
+        task_ids = await plain_client.schedule_many(tasks, queue="math")
+
+        assert len(task_ids) == 2
+        assert broker.publish.await_count == 2
+
+    # ------------------------------------------------------------------
+    # 9. schedule_many: pre_enqueue raises on task N -> batch aborts, no publish
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_schedule_many_pre_enqueue_raises_aborts_batch(
+        self, client_with_hooks, broker, middleware_chain, signal_dispatcher,
+    ):
+        # Pre_enqueue succeeds for first, raises on second
+        middleware_chain.run_pre_enqueue = AsyncMock(
+            side_effect=[None, RuntimeError("veto"), None]
+        )
+
+        tasks = [
+            ("add", (1, 2), {}),
+            ("add", (3, 4), {}),
+            ("add", (5, 6), {}),
+        ]
+
+        with pytest.raises(RuntimeError, match="veto"):
+            await client_with_hooks.schedule_many(tasks, queue="math")
+
+        # No publishes happened (abort BEFORE gather)
+        broker.publish.assert_not_awaited()
+        # No post_enqueue, no signals
+        middleware_chain.run_post_enqueue.assert_not_awaited()
+        signal_dispatcher.dispatch.assert_not_awaited()

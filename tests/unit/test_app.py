@@ -225,7 +225,13 @@ class TestSwarmQStartWorker:
 
             await app.start_worker()
 
-            MockWorker.assert_called_once_with(broker, backend, app.registry, app.config)
+            from swarmq.middleware import MiddlewareChain
+
+            MockWorker.assert_called_once()
+            call_args, call_kwargs = MockWorker.call_args
+            assert call_args == (broker, backend, app.registry, app.config)
+            assert isinstance(call_kwargs["middleware_chain"], MiddlewareChain)
+            assert call_kwargs["signal_dispatcher"] is app._signal_dispatcher
             mock_instance.start.assert_awaited_once()
 
 

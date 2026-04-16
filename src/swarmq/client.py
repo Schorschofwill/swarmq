@@ -11,8 +11,10 @@ import structlog
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
+from swarmq.middleware import MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
+from swarmq.signals import Signal, SignalDispatcher
 
 logger = structlog.get_logger()
 
@@ -32,10 +34,18 @@ class Client:
         broker: RabbitMQBroker,
         backend: ValkeyBackend,
         registry: TaskRegistry | None = None,
+        middleware_chain: MiddlewareChain | None = None,
+        signal_dispatcher: SignalDispatcher | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._registry = registry
+        self._middleware_chain = (
+            middleware_chain if middleware_chain is not None else MiddlewareChain([])
+        )
+        self._signal_dispatcher = (
+            signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
+        )
 
     async def schedule(
         self,
@@ -71,7 +81,29 @@ class Client:
             "args": list(args),
             "kwargs": kwargs,
         }
+
+        # Canonical message_dict for middleware hooks (worker-agnostic schema).
+        message_dict = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "queue": resolved_queue,
+            "args": list(args),
+            "kwargs": kwargs,
+        }
+
+        # pre_enqueue exceptions PROPAGATE — they can prevent the enqueue.
+        await self._middleware_chain.run_pre_enqueue(message_dict)
+
         await self._broker.publish(resolved_queue, encode_json(message))
+
+        # post_enqueue + TASK_ENQUEUED signal only after successful publish.
+        await self._middleware_chain.run_post_enqueue(message_dict)
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_ENQUEUED,
+            task_id=task_id,
+            task_name=task_name,
+            queue=resolved_queue,
+        )
         return task_id
 
     async def get_result(
@@ -161,7 +193,15 @@ class Client:
             return []
 
         task_ids: list[str] = []
-        coros = []
+        message_dicts: list[dict[str, Any]] = []
+        encoded_messages: list[bytes] = []
+        resolved_queues: list[str] = []
+        task_names: list[str] = []
+
+        # Pass 1: validate, resolve queue, build message_dicts + encoded
+        # payloads. pre_enqueue is invoked sequentially; a raise aborts the
+        # whole batch BEFORE any broker.publish coroutine is created or
+        # awaited.
         for task_name, args, kwargs in tasks:
             # --- validation (registry mode only) ---
             if self._registry is not None:
@@ -180,6 +220,9 @@ class Client:
 
             task_id = str(uuid.uuid7())
             task_ids.append(task_id)
+            task_names.append(task_name)
+            resolved_queues.append(resolved_queue)
+
             message = {
                 "task": {
                     "id": task_id,
@@ -189,8 +232,27 @@ class Client:
                 "args": list(args),
                 "kwargs": kwargs,
             }
-            coros.append(self._broker.publish(resolved_queue, encode_json(message)))
+            encoded_messages.append(encode_json(message))
 
+            message_dict = {
+                "task_id": task_id,
+                "task_name": task_name,
+                "queue": resolved_queue,
+                "args": list(args),
+                "kwargs": kwargs,
+            }
+            message_dicts.append(message_dict)
+
+            # pre_enqueue: exception aborts the whole batch (propagate).
+            # Coroutines for broker.publish are only created in Pass 2, so
+            # nothing needs cleanup if this raises.
+            await self._middleware_chain.run_pre_enqueue(message_dict)
+
+        # Pass 2: publish concurrently.
+        coros = [
+            self._broker.publish(resolved_queues[i], encoded_messages[i])
+            for i in range(len(tasks))
+        ]
         results = await asyncio.gather(*coros, return_exceptions=True)
         errors = [
             (i, r) for i, r in enumerate(results) if isinstance(r, BaseException)
@@ -207,7 +269,30 @@ class Client:
                     submitted_task_ids=submitted,
                     failed_count=len(errors),
                 )
+            # Run post_enqueue + TASK_ENQUEUED only for the successful ones
+            # before raising, so observers aren't left with a half-emitted state.
+            for i, r in enumerate(results):
+                if isinstance(r, BaseException):
+                    continue
+                await self._middleware_chain.run_post_enqueue(message_dicts[i])
+                await self._signal_dispatcher.dispatch(
+                    Signal.TASK_ENQUEUED,
+                    task_id=task_ids[i],
+                    task_name=task_names[i],
+                    queue=resolved_queues[i],
+                )
             raise errors[0][1]
+
+        # Pass 3: post_enqueue + TASK_ENQUEUED for each task after gather
+        # succeeded.
+        for i, message_dict in enumerate(message_dicts):
+            await self._middleware_chain.run_post_enqueue(message_dict)
+            await self._signal_dispatcher.dispatch(
+                Signal.TASK_ENQUEUED,
+                task_id=task_ids[i],
+                task_name=task_names[i],
+                queue=resolved_queues[i],
+            )
 
         return task_ids
 

@@ -7,6 +7,7 @@ import enum
 import os
 import signal
 import sys
+import time
 
 import structlog
 
@@ -23,8 +24,10 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
+from swarmq.middleware import MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, encode_result
+from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode
 
 logger = structlog.get_logger()
@@ -45,11 +48,19 @@ class Worker:
         backend: ValkeyBackend,
         registry: TaskRegistry,
         config: SwarmQConfig,
+        middleware_chain: MiddlewareChain | None = None,
+        signal_dispatcher: SignalDispatcher | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._registry = registry
         self._config = config
+        self._middleware_chain = (
+            middleware_chain if middleware_chain is not None else MiddlewareChain([])
+        )
+        self._signal_dispatcher = (
+            signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
+        )
         self._semaphore = asyncio.Semaphore(config.concurrency)
         self._active_tasks: set[asyncio.Task] = set()
         self._state = WorkerState.STARTING
@@ -86,6 +97,10 @@ class Worker:
             backend_url=sanitize_url(self._config.backend_url),
         )
 
+        await self._signal_dispatcher.dispatch(
+            Signal.WORKER_ONLINE, worker_id=str(id(self))
+        )
+
         # Block until shutdown is requested
         await self._shutdown_event.wait()
         await self._execute_shutdown()
@@ -97,6 +112,10 @@ class Worker:
 
     async def _execute_shutdown(self) -> None:
         """Execute the graceful shutdown sequence."""
+        await self._signal_dispatcher.dispatch(
+            Signal.WORKER_SHUTDOWN, worker_id=str(id(self))
+        )
+
         # 1. DRAINING: stop accepting new messages
         await self._broker.cancel_consume()
 
@@ -182,6 +201,25 @@ class Worker:
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                 await self._broker.ack(message)
 
+            # Build canonical message_dict for middleware + track retry_count
+            retry_count = message.headers.get("x-swarmq-retry-count", 0)
+            message_dict = {
+                "task_id": task_id,
+                "task_name": task_name,
+                "queue": queue,
+                "args": args,
+                "kwargs": kwargs,
+                "delivery_mode": task_info.delivery.value,
+                "retry_count": retry_count,
+            }
+
+            # Pre-execute hooks
+            await self._middleware_chain.run_pre_execute(message_dict)
+            await self._signal_dispatcher.dispatch(
+                Signal.TASK_STARTED, task_id=task_id, task_name=task_name
+            )
+            start_time = time.monotonic()
+
             # 6. Create task instance, run lifecycle
             task_instance = task_class()
             result_value = None
@@ -262,6 +300,29 @@ class Worker:
                     if watchdog is not None and not watchdog.done():
                         watchdog.cancel()
 
+            # Emit post-execute / on-error hooks now that lifecycle is resolved
+            duration_ms = (time.monotonic() - start_time) * 1000.0
+            if is_error and task_exception is not None:
+                await self._middleware_chain.run_on_error(
+                    message_dict, exception=task_exception
+                )
+                await self._signal_dispatcher.dispatch(
+                    Signal.TASK_FAILED,
+                    task_id=task_id,
+                    task_name=task_name,
+                    exception=str(task_exception),
+                )
+            else:
+                await self._middleware_chain.run_post_execute(
+                    message_dict, result=result_value
+                )
+                await self._signal_dispatcher.dispatch(
+                    Signal.TASK_COMPLETED,
+                    task_id=task_id,
+                    task_name=task_name,
+                    duration_ms=duration_ms,
+                )
+
             # For FIRE_AND_FORGET with errors: skip result/retry pipeline
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and is_error:
                 return
@@ -274,7 +335,14 @@ class Worker:
                 and task_info.max_retries > 0
             ):
                 should_retry = await self._evaluate_retry(
-                    message, task_info, task_exception, queue, task_id, task_name, error_message
+                    message,
+                    task_info,
+                    task_exception,
+                    queue,
+                    task_id,
+                    task_name,
+                    error_message,
+                    message_dict,
                 )
                 if should_retry:
                     return
@@ -355,6 +423,7 @@ class Worker:
         task_id: str,
         task_name: str,
         error_message: str,
+        message_dict: dict | None = None,
     ) -> bool:
         """Evaluate whether to retry a failed task.
 
@@ -393,6 +462,30 @@ class Worker:
             )
 
         delay_ms = int(delay_seconds * 1000)
+
+        # 5b. Middleware + signal hooks fire BEFORE publish_to_delay_queue
+        if message_dict is None:
+            message_dict = {
+                "task_id": task_id,
+                "task_name": task_name,
+                "queue": queue,
+                "args": [],
+                "kwargs": {},
+                "delivery_mode": task_info.delivery.value,
+                "retry_count": retry_count,
+            }
+        await self._middleware_chain.run_on_retry(
+            message_dict,
+            exception=exc,
+            retry_count=retry_count + 1,
+            delay=delay_seconds,
+        )
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_RETRYING,
+            task_id=task_id,
+            retry_count=retry_count + 1,
+            delay=delay_seconds,
+        )
 
         # 6. Publish to delay queue with incremented retry count
         headers = {

@@ -39,7 +39,13 @@ class SwarmQ:
         self._log_listener = setup_logging(self.config.log_level, self.config.log_json)
         self._middlewares: list[Middleware] = []
         self._signal_dispatcher = SignalDispatcher()
-        self.client = Client(broker, backend, registry=self.registry)
+        self.client = Client(
+            broker,
+            backend,
+            registry=self.registry,
+            middleware_chain=self.middleware_chain,
+            signal_dispatcher=self._signal_dispatcher,
+        )
 
     def add_middleware(self, middleware: Middleware) -> None:
         """Register a middleware to run for every task lifecycle event."""
@@ -106,5 +112,12 @@ class SwarmQ:
         )
 
     async def start_worker(self) -> None:
-        worker = Worker(self.broker, self.backend, self.registry, self.config)
+        worker = Worker(
+            self.broker,
+            self.backend,
+            self.registry,
+            self.config,
+            middleware_chain=self.middleware_chain,
+            signal_dispatcher=self._signal_dispatcher,
+        )
         await worker.start()

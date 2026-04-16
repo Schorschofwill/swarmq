@@ -1264,3 +1264,544 @@ async def test_publish_notification_failure_does_not_block_ack(broker, backend, 
     broker.ack.assert_awaited_once_with(msg)
     # And the result was stored
     backend.store_result.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Unit 4: Worker Middleware + Signal integration
+# ---------------------------------------------------------------------------
+
+
+def _make_middleware_chain_mock() -> MagicMock:
+    """Build a MagicMock MiddlewareChain with all 6 run_* methods as AsyncMock."""
+    from swarmq.middleware import MiddlewareChain
+
+    chain = MagicMock(spec=MiddlewareChain)
+    chain.run_pre_enqueue = AsyncMock()
+    chain.run_post_enqueue = AsyncMock()
+    chain.run_pre_execute = AsyncMock()
+    chain.run_post_execute = AsyncMock()
+    chain.run_on_error = AsyncMock()
+    chain.run_on_retry = AsyncMock()
+    return chain
+
+
+def _make_signal_dispatcher_mock() -> MagicMock:
+    """Build a MagicMock SignalDispatcher with dispatch as AsyncMock."""
+    from swarmq.signals import SignalDispatcher
+
+    dispatcher = MagicMock(spec=SignalDispatcher)
+    dispatcher.dispatch = AsyncMock()
+    return dispatcher
+
+
+class TestWorkerMiddlewareAndSignals:
+    """Unit 4: Worker integration for MiddlewareChain and SignalDispatcher."""
+
+    @pytest.mark.asyncio
+    async def test_pre_execute_called_before_run(self, broker, backend, config):
+        """pre_execute runs before task.run()."""
+        call_order: list[str] = []
+
+        mw_chain = _make_middleware_chain_mock()
+        mw_chain.run_pre_execute.side_effect = (
+            lambda *a, **kw: call_order.append("pre_execute") or None
+        )
+
+        class OrderTask(Task):
+            task_info = TaskInfo(name="order_pre", queues=["default"])
+
+            async def run(self) -> str:
+                call_order.append("run")
+                return "ok"
+
+        reg = TaskRegistry()
+        reg.register(OrderTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(_default_payload(name="order_pre", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        assert call_order == ["pre_execute", "run"]
+        mw_chain.run_pre_execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_post_execute_called_after_successful_run(
+        self, broker, backend, config
+    ):
+        """post_execute runs after a successful task.run() completes (including post_execution)."""
+
+        class GoodTask(Task):
+            task_info = TaskInfo(name="good_post", queues=["default"])
+
+            async def run(self) -> int:
+                return 42
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(GoodTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(_default_payload(name="good_post", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        mw_chain.run_post_execute.assert_awaited_once()
+        call_kwargs = mw_chain.run_post_execute.call_args.kwargs
+        assert call_kwargs["result"] == 42
+        # on_error must NOT fire on success
+        mw_chain.run_on_error.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_post_execute_not_called_when_post_execution_fails(
+        self, broker, backend, config
+    ):
+        """post_execute hook is NOT called when the task's post_execution() raises."""
+
+        class PostFailTask(Task):
+            task_info = TaskInfo(name="post_fail_hook", queues=["default"])
+
+            async def run(self) -> str:
+                return "ok"
+
+            async def post_execution(self) -> None:
+                raise RuntimeError("post failed")
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(PostFailTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(_default_payload(name="post_fail_hook", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        # post_execute (middleware) was NOT called because the lifecycle errored
+        mw_chain.run_post_execute.assert_not_awaited()
+        # on_error was called instead
+        mw_chain.run_on_error.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_on_error_called_on_task_exception(self, broker, backend, config):
+        """on_error hook fires when the task raises."""
+
+        class BoomTask(Task):
+            task_info = TaskInfo(name="boom_hook", queues=["default"])
+
+            async def run(self) -> None:
+                raise ValueError("boom")
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(BoomTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(_default_payload(name="boom_hook", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        mw_chain.run_on_error.assert_awaited_once()
+        call_kwargs = mw_chain.run_on_error.call_args.kwargs
+        assert isinstance(call_kwargs["exception"], ValueError)
+        mw_chain.run_post_execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_retry_called_when_retrying(self, broker, backend, config):
+        """on_retry hook fires when _evaluate_retry chooses the retry path."""
+
+        class RetryingTask(Task):
+            task_info = TaskInfo(
+                name="retry_hook",
+                queues=["default"],
+                max_retries=3,
+                retry_base_delay=1.0,
+            )
+
+            async def run(self) -> None:
+                raise RuntimeError("transient")
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(RetryingTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(
+            _default_payload(name="retry_hook", args=[], kwargs={}),
+            headers={},
+        )
+        await w._handle_message(msg)
+
+        mw_chain.run_on_retry.assert_awaited_once()
+        call_kwargs = mw_chain.run_on_retry.call_args.kwargs
+        assert call_kwargs["retry_count"] == 1
+        assert call_kwargs["delay"] > 0
+        assert isinstance(call_kwargs["exception"], RuntimeError)
+        # retry path hit the delay queue
+        broker.publish_to_delay_queue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_on_error_and_on_retry_both_fire_on_retried_failure(
+        self, broker, backend, config
+    ):
+        """Retried failure: on_error fires first, then on_retry."""
+
+        class RetryBothTask(Task):
+            task_info = TaskInfo(
+                name="retry_both",
+                queues=["default"],
+                max_retries=3,
+                retry_base_delay=1.0,
+            )
+
+            async def run(self) -> None:
+                raise RuntimeError("boom")
+
+        mw_chain = _make_middleware_chain_mock()
+        call_order: list[str] = []
+        mw_chain.run_on_error.side_effect = (
+            lambda *a, **kw: call_order.append("on_error") or None
+        )
+        mw_chain.run_on_retry.side_effect = (
+            lambda *a, **kw: call_order.append("on_retry") or None
+        )
+
+        reg = TaskRegistry()
+        reg.register(RetryBothTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(
+            _default_payload(name="retry_both", args=[], kwargs={}),
+            headers={},
+        )
+        await w._handle_message(msg)
+
+        assert call_order == ["on_error", "on_retry"]
+
+    @pytest.mark.asyncio
+    async def test_on_retry_not_called_when_sent_to_dlq(
+        self, broker, backend, config
+    ):
+        """When retries exhausted and task goes to DLQ, on_error fires but on_retry does NOT."""
+
+        class ExhaustedTask(Task):
+            task_info = TaskInfo(
+                name="exhausted_hook",
+                queues=["default"],
+                max_retries=2,
+            )
+
+            async def run(self) -> None:
+                raise RuntimeError("still broken")
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(ExhaustedTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        # retry_count == max_retries (2) -> DLQ, no retry
+        msg = _make_message(
+            _default_payload(name="exhausted_hook", args=[], kwargs={}),
+            headers={"x-swarmq-retry-count": 2},
+        )
+        await w._handle_message(msg)
+
+        mw_chain.run_on_error.assert_awaited_once()
+        mw_chain.run_on_retry.assert_not_awaited()
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_task_started_signal_dispatched(self, broker, backend, config):
+        """TASK_STARTED is dispatched with task_id + task_name before execution."""
+        from swarmq.signals import Signal
+
+        dispatcher = _make_signal_dispatcher_mock()
+
+        reg = TaskRegistry()
+        reg.register(AddTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            signal_dispatcher=dispatcher,
+        )
+
+        msg = _make_message(_default_payload())
+        await w._handle_message(msg)
+
+        started_calls = [
+            c for c in dispatcher.dispatch.call_args_list
+            if c.args and c.args[0] is Signal.TASK_STARTED
+        ]
+        assert len(started_calls) == 1
+        assert started_calls[0].kwargs["task_id"] == "abc-123"
+        assert started_calls[0].kwargs["task_name"] == "add"
+
+    @pytest.mark.asyncio
+    async def test_task_completed_signal_dispatched_with_duration(
+        self, broker, backend, config
+    ):
+        """TASK_COMPLETED dispatched with duration_ms after success."""
+        from swarmq.signals import Signal
+
+        dispatcher = _make_signal_dispatcher_mock()
+
+        reg = TaskRegistry()
+        reg.register(AddTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            signal_dispatcher=dispatcher,
+        )
+
+        msg = _make_message(_default_payload())
+        await w._handle_message(msg)
+
+        completed_calls = [
+            c for c in dispatcher.dispatch.call_args_list
+            if c.args and c.args[0] is Signal.TASK_COMPLETED
+        ]
+        assert len(completed_calls) == 1
+        kw = completed_calls[0].kwargs
+        assert kw["task_id"] == "abc-123"
+        assert kw["task_name"] == "add"
+        assert "duration_ms" in kw
+        assert isinstance(kw["duration_ms"], float)
+        assert kw["duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_task_failed_signal_dispatched_on_error(
+        self, broker, backend, config
+    ):
+        """TASK_FAILED dispatched with exception string on task error."""
+        from swarmq.signals import Signal
+
+        class FailSig(Task):
+            task_info = TaskInfo(name="fail_sig", queues=["default"])
+
+            async def run(self) -> None:
+                raise ValueError("bad thing")
+
+        dispatcher = _make_signal_dispatcher_mock()
+
+        reg = TaskRegistry()
+        reg.register(FailSig)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            signal_dispatcher=dispatcher,
+        )
+
+        msg = _make_message(_default_payload(name="fail_sig", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        failed_calls = [
+            c for c in dispatcher.dispatch.call_args_list
+            if c.args and c.args[0] is Signal.TASK_FAILED
+        ]
+        assert len(failed_calls) == 1
+        kw = failed_calls[0].kwargs
+        assert kw["task_id"] == "abc-123"
+        assert kw["task_name"] == "fail_sig"
+        assert "bad thing" in kw["exception"]
+
+    @pytest.mark.asyncio
+    async def test_task_retrying_signal_dispatched_on_retry(
+        self, broker, backend, config
+    ):
+        """TASK_RETRYING dispatched on retry path with retry_count and delay."""
+        from swarmq.signals import Signal
+
+        class RetrySig(Task):
+            task_info = TaskInfo(
+                name="retry_sig",
+                queues=["default"],
+                max_retries=3,
+                retry_base_delay=1.0,
+            )
+
+            async def run(self) -> None:
+                raise RuntimeError("transient")
+
+        dispatcher = _make_signal_dispatcher_mock()
+
+        reg = TaskRegistry()
+        reg.register(RetrySig)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            signal_dispatcher=dispatcher,
+        )
+
+        msg = _make_message(
+            _default_payload(name="retry_sig", args=[], kwargs={}),
+            headers={},
+        )
+        await w._handle_message(msg)
+
+        retrying_calls = [
+            c for c in dispatcher.dispatch.call_args_list
+            if c.args and c.args[0] is Signal.TASK_RETRYING
+        ]
+        assert len(retrying_calls) == 1
+        kw = retrying_calls[0].kwargs
+        assert kw["task_id"] == "abc-123"
+        assert kw["retry_count"] == 1
+        assert kw["delay"] > 0
+
+    @pytest.mark.asyncio
+    async def test_worker_online_and_shutdown_signals_dispatched(
+        self, broker, backend, config
+    ):
+        """WORKER_ONLINE dispatched after connect; WORKER_SHUTDOWN dispatched on shutdown."""
+        from swarmq.signals import Signal
+
+        dispatcher = _make_signal_dispatcher_mock()
+
+        reg = TaskRegistry()
+        reg.register(AddTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            signal_dispatcher=dispatcher,
+        )
+
+        # Trigger shutdown immediately so start() returns
+        w._shutdown_event.set()
+        await w.start()
+
+        signals_seen = [
+            c.args[0] for c in dispatcher.dispatch.call_args_list if c.args
+        ]
+        assert Signal.WORKER_ONLINE in signals_seen
+        assert Signal.WORKER_SHUTDOWN in signals_seen
+
+        # Check worker_id kwarg present for both
+        online_call = next(
+            c for c in dispatcher.dispatch.call_args_list
+            if c.args and c.args[0] is Signal.WORKER_ONLINE
+        )
+        assert "worker_id" in online_call.kwargs
+        shutdown_call = next(
+            c for c in dispatcher.dispatch.call_args_list
+            if c.args and c.args[0] is Signal.WORKER_SHUTDOWN
+        )
+        assert "worker_id" in shutdown_call.kwargs
+
+    @pytest.mark.asyncio
+    async def test_message_dict_contains_canonical_fields(
+        self, broker, backend, config
+    ):
+        """message_dict passed to middleware hooks contains all canonical fields."""
+
+        class KwTask(Task):
+            task_info = TaskInfo(name="kw_task", queues=["default"])
+
+            async def run(self, *args, **kwargs) -> str:
+                return "ok"
+
+        mw_chain = _make_middleware_chain_mock()
+
+        reg = TaskRegistry()
+        reg.register(KwTask)
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=mw_chain,
+        )
+
+        msg = _make_message(
+            _default_payload(
+                task_id="mid-1",
+                queue="myq",
+                name="kw_task",
+                args=[7, 8],
+                kwargs={"extra": "k"},
+            ),
+            headers={"x-swarmq-retry-count": 2},
+        )
+        await w._handle_message(msg)
+
+        mw_chain.run_pre_execute.assert_awaited_once()
+        message_dict = mw_chain.run_pre_execute.call_args.args[0]
+
+        assert message_dict["task_id"] == "mid-1"
+        assert message_dict["task_name"] == "kw_task"
+        assert message_dict["queue"] == "myq"
+        assert message_dict["args"] == [7, 8]
+        assert message_dict["kwargs"] == {"extra": "k"}
+        assert message_dict["delivery_mode"] == DeliveryMode.AT_LEAST_ONCE.value
+        assert message_dict["retry_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_backward_compatible_without_middleware_or_signals(
+        self, broker, backend, config
+    ):
+        """Without middleware_chain/signal_dispatcher, Worker works exactly as before."""
+        reg = TaskRegistry()
+        reg.register(AddTask)
+        # Neither middleware_chain nor signal_dispatcher provided
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+        msg = _make_message(_default_payload())
+        await w._handle_message(msg)
+
+        # Happy-path invariants hold
+        broker.ack.assert_awaited_once_with(msg)
+        backend.store_result.assert_awaited_once()
+        stored = decode_result(backend.store_result.call_args[0][1])
+        assert stored["is_error"] is False
+        assert stored["result"] == 3
