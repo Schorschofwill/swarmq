@@ -2318,3 +2318,370 @@ class TestRateLimitRequeueCounter:
 
         _, kwargs = broker.publish_to_delay_queue.call_args
         assert kwargs["headers"]["x-swarmq-rate-limit-count"] == 6
+
+
+# ===========================================================================
+# Phase 3b.2 — Task Locking pipeline-stage tests
+#
+# Mirrors the rate-limit suite above. Same four-test mandatory regression
+# template from docs/solutions/.../worker-pipeline-stage-ack-ordering-...md
+# applied to _try_apply_lock instead of _try_apply_rate_limit.
+# ===========================================================================
+
+
+class LockedTask(Task):
+    task_info = TaskInfo(
+        name="locked", queues=["default"], lock="resource", hard_timeout=60
+    )
+
+
+class FireAndForgetLockedTask(Task):
+    task_info = TaskInfo(
+        name="ff_locked",
+        queues=["default"],
+        delivery=DeliveryMode.FIRE_AND_FORGET,
+        lock="resource",
+        hard_timeout=60,
+    )
+
+
+class TestWorkerLocking:
+    """Unit-level coverage of the lock branch in _handle_message.
+
+    A real Worker is built but ``_lock_manager`` is replaced with a
+    mock so no Valkey is needed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_acquired_path_runs_the_task(self, broker, backend, config):
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=True)
+        w._lock_manager.release = AsyncMock(return_value=True)
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+
+        async def _run(self):  # noqa: ANN001
+            return None
+
+        with patch.object(LockedTask, "run", _run):
+            await w._handle_message(msg)
+
+        w._lock_manager.acquire.assert_awaited_once()
+        w._lock_manager.release.assert_awaited_once()
+        broker.publish_to_delay_queue.assert_not_called()
+        broker.ack.assert_awaited_once_with(msg)
+
+    @pytest.mark.asyncio
+    async def test_conflict_path_requeues_with_delay_and_skips_execution(
+        self, broker, backend, config
+    ):
+        from swarmq.signals import Signal, SignalDispatcher
+
+        dispatcher = SignalDispatcher()
+        seen: list[dict] = []
+
+        @dispatcher.on_signal(Signal.TASK_LOCKED)
+        async def _handler(**kwargs: object) -> None:
+            seen.append(dict(kwargs))
+
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(
+            broker=broker, backend=backend, registry=reg, config=config,
+            signal_dispatcher=dispatcher,
+        )
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.release = AsyncMock(return_value=True)
+
+        ran = False
+
+        async def _run(self):  # noqa: ANN001
+            nonlocal ran
+            ran = True
+
+        with patch.object(LockedTask, "run", _run):
+            msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+            await w._handle_message(msg)
+
+        assert ran is False, "task.run must NOT run when lock conflicted"
+        broker.publish_to_delay_queue.assert_awaited_once()
+        broker.ack.assert_awaited_once_with(msg)
+        broker.publish_to_dead_letter_queue.assert_not_called()
+        # Release is NOT called when acquire returned False
+        w._lock_manager.release.assert_not_awaited()
+        assert len(seen) == 1
+        assert seen[0]["task_name"] == "locked"
+        assert seen[0]["lock_name"] == "resource"
+        assert seen[0]["lock_conflict_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_lock_skips_lock_manager_entirely(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(AddTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+
+        msg = _make_message(_default_payload())
+        await w._handle_message(msg)
+
+        w._lock_manager.acquire.assert_not_called()
+
+    # --- Mandatory regression #1 ---------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_lock_set_but_lock_manager_none_falls_through_to_execution(
+        self, broker, backend, config
+    ):
+        """Defensive guard: ``_lock_manager is None`` (Worker.start() was
+        never called) must not crash. The task simply runs unprotected —
+        better than silently dropping it. Same shape as
+        test_rate_limit_set_but_limiter_none_falls_through_to_execution.
+        """
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        # _lock_manager intentionally stays None.
+
+        ran = False
+
+        async def _run(self):  # noqa: ANN001
+            nonlocal ran
+            ran = True
+
+        with patch.object(LockedTask, "run", _run):
+            msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+            await w._handle_message(msg)
+
+        assert ran is True
+        broker.ack.assert_awaited_once_with(msg)
+        broker.publish_to_delay_queue.assert_not_called()
+
+    # --- Mandatory regression #2 ---------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_lock_check_connection_error_nacks_with_requeue(
+        self, broker, backend, config
+    ):
+        """Valkey unreachable mid-acquire must nack(requeue=True), NOT
+        drop the message. Same shape as
+        test_limiter_connection_error_nacks_with_requeue."""
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(
+            side_effect=BackendConnectionError("valkey down")
+        )
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.ack.assert_not_awaited()
+        broker.publish_to_delay_queue.assert_not_called()
+
+
+class TestFireAndForgetLock:
+    """Mandatory regression #3 — FIRE_AND_FORGET + lock-stage failure must
+    NOT drop the message. Same shape as TestFireAndForgetRateLimit."""
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_lock_failure_does_not_drop_message(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(FireAndForgetLockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(
+            side_effect=BackendConnectionError("simulated valkey hiccup")
+        )
+
+        msg = _make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        # Crucially: NO ack happened. Message survives for redelivery.
+        broker.ack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_lock_conflict_acks_once(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(FireAndForgetLockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        broker.publish_to_delay_queue.assert_awaited_once()
+        # Single ack — not the old "FIRE_AND_FORGET ack + lock-conflict ack" double.
+        assert broker.ack.await_count == 1
+
+
+class TestLockRequeueCounter:
+    """Mandatory regression #4 — x-swarmq-lock-conflict-count header
+    increments on every conflict so operators can see a wedged lock.
+    Same shape as TestRateLimitRequeueCounter."""
+
+    @pytest.mark.asyncio
+    async def test_first_lock_conflict_sets_counter_to_one(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg.headers = {}
+
+        await w._handle_message(msg)
+
+        _, kwargs = broker.publish_to_delay_queue.call_args
+        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 1
+        # Wedged-lock recovery: DLQ (and requeue) messages must carry the
+        # rendered lock name so operators can `valkey-cli DEL sq:lock:<name>`.
+        assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
+
+    @pytest.mark.asyncio
+    async def test_existing_counter_is_incremented(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg.headers = {"x-swarmq-lock-conflict-count": 5}
+
+        await w._handle_message(msg)
+
+        _, kwargs = broker.publish_to_delay_queue.call_args
+        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 6
+
+    @pytest.mark.asyncio
+    async def test_counter_at_cap_routes_to_dlq_not_requeue(
+        self, broker, backend, config
+    ):
+        """At the configured cap (10), the message goes to DLQ instead of
+        being requeued — operators can inspect the DLQ message's
+        x-swarmq-lock-name header to recover the wedged lock."""
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg.headers = {"x-swarmq-lock-conflict-count": 10}
+
+        await w._handle_message(msg)
+
+        # No more requeue
+        broker.publish_to_delay_queue.assert_not_called()
+        # DLQ instead, with diagnostic header
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        _, kwargs = broker.publish_to_dead_letter_queue.call_args
+        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 11
+        assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
+        broker.ack.assert_awaited_once_with(msg)
+
+
+class FormatStringLockTask(Task):
+    task_info = TaskInfo(
+        name="user_charge",
+        queues=["default"],
+        lock="user-{user_id}",
+        hard_timeout=60,
+    )
+
+    async def run(self, user_id: int, amount: int) -> None:
+        return None
+
+
+class TestFormatStringLock:
+    """Lock names with format placeholders are rendered at acquire-time
+    via inspect.signature.bind, so positional and keyword args both
+    fill the template."""
+
+    @pytest.mark.asyncio
+    async def test_keyword_args_render_lock_name(self, broker, backend, config):
+        reg = TaskRegistry()
+        reg.register(FormatStringLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=True)
+        w._lock_manager.release = AsyncMock(return_value=True)
+
+        msg = _make_message(
+            _default_payload(name="user_charge", args=[], kwargs={"user_id": 42, "amount": 100})
+        )
+        await w._handle_message(msg)
+
+        args, _ = w._lock_manager.acquire.call_args
+        assert args[0] == "user-42"
+
+    @pytest.mark.asyncio
+    async def test_positional_args_render_lock_name(self, broker, backend, config):
+        reg = TaskRegistry()
+        reg.register(FormatStringLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=True)
+        w._lock_manager.release = AsyncMock(return_value=True)
+
+        msg = _make_message(
+            _default_payload(name="user_charge", args=[7, 100], kwargs={})
+        )
+        await w._handle_message(msg)
+
+        args, _ = w._lock_manager.acquire.call_args
+        assert args[0] == "user-7"
+
+    @pytest.mark.asyncio
+    async def test_missing_arg_routes_to_dlq_with_render_error_header(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(FormatStringLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+
+        # Missing user_id entirely
+        msg = _make_message(
+            _default_payload(name="user_charge", args=[], kwargs={"amount": 100})
+        )
+        await w._handle_message(msg)
+
+        w._lock_manager.acquire.assert_not_called()
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        _, kwargs = broker.publish_to_dead_letter_queue.call_args
+        assert "x-swarmq-lock-render-error" in kwargs["headers"]

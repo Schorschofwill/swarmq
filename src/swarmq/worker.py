@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import inspect
 import os
 import signal
 import sys
 import time
+import uuid
 from collections.abc import Callable
 
 import aio_pika
@@ -18,6 +20,7 @@ from swarmq.backoff import calculate_backoff
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.limits import RateLimiter, parse_rate_limit
+from swarmq.locking import LockManager, compute_lock_ttl_ms
 from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
@@ -82,6 +85,16 @@ class Worker:
         # RateLimiter needs an already-connected Valkey client; instantiated
         # in start() after backend.connect(). See plan 005 Unit 5 Lifecycle.
         self._rate_limiter: RateLimiter | None = None
+        # LockManager has the same lifecycle as RateLimiter — instantiated
+        # in start() once the Valkey client is live. See plan 008 Unit 4.
+        self._lock_manager: LockManager | None = None
+        # Backup registry for graceful-shutdown lock cleanup. Keyed by a
+        # per-_handle_message UUID (NOT task_id, which can collide under
+        # AT_LEAST_ONCE redelivery within the same worker). Values are the
+        # list of (lock_name, owner_token, max_concurrency) tuples currently
+        # held by that handler invocation. _release_acquired_locks pops
+        # the entry; _execute_shutdown drains anything still here.
+        self._active_handler_locks: dict[uuid.UUID, list[tuple[str, str, int]]] = {}
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -185,6 +198,275 @@ class Worker:
 
         return True
 
+    @staticmethod
+    def _render_lock_name(
+        lock_template: str,
+        task_class: type,
+        args: list,
+        kwargs: dict,
+    ) -> str:
+        """Resolve format placeholders in ``lock_template`` against the
+        task's run-method signature so positional and keyword args can
+        both fill ``"user-{user_id}"``-style templates.
+
+        Raises ``ValueError`` (with a wrapped TypeError / KeyError as
+        cause) on render failure — caller routes the message to DLQ
+        with an explanatory header. Plain non-format strings short-
+        circuit before any inspect work, keeping the common case cheap.
+        """
+        if "{" not in lock_template:
+            return lock_template
+        try:
+            bound = inspect.signature(task_class.run).bind(
+                None, *args, **kwargs
+            ).arguments
+            # Drop the first parameter ('self') so {self} placeholders
+            # don't accidentally pull in the bound None.
+            bound.pop("self", None)
+            return lock_template.format_map(bound)
+        except (TypeError, KeyError) as exc:
+            raise ValueError(
+                f"failed to render lock name {lock_template!r}: {exc}"
+            ) from exc
+
+    # Maximum lock-conflict requeue count before routing to DLQ. Mirrors the
+    # rate-limit cap convention from plan 005 — visibility-first, the cap is
+    # a safety net so a wedged lock doesn't bounce a message indefinitely.
+    _LOCK_CONFLICT_DLQ_CAP = 10
+    # Backoff cap for lock-conflict requeue: 100 ms * 2 ** count, capped at
+    # 60 s so an exponential ramp doesn't run away. The cap is reached by
+    # roughly the 9th conflict (100ms * 2**9 ≈ 51s), which lines up nicely
+    # with the DLQ cap above.
+    _LOCK_CONFLICT_BACKOFF_BASE_MS = 100
+    _LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
+
+    async def _try_apply_lock(
+        self,
+        message: aio_pika.abc.AbstractIncomingMessage,
+        task_info: TaskInfo,
+        task_class: type,
+        queue: str,
+        task_id: str,
+        task_name: str,
+        args: list,
+        kwargs: dict,
+        handler_id: uuid.UUID,
+        acquired_locks: list[tuple[str, str, int]],
+    ) -> bool:
+        """Decide whether the message must be requeued for lock-conflict
+        reasons. Mirrors :meth:`_try_apply_rate_limit` shape — the four
+        mandatory rules from
+        ``docs/solutions/.../worker-pipeline-stage-ack-ordering-2026-04-16.md``:
+
+        1. Runs BEFORE the FIRE_AND_FORGET ack.
+        2. Whole decision-and-handoff sequence wrapped in try/except,
+           mirroring ``_evaluate_retry``.
+        3. Per-stage requeue counter on the message header
+           (``x-swarmq-lock-conflict-count``) plus diagnostic
+           ``x-swarmq-lock-name`` so operators can DEL the wedged key.
+        4. Single helper returning bool — True = handled, False = continue.
+
+        On successful acquire, the (lock_name, owner_token,
+        max_concurrency) tuple is appended to ``acquired_locks`` (the
+        per-handler list) AND mirrored into ``_active_handler_locks``
+        (the worker-wide registry used by graceful-shutdown cleanup).
+        Both writes happen inside an ``asyncio.shield`` so a
+        ``CancelledError`` between Lua-acquire and registration cannot
+        leave a held lock untracked.
+        """
+        if task_info.lock is None or self._lock_manager is None:
+            return False
+
+        # Render the lock name once. A render failure is a user
+        # configuration bug — route to DLQ with a clear header, do NOT
+        # requeue (it would just bounce until the cap and then DLQ
+        # anyway, but with a less informative diagnostic).
+        try:
+            lock_name = self._render_lock_name(
+                task_info.lock, task_class, args, kwargs
+            )
+        except ValueError as exc:
+            logger.error(
+                "lock_name_render_failed",
+                task_id=task_id,
+                task_name=task_name,
+                lock_template=task_info.lock,
+                error=str(exc),
+            )
+            original_headers = dict(message.headers) if message.headers else {}
+            original_headers["x-swarmq-lock-render-error"] = str(exc)
+            await self._broker.publish_to_dead_letter_queue(
+                queue, message.body, headers=original_headers,
+            )
+            await self._broker.ack(message)
+            return True
+
+        owner_token = uuid.uuid4().hex
+        ttl_ms = compute_lock_ttl_ms(task_info.hard_timeout)
+
+        # Acquire + register run inside asyncio.shield so a cancellation
+        # between successful Lua-acquire and the in-memory registration
+        # cannot leave the lock held with no Python record. The shield
+        # itself cannot block KeyboardInterrupt, but SIGTERM goes through
+        # the graceful-shutdown path which drains active tasks first.
+        try:
+            acquired = await asyncio.shield(
+                self._acquire_and_register(
+                    lock_name=lock_name,
+                    owner_token=owner_token,
+                    ttl_ms=ttl_ms,
+                    max_concurrency=task_info.max_concurrency,
+                    handler_id=handler_id,
+                    acquired_locks=acquired_locks,
+                )
+            )
+        except Exception as exc:
+            # Same shape as rate-limit: BackendConnectionError or any
+            # other failure means we cannot decide safely. nack(requeue)
+            # so the broker hands the message to the next worker. Runs
+            # BEFORE FIRE_AND_FORGET ack — no data loss.
+            logger.error(
+                "lock_acquire_failed",
+                task_id=task_id,
+                task_name=task_name,
+                lock_name=lock_name,
+                error=str(exc),
+            )
+            await self._broker.nack(message, requeue=True)
+            return True
+
+        if acquired:
+            return False
+
+        # Conflict: lock held by someone else (mutex) or semaphore full.
+        # Track how often this exact message has bounced so operators can
+        # see a wedged lock. Plan 005 set the precedent — visibility-first,
+        # auto-DLQ at the cap is the safety net.
+        original_headers = dict(message.headers) if message.headers else {}
+        prior_count = int(original_headers.get("x-swarmq-lock-conflict-count", 0))
+        new_count = prior_count + 1
+        original_headers["x-swarmq-lock-conflict-count"] = new_count
+        # Wedged-lock recovery: operator reads this header from the DLQ
+        # message and runs `valkey-cli DEL sq:lock:<lock_name>`.
+        original_headers["x-swarmq-lock-name"] = lock_name
+
+        logger.info(
+            "task_lock_conflict",
+            task_id=task_id,
+            task_name=task_name,
+            lock_name=lock_name,
+            lock_conflict_count=new_count,
+        )
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_LOCKED,
+            task_id=task_id,
+            task_name=task_name,
+            lock_name=lock_name,
+            lock_conflict_count=new_count,
+        )
+
+        # At the cap, route to DLQ instead of requeuing — operator must
+        # intervene (typically: DEL the wedged Valkey key, then republish
+        # the DLQ message). This caps the bounce window; without it a
+        # broken upstream could consume queue capacity indefinitely.
+        if new_count > self._LOCK_CONFLICT_DLQ_CAP:
+            try:
+                await self._broker.publish_to_dead_letter_queue(
+                    queue, message.body, headers=original_headers,
+                )
+                await self._broker.ack(message)
+            except Exception as exc:
+                logger.error(
+                    "lock_conflict_dlq_failed",
+                    task_id=task_id,
+                    task_name=task_name,
+                    error=str(exc),
+                )
+                await self._broker.nack(message, requeue=True)
+            return True
+
+        delay_ms = min(
+            self._LOCK_CONFLICT_BACKOFF_BASE_MS * (2 ** (new_count - 1)),
+            self._LOCK_CONFLICT_BACKOFF_CAP_MS,
+        )
+
+        try:
+            await self._broker.publish_to_delay_queue(
+                queue,
+                message.body,
+                delay_ms=delay_ms,
+                headers=original_headers,
+            )
+            await self._broker.ack(message)
+        except Exception as exc:
+            # Same try/except shape as _evaluate_retry / rate-limit:
+            # broker failure between publish and ack means the message
+            # might double-deliver. nack(requeue=True) keeps the original
+            # in flight; the next acquire will naturally serialize.
+            logger.error(
+                "lock_conflict_requeue_failed",
+                task_id=task_id,
+                task_name=task_name,
+                lock_name=lock_name,
+                error=str(exc),
+            )
+            await self._broker.nack(message, requeue=True)
+
+        return True
+
+    async def _acquire_and_register(
+        self,
+        *,
+        lock_name: str,
+        owner_token: str,
+        ttl_ms: int,
+        max_concurrency: int,
+        handler_id: uuid.UUID,
+        acquired_locks: list[tuple[str, str, int]],
+    ) -> bool:
+        """Atomic-ish acquire + dual-register helper for asyncio.shield.
+
+        Calls ``LockManager.acquire``; on success appends to both the
+        per-handler list and the worker-wide registry. The two writes
+        are sync (list.append + dict assignment) so they cannot raise
+        between them — the only failure mode is the acquire itself.
+        """
+        acquired = await self._lock_manager.acquire(
+            lock_name, owner_token, ttl_ms, max_concurrency
+        )
+        if acquired:
+            entry = (lock_name, owner_token, max_concurrency)
+            acquired_locks.append(entry)
+            self._active_handler_locks.setdefault(handler_id, []).append(entry)
+        return acquired
+
+    async def _release_acquired_locks(
+        self,
+        handler_id: uuid.UUID,
+        acquired_locks: list[tuple[str, str, int]],
+    ) -> None:
+        """Release every lock acquired by this handler. Called in the
+        ``_handle_message`` finally block. Failures are logged and
+        swallowed — the task already produced its result; release
+        problems must not break the worker pipeline. The TTL-recovery
+        path is the safety net for any lock that ends up not released.
+        """
+        for lock_name, owner_token, max_concurrency in acquired_locks:
+            try:
+                await self._lock_manager.release(
+                    lock_name, owner_token, max_concurrency
+                )
+            except Exception as exc:
+                logger.error(
+                    "lock_release_failed",
+                    lock_name=lock_name,
+                    error=str(exc),
+                )
+        # Drop the worker-wide registry entry whether release succeeded
+        # or not — anything still held will time out via TTL, and we
+        # don't want shutdown-cleanup to double-release.
+        self._active_handler_locks.pop(handler_id, None)
+
     async def start(self) -> None:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
@@ -194,6 +476,9 @@ class Worker:
         # the rate limiter here so the registered Lua script uses the
         # live client.
         self._rate_limiter = RateLimiter(self._backend._client)
+        # LockManager has the same lifecycle constraint — registered
+        # AsyncScripts need a live client. See plan 008 Unit 4.
+        self._lock_manager = LockManager(self._backend._client)
 
         for queue_name in self._config.queues:
             await self._broker.declare_queue(queue_name)
@@ -258,6 +543,28 @@ class Worker:
                     task.cancel()
                 await asyncio.wait(pending, timeout=1)
 
+        # 3b. Release any leftover handler locks. Runs AFTER the
+        # asyncio.wait above (so cancelled tasks have had a chance to
+        # finish their finally and release their locks themselves) but
+        # BEFORE backend.close (so LockManager.release still has a
+        # working Valkey client). Whatever's still in the registry
+        # corresponds to a handler whose finally never ran (typically
+        # because the task was cancel()ed before reaching it).
+        if self._lock_manager is not None and self._active_handler_locks:
+            for handler_id, locks in list(self._active_handler_locks.items()):
+                for lock_name, owner_token, max_concurrency in locks:
+                    try:
+                        await self._lock_manager.release(
+                            lock_name, owner_token, max_concurrency
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "shutdown_lock_release_failed",
+                            lock_name=lock_name,
+                            error=str(exc),
+                        )
+            self._active_handler_locks.clear()
+
         # 4. Close connections
         self._state = WorkerState.SHUTTING_DOWN
         await self._broker.close()
@@ -306,6 +613,13 @@ class Worker:
 
         # 3. Acquire semaphore
         await self._semaphore.acquire()
+        # Per-handler lock-tracking state. handler_id is the registry key
+        # for shutdown cleanup; acquired_locks is the local source of truth
+        # the finally-block uses to release. Both are scoped to this
+        # _handle_message invocation — task_id alone would collide under
+        # AT_LEAST_ONCE redelivery within the same worker.
+        handler_id = uuid.uuid4()
+        acquired_locks: list[tuple[str, str, int]] = []
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():
@@ -329,6 +643,16 @@ class Worker:
             # delay queue and ack'd as a single transactional unit.
             if await self._try_apply_rate_limit(
                 message, task_info, queue, task_id, task_name,
+            ):
+                return
+
+            # 5b'. Lock check — same FIRE_AND_FORGET-ordering discipline as
+            # rate-limit. Conflict path: requeue with exponential backoff
+            # until the per-message cap, then DLQ. Acquired locks are
+            # released in the finally below.
+            if await self._try_apply_lock(
+                message, task_info, task_class, queue, task_id, task_name,
+                args, kwargs, handler_id, acquired_locks,
             ):
                 return
 
@@ -566,7 +890,13 @@ class Worker:
                 await self._broker.ack(message)
 
         finally:
-            # 12. Release semaphore
+            # 12a. Release any task-locks acquired by this handler. Runs
+            # BEFORE semaphore release so the central registry is clean
+            # before the next concurrent handler starts. Failures here
+            # are logged + swallowed — TTL is the recovery safety net.
+            if acquired_locks and self._lock_manager is not None:
+                await self._release_acquired_locks(handler_id, acquired_locks)
+            # 12b. Release semaphore
             self._semaphore.release()
             structlog.contextvars.clear_contextvars()
 

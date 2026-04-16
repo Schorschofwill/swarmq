@@ -399,7 +399,7 @@ import), nicht im Worker.
 
 ---
 
-- [ ] **Unit 4: Worker `_try_apply_lock` Pipeline-Integration**
+- [x] **Unit 4: Worker `_try_apply_lock` Pipeline-Integration**
 
 **Goal:** Lock-Stage im Worker-Pipeline. Folgt strikt den 4 Mandatory Rules
 aus `docs/solutions/.../worker-pipeline-stage-ack-ordering-...md`.
@@ -499,7 +499,7 @@ FIRE_AND_FORGET-Reihenfolge nicht erneut zertrennt wird.
 
 ---
 
-- [ ] **Unit 5: Lock-Release Discipline (try/finally + Shutdown-Cleanup)**
+- [x] **Unit 5: Lock-Release Discipline (try/finally + Shutdown-Cleanup)**
 
 **Goal:** Lock wird IMMER freigegeben — bei success, exception, soft-timeout,
 hard-cancel, AND graceful shutdown.
