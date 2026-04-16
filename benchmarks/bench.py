@@ -23,14 +23,54 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
 import json
 import os
+import signal
 import statistics
 import sys
+import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 
 import aio_pika
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic hooks — enable `kill -USR1 <pid>` to dump stacks of every thread
+# AND every live asyncio task, so we can see where a benchmark hang is parked.
+# ---------------------------------------------------------------------------
+
+def _dump_all_stacks(*_: object) -> None:
+    out = sys.stderr
+    out.write("\n==== SIGUSR1 STACK DUMP ====\n")
+    out.write(f"time={time.strftime('%H:%M:%S')} pid={os.getpid()}\n\n")
+    out.write("-- THREADS --\n")
+    frames = sys._current_frames()
+    for tid, frame in frames.items():
+        out.write(f"\nThread {tid}:\n")
+        traceback.print_stack(frame, file=out)
+    try:
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+    except Exception:
+        loop = None
+    tasks = asyncio.all_tasks(loop) if loop is not None else set()
+    out.write(f"\n-- ASYNCIO TASKS ({len(tasks)}) --\n")
+    for t in tasks:
+        out.write(f"\nTask {t.get_name()!r} done={t.done()} cancelled={t.cancelled()}\n")
+        stack = t.get_stack()
+        for frame in stack:
+            traceback.print_stack(frame, file=out, limit=1)
+    out.write("==== END STACK DUMP ====\n\n")
+    out.flush()
+
+
+try:
+    signal.signal(signal.SIGUSR1, _dump_all_stacks)
+    faulthandler.register(signal.SIGUSR2, all_threads=True)
+except Exception:
+    pass
 from aio_pika import DeliveryMode, Message as AMQPMessage
 from valkey.asyncio import Valkey
 
@@ -266,18 +306,24 @@ class RabbitMQBench:
         async def consumer() -> None:
             nonlocal count
             ch = await self.connection.channel()  # type: ignore[union-attr]
-            await ch.set_qos(prefetch_count=10)
-            queue = await ch.declare_queue(QUEUE_NAME, durable=True)
-
-            async for message in queue:
-                await message.ack()
-                async with lock:
-                    count += 1
-                    if count >= n:
-                        done.set()
-                if done.is_set():
-                    break
-            await ch.close()
+            try:
+                await ch.set_qos(prefetch_count=10)
+                queue = await ch.declare_queue(QUEUE_NAME, durable=True)
+                # ``async with queue.iterator()`` guarantees the consumer is
+                # cancelled broker-side and the iterator task tree is torn
+                # down when this coroutine is cancelled — otherwise aiormq
+                # leaves orphaned _reader tasks behind.
+                async with queue.iterator() as it:
+                    async for message in it:
+                        await message.ack()
+                        async with lock:
+                            count += 1
+                            if count >= n:
+                                done.set()
+                        if done.is_set():
+                            break
+            finally:
+                await ch.close()
 
         t0 = time.perf_counter()
         tasks = [asyncio.create_task(consumer()) for _ in range(concurrency)]
@@ -304,31 +350,37 @@ class RabbitMQBench:
 
         async def producer(count: int) -> None:
             ch = await self.connection.channel()  # type: ignore[union-attr]
-            await ch.declare_queue(QUEUE_NAME, durable=True)
-            for _ in range(count):
-                body = f"{time.perf_counter()}|".encode() + payload
-                msg = AMQPMessage(body, delivery_mode=DeliveryMode.PERSISTENT)
-                await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
-            await ch.close()
+            try:
+                await ch.declare_queue(QUEUE_NAME, durable=True)
+                for _ in range(count):
+                    body = f"{time.perf_counter()}|".encode() + payload
+                    msg = AMQPMessage(body, delivery_mode=DeliveryMode.PERSISTENT)
+                    await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
+            finally:
+                await ch.close()
 
         async def consumer() -> None:
             nonlocal consumed
             ch = await self.connection.channel()  # type: ignore[union-attr]
-            await ch.set_qos(prefetch_count=10)
-            queue = await ch.declare_queue(QUEUE_NAME, durable=True)
-
-            async for message in queue:
-                t_sent = float(message.body.split(b"|", 1)[0])
-                lat = (time.perf_counter() - t_sent) * 1000
-                await message.ack()
-                async with lock:
-                    latencies.append(lat)
-                    consumed += 1
-                    if consumed >= n:
-                        done.set()
-                if done.is_set():
-                    break
-            await ch.close()
+            try:
+                await ch.set_qos(prefetch_count=10)
+                queue = await ch.declare_queue(QUEUE_NAME, durable=True)
+                # See concurrent_dequeue: iterator context manager is
+                # required so the consumer is torn down cleanly on cancel.
+                async with queue.iterator() as it:
+                    async for message in it:
+                        t_sent = float(message.body.split(b"|", 1)[0])
+                        lat = (time.perf_counter() - t_sent) * 1000
+                        await message.ack()
+                        async with lock:
+                            latencies.append(lat)
+                            consumed += 1
+                            if consumed >= n:
+                                done.set()
+                        if done.is_set():
+                            break
+            finally:
+                await ch.close()
 
         t0 = time.perf_counter()
         consumer_tasks = [asyncio.create_task(consumer()) for _ in range(consumers)]
