@@ -35,12 +35,31 @@ import statistics
 import sys
 import time
 import traceback
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import FrameType
 
 import aio_pika
 from aio_pika import DeliveryMode, Message as AMQPMessage
 from valkey.asyncio import Valkey
+
+
+@asynccontextmanager
+async def _bench_channel(
+    connection: aio_pika.abc.AbstractRobustConnection,
+):
+    """Open an aio-pika channel and guarantee it is closed on exit.
+
+    Wraps the channel lifecycle so benchmark functions do not have to
+    remember to put `await ch.close()` in a finally. On task
+    cancellation the channel is still closed, which is what originally
+    caused the aiormq `_reader`-task leak in full_pipeline.
+    """
+    ch = await connection.channel()
+    try:
+        yield ch
+    finally:
+        await ch.close()
 
 
 # ---------------------------------------------------------------------------
@@ -250,92 +269,89 @@ class RabbitMQBench:
 
     async def purge(self) -> None:
         conn = await self._ensure_connection()
-        ch = await conn.channel()
-        queue = await ch.declare_queue(QUEUE_NAME, durable=True)
-        await queue.purge()
-        await ch.close()
+        async with _bench_channel(conn) as ch:
+            queue = await ch.declare_queue(QUEUE_NAME, durable=True)
+            await queue.purge()
 
     # --- Szenario 1: Enqueue-Throughput ---
     async def enqueue_throughput(self, n: int, concurrency: int, payload: bytes) -> BenchResult:
         assert self.connection
-        ch = await self.connection.channel()
-        await ch.declare_queue(QUEUE_NAME, durable=True)
+        async with _bench_channel(self.connection) as ch:
+            await ch.declare_queue(QUEUE_NAME, durable=True)
 
-        sem = asyncio.Semaphore(concurrency)
-        msg = AMQPMessage(payload, delivery_mode=DeliveryMode.PERSISTENT)
+            sem = asyncio.Semaphore(concurrency)
+            msg = AMQPMessage(payload, delivery_mode=DeliveryMode.PERSISTENT)
 
-        async def publish_one() -> None:
-            async with sem:
-                await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
+            async def publish_one() -> None:
+                async with sem:
+                    await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
 
-        t0 = time.perf_counter()
-        await asyncio.gather(*(publish_one() for _ in range(n)))
-        dur = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            await asyncio.gather(*(publish_one() for _ in range(n)))
+            dur = time.perf_counter() - t0
 
-        await ch.close()
         return BenchResult("RabbitMQ", "enqueue_throughput", n, concurrency, dur, n / dur)
 
     # --- Szenario 2: Dequeue-Throughput ---
     async def dequeue_throughput(self, n: int, concurrency: int) -> BenchResult:
         assert self.connection
-        ch = await self.connection.channel()
-        await ch.set_qos(prefetch_count=concurrency)
-        queue = await ch.declare_queue(QUEUE_NAME, durable=True)
+        async with _bench_channel(self.connection) as ch:
+            await ch.set_qos(prefetch_count=concurrency)
+            queue = await ch.declare_queue(QUEUE_NAME, durable=True)
 
-        count = 0
-        done = asyncio.Event()
+            count = 0
+            done = asyncio.Event()
 
-        async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-            nonlocal count
-            await message.ack()
-            count += 1
-            if count >= n:
-                done.set()
+            async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+                nonlocal count
+                await message.ack()
+                count += 1
+                if count >= n:
+                    done.set()
 
-        consumer_tag = await queue.consume(on_message)
-        t0 = time.perf_counter()
-        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
-        dur = time.perf_counter() - t0
+            consumer_tag = await queue.consume(on_message)
+            t0 = time.perf_counter()
+            await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
+            dur = time.perf_counter() - t0
 
-        await queue.cancel(consumer_tag)
-        await ch.close()
+            await queue.cancel(consumer_tag)
         return BenchResult("RabbitMQ", "dequeue_throughput", n, concurrency, dur, n / dur)
 
     # --- Szenario 3: Round-Trip-Latenz ---
     async def roundtrip_latency(self, n: int) -> BenchResult:
         assert self.connection
-        ch_pub = await self.connection.channel()
-        ch_sub = await self.connection.channel()
-        await ch_sub.set_qos(prefetch_count=1)
-        queue = await ch_sub.declare_queue(QUEUE_NAME, durable=True)
+        async with (
+            _bench_channel(self.connection) as ch_pub,
+            _bench_channel(self.connection) as ch_sub,
+        ):
+            await ch_sub.set_qos(prefetch_count=1)
+            queue = await ch_sub.declare_queue(QUEUE_NAME, durable=True)
 
-        latencies: list[float] = []
-        received = asyncio.Event()
-        count = 0
+            latencies: list[float] = []
+            received = asyncio.Event()
+            count = 0
 
-        async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-            nonlocal count
-            t_sent = float(message.body.split(b"|")[0])
-            latencies.append((time.perf_counter() - t_sent) * 1000)
-            await message.ack()
-            count += 1
-            if count >= n:
-                received.set()
+            async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+                nonlocal count
+                t_sent = float(message.body.split(b"|")[0])
+                latencies.append((time.perf_counter() - t_sent) * 1000)
+                await message.ack()
+                count += 1
+                if count >= n:
+                    received.set()
 
-        consumer_tag = await queue.consume(on_message)
+            consumer_tag = await queue.consume(on_message)
 
-        t0 = time.perf_counter()
-        for _ in range(n):
-            body = f"{time.perf_counter()}|ping".encode()
-            msg = AMQPMessage(body, delivery_mode=DeliveryMode.PERSISTENT)
-            await ch_pub.default_exchange.publish(msg, routing_key=QUEUE_NAME)
+            t0 = time.perf_counter()
+            for _ in range(n):
+                body = f"{time.perf_counter()}|ping".encode()
+                msg = AMQPMessage(body, delivery_mode=DeliveryMode.PERSISTENT)
+                await ch_pub.default_exchange.publish(msg, routing_key=QUEUE_NAME)
 
-        await asyncio.wait_for(received.wait(), timeout=_BENCH_HANG_TIMEOUT)
-        dur = time.perf_counter() - t0
+            await asyncio.wait_for(received.wait(), timeout=_BENCH_HANG_TIMEOUT)
+            dur = time.perf_counter() - t0
 
-        await queue.cancel(consumer_tag)
-        await ch_pub.close()
-        await ch_sub.close()
+            await queue.cancel(consumer_tag)
         return BenchResult("RabbitMQ", "roundtrip_latency", n, 1, dur, n / dur, latencies)
 
     # --- Szenario 4+5: Concurrent Producers / Consumers ---
@@ -346,12 +362,12 @@ class RabbitMQBench:
         remainder = n % concurrency
 
         async def producer(count: int) -> None:
-            ch = await self.connection.channel()  # type: ignore[union-attr]
-            await ch.declare_queue(QUEUE_NAME, durable=True)
-            msg = AMQPMessage(payload, delivery_mode=DeliveryMode.PERSISTENT)
-            for _ in range(count):
-                await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
-            await ch.close()
+            assert self.connection
+            async with _bench_channel(self.connection) as ch:
+                await ch.declare_queue(QUEUE_NAME, durable=True)
+                msg = AMQPMessage(payload, delivery_mode=DeliveryMode.PERSISTENT)
+                for _ in range(count):
+                    await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
 
         t0 = time.perf_counter()
         tasks = []
@@ -372,14 +388,15 @@ class RabbitMQBench:
 
         async def consumer() -> None:
             nonlocal count
-            ch = await self.connection.channel()  # type: ignore[union-attr]
-            try:
+            assert self.connection
+            # _bench_channel guarantees ch.close() even on task.cancel() —
+            # `async with queue.iterator()` in turn guarantees the
+            # consumer is cancelled broker-side and the iterator task
+            # tree is torn down (otherwise aiormq leaves orphaned
+            # _reader tasks behind).
+            async with _bench_channel(self.connection) as ch:
                 await ch.set_qos(prefetch_count=10)
                 queue = await ch.declare_queue(QUEUE_NAME, durable=True)
-                # ``async with queue.iterator()`` guarantees the consumer is
-                # cancelled broker-side and the iterator task tree is torn
-                # down when this coroutine is cancelled — otherwise aiormq
-                # leaves orphaned _reader tasks behind.
                 async with queue.iterator() as it:
                     async for message in it:
                         await message.ack()
@@ -389,8 +406,6 @@ class RabbitMQBench:
                                 done.set()
                         if done.is_set():
                             break
-            finally:
-                await ch.close()
 
         t0 = time.perf_counter()
         tasks = [asyncio.create_task(consumer()) for _ in range(concurrency)]
@@ -416,24 +431,22 @@ class RabbitMQBench:
         remainder = n % producers
 
         async def producer(count: int) -> None:
-            ch = await self.connection.channel()  # type: ignore[union-attr]
-            try:
+            assert self.connection
+            async with _bench_channel(self.connection) as ch:
                 await ch.declare_queue(QUEUE_NAME, durable=True)
                 for _ in range(count):
                     body = f"{time.perf_counter()}|".encode() + payload
                     msg = AMQPMessage(body, delivery_mode=DeliveryMode.PERSISTENT)
                     await ch.default_exchange.publish(msg, routing_key=QUEUE_NAME)
-            finally:
-                await ch.close()
 
         async def consumer() -> None:
             nonlocal consumed
-            ch = await self.connection.channel()  # type: ignore[union-attr]
-            try:
+            assert self.connection
+            # See concurrent_dequeue: _bench_channel + queue.iterator()
+            # together guarantee clean teardown on cancel.
+            async with _bench_channel(self.connection) as ch:
                 await ch.set_qos(prefetch_count=10)
                 queue = await ch.declare_queue(QUEUE_NAME, durable=True)
-                # See concurrent_dequeue: iterator context manager is
-                # required so the consumer is torn down cleanly on cancel.
                 async with queue.iterator() as it:
                     async for message in it:
                         t_sent = float(message.body.split(b"|", 1)[0])
@@ -446,8 +459,6 @@ class RabbitMQBench:
                                 done.set()
                         if done.is_set():
                             break
-            finally:
-                await ch.close()
 
         t0 = time.perf_counter()
         consumer_tasks = [asyncio.create_task(consumer()) for _ in range(consumers)]
@@ -460,7 +471,7 @@ class RabbitMQBench:
 
         try:
             await asyncio.gather(*producer_tasks)
-            await done.wait()
+            await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
             dur = time.perf_counter() - t0
         finally:
             # Always tear down consumer tasks — even when a producer raises or
@@ -480,39 +491,40 @@ class RabbitMQBench:
     async def pubsub_notify(self, n: int) -> BenchResult:
         """RabbitMQ Fanout-Exchange fuer Result-Benachrichtigungen."""
         assert self.connection
-        ch_pub = await self.connection.channel()
-        ch_sub = await self.connection.channel()
+        async with (
+            _bench_channel(self.connection) as ch_pub,
+            _bench_channel(self.connection) as ch_sub,
+        ):
+            exchange = await ch_pub.declare_exchange(
+                "bench_results_fanout", aio_pika.ExchangeType.FANOUT
+            )
+            queue = await ch_sub.declare_queue("", exclusive=True)
+            await queue.bind(exchange)
 
-        exchange = await ch_pub.declare_exchange("bench_results_fanout", aio_pika.ExchangeType.FANOUT)
-        queue = await ch_sub.declare_queue("", exclusive=True)
-        await queue.bind(exchange)
+            latencies: list[float] = []
+            count = 0
+            done = asyncio.Event()
 
-        latencies: list[float] = []
-        count = 0
-        done = asyncio.Event()
+            async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+                nonlocal count
+                t_sent = float(message.body.split(b"|")[0])
+                latencies.append((time.perf_counter() - t_sent) * 1000)
+                await message.ack()
+                count += 1
+                if count >= n:
+                    done.set()
 
-        async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-            nonlocal count
-            t_sent = float(message.body.split(b"|")[0])
-            latencies.append((time.perf_counter() - t_sent) * 1000)
-            await message.ack()
-            count += 1
-            if count >= n:
-                done.set()
+            consumer_tag = await queue.consume(on_message)
 
-        consumer_tag = await queue.consume(on_message)
+            t0 = time.perf_counter()
+            for _ in range(n):
+                body = f"{time.perf_counter()}|result_ready".encode()
+                msg = AMQPMessage(body)
+                await exchange.publish(msg, routing_key="")
+            await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
+            dur = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
-        for _ in range(n):
-            body = f"{time.perf_counter()}|result_ready".encode()
-            msg = AMQPMessage(body)
-            await exchange.publish(msg, routing_key="")
-        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
-        dur = time.perf_counter() - t0
-
-        await queue.cancel(consumer_tag)
-        await ch_pub.close()
-        await ch_sub.close()
+            await queue.cancel(consumer_tag)
 
         return BenchResult("RabbitMQ", "pubsub_notify", n, 1, dur, n / dur, latencies)
 
@@ -520,28 +532,27 @@ class RabbitMQBench:
     async def ack_after_process(self, n: int, work_ms: float) -> BenchResult:
         """Simuliert ack-after-process: erst Arbeit, dann ack."""
         assert self.connection
-        ch = await self.connection.channel()
-        await ch.set_qos(prefetch_count=10)
-        queue = await ch.declare_queue(QUEUE_NAME, durable=True)
+        async with _bench_channel(self.connection) as ch:
+            await ch.set_qos(prefetch_count=10)
+            queue = await ch.declare_queue(QUEUE_NAME, durable=True)
 
-        count = 0
-        done = asyncio.Event()
+            count = 0
+            done = asyncio.Event()
 
-        async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-            nonlocal count
-            await asyncio.sleep(work_ms / 1000)  # Simulierte Arbeit
-            await message.ack()
-            count += 1
-            if count >= n:
-                done.set()
+            async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+                nonlocal count
+                await asyncio.sleep(work_ms / 1000)  # Simulierte Arbeit
+                await message.ack()
+                count += 1
+                if count >= n:
+                    done.set()
 
-        consumer_tag = await queue.consume(on_message)
-        t0 = time.perf_counter()
-        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
-        dur = time.perf_counter() - t0
+            consumer_tag = await queue.consume(on_message)
+            t0 = time.perf_counter()
+            await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
+            dur = time.perf_counter() - t0
 
-        await queue.cancel(consumer_tag)
-        await ch.close()
+            await queue.cancel(consumer_tag)
         return BenchResult(
             "RabbitMQ", "ack_after_process", n, 1, dur, n / dur,
             extra={"simulated_work_ms": work_ms},
@@ -834,38 +845,45 @@ class ValkeyBench:
         done = asyncio.Event()
 
         pubsub = self.client.pubsub()
-        await pubsub.subscribe(RESULT_CHANNEL)
+        listener_task: asyncio.Task | None = None
+        try:
+            await pubsub.subscribe(RESULT_CHANNEL)
 
-        async def listener() -> None:
-            nonlocal count
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                t_sent = float(message["data"].split(b"|")[0])
-                latencies.append((time.perf_counter() - t_sent) * 1000)
-                count += 1
-                if count >= n:
-                    done.set()
-                    return
+            async def listener() -> None:
+                nonlocal count
+                async for message in pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    t_sent = float(message["data"].split(b"|")[0])
+                    latencies.append((time.perf_counter() - t_sent) * 1000)
+                    count += 1
+                    if count >= n:
+                        done.set()
+                        return
 
-        listener_task = asyncio.create_task(listener())
-        await asyncio.sleep(0.05)  # Subscriber bereit
+            listener_task = asyncio.create_task(listener())
+            await asyncio.sleep(0.05)  # Subscriber bereit
 
-        t0 = time.perf_counter()
-        pipe = self.client.pipeline()
-        for i in range(n):
-            pipe.publish(RESULT_CHANNEL, f"{time.perf_counter()}|result")
-            if (i + 1) % 500 == 0:
-                await pipe.execute()
-                pipe = self.client.pipeline()
-        await pipe.execute()
-        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
-        dur = time.perf_counter() - t0
-
-        listener_task.cancel()
-        await asyncio.gather(listener_task, return_exceptions=True)
-        await pubsub.unsubscribe(RESULT_CHANNEL)
-        await pubsub.aclose()
+            t0 = time.perf_counter()
+            pipe = self.client.pipeline()
+            for i in range(n):
+                pipe.publish(RESULT_CHANNEL, f"{time.perf_counter()}|result")
+                if (i + 1) % 500 == 0:
+                    await pipe.execute()
+                    pipe = self.client.pipeline()
+            await pipe.execute()
+            await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
+            dur = time.perf_counter() - t0
+        finally:
+            # Ensure the listener task and the pubsub connection are always
+            # torn down, even when done.wait() times out or the publish
+            # pipeline raises. Otherwise the next run reuses a half-closed
+            # pubsub (the Valkey equivalent of the aiormq _reader leak).
+            if listener_task is not None:
+                listener_task.cancel()
+                await asyncio.gather(listener_task, return_exceptions=True)
+            await pubsub.unsubscribe(RESULT_CHANNEL)
+            await pubsub.aclose()
 
         return BenchResult("Valkey", "pubsub_notify", n, 1, dur, n / dur, latencies)
 
