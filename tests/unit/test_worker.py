@@ -1850,3 +1850,63 @@ class TestWorkerMiddlewareAndSignals:
         stored = decode_result(backend.store_result.call_args[0][1])
         assert stored["is_error"] is False
         assert stored["result"] == 3
+
+    @pytest.mark.asyncio
+    async def test_factory_is_invoked_per_message(
+        self, broker, backend, config
+    ):
+        """Worker built with a factory callable must invoke it on every message.
+
+        Regression guard for F1+F2: the worker used to accept a static
+        MiddlewareChain only, so middleware added AFTER Worker construction
+        (via SwarmQ.add_middleware) was invisible. The factory is invoked on
+        every message so the chain reflects the current state.
+        """
+        from swarmq.middleware import MiddlewareChain
+
+        reg = TaskRegistry()
+        reg.register(AddTask)
+
+        chain_a = _make_middleware_chain_mock()
+        chain_b = _make_middleware_chain_mock()
+        # Return chain_a first, chain_b on the second call — mimics
+        # add_middleware() producing a new chain after the first message.
+        factory_calls = [chain_a, chain_b]
+        factory = MagicMock(side_effect=lambda: factory_calls.pop(0))
+
+        # isinstance check in Worker.__init__ needs an actual subclass, not a
+        # MagicMock(spec=...). The factory is a plain callable that returns
+        # mocks — Worker classifies it as callable and stores it as-is.
+        # Sanity: MiddlewareChain import confirms the type we spec'd.
+        assert isinstance(chain_a, MiddlewareChain)
+
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=factory,
+        )
+
+        msg1 = _make_message(_default_payload())
+        await w._handle_message(msg1)
+        msg2 = _make_message(_default_payload())
+        await w._handle_message(msg2)
+
+        assert factory.call_count == 2
+        chain_a.run_pre_execute.assert_awaited_once()
+        chain_b.run_pre_execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_factory_rejects_invalid_type(self, broker, backend, config):
+        """Worker.__init__ rejects non-chain, non-callable, non-None inputs."""
+        reg = TaskRegistry()
+        import pytest as _pytest
+        with _pytest.raises(TypeError, match="middleware_chain must be"):
+            Worker(
+                broker=broker,
+                backend=backend,
+                registry=reg,
+                config=config,
+                middleware_chain=42,  # type: ignore[arg-type]
+            )

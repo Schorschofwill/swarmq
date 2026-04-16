@@ -48,17 +48,11 @@ class Client:
         # Storing a factory lets us see middleware registered AFTER Client
         # construction — e.g. when SwarmQ.add_middleware() is called after
         # the Client has already been built.
-        #
-        # Classification rule: anything that exposes ``run_pre_enqueue`` is
-        # treated as a chain-like object (real MiddlewareChain or a test
-        # double such as a MagicMock) and wrapped in a lambda. Otherwise a
-        # callable is treated as a zero-arg factory. ``None`` means an empty
-        # chain.
         self._middleware_chain_factory: Callable[[], MiddlewareChain]
         if middleware_chain is None:
             empty = MiddlewareChain([])
             self._middleware_chain_factory = lambda: empty
-        elif hasattr(middleware_chain, "run_pre_enqueue"):
+        elif isinstance(middleware_chain, MiddlewareChain):
             static_chain = middleware_chain
             self._middleware_chain_factory = lambda: static_chain
         elif callable(middleware_chain):
@@ -76,6 +70,28 @@ class Client:
         """Return a live MiddlewareChain for the current schedule() call."""
         return self._middleware_chain_factory()
 
+    def _resolve_queue_and_delivery_mode(
+        self, task_name: str, queue: str | None
+    ) -> tuple[str, str]:
+        """Resolve the target queue and delivery mode for *task_name*.
+
+        Uses the registered TaskInfo when available; falls back to the
+        explicit *queue* argument and ``at_least_once`` delivery otherwise.
+        Raises ``ValueError`` if the queue cannot be resolved.
+        """
+        resolved_queue = queue
+        delivery_mode = "at_least_once"
+        if self._registry is not None:
+            entry = self._registry.get_entry(task_name)
+            if resolved_queue is None:
+                resolved_queue = entry.task_info.queues[0]
+            delivery_mode = entry.task_info.delivery.value
+        if resolved_queue is None:
+            raise ValueError(
+                "No queue specified and no registry available to resolve one"
+            )
+        return resolved_queue, delivery_mode
+
     async def schedule(
         self,
         task_name: str,
@@ -90,17 +106,9 @@ class Client:
                 raise TaskNotFoundError(task_name)
 
         # --- queue resolution chain + delivery_mode resolution ---
-        resolved_queue = queue
-        delivery_mode = "at_least_once"
-        if self._registry is not None:
-            entry = self._registry.get_entry(task_name)
-            if resolved_queue is None:
-                resolved_queue = entry.task_info.queues[0]
-            delivery_mode = entry.task_info.delivery.value
-        if resolved_queue is None:
-            raise ValueError(
-                "No queue specified and no registry available to resolve one"
-            )
+        resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
+            task_name, queue
+        )
 
         # --- build and publish message ---
         task_id = str(uuid.uuid7())
@@ -250,17 +258,9 @@ class Client:
                     raise TaskNotFoundError(task_name)
 
             # --- queue resolution chain + delivery_mode resolution ---
-            resolved_queue = queue
-            delivery_mode = "at_least_once"
-            if self._registry is not None:
-                entry = self._registry.get_entry(task_name)
-                if resolved_queue is None:
-                    resolved_queue = entry.task_info.queues[0]
-                delivery_mode = entry.task_info.delivery.value
-            if resolved_queue is None:
-                raise ValueError(
-                    "No queue specified and no registry available to resolve one"
-                )
+            resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
+                task_name, queue
+            )
 
             task_id = str(uuid.uuid7())
             task_ids.append(task_id)

@@ -230,7 +230,11 @@ class TestSwarmQStartWorker:
             MockWorker.assert_called_once()
             call_args, call_kwargs = MockWorker.call_args
             assert call_args == (broker, backend, app.registry, app.config)
-            assert isinstance(call_kwargs["middleware_chain"], MiddlewareChain)
+            # middleware_chain is a factory callable so add_middleware() calls
+            # made after SwarmQ construction are visible to the Worker.
+            factory = call_kwargs["middleware_chain"]
+            assert callable(factory)
+            assert isinstance(factory(), MiddlewareChain)
             assert call_kwargs["signal_dispatcher"] is app._signal_dispatcher
             mock_instance.start.assert_awaited_once()
 
@@ -453,6 +457,43 @@ class TestSwarmQMiddlewareAndSignals:
             assert spy.post_calls[0]["task_id"] == task_id
         finally:
             Task._registered_tasks[:] = saved
+
+
+    @pytest.mark.anyio()
+    async def test_add_middleware_after_swarmq_init_visible_to_worker(
+        self, broker, backend,
+    ):
+        """Regression: middleware added AFTER SwarmQ.__init__ must be visible
+        to the Worker on every message.
+
+        Before the fix, SwarmQ.start_worker() passed ``self.middleware_chain``
+        as a snapshot to Worker. ``add_middleware()`` appended to
+        ``_middlewares`` but the Worker kept using the stale chain.
+
+        This test captures the Worker constructor, extracts the
+        middleware_chain factory, and verifies a post-construction
+        ``add_middleware()`` is reflected when the factory is invoked.
+        """
+        from swarmq.middleware import Middleware
+
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as MockWorker:
+            mock_instance = MockWorker.return_value
+            mock_instance.start = AsyncMock()
+
+            class Spy(Middleware):
+                pass
+
+            spy = Spy()
+            app.add_middleware(spy)  # AFTER SwarmQ() — was the bug path
+            await app.start_worker()
+
+            _, call_kwargs = MockWorker.call_args
+            factory = call_kwargs["middleware_chain"]
+            chain = factory()
+
+            assert spy in chain._middlewares
 
 
 class TestSwarmQPublicAPIExports:

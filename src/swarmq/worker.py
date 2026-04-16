@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 
 import aio_pika
 import structlog
@@ -49,16 +50,34 @@ class Worker:
         backend: ValkeyBackend,
         registry: TaskRegistry,
         config: SwarmQConfig,
-        middleware_chain: MiddlewareChain | None = None,
+        middleware_chain: MiddlewareChain
+        | Callable[[], MiddlewareChain]
+        | None = None,
         signal_dispatcher: SignalDispatcher | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._registry = registry
         self._config = config
-        self._middleware_chain = (
-            middleware_chain if middleware_chain is not None else MiddlewareChain([])
-        )
+        # Accept either a static MiddlewareChain (backward compat) or a
+        # zero-arg factory callable that returns a fresh chain on each call.
+        # Storing a factory lets the worker see middleware registered AFTER
+        # Worker construction — e.g. when SwarmQ.add_middleware() is called
+        # after start_worker() has already built the Worker instance.
+        self._middleware_chain_factory: Callable[[], MiddlewareChain]
+        if middleware_chain is None:
+            empty = MiddlewareChain([])
+            self._middleware_chain_factory = lambda: empty
+        elif isinstance(middleware_chain, MiddlewareChain):
+            static_chain = middleware_chain
+            self._middleware_chain_factory = lambda: static_chain
+        elif callable(middleware_chain):
+            self._middleware_chain_factory = middleware_chain
+        else:
+            raise TypeError(
+                "middleware_chain must be a MiddlewareChain, a zero-arg "
+                "callable returning a MiddlewareChain, or None"
+            )
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )
@@ -66,6 +85,10 @@ class Worker:
         self._active_tasks: set[asyncio.Task] = set()
         self._state = WorkerState.STARTING
         self._shutdown_event = asyncio.Event()
+
+    def _get_chain(self) -> MiddlewareChain:
+        """Return a live MiddlewareChain for the current message."""
+        return self._middleware_chain_factory()
 
     async def start(self) -> None:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
@@ -214,8 +237,13 @@ class Worker:
                 "retry_count": retry_count,
             }
 
+            # Resolve the middleware chain once per message so that any
+            # add_middleware() calls made after Worker construction are
+            # visible to every hook for this message.
+            chain = self._get_chain()
+
             # Pre-execute hooks
-            await self._middleware_chain.run_pre_execute(message_dict)
+            await chain.run_pre_execute(message_dict)
             await self._signal_dispatcher.dispatch(
                 Signal.TASK_STARTED, task_id=task_id, task_name=task_name
             )
@@ -314,7 +342,7 @@ class Worker:
             # Emit post-execute / on-error hooks now that lifecycle is resolved
             duration_ms = (time.monotonic() - start_time) * 1000.0
             if is_error and task_exception is not None:
-                await self._middleware_chain.run_on_error(
+                await chain.run_on_error(
                     message_dict, exception=task_exception
                 )
                 await self._signal_dispatcher.dispatch(
@@ -324,7 +352,7 @@ class Worker:
                     exception=str(task_exception),
                 )
             else:
-                await self._middleware_chain.run_post_execute(
+                await chain.run_post_execute(
                     message_dict, result=result_value
                 )
                 await self._signal_dispatcher.dispatch(
@@ -354,6 +382,7 @@ class Worker:
                     task_name,
                     error_message,
                     message_dict,
+                    chain,
                 )
                 if should_retry:
                     return
@@ -438,7 +467,8 @@ class Worker:
         task_id: str,
         task_name: str,
         error_message: str,
-        message_dict: MessageContext | None = None,
+        message_dict: MessageContext,
+        chain: MiddlewareChain,
     ) -> bool:
         """Evaluate whether to retry a failed task.
 
@@ -478,21 +508,11 @@ class Worker:
 
         delay_ms = int(delay_seconds * 1000)
 
-        # 5b. Middleware + signal hooks fire BEFORE publish_to_delay_queue
-        if message_dict is None:
-            message_dict = MessageContext(
-                task_id=task_id,
-                task_name=task_name,
-                queue=queue,
-                args=[],
-                kwargs={},
-                delivery_mode=task_info.delivery.value,
-                retry_count=retry_count,
-            )
+        # 5b. Middleware + signal hooks fire BEFORE publish_to_delay_queue.
         # Synchronize retry_count in message_dict with the on_retry parameter:
         # both represent the NEW attempt number (the retry we're about to do).
         message_dict["retry_count"] = retry_count + 1
-        await self._middleware_chain.run_on_retry(
+        await chain.run_on_retry(
             message_dict,
             exception=exc,
             retry_count=retry_count + 1,

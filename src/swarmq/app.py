@@ -123,7 +123,10 @@ class SwarmQ:
             self.backend,
             self.registry,
             self.config,
-            middleware_chain=self.middleware_chain,
+            # Pass a factory so add_middleware() calls made AFTER SwarmQ
+            # construction are visible on every Worker message. Mirrors the
+            # Client construction path in __init__.
+            middleware_chain=lambda: self.middleware_chain,
             signal_dispatcher=self._signal_dispatcher,
         )
         await worker.start()

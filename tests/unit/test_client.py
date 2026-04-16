@@ -513,7 +513,9 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.fixture
     def middleware_chain(self):
-        chain = MagicMock()
+        from swarmq.middleware import MiddlewareChain
+
+        chain = MagicMock(spec=MiddlewareChain)
         chain.run_pre_enqueue = AsyncMock()
         chain.run_post_enqueue = AsyncMock()
         return chain
