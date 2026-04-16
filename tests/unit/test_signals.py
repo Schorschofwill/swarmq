@@ -87,8 +87,21 @@ def test_signal_enum_has_scheduler_leader_failover():
     assert Signal.SCHEDULER_LEADER_FAILOVER.value == "scheduler_leader_failover"
 
 
-def test_signal_enum_has_exactly_17_values():
-    assert len(list(Signal)) == 17
+def test_signal_enum_contains_all_required_values():
+    """Presence-check (not count-check): additive new signals must not
+    break this test. Count-based coupling was brittle — api-contract
+    AC-07."""
+    required = {
+        "TASK_ENQUEUED", "TASK_STARTED", "TASK_COMPLETED", "TASK_FAILED",
+        "TASK_RETRYING", "TASK_CANCELLED", "TASK_EXPIRED", "TASK_LOCKED",
+        "TASK_RATE_LIMITED",
+        "WORKER_ONLINE", "WORKER_SHUTDOWN", "WORKER_HEARTBEAT",
+        "SCHEDULER_LEADER", "SCHEDULER_STANDBY", "SCHEDULER_HEARTBEAT",
+        "SCHEDULER_LEADER_HANDOVER", "SCHEDULER_LEADER_FAILOVER",
+    }
+    existing = {s.name for s in Signal}
+    missing = required - existing
+    assert not missing, f"required signals missing: {missing}"
 
 
 # ---------------------------------------------------------------------------

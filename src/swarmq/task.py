@@ -163,8 +163,12 @@ class TaskInfo:
         # construction (Review-Finding P2-3) rather than letting the user
         # discover it on first fire (potentially days later for monthly
         # crons). Feld bleibt für Forward-Compat erhalten.
+        # ValueError (not NotImplementedError) — this is a reserved-but-
+        # unsupported API value, not an abstract method stub. Code that
+        # catches NotImplementedError for abstract-method handling must
+        # not accidentally swallow it. (review-finding api-contract AC-03)
         if self.catchup:
-            raise NotImplementedError(
+            raise ValueError(
                 "catchup=True is reserved for a future release; "
                 "set catchup=False"
             )
@@ -232,7 +236,8 @@ def _check_run_signature_reserved_params(cls: type) -> None:
         raise ValueError(
             f"task {cls.__name__!r} accepts reserved parameter name(s) "
             f"[{conflict_list}], which conflicts with Client.schedule's "
-            f"scheduling keywords. Rename the task parameter(s) OR pass "
-            f"them explicitly via kwargs mapping, e.g.: "
-            f"client.schedule('{cls.__name__}', kwargs={{'{conflict_list}': ...}})"
+            f"scheduling keywords. Rename the task parameter(s) "
+            f"(e.g. 'delay' -> 'retry_delay', 'eta' -> 'run_at'). "
+            f"There is no escape-hatch keyword in Client.schedule — the "
+            f"rename is required."
         )

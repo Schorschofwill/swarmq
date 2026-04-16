@@ -347,16 +347,18 @@ def test_taskinfo_cron_extended_hash_syntax_rejected():
         TaskInfo(name="task", queues=["q"], cron="0 3 * * 1#2")
 
 
-def test_taskinfo_catchup_true_raises_not_implemented():
+def test_taskinfo_catchup_true_raises_value_error():
     """catchup=True is reserved for a future release; fail fast at
-    construction (Review-Finding P2-3)."""
-    with pytest.raises(NotImplementedError, match="catchup"):
+    construction (Review-Finding P2-3). ValueError (not
+    NotImplementedError) — the field is a reserved API value, not
+    an abstract-method stub (api-contract AC-03)."""
+    with pytest.raises(ValueError, match="catchup"):
         TaskInfo(name="task", queues=["q"], cron="* * * * *", catchup=True)
 
 
 def test_taskinfo_catchup_true_without_cron_also_raises():
     """catchup=True is rejected regardless of cron (reserved keyword)."""
-    with pytest.raises(NotImplementedError, match="catchup"):
+    with pytest.raises(ValueError, match="catchup"):
         TaskInfo(name="task", queues=["q"], catchup=True)
 
 

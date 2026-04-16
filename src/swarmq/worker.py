@@ -763,9 +763,15 @@ class Worker:
                 header_value, ttl_ms
             )
         except BackendConnectionError:
+            # Ack-ordering discipline Rule 3: per-stage requeue counter.
+            # Mirror x-swarmq-rate-limit-count / x-swarmq-lock-conflict-count
+            # so operators see the bounce in headers (learnings reviewer).
+            prior = int(message.headers.get("x-swarmq-schedfire-dedup-count", 0))
+            message.headers["x-swarmq-schedfire-dedup-count"] = prior + 1
             logger.error(
                 "schedfire_dedup_backend_error",
                 schedfire_key=header_value,
+                requeue_count=prior + 1,
             )
             await self._broker.nack(message, requeue=True)
             structlog.contextvars.clear_contextvars()

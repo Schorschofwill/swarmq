@@ -52,11 +52,17 @@ SCHEDULER_LOCK_NAME = "scheduler:leader"
 """Logical lock name — LockManager's automatic ``sq:lock:`` prefix
 yields the final Valkey key ``sq:lock:scheduler:leader``."""
 
-_HANDOVER_MARKER_TTL_MS = 5_000
-"""TTL for the transient handover marker. Narrow window (5s) — long
-enough for a standby to see it at the next election tick, short enough
-that a stale marker cannot mislead a later failover into pretending to
-be a clean handover."""
+SCHEDULER_LOCK_KEY = "sq:lock:scheduler:leader"
+"""Final Valkey key for the leader lock. Single source of truth for
+the owner-check in sched_commit.lua and the CLI status view. Must match
+``locking._LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME``."""
+
+_HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
+"""Minimum TTL for the handover marker (5s). The actual TTL used is
+``max(floor, heartbeat_interval*2*1000)`` so a slow standby still
+observes the marker on its next election tick — otherwise every
+clean handover would time out before the successor polls and emit
+FAILOVER instead of LEADER (review-finding reliability R-001)."""
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +216,15 @@ class ScheduleStore:
         await self._backend.hdel_schedule_def(schedule_name)
 
     async def disable_schedule(self, schedule_name: str) -> None:
-        """Mark an existing schedule disabled without removing it.
+        """Mark an existing schedule disabled AND remove it from the
+        due-set so the poll loop no longer touches it.
 
         Missing schedule is a no-op. Insert-if-absent (CD11) then
         prevents a later static-sync from resurrecting the entry
-        because the disabled flag stays in the def JSON.
+        because the disabled flag stays in the def JSON. The zset
+        removal (review-finding correctness C-02) stops the poll
+        loop from repeatedly pulling the disabled entry every tick
+        and burning HGET bandwidth for work it cannot do.
         """
         existing = await self._backend.hget_schedule_def(schedule_name)
         if existing is None:
@@ -224,6 +234,7 @@ class ScheduleStore:
         await self._backend.hset_schedule_def(
             schedule_name, msgspec.json.encode(updated)
         )
+        await self._backend.zrem_schedule(schedule_name)
 
     async def list_schedules(self) -> list[ScheduleDefinition]:
         raw = await self._backend.hgetall_schedule_defs()
@@ -289,9 +300,7 @@ class ScheduleStore:
                 keys=[
                     self._backend._sched_zset_key(),
                     self._backend._sched_defs_key(),
-                    # Leader lock key — must match LockManager's prefix
-                    # ("sq:lock:") + the scheduler's lock name ("scheduler:leader")
-                    "sq:lock:scheduler:leader",
+                    SCHEDULER_LOCK_KEY,
                 ],
                 args=[
                     schedule_name,
@@ -412,18 +421,35 @@ class SchedulerLoop:
     async def stop(self) -> None:
         """Graceful shutdown. Releases the leader lock if held, sets
         the handover marker so the next acquirer emits LEADER instead
-        of FAILOVER, then cancels both sub-coroutines."""
+        of FAILOVER, then cancels both sub-coroutines.
+
+        Ordering (review-finding R-005): state transition and
+        stop_event are set BEFORE lock release. Otherwise a window
+        exists where the lock is already released (another worker can
+        acquire it) while our own poll_loop still believes it is the
+        leader — one spurious publish batch can fire inside that
+        window. Setting state first prevents our poll_loop from
+        starting a new tick after the release.
+        """
         if self._state == "leader":
             await self._emit(Signal.SCHEDULER_LEADER_HANDOVER)
             try:
+                marker_ttl_ms = max(
+                    _HANDOVER_MARKER_TTL_MS_FLOOR,
+                    int(self._config.scheduler_heartbeat_interval * 2_000),
+                )
                 await self._backend.set_schedfire_handover_marker(
-                    self._owner_token, _HANDOVER_MARKER_TTL_MS
+                    self._owner_token, marker_ttl_ms
                 )
             except BackendConnectionError as exc:
                 logger.warning(
                     "scheduler_handover_marker_failed",
                     error=str(exc),
                 )
+            # Transition state BEFORE release — closes the window
+            # where poll_loop runs as leader while the lock is gone.
+            self._state = "standby"
+            self._stop_event.set()
             try:
                 await self._lock_manager.release(
                     SCHEDULER_LOCK_NAME, self._owner_token, 1
@@ -432,7 +458,6 @@ class SchedulerLoop:
                 logger.warning(
                     "scheduler_lock_release_failed", error=str(exc)
                 )
-            self._state = "standby"
 
         self._stop_event.set()
         for task in (self._election_task, self._poll_task):
@@ -647,17 +672,24 @@ class SchedulerLoop:
         """Reconcile static ``TaskInfo(cron=...)`` declarations into the
         ``sq:sched:defs`` hash.
 
-        Three branches:
+        Five resolution branches (in check order):
 
-        - No existing entry → ``add_schedule`` (insert).
-        - Existing ``source="cli"`` entry → no-op (CD11 — CLI ownership
-          is authoritative over code).
-        - Existing ``source="static"`` entry with a **different**
-          cron-string → ``update_static_schedule`` (Fork 1: code is
-          single-source-of-truth for static schedules; Redeploys
-          propagate).
-        - Existing ``source="static"`` entry with the same cron-string
-          → no-op (stable).
+        1. ``hget_schedule_def`` raises ``BackendConnectionError`` →
+           log and skip this schedule, continue iteration.
+        2. No existing entry → ``add_schedule`` (insert).
+        3. Existing entry fails msgspec decode → best-effort
+           ``update_static_schedule`` overwrite with the valid
+           definition from code.
+        4. Existing ``source="cli"`` entry → no-op with warning log
+           (CD11 — CLI ownership beats code, but the shadow is
+           surfaced so operators can discover it).
+        5. Existing ``source="static"`` entry with the same
+           cron-string → no-op (stable).
+        6. Existing ``source="static"`` entry with a **different**
+           cron-string → ``update_static_schedule`` (Fork 1). The
+           existing ``disabled`` flag is preserved so an operator's
+           ``schedule remove`` is not silently reversed
+           (correctness C-01).
         """
         for task_class in Task._registered_tasks:
             task_info = getattr(task_class, "task_info", None)
@@ -708,17 +740,32 @@ class SchedulerLoop:
                 continue
 
             if existing.source == "cli":
-                continue  # CD11 protection
+                # CD11 protection: CLI ownership beats code. Log so
+                # the silent shadow is discoverable (reliability R-006).
+                logger.warning(
+                    "scheduler_static_cron_shadowed_by_cli",
+                    schedule_name=schedule_name,
+                    static_cron=task_info.cron,
+                    cli_cron=existing.cron,
+                )
+                continue
             if existing.cron == task_info.cron:
                 continue  # Unchanged static
             # Static cron changed — propagate (Fork 1).
+            # Preserve the disabled flag from the existing entry so
+            # an operator's `schedule remove` intent is not silently
+            # reversed by the next redeploy (correctness C-01).
+            propagated = msgspec.structs.replace(
+                definition, disabled=existing.disabled
+            )
             logger.info(
                 "scheduler_static_cron_updated",
                 schedule_name=schedule_name,
                 old_cron=existing.cron,
                 new_cron=task_info.cron,
+                disabled_preserved=existing.disabled,
             )
-            await self._store.update_static_schedule(definition)
+            await self._store.update_static_schedule(propagated)
 
     # ---- helpers --------------------------------------------------------
 

@@ -1446,6 +1446,58 @@ Engineering-internal:
 - Alle bestehenden 574+ Tests grün. Geschätzt +80-120 neue Tests.
 - Scheduler-Loop-Idle-CPU <1% auf 4-Core (informell messen).
 
+## Post-Implementation Review Fixes (2026-04-17)
+
+Nach ce:review mit 13 Reviewern wurden folgende Quick-Wins direkt auf
+dem Feature-Branch eingearbeitet:
+
+- **reliability R-001 / adversarial adv-001** (HIGH): Handover-Marker-
+  TTL war fixiert auf 5s, Default-Heartbeat ist 10s → jeder clean
+  Handover timeoutete und emittierte FAILOVER. Neu: dynamisch
+  `max(5000, heartbeat_interval*2*1000)`.
+- **reliability R-005** (MEDIUM): `SchedulerLoop.stop()` setzt jetzt
+  `state="standby"` und `_stop_event.set()` **vor** `release()` —
+  schließt das Fenster, in dem poll_loop noch als Leader tickt
+  nachdem der Lock schon weg ist.
+- **correctness C-01 / testing T-03 / adversarial adv-004** (HIGH):
+  `sync_taskinfo_crons` preserviert jetzt den `disabled=True` Flag
+  beim static-cron-Update. Operator-disabled Schedules werden nicht
+  mehr durch Redeploy silently re-enabled.
+- **correctness C-02** (HIGH): `disable_schedule` ruft zusätzlich
+  `zrem_schedule` auf — disabled-Einträge blockieren nicht mehr
+  den Poll-Pfad.
+- **api-contract AC-01** (MEDIUM): `Task.__init_subclass__` Migration-
+  Hint war falsch (versprach `kwargs={}`-Parameter den es nicht
+  gibt). Jetzt: klarer Rename-Hinweis, kein nicht-existenter
+  Escape-Hatch.
+- **maintainability M-01 / kieran-python KP-05 / api-contract RR-03**
+  (MEDIUM): Hardcoded `"sq:lock:scheduler:leader"` an 3 Stellen →
+  neue Konstante `SCHEDULER_LOCK_KEY` in scheduler.py, genutzt in
+  `commit_fire` (statt Lua-KEYS-Literal) und `cli._run_schedule_status`.
+- **api-contract AC-03** (MEDIUM): `catchup=True` wirft jetzt
+  `ValueError` statt `NotImplementedError` — Python-Konvention für
+  reservierte API-Werte, und Handler die NotImplementedError fangen
+  swallown nicht versehentlich.
+- **learnings-researcher (ack-ordering Rule 3)**: `_pre_start_schedfire_dedup`
+  inkrementiert jetzt `x-swarmq-schedfire-dedup-count` auf dem
+  BackendConnectionError-nack-Pfad, konsistent mit
+  `x-swarmq-rate-limit-count` / `x-swarmq-lock-conflict-count`.
+- **reliability R-006** (LOW): Static-cron shadowed-by-cli wird jetzt
+  mit `WARNING` geloggt statt silent geskipped.
+- **api-contract AC-07** (LOW): Signal-count-Test von
+  `len(list(Signal)) == 17` auf Presence-Check umgestellt.
+- **maintainability M-02** (LOW): `sync_taskinfo_crons` Docstring
+  zählt jetzt alle 6 Resolution-Branches statt 3.
+
+**Verbleibende Findings in Folge-Plan**
+`docs/plans/2026-04-17-003-fix-phase3c-review-followup-plan.md`:
+H-2 (dedup-SETNX-ordering: at-most-once-Hole bei SETNX-winner-crash,
+architectural), H-5/H-6 (asyncio.sleep + @pytest.mark.timeout in Tests),
+M-2 (--format json für add/remove), M-3 (DecodeError hardening),
+M-4/M-14 (partial-sync + TOCTOU), M-5 (list_schedules crash), M-7
+(Literal[1] für renew), M-11 (schedfire-key Divergenz), M-12 (mehr
+_election_tick Tests), M-13 (cli.py Split).
+
 ## Review Changelog (Deepening 2026-04-17)
 
 Nach Document-Review (5 Reviewer: coherence, feasibility, product-lens,

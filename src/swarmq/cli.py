@@ -35,7 +35,7 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     ConfigurationError,
 )
-from swarmq.scheduler import ScheduleDefinition, ScheduleStore
+from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
 from swarmq.task import Task
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -452,7 +452,7 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
     backend = await _backend_from_env()
     try:
         # Read the leader lock directly.
-        owner_raw = await backend._client.get("sq:lock:scheduler:leader")
+        owner_raw = await backend._client.get(SCHEDULER_LOCK_KEY)
         leader = owner_raw.decode() if owner_raw else None
 
         store = ScheduleStore(backend)
