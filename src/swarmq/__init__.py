@@ -14,4 +14,6 @@ from swarmq.exceptions import (
     TaskError,
     TaskNotFoundError,
 )
+from swarmq.middleware import Middleware
+from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo

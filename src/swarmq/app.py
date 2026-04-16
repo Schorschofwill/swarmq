@@ -9,7 +9,9 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
+from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.registry import TaskRegistry
+from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task
 from swarmq.worker import Worker
 
@@ -35,7 +37,22 @@ class SwarmQ:
         for task_class in Task._registered_tasks:
             self.registry.register(task_class)
         self._log_listener = setup_logging(self.config.log_level, self.config.log_json)
+        self._middlewares: list[Middleware] = []
+        self._signal_dispatcher = SignalDispatcher()
         self.client = Client(broker, backend, registry=self.registry)
+
+    def add_middleware(self, middleware: Middleware) -> None:
+        """Register a middleware to run for every task lifecycle event."""
+        self._middlewares.append(middleware)
+
+    def on_signal(self, signal: Signal):  # type: ignore[no-untyped-def]
+        """Return a decorator that registers a handler for ``signal``."""
+        return self._signal_dispatcher.on_signal(signal)
+
+    @property
+    def middleware_chain(self) -> MiddlewareChain:
+        """Build a fresh :class:`MiddlewareChain` from currently registered middlewares."""
+        return MiddlewareChain(self._middlewares)
 
     async def __aenter__(self) -> SwarmQ:
         await self.broker.connect()
