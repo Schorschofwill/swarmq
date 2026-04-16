@@ -31,3 +31,9 @@ htmlcov/
 
 # Claude
 .claude/
+
+# Compound-engineering review/work artifacts (machine-generated, run-scoped)
+.context/
+
+# Benchmark comparison run outputs (per-run JSON, not source)
+benchmarks/comparison/results/

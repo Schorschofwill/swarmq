@@ -1,7 +1,7 @@
 ---
 title: "feat: Phase 3a — Middleware-System und Signal/Event-System"
 type: feat
-status: active
+status: completed
 date: 2026-04-16
 origin: docs/brainstorms/implementation-order-requirements.md
 deepened: 2026-04-16

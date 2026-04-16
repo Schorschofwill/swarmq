@@ -1,7 +1,7 @@
 ---
 title: "fix: Review-Findings aus Phase 3a Code Review"
 type: fix
-status: active
+status: completed
 date: 2026-04-16
 ---
 

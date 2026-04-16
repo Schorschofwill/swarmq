@@ -1,7 +1,7 @@
 ---
 title: "fix: Re-Review-Findings aus Phase 3a Fix-Commits"
 type: fix
-status: active
+status: completed
 date: 2026-04-16
 ---
 

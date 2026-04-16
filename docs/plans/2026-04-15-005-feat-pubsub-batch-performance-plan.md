@@ -1,7 +1,7 @@
 ---
 title: "feat: Pub/Sub Result-Notification, Batch-APIs und Queue-Type-Konfiguration"
 type: feat
-status: active
+status: completed
 date: 2026-04-15
 origin: docs/brainstorms/performance-optimization-requirements.md
 deepened: 2026-04-15

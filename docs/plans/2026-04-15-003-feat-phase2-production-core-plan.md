@@ -1,7 +1,7 @@
 ---
 title: "feat: Phase 2 — Produktionsfähiger Kern"
 type: feat
-status: active
+status: completed
 date: 2026-04-15
 origin: docs/brainstorms/implementation-order-requirements.md
 deepened: 2026-04-15

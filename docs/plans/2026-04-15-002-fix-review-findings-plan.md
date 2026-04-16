@@ -1,7 +1,7 @@
 ---
 title: "fix: Review-Findings P0+P1 aus Phase 0+1 Code Review"
 type: fix
-status: active
+status: completed
 date: 2026-04-15
 ---
 
