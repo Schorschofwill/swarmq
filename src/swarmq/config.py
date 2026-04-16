@@ -20,6 +20,7 @@ class SwarmQConfig:
     retry_max_delay: float = 3600.0
     shutdown_timeout: int = 30
     queue_type: str = "quorum"
+    cancel_poll_interval: float = 1.0
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -62,6 +63,10 @@ class SwarmQConfig:
         if env_queue_type:
             self.queue_type = env_queue_type
 
+        env_cancel_poll = os.environ.get("SWARMQ_CANCEL_POLL_INTERVAL", "")
+        if env_cancel_poll:
+            self.cancel_poll_interval = float(env_cancel_poll)
+
         # Validation
         if not self.broker_url:
             msg = "broker_url must not be empty"
@@ -87,4 +92,8 @@ class SwarmQConfig:
         valid_queue_types = {"quorum", "classic"}
         if self.queue_type not in valid_queue_types:
             msg = f"queue_type must be one of {sorted(valid_queue_types)}, got {self.queue_type!r}"
+            raise ConfigurationError(msg)
+
+        if self.cancel_poll_interval <= 0:
+            msg = f"cancel_poll_interval must be > 0, got {self.cancel_poll_interval}"
             raise ConfigurationError(msg)

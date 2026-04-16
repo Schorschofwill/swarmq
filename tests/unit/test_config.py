@@ -185,3 +185,43 @@ def test_config_queue_type_env_var_overrides_default(monkeypatch):
     monkeypatch.setenv("SWARMQ_QUEUE_TYPE", "classic")
     cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
     assert cfg.queue_type == "classic"
+
+
+# --- cancel_poll_interval -------------------------------------------------
+
+def test_config_cancel_poll_interval_default():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.cancel_poll_interval == 1.0
+
+
+def test_config_cancel_poll_interval_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        cancel_poll_interval=0.5,
+    )
+    assert cfg.cancel_poll_interval == 0.5
+
+
+def test_config_cancel_poll_interval_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_CANCEL_POLL_INTERVAL", "2.5")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.cancel_poll_interval == 2.5
+
+
+def test_config_cancel_poll_interval_zero_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            cancel_poll_interval=0,
+        )
+
+
+def test_config_cancel_poll_interval_negative_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            cancel_poll_interval=-1.0,
+        )
