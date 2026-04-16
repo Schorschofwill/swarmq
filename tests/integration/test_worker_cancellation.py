@@ -118,7 +118,14 @@ class TestPreStartCancelIntegration:
     async def test_cancel_after_completion_has_no_effect(
         self, rabbitmq_url, valkey_url, _cleanup_tasks,
     ):
-        """Task runs to completion → cancel() sets a flag with no effect."""
+        """Task runs to completion → cancel() sets a flag with no effect.
+
+        The real invariant we verify: cancelling an already-completed
+        task must not retroactively mutate its stored result.  Earlier
+        revisions of this test used `app.run()`, which discards the
+        task_id — so the cancel was against a hardcoded placeholder
+        and the invariant was never actually checked.
+        """
         queue = _unique_queue()
 
         class FastTask(Task):
@@ -130,17 +137,25 @@ class TestPreStartCancelIntegration:
         backend = ValkeyBackend(valkey_url)
 
         async with SwarmQ(broker, backend, queues=[queue], concurrency=1) as app:
+            await app.broker.declare_queue(queue)
             worker_task = await _start_worker(app)
             try:
-                # Run task to completion.
-                result = await app.run("fast", timeout=3)
+                # Schedule + wait for real completion; keep the task_id.
+                task_id = await app.schedule("fast")
+                result = await app.get_result(task_id, timeout=3)
                 assert result == "completed"
 
-                # Now cancel — has no effect since task is done.
-                assert await app.cancel(result if False else "never-existed") is True
-                # get_result on a completed task still returns the real result.
-                task_id = None  # we don't have the ID here; use run() semantics
+                # Cancel the already-completed task.  Flag is newly set
+                # (True) because there was no prior cancel for this id.
+                assert await app.cancel(task_id) is True
+
+                # Re-reading the result returns the real completion
+                # value — cancel did NOT mutate the stored result.
+                assert await app.get_result(task_id, timeout=1) == "completed"
             finally:
+                # Clean up the orphan flag so it doesn't linger in the
+                # shared Valkey across test runs.
+                await backend.clear_cancel_flag(task_id)
                 await _stop_worker(app, worker_task)
 
     async def test_cancel_unknown_task_id_harmless(

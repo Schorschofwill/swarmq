@@ -1130,6 +1130,7 @@ class Worker:
                 result_data = {
                     "task": {"id": task_id, "queue": queue, "name": task_name},
                     "is_error": True,
+                    "is_cancelled": False,
                     "error_message": str(exc),
                     "result": None,
                 }
@@ -1271,9 +1272,11 @@ class Worker:
                     task_id=task_id,
                     error=str(exc),
                 )
-                # Loop continues on next tick — do NOT spin tight on
-                # errors.
-                await asyncio.sleep(poll_interval)
+                # Fall through — the next iteration's asyncio.wait
+                # already waits poll_interval, so no extra sleep is
+                # needed.  A prior version slept an additional
+                # poll_interval here, doubling the effective latency
+                # between checks during transient Valkey errors.
 
     async def _evaluate_retry(
         self,
@@ -1380,6 +1383,7 @@ class Worker:
         result_data = {
             "task": {"id": task_id, "queue": queue, "name": task_name},
             "is_error": True,
+            "is_cancelled": False,
             "error_message": error_message,
             "result": None,
         }
