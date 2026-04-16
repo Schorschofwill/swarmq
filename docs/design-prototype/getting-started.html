@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started · SwarmQ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">S</span>
+      <span class="brand-name">SwarmQ</span>
+      <span class="brand-version">v0.3</span>
+    </a>
+    <div class="header-search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input type="text" placeholder="Search documentation">
+      <kbd>⌘K</kbd>
+    </div>
+    <nav class="header-nav">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="api-reference.html">API</a>
+      <a href="#">GitHub</a>
+      <button class="theme-toggle" aria-label="Toggle theme">
+        <svg class="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <nav>
+      <div class="nav-section">
+        <div class="nav-title">Introduction</div>
+        <ul>
+          <li><a href="getting-started.html" class="active">Getting Started</a></li>
+          <li><a href="#">Why SwarmQ</a></li>
+          <li><a href="#">Core Concepts</a></li>
+          <li><a href="#">Architecture</a></li>
+        </ul>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Guides</div>
+        <ul>
+          <li><a href="#">Defining Tasks</a></li>
+          <li><a href="#">Scheduling &amp; Retries</a></li>
+          <li><a href="guide-middleware.html">Middleware</a></li>
+          <li><a href="#">Signals</a></li>
+          <li><a href="#">Rate Limiting</a></li>
+          <li><a href="#">Locking &amp; Dedup</a></li>
+          <li><a href="#">Dead Letter Queues</a></li>
+          <li><a href="#">Testing Tasks</a></li>
+        </ul>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Reference</div>
+        <ul>
+          <li><a href="api-reference.html">API Reference</a></li>
+          <li><a href="cli-reference.html">CLI Reference</a></li>
+          <li><a href="#">Configuration</a></li>
+          <li><a href="#">Changelog</a></li>
+        </ul>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="content">
+    <div class="breadcrumb">
+      <a href="index.html">Docs</a>
+      <span class="sep">/</span>
+      <span>Getting Started</span>
+    </div>
+
+    <h1 class="page-title">Getting Started</h1>
+    <p class="page-subtitle">
+      From a fresh virtualenv to a running worker processing tasks in under five minutes.
+      No entrypoint boilerplate, no config files required.
+    </p>
+
+    <h2 id="prerequisites">Prerequisites</h2>
+    <p>
+      SwarmQ needs a RabbitMQ broker and a Valkey (or Redis) backend. The repository
+      ships a <code>docker-compose.yml</code> that brings both up locally.
+    </p>
+
+    <ul>
+      <li>Python <strong>3.11+</strong> (3.14 supported, tested on CI)</li>
+      <li>Docker or a running RabbitMQ + Valkey pair</li>
+      <li>A package manager — examples use <code>uv</code></li>
+    </ul>
+
+    <h2 id="install">Install</h2>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <div class="codeblock-tabs">
+          <button class="active">uv</button>
+          <button>pip</button>
+          <button>poetry</button>
+        </div>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code>uv add swarmq
+uv run swarmq --version</code></pre>
+    </div>
+
+    <div class="callout note">
+      <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <div class="cbody">
+        <span class="callout-title">Note</span>
+        SwarmQ pulls <code>aio-pika</code>, <code>valkey</code>, and <code>msgpack</code> as direct dependencies. The library is pure Python — no C extensions to build.
+      </div>
+    </div>
+
+    <h2 id="broker">Start the broker</h2>
+    <p>
+      Clone the repo (or copy the compose file) and bring the stack up. Both services
+      expose default ports; the compose file includes healthchecks so workers wait for
+      them to be ready.
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">shell</span>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code>docker compose up -d
+docker compose ps</code></pre>
+    </div>
+
+    <h2 id="first-task">Define your first task</h2>
+    <p>
+      Tasks are Python classes that inherit from <code>Task</code> and declare their
+      identity through a <code>TaskInfo</code> descriptor. The body lives in an
+      <code>async def run(...)</code> method.
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">myapp/tasks.py</span>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code><span class="tok-kw">from</span> swarmq.task <span class="tok-kw">import</span> <span class="tok-cls">Task</span>, <span class="tok-cls">TaskInfo</span>
+
+
+<span class="tok-kw">class</span> <span class="tok-cls">Greet</span>(<span class="tok-cls">Task</span>):
+    <span class="tok-com"># Identity, queue routing, and limits live here.</span>
+    task_info = <span class="tok-cls">TaskInfo</span>(
+        name=<span class="tok-str">"greet"</span>,
+        queues=[<span class="tok-str">"default"</span>],
+        max_retries=<span class="tok-num">2</span>,
+    )
+
+    <span class="tok-kw">async def</span> <span class="tok-fn">run</span>(<span class="tok-kw">self</span>, who: <span class="tok-cls">str</span>) -&gt; <span class="tok-cls">str</span>:
+        <span class="tok-kw">return</span> <span class="tok-str">f"hello, {who}"</span></code></pre>
+    </div>
+
+    <h2 id="run-worker">Run a worker</h2>
+    <p>
+      No entrypoint file, no <code>celery -A app worker</code>-style wrapper.
+      Point the CLI at your task module and start consuming.
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">shell</span>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code>export SWARMQ_BROKER_URL=<span class="tok-str">"amqp://guest:guest@localhost:5672/"</span>
+export SWARMQ_BACKEND_URL=<span class="tok-str">"valkey://localhost:6379/0"</span>
+
+swarmq worker --module myapp.tasks --queues default --concurrency 10</code></pre>
+    </div>
+
+    <div class="callout tip">
+      <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
+      <div class="cbody">
+        <span class="callout-title">Tip</span>
+        For JSON logs fit for Loki, Datadog, or CloudWatch, add <code>--log-format json</code>. The process handles <kbd>SIGTERM</kbd> and <kbd>SIGINT</kbd> with a graceful drain.
+      </div>
+    </div>
+
+    <h2 id="enqueue">Enqueue from your app</h2>
+    <p>
+      On the client side, instantiate a <code>SwarmQ</code> app with the same broker
+      and backend URLs, then call <code>schedule()</code> on a task class.
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">enqueue.py</span>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code><span class="tok-kw">import</span> asyncio
+<span class="tok-kw">from</span> swarmq <span class="tok-kw">import</span> <span class="tok-cls">SwarmQ</span>
+<span class="tok-kw">from</span> myapp.tasks <span class="tok-kw">import</span> <span class="tok-cls">Greet</span>
+
+
+<span class="tok-kw">async def</span> <span class="tok-fn">main</span>():
+    app = <span class="tok-cls">SwarmQ</span>(
+        broker_url=<span class="tok-str">"amqp://guest:guest@localhost:5672/"</span>,
+        backend_url=<span class="tok-str">"valkey://localhost:6379/0"</span>,
+    )
+    <span class="tok-kw">async with</span> app:
+        handle = <span class="tok-kw">await</span> app.<span class="tok-fn">schedule</span>(<span class="tok-cls">Greet</span>, who=<span class="tok-str">"world"</span>)
+        result = <span class="tok-kw">await</span> handle.<span class="tok-fn">wait</span>(timeout=<span class="tok-num">10</span>)
+        <span class="tok-fn">print</span>(result)  <span class="tok-com"># "hello, world"</span>
+
+
+asyncio.<span class="tok-fn">run</span>(<span class="tok-fn">main</span>())</code></pre>
+    </div>
+
+    <div class="callout warn">
+      <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <div class="cbody">
+        <span class="callout-title">Heads up</span>
+        The <code>async with</code> block manages both broker connection and backend pool. Forgetting it leaks AMQP channels and keeps Valkey connections open until GC.
+      </div>
+    </div>
+
+    <h2 id="next-steps">Next steps</h2>
+    <p>
+      You now have a worker consuming tasks end-to-end. From here, the guides cover
+      the concepts you'll reach for in any non-trivial project:
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Topic</th>
+            <th>When you need it</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Middleware</strong></td>
+            <td>Cross-cutting concerns: logging, tracing, auth context</td>
+            <td><a href="guide-middleware.html">Guide</a></td>
+          </tr>
+          <tr>
+            <td><strong>Rate limiting</strong></td>
+            <td>Third-party API quotas, self-protection</td>
+            <td><a href="#">Guide</a></td>
+          </tr>
+          <tr>
+            <td><strong>Retries &amp; DLQ</strong></td>
+            <td>Transient failures, poison-message isolation</td>
+            <td><a href="#">Guide</a></td>
+          </tr>
+          <tr>
+            <td><strong>Signals</strong></td>
+            <td>Lifecycle hooks, metrics, audit trails</td>
+            <td><a href="#">Guide</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pager">
+      <a href="index.html">
+        <div class="dir">← Previous</div>
+        <div class="title">Overview</div>
+      </a>
+      <a href="guide-middleware.html" class="next">
+        <div class="dir">Next →</div>
+        <div class="title">Middleware</div>
+      </a>
+    </div>
+  </main>
+
+  <aside class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#prerequisites">Prerequisites</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#broker">Start the broker</a></li>
+      <li><a href="#first-task">Define your first task</a></li>
+      <li><a href="#run-worker">Run a worker</a></li>
+      <li><a href="#enqueue">Enqueue from your app</a></li>
+      <li><a href="#next-steps">Next steps</a></li>
+    </ul>
+  </aside>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div>© 2026 SwarmQ · Python task queue on RabbitMQ + Valkey</div>
+    <div class="footer-links">
+      <a href="#">GitHub</a>
+      <a href="#">PyPI</a>
+      <a href="#">Changelog</a>
+      <a href="#">License</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

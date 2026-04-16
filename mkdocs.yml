@@ -1,0 +1,162 @@
+site_name: SwarmQ
+site_description: Async-first Python task queue on RabbitMQ and Valkey.
+site_url: https://swarmq.readthedocs.io/
+repo_url: https://github.com/gstricker/swarmq
+repo_name: gstricker/swarmq
+copyright: © 2026 SwarmQ
+
+docs_dir: website
+site_dir: site
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+  palette:
+    - media: "(prefers-color-scheme)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+    - search.suggest
+    - search.highlight
+    - search.share
+
+extra_css:
+  - stylesheets/swarmq.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/gstricker/swarmq
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/swarmq/
+  version:
+    provider: mike
+    default: latest
+
+markdown_extensions:
+  # Python-Markdown core
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Link to this section
+  # PyMdown extensions
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search:
+      separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - llmstxt:
+      full_output: llms-full.txt
+      sections:
+        Introduction:
+          - index.md
+          - getting-started.md
+        Tutorials:
+          - tutorials/*.md
+        How-to guides:
+          - guides/*.md
+        Reference:
+          - reference/*.md
+        Explanation:
+          - explanation/*.md
+
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - Tutorials:
+      - tutorials/index.md
+      - First email worker: tutorials/first-email-worker.md
+  - How-to guides:
+      - guides/index.md
+      - Defining tasks: guides/defining-tasks.md
+      - Scheduling and retries: guides/scheduling-and-retries.md
+      - Middleware: guides/middleware.md
+      - Signals: guides/signals.md
+      - Rate limiting: guides/rate-limiting.md
+      - Locking and deduplication: guides/locking-and-dedup.md
+      - Dead letter queues: guides/dead-letter-queues.md
+      - Testing tasks: guides/testing-tasks.md
+  - Reference:
+      - reference/index.md
+      - API: reference/api.md
+      - CLI: reference/cli.md
+      - Configuration: reference/configuration.md
+      - Error catalog: reference/errors.md
+      - Changelog: reference/changelog.md
+  - Explanation:
+      - explanation/index.md
+      - Architecture: explanation/architecture.md
+      - Delivery semantics: explanation/delivery-semantics.md
+      - Design decisions: explanation/design-decisions.md

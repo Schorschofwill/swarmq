@@ -37,3 +37,7 @@ htmlcov/
 
 # Benchmark comparison run outputs (per-run JSON, not source)
 benchmarks/comparison/results/
+
+# mkdocs build output (generated; source lives elsewhere)
+site/
+website/

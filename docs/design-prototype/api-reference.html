@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Reference · SwarmQ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">S</span>
+      <span class="brand-name">SwarmQ</span>
+      <span class="brand-version">v0.3</span>
+    </a>
+    <div class="header-search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input type="text" placeholder="Search documentation">
+      <kbd>⌘K</kbd>
+    </div>
+    <nav class="header-nav">
+      <a href="getting-started.html">Docs</a>
+      <a href="api-reference.html" class="active">API</a>
+      <a href="#">GitHub</a>
+      <button class="theme-toggle" aria-label="Toggle theme">
+        <svg class="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <nav>
+      <div class="nav-section">
+        <div class="nav-title">Reference</div>
+        <ul>
+          <li><a href="api-reference.html" class="active">API Reference</a></li>
+          <li><a href="cli-reference.html">CLI Reference</a></li>
+          <li><a href="#">Configuration</a></li>
+          <li><a href="#">Changelog</a></li>
+        </ul>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Modules</div>
+        <ul>
+          <li><a href="#swarmq-app" class="active">swarmq.SwarmQ</a></li>
+          <li><a href="#">swarmq.task</a></li>
+          <li><a href="#">swarmq.client</a></li>
+          <li><a href="#">swarmq.middleware</a></li>
+          <li><a href="#">swarmq.signals</a></li>
+          <li><a href="#">swarmq.limits</a></li>
+          <li><a href="#">swarmq.broker</a></li>
+          <li><a href="#">swarmq.backend</a></li>
+        </ul>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Guides</div>
+        <ul>
+          <li><a href="getting-started.html">Getting Started</a></li>
+          <li><a href="guide-middleware.html">Middleware</a></li>
+          <li><a href="#">Signals</a></li>
+        </ul>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="content">
+    <div class="breadcrumb">
+      <a href="index.html">Docs</a>
+      <span class="sep">/</span>
+      <a href="#">Reference</a>
+      <span class="sep">/</span>
+      <span>API</span>
+    </div>
+
+    <h1 class="page-title" id="swarmq-app">class SwarmQ</h1>
+    <p class="page-subtitle">
+      The application entrypoint — owns the broker connection, the backend pool,
+      the middleware stack, and the signal dispatcher.
+    </p>
+
+    <div class="api-signature">
+class <span class="tok-cls">SwarmQ</span>(broker_url: <span class="tok-cls">str</span>, backend_url: <span class="tok-cls">str</span>, *, middleware: <span class="tok-cls">list</span>[<span class="tok-cls">Middleware</span>] | <span class="tok-cls">None</span> = <span class="tok-cls">None</span>, result_ttl: <span class="tok-cls">int</span> = <span class="tok-num">3600</span>)
+    </div>
+
+    <p>
+      A <code>SwarmQ</code> instance is both a client (for scheduling tasks) and the
+      context a worker reads configuration from. Use it as an <code>async context
+      manager</code> to ensure the broker connection and backend pool are closed
+      cleanly.
+    </p>
+
+    <div class="callout note">
+      <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <div class="cbody">
+        <span class="callout-title">Thread safety</span>
+        A single <code>SwarmQ</code> instance is safe to share across coroutines on the same event loop. Do <em>not</em> share it across processes — each process should build its own.
+      </div>
+    </div>
+
+    <h2 id="methods">Methods</h2>
+
+    <div class="api-method">
+      <div class="api-method-head">
+        <h3 class="api-method-name">schedule()</h3>
+        <span class="api-tag async">async</span>
+      </div>
+
+      <div class="api-signature">
+<span class="tok-kw">async def</span> <span class="tok-fn">schedule</span>(
+    task: <span class="tok-cls">type</span>[<span class="tok-cls">Task</span>],
+    *args,
+    delay: <span class="tok-cls">float</span> | <span class="tok-cls">None</span> = <span class="tok-cls">None</span>,
+    unique_key: <span class="tok-cls">str</span> | <span class="tok-cls">None</span> = <span class="tok-cls">None</span>,
+    **kwargs,
+) -&gt; <span class="tok-cls">TaskHandle</span>
+      </div>
+
+      <p>
+        Enqueue a task for asynchronous execution. Returns a <code>TaskHandle</code>
+        that can be awaited or polled for the final result.
+      </p>
+
+      <h4>Parameters</h4>
+      <div class="table-wrap">
+        <table class="param-table">
+          <thead>
+            <tr><th>Name</th><th>Type</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>task</code></td>
+              <td><code>type[Task]</code></td>
+              <td>The task class to schedule. Must be importable from the worker's <code>--module</code>.</td>
+            </tr>
+            <tr>
+              <td><code>*args</code>, <code>**kwargs</code></td>
+              <td><code>Any</code></td>
+              <td>Positional and keyword arguments forwarded to <code>run()</code>. Must be msgpack-serialisable.</td>
+            </tr>
+            <tr>
+              <td><code>delay</code></td>
+              <td><code>float | None</code></td>
+              <td>Delay in seconds before delivery. <code>None</code> (default) means deliver immediately.</td>
+            </tr>
+            <tr>
+              <td><code>unique_key</code></td>
+              <td><code>str | None</code></td>
+              <td>Dedup key. If a task with the same key is in-flight, this call returns the existing handle.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h4>Returns</h4>
+      <p>A <code>TaskHandle</code> — <code>await handle.wait(timeout=...)</code> to block until completion, or <code>await handle.result()</code> for fire-and-forget retrieval.</p>
+
+      <h4>Raises</h4>
+      <p><code>BrokerUnavailable</code> if the broker connection drops during publish and reconnect fails. <code>SerializationError</code> if arguments are not msgpack-compatible.</p>
+
+      <h4>Example</h4>
+      <div class="codeblock">
+        <div class="codeblock-head">
+          <span class="codeblock-lang">python</span>
+          <button class="copy-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span class="copy-label">Copy</span>
+          </button>
+        </div>
+<pre><code>handle = <span class="tok-kw">await</span> app.<span class="tok-fn">schedule</span>(
+    <span class="tok-cls">SendEmail</span>,
+    to=<span class="tok-str">"alice@example.com"</span>,
+    subject=<span class="tok-str">"Welcome"</span>,
+    delay=<span class="tok-num">30.0</span>,
+)
+result = <span class="tok-kw">await</span> handle.<span class="tok-fn">wait</span>(timeout=<span class="tok-num">60</span>)</code></pre>
+      </div>
+    </div>
+
+    <div class="api-method">
+      <div class="api-method-head">
+        <h3 class="api-method-name">start_worker()</h3>
+        <span class="api-tag async">async</span>
+      </div>
+
+      <div class="api-signature">
+<span class="tok-kw">async def</span> <span class="tok-fn">start_worker</span>(queues: <span class="tok-cls">list</span>[<span class="tok-cls">str</span>], *, concurrency: <span class="tok-cls">int</span> = <span class="tok-num">10</span>) -&gt; <span class="tok-cls">None</span>
+      </div>
+      <p>
+        Start consuming from one or more queues. Returns when a shutdown signal
+        arrives. The CLI's <code>swarmq worker</code> is a thin wrapper around this.
+      </p>
+
+      <h4>Parameters</h4>
+      <div class="table-wrap">
+        <table class="param-table">
+          <tbody>
+            <tr><td><code>queues</code></td><td><code>list[str]</code></td><td>Queue names to consume from. Order defines priority on contention.</td></tr>
+            <tr><td><code>concurrency</code></td><td><code>int</code></td><td>Maximum number of tasks running concurrently. Default <code>10</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="api-method">
+      <div class="api-method-head">
+        <h3 class="api-method-name">on_signal()</h3>
+        <span class="api-tag classmethod">decorator</span>
+      </div>
+
+      <div class="api-signature">
+<span class="tok-kw">def</span> <span class="tok-fn">on_signal</span>(signal: <span class="tok-cls">Signal</span>) -&gt; <span class="tok-cls">Callable</span>
+      </div>
+      <p>
+        Register a coroutine handler for a lifecycle signal. Handlers are fire-and-
+        forget from the worker's perspective; exceptions are caught and logged.
+      </p>
+
+      <h4>Example</h4>
+      <div class="codeblock">
+        <div class="codeblock-head">
+          <span class="codeblock-lang">python</span>
+          <button class="copy-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span class="copy-label">Copy</span>
+          </button>
+        </div>
+<pre><code><span class="tok-prop">@app.on_signal</span>(<span class="tok-cls">Signal</span>.TASK_FAILURE)
+<span class="tok-kw">async def</span> <span class="tok-fn">record_failure</span>(ctx, exc):
+    <span class="tok-kw">await</span> sentry.<span class="tok-fn">capture</span>(exc, tags={<span class="tok-str">"task"</span>: ctx.task_name})</code></pre>
+      </div>
+    </div>
+
+    <div class="pager">
+      <a href="guide-middleware.html">
+        <div class="dir">← Previous</div>
+        <div class="title">Middleware</div>
+      </a>
+      <a href="cli-reference.html" class="next">
+        <div class="dir">Next →</div>
+        <div class="title">CLI Reference</div>
+      </a>
+    </div>
+  </main>
+
+  <aside class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#swarmq-app">class SwarmQ</a></li>
+      <li><a href="#methods">Methods</a></li>
+    </ul>
+  </aside>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div>© 2026 SwarmQ · Python task queue on RabbitMQ + Valkey</div>
+    <div class="footer-links">
+      <a href="#">GitHub</a>
+      <a href="#">PyPI</a>
+      <a href="#">Changelog</a>
+      <a href="#">License</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

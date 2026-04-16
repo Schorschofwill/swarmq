@@ -26,6 +26,12 @@ test = [
     "mypy",
     "ruff",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "mkdocs-llmstxt>=0.3",
+    "pymdown-extensions>=10.11",
+]
 
 [project.scripts]
 swarmq = "swarmq.cli:main"

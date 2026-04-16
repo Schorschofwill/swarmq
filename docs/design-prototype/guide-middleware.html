@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Middleware · SwarmQ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">S</span>
+      <span class="brand-name">SwarmQ</span>
+      <span class="brand-version">v0.3</span>
+    </a>
+    <div class="header-search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input type="text" placeholder="Search documentation">
+      <kbd>⌘K</kbd>
+    </div>
+    <nav class="header-nav">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="api-reference.html">API</a>
+      <a href="#">GitHub</a>
+      <button class="theme-toggle" aria-label="Toggle theme">
+        <svg class="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <nav>
+      <div class="nav-section">
+        <div class="nav-title">Introduction</div>
+        <ul>
+          <li><a href="getting-started.html">Getting Started</a></li>
+          <li><a href="#">Why SwarmQ</a></li>
+          <li><a href="#">Core Concepts</a></li>
+          <li><a href="#">Architecture</a></li>
+        </ul>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Guides</div>
+        <ul>
+          <li><a href="#">Defining Tasks</a></li>
+          <li><a href="#">Scheduling &amp; Retries</a></li>
+          <li><a href="guide-middleware.html" class="active">Middleware</a></li>
+          <li><a href="#">Signals</a></li>
+          <li><a href="#">Rate Limiting</a></li>
+          <li><a href="#">Locking &amp; Dedup</a></li>
+          <li><a href="#">Dead Letter Queues</a></li>
+          <li><a href="#">Testing Tasks</a></li>
+        </ul>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Reference</div>
+        <ul>
+          <li><a href="api-reference.html">API Reference</a></li>
+          <li><a href="cli-reference.html">CLI Reference</a></li>
+          <li><a href="#">Configuration</a></li>
+          <li><a href="#">Changelog</a></li>
+        </ul>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="content">
+    <div class="breadcrumb">
+      <a href="index.html">Docs</a>
+      <span class="sep">/</span>
+      <a href="#">Guides</a>
+      <span class="sep">/</span>
+      <span>Middleware</span>
+    </div>
+
+    <h1 class="page-title">Middleware</h1>
+    <p class="page-subtitle">
+      Wrap every task with cross-cutting logic — logging, tracing, auth, metrics —
+      through six composable hooks with stack semantics.
+    </p>
+
+    <h2 id="overview">Overview</h2>
+    <p>
+      A middleware is an object that implements one or more of six hooks. The worker
+      composes them into a stack: hooks wrap task execution in entry/exit order,
+      similar to WSGI or ASGI middleware.
+    </p>
+
+    <div class="callout note">
+      <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <div class="cbody">
+        <span class="callout-title">Note</span>
+        Middleware runs <strong>on the worker</strong>, not the client. The <code>pre_enqueue</code> and <code>post_enqueue</code> hooks run in the client process but all four execution hooks are worker-side.
+      </div>
+    </div>
+
+    <h2 id="hooks">The six hooks</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Hook</th>
+            <th>Where</th>
+            <th>When</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>pre_enqueue</code></td><td>Client</td><td>Before the message is published to RabbitMQ.</td></tr>
+          <tr><td><code>post_enqueue</code></td><td>Client</td><td>After the broker confirms the publish.</td></tr>
+          <tr><td><code>pre_execute</code></td><td>Worker</td><td>After delivery, before <code>run()</code>.</td></tr>
+          <tr><td><code>post_execute</code></td><td>Worker</td><td>After <code>run()</code> succeeds, before ack.</td></tr>
+          <tr><td><code>on_error</code></td><td>Worker</td><td>When <code>run()</code> raises, before retry decision.</td></tr>
+          <tr><td><code>on_retry</code></td><td>Worker</td><td>When a retry is scheduled.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="writing">Writing a middleware</h2>
+    <p>
+      Subclass <code>Middleware</code> and override only the hooks you need. Unmentioned
+      hooks are no-ops. The first argument is always a <code>TaskContext</code> — it
+      carries the task, its arguments, the delivery metadata, and mutable state.
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">middleware/timing.py</span>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code><span class="tok-kw">import</span> time, logging
+<span class="tok-kw">from</span> swarmq.middleware <span class="tok-kw">import</span> <span class="tok-cls">Middleware</span>, <span class="tok-cls">TaskContext</span>
+
+log = logging.<span class="tok-fn">getLogger</span>(<span class="tok-str">"swarmq.timing"</span>)
+
+
+<span class="tok-kw">class</span> <span class="tok-cls">TimingMiddleware</span>(<span class="tok-cls">Middleware</span>):
+    <span class="tok-kw">async def</span> <span class="tok-fn">pre_execute</span>(<span class="tok-kw">self</span>, ctx: <span class="tok-cls">TaskContext</span>) -&gt; <span class="tok-cls">None</span>:
+        ctx.state[<span class="tok-str">"t0"</span>] = time.<span class="tok-fn">perf_counter</span>()
+
+    <span class="tok-kw">async def</span> <span class="tok-fn">post_execute</span>(<span class="tok-kw">self</span>, ctx: <span class="tok-cls">TaskContext</span>, result: <span class="tok-cls">object</span>) -&gt; <span class="tok-cls">None</span>:
+        elapsed = time.<span class="tok-fn">perf_counter</span>() - ctx.state[<span class="tok-str">"t0"</span>]
+        log.<span class="tok-fn">info</span>(<span class="tok-str">"task=%s elapsed=%.3fs"</span>, ctx.task_name, elapsed)
+
+    <span class="tok-kw">async def</span> <span class="tok-fn">on_error</span>(<span class="tok-kw">self</span>, ctx: <span class="tok-cls">TaskContext</span>, exc: <span class="tok-cls">Exception</span>) -&gt; <span class="tok-cls">None</span>:
+        elapsed = time.<span class="tok-fn">perf_counter</span>() - ctx.state.<span class="tok-fn">get</span>(<span class="tok-str">"t0"</span>, time.<span class="tok-fn">perf_counter</span>())
+        log.<span class="tok-fn">warning</span>(<span class="tok-str">"task=%s failed=%.3fs err=%r"</span>, ctx.task_name, elapsed, exc)</code></pre>
+    </div>
+
+    <h2 id="registration">Registration</h2>
+    <p>
+      Middleware are registered in order on the <code>SwarmQ</code> app. Execution
+      hooks run in the order registered; exit hooks (<code>post_execute</code>, etc.)
+      run in reverse — the same nesting you know from WSGI.
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">app.py</span>
+        <button class="copy-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+<pre><code>app = <span class="tok-cls">SwarmQ</span>(
+    broker_url=BROKER_URL,
+    backend_url=BACKEND_URL,
+    middleware=[
+        <span class="tok-cls">TracingMiddleware</span>(),   <span class="tok-com"># outermost</span>
+        <span class="tok-cls">TimingMiddleware</span>(),
+        <span class="tok-cls">AuthContextMiddleware</span>(),  <span class="tok-com"># innermost, wraps run()</span>
+    ],
+)</code></pre>
+    </div>
+
+    <h2 id="execution-order">Execution order</h2>
+    <p>
+      Given three middleware registered as <code>[A, B, C]</code> around a task body,
+      the call graph looks like this:
+    </p>
+
+    <div class="codeblock">
+      <div class="codeblock-head">
+        <span class="codeblock-lang">flow</span>
+      </div>
+<pre><code>A.pre_execute  →  B.pre_execute  →  C.pre_execute
+                                        ↓
+                                    run(task)
+                                        ↓
+C.post_execute ←  B.post_execute ←  A.post_execute</code></pre>
+    </div>
+
+    <div class="callout warn">
+      <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <div class="cbody">
+        <span class="callout-title">Careful</span>
+        Exceptions raised inside a middleware hook abort the chain and surface as task errors. Use <code>on_error</code> to record or transform them — don't swallow them silently.
+      </div>
+    </div>
+
+    <h2 id="ctx">The TaskContext</h2>
+    <p>
+      Every hook receives the same <code>TaskContext</code> instance for a given
+      execution, so middleware can share state via <code>ctx.state</code>. Frequently
+      used fields:
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>task_name</code></td><td><code>str</code></td><td>Registered task name (from <code>TaskInfo.name</code>).</td></tr>
+          <tr><td><code>args</code>, <code>kwargs</code></td><td><code>tuple, dict</code></td><td>Arguments passed to <code>schedule()</code>.</td></tr>
+          <tr><td><code>message_id</code></td><td><code>str</code></td><td>Unique ID assigned at enqueue time.</td></tr>
+          <tr><td><code>retry_count</code></td><td><code>int</code></td><td>How many previous attempts this message has had.</td></tr>
+          <tr><td><code>state</code></td><td><code>dict</code></td><td>Mutable per-execution scratch space. Lives only for one invocation.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pager">
+      <a href="getting-started.html">
+        <div class="dir">← Previous</div>
+        <div class="title">Getting Started</div>
+      </a>
+      <a href="api-reference.html" class="next">
+        <div class="dir">Next →</div>
+        <div class="title">API Reference</div>
+      </a>
+    </div>
+  </main>
+
+  <aside class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#hooks">The six hooks</a></li>
+      <li><a href="#writing">Writing a middleware</a></li>
+      <li><a href="#registration">Registration</a></li>
+      <li><a href="#execution-order">Execution order</a></li>
+      <li><a href="#ctx">The TaskContext</a></li>
+    </ul>
+  </aside>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div>© 2026 SwarmQ · Python task queue on RabbitMQ + Valkey</div>
+    <div class="footer-links">
+      <a href="#">GitHub</a>
+      <a href="#">PyPI</a>
+      <a href="#">Changelog</a>
+      <a href="#">License</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
