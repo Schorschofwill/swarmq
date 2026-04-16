@@ -1,8 +1,9 @@
 ---
 title: "feat: Phase 3b.2 — Task Locking (R3.4)"
 type: feat
-status: active
+status: completed
 date: 2026-04-16
+completed: 2026-04-16
 origin: docs/brainstorms/2026-04-16-phase-3b2-task-locking-requirements.md
 ---
 
@@ -575,7 +576,7 @@ garantiert auch bei Exception".
 
 ---
 
-- [ ] **Unit 6: End-to-End Integration Tests + Comparison-Update**
+- [x] **Unit 6: End-to-End Integration Tests + Comparison-Update**
 
 **Goal:** Multi-Worker-Szenarien gegen echte Docker-Stack; Brief Success-Criteria
 verifizieren.
