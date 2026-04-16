@@ -1,0 +1,266 @@
+"""Tests for swarmq.signals — Signal Enum and SignalDispatcher."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+import structlog.testing
+
+from swarmq.signals import Signal, SignalDispatcher
+
+
+# ---------------------------------------------------------------------------
+# 1. Signal Enum has all 14 expected values
+# ---------------------------------------------------------------------------
+
+def test_signal_enum_has_task_enqueued():
+    assert Signal.TASK_ENQUEUED.value == "task_enqueued"
+
+
+def test_signal_enum_has_task_started():
+    assert Signal.TASK_STARTED.value == "task_started"
+
+
+def test_signal_enum_has_task_completed():
+    assert Signal.TASK_COMPLETED.value == "task_completed"
+
+
+def test_signal_enum_has_task_failed():
+    assert Signal.TASK_FAILED.value == "task_failed"
+
+
+def test_signal_enum_has_task_retrying():
+    assert Signal.TASK_RETRYING.value == "task_retrying"
+
+
+def test_signal_enum_has_task_revoked():
+    assert Signal.TASK_REVOKED.value == "task_revoked"
+
+
+def test_signal_enum_has_task_expired():
+    assert Signal.TASK_EXPIRED.value == "task_expired"
+
+
+def test_signal_enum_has_task_locked():
+    assert Signal.TASK_LOCKED.value == "task_locked"
+
+
+def test_signal_enum_has_task_rate_limited():
+    assert Signal.TASK_RATE_LIMITED.value == "task_rate_limited"
+
+
+def test_signal_enum_has_worker_online():
+    assert Signal.WORKER_ONLINE.value == "worker_online"
+
+
+def test_signal_enum_has_worker_shutdown():
+    assert Signal.WORKER_SHUTDOWN.value == "worker_shutdown"
+
+
+def test_signal_enum_has_worker_heartbeat():
+    assert Signal.WORKER_HEARTBEAT.value == "worker_heartbeat"
+
+
+def test_signal_enum_has_scheduler_leader():
+    assert Signal.SCHEDULER_LEADER.value == "scheduler_leader"
+
+
+def test_signal_enum_has_scheduler_standby():
+    assert Signal.SCHEDULER_STANDBY.value == "scheduler_standby"
+
+
+def test_signal_enum_has_exactly_14_values():
+    assert len(list(Signal)) == 14
+
+
+# ---------------------------------------------------------------------------
+# 2. SignalDispatcher.connect registers handler
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_connect_registers_handler():
+    dispatcher = SignalDispatcher()
+    handler = AsyncMock()
+
+    dispatcher.connect(Signal.TASK_COMPLETED, handler)
+
+    await dispatcher.dispatch(Signal.TASK_COMPLETED)
+    handler.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 3. @on_signal decorator registers handler
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_signal_decorator_registers_handler():
+    dispatcher = SignalDispatcher()
+    calls: list[str] = []
+
+    @dispatcher.on_signal(Signal.TASK_STARTED)
+    async def handler(**kwargs):
+        calls.append("called")
+
+    await dispatcher.dispatch(Signal.TASK_STARTED)
+    assert calls == ["called"]
+
+
+@pytest.mark.asyncio
+async def test_on_signal_decorator_returns_original_handler():
+    """The decorator should not replace the function — it should return it."""
+    dispatcher = SignalDispatcher()
+
+    @dispatcher.on_signal(Signal.TASK_STARTED)
+    async def handler(**kwargs):
+        return "ok"
+
+    # The decorated name must still be callable as the original coroutine
+    result = await handler()
+    assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# 4. dispatch calls all registered handlers for the signal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_calls_registered_handler():
+    dispatcher = SignalDispatcher()
+    handler = AsyncMock()
+    dispatcher.connect(Signal.TASK_FAILED, handler)
+
+    await dispatcher.dispatch(Signal.TASK_FAILED)
+
+    handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_only_calls_handlers_for_that_signal():
+    """Handlers for other signals must not fire."""
+    dispatcher = SignalDispatcher()
+    completed_handler = AsyncMock()
+    failed_handler = AsyncMock()
+
+    dispatcher.connect(Signal.TASK_COMPLETED, completed_handler)
+    dispatcher.connect(Signal.TASK_FAILED, failed_handler)
+
+    await dispatcher.dispatch(Signal.TASK_COMPLETED)
+
+    completed_handler.assert_awaited_once()
+    failed_handler.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 5. dispatch with kwargs → handlers receive kwargs
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_passes_kwargs_to_handler():
+    dispatcher = SignalDispatcher()
+    handler = AsyncMock()
+    dispatcher.connect(Signal.TASK_COMPLETED, handler)
+
+    await dispatcher.dispatch(
+        Signal.TASK_COMPLETED, task_id="abc-123", duration_ms=42.5
+    )
+
+    handler.assert_awaited_once_with(task_id="abc-123", duration_ms=42.5)
+
+
+# ---------------------------------------------------------------------------
+# 6. Multiple handlers for same signal → all called in registration order
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_multiple_handlers_called_in_registration_order():
+    dispatcher = SignalDispatcher()
+    calls: list[str] = []
+
+    async def first(**kwargs):
+        calls.append("first")
+
+    async def second(**kwargs):
+        calls.append("second")
+
+    async def third(**kwargs):
+        calls.append("third")
+
+    dispatcher.connect(Signal.WORKER_ONLINE, first)
+    dispatcher.connect(Signal.WORKER_ONLINE, second)
+    dispatcher.connect(Signal.WORKER_ONLINE, third)
+
+    await dispatcher.dispatch(Signal.WORKER_ONLINE)
+
+    assert calls == ["first", "second", "third"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Handler raises exception → logged, next handler still runs
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handler_exception_is_logged_and_next_runs():
+    dispatcher = SignalDispatcher()
+    calls: list[str] = []
+
+    async def failing(**kwargs):
+        calls.append("failing")
+        raise RuntimeError("boom")
+
+    async def succeeding(**kwargs):
+        calls.append("succeeding")
+
+    dispatcher.connect(Signal.TASK_FAILED, failing)
+    dispatcher.connect(Signal.TASK_FAILED, succeeding)
+
+    with structlog.testing.capture_logs() as logs:
+        await dispatcher.dispatch(Signal.TASK_FAILED)
+
+    # Both handlers ran — exception did not abort the dispatch loop
+    assert calls == ["failing", "succeeding"]
+
+    # A warning was logged; the failing handler's error must be captured
+    warning_entries = [
+        entry for entry in logs if entry.get("log_level") == "warning"
+    ]
+    assert warning_entries, "expected a WARNING log entry for handler exception"
+    # The failing handler's exception details must be present
+    entry = warning_entries[0]
+    assert entry["event"] == "signal_handler_error"
+    assert entry["signal"] == Signal.TASK_FAILED.value
+    assert "RuntimeError" in entry["error"]
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_does_not_propagate():
+    """dispatch itself must not raise when a handler fails."""
+    dispatcher = SignalDispatcher()
+
+    async def failing(**kwargs):
+        raise ValueError("nope")
+
+    dispatcher.connect(Signal.TASK_FAILED, failing)
+
+    # Must not raise
+    await dispatcher.dispatch(Signal.TASK_FAILED)
+
+
+# ---------------------------------------------------------------------------
+# 8. dispatch for signal with no handlers → no-op (no error)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_with_no_handlers_is_noop():
+    dispatcher = SignalDispatcher()
+
+    # No handlers connected — must not raise
+    await dispatcher.dispatch(Signal.SCHEDULER_STANDBY)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_with_no_handlers_accepts_kwargs():
+    dispatcher = SignalDispatcher()
+
+    # kwargs with no handlers — also a safe no-op
+    await dispatcher.dispatch(Signal.SCHEDULER_STANDBY, foo="bar", n=1)
