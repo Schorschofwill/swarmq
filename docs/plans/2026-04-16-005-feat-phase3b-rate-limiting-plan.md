@@ -1,7 +1,7 @@
 ---
 title: "feat: Phase 3b.1 — Rate Limiting via Sliding Window Counter"
 type: feat
-status: active
+status: completed
 date: 2026-04-16
 origin: docs/brainstorms/implementation-order-requirements.md
 ---
@@ -127,7 +127,7 @@ Alle Artifacts unter `.context/compound-engineering/document-review/plan005-*.js
 
 ## Implementation Units
 
-- [ ] **Unit 1: Lua-Script-Loader (`src/swarmq/lua/__init__.py`)**
+- [x] **Unit 1: Lua-Script-Loader (`src/swarmq/lua/__init__.py`)**
 
 **Goal:** Minimaler File-Loader der Lua-Dateien aus `src/swarmq/lua/*.lua` lädt. Konsumenten nutzen dann `client.register_script(source)` direkt (NOSCRIPT-Recovery ist dort eingebaut).
 
@@ -162,7 +162,7 @@ Alle Artifacts unter `.context/compound-engineering/document-review/plan005-*.js
 
 ---
 
-- [ ] **Unit 2: Sliding-Window-Counter Lua-Script + Integration-Tests**
+- [x] **Unit 2: Sliding-Window-Counter Lua-Script + Integration-Tests**
 
 **Goal:** Das Lua-Script selbst (wortgetreue Übernahme aus der Recherche) + Integration-Tests gegen eine echte Valkey-Instanz.
 
@@ -202,7 +202,7 @@ Alle Artifacts unter `.context/compound-engineering/document-review/plan005-*.js
 
 ---
 
-- [ ] **Unit 3: RateLimiter Python-Wrapper (`src/swarmq/limits.py`)**
+- [x] **Unit 3: RateLimiter Python-Wrapper (`src/swarmq/limits.py`)**
 
 **Goal:** `parse_rate_limit("100/m")` + `RateLimiter(client).check(task_name, config)` mit SCRIPT-Registration im Konstruktor.
 
@@ -259,7 +259,7 @@ Alle Artifacts unter `.context/compound-engineering/document-review/plan005-*.js
 
 ---
 
-- [ ] **Unit 4: `TaskInfo.rate_limit` Feld + Validierung**
+- [x] **Unit 4: `TaskInfo.rate_limit` Feld + Validierung**
 
 **Goal:** TaskInfo erweitern um `rate_limit: str | None = None`, Validierung beim Erstellen.
 
@@ -291,7 +291,7 @@ Alle Artifacts unter `.context/compound-engineering/document-review/plan005-*.js
 
 ---
 
-- [ ] **Unit 5: Worker-Integration + Requeue-Logic + E2E-Test**
+- [x] **Unit 5: Worker-Integration + Requeue-Logic + E2E-Test**
 
 **Goal:** Worker prüft Rate-Limit **vor** `run_pre_execute`. Bei Rate-Limited: Signal dispatchen, `publish_to_delay_queue` mit `retry_after_ms`, ack — **kein** DLQ, kein pre_execute. E2E-Test in `tests/e2e/`.
 
