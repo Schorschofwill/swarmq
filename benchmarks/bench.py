@@ -17,6 +17,10 @@ Szenarien:
 
 Aufruf:
   python bench.py [--messages N] [--concurrency N] [--scenario NAME|all]
+
+Diagnose bei Hangs:
+  kill -USR1 <pid>   dumpt alle Python-Threads + asyncio-Tasks nach stderr
+  kill -USR2 <pid>   dumpt C-Level-Stacks via faulthandler (async-signal-safe)
 """
 
 from __future__ import annotations
@@ -29,50 +33,77 @@ import os
 import signal
 import statistics
 import sys
-import threading
 import time
 import traceback
 from dataclasses import dataclass, field
+from types import FrameType
 
 import aio_pika
+from aio_pika import DeliveryMode, Message as AMQPMessage
+from valkey.asyncio import Valkey
 
 
 # ---------------------------------------------------------------------------
 # Diagnostic hooks — enable `kill -USR1 <pid>` to dump stacks of every thread
 # AND every live asyncio task, so we can see where a benchmark hang is parked.
+# SIGUSR2 uses faulthandler, which is async-signal-safe; SIGUSR1 gives us the
+# Python-level view (asyncio tasks) that faulthandler cannot provide.
 # ---------------------------------------------------------------------------
 
-def _dump_all_stacks(*_: object) -> None:
-    out = sys.stderr
-    out.write("\n==== SIGUSR1 STACK DUMP ====\n")
-    out.write(f"time={time.strftime('%H:%M:%S')} pid={os.getpid()}\n\n")
-    out.write("-- THREADS --\n")
-    frames = sys._current_frames()
-    for tid, frame in frames.items():
-        out.write(f"\nThread {tid}:\n")
-        traceback.print_stack(frame, file=out)
+def _dump_all_stacks(signum: int, frame: FrameType | None) -> None:
     try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
+        out = sys.stderr
+        out.write("\n==== SIGUSR1 STACK DUMP ====\n")
+        out.write(f"time={time.strftime('%H:%M:%S')} pid={os.getpid()}\n\n")
+        out.write("-- THREADS --\n")
+        frames = sys._current_frames()
+        main_tid = threading_main_tid()
+        for tid, f in frames.items():
+            # For the interrupted main thread, prefer the `frame` argument —
+            # it points to the user code site, not the signal handler.
+            effective = frame if (main_tid is not None and tid == main_tid and frame is not None) else f
+            out.write(f"\nThread {tid}:\n")
+            traceback.print_stack(effective, file=out)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        tasks = asyncio.all_tasks(loop) if loop is not None else set()
+        out.write(f"\n-- ASYNCIO TASKS ({len(tasks)}) --\n")
+        for t in tasks:
+            out.write(
+                f"\nTask {t.get_name()!r} done={t.done()} cancelled={t.cancelled()}\n"
+            )
+            # Task.print_stack() renders the full coroutine call chain; frame-
+            # by-frame traceback.print_stack(limit=1) collapsed each await to
+            # a single line and hid the async shape we need for debugging.
+            t.print_stack(file=out)
+        out.write("==== END STACK DUMP ====\n\n")
+        out.flush()
+    except BaseException as exc:  # noqa: BLE001 — handler must never leak
+        try:
+            sys.stderr.write(f"[bench] SIGUSR1 handler failed: {exc!r}\n")
+        except Exception:
+            pass
+
+
+def threading_main_tid() -> int | None:
+    """Return the main-thread ID if known (used only inside the dump)."""
+    import threading
+
+    try:
+        return threading.main_thread().ident
     except Exception:
-        loop = None
-    tasks = asyncio.all_tasks(loop) if loop is not None else set()
-    out.write(f"\n-- ASYNCIO TASKS ({len(tasks)}) --\n")
-    for t in tasks:
-        out.write(f"\nTask {t.get_name()!r} done={t.done()} cancelled={t.cancelled()}\n")
-        stack = t.get_stack()
-        for frame in stack:
-            traceback.print_stack(frame, file=out, limit=1)
-    out.write("==== END STACK DUMP ====\n\n")
-    out.flush()
+        return None
 
 
 try:
     signal.signal(signal.SIGUSR1, _dump_all_stacks)
-    faulthandler.register(signal.SIGUSR2, all_threads=True)
-except Exception:
-    pass
-from aio_pika import DeliveryMode, Message as AMQPMessage
-from valkey.asyncio import Valkey
+    faulthandler.register(signal.SIGUSR2, file=sys.__stderr__, all_threads=True)
+except (AttributeError, OSError, ValueError) as _exc:
+    # SIGUSR1/SIGUSR2 are unavailable on Windows and may be claimed by a
+    # parent supervisor. Tell the operator rather than swallow silently.
+    sys.stderr.write(f"[bench] stack-dump handlers unavailable: {_exc!r}\n")
 
 
 # ---------------------------------------------------------------------------
