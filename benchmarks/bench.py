@@ -38,6 +38,7 @@ import traceback
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import FrameType
+from typing import NamedTuple
 
 import aio_pika
 from aio_pika import DeliveryMode, Message as AMQPMessage
@@ -184,6 +185,114 @@ class BenchResult:
         if not self.latencies_ms:
             return 0.0
         return statistics.mean(self.latencies_ms)
+
+
+# ---------------------------------------------------------------------------
+# Repeat / aggregation helpers
+#
+# Used only when the CLI is invoked with `--repeat N` where N >= 2. Single-
+# run behaviour (the default) is unchanged and these helpers are never
+# exercised — they operate on lists of BenchResult and have no side effects.
+# ---------------------------------------------------------------------------
+
+
+class AggregateStats(NamedTuple):
+    """Median / min / max summary over N single-run numbers."""
+
+    median: float
+    min: float
+    max: float
+    count: int
+
+
+def _aggregate_rps(results: list[BenchResult]) -> AggregateStats:
+    """Aggregate ``throughput_msg_s`` across runs of the same scenario.
+
+    Median is the robust mid-value; min+max expose the real spread (which
+    the baseline showed is 16-22% for pubsub even with warm-up active).
+    """
+    if not results:
+        raise ValueError("_aggregate_rps called with no results")
+    values = [r.throughput_msg_s for r in results]
+    return AggregateStats(
+        median=statistics.median(values),
+        min=min(values),
+        max=max(values),
+        count=len(values),
+    )
+
+
+def _aggregate_latencies(results: list[BenchResult]) -> dict[str, float] | None:
+    """Return median-over-runs of per-run P50 / P95 / P99, or None.
+
+    Each run computes its own percentiles from its ``latencies_ms``.
+    We then take the median of those per-run percentiles. This reports
+    stability ("where did P95 typically land?") rather than pooling all
+    samples into one distribution, which would hide tail drift.
+
+    Returns None when *every* result has an empty ``latencies_ms`` — the
+    scenario does not measure latency. If some runs have latencies and
+    others do not, we conservatively return None rather than average
+    across non-comparable runs.
+    """
+    if not results:
+        raise ValueError("_aggregate_latencies called with no results")
+    if any(not r.latencies_ms for r in results):
+        return None
+    return {
+        "p50_median": statistics.median(r.p50 for r in results),
+        "p95_median": statistics.median(r.p95 for r in results),
+        "p99_median": statistics.median(r.p99 for r in results),
+    }
+
+
+def print_aggregate(
+    broker: str,
+    scenario: str,
+    rps: AggregateStats,
+    latencies: dict[str, float] | None,
+) -> None:
+    """One-line-ish summary after the per-run prints when --repeat >= 2."""
+    tail = ""
+    if latencies is not None:
+        tail = (
+            f"  |  P50_med={latencies['p50_median']:.2f}ms"
+            f" P95_med={latencies['p95_median']:.2f}ms"
+            f" P99_med={latencies['p99_median']:.2f}ms"
+        )
+    print(
+        f"  AGGREGATE [{rps.count} runs] {broker:>8} | {scenario}: "
+        f"msg/s median={rps.median:,.0f} "
+        f"min={rps.min:,.0f} max={rps.max:,.0f}{tail}\n"
+    )
+
+
+async def _repeat_measurement(
+    runner,
+    repeat: int,
+    out: list[BenchResult],
+) -> None:
+    """Run ``runner`` ``repeat`` times, append each result, print per-run.
+
+    ``runner`` is an async callable returning a ``BenchResult``. The
+    callable is responsible for the FULL scenario setup — purge, pre-fill,
+    measurement — because every run needs its own fresh starting state
+    (an empty queue for dequeue-heavy scenarios, a fresh pubsub channel,
+    etc.).
+
+    When ``repeat >= 2`` an AGGREGATE line is printed after the per-run
+    output using median/min/max over runs.
+    """
+    runs: list[BenchResult] = []
+    for _ in range(repeat):
+        r = await runner()
+        print_result(r)
+        runs.append(r)
+    out.extend(runs)
+    if repeat > 1 and runs:
+        rps = _aggregate_rps(runs)
+        lat = _aggregate_latencies(runs)
+        print_aggregate(runs[0].broker, runs[0].scenario, rps, lat)
 
 
 def print_result(r: BenchResult) -> None:
@@ -945,7 +1054,17 @@ async def run_scenario(
     vk: ValkeyBench,
     messages: int,
     concurrency: int,
+    repeat: int = 1,
 ) -> list[BenchResult]:
+    """Dispatch the selected scenario(s).
+
+    When ``repeat > 1`` each measurement (per broker, per sub-variant)
+    runs ``repeat`` times with full setup per run, and an AGGREGATE line
+    is printed after the per-run output. The returned list contains
+    every single run in insertion order (the summary / winner code later
+    just uses the latest result per scenario, which is backward
+    compatible).
+    """
     results: list[BenchResult] = []
     payload_256 = make_payload(256)
     payload_1k = make_payload(1024)
@@ -953,147 +1072,165 @@ async def run_scenario(
 
     if name in ("enqueue_throughput", "all"):
         print("\n--- Szenario 1: Enqueue-Throughput ---")
-        await rmq.purge()
-        r = await rmq.enqueue_throughput(messages, concurrency, payload_256)
-        print_result(r)
-        results.append(r)
-        await rmq.purge()
 
-        await vk.purge()
-        r = await vk.enqueue_throughput(messages, concurrency, payload_256)
-        print_result(r)
-        results.append(r)
+        async def _rmq_enq() -> BenchResult:
+            await rmq.purge()
+            r = await rmq.enqueue_throughput(messages, concurrency, payload_256)
+            await rmq.purge()
+            return r
 
-        r = await vk.enqueue_throughput_stream(messages, concurrency, payload_256)
-        print_result(r)
-        results.append(r)
-        await vk.purge()
+        async def _vk_enq() -> BenchResult:
+            await vk.purge()
+            return await vk.enqueue_throughput(messages, concurrency, payload_256)
+
+        async def _vk_enq_stream() -> BenchResult:
+            r = await vk.enqueue_throughput_stream(messages, concurrency, payload_256)
+            await vk.purge()
+            return r
+
+        await _repeat_measurement(_rmq_enq, repeat, results)
+        await _repeat_measurement(_vk_enq, repeat, results)
+        await _repeat_measurement(_vk_enq_stream, repeat, results)
 
     if name in ("dequeue_throughput", "all"):
         print("\n--- Szenario 2: Dequeue-Throughput ---")
-        # RabbitMQ: erst befuellen, dann konsumieren
-        await rmq.purge()
-        await rmq.enqueue_throughput(messages, concurrency, payload_256)
-        r = await rmq.dequeue_throughput(messages, concurrency)
-        print_result(r)
-        results.append(r)
 
-        # Valkey LIST
-        await vk.purge()
-        await vk.enqueue_throughput(messages, concurrency, payload_256)
-        r = await vk.dequeue_throughput(messages, concurrency)
-        print_result(r)
-        results.append(r)
+        async def _rmq_deq() -> BenchResult:
+            await rmq.purge()
+            await rmq.enqueue_throughput(messages, concurrency, payload_256)
+            return await rmq.dequeue_throughput(messages, concurrency)
 
-        # Valkey STREAM
-        await vk.purge()
-        await vk.enqueue_throughput_stream(messages, concurrency, payload_256)
-        r = await vk.dequeue_throughput_stream(messages, concurrency)
-        print_result(r)
-        results.append(r)
+        async def _vk_deq() -> BenchResult:
+            await vk.purge()
+            await vk.enqueue_throughput(messages, concurrency, payload_256)
+            return await vk.dequeue_throughput(messages, concurrency)
+
+        async def _vk_deq_stream() -> BenchResult:
+            await vk.purge()
+            await vk.enqueue_throughput_stream(messages, concurrency, payload_256)
+            return await vk.dequeue_throughput_stream(messages, concurrency)
+
+        await _repeat_measurement(_rmq_deq, repeat, results)
+        await _repeat_measurement(_vk_deq, repeat, results)
+        await _repeat_measurement(_vk_deq_stream, repeat, results)
 
     if name in ("roundtrip_latency", "all"):
         print("\n--- Szenario 3: Round-Trip-Latenz ---")
         n_lat = min(messages, 5000)  # Latenz-Tests mit weniger Messages
-        await rmq.purge()
-        r = await rmq.roundtrip_latency(n_lat)
-        print_result(r)
-        results.append(r)
 
-        await vk.purge()
-        r = await vk.roundtrip_latency(n_lat)
-        print_result(r)
-        results.append(r)
+        async def _rmq_rtt() -> BenchResult:
+            await rmq.purge()
+            return await rmq.roundtrip_latency(n_lat)
+
+        async def _vk_rtt() -> BenchResult:
+            await vk.purge()
+            return await vk.roundtrip_latency(n_lat)
+
+        await _repeat_measurement(_rmq_rtt, repeat, results)
+        await _repeat_measurement(_vk_rtt, repeat, results)
 
     if name in ("concurrent_enqueue", "all"):
         print("\n--- Szenario 4: Concurrent Producers ---")
-        await rmq.purge()
-        r = await rmq.concurrent_enqueue(messages, concurrency, payload_256)
-        print_result(r)
-        results.append(r)
-        await rmq.purge()
 
-        await vk.purge()
-        r = await vk.concurrent_enqueue(messages, concurrency, payload_256)
-        print_result(r)
-        results.append(r)
-        await vk.purge()
+        async def _rmq_cenq() -> BenchResult:
+            await rmq.purge()
+            r = await rmq.concurrent_enqueue(messages, concurrency, payload_256)
+            await rmq.purge()
+            return r
+
+        async def _vk_cenq() -> BenchResult:
+            await vk.purge()
+            r = await vk.concurrent_enqueue(messages, concurrency, payload_256)
+            await vk.purge()
+            return r
+
+        await _repeat_measurement(_rmq_cenq, repeat, results)
+        await _repeat_measurement(_vk_cenq, repeat, results)
 
     if name in ("concurrent_dequeue", "all"):
         print("\n--- Szenario 5: Concurrent Consumers ---")
-        await rmq.purge()
-        await rmq.enqueue_throughput(messages, concurrency, payload_256)
-        r = await rmq.concurrent_dequeue(messages, concurrency)
-        print_result(r)
-        results.append(r)
 
-        await vk.purge()
-        await vk.enqueue_throughput(messages, concurrency, payload_256)
-        r = await vk.concurrent_dequeue(messages, concurrency)
-        print_result(r)
-        results.append(r)
+        async def _rmq_cdeq() -> BenchResult:
+            await rmq.purge()
+            await rmq.enqueue_throughput(messages, concurrency, payload_256)
+            return await rmq.concurrent_dequeue(messages, concurrency)
+
+        async def _vk_cdeq() -> BenchResult:
+            await vk.purge()
+            await vk.enqueue_throughput(messages, concurrency, payload_256)
+            return await vk.concurrent_dequeue(messages, concurrency)
+
+        await _repeat_measurement(_rmq_cdeq, repeat, results)
+        await _repeat_measurement(_vk_cdeq, repeat, results)
 
     if name in ("full_pipeline", "all"):
         print("\n--- Szenario 6: Full Pipeline (Producers + Consumers gleichzeitig) ---")
         producers = max(1, concurrency // 2)
         consumers = max(1, concurrency - producers)
 
-        await rmq.purge()
-        r = await rmq.full_pipeline(messages, producers, consumers, payload_256)
-        print_result(r)
-        results.append(r)
+        async def _rmq_full() -> BenchResult:
+            await rmq.purge()
+            return await rmq.full_pipeline(messages, producers, consumers, payload_256)
 
-        await vk.purge()
-        r = await vk.full_pipeline(messages, producers, consumers, payload_256)
-        print_result(r)
-        results.append(r)
+        async def _vk_full() -> BenchResult:
+            await vk.purge()
+            return await vk.full_pipeline(messages, producers, consumers, payload_256)
+
+        await _repeat_measurement(_rmq_full, repeat, results)
+        await _repeat_measurement(_vk_full, repeat, results)
 
     if name in ("payload_sizes", "all"):
         print("\n--- Szenario 7: Payload-Groessen ---")
         for label, payload in [("256B", payload_256), ("1KB", payload_1k), ("10KB", payload_10k)]:
-            await rmq.purge()
-            r = await rmq.enqueue_throughput(messages, concurrency, payload)
-            r.scenario = f"payload_{label}"
-            print_result(r)
-            results.append(r)
-            await rmq.purge()
+            scenario_label = f"payload_{label}"
 
-            await vk.purge()
-            r = await vk.enqueue_throughput(messages, concurrency, payload)
-            r.scenario = f"payload_{label}"
-            print_result(r)
-            results.append(r)
-            await vk.purge()
+            async def _rmq_pay(pl=payload, sl=scenario_label) -> BenchResult:
+                await rmq.purge()
+                r = await rmq.enqueue_throughput(messages, concurrency, pl)
+                r.scenario = sl
+                await rmq.purge()
+                return r
+
+            async def _vk_pay(pl=payload, sl=scenario_label) -> BenchResult:
+                await vk.purge()
+                r = await vk.enqueue_throughput(messages, concurrency, pl)
+                r.scenario = sl
+                await vk.purge()
+                return r
+
+            await _repeat_measurement(_rmq_pay, repeat, results)
+            await _repeat_measurement(_vk_pay, repeat, results)
 
     if name in ("pubsub_notify", "all"):
         print("\n--- Szenario 8: Pub/Sub Result-Benachrichtigung ---")
         n_ps = min(messages, 10000)
-        await rmq.purge()
-        r = await rmq.pubsub_notify(n_ps)
-        print_result(r)
-        results.append(r)
 
-        r = await vk.pubsub_notify(n_ps)
-        print_result(r)
-        results.append(r)
+        async def _rmq_ps() -> BenchResult:
+            await rmq.purge()
+            return await rmq.pubsub_notify(n_ps)
+
+        async def _vk_ps() -> BenchResult:
+            return await vk.pubsub_notify(n_ps)
+
+        await _repeat_measurement(_rmq_ps, repeat, results)
+        await _repeat_measurement(_vk_ps, repeat, results)
 
     if name in ("ack_patterns", "all"):
         print("\n--- Szenario 9: Ack-after-Process (1ms simulierte Arbeit) ---")
         n_ack = min(messages, 5000)
 
-        # RabbitMQ: befuellen
-        await rmq.purge()
-        await rmq.enqueue_throughput(n_ack, concurrency, payload_256)
-        r = await rmq.ack_after_process(n_ack, work_ms=1.0)
-        print_result(r)
-        results.append(r)
+        async def _rmq_ack() -> BenchResult:
+            await rmq.purge()
+            await rmq.enqueue_throughput(n_ack, concurrency, payload_256)
+            return await rmq.ack_after_process(n_ack, work_ms=1.0)
 
-        # Valkey Streams: befuellen
-        await vk.purge()
-        await vk.enqueue_throughput_stream(n_ack, concurrency, payload_256)
-        r = await vk.ack_after_process(n_ack, work_ms=1.0)
-        print_result(r)
-        results.append(r)
+        async def _vk_ack() -> BenchResult:
+            await vk.purge()
+            await vk.enqueue_throughput_stream(n_ack, concurrency, payload_256)
+            return await vk.ack_after_process(n_ack, work_ms=1.0)
+
+        await _repeat_measurement(_rmq_ack, repeat, results)
+        await _repeat_measurement(_vk_ack, repeat, results)
 
     return results
 
@@ -1135,6 +1272,23 @@ def print_summary(results: list[BenchResult]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _positive_int(raw: str) -> int:
+    """argparse type function that rejects values below 1.
+
+    argparse has no built-in `min=` constraint for int, so we emit an
+    ArgumentTypeError for 0 / negative / non-integer input.
+    """
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"must be >= 1 (got {value}); use --repeat 1 for a single run"
+        )
+    return value
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="SwarmQ Broker Benchmark: RabbitMQ vs Valkey")
     parser.add_argument("--messages", "-n", type=int, default=50_000, help="Anzahl Messages pro Test (Default: 50000)")
@@ -1148,10 +1302,17 @@ async def main() -> None:
         ],
         help="Welches Szenario (Default: all)",
     )
+    parser.add_argument(
+        "--repeat", "-r", type=_positive_int, default=1,
+        help=(
+            "Wiederhole jedes Szenario N mal und gib Median+Min+Max aus. "
+            "Default 1 = alter Einzel-Run-Modus."
+        ),
+    )
     args = parser.parse_args()
 
     print(f"\nSwarmQ Broker Benchmark")
-    print(f"Messages: {args.messages:,} | Concurrency: {args.concurrency} | Szenario: {args.scenario}")
+    print(f"Messages: {args.messages:,} | Concurrency: {args.concurrency} | Szenario: {args.scenario} | Repeat: {args.repeat}")
     print(f"RabbitMQ: {RABBITMQ_URL}")
     print(f"Valkey:   {VALKEY_URL}")
 
@@ -1177,7 +1338,10 @@ async def main() -> None:
         await vk.purge()
         print("Warmup abgeschlossen.\n")
 
-        results = await run_scenario(args.scenario, rmq, vk, args.messages, args.concurrency)
+        results = await run_scenario(
+            args.scenario, rmq, vk, args.messages, args.concurrency,
+            repeat=args.repeat,
+        )
         print_summary(results)
     finally:
         await rmq.close()

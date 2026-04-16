@@ -100,3 +100,66 @@ def test_benchmark_all_scenarios_small_load() -> None:
             f"benchmark output missing {marker!r}. Last output:\n"
             + combined[-4000:]
         )
+
+    # Default (--repeat omitted) must not trigger the aggregate path.
+    assert "AGGREGATE [" not in combined, (
+        "default run unexpectedly emitted AGGREGATE — the --repeat 1 legacy "
+        "path should stay silent.\n" + combined[-4000:]
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.timeout(240)
+@pytest.mark.skipif(
+    not _docker_up(),
+    reason="RabbitMQ (5672) or Valkey (6379) not reachable — start docker compose",
+)
+def test_benchmark_repeat_mode_emits_aggregate() -> None:
+    """`--repeat 2` must print two per-run results plus one AGGREGATE line.
+
+    Locks in that the repeat loop actually runs the measurement twice
+    (not once, not in parallel, not silently merged) and that
+    print_aggregate fires exactly when repeat > 1.
+    """
+    assert BENCH_PATH.is_file()
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+
+    result = subprocess.run(
+        [
+            "uv", "run", "--with-requirements",
+            str(BENCH_PATH.parent / "requirements.txt"),
+            "python", "-u", str(BENCH_PATH),
+            "-n", "300", "-s", "enqueue_throughput", "--repeat", "2",
+        ],
+        cwd=BENCH_PATH.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    combined = result.stdout + result.stderr
+
+    assert "Connection closed" not in combined, combined[-4000:]
+    assert "TimeoutError" not in combined, combined[-4000:]
+    assert "Traceback" not in combined, combined[-4000:]
+    assert result.returncode == 0, (
+        f"benchmark exited {result.returncode}. Last output:\n"
+        + combined[-4000:]
+    )
+
+    # The enqueue_throughput scenario runs three variants: RabbitMQ +
+    # Valkey (LIST) + Valkey/Stream. --repeat 2 means six per-run prints
+    # and three AGGREGATE lines (one per variant).
+    throughput_count = combined.count("Throughput:")
+    assert throughput_count == 6, (
+        f"expected 6 per-run Throughput lines, got {throughput_count}.\n"
+        + combined[-4000:]
+    )
+    aggregate_count = combined.count("AGGREGATE [2 runs]")
+    assert aggregate_count == 3, (
+        f"expected 3 AGGREGATE lines, got {aggregate_count}.\n"
+        + combined[-4000:]
+    )
