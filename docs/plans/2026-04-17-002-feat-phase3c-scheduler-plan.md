@@ -689,7 +689,7 @@ Consumer-Dedup:
 
 ---
 
-- [ ] **Unit 6: Lua-Scripts — sched_poll, sched_commit**
+- [x] **Unit 6: Lua-Scripts — sched_poll, sched_commit**
 
 **Goal:** Zwei neue Lua-Scripts für die atomare Poll-Sequence.
 
