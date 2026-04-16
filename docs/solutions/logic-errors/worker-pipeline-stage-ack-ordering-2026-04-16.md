@@ -1,6 +1,7 @@
 ---
 title: "Worker pipeline stages: ack-ordering and the FIRE_AND_FORGET data-loss trap"
 date: 2026-04-16
+last_updated: 2026-04-16
 category: logic-errors
 module: swarmq
 problem_type: logic_error
@@ -114,6 +115,34 @@ async def _try_apply_rate_limit(self, message, task_info, queue, task_id, task_n
     return True
 ```
 
+**Refinement (added 2026-04-16 from Phase 3b.2 review)**: Rule 2's
+`nack(requeue=True)` is correct ONLY for transient broker/backend faults where
+redelivery to any worker can plausibly succeed. For **permanent** payload
+errors — render failures, format-string templates that cannot resolve,
+conflict-counter cap exceeded — use `nack(requeue=False)`. The main queue is
+declared with `x-dead-letter-exchange=""` + `x-dead-letter-routing-key=
+{queue}.XQ` (see `src/swarmq/broker/rabbitmq.py:29-36`), so `nack(requeue=False)`
+is automatically routed by the broker to `{queue}.XQ` — the message is NOT
+lost, just stripped of any application-managed diagnostic headers.
+**Misusing `requeue=True` for a permanent error produces an infinite no-backoff
+loop**: the same payload re-encounters the same failure on every redelivery.
+
+The decision rule:
+- **Transient** (Valkey blip, backend disconnect, broker channel close) →
+  `requeue=True`
+- **Permanent** (render fail, malformed payload, cap exceeded) →
+  `requeue=False`
+
+Logging discipline: every `nack(requeue=False)` log message must explicitly
+state the message is **routed to `{queue}.XQ` via broker DLX without diagnostic
+headers** — never "dropped", "discarded", or "lost". The DLX guarantees
+delivery; the operationally relevant detail is the missing diagnostic headers,
+not message disposition.
+
+See `docs/solutions/logic-errors/nack-requeue-false-routes-via-dlx-not-data-loss-2026-04-16.md`
+for the full DLX-routing analysis and the cascade pattern that originally
+violated this refinement (Phase 3b.2 / R3.4 Task Locking, ADV-002 + ADV-009).
+
 ### Rule 3 — track a per-stage requeue counter on the message header
 
 Without it, a misconfigured stage (rate limit set too tight, lock that never releases, cancel flag that lingers) bounces the same message forever and the only operator-visible signal is unrelated queue-depth growth. Increment a stage-specific header on every requeue and surface it in both the structured log and the dispatched signal.
@@ -172,7 +201,8 @@ The try/except mirror to `_evaluate_retry` matters because broker faults during 
    - The stage runs before the FIRE_AND_FORGET ack site in `_handle_message`
    - The stage method follows the `_try_apply_*` naming and returns `bool`
    - Both the decision call and the publish+ack pair are inside try/except
-   - The exception path issues `nack(requeue=True)`
+   - The exception path issues `nack(requeue=True)` for **transient** failures, `nack(requeue=False)` for **permanent** failures (see Rule 2 refinement above + DLX-routing solution doc)
+   - Every `nack(requeue=False)` log message states routing to `{queue}.XQ via broker DLX`, never "dropped"
    - A per-stage requeue counter is incremented and surfaced in signal kwargs
    - The four-test template above exists in `tests/unit/test_worker.py`
 
@@ -186,4 +216,6 @@ The try/except mirror to `_evaluate_retry` matters because broker faults during 
 - Phase 2 retry pattern (the `_evaluate_retry` shape this mirrors): `src/swarmq/worker.py:_evaluate_retry`, `docs/plans/2026-04-15-003-feat-phase2-production-core-plan.md`
 - Phase 3b.1 review artifacts: `.context/compound-engineering/ce-review/20260416-121928-2f0da051/` — the headline finding (correctness C1 / reliability rel-001 / adversarial adv-001) where three independent reviewers converged on the FIRE_AND_FORGET data-loss path
 - Fix commit: `5e1e695` — "fix(rate-limit): address P1 data-loss + reliability + test gaps from review"
+- **Rule 2 refinement (DLX semantics)**: `docs/solutions/logic-errors/nack-requeue-false-routes-via-dlx-not-data-loss-2026-04-16.md` — Phase 3b.2 review-iteration findings on transient vs permanent error handling and DLX-honest log wording
+- Phase 3b.2 fix commits applying the refinement: `95cc2d6`, `8b9ff67`
 - Adjacent learning: `docs/solutions/patterns/measure-before-planning-variance-claims-2026-04-16.md` — same session, on review-finding confidence vs library-specific contracts
