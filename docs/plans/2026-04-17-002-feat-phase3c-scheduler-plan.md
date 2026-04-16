@@ -1172,7 +1172,7 @@ Integration mit echten 2 Worker-Instanzen.
 
 ---
 
-- [ ] **Unit 11: Worker-Integration — Scheduler embedded starten**
+- [x] **Unit 11: Worker-Integration — Scheduler embedded starten**
 
 **Goal:** Worker startet `SchedulerLoop` beim `start()`, stoppt ihn im
 `_execute_shutdown()`. Integration mit dem bestehenden Worker-Lifecycle.

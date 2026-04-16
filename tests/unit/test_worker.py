@@ -3731,6 +3731,52 @@ class TestSchedfireDedup:
         # can try again
         assert nack_call.kwargs.get("requeue") is True
 
+    async def test_worker_start_instantiates_scheduler(
+        self, broker, backend, config, monkeypatch
+    ):
+        """Worker.start() must construct a SchedulerLoop after the
+        backend + lock-manager are ready and call scheduler.start()."""
+        from swarmq.task import Task, TaskInfo
+        from swarmq.registry import TaskRegistry
+        from swarmq import worker as worker_mod
+
+        class NoopTask(Task):
+            task_info = TaskInfo(name="noop_sched", queues=["default"])
+            async def run(self):
+                return None
+
+        registry = TaskRegistry()
+        registry.register(NoopTask)
+
+        # Patch SchedulerLoop so we can observe start() was called
+        created = []
+        class _FakeSched:
+            def __init__(self, **kwargs):
+                created.append(kwargs)
+                self.started = False
+                self.stopped = False
+            async def start(self):
+                self.started = True
+            async def stop(self):
+                self.stopped = True
+
+        monkeypatch.setattr(worker_mod, "SchedulerLoop", _FakeSched)
+        # Patch broker.consume so start() returns from the consume loop
+        # — we shut down immediately after start() assembles the pipeline.
+        async def _noop_consume(*a, **kw): return None
+        broker.consume = AsyncMock(side_effect=_noop_consume)
+
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        # Fire shutdown before start() blocks on _shutdown_event
+        w._shutdown_event.set()
+
+        await w.start()
+
+        assert len(created) == 1
+        assert w._scheduler is not None
+        assert w._scheduler.started is True
+        assert w._scheduler.stopped is True
+
     async def test_dedup_runs_before_cancel_check(
         self, broker, backend, config
     ):

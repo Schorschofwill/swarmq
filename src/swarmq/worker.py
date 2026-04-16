@@ -57,6 +57,7 @@ from swarmq.middleware import (
     coerce_middleware_chain_factory,
 )
 from swarmq.registry import TaskRegistry
+from swarmq.scheduler import ScheduleStore, SchedulerLoop
 from swarmq.serialization import decode_json, encode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
@@ -109,6 +110,12 @@ class Worker:
         # LockManager has the same lifecycle as RateLimiter — instantiated
         # in start() once the Valkey client is live. See plan 008 Unit 4.
         self._lock_manager: LockManager | None = None
+        # Embedded scheduler (Phase 3c). Lazy-constructed in start() after
+        # the backend is connected — ScheduleStore's registered Lua
+        # scripts need a live client. None means "this worker is not
+        # running the scheduler loop" (only possible if explicitly
+        # disabled; default is enabled).
+        self._scheduler: SchedulerLoop | None = None
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
         # AT_LEAST_ONCE redelivery within the same worker). Values are the
@@ -575,6 +582,23 @@ class Worker:
         # AsyncScripts need a live client. See plan 008 Unit 4.
         self._lock_manager = LockManager(self._backend._client)
 
+        # Embedded scheduler (Phase 3c). Also lazy-constructed here for
+        # the same reason — ScheduleStore's registered sched_poll /
+        # sched_commit scripts need the connected client. Starts both
+        # the election and poll sub-coroutines; only the elected leader
+        # will actually do work, standbys no-op.
+        schedule_store = ScheduleStore(self._backend)
+        self._scheduler = SchedulerLoop(
+            backend=self._backend,
+            broker=self._broker,
+            config=self._config,
+            lock_manager=self._lock_manager,
+            store=schedule_store,
+            signal_dispatcher=self._signal_dispatcher,
+            worker_id=str(id(self)),
+        )
+        await self._scheduler.start()
+
         for queue_name in self._config.queues:
             await self._broker.declare_queue(queue_name)
             await self._broker.consume(
@@ -671,6 +695,22 @@ class Worker:
                             error=str(exc),
                         )
             self._active_handler_locks.clear()
+
+        # 3d. Stop the embedded scheduler. Must run AFTER in-flight tasks
+        # have drained (otherwise the leader could still fire during
+        # drain and have its commit arrive at a closed backend) and
+        # BEFORE broker/backend close (scheduler.stop() writes a handover
+        # marker + releases the leader lock — both Valkey ops). If this
+        # worker holds the leader lock, the stop() call emits
+        # SCHEDULER_LEADER_HANDOVER and sets the transient marker so
+        # the next standby emits SCHEDULER_LEADER (not FAILOVER).
+        if self._scheduler is not None:
+            try:
+                await self._scheduler.stop()
+            except Exception as exc:
+                logger.error(
+                    "scheduler_stop_failed", error=str(exc)
+                )
 
         # 4. Close connections
         self._state = WorkerState.SHUTTING_DOWN
