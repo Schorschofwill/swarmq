@@ -228,3 +228,139 @@ class TestPreStartCancelIntegration:
                     await app.get_result(task_id, timeout=5)
             finally:
                 await _stop_worker(app, worker_task)
+
+
+# ---------------------------------------------------------------------------
+# Unit 7 — running-cancel integration (Monitor-Coroutine)
+# ---------------------------------------------------------------------------
+
+
+class TestRunningCancelIntegration:
+
+    async def test_running_task_cancel_via_monitor(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        """asyncio.sleep(10) task cancelled 500ms in → TaskCancelledError in <2s."""
+        queue = _unique_queue()
+
+        class LongTask(Task):
+            task_info = TaskInfo(name="long_run", queues=[queue])
+            async def run(self) -> str:
+                await asyncio.sleep(10)
+                return "should-not-return"
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+
+        # Short poll interval for fast test.
+        async with SwarmQ(
+            broker, backend, queues=[queue], concurrency=1,
+            cancel_poll_interval=0.1,
+        ) as app:
+            await app.broker.declare_queue(queue)
+
+            worker_task = await _start_worker(app)
+            try:
+                task_id = await app.schedule("long_run")
+                # Let the worker dequeue and start run().
+                await asyncio.sleep(0.5)
+                assert await app.cancel(task_id) is True
+                # Monitor should catch the flag at next poll (≤100ms).
+                with pytest.raises(TaskCancelledError):
+                    await app.get_result(task_id, timeout=3)
+                # Flag cleared.
+                assert await backend.is_cancelled(task_id) is False
+            finally:
+                await _stop_worker(app, worker_task)
+
+    async def test_hard_timeout_still_works_without_cancel(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        """Regression: task exceeds hard_timeout, no cancel → task fails with timeout."""
+        queue = _unique_queue()
+
+        class TimeoutTask(Task):
+            task_info = TaskInfo(
+                name="timeout_task", queues=[queue], hard_timeout=1,
+            )
+            async def run(self) -> str:
+                await asyncio.sleep(10)
+                return "never"
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+
+        async with SwarmQ(
+            broker, backend, queues=[queue], concurrency=1,
+            cancel_poll_interval=0.5,
+        ) as app:
+            await app.broker.declare_queue(queue)
+
+            worker_task = await _start_worker(app)
+            try:
+                task_id = await app.schedule("timeout_task")
+                # Expect a TaskError (NOT TaskCancelledError).
+                from swarmq.exceptions import TaskError
+                with pytest.raises(TaskError) as excinfo:
+                    await app.get_result(task_id, timeout=5)
+                # Cancel-specific exception must NOT be raised.
+                assert not isinstance(excinfo.value, TaskCancelledError)
+                assert "hard timeout" in str(excinfo.value).lower()
+            finally:
+                await _stop_worker(app, worker_task)
+
+    async def test_cancel_with_lock_releases_lock_for_successor(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        """Task holds lock, cancel greift, lock is released, next task can acquire."""
+        queue = _unique_queue()
+        lock_name = f"lock-test-{uuid.uuid4().hex[:6]}"
+
+        order: list[str] = []
+
+        class LockedLongTask(Task):
+            task_info = TaskInfo(
+                name="locked_long", queues=[queue],
+                lock=lock_name, hard_timeout=30,
+            )
+            async def run(self) -> str:
+                order.append("long_started")
+                await asyncio.sleep(10)
+                return "no"
+
+        class LockedShortTask(Task):
+            task_info = TaskInfo(
+                name="locked_short", queues=[queue],
+                lock=lock_name, hard_timeout=30,
+            )
+            async def run(self) -> str:
+                order.append("short_ran")
+                return "ok"
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+
+        async with SwarmQ(
+            broker, backend, queues=[queue], concurrency=2,
+            cancel_poll_interval=0.1,
+        ) as app:
+            await app.broker.declare_queue(queue)
+
+            worker_task = await _start_worker(app)
+            try:
+                long_id = await app.schedule("locked_long")
+                await asyncio.sleep(0.4)  # let it acquire the lock
+                # Schedule the successor — it must be gated by the lock.
+                short_id = await app.schedule("locked_short")
+                await asyncio.sleep(0.2)  # give it a chance to try-acquire
+                # Now cancel the long task.
+                await app.cancel(long_id)
+                # Long task result is Cancelled.
+                with pytest.raises(TaskCancelledError):
+                    await app.get_result(long_id, timeout=5)
+                # Short task eventually runs because the lock was released.
+                result = await app.get_result(short_id, timeout=10)
+                assert result == "ok"
+                assert "short_ran" in order
+            finally:
+                await _stop_worker(app, worker_task)

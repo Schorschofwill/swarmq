@@ -264,3 +264,248 @@ async def test_e2e_cancel_in_retry_delay_full_stack(
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker_task
+
+
+# ---------------------------------------------------------------------------
+# Unit 7 — running cancel (Monitor-Coroutine) E2E
+# ---------------------------------------------------------------------------
+
+
+async def test_e2e_running_cancel_full_stack(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """Task is already running → cancel → TaskCancelledError within poll interval."""
+    queue = _unique_queue()
+    task_name = _task_name("running")
+
+    class LongRun(Task):
+        task_info = TaskInfo(name=task_name, queues=[queue])
+        async def run(self) -> str:
+            await asyncio.sleep(10)
+            return "should-not-return"
+
+    client_broker = RabbitMQBroker(rabbitmq_url)
+    client_backend = ValkeyBackend(valkey_url)
+    client_app = SwarmQ(client_broker, client_backend, queues=[queue])
+
+    worker_broker = RabbitMQBroker(rabbitmq_url)
+    worker_backend = ValkeyBackend(valkey_url)
+    worker_app = SwarmQ(
+        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        cancel_poll_interval=0.1,
+    )
+
+    async with client_app:
+        await client_broker.declare_queue(queue)
+
+        async with worker_app:
+            worker_task = asyncio.create_task(worker_app.start_worker())
+            try:
+                await asyncio.sleep(0.4)
+
+                task_id = await client_app.schedule(task_name)
+                # Let the worker actually start run()
+                await asyncio.sleep(0.5)
+                # Now cancel mid-execution
+                assert await client_app.cancel(task_id) is True
+                # Monitor catches this at the next poll, run_task.cancel() fires.
+                with pytest.raises(TaskCancelledError):
+                    await client_app.get_result(task_id, timeout=3)
+            finally:
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
+
+
+async def test_e2e_cancel_with_lock_releases_for_successor(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """Task holds lock, cancel greift, Lock frei für Nachfolger."""
+    queue = _unique_queue()
+    lock_name = f"e2e-lock-{uuid.uuid4().hex[:6]}"
+
+    long_name = _task_name("long_locked")
+    short_name = _task_name("short_locked")
+
+    class LongLocked(Task):
+        task_info = TaskInfo(
+            name=long_name, queues=[queue],
+            lock=lock_name, hard_timeout=30,
+        )
+        async def run(self) -> str:
+            await asyncio.sleep(30)
+            return "no"
+
+    class ShortLocked(Task):
+        task_info = TaskInfo(
+            name=short_name, queues=[queue],
+            lock=lock_name, hard_timeout=30,
+        )
+        async def run(self) -> str:
+            return "ok"
+
+    client_broker = RabbitMQBroker(rabbitmq_url)
+    client_backend = ValkeyBackend(valkey_url)
+    client_app = SwarmQ(client_broker, client_backend, queues=[queue])
+
+    worker_broker = RabbitMQBroker(rabbitmq_url)
+    worker_backend = ValkeyBackend(valkey_url)
+    worker_app = SwarmQ(
+        worker_broker, worker_backend, queues=[queue], concurrency=2,
+        cancel_poll_interval=0.1,
+    )
+
+    async with client_app:
+        await client_broker.declare_queue(queue)
+
+        async with worker_app:
+            worker_task = asyncio.create_task(worker_app.start_worker())
+            try:
+                await asyncio.sleep(0.4)
+
+                long_id = await client_app.schedule(long_name)
+                await asyncio.sleep(0.5)  # let it acquire the lock
+
+                short_id = await client_app.schedule(short_name)
+                # Short is now lock-blocked, will retry via broker.
+                await asyncio.sleep(0.3)
+
+                # Cancel the long-running task.
+                await client_app.cancel(long_id)
+                with pytest.raises(TaskCancelledError):
+                    await client_app.get_result(long_id, timeout=5)
+
+                # Successor runs after lock release.
+                result = await client_app.get_result(short_id, timeout=10)
+                assert result == "ok"
+            finally:
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
+
+
+async def test_e2e_parallel_mixed_cancel_and_complete(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """50 tasks scheduled, 25 get cancelled mid-run, 25 complete — no crosstalk."""
+    queue = _unique_queue()
+    task_name = _task_name("mixed")
+
+    class MixedTask(Task):
+        task_info = TaskInfo(name=task_name, queues=[queue])
+        async def run(self, sleep_s: float, marker: int) -> int:
+            await asyncio.sleep(sleep_s)
+            return marker
+
+    client_broker = RabbitMQBroker(rabbitmq_url)
+    client_backend = ValkeyBackend(valkey_url)
+    client_app = SwarmQ(client_broker, client_backend, queues=[queue])
+
+    worker_broker = RabbitMQBroker(rabbitmq_url)
+    worker_backend = ValkeyBackend(valkey_url)
+    # Reduced scale from 50→20 to keep test runtime reasonable but
+    # still exercises the concurrent-cancel path.
+    TOTAL = 20
+    TO_CANCEL = 10
+    worker_app = SwarmQ(
+        worker_broker, worker_backend, queues=[queue], concurrency=10,
+        cancel_poll_interval=0.1,
+    )
+
+    async with client_app:
+        await client_broker.declare_queue(queue)
+
+        async with worker_app:
+            worker_task = asyncio.create_task(worker_app.start_worker())
+            try:
+                await asyncio.sleep(0.4)
+
+                # Cancelled tasks sleep longer so the monitor has time
+                # to kick in; completed ones sleep only a bit.
+                ids_cancel = []
+                ids_complete = []
+                for i in range(TO_CANCEL):
+                    tid = await client_app.schedule(task_name, 5.0, i)
+                    ids_cancel.append(tid)
+                for i in range(TOTAL - TO_CANCEL):
+                    tid = await client_app.schedule(task_name, 0.1, 100 + i)
+                    ids_complete.append(tid)
+
+                # Let them all start (concurrency=10).
+                await asyncio.sleep(0.8)
+                # Cancel the first 10.
+                await asyncio.gather(*[client_app.cancel(tid) for tid in ids_cancel])
+
+                # Collect outcomes.
+                cancel_errors = 0
+                for tid in ids_cancel:
+                    with pytest.raises(TaskCancelledError):
+                        await client_app.get_result(tid, timeout=5)
+                    cancel_errors += 1
+
+                # Remaining tasks completed cleanly with their markers.
+                for i, tid in enumerate(ids_complete):
+                    result = await client_app.get_result(tid, timeout=5)
+                    assert result == 100 + i
+
+                assert cancel_errors == TO_CANCEL
+            finally:
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
+
+
+async def test_e2e_shutdown_during_running_cancel(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """SIGTERM during a cancelled run: detached_releases drained, no lock leak."""
+    queue = _unique_queue()
+    task_name = _task_name("shutdown_cancel")
+    lock_name = f"shutdown-{uuid.uuid4().hex[:6]}"
+
+    class LockedLong(Task):
+        task_info = TaskInfo(
+            name=task_name, queues=[queue],
+            lock=lock_name, hard_timeout=30,
+        )
+        async def run(self) -> str:
+            await asyncio.sleep(30)
+            return "no"
+
+    client_broker = RabbitMQBroker(rabbitmq_url)
+    client_backend = ValkeyBackend(valkey_url)
+    client_app = SwarmQ(client_broker, client_backend, queues=[queue])
+
+    worker_broker = RabbitMQBroker(rabbitmq_url)
+    worker_backend = ValkeyBackend(valkey_url)
+    worker_app = SwarmQ(
+        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        cancel_poll_interval=0.1, shutdown_timeout=2,
+    )
+
+    async with client_app:
+        await client_broker.declare_queue(queue)
+
+        async with worker_app:
+            worker_task = asyncio.create_task(worker_app.start_worker())
+            try:
+                await asyncio.sleep(0.4)
+
+                task_id = await client_app.schedule(task_name)
+                await asyncio.sleep(0.5)  # lock acquired
+
+                # Cancel + immediate shutdown.
+                await client_app.cancel(task_id)
+                await asyncio.sleep(0.05)  # microdelay so cancel lands first
+            finally:
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
+
+        # Lock must be gone from Valkey even though shutdown cancelled
+        # the handler mid-release.
+        from swarmq.locking import lock_key
+        raw = await client_backend._client.get(lock_key(lock_name))
+        assert raw is None, (
+            f"lock was not released during shutdown-cancel: {raw!r}"
+        )

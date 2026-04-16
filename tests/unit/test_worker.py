@@ -18,6 +18,7 @@ from swarmq.exceptions import (
     Retry,
     TaskNotFoundError,
 )
+# SwarmQConfig is used in fixtures for the Unit 7 monitor tests.
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -3144,3 +3145,460 @@ class TestWorkerPreStartCancelCheck:
         await w._handle_message(msg)
 
         w._rate_limiter.check.assert_not_awaited()
+
+
+# ===========================================================================
+# Phase 3b.3 / Unit 7 — Cancel-Monitor Coroutine (isolated)
+# ===========================================================================
+
+class TestCancelMonitorIsolated:
+    """Unit tests for Worker._cancel_monitor as a standalone coroutine.
+
+    Does not exercise _handle_message — those integration paths are
+    covered separately below and in tests/integration/.
+    """
+
+    async def test_monitor_cancels_run_task_when_flag_set(
+        self, worker, backend,
+    ):
+        """is_cancelled=True on first poll → run_task.cancel() + reason set."""
+        backend.is_cancelled = AsyncMock(return_value=True)
+        # A long-running task we expect to be cancelled.
+        run_task = asyncio.create_task(asyncio.sleep(10))
+        reasons: list[str | None] = [None]
+
+        def set_reason_if_unset(r: str) -> None:
+            if reasons[0] is None:
+                reasons[0] = r
+
+        try:
+            await worker._cancel_monitor("task-abc", run_task, set_reason_if_unset)
+        finally:
+            # Whether or not the monitor returned, clean up the run_task.
+            if not run_task.done():
+                run_task.cancel()
+            with contextlib_suppress_cancelled():
+                await run_task
+
+        assert reasons[0] == "cancel"
+        assert run_task.cancelled()
+
+    async def test_monitor_exits_when_run_task_already_done(
+        self, worker, backend,
+    ):
+        """Monitor exits cleanly if run_task.done() is True on entry."""
+        backend.is_cancelled = AsyncMock(return_value=False)
+        run_task = asyncio.create_task(asyncio.sleep(0))
+        await run_task  # run_task is now done
+
+        reasons: list[str | None] = [None]
+
+        async def monitor_with_timeout():
+            await asyncio.wait_for(
+                worker._cancel_monitor(
+                    "task-abc", run_task,
+                    lambda r: reasons.__setitem__(0, r),
+                ),
+                timeout=2.0,
+            )
+
+        await monitor_with_timeout()
+        assert reasons[0] is None
+        # Monitor did NOT poll: is_cancelled should not have been awaited.
+        backend.is_cancelled.assert_not_awaited()
+
+    async def test_monitor_swallows_is_cancelled_exceptions(
+        self, worker, backend,
+    ):
+        """Transient BackendConnectionError → log + continue loop."""
+        # First call raises, second returns False, third True.
+        backend.is_cancelled = AsyncMock(
+            side_effect=[
+                BackendConnectionError("blip"),
+                False,
+                True,
+            ],
+        )
+        # Shorten the poll interval so this test completes fast.
+        worker._config.cancel_poll_interval = 0.05
+
+        run_task = asyncio.create_task(asyncio.sleep(10))
+        reasons: list[str | None] = [None]
+
+        try:
+            await worker._cancel_monitor(
+                "task-abc", run_task,
+                lambda r: reasons.__setitem__(0, r) if reasons[0] is None else None,
+            )
+        finally:
+            if not run_task.done():
+                run_task.cancel()
+            with contextlib_suppress_cancelled():
+                await run_task
+
+        # Eventually set reason=cancel after surviving the first blip.
+        assert reasons[0] == "cancel"
+
+    async def test_monitor_exits_when_run_task_completes_during_sleep(
+        self, worker, backend,
+    ):
+        """asyncio.wait(timeout) lets the monitor detect run_task.done() quickly."""
+        backend.is_cancelled = AsyncMock(return_value=False)
+        worker._config.cancel_poll_interval = 1.0  # long, to verify early-exit
+
+        async def short_run():
+            await asyncio.sleep(0.1)
+            return "ok"
+
+        run_task = asyncio.create_task(short_run())
+        reasons: list[str | None] = [None]
+
+        # Wrap in wait_for with a tight timeout: if the monitor blocks
+        # for the full 1.0 s poll interval it will time out here.
+        await asyncio.wait_for(
+            worker._cancel_monitor(
+                "task-abc", run_task,
+                lambda r: reasons.__setitem__(0, r),
+            ),
+            timeout=0.5,
+        )
+
+        assert run_task.done()
+        assert reasons[0] is None  # never set — task completed normally
+
+
+class TestSetReasonIfUnset:
+    """The compare-and-set helper lives in _handle_message as a closure.
+
+    This test runs the pattern directly to prove first-writer-wins
+    semantics — the identical pattern will be used inline in
+    _handle_message once Unit 7 wires it up.
+    """
+
+    def test_first_call_sets_value(self):
+        reasons: list[str | None] = [None]
+
+        def set_reason_if_unset(r: str) -> None:
+            if reasons[0] is None:
+                reasons[0] = r
+
+        set_reason_if_unset("cancel")
+        assert reasons[0] == "cancel"
+
+    def test_second_call_does_not_overwrite(self):
+        reasons: list[str | None] = [None]
+
+        def set_reason_if_unset(r: str) -> None:
+            if reasons[0] is None:
+                reasons[0] = r
+
+        set_reason_if_unset("cancel")
+        set_reason_if_unset("timeout")
+        assert reasons[0] == "cancel"  # first writer wins
+
+    def test_second_call_with_same_value_is_idempotent(self):
+        reasons: list[str | None] = [None]
+
+        def set_reason_if_unset(r: str) -> None:
+            if reasons[0] is None:
+                reasons[0] = r
+
+        set_reason_if_unset("cancel")
+        set_reason_if_unset("cancel")
+        assert reasons[0] == "cancel"
+
+
+# Module-level contextlib.suppress helper — pytest-asyncio has a quirk
+# where contextlib.suppress used inside async tests occasionally masks
+# the test's own CancelledError on teardown. Inline try/except avoids it.
+class contextlib_suppress_cancelled:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is asyncio.CancelledError:
+            return True
+        return False
+
+
+# ===========================================================================
+# Phase 3b.3 / Unit 7 — Monitor in the full _handle_message pipeline
+# ===========================================================================
+
+class _SlowTask(Task):
+    """Task whose run() takes long enough that the monitor can intervene."""
+    task_info = TaskInfo(name="slow_run", queues=["default"])
+
+    async def run(self) -> str:
+        await asyncio.sleep(5)
+        return "completed"
+
+
+class TestRunningCancelInHandleMessage:
+    """Unit-level integration: cancel during _handle_message execution."""
+
+    @pytest.fixture()
+    def slow_worker(self, broker, backend, config):
+        registry = TaskRegistry()
+        registry.register(_SlowTask)
+        cfg = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            concurrency=2,
+            queues=["default"],
+            cancel_poll_interval=0.05,  # fast polling for unit tests
+        )
+        return Worker(broker=broker, backend=backend, registry=registry, config=cfg)
+
+    async def test_cancel_during_run_raises_task_cancelled_error(
+        self, slow_worker, broker, backend,
+    ):
+        """Flag flips to True during run() → CancelledError → is_cancelled=True."""
+        call_count = [0]
+
+        async def is_cancelled_impl(task_id):
+            call_count[0] += 1
+            # First poll returns False, second returns True.
+            return call_count[0] >= 2
+
+        backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
+        msg = _make_message(_default_payload(name="slow_run", args=[], kwargs={}))
+
+        await slow_worker._handle_message(msg)
+
+        # Result was stored with is_cancelled=True.
+        backend.store_result.assert_awaited_once()
+        stored_bytes = backend.store_result.await_args.args[1]
+        decoded = decode_result(stored_bytes)
+        assert decoded["is_cancelled"] is True
+        assert decoded["is_error"] is False
+        assert decoded["result"] is None
+
+        # Flag was cleared after result-write.
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        broker.ack.assert_awaited_once()
+        broker.nack.assert_not_awaited()
+
+    async def test_cancel_during_run_dispatches_task_cancelled_signal(
+        self, slow_worker, backend,
+    ):
+        """is_cancelled=True path dispatches TASK_CANCELLED, NOT TASK_COMPLETED/FAILED."""
+        call_count = [0]
+
+        async def is_cancelled_impl(task_id):
+            call_count[0] += 1
+            return call_count[0] >= 2
+
+        backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
+
+        captured: list[tuple] = []
+        async def cancelled_handler(**kwargs):
+            captured.append(("cancelled", kwargs))
+        async def completed_handler(**kwargs):
+            captured.append(("completed", kwargs))
+        async def failed_handler(**kwargs):
+            captured.append(("failed", kwargs))
+
+        from swarmq.signals import Signal
+        slow_worker._signal_dispatcher.connect(Signal.TASK_CANCELLED, cancelled_handler)
+        slow_worker._signal_dispatcher.connect(Signal.TASK_COMPLETED, completed_handler)
+        slow_worker._signal_dispatcher.connect(Signal.TASK_FAILED, failed_handler)
+
+        msg = _make_message(_default_payload(name="slow_run", args=[], kwargs={}))
+        await slow_worker._handle_message(msg)
+
+        kinds = [c[0] for c in captured]
+        assert "cancelled" in kinds
+        assert "completed" not in kinds
+        assert "failed" not in kinds
+
+    async def test_cancel_during_run_bypasses_retry(
+        self, broker, backend,
+    ):
+        """Task with max_retries>0, cancel during run → NO retry, is_cancelled result."""
+        class RetryableSlowTask(Task):
+            task_info = TaskInfo(
+                name="retry_slow", queues=["default"],
+                max_retries=3, retry_base_delay=1.0,
+            )
+            async def run(self) -> str:
+                await asyncio.sleep(5)
+                return "x"
+
+        registry = TaskRegistry()
+        registry.register(RetryableSlowTask)
+        cfg = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            concurrency=2,
+            queues=["default"],
+            cancel_poll_interval=0.05,
+        )
+        w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
+
+        call_count = [0]
+        async def is_cancelled_impl(task_id):
+            call_count[0] += 1
+            return call_count[0] >= 2
+        backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
+
+        msg = _make_message(_default_payload(name="retry_slow", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        # Publish to delay queue (retry) must NOT happen.
+        broker.publish_to_delay_queue.assert_not_awaited()
+        broker.publish_to_dead_letter_queue.assert_not_awaited()
+        # Cancel result stored.
+        backend.store_result.assert_awaited_once()
+        stored_bytes = backend.store_result.await_args.args[1]
+        decoded = decode_result(stored_bytes)
+        assert decoded["is_cancelled"] is True
+
+    async def test_cancel_during_run_clears_flag_before_ack(
+        self, slow_worker, broker, backend,
+    ):
+        """clear_cancel_flag is called BEFORE broker.ack (Flag-lifecycle rule)."""
+        call_count = [0]
+        async def is_cancelled_impl(task_id):
+            call_count[0] += 1
+            return call_count[0] >= 2
+        backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
+
+        call_order: list[str] = []
+        backend.clear_cancel_flag = AsyncMock(
+            side_effect=lambda tid: call_order.append("clear"),
+        )
+        broker.ack = AsyncMock(
+            side_effect=lambda msg: call_order.append("ack"),
+        )
+
+        msg = _make_message(_default_payload(name="slow_run", args=[], kwargs={}))
+        await slow_worker._handle_message(msg)
+
+        assert call_order == ["clear", "ack"]
+
+    async def test_cancel_during_run_faf_emits_signal_no_result(
+        self, broker, backend, config,
+    ):
+        """FAF + cancel during run: Signal fires, no store_result."""
+        class FafSlow(Task):
+            task_info = TaskInfo(
+                name="faf_slow", queues=["default"],
+                delivery=DeliveryMode.FIRE_AND_FORGET,
+            )
+            async def run(self) -> None:
+                await asyncio.sleep(5)
+
+        registry = TaskRegistry()
+        registry.register(FafSlow)
+        cfg = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            concurrency=2,
+            queues=["default"],
+            cancel_poll_interval=0.05,
+        )
+        w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
+
+        call_count = [0]
+        async def is_cancelled_impl(task_id):
+            call_count[0] += 1
+            return call_count[0] >= 2
+        backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
+
+        captured = []
+        async def h(**kwargs):
+            captured.append(kwargs)
+        from swarmq.signals import Signal
+        w._signal_dispatcher.connect(Signal.TASK_CANCELLED, h)
+
+        msg = _make_message(_default_payload(name="faf_slow", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        backend.store_result.assert_not_awaited()
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        assert len(captured) == 1
+
+
+class TestHardTimeoutVsCancelRace:
+    """Race between hard-timeout watchdog and cancel monitor.
+
+    Both write to cancel_reason via set_reason_if_unset — first writer
+    wins. The CancelledError branch in _handle_message reads the box.
+    """
+
+    async def test_cancel_wins_race_user_sees_task_cancelled(
+        self, broker, backend,
+    ):
+        """Cancel-flag fires BEFORE hard_timeout → user sees TaskCancelledError."""
+        class TaskWithTimeout(Task):
+            task_info = TaskInfo(
+                name="race_task", queues=["default"], hard_timeout=2,
+            )
+            async def run(self) -> str:
+                await asyncio.sleep(10)
+                return "x"
+
+        registry = TaskRegistry()
+        registry.register(TaskWithTimeout)
+        cfg = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            concurrency=1,
+            queues=["default"],
+            cancel_poll_interval=0.05,
+        )
+        w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
+
+        # Cancel fires after 100ms (well before hard_timeout=2s).
+        call_count = [0]
+        async def is_cancelled_impl(task_id):
+            call_count[0] += 1
+            return call_count[0] >= 2
+        backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
+
+        msg = _make_message(_default_payload(name="race_task", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        backend.store_result.assert_awaited_once()
+        stored_bytes = backend.store_result.await_args.args[1]
+        decoded = decode_result(stored_bytes)
+        assert decoded["is_cancelled"] is True
+        assert decoded["is_error"] is False
+        assert "hard timeout" not in decoded.get("error_message", "")
+
+    async def test_hard_timeout_wins_when_cancel_never_fires(
+        self, broker, backend,
+    ):
+        """Hard-timeout with no cancel flag → existing hard-timeout path."""
+        class TimeoutTask(Task):
+            task_info = TaskInfo(
+                name="timeout_only", queues=["default"], hard_timeout=1,
+            )
+            async def run(self) -> str:
+                await asyncio.sleep(10)
+                return "x"
+
+        registry = TaskRegistry()
+        registry.register(TimeoutTask)
+        cfg = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            concurrency=1,
+            queues=["default"],
+            cancel_poll_interval=0.1,
+        )
+        w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
+
+        # Cancel flag stays False throughout — regression for hard-timeout.
+        backend.is_cancelled = AsyncMock(return_value=False)
+
+        msg = _make_message(_default_payload(name="timeout_only", args=[], kwargs={}))
+        await w._handle_message(msg)
+
+        backend.store_result.assert_awaited_once()
+        stored_bytes = backend.store_result.await_args.args[1]
+        decoded = decode_result(stored_bytes)
+        assert decoded["is_cancelled"] is False
+        assert decoded["is_error"] is True
+        assert "hard timeout" in decoded["error_message"]

@@ -411,13 +411,13 @@ def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task]:
     created: list[asyncio.Task] = []
     original = worker._hard_timeout_watchdog
 
-    async def tracking_watchdog(run_task, timeout):
+    async def tracking_watchdog(run_task, timeout, set_reason_if_unset=None):
         # Record the *current* task (the watchdog task) on first yield so the
         # test can assert on its state after _handle_message returns.
         current = asyncio.current_task()
         if current is not None:
             created.append(current)
-        await original(run_task, timeout)
+        await original(run_task, timeout, set_reason_if_unset)
 
     worker._hard_timeout_watchdog = tracking_watchdog  # type: ignore[assignment]
     return created

@@ -116,6 +116,15 @@ class Worker:
         # _release_acquired_locks pops the entry; _execute_shutdown drains
         # anything still here.
         self._active_handler_locks: dict[uuid.UUID, list[_LockEntry]] = {}
+        # Phase 3b.3: detached lock-release tasks. The shield pattern
+        # around _release_acquired_locks protects against run_task
+        # cancellation (inner-cancel). Against graceful-shutdown
+        # (outer-cancel), the shielded task is detached here so
+        # _execute_shutdown can await it before closing the backend.
+        # Without this set, the orphaned release would race backend.close
+        # and likely fail with BackendConnectionError, leaving the lock
+        # held until TTL.
+        self._detached_releases: set[asyncio.Task] = set()
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -629,7 +638,19 @@ class Worker:
                     task.cancel()
                 await asyncio.wait(pending, timeout=1)
 
-        # 3b. Release any leftover handler locks. Runs AFTER the
+        # 3b. Await detached lock-release tasks (Phase 3b.3). When a
+        # handler finally block was interrupted by outer-cancel, its
+        # shielded _release_acquired_locks call was detached into
+        # self._detached_releases. We must await them BEFORE
+        # backend.close() — otherwise the detached release would use a
+        # closed Valkey client and the lock would stay held until TTL.
+        if self._detached_releases:
+            await asyncio.wait(
+                self._detached_releases,
+                timeout=max(5.0, float(self._config.shutdown_timeout)),
+            )
+
+        # 3c. Release any leftover handler locks. Runs AFTER the
         # asyncio.wait above (so cancelled tasks have had a chance to
         # finish their finally and release their locks themselves) but
         # BEFORE backend.close (so LockManager.release still has a
@@ -901,6 +922,7 @@ class Worker:
             task_instance = task_class()
             result_value = None
             is_error = False
+            is_cancelled = False
             error_message = ""
             task_exception = None
 
@@ -921,12 +943,28 @@ class Worker:
 
                 run_task = asyncio.create_task(run_coro)
 
+                # Per-handler cancel-reason box (Phase 3b.3). Both the
+                # hard-timeout watchdog and the cancel monitor write via
+                # set_reason_if_unset — first writer wins. The
+                # CancelledError branch below reads cancel_reason[0] to
+                # decide which path to take.
+                cancel_reason: list[str | None] = [None]
+
+                def set_reason_if_unset(reason: str) -> None:
+                    if cancel_reason[0] is None:
+                        cancel_reason[0] = reason
+
                 watchdog = None
+                monitor = asyncio.create_task(
+                    self._cancel_monitor(task_id, run_task, set_reason_if_unset)
+                )
                 try:
                     if task_info.hard_timeout is not None:
                         watchdog = asyncio.create_task(
                             self._hard_timeout_watchdog(
-                                run_task, task_info.hard_timeout
+                                run_task,
+                                task_info.hard_timeout,
+                                set_reason_if_unset,
                             )
                         )
 
@@ -944,16 +982,29 @@ class Worker:
                                 "fire_and_forget_error", error=error_message
                             )
                     except asyncio.CancelledError:
-                        hard_err_msg = (
-                            f"hard timeout after {task_info.hard_timeout}s"
-                        )
-                        is_error = True
-                        error_message = hard_err_msg
-                        task_exception = RuntimeError(hard_err_msg)
-                        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                            logger.error(
-                                "fire_and_forget_error", error=error_message
+                        # Discriminate user-cancel vs hard-timeout via
+                        # cancel_reason box (Phase 3b.3).  The box is
+                        # written BEFORE run_task.cancel() by whichever
+                        # source fires first — first-writer-wins.
+                        if cancel_reason[0] == "cancel":
+                            is_cancelled = True
+                            # No task_exception / error_message: cancel
+                            # bypasses the error pipeline entirely.
+                        else:
+                            # "timeout" or None (bare CancelledError):
+                            # fall through to the existing hard-timeout
+                            # path.
+                            hard_err_msg = (
+                                f"hard timeout after {task_info.hard_timeout}s"
                             )
+                            is_error = True
+                            error_message = hard_err_msg
+                            task_exception = RuntimeError(hard_err_msg)
+                            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                                logger.error(
+                                    "fire_and_forget_error",
+                                    error=error_message,
+                                )
                     except Exception as exc:
                         is_error = True
                         error_message = str(exc)
@@ -975,21 +1026,37 @@ class Worker:
                                     "fire_and_forget_error", error=error_message
                                 )
                 finally:
-                    # Outer finally: guarantees watchdog cleanup regardless of
-                    # which path was taken (success, soft/hard timeout, or any
-                    # other exception from run_task / post_execution). Awaiting
-                    # the cancelled watchdog ensures it fully completes so no
-                    # orphan task survives _handle_message.
+                    # Outer finally: guarantees watchdog + monitor cleanup
+                    # regardless of which path was taken (success, soft/
+                    # hard timeout, user cancel, or any other exception
+                    # from run_task / post_execution).
                     if watchdog is not None and not watchdog.done():
                         watchdog.cancel()
                         try:
                             await watchdog
                         except asyncio.CancelledError:
                             pass
+                    if not monitor.done():
+                        monitor.cancel()
+                        try:
+                            await monitor
+                        except asyncio.CancelledError:
+                            pass
 
-            # Emit post-execute / on-error hooks now that lifecycle is resolved
+            # Emit post-execute / on-error / on-cancel hooks now that
+            # the run lifecycle is resolved.
             duration_ms = (time.monotonic() - start_time) * 1000.0
-            if is_error and task_exception is not None:
+            if is_cancelled:
+                # Cancel bypasses the error/success pipeline: no
+                # on_error, no post_execute hooks — cancel is not an
+                # error from middleware's perspective.  Only the
+                # TASK_CANCELLED signal fires.
+                await self._signal_dispatcher.dispatch(
+                    Signal.TASK_CANCELLED,
+                    task_id=task_id,
+                    task_name=task_name,
+                )
+            elif is_error and task_exception is not None:
                 await chain.run_on_error(
                     message_dict, exception=task_exception
                 )
@@ -1010,14 +1077,23 @@ class Worker:
                     duration_ms=duration_ms,
                 )
 
-            # For FIRE_AND_FORGET with errors: skip result/retry pipeline
-            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and is_error:
+            # For FIRE_AND_FORGET with errors: skip result/retry pipeline.
+            # For FIRE_AND_FORGET cancels: also clear the flag before we
+            # bail — the result-ttl-zero early-return below wouldn't
+            # clear it because FAF control flow doesn't reach that
+            # branch for cancelled tasks with errors.
+            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and (
+                is_error or is_cancelled
+            ):
+                if is_cancelled:
+                    await self._backend.clear_cancel_flag(task_id)
                 return
 
-            # Retry logic (AT_LEAST_ONCE only)
+            # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
             if (
                 is_error
                 and task_exception is not None
+                and not is_cancelled
                 and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
                 and task_info.max_retries > 0
             ):
@@ -1035,12 +1111,15 @@ class Worker:
                 if should_retry:
                     return
 
-            # Build result dict
+            # Build result dict. is_cancelled is a new key in Phase 3b.3;
+            # Client._unpack reads it via .get() so pre-R3.6 consumers
+            # don't break when the key is absent.
             result_data = {
                 "task": {"id": task_id, "queue": queue, "name": task_name},
                 "is_error": is_error,
+                "is_cancelled": is_cancelled,
                 "error_message": error_message,
-                "result": None if is_error else result_value,
+                "result": None if (is_error or is_cancelled) else result_value,
             }
 
             # 7. Serialize result
@@ -1069,6 +1148,11 @@ class Worker:
             if result_ttl == 0:
                 if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                     await self._broker.ack(message)
+                # Even with result_ttl=0 we must clear the cancel flag
+                # when the task was cancelled — otherwise it lives until
+                # TTL expires and a task_id reuse would silently cancel.
+                if is_cancelled:
+                    await self._backend.clear_cancel_flag(task_id)
                 return
 
             # 9-11. Store result + ack/nack
@@ -1091,26 +1175,105 @@ class Worker:
                     task_id=task_id,
                 )
 
+            # Clear the cancel flag AFTER the result is safely stored so
+            # a mid-op failure leaves the flag in place and a redelivery
+            # re-triggers the cancel branch.
+            if is_cancelled:
+                await self._backend.clear_cancel_flag(task_id)
+
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 await self._broker.ack(message)
 
         finally:
-            # 12a. Release any task-locks acquired by this handler. Runs
-            # BEFORE semaphore release so the central registry is clean
-            # before the next concurrent handler starts. Failures here
-            # are logged + swallowed — TTL is the recovery safety net.
+            # 12a. Release any task-locks acquired by this handler.
+            # Shielded against inner-cancel (CancelledError from run_task
+            # propagating into this finally). For outer-cancel (graceful
+            # shutdown cancelling the whole _handle_message task), the
+            # release is detached into self._detached_releases and
+            # _execute_shutdown awaits them before closing the backend.
             if acquired_locks and self._lock_manager is not None:
-                await self._release_acquired_locks(handler_id, acquired_locks)
+                release_task = asyncio.ensure_future(
+                    asyncio.shield(
+                        self._release_acquired_locks(handler_id, acquired_locks)
+                    )
+                )
+                self._detached_releases.add(release_task)
+                release_task.add_done_callback(self._detached_releases.discard)
+                try:
+                    await release_task
+                except asyncio.CancelledError:
+                    # Outer-cancel reached us. The shielded task keeps
+                    # running detached; _execute_shutdown will await it.
+                    # Re-raise so the caller's cancel is observed.
+                    raise
             # 12b. Release semaphore
             self._semaphore.release()
             structlog.contextvars.clear_contextvars()
 
     async def _hard_timeout_watchdog(
-        self, run_task: asyncio.Task, timeout: float
+        self,
+        run_task: asyncio.Task,
+        timeout: float,
+        set_reason_if_unset: Callable[[str], None] | None = None,
     ) -> None:
-        """Sleep for *timeout* seconds, then cancel *run_task*."""
+        """Sleep for *timeout* seconds, then cancel *run_task*.
+
+        The optional *set_reason_if_unset* callback writes ``"timeout"``
+        into the per-handler cancel-reason box (Phase 3b.3) so the
+        CancelledError branch in _handle_message can distinguish a
+        hard-timeout from a user cancel.  Omitted arg keeps the old
+        behaviour for tests that instantiate the watchdog directly.
+        """
         await asyncio.sleep(timeout)
+        if set_reason_if_unset is not None:
+            set_reason_if_unset("timeout")
         run_task.cancel()
+
+    async def _cancel_monitor(
+        self,
+        task_id: str,
+        run_task: asyncio.Task,
+        set_reason_if_unset: Callable[[str], None],
+    ) -> None:
+        """Poll Valkey for a cancel flag and cancel *run_task* when set.
+
+        Polling interval: ``self._config.cancel_poll_interval``.  Uses
+        ``asyncio.wait(timeout=…)`` to short-circuit the sleep as soon
+        as *run_task* completes — a vanilla ``asyncio.sleep`` would
+        keep the coroutine alive for a full poll interval past
+        run_task completion.
+
+        Transient errors from ``backend.is_cancelled`` are logged as a
+        warning and do not break the loop — the next poll re-tries.
+
+        The caller is responsible for cancelling and awaiting this
+        coroutine in its finally block.
+        """
+        poll_interval = self._config.cancel_poll_interval
+        while not run_task.done():
+            try:
+                done, _ = await asyncio.wait(
+                    {run_task}, timeout=poll_interval
+                )
+                if run_task in done:
+                    # Task completed on its own — stop polling.
+                    return
+                if await self._backend.is_cancelled(task_id):
+                    set_reason_if_unset("cancel")
+                    run_task.cancel()
+                    return
+            except asyncio.CancelledError:
+                # Handler finally cancels us explicitly — propagate.
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "cancel_monitor_error",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+                # Loop continues on next tick — do NOT spin tight on
+                # errors.
+                await asyncio.sleep(poll_interval)
 
     async def _evaluate_retry(
         self,
