@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import enum
+import inspect
+import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from croniter import CroniterBadCronError, croniter
 
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
+
+# Cron syntax we intentionally do NOT support in v1: L (last), W (nearest
+# weekday), # (nth weekday of month). Rejected at construction so the failure
+# surfaces at task-module import time rather than inside the scheduler loop.
+_FORBIDDEN_CRON_CHARS = re.compile(r"[LW#]")
+
+# Task.run parameter names reserved by Client.schedule. A task that accepts
+# these as its own arguments would silently lose its payload because
+# schedule(delay=) / schedule(eta=) intercepts them before kwargs forwarding.
+# See plan Review-Finding P1-3 for the migration hint users get.
+_RESERVED_RUN_PARAM_NAMES = frozenset({"delay", "eta"})
 
 
 class DeliveryMode(enum.Enum):
@@ -54,6 +70,8 @@ class TaskInfo:
     rate_limit: str | None = None
     lock: str | None = None
     max_concurrency: int = 1
+    cron: str | None = None
+    catchup: bool = False
 
     def __init__(
         self,
@@ -70,6 +88,8 @@ class TaskInfo:
         rate_limit: str | None = None,
         lock: str | None = None,
         max_concurrency: int = 1,
+        cron: str | None = None,
+        catchup: bool = False,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -88,6 +108,8 @@ class TaskInfo:
         object.__setattr__(self, "rate_limit", rate_limit)
         object.__setattr__(self, "lock", lock)
         object.__setattr__(self, "max_concurrency", max_concurrency)
+        object.__setattr__(self, "cron", cron)
+        object.__setattr__(self, "catchup", catchup)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -137,6 +159,30 @@ class TaskInfo:
             # contract — its ValueError is the right message verbatim.
             compute_lock_ttl_ms(self.hard_timeout)
 
+        # catchup=True is reserved for a future release; fail fast at
+        # construction (Review-Finding P2-3) rather than letting the user
+        # discover it on first fire (potentially days later for monthly
+        # crons). Feld bleibt für Forward-Compat erhalten.
+        if self.catchup:
+            raise NotImplementedError(
+                "catchup=True is reserved for a future release; "
+                "set catchup=False"
+            )
+
+        if self.cron is not None:
+            # Reject extended cron-syntax (L/W/#) at construction.
+            if _FORBIDDEN_CRON_CHARS.search(self.cron):
+                raise ValueError(
+                    f"cron uses unsupported extended syntax (L/W/#): "
+                    f"{self.cron!r}; use a standard 5-field expression"
+                )
+            try:
+                croniter(self.cron, datetime.now(UTC))
+            except (CroniterBadCronError, ValueError) as exc:
+                raise ValueError(
+                    f"cron is not a valid expression: {self.cron!r} ({exc})"
+                ) from exc
+
 
 class Task:
     task_info: TaskInfo
@@ -145,6 +191,7 @@ class Task:
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         if hasattr(cls, "task_info"):
+            _check_run_signature_reserved_params(cls)
             Task._registered_tasks.append(cls)
 
     @classmethod
@@ -159,3 +206,33 @@ class Task:
 
     async def post_execution(self) -> None:
         pass
+
+
+def _check_run_signature_reserved_params(cls: type) -> None:
+    """Reject Task subclasses whose run() accepts reserved parameter names.
+
+    ``delay`` and ``eta`` are reserved by Client.schedule() as scheduling
+    instructions. A task that accepts them as its own payload arguments
+    would silently lose those values once scheduled with ``delay=`` or
+    ``eta=``. Surface the conflict at class-registration time with a
+    migration hint, rather than at first schedule.
+    """
+    run = cls.__dict__.get("run")
+    if run is None:
+        # Subclass inherits Task.run — no new signature to inspect.
+        return
+    try:
+        params = inspect.signature(run).parameters
+    except (TypeError, ValueError):
+        # Builtin / C-implemented run — skip.
+        return
+    conflicts = _RESERVED_RUN_PARAM_NAMES & set(params)
+    if conflicts:
+        conflict_list = ", ".join(sorted(conflicts))
+        raise ValueError(
+            f"task {cls.__name__!r} accepts reserved parameter name(s) "
+            f"[{conflict_list}], which conflicts with Client.schedule's "
+            f"scheduling keywords. Rename the task parameter(s) OR pass "
+            f"them explicitly via kwargs mapping, e.g.: "
+            f"client.schedule('{cls.__name__}', kwargs={{'{conflict_list}': ...}})"
+        )

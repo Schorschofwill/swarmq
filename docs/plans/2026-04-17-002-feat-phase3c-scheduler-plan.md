@@ -491,7 +491,7 @@ Default-`retry_max_delay=3600` → 3900 s). Plus Env-Var-Overrides.
 
 ---
 
-- [ ] **Unit 3: TaskInfo-Erweiterung — cron + catchup**
+- [x] **Unit 3: TaskInfo-Erweiterung — cron + catchup**
 
 **Goal:** `TaskInfo.cron: str | None = None` und
 `TaskInfo.catchup: bool = False`. Eager-Validation im `__post_init__`:

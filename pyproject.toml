@@ -13,6 +13,7 @@ dependencies = [
     "structlog",
     "aio-pika",
     "valkey[libvalkey]",
+    "croniter",
 ]
 
 [project.optional-dependencies]

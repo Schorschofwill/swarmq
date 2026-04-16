@@ -298,3 +298,131 @@ def test_taskinfo_whitespace_only_lock_rejected():
     indistinguishable in operator commands from the namespace prefix."""
     with pytest.raises(ValueError, match="lock must not be empty"):
         TaskInfo(name="task", queues=["q"], lock="   ", hard_timeout=60)
+
+
+# ---------------------------------------------------------------------------
+# Cron + catchup (Unit 3)
+# ---------------------------------------------------------------------------
+
+
+def test_taskinfo_cron_default_none():
+    info = TaskInfo(name="task", queues=["q"])
+    assert info.cron is None
+    assert info.catchup is False
+
+
+def test_taskinfo_cron_5_field_standard_accepted():
+    info = TaskInfo(name="task", queues=["q"], cron="*/5 * * * *")
+    assert info.cron == "*/5 * * * *"
+
+
+def test_taskinfo_cron_daily_at_3am_accepted():
+    info = TaskInfo(name="task", queues=["q"], cron="0 3 * * *")
+    assert info.cron == "0 3 * * *"
+
+
+def test_taskinfo_cron_every_minute_accepted():
+    info = TaskInfo(name="task", queues=["q"], cron="* * * * *")
+    assert info.cron == "* * * * *"
+
+
+def test_taskinfo_cron_invalid_syntax_raises():
+    with pytest.raises(ValueError, match="cron"):
+        TaskInfo(name="task", queues=["q"], cron="not-a-cron")
+
+
+def test_taskinfo_cron_extended_L_syntax_rejected():
+    """Extended cron syntax (L, W, #) is rejected at construction."""
+    with pytest.raises(ValueError, match="cron"):
+        TaskInfo(name="task", queues=["q"], cron="0 3 L * *")
+
+
+def test_taskinfo_cron_extended_W_syntax_rejected():
+    with pytest.raises(ValueError, match="cron"):
+        TaskInfo(name="task", queues=["q"], cron="0 3 15W * *")
+
+
+def test_taskinfo_cron_extended_hash_syntax_rejected():
+    with pytest.raises(ValueError, match="cron"):
+        TaskInfo(name="task", queues=["q"], cron="0 3 * * 1#2")
+
+
+def test_taskinfo_catchup_true_raises_not_implemented():
+    """catchup=True is reserved for a future release; fail fast at
+    construction (Review-Finding P2-3)."""
+    with pytest.raises(NotImplementedError, match="catchup"):
+        TaskInfo(name="task", queues=["q"], cron="* * * * *", catchup=True)
+
+
+def test_taskinfo_catchup_true_without_cron_also_raises():
+    """catchup=True is rejected regardless of cron (reserved keyword)."""
+    with pytest.raises(NotImplementedError, match="catchup"):
+        TaskInfo(name="task", queues=["q"], catchup=True)
+
+
+def test_taskinfo_catchup_false_with_cron_accepted():
+    info = TaskInfo(name="task", queues=["q"], cron="* * * * *", catchup=False)
+    assert info.catchup is False
+    assert info.cron == "* * * * *"
+
+
+# ---------------------------------------------------------------------------
+# Task registration delay/eta signature-guard (P1-3)
+# ---------------------------------------------------------------------------
+
+
+def test_task_subclass_with_delay_parameter_raises():
+    """Task.run accepting 'delay' as a parameter would silently lose its
+    payload once Client.schedule(delay=) is called. Guard at registration."""
+    Task._clear_registered_tasks()
+    with pytest.raises(ValueError, match="delay"):
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            async def run(self, delay):  # reserved name
+                return delay
+
+
+def test_task_subclass_with_eta_parameter_raises():
+    Task._clear_registered_tasks()
+    with pytest.raises(ValueError, match="eta"):
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            async def run(self, eta):
+                return eta
+
+
+def test_task_subclass_with_delay_in_kwargs_raises():
+    """Keyword-only delay parameter is equally a conflict."""
+    Task._clear_registered_tasks()
+    with pytest.raises(ValueError, match="delay"):
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            async def run(self, *, delay=None):
+                return delay
+
+
+def test_task_subclass_with_non_reserved_params_still_registers():
+    """Baseline — non-reserved names pass the guard."""
+    Task._clear_registered_tasks()
+
+    class OkTask(Task):
+        task_info = TaskInfo(name="ok", queues=["q"])
+
+        async def run(self, a, b, c):
+            return a + b + c
+
+    assert OkTask in Task._registered_tasks
+
+
+def test_task_subclass_without_run_method_allowed():
+    """A subclass without its own run() inherits the base — no signature
+    to inspect, no conflict possible."""
+    Task._clear_registered_tasks()
+
+    class BareTask(Task):
+        task_info = TaskInfo(name="bare", queues=["q"])
+
+    assert BareTask in Task._registered_tasks
