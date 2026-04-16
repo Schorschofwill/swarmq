@@ -555,3 +555,39 @@ class TestSwarmQPublicAPIExports:
         from swarmq.signals import SignalDispatcher as _DispatcherDirect
 
         assert SignalDispatcher is _DispatcherDirect
+
+
+# ---------------------------------------------------------------------------
+# SwarmQ.cancel — Phase 3b.3 / Unit 5
+# ---------------------------------------------------------------------------
+
+class TestSwarmQCancel:
+    async def test_cancel_delegates_to_client_with_computed_ttl(self, broker, backend):
+        app = SwarmQ(broker, backend, result_ttl=60)
+        app.client.cancel = AsyncMock(return_value=True)
+
+        result = await app.cancel("task-abc")
+
+        # ttl_ms = result_ttl * 1000 = 60_000
+        app.client.cancel.assert_awaited_once_with("task-abc", ttl_ms=60_000)
+        assert result is True
+
+    async def test_cancel_uses_default_result_ttl_when_not_overridden(
+        self, broker, backend,
+    ):
+        app = SwarmQ(broker, backend)
+        app.client.cancel = AsyncMock(return_value=True)
+
+        await app.cancel("task-def")
+
+        # Default result_ttl is 86400 → 86_400_000 ms
+        app.client.cancel.assert_awaited_once_with("task-def", ttl_ms=86_400_000)
+
+    async def test_cancel_returns_false_when_already_cancelled(
+        self, broker, backend,
+    ):
+        app = SwarmQ(broker, backend)
+        app.client.cancel = AsyncMock(return_value=False)
+
+        result = await app.cancel("task-ghi")
+        assert result is False

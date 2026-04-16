@@ -123,6 +123,19 @@ class SwarmQ:
             task_name, *args, timeout=timeout, polling=polling, **kwargs
         )
 
+    async def cancel(self, task_id: str) -> bool:
+        """Request cancellation of *task_id*.
+
+        Fire-and-forget delegation to :meth:`Client.cancel`. Computes the
+        flag's TTL from ``config.result_ttl`` so the cancel flag outlives
+        a typical retry window (default: 24 hours).
+
+        Returns True when the flag was newly set, False when it already
+        existed.
+        """
+        ttl_ms = self.config.result_ttl * 1000
+        return await self.client.cancel(task_id, ttl_ms=ttl_ms)
+
     async def start_worker(self) -> None:
         worker = Worker(
             self.broker,

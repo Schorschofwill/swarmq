@@ -384,6 +384,29 @@ class Client:
         task_id = await self.schedule(task_name, *args, queue=queue, **kwargs)
         return await self.get_result(task_id, timeout=timeout, polling=polling)
 
+    async def cancel(self, task_id: str, ttl_ms: int = 86_400_000) -> bool:
+        """Request cancellation of *task_id*.
+
+        Fire-and-forget: sets the Valkey cancel flag (with TTL) and
+        returns immediately.  Does **not** wait for a worker to react.
+
+        Args:
+            task_id: the task to cancel.  Must be a non-empty string;
+                format is not validated otherwise — cancellation for
+                unknown IDs is harmless and self-heals via TTL.
+            ttl_ms: how long the flag lives in Valkey, in milliseconds.
+                Defaults to 24 hours.  The SwarmQ app wrapper passes
+                ``config.result_ttl * 1000`` so the flag outlives a
+                typical retry window.
+
+        Returns:
+            True when the flag was newly set, False when it already
+            existed (i.e. a prior cancel() call is still in flight).
+        """
+        if not task_id:
+            raise ValueError("task_id must be a non-empty string")
+        return await self._backend.set_cancel_flag(task_id, ttl_ms)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

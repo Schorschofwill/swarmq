@@ -972,3 +972,55 @@ async def test_schedule_default_delivery_mode_without_registry(broker, backend):
 
     assert len(captured) == 1
     assert captured[0]["delivery_mode"] == "at_least_once"
+
+
+# ---------------------------------------------------------------------------
+# Client.cancel() — Phase 3b.3 / Unit 5
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_calls_backend_set_cancel_flag_and_returns_bool(
+    client, backend,
+):
+    backend.set_cancel_flag = AsyncMock(return_value=True)
+
+    result = await client.cancel("task-abc", ttl_ms=60_000)
+
+    backend.set_cancel_flag.assert_awaited_once_with("task-abc", 60_000)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_false_when_already_cancelled(client, backend):
+    backend.set_cancel_flag = AsyncMock(return_value=False)
+
+    result = await client.cancel("task-abc")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_default_ttl_is_24h(client, backend):
+    backend.set_cancel_flag = AsyncMock(return_value=True)
+
+    await client.cancel("task-abc")
+
+    backend.set_cancel_flag.assert_awaited_once_with("task-abc", 86_400_000)
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejects_empty_task_id(client):
+    with pytest.raises(ValueError):
+        await client.cancel("")
+
+
+@pytest.mark.asyncio
+async def test_cancel_propagates_backend_errors(client, backend):
+    from swarmq.exceptions import BackendConnectionError
+
+    backend.set_cancel_flag = AsyncMock(
+        side_effect=BackendConnectionError("valkey down")
+    )
+
+    with pytest.raises(BackendConnectionError):
+        await client.cancel("task-abc")
