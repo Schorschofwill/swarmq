@@ -306,11 +306,16 @@ class Worker:
             original_headers = dict(message.headers) if message.headers else {}
             original_headers["x-swarmq-lock-render-error"] = str(exc)
             # Mirror the rate-limit/_evaluate_retry try/except contract:
-            # broker fault between publish and ack must nack(requeue=True)
-            # so the message survives. Without this wrap, a FIRE_AND_FORGET
-            # task whose lock template fails to render AND whose DLQ publish
-            # fails would be lost — the message has not been acked yet, but
-            # the exception would propagate naked out of _try_apply_lock.
+            # broker fault between publish and ack must NOT loop-bounce a
+            # message whose render error is permanent — the next delivery
+            # would render-fail again, hit the DLQ-publish failure again,
+            # and bounce forever (same shape as ADV-002 at the conflict cap).
+            # nack(requeue=False) routes the message via the broker-side
+            # x-dead-letter-exchange config (see RabbitMQBroker.declare_queue)
+            # to {queue}.XQ — the message is NOT lost, but the diagnostic
+            # x-swarmq-lock-render-error header that this code path tried
+            # to attach will be missing. Operator inspecting the DLQ sees
+            # only the original headers + RabbitMQ's x-death info.
             try:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
@@ -321,9 +326,47 @@ class Worker:
                     "lock_render_dlq_failed",
                     task_id=task_id,
                     task_name=task_name,
+                    lock_template=task_info.lock,
                     error=str(broker_exc),
+                    note="message routed via broker DLX to "
+                         f"{queue}.XQ without diagnostic headers",
                 )
-                await self._broker.nack(message, requeue=True)
+                await self._broker.nack(message, requeue=False)
+            return True
+
+        # Empty-rendered lock guard. TaskInfo rejects literal lock="" and
+        # whitespace-only at construction, but a format-string template
+        # like lock="{var}" with var="" renders to "" at runtime. Without
+        # this check, lock_key("") returns "sq:lock:" — the bare namespace
+        # prefix — which silently collides with every other empty-rendered
+        # lock in the system. Same DLX-via-nack pattern as the render-fail
+        # branch above.
+        if not lock_name.strip():
+            logger.error(
+                "lock_name_rendered_empty",
+                task_id=task_id,
+                task_name=task_name,
+                lock_template=task_info.lock,
+            )
+            original_headers = dict(message.headers) if message.headers else {}
+            original_headers["x-swarmq-lock-render-error"] = (
+                f"lock template {task_info.lock!r} rendered to empty string"
+            )
+            try:
+                await self._broker.publish_to_dead_letter_queue(
+                    queue, message.body, headers=original_headers,
+                )
+                await self._broker.ack(message)
+            except Exception as broker_exc:
+                logger.error(
+                    "lock_empty_render_dlq_failed",
+                    task_id=task_id,
+                    task_name=task_name,
+                    error=str(broker_exc),
+                    note="message routed via broker DLX to "
+                         f"{queue}.XQ without diagnostic headers",
+                )
+                await self._broker.nack(message, requeue=False)
             return True
 
         owner_token = uuid.uuid4().hex
@@ -408,10 +451,12 @@ class Worker:
                 # with requeue lets the message bounce back at count >= cap
                 # again, hit the same DLQ failure, and loop without backoff
                 # (the requeue branch below is unreachable past the cap).
-                # nack(requeue=False) drops the message after a loud ERROR
-                # log naming the lock; operator recovers the wedged Valkey
-                # key per the documented procedure. Better honest data loss
-                # with diagnostic than a silent infinite loop.
+                # nack(requeue=False) routes the message via the broker-side
+                # x-dead-letter-exchange config (see RabbitMQBroker.declare_queue)
+                # to {queue}.XQ — the message is NOT lost, but the diagnostic
+                # headers (x-swarmq-lock-name, x-swarmq-lock-conflict-count)
+                # that this branch tried to attach will be missing. Operator
+                # sees only the original headers + RabbitMQ's x-death info.
                 logger.error(
                     "lock_conflict_dlq_failed",
                     task_id=task_id,
@@ -419,8 +464,9 @@ class Worker:
                     lock_name=lock_name,
                     lock_conflict_count=new_count,
                     error=str(exc),
-                    note="message dropped — recover via valkey-cli DEL "
-                         f"sq:lock:{lock_name}",
+                    note=f"message routed via broker DLX to {queue}.XQ "
+                         "without diagnostic headers; recover wedged lock "
+                         f"via valkey-cli DEL sq:lock:{lock_name}",
                 )
                 await self._broker.nack(message, requeue=False)
             return True

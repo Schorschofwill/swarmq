@@ -2743,15 +2743,17 @@ class TestFormatStringLock:
         assert "x-swarmq-lock-render-error" in kwargs["headers"]
 
     @pytest.mark.asyncio
-    async def test_render_error_with_dlq_publish_failure_nacks_with_requeue(
+    async def test_render_error_with_dlq_publish_failure_nacks_no_requeue(
         self, broker, backend, config
     ):
         """Regression: lock-render DLQ path must wrap publish + ack in
-        try/except so a broker fault does not propagate naked out of
-        _try_apply_lock. Without the wrap, a FIRE_AND_FORGET task whose
-        lock template fails to render AND whose DLQ publish fails would
-        be silently dropped (rule 2 from worker-pipeline-stage solution
-        doc — broker fault between publish and ack must nack(requeue=True))."""
+        try/except, AND on broker fault must nack(requeue=False) so the
+        message routes via the broker DLX to {queue}.XQ instead of
+        bouncing back into the consume loop. A render error is permanent
+        (deterministic output of inspect.signature.bind on this payload)
+        — requeueing would just hit the same render error again, then
+        the same DLQ failure, then loop forever (same shape as ADV-002
+        at the conflict cap)."""
         reg = TaskRegistry()
         reg.register(FormatStringLockTask)
 
@@ -2767,6 +2769,97 @@ class TestFormatStringLock:
         )
         await w._handle_message(msg)
 
-        # Render failed, DLQ publish failed → nack with requeue, no ack.
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        # Render failed, DLQ publish failed → nack(requeue=False) routes
+        # via DLX to {queue}.XQ (not lost), no ack.
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.ack.assert_not_awaited()
+
+
+class EmptyRenderingLockTask(Task):
+    task_info = TaskInfo(
+        name="empty_render",
+        queues=["default"],
+        lock="{tag}",
+        hard_timeout=60,
+    )
+
+    async def run(self, tag: str) -> str:
+        return tag
+
+
+class TestEmptyRenderedLock:
+    """Lock template that renders to "" or whitespace must be rejected
+    at acquire-time. TaskInfo blocks literal `lock=""` at construction,
+    but a format-string template that renders to empty (e.g. lock="{var}"
+    with var="") would slip past — without this guard, lock_key("")
+    returns "sq:lock:" and silently collides with every other empty-
+    rendered lock in the system."""
+
+    @pytest.mark.asyncio
+    async def test_empty_render_routes_to_dlq_with_diagnostic_header(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(EmptyRenderingLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+
+        msg = _make_message(
+            _default_payload(name="empty_render", args=[], kwargs={"tag": ""})
+        )
+        await w._handle_message(msg)
+
+        # Acquire never called — guard fires before LockManager
+        w._lock_manager.acquire.assert_not_called()
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        _, kwargs = broker.publish_to_dead_letter_queue.call_args
+        assert "rendered to empty string" in kwargs["headers"][
+            "x-swarmq-lock-render-error"
+        ]
+        broker.ack.assert_awaited_once_with(msg)
+
+    @pytest.mark.asyncio
+    async def test_whitespace_render_also_rejected(
+        self, broker, backend, config
+    ):
+        reg = TaskRegistry()
+        reg.register(EmptyRenderingLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+
+        msg = _make_message(
+            _default_payload(name="empty_render", args=[], kwargs={"tag": "   "})
+        )
+        await w._handle_message(msg)
+
+        w._lock_manager.acquire.assert_not_called()
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_render_with_dlq_failure_nacks_no_requeue(
+        self, broker, backend, config
+    ):
+        """Same hazard pattern as render-fail: empty render is permanent
+        for this payload, so DLQ publish failure must route via DLX
+        rather than bouncing the message back into the consume loop."""
+        reg = TaskRegistry()
+        reg.register(EmptyRenderingLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+        broker.publish_to_dead_letter_queue = AsyncMock(
+            side_effect=ConnectionError("broker down")
+        )
+
+        msg = _make_message(
+            _default_payload(name="empty_render", args=[], kwargs={"tag": ""})
+        )
+        await w._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
         broker.ack.assert_not_awaited()
