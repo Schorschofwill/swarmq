@@ -93,7 +93,7 @@ SwarmQ hat aktuell keine Möglichkeit für Benutzer, sich in den Task-Lifecycle 
 
 ## Implementation Units
 
-- [ ] **Unit 1: Middleware Basisklasse und MiddlewareChain**
+- [x] **Unit 1: Middleware Basisklasse und MiddlewareChain**
 
 **Goal:** `Middleware` Basisklasse mit 6 Hooks und `MiddlewareChain` die die Stack-Semantik implementiert.
 
@@ -133,7 +133,7 @@ SwarmQ hat aktuell keine Möglichkeit für Benutzer, sich in den Task-Lifecycle 
 
 ---
 
-- [ ] **Unit 2: Signal Enum und SignalDispatcher**
+- [x] **Unit 2: Signal Enum und SignalDispatcher**
 
 **Goal:** `Signal` Enum mit 14 Signalen und `SignalDispatcher` mit Dekorator-API.
 
@@ -172,7 +172,7 @@ SwarmQ hat aktuell keine Möglichkeit für Benutzer, sich in den Task-Lifecycle 
 
 ---
 
-- [ ] **Unit 3: App-Integration (add_middleware + on_signal)**
+- [x] **Unit 3: App-Integration (add_middleware + on_signal)**
 
 **Goal:** SwarmQ App bekommt `add_middleware()` und `on_signal()` API. MiddlewareChain und SignalDispatcher werden an Worker/Client durchgereicht.
 
@@ -202,7 +202,7 @@ SwarmQ hat aktuell keine Möglichkeit für Benutzer, sich in den Task-Lifecycle 
 
 ---
 
-- [ ] **Unit 4: Worker Middleware + Signal Integration**
+- [x] **Unit 4: Worker Middleware + Signal Integration**
 
 **Goal:** Worker ruft Middleware-Hooks und feuert Signals an den richtigen Stellen im Task-Lifecycle.
 
@@ -254,7 +254,7 @@ SwarmQ hat aktuell keine Möglichkeit für Benutzer, sich in den Task-Lifecycle 
 
 ---
 
-- [ ] **Unit 5: Client Middleware + Signal Integration**
+- [x] **Unit 5: Client Middleware + Signal Integration**
 
 **Goal:** Client ruft Middleware-Hooks und feuert Signals bei Enqueue-Operationen.
 
@@ -288,7 +288,7 @@ SwarmQ hat aktuell keine Möglichkeit für Benutzer, sich in den Task-Lifecycle 
 
 ---
 
-- [ ] **Unit 6: E2E Middleware + Signals Tests**
+- [x] **Unit 6: E2E Middleware + Signals Tests**
 
 **Goal:** Verifiziere dass Middleware und Signals End-to-End mit echtem RabbitMQ + Valkey funktionieren.
 
