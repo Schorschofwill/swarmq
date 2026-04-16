@@ -236,7 +236,7 @@ origin doc).
 
 ## Implementation Units
 
-- [ ] **Unit 1: Lua Scripts — `lock_acquire.lua` + `lock_release.lua`**
+- [x] **Unit 1: Lua Scripts — `lock_acquire.lua` + `lock_release.lua`**
 
 **Goal:** Atomare Lock-Acquire- und Release-Operationen, die sowohl Mutex
 (String-Key) als auch Semaphore (SortedSet-Key) abdecken.
@@ -294,7 +294,7 @@ origin doc).
 
 ---
 
-- [ ] **Unit 2: `LockManager` Klasse + Lock-TTL-Berechnung**
+- [x] **Unit 2: `LockManager` Klasse + Lock-TTL-Berechnung**
 
 **Goal:** Python-API um die Lua-Scripts. Hält registered AsyncScripts (NOSCRIPT-
 Recovery via Valkey-py); bietet `acquire()` und `release()`.
@@ -345,7 +345,7 @@ Recovery via Valkey-py); bietet `acquire()` und `release()`.
 
 ---
 
-- [ ] **Unit 3: `TaskInfo` — neue Felder `lock`, `max_concurrency`**
+- [x] **Unit 3: `TaskInfo` — neue Felder `lock`, `max_concurrency`**
 
 **Goal:** Public-API-Erweiterung. Validation-Errors früh (beim Class-Definition
 import), nicht im Worker.

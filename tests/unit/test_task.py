@@ -223,3 +223,64 @@ def test_taskinfo_rate_limit_rejects_missing_separator():
 def test_taskinfo_rate_limit_rejects_zero_count():
     with pytest.raises(ValueError, match="count must be >= 1"):
         TaskInfo(name="task", queues=["q"], rate_limit="0/m")
+
+
+# ---------------------------------------------------------------------------
+# Task locking fields (R3.4 / Phase 3b.2)
+# ---------------------------------------------------------------------------
+
+
+def test_taskinfo_lock_default_is_none():
+    info = TaskInfo(name="task", queues=["q"])
+    assert info.lock is None
+    assert info.max_concurrency == 1
+
+
+def test_taskinfo_lock_with_hard_timeout_accepted():
+    info = TaskInfo(name="task", queues=["q"], lock="resource", hard_timeout=60)
+    assert info.lock == "resource"
+    assert info.max_concurrency == 1
+
+
+def test_taskinfo_lock_semaphore_with_hard_timeout_accepted():
+    info = TaskInfo(
+        name="task", queues=["q"], lock="resource", max_concurrency=3, hard_timeout=60
+    )
+    assert info.lock == "resource"
+    assert info.max_concurrency == 3
+
+
+def test_taskinfo_lock_without_hard_timeout_raises():
+    with pytest.raises(ValueError, match="lock requires hard_timeout"):
+        TaskInfo(name="task", queues=["q"], lock="resource")
+
+
+def test_taskinfo_max_concurrency_without_lock_raises():
+    with pytest.raises(ValueError, match="max_concurrency requires lock"):
+        TaskInfo(name="task", queues=["q"], max_concurrency=3)
+
+
+def test_taskinfo_max_concurrency_zero_raises():
+    with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+        TaskInfo(
+            name="task", queues=["q"], lock="resource", max_concurrency=0,
+            hard_timeout=60,
+        )
+
+
+def test_taskinfo_max_concurrency_negative_raises():
+    with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+        TaskInfo(
+            name="task", queues=["q"], lock="resource", max_concurrency=-1,
+            hard_timeout=60,
+        )
+
+
+def test_taskinfo_format_string_lock_accepted_without_warning():
+    """Format-string locks are rendered at acquire-time via inspect.signature.
+    No warning at TaskInfo construction — render-failures surface in the
+    worker as DLQ entries with a clear error header."""
+    info = TaskInfo(
+        name="task", queues=["q"], lock="user-{user_id}", hard_timeout=60
+    )
+    assert info.lock == "user-{user_id}"

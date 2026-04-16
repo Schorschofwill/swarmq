@@ -6,6 +6,7 @@ import enum
 from dataclasses import dataclass, field
 
 from swarmq.limits import parse_rate_limit
+from swarmq.locking import compute_lock_ttl_ms
 
 
 class DeliveryMode(enum.Enum):
@@ -27,6 +28,17 @@ class TaskInfo:
         with a per-Lua-script delay rather than DLQ'd. Validated at
         construction (a bad string raises ``ValueError`` immediately).
         Supported units: ``s``, ``m``/``min``, ``h``/``hour``.
+      * ``lock``: optional resource name (or format string like
+        ``"user-{user_id}"``) that gates concurrent execution of this
+        task across all workers. With ``max_concurrency=1`` (default)
+        it acts as a Mutex; with ``max_concurrency>1`` as a Semaphore.
+        **Requires ``hard_timeout`` to be set** — the lock TTL is
+        derived from it via ``max(30s, 0.25 * hard_timeout)``. Setting
+        ``lock`` without ``hard_timeout`` raises ``ValueError`` at
+        TaskInfo construction (fail-fast at module import).
+      * ``max_concurrency``: only meaningful when ``lock`` is set.
+        Maximum number of concurrent task instances allowed across all
+        workers for this lock name. Defaults to 1 (Mutex).
     """
 
     name: str
@@ -40,6 +52,8 @@ class TaskInfo:
     retry_exceptions: tuple[type[BaseException], ...] | None = None
     retry_base_delay: float = 1.0
     rate_limit: str | None = None
+    lock: str | None = None
+    max_concurrency: int = 1
 
     def __init__(
         self,
@@ -54,6 +68,8 @@ class TaskInfo:
         retry_exceptions: list[type[BaseException]] | None = None,
         retry_base_delay: float = 1.0,
         rate_limit: str | None = None,
+        lock: str | None = None,
+        max_concurrency: int = 1,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -70,6 +86,8 @@ class TaskInfo:
         )
         object.__setattr__(self, "retry_base_delay", retry_base_delay)
         object.__setattr__(self, "rate_limit", rate_limit)
+        object.__setattr__(self, "lock", lock)
+        object.__setattr__(self, "max_concurrency", max_concurrency)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -96,6 +114,21 @@ class TaskInfo:
             # Validate eagerly at construction so a bad string fails at
             # task-module import time, not inside the worker loop.
             parse_rate_limit(self.rate_limit)
+        if self.max_concurrency < 1:
+            raise ValueError(
+                f"max_concurrency must be >= 1 (got {self.max_concurrency})"
+            )
+        if self.max_concurrency != 1 and self.lock is None:
+            raise ValueError(
+                "max_concurrency requires lock to be set"
+            )
+        if self.lock is not None:
+            # Locks need a finite ceiling for safe TTL derivation. Surface
+            # the requirement at TaskInfo construction (module import) so
+            # the bug fires at the obvious site, not inside the worker loop
+            # at first schedule. compute_lock_ttl_ms encapsulates the
+            # contract — its ValueError is the right message verbatim.
+            compute_lock_ttl_ms(self.hard_timeout)
 
 
 class Task:
