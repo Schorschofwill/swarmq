@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -23,6 +25,7 @@ from swarmq.middleware import (
     coerce_middleware_chain_factory,
 )
 from swarmq.registry import TaskRegistry
+from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import decode_result, encode_json
 from swarmq.signals import Signal, SignalDispatcher
 
@@ -63,6 +66,11 @@ class Client:
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )
+        # Lazy-init (Fork 2 / Review-Finding P2-6). ScheduleStore requires a
+        # connected backend to register its Lua scripts — but Client is
+        # constructed before backend.connect(). We defer the construction to
+        # the first schedule(delay=|eta=) call.
+        self._schedule_store: ScheduleStore | None = None
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current schedule() call."""
@@ -90,14 +98,40 @@ class Client:
             )
         return resolved_queue, delivery_mode
 
+    def _ensure_schedule_store(self) -> ScheduleStore:
+        """Construct and cache the ScheduleStore on first deferred schedule.
+
+        ScheduleStore needs a connected backend (for Lua script-register).
+        Client is built before backend.connect() is awaited, so we defer
+        the construction to the first ``schedule(delay=|eta=)`` call.
+        """
+        if self._schedule_store is None:
+            if getattr(self._backend, "_client", None) is None:
+                raise RuntimeError(
+                    "Client.schedule(delay=/eta=) requires a connected "
+                    "backend. Use 'async with SwarmQ(...)' or await "
+                    "backend.connect() before scheduling deferred tasks."
+                )
+            self._schedule_store = ScheduleStore(self._backend)
+        return self._schedule_store
+
     async def schedule(
         self,
         task_name: str,
         *args: Any,
         queue: str | None = None,
+        delay: float | None = None,
+        eta: datetime | None = None,
         **kwargs: Any,
     ) -> str:
-        """Submit a task for execution and return its task_id."""
+        """Submit a task for execution and return its task_id.
+
+        Reserved keyword-only args ``delay`` and ``eta`` (mutually
+        exclusive) defer the publish until the scheduler fires the
+        entry. Tasks accepting ``delay`` / ``eta`` as payload-arg names
+        are rejected at ``@app.task`` registration (P1-3), so this
+        signature cannot collide with user payloads.
+        """
         # --- validation (registry mode only) ---
         if self._registry is not None:
             if not self._registry.has(task_name):
@@ -107,6 +141,23 @@ class Client:
         resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
             task_name, queue
         )
+
+        # --- deferred path: delay= / eta= ---
+        if delay is not None and eta is not None:
+            raise ValueError("Specify delay OR eta, not both")
+        if delay is not None and delay < 0:
+            raise ValueError(f"delay must be >= 0, got {delay!r}")
+        # delay=0 is a normal immediate publish; only non-zero delay and
+        # eta take the scheduler-store detour.
+        if (delay is not None and delay > 0) or eta is not None:
+            return await self._schedule_deferred(
+                task_name,
+                list(args),
+                kwargs,
+                resolved_queue=resolved_queue,
+                delay=delay,
+                eta=eta,
+            )
 
         # --- build and publish message ---
         task_id = str(uuid.uuid7())
@@ -406,6 +457,52 @@ class Client:
         if not task_id:
             raise ValueError("task_id must be a non-empty string")
         return await self._backend.set_cancel_flag(task_id, ttl_ms)
+
+    async def _schedule_deferred(
+        self,
+        task_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any],
+        *,
+        resolved_queue: str,
+        delay: float | None,
+        eta: datetime | None,
+    ) -> str:
+        """Write a one-shot entry to the ScheduleStore and return task_id.
+
+        The scheduler-loop in Unit 10 poll's, publishes with
+        ``x-swarmq-schedfire`` header, and commits. The worker dedupes on
+        the header (Unit 8), then runs the task like any other message.
+        """
+        now_ms = int(time.time() * 1000)
+        if eta is not None:
+            fire_ts_ms = int(eta.timestamp() * 1000)
+            # Allow a 1s lenience for clock skew / scheduling latency.
+            if fire_ts_ms < now_ms - 1_000:
+                raise ValueError(
+                    f"eta is in the past: {eta.isoformat()}. "
+                    "Use delay=0 for immediate execution."
+                )
+        else:
+            assert delay is not None  # caller-side validated
+            fire_ts_ms = now_ms + int(delay * 1000)
+
+        task_id = str(uuid.uuid7())
+        schedule_name = f"oneshot:{task_id}"
+        definition = ScheduleDefinition(
+            schedule_name=schedule_name,
+            task_name=task_name,
+            args=tuple(args),
+            kwargs=kwargs,
+            queue=resolved_queue,
+            cron=None,
+            fire_ts_ms=fire_ts_ms,
+            source="cli",
+        )
+
+        store = self._ensure_schedule_store()
+        await store.add_schedule(definition)
+        return task_id
 
     # ------------------------------------------------------------------
     # Internal helpers

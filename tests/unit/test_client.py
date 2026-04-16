@@ -1024,3 +1024,119 @@ async def test_cancel_propagates_backend_errors(client, backend):
 
     with pytest.raises(BackendConnectionError):
         await client.cancel("task-abc")
+
+
+# ---------------------------------------------------------------------------
+# schedule(delay=) / schedule(eta=) — Unit 9
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _patched_schedule_store(monkeypatch):
+    """Replace ScheduleStore with an AsyncMock so we can assert calls
+    without needing a connected backend + Lua scripts."""
+    from swarmq import client as client_mod
+
+    store_instance = MagicMock()
+    store_instance.add_schedule = AsyncMock()
+
+    def _factory(backend):
+        return store_instance
+
+    monkeypatch.setattr(client_mod, "ScheduleStore", _factory)
+    return store_instance
+
+
+class TestClientScheduleDelayEta:
+    async def test_schedule_without_delay_or_eta_takes_normal_path(
+        self, client, broker, backend, _patched_schedule_store
+    ):
+        await client.schedule("add", 1, 2, queue="math")
+        # Normal publish path, no ScheduleStore touch
+        broker.publish.assert_awaited()
+        _patched_schedule_store.add_schedule.assert_not_awaited()
+
+    async def test_schedule_with_delay_writes_to_store(
+        self, client, broker, backend, _patched_schedule_store
+    ):
+        tid = await client.schedule("add", 1, 2, queue="math", delay=60.0)
+
+        # Normal publish is bypassed for deferred schedules
+        broker.publish.assert_not_awaited()
+
+        _patched_schedule_store.add_schedule.assert_awaited_once()
+        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        # schedule_name encodes the task_id so that one-shots are
+        # discoverable in list_schedules
+        assert definition.schedule_name == f"oneshot:{tid}"
+        assert definition.cron is None
+        assert definition.source == "cli"
+        # fire_ts is now + delay*1000 — within a reasonable window
+        import time
+        now_ms = int(time.time() * 1000)
+        assert now_ms + 55_000 <= definition.fire_ts_ms <= now_ms + 65_000
+
+    async def test_schedule_with_eta_writes_to_store(
+        self, client, broker, backend, _patched_schedule_store
+    ):
+        from datetime import UTC, datetime, timedelta
+        eta = datetime.now(UTC) + timedelta(hours=2)
+        await client.schedule("add", queue="math", eta=eta)
+
+        _patched_schedule_store.add_schedule.assert_awaited_once()
+        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        expected_ms = int(eta.timestamp() * 1000)
+        assert definition.fire_ts_ms == expected_ms
+
+    async def test_schedule_with_both_delay_and_eta_raises(
+        self, client, _patched_schedule_store
+    ):
+        from datetime import UTC, datetime, timedelta
+        eta = datetime.now(UTC) + timedelta(seconds=60)
+        with pytest.raises(ValueError, match="delay OR eta"):
+            await client.schedule("add", queue="math", delay=1.0, eta=eta)
+
+    async def test_schedule_with_negative_delay_raises(
+        self, client, _patched_schedule_store
+    ):
+        with pytest.raises(ValueError, match="delay"):
+            await client.schedule("add", queue="math", delay=-0.5)
+
+    async def test_schedule_with_past_eta_raises(
+        self, client, _patched_schedule_store
+    ):
+        from datetime import UTC, datetime, timedelta
+        past = datetime.now(UTC) - timedelta(hours=1)
+        with pytest.raises(ValueError, match="eta"):
+            await client.schedule("add", queue="math", eta=past)
+
+    async def test_schedule_with_delay_zero_uses_normal_publish(
+        self, client, broker, backend, _patched_schedule_store
+    ):
+        """delay=0 is explicitly sofortiger publish, not a zero-delay
+        scheduler detour (plan test-scenario)."""
+        await client.schedule("add", queue="math", delay=0)
+        broker.publish.assert_awaited()
+        _patched_schedule_store.add_schedule.assert_not_awaited()
+
+    async def test_schedule_reuses_existing_store(
+        self, client, _patched_schedule_store
+    ):
+        """Lazy-init: second delay-schedule uses the cached store."""
+        await client.schedule("add", queue="math", delay=1.0)
+        await client.schedule("add", queue="math", delay=2.0)
+        assert _patched_schedule_store.add_schedule.await_count == 2
+
+    async def test_schedule_with_delay_without_connected_backend_raises(
+        self, client, broker
+    ):
+        """If backend is not connected, lazy-init must not silently proceed
+        (Fork 2 — clear RuntimeError with migration hint)."""
+        # Ensure backend has no _client attribute (unconnected)
+        # We use a fresh client with a plain Mock backend
+        from swarmq.client import Client as _Client
+        backend = MagicMock()
+        backend._client = None
+        c = _Client(broker=broker, backend=backend, registry=None)
+        with pytest.raises(RuntimeError, match="connected"):
+            await c.schedule("add", queue="math", delay=1.0)

@@ -943,7 +943,7 @@ Duplicate: ack + skip + log. Läuft VOR `_pre_start_cancel_check`.
 
 ---
 
-- [ ] **Unit 9: Client.schedule — delay + eta kwargs**
+- [x] **Unit 9: Client.schedule — delay + eta kwargs**
 
 **Goal:** Reserved keyword-only args `delay` und `eta` auf `client.schedule()`
 und `SwarmQ.schedule()`. Ein-Shot-Schedule wird via `ScheduleStore`
