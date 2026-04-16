@@ -333,3 +333,105 @@ class TestValkeyBackendSubscribeAndWaitCancelledError:
 
         mock_pubsub.unsubscribe.assert_awaited_once_with("sq:notify:task-1")
         mock_pubsub.aclose.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Cancel-flag operations (Phase 3b.3 / Unit 3)
+# ---------------------------------------------------------------------------
+
+
+class TestValkeyBackendCancelKey:
+    def test_cancel_key_format(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert backend._cancel_key("task-abc") == "sq:cancel:task-abc"
+
+
+class TestValkeyBackendSetCancelFlag:
+    async def test_set_cancel_flag_calls_set_with_nx_px(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.return_value = True  # valkey-py with nx=True returns True on success
+        backend._client = mock_client
+
+        result = await backend.set_cancel_flag("task-abc", 60_000)
+
+        mock_client.set.assert_awaited_once_with(
+            "sq:cancel:task-abc", "1", nx=True, px=60_000
+        )
+        assert result is True
+
+    async def test_set_cancel_flag_returns_false_when_already_set(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.return_value = None  # nx=True returns None when key already exists
+        backend._client = mock_client
+
+        result = await backend.set_cancel_flag("task-abc", 60_000)
+
+        assert result is False
+
+    async def test_set_cancel_flag_wraps_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.side_effect = ValkeyError("write failed")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.set_cancel_flag("task-abc", 60_000)
+
+
+class TestValkeyBackendIsCancelled:
+    async def test_is_cancelled_returns_true_when_key_exists(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.exists.return_value = 1
+        backend._client = mock_client
+
+        result = await backend.is_cancelled("task-abc")
+
+        mock_client.exists.assert_awaited_once_with("sq:cancel:task-abc")
+        assert result is True
+
+    async def test_is_cancelled_returns_false_when_key_missing(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.exists.return_value = 0
+        backend._client = mock_client
+
+        result = await backend.is_cancelled("task-abc")
+        assert result is False
+
+    async def test_is_cancelled_wraps_valkey_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.exists.side_effect = ValkeyError("read failed")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.is_cancelled("task-abc")
+
+
+class TestValkeyBackendClearCancelFlag:
+    async def test_clear_cancel_flag_calls_delete(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client
+
+        await backend.clear_cancel_flag("task-abc")
+
+        mock_client.delete.assert_awaited_once_with("sq:cancel:task-abc")
+
+    async def test_clear_cancel_flag_swallows_valkey_error(self):
+        """Flag-DEL failures must not propagate — orphan self-heals via TTL.
+
+        See plan Unit 3 Approach: clear_cancel_flag fängt
+        BackendConnectionError intern, loggt, gibt None zurück.
+        """
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.delete.side_effect = ValkeyError("delete failed")
+        backend._client = mock_client
+
+        # Must not raise
+        result = await backend.clear_cancel_flag("task-abc")
+        assert result is None

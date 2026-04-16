@@ -34,6 +34,9 @@ class ValkeyBackend:
     def _key(self, task_id: str) -> str:
         return f"sq:result:{task_id}"
 
+    def _cancel_key(self, task_id: str) -> str:
+        return f"sq:cancel:{task_id}"
+
     async def store_result(self, task_id: str, result_data: bytes, ttl_ms: int) -> None:
         try:
             await self._client.set(self._key(task_id), result_data, px=ttl_ms)
@@ -69,6 +72,43 @@ class ValkeyBackend:
 
     def create_pubsub(self) -> valkey.asyncio.client.PubSub:
         return self._client.pubsub()
+
+    async def set_cancel_flag(self, task_id: str, ttl_ms: int) -> bool:
+        """Set the cancel flag for *task_id* atomically with TTL.
+
+        Returns True when the flag was newly set, False when it already
+        existed.  Uses ``SET NX PX`` — a single round-trip that handles
+        idempotency (NX) and expiry (PX) together.  No Lua script needed.
+        """
+        try:
+            result = await self._client.set(
+                self._cancel_key(task_id), "1", nx=True, px=ttl_ms
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return bool(result)
+
+    async def is_cancelled(self, task_id: str) -> bool:
+        """Return True when a cancel flag exists for *task_id*."""
+        try:
+            result = await self._client.exists(self._cancel_key(task_id))
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return result == 1
+
+    async def clear_cancel_flag(self, task_id: str) -> None:
+        """Delete the cancel flag for *task_id*.
+
+        Failures are logged and swallowed — an orphan flag will self-heal
+        via TTL, and a DEL failure must not break the worker pipeline
+        (plan Unit 3 / Unit 6 Flag-DEL-Failure rule).
+        """
+        try:
+            await self._client.delete(self._cancel_key(task_id))
+        except (ValkeyError, OSError) as exc:
+            logger.warning(
+                "cancel_flag_delete_failed", task_id=task_id, error=str(exc)
+            )
 
     async def subscribe_and_wait(self, channel: str, timeout: float) -> bool:
         """Subscribe to a Pub/Sub channel and wait for a message.

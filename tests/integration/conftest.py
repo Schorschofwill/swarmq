@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
 
-_RABBITMQ_HOST = "localhost"
-_RABBITMQ_PORT = 5672
-_VALKEY_HOST = "localhost"
-_VALKEY_PORT = 6379
+_RABBITMQ_HOST = os.environ.get("SWARMQ_TEST_RABBITMQ_HOST", "localhost")
+_RABBITMQ_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ_PORT", "5672"))
+_VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
+_VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
 
 
 # ---------------------------------------------------------------------------
@@ -31,12 +32,12 @@ def _port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
 
 @pytest.fixture(scope="session")
 def rabbitmq_url() -> str:
-    return "amqp://guest:guest@localhost:5672/"
+    return f"amqp://guest:guest@{_RABBITMQ_HOST}:{_RABBITMQ_PORT}/"
 
 
 @pytest.fixture(scope="session")
 def valkey_url() -> str:
-    return "valkey://localhost:6379/0"
+    return f"valkey://{_VALKEY_HOST}:{_VALKEY_PORT}/0"
 
 
 @pytest.fixture(autouse=True, scope="session")
