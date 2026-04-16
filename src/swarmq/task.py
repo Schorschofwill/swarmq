@@ -123,6 +123,13 @@ class TaskInfo:
                 "max_concurrency requires lock to be set"
             )
         if self.lock is not None:
+            # Empty / whitespace-only lock would render to the bare Valkey
+            # namespace key "sq:lock:" and silently collide with every
+            # other empty-locked task in the system. Reject at construction.
+            if not self.lock.strip():
+                raise ValueError(
+                    "lock must not be empty or whitespace-only"
+                )
             # Locks need a finite ceiling for safe TTL derivation. Surface
             # the requirement at TaskInfo construction (module import) so
             # the bug fires at the obvious site, not inside the worker loop

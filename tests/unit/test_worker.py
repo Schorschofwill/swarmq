@@ -2583,12 +2583,12 @@ class TestLockRequeueCounter:
         assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 6
 
     @pytest.mark.asyncio
-    async def test_counter_at_cap_routes_to_dlq_not_requeue(
+    async def test_counter_reaching_cap_routes_to_dlq(
         self, broker, backend, config
     ):
-        """At the configured cap (10), the message goes to DLQ instead of
-        being requeued — operators can inspect the DLQ message's
-        x-swarmq-lock-name header to recover the wedged lock."""
+        """When new_count reaches the cap (10), the message routes to DLQ
+        instead of being requeued. Cap is INCLUSIVE — the 10th conflict
+        is the one that DLQs, not the 11th."""
         reg = TaskRegistry()
         reg.register(LockedTask)
 
@@ -2597,7 +2597,8 @@ class TestLockRequeueCounter:
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
         msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
-        msg.headers = {"x-swarmq-lock-conflict-count": 10}
+        # Prior count = 9; new_count = 10 → exactly at cap → DLQ
+        msg.headers = {"x-swarmq-lock-conflict-count": 9}
 
         await w._handle_message(msg)
 
@@ -2606,9 +2607,64 @@ class TestLockRequeueCounter:
         # DLQ instead, with diagnostic header
         broker.publish_to_dead_letter_queue.assert_awaited_once()
         _, kwargs = broker.publish_to_dead_letter_queue.call_args
-        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 11
+        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 10
         assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
         broker.ack.assert_awaited_once_with(msg)
+
+    async def test_counter_just_below_cap_still_requeues(
+        self, broker, backend, config
+    ):
+        """Boundary check: count=8 (becomes new_count=9) is just below the
+        cap and still requeues with backoff. Confirms the cap is
+        inclusive on the DLQ side, exclusive on the requeue side."""
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg.headers = {"x-swarmq-lock-conflict-count": 8}
+
+        await w._handle_message(msg)
+
+        broker.publish_to_delay_queue.assert_awaited_once()
+        broker.publish_to_dead_letter_queue.assert_not_called()
+        _, kwargs = broker.publish_to_delay_queue.call_args
+        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 9
+
+    async def test_dlq_failure_at_cap_drops_message_no_infinite_loop(
+        self, broker, backend, config
+    ):
+        """Cascade-fix regression: when publish_to_dead_letter_queue fails
+        AT the cap, falling back to nack(requeue=True) would let the
+        message bounce back at count >= cap, hit the same DLQ failure,
+        and loop forever without backoff (the requeue branch is
+        unreachable past the cap). Honest data loss with a loud ERROR
+        log naming the lock is the right trade-off."""
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+        broker.publish_to_dead_letter_queue = AsyncMock(
+            side_effect=ConnectionError("broker down")
+        )
+
+        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg.headers = {"x-swarmq-lock-conflict-count": 9}
+
+        await w._handle_message(msg)
+
+        # nack(requeue=False) — drop the message, do not requeue into the
+        # bounce loop.
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        # No ack happened.
+        broker.ack.assert_not_awaited()
+        # No requeue either — the requeue branch is unreachable past the cap.
+        broker.publish_to_delay_queue.assert_not_called()
 
 
 class FormatStringLockTask(Task):
@@ -2685,3 +2741,32 @@ class TestFormatStringLock:
         broker.publish_to_dead_letter_queue.assert_awaited_once()
         _, kwargs = broker.publish_to_dead_letter_queue.call_args
         assert "x-swarmq-lock-render-error" in kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_render_error_with_dlq_publish_failure_nacks_with_requeue(
+        self, broker, backend, config
+    ):
+        """Regression: lock-render DLQ path must wrap publish + ack in
+        try/except so a broker fault does not propagate naked out of
+        _try_apply_lock. Without the wrap, a FIRE_AND_FORGET task whose
+        lock template fails to render AND whose DLQ publish fails would
+        be silently dropped (rule 2 from worker-pipeline-stage solution
+        doc — broker fault between publish and ack must nack(requeue=True))."""
+        reg = TaskRegistry()
+        reg.register(FormatStringLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+        broker.publish_to_dead_letter_queue = AsyncMock(
+            side_effect=ConnectionError("broker down")
+        )
+
+        msg = _make_message(
+            _default_payload(name="user_charge", args=[], kwargs={"amount": 100})
+        )
+        await w._handle_message(msg)
+
+        # Render failed, DLQ publish failed → nack with requeue, no ack.
+        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.ack.assert_not_awaited()

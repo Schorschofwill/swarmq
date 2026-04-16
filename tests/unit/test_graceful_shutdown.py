@@ -282,3 +282,112 @@ class TestShutdownNoActiveTasks:
         broker.close.assert_awaited_once()
         backend.close.assert_awaited_once()
         assert worker._state is WorkerState.STOPPED
+
+
+class TestShutdownLockDrain:
+    """Plan 008 Unit 5 step 3b — leftover handler locks must be released
+    BEFORE backend.close so LockManager.release still has a working
+    Valkey client. Tests the race-tolerant behavior: even if a handler's
+    finally never ran (e.g. cancelled before reaching it), the leftover
+    entries in _active_handler_locks get drained and the registry is
+    cleared.
+    """
+
+    @pytest.mark.asyncio
+    async def test_leftover_handler_locks_released_before_backend_close(
+        self, worker, broker, backend
+    ):
+        import uuid as _uuid
+
+        worker._state = WorkerState.RUNNING
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.release = AsyncMock(return_value=True)
+
+        # Simulate a handler that acquired locks but whose finally never
+        # ran (cancelled mid-execute, before _release_acquired_locks).
+        h1 = _uuid.uuid4()
+        h2 = _uuid.uuid4()
+        worker._active_handler_locks[h1] = [("res-A", "tok-1", 1)]
+        worker._active_handler_locks[h2] = [
+            ("res-B", "tok-2", 3),
+            ("res-C", "tok-3", 1),
+        ]
+
+        # Track ordering: release calls must complete before backend.close
+        release_calls_before_close: list[tuple[str, str, int]] = []
+        original_release = worker._lock_manager.release
+
+        async def _capture_release(*args):
+            release_calls_before_close.append(args)
+            return await original_release(*args)
+
+        worker._lock_manager.release = _capture_release
+
+        close_called_with_pending_releases: list[bool] = []
+        original_backend_close = backend.close
+
+        async def _check_close():
+            close_called_with_pending_releases.append(
+                len(release_calls_before_close) == 3
+            )
+            return await original_backend_close()
+
+        backend.close = _check_close
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        # All three locks released
+        assert len(release_calls_before_close) == 3
+        # Backend.close ran AFTER all releases
+        assert close_called_with_pending_releases == [True]
+        # Registry cleared
+        assert worker._active_handler_locks == {}
+        assert worker._state is WorkerState.STOPPED
+
+    @pytest.mark.asyncio
+    async def test_release_failure_during_drain_logged_but_does_not_crash_shutdown(
+        self, worker, broker, backend
+    ):
+        """A LockManager.release that raises must not abort the shutdown
+        sequence — log + continue, then proceed to backend.close. The
+        TTL is the recovery safety net for any lock that ended up
+        not released."""
+        import uuid as _uuid
+
+        worker._state = WorkerState.RUNNING
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.release = AsyncMock(
+            side_effect=ConnectionError("valkey down")
+        )
+
+        h1 = _uuid.uuid4()
+        worker._active_handler_locks[h1] = [("res-X", "tok-X", 1)]
+
+        worker._request_shutdown()
+        # Must not raise
+        await worker._execute_shutdown()
+
+        # Backend still closed despite release failure
+        backend.close.assert_awaited_once()
+        # Registry cleared even on failure (TTL becomes the safety net)
+        assert worker._active_handler_locks == {}
+        assert worker._state is WorkerState.STOPPED
+
+    @pytest.mark.asyncio
+    async def test_drain_skipped_when_lock_manager_never_initialised(
+        self, worker, broker, backend
+    ):
+        """Worker without LockManager (start() never called) must not
+        crash in the drain step — the guard `if self._lock_manager is
+        not None` short-circuits the empty-registry case."""
+        worker._state = WorkerState.RUNNING
+        worker._lock_manager = None
+        # Even if entries somehow got in (defensive), drain skips entirely
+        # without raising.
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        backend.close.assert_awaited_once()
+        assert worker._state is WorkerState.STOPPED

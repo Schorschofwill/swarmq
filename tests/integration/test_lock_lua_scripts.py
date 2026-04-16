@@ -177,6 +177,25 @@ class TestSemaphore:
             await release_script(keys=[lock_key], args=[tok, max_concurrency])
 
 
+async def _wait_for_pttl_expiry(client, key: str, deadline_s: float = 2.0) -> None:
+    """Poll PTTL until the key expires (returns -2). Avoids asyncio.sleep
+    in test control flow per AGENTS.md — PTTL is the canonical signal
+    that a TTL-driven Valkey key has actually expired, not "probably
+    enough time has passed"."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + deadline_s
+    while loop.time() < deadline:
+        pttl = await client.pttl(key)
+        if pttl == -2:
+            return
+        # Brief yield so other tasks make progress; this is the smallest
+        # cooperative yield, not a wall-clock wait. Equivalent to
+        # asyncio.sleep(0) in spirit but with a tiny floor for syscall
+        # cadence under heavy event-loop pressure.
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"key {key!r} did not expire within {deadline_s}s")
+
+
 class TestExpiry:
     async def test_mutex_ttl_releases_lock_automatically(
         self, valkey_client, acquire_script, lock_key
@@ -189,8 +208,9 @@ class TestExpiry:
         )
         assert int(result) == 1
 
-        # Wait past TTL
-        await asyncio.sleep(0.4)
+        # Wait for the actual TTL expiry signal from Valkey, not a
+        # wall-clock guess.
+        await _wait_for_pttl_expiry(valkey_client, lock_key)
 
         token2 = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
@@ -217,10 +237,11 @@ class TestExpiry:
             )
             assert int(result) == 1
 
-        # Step 2: wait past TTL — but DON'T let PEXPIRE delete the key by
-        # acquiring a long-lived holder right after. We're testing the
-        # in-script ZREMRANGEBYSCORE branch.
-        await asyncio.sleep(0.4)
+        # Step 2: wait for the SortedSet's PEXPIRE to fire. We could also
+        # poll for now_ms - oldest_score > ttl_ms but that's fragile;
+        # the key being gone is a clean signal that the in-script
+        # ZREMRANGEBYSCORE will encounter no live members.
+        await _wait_for_pttl_expiry(valkey_client, lock_key)
 
         # Step 3: a new acquire should clean up the stale members and succeed
         fresh_token = uuid.uuid4().hex

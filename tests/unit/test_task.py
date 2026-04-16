@@ -284,3 +284,17 @@ def test_taskinfo_format_string_lock_accepted_without_warning():
         name="task", queues=["q"], lock="user-{user_id}", hard_timeout=60
     )
     assert info.lock == "user-{user_id}"
+
+
+def test_taskinfo_empty_lock_string_rejected():
+    """lock="" would render to the bare 'sq:lock:' Valkey key and silently
+    collide with every other empty-locked task. Reject at construction."""
+    with pytest.raises(ValueError, match="lock must not be empty"):
+        TaskInfo(name="task", queues=["q"], lock="", hard_timeout=60)
+
+
+def test_taskinfo_whitespace_only_lock_rejected():
+    """Same trap as empty: whitespace-only locks render to a key that's
+    indistinguishable in operator commands from the namespace prefix."""
+    with pytest.raises(ValueError, match="lock must not be empty"):
+        TaskInfo(name="task", queues=["q"], lock="   ", hard_timeout=60)

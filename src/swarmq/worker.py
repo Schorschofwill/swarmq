@@ -21,6 +21,27 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.limits import RateLimiter, parse_rate_limit
 from swarmq.locking import LockManager, compute_lock_ttl_ms
+
+# Lock-conflict policy. Module-level so they sit alongside other constants
+# and can be referenced from tests without a class qualifier. Mirrors the
+# locking.py module-level _MIN_LOCK_TTL_SECONDS pattern.
+#
+# DLQ_CAP: when conflict_count reaches this value (inclusive), the message
+# routes to DLQ instead of being requeued. Operator inspects the
+# x-swarmq-lock-name DLQ header and runs `valkey-cli DEL sq:lock:<name>`
+# to recover from a wedged holder.
+LOCK_CONFLICT_DLQ_CAP = 10
+# Backoff cap for lock-conflict requeue: 100 ms * 2 ** (count-1), capped at
+# 60 s so an exponential ramp doesn't run away. The cap is reached around
+# the 9th conflict (100ms * 2**8 ≈ 25.6s, then 51s, then DLQ at 10).
+LOCK_CONFLICT_BACKOFF_BASE_MS = 100
+LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
+
+# Type alias for lock-tracking entries: (lock_name, owner_token, max_concurrency).
+# Used by the per-handler acquired_locks list and the worker-wide
+# _active_handler_locks registry. Single source of truth for the field
+# ordering so destructuring sites are self-documenting.
+_LockEntry = tuple[str, str, int]
 from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
@@ -91,10 +112,10 @@ class Worker:
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
         # AT_LEAST_ONCE redelivery within the same worker). Values are the
-        # list of (lock_name, owner_token, max_concurrency) tuples currently
-        # held by that handler invocation. _release_acquired_locks pops
-        # the entry; _execute_shutdown drains anything still here.
-        self._active_handler_locks: dict[uuid.UUID, list[tuple[str, str, int]]] = {}
+        # list of _LockEntry tuples currently held by that handler invocation.
+        # _release_acquired_locks pops the entry; _execute_shutdown drains
+        # anything still here.
+        self._active_handler_locks: dict[uuid.UUID, list[_LockEntry]] = {}
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -229,17 +250,6 @@ class Worker:
                 f"failed to render lock name {lock_template!r}: {exc}"
             ) from exc
 
-    # Maximum lock-conflict requeue count before routing to DLQ. Mirrors the
-    # rate-limit cap convention from plan 005 — visibility-first, the cap is
-    # a safety net so a wedged lock doesn't bounce a message indefinitely.
-    _LOCK_CONFLICT_DLQ_CAP = 10
-    # Backoff cap for lock-conflict requeue: 100 ms * 2 ** count, capped at
-    # 60 s so an exponential ramp doesn't run away. The cap is reached by
-    # roughly the 9th conflict (100ms * 2**9 ≈ 51s), which lines up nicely
-    # with the DLQ cap above.
-    _LOCK_CONFLICT_BACKOFF_BASE_MS = 100
-    _LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
-
     async def _try_apply_lock(
         self,
         message: aio_pika.abc.AbstractIncomingMessage,
@@ -251,7 +261,7 @@ class Worker:
         args: list,
         kwargs: dict,
         handler_id: uuid.UUID,
-        acquired_locks: list[tuple[str, str, int]],
+        acquired_locks: list[_LockEntry],
     ) -> bool:
         """Decide whether the message must be requeued for lock-conflict
         reasons. Mirrors :meth:`_try_apply_rate_limit` shape — the four
@@ -295,10 +305,25 @@ class Worker:
             )
             original_headers = dict(message.headers) if message.headers else {}
             original_headers["x-swarmq-lock-render-error"] = str(exc)
-            await self._broker.publish_to_dead_letter_queue(
-                queue, message.body, headers=original_headers,
-            )
-            await self._broker.ack(message)
+            # Mirror the rate-limit/_evaluate_retry try/except contract:
+            # broker fault between publish and ack must nack(requeue=True)
+            # so the message survives. Without this wrap, a FIRE_AND_FORGET
+            # task whose lock template fails to render AND whose DLQ publish
+            # fails would be lost — the message has not been acked yet, but
+            # the exception would propagate naked out of _try_apply_lock.
+            try:
+                await self._broker.publish_to_dead_letter_queue(
+                    queue, message.body, headers=original_headers,
+                )
+                await self._broker.ack(message)
+            except Exception as broker_exc:
+                logger.error(
+                    "lock_render_dlq_failed",
+                    task_id=task_id,
+                    task_name=task_name,
+                    error=str(broker_exc),
+                )
+                await self._broker.nack(message, requeue=True)
             return True
 
         owner_token = uuid.uuid4().hex
@@ -369,25 +394,40 @@ class Worker:
         # intervene (typically: DEL the wedged Valkey key, then republish
         # the DLQ message). This caps the bounce window; without it a
         # broken upstream could consume queue capacity indefinitely.
-        if new_count > self._LOCK_CONFLICT_DLQ_CAP:
+        # Comparison uses >= so the cap is inclusive: cap=10 means the 10th
+        # conflict routes to DLQ (matches the brief's "cap 10 → DLQ"; the
+        # earlier > was off-by-one and let conflict 10 requeue).
+        if new_count >= LOCK_CONFLICT_DLQ_CAP:
             try:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
                 await self._broker.ack(message)
             except Exception as exc:
+                # DLQ-publish failure at the cap creates a hazard: nacking
+                # with requeue lets the message bounce back at count >= cap
+                # again, hit the same DLQ failure, and loop without backoff
+                # (the requeue branch below is unreachable past the cap).
+                # nack(requeue=False) drops the message after a loud ERROR
+                # log naming the lock; operator recovers the wedged Valkey
+                # key per the documented procedure. Better honest data loss
+                # with diagnostic than a silent infinite loop.
                 logger.error(
                     "lock_conflict_dlq_failed",
                     task_id=task_id,
                     task_name=task_name,
+                    lock_name=lock_name,
+                    lock_conflict_count=new_count,
                     error=str(exc),
+                    note="message dropped — recover via valkey-cli DEL "
+                         f"sq:lock:{lock_name}",
                 )
-                await self._broker.nack(message, requeue=True)
+                await self._broker.nack(message, requeue=False)
             return True
 
         delay_ms = min(
-            self._LOCK_CONFLICT_BACKOFF_BASE_MS * (2 ** (new_count - 1)),
-            self._LOCK_CONFLICT_BACKOFF_CAP_MS,
+            LOCK_CONFLICT_BACKOFF_BASE_MS * (2 ** (new_count - 1)),
+            LOCK_CONFLICT_BACKOFF_CAP_MS,
         )
 
         try:
@@ -422,7 +462,7 @@ class Worker:
         ttl_ms: int,
         max_concurrency: int,
         handler_id: uuid.UUID,
-        acquired_locks: list[tuple[str, str, int]],
+        acquired_locks: list[_LockEntry],
     ) -> bool:
         """Atomic-ish acquire + dual-register helper for asyncio.shield.
 
@@ -443,7 +483,7 @@ class Worker:
     async def _release_acquired_locks(
         self,
         handler_id: uuid.UUID,
-        acquired_locks: list[tuple[str, str, int]],
+        acquired_locks: list[_LockEntry],
     ) -> None:
         """Release every lock acquired by this handler. Called in the
         ``_handle_message`` finally block. Failures are logged and
@@ -619,7 +659,7 @@ class Worker:
         # _handle_message invocation — task_id alone would collide under
         # AT_LEAST_ONCE redelivery within the same worker.
         handler_id = uuid.uuid4()
-        acquired_locks: list[tuple[str, str, int]] = []
+        acquired_locks: list[_LockEntry] = []
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():
