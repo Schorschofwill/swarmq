@@ -285,3 +285,141 @@ class TestRunWorkerAsync:
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         with pytest.raises(ConfigurationError, match="SWARMQ_BROKER_URL"):
             await cli._run_worker_async(ns)
+
+
+# ---------------------------------------------------------------------------
+# schedule subcommand parser (Unit 12)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleParser:
+    def test_list_default_format_is_table(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["schedule", "list"])
+        assert ns.command == "schedule"
+        assert ns.schedule_command == "list"
+        assert ns.format == "table"
+
+    def test_list_json_format(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["schedule", "list", "--format", "json"])
+        assert ns.format == "json"
+
+    def test_add_with_cron(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "add", "mycron",
+            "--cron", "*/5 * * * *",
+            "--task", "mytask",
+            "--args", '[1, 2]',
+            "--kwargs", '{"k": 1}',
+            "--queue", "high",
+        ])
+        assert ns.name == "mycron"
+        assert ns.cron == "*/5 * * * *"
+        assert ns.at is None
+        assert ns.task == "mytask"
+        assert ns.args == "[1, 2]"
+        assert ns.queue == "high"
+
+    def test_add_with_at(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "add", "one",
+            "--at", "2026-05-01T03:00:00Z",
+            "--task", "mytask",
+        ])
+        assert ns.at == "2026-05-01T03:00:00Z"
+        assert ns.cron is None
+
+    def test_add_rejects_both_cron_and_at(self):
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "schedule", "add", "x", "--task", "t",
+                "--cron", "* * * * *",
+                "--at", "2026-01-01T00:00:00Z",
+            ])
+
+    def test_add_requires_task(self):
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "schedule", "add", "x", "--cron", "* * * * *",
+            ])
+
+    def test_remove_without_permanent(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["schedule", "remove", "abc"])
+        assert ns.name == "abc"
+        assert ns.permanent is False
+
+    def test_remove_permanent_flag(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["schedule", "remove", "abc", "--permanent"])
+        assert ns.permanent is True
+
+    def test_status_default_limit(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["schedule", "status"])
+        assert ns.limit == 10
+        assert ns.format == "table"
+
+    def test_status_with_limit_and_json(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "status", "--limit", "50", "--format", "json"
+        ])
+        assert ns.limit == 50
+        assert ns.format == "json"
+
+
+class TestScheduleHandlerValidation:
+    async def test_backend_from_env_requires_url(self, monkeypatch):
+        monkeypatch.delenv("SWARMQ_BACKEND_URL", raising=False)
+        with pytest.raises(ConfigurationError, match="SWARMQ_BACKEND_URL"):
+            await cli._backend_from_env()
+
+    async def test_schedule_add_rejects_invalid_cron(self, monkeypatch):
+        monkeypatch.setenv(
+            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
+        )
+        ns = argparse.Namespace(
+            name="bad", cron="not-a-cron", at=None, task="t",
+            args="[]", kwargs="{}", queue="default",
+        )
+        with pytest.raises(ConfigurationError, match="invalid cron"):
+            await cli._run_schedule_add(ns)
+
+    async def test_schedule_add_rejects_invalid_args_json(self, monkeypatch):
+        monkeypatch.setenv(
+            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
+        )
+        ns = argparse.Namespace(
+            name="x", cron="* * * * *", at=None, task="t",
+            args="not json", kwargs="{}", queue="default",
+        )
+        with pytest.raises(ConfigurationError, match="--args"):
+            await cli._run_schedule_add(ns)
+
+    async def test_schedule_add_rejects_non_array_args(self, monkeypatch):
+        monkeypatch.setenv(
+            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
+        )
+        ns = argparse.Namespace(
+            name="x", cron="* * * * *", at=None, task="t",
+            args='{"oops": 1}', kwargs="{}", queue="default",
+        )
+        with pytest.raises(ConfigurationError, match="JSON array"):
+            await cli._run_schedule_add(ns)
+
+    async def test_schedule_add_rejects_invalid_at(self, monkeypatch):
+        monkeypatch.setenv(
+            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
+        )
+        ns = argparse.Namespace(
+            name="x", cron=None, at="not-a-datetime", task="t",
+            args="[]", kwargs="{}", queue="default",
+        )
+        with pytest.raises(ConfigurationError, match="--at"):
+            await cli._run_schedule_add(ns)

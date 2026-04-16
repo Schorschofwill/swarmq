@@ -1219,7 +1219,7 @@ Integration mit echten 2 Worker-Instanzen.
 
 ---
 
-- [ ] **Unit 12: CLI — swarmq schedule list/add/remove/status**
+- [x] **Unit 12: CLI — swarmq schedule list/add/remove/status**
 
 **Goal:** Vier neue CLI-Subcommands unter `swarmq schedule`. Erlaubt
 Runtime-Management der Schedules ohne Worker-Restart.
