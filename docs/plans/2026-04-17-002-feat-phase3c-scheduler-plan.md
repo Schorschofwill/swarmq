@@ -1028,7 +1028,7 @@ und `SwarmQ.schedule()`. Ein-Shot-Schedule wird via `ScheduleStore`
 
 ---
 
-- [ ] **Unit 10: SchedulerLoop — Leader-Election + Poll-Loop + Heartbeat**
+- [x] **Unit 10: SchedulerLoop — Leader-Election + Poll-Loop + Heartbeat**
 
 **Goal:** Haupt-Logik-Coroutine `SchedulerLoop` in `src/swarmq/scheduler.py`.
 Embedded in jedem Worker; nur der Lock-Holder pollt die Sorted-Set und

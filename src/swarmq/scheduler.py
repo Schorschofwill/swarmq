@@ -1,4 +1,4 @@
-"""SwarmQ embedded scheduler — ScheduleDefinition, ScheduleStore helpers.
+"""SwarmQ embedded scheduler — ScheduleDefinition, ScheduleStore, SchedulerLoop.
 
 The scheduler owns two Valkey datastructures:
 
@@ -9,26 +9,54 @@ The scheduler owns two Valkey datastructures:
   member is the schedule_name. Poll reads a batch (sched_poll.lua),
   the leader publishes + commits (sched_commit.lua with owner-check).
 
-This module provides the Python surface: msgspec-encoded definitions,
-insert-if-absent vs. static-cron-update semantics (CD11 + Fork 1), and
-schedfire-key (de)serialization for the consumer-side dedup header.
-``SchedulerLoop`` itself (election + poll + heartbeat) lives further
-down in Unit 10.
+Three top-level pieces:
+
+- :class:`ScheduleDefinition` — msgspec.Struct persisted per schedule.
+- :class:`ScheduleStore` — CRUD + poll/commit wrapper around the
+  two Valkey keys, holding the registered Lua scripts.
+- :class:`SchedulerLoop` — embedded-in-each-worker coroutine. Two
+  sub-loops: ``_election_loop`` drives leader-election + heartbeat,
+  ``_poll_loop`` drives the publish-before-ZREM firing. Only the
+  leader runs the poll body; standbys short-circuit.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+import asyncio
+import os
+import socket
+import time
+import uuid
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 import msgspec
 import structlog
 import valkey.asyncio as valkey_asyncio
+from croniter import croniter
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
+from swarmq.locking import LockManager
 from swarmq.lua import load_script
+from swarmq.serialization import encode_json
+from swarmq.signals import Signal, SignalDispatcher
+from swarmq.task import Task
 
 logger = structlog.get_logger()
+
+
+SCHEDULER_LOCK_NAME = "scheduler:leader"
+"""Logical lock name — LockManager's automatic ``sq:lock:`` prefix
+yields the final Valkey key ``sq:lock:scheduler:leader``."""
+
+_HANDOVER_MARKER_TTL_MS = 5_000
+"""TTL for the transient handover marker. Narrow window (5s) — long
+enough for a standby to see it at the next election tick, short enough
+that a stale marker cannot mislead a later failover into pretending to
+be a clean handover."""
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +311,434 @@ class ScheduleStore:
 
 def _decode_bytes(value: bytes | str) -> str:
     return value.decode() if isinstance(value, bytes) else value
+
+
+# ---------------------------------------------------------------------------
+# SchedulerLoop — leader-election + poll (Unit 10)
+# ---------------------------------------------------------------------------
+
+
+_SchedulerState = Literal["standby", "leader", "stopped"]
+
+
+def _make_owner_token() -> str:
+    """Human-readable owner identity for the leader lock.
+
+    Format: ``{hostname}:{pid}:{uuid4_short}``. Exposed via
+    ``swarmq schedule status`` so operators can tell which worker is
+    currently leader, rather than seeing an opaque 32-char hex blob.
+    """
+    host = socket.gethostname()
+    pid = os.getpid()
+    suffix = uuid.uuid4().hex[:8]
+    return f"{host}:{pid}:{suffix}"
+
+
+class SchedulerLoop:
+    """Embedded scheduler — one instance per worker.
+
+    Runs two cooperating coroutines:
+
+    - ``_election_loop``: at each ``heartbeat_interval`` tick either
+      attempts ``acquire`` (standby) or ``renew`` (leader). On acquire
+      success, consults the transient handover marker to decide
+      whether to emit :class:`~swarmq.signals.Signal.SCHEDULER_LEADER`
+      (clean handover or first-ever start) or
+      :class:`~swarmq.signals.Signal.SCHEDULER_LEADER_FAILOVER` (lock
+      TTL expired with no marker). On renew success, emits
+      :class:`~swarmq.signals.Signal.SCHEDULER_HEARTBEAT`.
+    - ``_poll_loop``: at each ``poll_interval`` tick, standbys no-op;
+      the leader reads due schedules, publishes to the main queue
+      with an ``x-swarmq-schedfire`` header, and commits via the
+      owner-checked Lua script.
+
+    :meth:`stop` is the graceful path: emits HANDOVER, writes a
+    short-TTL marker under the outgoing token, releases the lock, and
+    cancels both sub-coroutines. A non-graceful exit (crash/SIGKILL)
+    leaves no marker, and the next standby to acquire observes the
+    missing marker and emits FAILOVER.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: ValkeyBackend,
+        broker: RabbitMQBroker,
+        config: SwarmQConfig,
+        lock_manager: LockManager,
+        store: ScheduleStore,
+        signal_dispatcher: SignalDispatcher,
+        owner_token: str | None = None,
+        worker_id: str | None = None,
+    ) -> None:
+        self._backend = backend
+        self._broker = broker
+        self._config = config
+        self._lock_manager = lock_manager
+        self._store = store
+        self._signals = signal_dispatcher
+        self._owner_token = owner_token or _make_owner_token()
+        self._worker_id = worker_id or self._owner_token
+
+        self._state: _SchedulerState = "standby"
+        self._prev_leader_seen = False
+        """Set to True when election sees the lock held by *someone*
+        (acquire returned False). Used together with the
+        handover-marker check to distinguish first-ever start from
+        TTL-expiry failover."""
+
+        self._election_task: asyncio.Task[None] | None = None
+        self._poll_task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
+
+    # ---- lifecycle ------------------------------------------------------
+
+    @property
+    def state(self) -> _SchedulerState:
+        return self._state
+
+    @property
+    def owner_token(self) -> str:
+        return self._owner_token
+
+    async def start(self) -> None:
+        """Launch election + poll coroutines. Idempotent."""
+        if self._election_task is not None:
+            return
+        self._stop_event.clear()
+        self._election_task = asyncio.create_task(self._election_loop())
+        self._poll_task = asyncio.create_task(self._poll_loop())
+
+    async def stop(self) -> None:
+        """Graceful shutdown. Releases the leader lock if held, sets
+        the handover marker so the next acquirer emits LEADER instead
+        of FAILOVER, then cancels both sub-coroutines."""
+        if self._state == "leader":
+            await self._emit(Signal.SCHEDULER_LEADER_HANDOVER)
+            try:
+                await self._backend.set_schedfire_handover_marker(
+                    self._owner_token, _HANDOVER_MARKER_TTL_MS
+                )
+            except BackendConnectionError as exc:
+                logger.warning(
+                    "scheduler_handover_marker_failed",
+                    error=str(exc),
+                )
+            try:
+                await self._lock_manager.release(
+                    SCHEDULER_LOCK_NAME, self._owner_token, 1
+                )
+            except BackendConnectionError as exc:
+                logger.warning(
+                    "scheduler_lock_release_failed", error=str(exc)
+                )
+            self._state = "standby"
+
+        self._stop_event.set()
+        for task in (self._election_task, self._poll_task):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (self._election_task, self._poll_task):
+            if task is not None:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._election_task = None
+        self._poll_task = None
+        self._state = "stopped"
+
+    # ---- election loop --------------------------------------------------
+
+    async def _election_loop(self) -> None:
+        interval = self._config.scheduler_heartbeat_interval
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await self._election_tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "scheduler_election_tick_error", error=str(exc)
+                    )
+                await self._sleep_until_stop(interval)
+        except asyncio.CancelledError:
+            return
+
+    async def _election_tick(self) -> None:
+        if self._state == "leader":
+            try:
+                still_leader = await self._lock_manager.renew(
+                    SCHEDULER_LOCK_NAME,
+                    self._owner_token,
+                    int(self._config.scheduler_lock_ttl * 1000),
+                )
+            except BackendConnectionError as exc:
+                logger.warning("scheduler_renew_error", error=str(exc))
+                return
+            if still_leader:
+                await self._emit(Signal.SCHEDULER_HEARTBEAT)
+            else:
+                logger.warning("scheduler_lock_lost")
+                self._state = "standby"
+                self._prev_leader_seen = True
+            return
+
+        # state == "standby"
+        try:
+            acquired = await self._lock_manager.acquire(
+                SCHEDULER_LOCK_NAME,
+                self._owner_token,
+                int(self._config.scheduler_lock_ttl * 1000),
+                1,  # mutex
+            )
+        except BackendConnectionError as exc:
+            logger.warning("scheduler_acquire_error", error=str(exc))
+            return
+
+        if not acquired:
+            self._prev_leader_seen = True
+            return
+
+        # Acquired the lock — decide which signal to emit.
+        try:
+            had_handover = (
+                await self._backend.get_and_del_schedfire_handover_marker()
+            )
+        except BackendConnectionError as exc:
+            logger.warning(
+                "scheduler_handover_marker_read_failed", error=str(exc)
+            )
+            had_handover = False
+
+        self._state = "leader"
+        if had_handover or not self._prev_leader_seen:
+            await self._emit(Signal.SCHEDULER_LEADER)
+        else:
+            await self._emit(Signal.SCHEDULER_LEADER_FAILOVER)
+
+        # Sync static TaskInfo(cron=...) declarations (Fork 1).
+        try:
+            await self.sync_taskinfo_crons()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "scheduler_sync_taskinfo_crons_failed", error=str(exc)
+            )
+
+    # ---- poll loop ------------------------------------------------------
+
+    async def _poll_loop(self) -> None:
+        interval = self._config.scheduler_poll_interval
+        try:
+            while not self._stop_event.is_set():
+                if self._state == "leader":
+                    try:
+                        await self._poll_tick()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "scheduler_poll_tick_error", error=str(exc)
+                        )
+                await self._sleep_until_stop(interval)
+        except asyncio.CancelledError:
+            return
+
+    async def _poll_tick(self) -> None:
+        now_ms = int(time.time() * 1000)
+        try:
+            due = await self._store.poll_due(now_ms, limit=100)
+        except BackendConnectionError as exc:
+            logger.warning("scheduler_poll_due_failed", error=str(exc))
+            return
+
+        for schedule_name, _score_ms, definition in due:
+            if self._state != "leader":
+                # Lost leadership mid-batch — abort remaining items so
+                # the new leader handles them (Review-Finding Unit 10
+                # 'lock lost mid-batch' scenario).
+                return
+            if definition.disabled:
+                continue
+            await self._fire_one(schedule_name, definition)
+
+    async def _fire_one(
+        self, schedule_name: str, definition: ScheduleDefinition
+    ) -> None:
+        fire_ts_ms = definition.fire_ts_ms
+        if fire_ts_ms is None:
+            # Defensive — every entry in zset must have a score.
+            logger.warning(
+                "scheduler_entry_without_fire_ts",
+                schedule_name=schedule_name,
+            )
+            return
+
+        schedfire_key = make_schedfire_key(schedule_name, fire_ts_ms)
+
+        # Build the task message body — same shape as Client.schedule.
+        task_id = str(uuid.uuid7())
+        body = encode_json({
+            "task": {
+                "id": task_id,
+                "queue": definition.queue,
+                "name": definition.task_name,
+            },
+            "args": list(definition.args),
+            "kwargs": definition.kwargs,
+        })
+
+        try:
+            await self._broker.publish(
+                definition.queue,
+                body,
+                headers={"x-swarmq-schedfire": schedfire_key},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "scheduler_publish_failed",
+                schedule_name=schedule_name,
+                error=str(exc),
+            )
+            return  # Do NOT commit — retry on the next poll tick.
+
+        # Compute next_fire for cron, -1 for one-shots.
+        if definition.cron is None:
+            next_fire_ts_ms = -1
+            updated_def: ScheduleDefinition | None = None
+        else:
+            now = datetime.now(UTC)
+            next_dt = croniter(definition.cron, now).get_next(datetime)
+            next_fire_ts_ms = int(next_dt.timestamp() * 1000)
+            updated_def = msgspec.structs.replace(
+                definition,
+                fire_ts_ms=next_fire_ts_ms,
+                last_fire_at=int(time.time() * 1000),
+            )
+
+        try:
+            committed = await self._store.commit_fire(
+                schedule_name,
+                next_fire_ts_ms,
+                updated_def,
+                self._owner_token,
+            )
+        except BackendConnectionError as exc:
+            logger.warning(
+                "scheduler_commit_failed",
+                schedule_name=schedule_name,
+                error=str(exc),
+            )
+            return
+
+        if not committed:
+            # Owner-check rejected — we lost the lock between publish and
+            # commit. The new leader will handle the next poll.
+            logger.warning(
+                "scheduler_commit_owner_mismatch",
+                schedule_name=schedule_name,
+            )
+            self._state = "standby"
+
+    # ---- static-cron sync (Fork 1) -------------------------------------
+
+    async def sync_taskinfo_crons(self) -> None:
+        """Reconcile static ``TaskInfo(cron=...)`` declarations into the
+        ``sq:sched:defs`` hash.
+
+        Three branches:
+
+        - No existing entry → ``add_schedule`` (insert).
+        - Existing ``source="cli"`` entry → no-op (CD11 — CLI ownership
+          is authoritative over code).
+        - Existing ``source="static"`` entry with a **different**
+          cron-string → ``update_static_schedule`` (Fork 1: code is
+          single-source-of-truth for static schedules; Redeploys
+          propagate).
+        - Existing ``source="static"`` entry with the same cron-string
+          → no-op (stable).
+        """
+        for task_class in Task._registered_tasks:
+            task_info = getattr(task_class, "task_info", None)
+            if task_info is None or not task_info.cron:
+                continue
+
+            schedule_name = task_info.name
+            queue = task_info.queues[0]
+            now = datetime.now(UTC)
+            next_dt = croniter(task_info.cron, now).get_next(datetime)
+            fire_ts_ms = int(next_dt.timestamp() * 1000)
+
+            definition = ScheduleDefinition(
+                schedule_name=schedule_name,
+                task_name=task_info.name,
+                args=(),
+                kwargs={},
+                queue=queue,
+                cron=task_info.cron,
+                fire_ts_ms=fire_ts_ms,
+                source="static",
+            )
+
+            try:
+                existing_raw = await self._backend.hget_schedule_def(
+                    schedule_name
+                )
+            except BackendConnectionError as exc:
+                logger.warning(
+                    "scheduler_sync_hget_failed",
+                    schedule_name=schedule_name,
+                    error=str(exc),
+                )
+                continue
+
+            if existing_raw is None:
+                await self._store.add_schedule(definition)
+                continue
+
+            try:
+                existing = msgspec.json.decode(
+                    existing_raw, type=ScheduleDefinition
+                )
+            except msgspec.DecodeError:
+                # Malformed entry — best-effort overwrite with the
+                # valid one from code.
+                await self._store.update_static_schedule(definition)
+                continue
+
+            if existing.source == "cli":
+                continue  # CD11 protection
+            if existing.cron == task_info.cron:
+                continue  # Unchanged static
+            # Static cron changed — propagate (Fork 1).
+            logger.info(
+                "scheduler_static_cron_updated",
+                schedule_name=schedule_name,
+                old_cron=existing.cron,
+                new_cron=task_info.cron,
+            )
+            await self._store.update_static_schedule(definition)
+
+    # ---- helpers --------------------------------------------------------
+
+    async def _sleep_until_stop(self, seconds: float) -> None:
+        """Sleep for *seconds*, but short-circuit on stop."""
+        try:
+            await asyncio.wait_for(
+                self._stop_event.wait(), timeout=seconds
+            )
+        except TimeoutError:
+            return
+
+    async def _emit(self, signal: Signal) -> None:
+        try:
+            await self._signals.dispatch(
+                signal, worker_id=self._worker_id
+            )
+        except Exception as exc:  # noqa: BLE001 — never abort on handler
+            logger.warning(
+                "scheduler_signal_dispatch_error",
+                signal=signal.value,
+                error=str(exc),
+            )
