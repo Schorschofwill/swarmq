@@ -1,7 +1,7 @@
 ---
 title: "feat: Benchmark-Stabilität via Repeat + Median-Aggregation"
 type: feat
-status: active
+status: completed
 date: 2026-04-16
 baseline: /tmp/baseline_pubsub.csv
 ---
@@ -103,7 +103,7 @@ Interpretation:
 
 ## Implementation Units
 
-- [ ] **Unit 1: `--repeat N` Flag + Repeat-Loop + Aggregation**
+- [x] **Unit 1: `--repeat N` Flag + Repeat-Loop + Aggregation**
 
 **Goal:** `--repeat N` steuert wie oft jedes Szenario ausgeführt wird. Bei `N > 1` werden die Einzelergebnisse aggregiert (Median/Min/Max über Runs).
 
@@ -148,7 +148,7 @@ Interpretation:
 
 ---
 
-- [ ] **Unit 2: Aggregate-Output + Smoke-Test-Update**
+- [x] **Unit 2: Aggregate-Output + Smoke-Test-Update**
 
 **Goal:** Eine kompakte Aggregate-Zeile nach den N Runs in der Per-Run-Ausgabe; Smoke-Test verifiziert das Repeat-Verhalten End-to-End.
 
