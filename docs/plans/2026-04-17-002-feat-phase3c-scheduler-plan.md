@@ -1,9 +1,10 @@
 ---
 title: "feat: Phase 3c — Scheduler (R3.8 Delay/ETA + R3.9 Cron + R3.10 schedule-CLI)"
 type: feat
-status: active
+status: completed
 date: 2026-04-17
 deepened: 2026-04-17
+completed: 2026-04-17
 origin: docs/brainstorms/2026-04-16-phase-3c-scheduler-requirements.md
 ---
 
@@ -1283,7 +1284,7 @@ Infrastruktur die in einem eigenständigen Plan sauberer designbar ist.
 
 ---
 
-- [ ] **Unit 13: E2E — Full Scheduler-Lifecycle**
+- [x] **Unit 13: E2E — Full Scheduler-Lifecycle**
 
 **Goal:** End-to-End Tests mit echtem Broker+Backend+Worker,
 decken alle primären Scenarios ab.
