@@ -225,3 +225,187 @@ def test_config_cancel_poll_interval_negative_raises():
             backend_url="redis://localhost",
             cancel_poll_interval=-1.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# Scheduler config fields (Unit 2)
+# ---------------------------------------------------------------------------
+
+
+def test_config_scheduler_poll_interval_default():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_poll_interval == 1.0
+
+
+def test_config_scheduler_heartbeat_interval_default():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_heartbeat_interval == 10.0
+
+
+def test_config_scheduler_lock_ttl_default():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_lock_ttl == 30.0
+
+
+def test_config_scheduler_dedup_ttl_default_covers_retry_max_delay():
+    """Default must satisfy max(60, retry_max_delay + 300) — safety window."""
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    # Default retry_max_delay=3600 → dedup_ttl=3900
+    assert cfg.scheduler_dedup_ttl == 3900.0
+
+
+def test_config_scheduler_dedup_ttl_default_scales_with_retry_max_delay():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        retry_max_delay=7200.0,
+    )
+    assert cfg.scheduler_dedup_ttl == 7500.0
+
+
+def test_config_scheduler_dedup_ttl_default_floor_is_60():
+    """When retry_max_delay + 300 < 60, default floor is 60s."""
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        retry_max_delay=0.0,
+    )
+    assert cfg.scheduler_dedup_ttl == 300.0  # 0 + 300 = 300 > 60
+
+
+def test_config_scheduler_poll_interval_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        scheduler_poll_interval=0.5,
+    )
+    assert cfg.scheduler_poll_interval == 0.5
+
+
+def test_config_scheduler_heartbeat_interval_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        scheduler_heartbeat_interval=5.0,
+    )
+    assert cfg.scheduler_heartbeat_interval == 5.0
+
+
+def test_config_scheduler_lock_ttl_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        scheduler_lock_ttl=60.0,
+    )
+    assert cfg.scheduler_lock_ttl == 60.0
+
+
+def test_config_scheduler_dedup_ttl_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        scheduler_dedup_ttl=7200.0,
+    )
+    assert cfg.scheduler_dedup_ttl == 7200.0
+
+
+def test_config_scheduler_poll_interval_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_POLL_INTERVAL", "2.5")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_poll_interval == 2.5
+
+
+def test_config_scheduler_heartbeat_interval_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "7.0")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_heartbeat_interval == 7.0
+
+
+def test_config_scheduler_lock_ttl_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_LOCK_TTL", "45.0")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_lock_ttl == 45.0
+
+
+def test_config_scheduler_dedup_ttl_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_DEDUP_TTL", "5000.0")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_dedup_ttl == 5000.0
+
+
+def test_config_scheduler_poll_interval_zero_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_poll_interval=0.0,
+        )
+
+
+def test_config_scheduler_heartbeat_interval_negative_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_heartbeat_interval=-1.0,
+        )
+
+
+def test_config_scheduler_lock_ttl_zero_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_lock_ttl=0.0,
+        )
+
+
+def test_config_scheduler_dedup_ttl_zero_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_dedup_ttl=0.0,
+        )
+
+
+def test_config_scheduler_lock_ttl_must_exceed_heartbeat_doubled():
+    """lock_ttl >= heartbeat*2 is a safety margin against heartbeat misses."""
+    with pytest.raises(ConfigurationError, match="scheduler_lock_ttl"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_heartbeat_interval=10.0,
+            scheduler_lock_ttl=15.0,  # <20 = heartbeat*2
+        )
+
+
+def test_config_scheduler_lock_ttl_exactly_heartbeat_doubled_ok():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        scheduler_heartbeat_interval=10.0,
+        scheduler_lock_ttl=20.0,
+    )
+    assert cfg.scheduler_lock_ttl == 20.0
+
+
+def test_config_scheduler_dedup_ttl_must_cover_retry_max_delay():
+    """dedup_ttl < retry_max_delay would allow duplicate retried fires."""
+    with pytest.raises(ConfigurationError, match="scheduler_dedup_ttl"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            retry_max_delay=3600.0,
+            scheduler_dedup_ttl=60.0,  # << 3600
+        )
+
+
+def test_config_scheduler_dedup_ttl_equal_retry_max_delay_ok():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        retry_max_delay=3600.0,
+        scheduler_dedup_ttl=3600.0,
+    )
+    assert cfg.scheduler_dedup_ttl == 3600.0

@@ -430,7 +430,7 @@ und die Test-Suite muss am Ende grün sein (TDD-Pflicht, AGENTS.md).
 
 ---
 
-- [ ] **Unit 2: Config-Felder für Scheduler**
+- [x] **Unit 2: Config-Felder für Scheduler**
 
 **Goal:** Vier neue `SwarmQConfig`-Felder:
 `scheduler_poll_interval` (1.0 s default), `scheduler_heartbeat_interval`

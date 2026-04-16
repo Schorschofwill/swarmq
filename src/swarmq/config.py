@@ -21,6 +21,12 @@ class SwarmQConfig:
     shutdown_timeout: int = 30
     queue_type: str = "quorum"
     cancel_poll_interval: float = 1.0
+    scheduler_poll_interval: float = 1.0
+    scheduler_heartbeat_interval: float = 10.0
+    scheduler_lock_ttl: float = 30.0
+    # Sentinel — None means "compute max(60, retry_max_delay + 300) in
+    # __post_init__". Explicit value overrides the computation.
+    scheduler_dedup_ttl: float | None = None
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -67,6 +73,28 @@ class SwarmQConfig:
         if env_cancel_poll:
             self.cancel_poll_interval = float(env_cancel_poll)
 
+        env_sched_poll = os.environ.get("SWARMQ_SCHEDULER_POLL_INTERVAL", "")
+        if env_sched_poll:
+            self.scheduler_poll_interval = float(env_sched_poll)
+
+        env_sched_heartbeat = os.environ.get("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "")
+        if env_sched_heartbeat:
+            self.scheduler_heartbeat_interval = float(env_sched_heartbeat)
+
+        env_sched_lock_ttl = os.environ.get("SWARMQ_SCHEDULER_LOCK_TTL", "")
+        if env_sched_lock_ttl:
+            self.scheduler_lock_ttl = float(env_sched_lock_ttl)
+
+        env_sched_dedup_ttl = os.environ.get("SWARMQ_SCHEDULER_DEDUP_TTL", "")
+        if env_sched_dedup_ttl:
+            self.scheduler_dedup_ttl = float(env_sched_dedup_ttl)
+
+        # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
+        # retry horizon and prevent retried schedule-fires from bypassing
+        # consumer-side SETNX dedup (review-finding P1-1).
+        if self.scheduler_dedup_ttl is None:
+            self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
+
         # Validation
         if not self.broker_url:
             msg = "broker_url must not be empty"
@@ -96,4 +124,51 @@ class SwarmQConfig:
 
         if self.cancel_poll_interval <= 0:
             msg = f"cancel_poll_interval must be > 0, got {self.cancel_poll_interval}"
+            raise ConfigurationError(msg)
+
+        if self.scheduler_poll_interval <= 0:
+            msg = (
+                "scheduler_poll_interval must be > 0, got "
+                f"{self.scheduler_poll_interval}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.scheduler_heartbeat_interval <= 0:
+            msg = (
+                "scheduler_heartbeat_interval must be > 0, got "
+                f"{self.scheduler_heartbeat_interval}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.scheduler_lock_ttl <= 0:
+            msg = (
+                f"scheduler_lock_ttl must be > 0, got {self.scheduler_lock_ttl}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.scheduler_lock_ttl < self.scheduler_heartbeat_interval * 2:
+            msg = (
+                "scheduler_lock_ttl must be at least 2x "
+                "scheduler_heartbeat_interval to survive a missed heartbeat; "
+                f"got lock_ttl={self.scheduler_lock_ttl}, "
+                f"heartbeat_interval={self.scheduler_heartbeat_interval}"
+            )
+            raise ConfigurationError(msg)
+
+        # scheduler_dedup_ttl is guaranteed non-None here (default filled above).
+        assert self.scheduler_dedup_ttl is not None
+        if self.scheduler_dedup_ttl <= 0:
+            msg = (
+                "scheduler_dedup_ttl must be > 0, got "
+                f"{self.scheduler_dedup_ttl}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.scheduler_dedup_ttl < self.retry_max_delay:
+            msg = (
+                "scheduler_dedup_ttl must be >= retry_max_delay so that a "
+                "retried schedule-fire cannot bypass consumer-side dedup; "
+                f"got dedup_ttl={self.scheduler_dedup_ttl}, "
+                f"retry_max_delay={self.retry_max_delay}"
+            )
             raise ConfigurationError(msg)
