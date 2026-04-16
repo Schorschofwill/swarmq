@@ -83,6 +83,11 @@ def backend():
     be.store_result = AsyncMock()
     be.publish_notification = AsyncMock()
     be.close = AsyncMock()
+    # _client is needed by Worker.start() to construct RateLimiter. We
+    # provide a MagicMock whose register_script returns another MagicMock
+    # — concrete rate-limit behaviour is covered by the integration suite.
+    be._client = MagicMock()
+    be._client.register_script = MagicMock(return_value=AsyncMock())
     return be
 
 
@@ -2015,3 +2020,108 @@ class TestWorkerMiddlewareAndSignals:
 
         broker.nack.assert_awaited_once_with(msg, requeue=False)
         broker.ack.assert_not_awaited()
+
+
+class RateLimitedTask(Task):
+    task_info = TaskInfo(name="rate_limited", queues=["default"], rate_limit="10/m")
+
+
+class TestWorkerRateLimiting:
+    """Unit-level coverage of the rate-limit branch in _handle_message.
+
+    A real Worker is built but the ``_rate_limiter`` attribute is
+    replaced with an ``AsyncMock`` so no Valkey is needed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_allowed_path_runs_the_task(self, broker, backend, config):
+        """allowed=True -> pre_execute + run fire, no delay-queue publish."""
+        reg = TaskRegistry()
+        reg.register(RateLimitedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        # Simulate start()'s lifecycle step without connecting.
+        w._rate_limiter = MagicMock()
+        w._rate_limiter.check = AsyncMock(return_value=(True, 9, 0))
+
+        msg = _make_message(_default_payload(name="rate_limited", args=[], kwargs={}))
+
+        async def _run(self):  # noqa: ANN001
+            return None
+
+        with patch.object(RateLimitedTask, "run", _run):
+            await w._handle_message(msg)
+
+        w._rate_limiter.check.assert_awaited_once()
+        broker.publish_to_delay_queue.assert_not_called()
+        # Normal ack after successful execution (AT_LEAST_ONCE).
+        broker.ack.assert_awaited_once_with(msg)
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_path_requeues_with_delay_and_skips_execution(
+        self, broker, backend, config
+    ):
+        """allowed=False -> publish_to_delay_queue + ack, no pre_execute,
+        no DLQ, TASK_RATE_LIMITED signal fired with retry_after + remaining.
+        """
+        from swarmq.signals import Signal, SignalDispatcher
+
+        dispatcher = SignalDispatcher()
+        seen: list[dict] = []
+
+        @dispatcher.on_signal(Signal.TASK_RATE_LIMITED)
+        async def _handler(**kwargs: object) -> None:
+            seen.append(dict(kwargs))
+
+        reg = TaskRegistry()
+        reg.register(RateLimitedTask)
+
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            signal_dispatcher=dispatcher,
+        )
+        w._rate_limiter = MagicMock()
+        w._rate_limiter.check = AsyncMock(return_value=(False, 0, 2500))
+
+        ran = False
+
+        async def _run(self):  # noqa: ANN001
+            nonlocal ran
+            ran = True
+
+        with patch.object(RateLimitedTask, "run", _run):
+            msg = _make_message(
+                _default_payload(name="rate_limited", args=[], kwargs={})
+            )
+            await w._handle_message(msg)
+
+        assert ran is False, "task.run must NOT run when rate-limited"
+        broker.publish_to_delay_queue.assert_awaited_once()
+        _, kwargs = broker.publish_to_delay_queue.call_args
+        assert kwargs["delay_ms"] == 2500
+        broker.ack.assert_awaited_once_with(msg)
+        broker.publish_to_dead_letter_queue.assert_not_called()
+        assert len(seen) == 1
+        assert seen[0]["retry_after_ms"] == 2500
+        assert seen[0]["remaining"] == 0
+        assert seen[0]["task_name"] == "rate_limited"
+
+    @pytest.mark.asyncio
+    async def test_no_rate_limit_skips_limiter_entirely(
+        self, broker, backend, config
+    ):
+        """Task without ``rate_limit`` must not call the limiter at all."""
+        reg = TaskRegistry()
+        reg.register(AddTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._rate_limiter = MagicMock()
+        w._rate_limiter.check = AsyncMock()
+
+        msg = _make_message(_default_payload())
+        await w._handle_message(msg)
+
+        w._rate_limiter.check.assert_not_called()

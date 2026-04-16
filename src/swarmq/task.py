@@ -26,6 +26,7 @@ class TaskInfo:
     retry_backoff: str = "exponential"
     retry_exceptions: tuple[type[BaseException], ...] | None = None
     retry_base_delay: float = 1.0
+    rate_limit: str | None = None
 
     def __init__(
         self,
@@ -39,6 +40,7 @@ class TaskInfo:
         retry_backoff: str = "exponential",
         retry_exceptions: list[type[BaseException]] | None = None,
         retry_base_delay: float = 1.0,
+        rate_limit: str | None = None,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -54,6 +56,7 @@ class TaskInfo:
             tuple(retry_exceptions) if retry_exceptions is not None else None,
         )
         object.__setattr__(self, "retry_base_delay", retry_base_delay)
+        object.__setattr__(self, "rate_limit", rate_limit)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -76,6 +79,14 @@ class TaskInfo:
             )
         if self.retry_base_delay < 0:
             raise ValueError("retry_base_delay must be >= 0")
+        if self.rate_limit is not None:
+            # Validate eagerly at construction time so a bad string fails
+            # in the task-module import, not inside the worker loop.
+            # Imported locally to avoid a circular dep via
+            # swarmq.limits -> swarmq.lua at module top-level.
+            from swarmq.limits import parse_rate_limit
+
+            parse_rate_limit(self.rate_limit)
 
 
 class Task:

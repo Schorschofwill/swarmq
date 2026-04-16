@@ -17,6 +17,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backoff import calculate_backoff
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
+from swarmq.limits import RateLimiter, parse_rate_limit
 from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
@@ -78,6 +79,9 @@ class Worker:
         self._active_tasks: set[asyncio.Task] = set()
         self._state = WorkerState.STARTING
         self._shutdown_event = asyncio.Event()
+        # RateLimiter needs an already-connected Valkey client; instantiated
+        # in start() after backend.connect(). See plan 005 Unit 5 Lifecycle.
+        self._rate_limiter: RateLimiter | None = None
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -87,6 +91,11 @@ class Worker:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
         await self._backend.connect()
+
+        # Backend._client is available only after connect(). Instantiate
+        # the rate limiter here so the registered Lua script uses the
+        # live client.
+        self._rate_limiter = RateLimiter(self._backend._client)
 
         for queue_name in self._config.queues:
             await self._broker.declare_queue(queue_name)
@@ -217,6 +226,45 @@ class Worker:
             task_info = task_class.task_info
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                 await self._broker.ack(message)
+
+            # 5c. Rate limit check — before middleware, before pre_execute.
+            # A rate-limited task is *not* a task failure: re-enqueue with
+            # the Lua script's retry_after_ms delay, ack (or rely on the
+            # FIRE_AND_FORGET ack above), emit TASK_RATE_LIMITED, and stop.
+            # The delayed message will come back through the normal
+            # consume loop once the window has moved forward.
+            if task_info.rate_limit is not None and self._rate_limiter is not None:
+                config = parse_rate_limit(task_info.rate_limit)
+                allowed, remaining, retry_after_ms = await self._rate_limiter.check(
+                    task_name, config
+                )
+                if not allowed:
+                    logger.info(
+                        "task_rate_limited",
+                        task_id=task_id,
+                        task_name=task_name,
+                        retry_after_ms=retry_after_ms,
+                        remaining=remaining,
+                    )
+                    await self._signal_dispatcher.dispatch(
+                        Signal.TASK_RATE_LIMITED,
+                        task_id=task_id,
+                        task_name=task_name,
+                        retry_after_ms=retry_after_ms,
+                        remaining=remaining,
+                    )
+                    original_headers = (
+                        dict(message.headers) if message.headers else {}
+                    )
+                    await self._broker.publish_to_delay_queue(
+                        queue,
+                        message.body,
+                        delay_ms=retry_after_ms,
+                        headers=original_headers,
+                    )
+                    if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                        await self._broker.ack(message)
+                    return
 
             # Build canonical message_dict for middleware + track retry_count
             retry_count = message.headers.get("x-swarmq-retry-count", 0)

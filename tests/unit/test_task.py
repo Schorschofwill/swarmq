@@ -195,3 +195,31 @@ def test_taskinfo_invalid_retry_backoff_raises():
     """Invalid retry_backoff strategy raises ValueError."""
     with pytest.raises(ValueError, match="retry_backoff"):
         TaskInfo(name="task", queues=["q"], retry_backoff="invalid")
+
+
+def test_taskinfo_rate_limit_default_is_none():
+    """Existing tasks without rate_limit keep rate_limit=None."""
+    info = TaskInfo(name="task", queues=["q"])
+    assert info.rate_limit is None
+
+
+def test_taskinfo_rate_limit_accepts_valid_string():
+    """Valid Celery-style rate_limit strings are accepted verbatim."""
+    info = TaskInfo(name="task", queues=["q"], rate_limit="100/m")
+    assert info.rate_limit == "100/m"
+
+
+def test_taskinfo_rate_limit_rejects_unsupported_unit():
+    """Invalid rate_limit fails loud at construction, not at execution."""
+    with pytest.raises(ValueError, match="unsupported unit"):
+        TaskInfo(name="task", queues=["q"], rate_limit="100/day")
+
+
+def test_taskinfo_rate_limit_rejects_missing_separator():
+    with pytest.raises(ValueError, match="missing unit separator"):
+        TaskInfo(name="task", queues=["q"], rate_limit="100")
+
+
+def test_taskinfo_rate_limit_rejects_zero_count():
+    with pytest.raises(ValueError, match="count must be >= 1"):
+        TaskInfo(name="task", queues=["q"], rate_limit="0/m")
