@@ -564,7 +564,7 @@ Cron-String via croniter validiert; `catchup=True` wirft
 
 ---
 
-- [ ] **Unit 4: LockManager.renew + lock_renew.lua**
+- [x] **Unit 4: LockManager.renew + lock_renew.lua**
 
 **Goal:** `LockManager.renew(lock_name, owner_token, ttl_ms) -> bool` für
 Heartbeat-Lock-Verlängerung. Neues Lua-Script `lock_renew.lua`:

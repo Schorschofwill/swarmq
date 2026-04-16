@@ -7,6 +7,7 @@ Valkey instance. Mirrors ``tests/integration/test_rate_limiter_integration.py``.
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import uuid
 
@@ -15,8 +16,8 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.locking import LockManager
 
-VALKEY_HOST = "localhost"
-VALKEY_PORT = 6379
+VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
+VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
 VALKEY_URL = f"valkey://{VALKEY_HOST}:{VALKEY_PORT}/0"
 
 
@@ -144,3 +145,66 @@ class TestContention:
         assert len(winners) == max_concurrency
         for tok in winners:
             await lock_manager.release(lock_name, tok, max_concurrency)
+
+
+class TestRenew:
+    """``renew`` extends TTL for the current mutex holder only.
+
+    Covers the heartbeat path the embedded scheduler uses to keep its
+    leader-lock alive (Unit 4 / Review-Finding P2-8).
+    """
+
+    async def test_renew_extends_ttl_for_owner(
+        self, lock_manager, lock_name, valkey_client
+    ):
+        token = uuid.uuid4().hex
+        # Acquire with a short TTL, then renew to a much longer one.
+        assert await lock_manager.acquire(lock_name, token, 2_000, 1) is True
+
+        key = f"sq:lock:{lock_name}"
+        pttl_before = await valkey_client.pttl(key)
+        assert 0 < pttl_before <= 2_000
+
+        assert await lock_manager.renew(lock_name, token, 60_000) is True
+        pttl_after = await valkey_client.pttl(key)
+        # Renew should push the TTL well past the original 2_000ms ceiling.
+        assert pttl_after > pttl_before
+        assert pttl_after > 30_000
+
+        await lock_manager.release(lock_name, token, 1)
+
+    async def test_renew_foreign_owner_returns_false_and_lock_unchanged(
+        self, lock_manager, lock_name, valkey_client
+    ):
+        owner = uuid.uuid4().hex
+        intruder = uuid.uuid4().hex
+        assert await lock_manager.acquire(lock_name, owner, 60_000, 1) is True
+
+        key = f"sq:lock:{lock_name}"
+        pttl_before = await valkey_client.pttl(key)
+
+        assert await lock_manager.renew(lock_name, intruder, 5_000) is False
+        pttl_after = await valkey_client.pttl(key)
+        # Script must not have touched the key — TTL monotonically ticks
+        # but the PEXPIRE path was not entered, so no sudden jump up.
+        assert pttl_after <= pttl_before
+
+        await lock_manager.release(lock_name, owner, 1)
+
+    async def test_renew_absent_key_returns_false(self, lock_manager, lock_name):
+        # No acquire — GET returns nil, script returns 0
+        assert await lock_manager.renew(lock_name, "any-tok", 60_000) is False
+
+    async def test_renew_after_expiry_returns_false(
+        self, lock_manager, lock_name
+    ):
+        token = uuid.uuid4().hex
+        # Short TTL, wait for it to die naturally, then attempt renew.
+        assert await lock_manager.acquire(lock_name, token, 300, 1) is True
+        await asyncio.sleep(0.6)
+        assert await lock_manager.renew(lock_name, token, 60_000) is False
+
+    async def test_renew_rejects_semaphore_explicitly(self, lock_manager, lock_name):
+        # P2-8 guard: semaphore-mode renew is intentionally NotImplemented
+        with pytest.raises(NotImplementedError, match="mutex-only"):
+            await lock_manager.renew(lock_name, "tok", 60_000, max_concurrency=2)

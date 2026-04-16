@@ -83,6 +83,7 @@ class LockManager:
         self._client = client
         self._acquire_script = client.register_script(load_script("lock_acquire"))
         self._release_script = client.register_script(load_script("lock_release"))
+        self._renew_script = client.register_script(load_script("lock_renew"))
 
     async def acquire(
         self,
@@ -141,3 +142,41 @@ class LockManager:
         # Lua returns 1 (owned release), 2 (force release), 0 (no-op).
         # Both 1 and 2 count as "released" from the caller's perspective.
         return int(result) >= 1
+
+    async def renew(
+        self,
+        lock_name: str,
+        owner_token: str,
+        ttl_ms: int,
+        max_concurrency: int = 1,
+    ) -> bool:
+        """Extend the TTL of a mutex lock we still own (heartbeat path).
+
+        Returns ``True`` when the script confirms the owner matches and the
+        PEXPIRE succeeded, ``False`` when the lock is absent, expired, or
+        held by a different owner. The caller uses the boolean to decide
+        whether to keep asserting leadership — a ``False`` means the lock
+        was lost and the caller should transition back to standby.
+
+        Mutex-only for v1 (Review-Finding P2-8). Calling with
+        ``max_concurrency > 1`` raises ``NotImplementedError`` — the
+        underlying script uses ``GET`` on the lock key and would otherwise
+        hit WRONGTYPE against a semaphore SortedSet.
+        """
+        if max_concurrency != 1:
+            raise NotImplementedError(
+                "LockManager.renew is mutex-only in this release; "
+                f"got max_concurrency={max_concurrency}"
+            )
+        try:
+            result = await self._renew_script(
+                keys=[lock_key(lock_name)],
+                args=[owner_token, ttl_ms],
+            )
+        except BackendConnectionError:
+            raise
+        except Exception as exc:
+            raise BackendConnectionError(
+                f"lock renew failed for {lock_name!r}: {exc}"
+            ) from exc
+        return int(result) == 1
