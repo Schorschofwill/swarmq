@@ -388,7 +388,7 @@ und die Test-Suite muss am Ende grün sein (TDD-Pflicht, AGENTS.md).
 
 ---
 
-- [ ] **Unit 1: Signal-Enum-Erweiterung**
+- [x] **Unit 1: Signal-Enum-Erweiterung**
 
 **Goal:** Drei neue Signal-Werte für Scheduler-Lifecycle: `SCHEDULER_HEARTBEAT`,
 `SCHEDULER_LEADER_HANDOVER`, `SCHEDULER_LEADER_FAILOVER`.

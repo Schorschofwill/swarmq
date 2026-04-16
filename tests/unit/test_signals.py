@@ -75,8 +75,20 @@ def test_signal_enum_has_scheduler_standby():
     assert Signal.SCHEDULER_STANDBY.value == "scheduler_standby"
 
 
-def test_signal_enum_has_exactly_14_values():
-    assert len(list(Signal)) == 14
+def test_signal_enum_has_scheduler_heartbeat():
+    assert Signal.SCHEDULER_HEARTBEAT.value == "scheduler_heartbeat"
+
+
+def test_signal_enum_has_scheduler_leader_handover():
+    assert Signal.SCHEDULER_LEADER_HANDOVER.value == "scheduler_leader_handover"
+
+
+def test_signal_enum_has_scheduler_leader_failover():
+    assert Signal.SCHEDULER_LEADER_FAILOVER.value == "scheduler_leader_failover"
+
+
+def test_signal_enum_has_exactly_17_values():
+    assert len(list(Signal)) == 17
 
 
 # ---------------------------------------------------------------------------

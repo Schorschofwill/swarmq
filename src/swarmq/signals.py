@@ -40,6 +40,18 @@ class Signal(enum.Enum):
         - rate_limit_count: number of times this exact message has been
           requeued by the rate limiter (operator-visible bounce counter)
       * WORKER_ONLINE / WORKER_SHUTDOWN: worker_id
+      * SCHEDULER_LEADER:          worker_id (this worker just became leader,
+                                   either first-time or via clean handover)
+      * SCHEDULER_STANDBY:         worker_id (this worker did not acquire
+                                   the leader lock)
+      * SCHEDULER_HEARTBEAT:       worker_id (leader successfully renewed
+                                   its leader-lock)
+      * SCHEDULER_LEADER_HANDOVER: worker_id (this leader is about to
+                                   release its lock as part of graceful
+                                   shutdown)
+      * SCHEDULER_LEADER_FAILOVER: worker_id (this worker just acquired
+                                   the leader lock after the previous
+                                   leader's TTL expired, i.e. crash/GC)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -63,6 +75,9 @@ class Signal(enum.Enum):
     # Scheduler lifecycle
     SCHEDULER_LEADER = "scheduler_leader"
     SCHEDULER_STANDBY = "scheduler_standby"
+    SCHEDULER_HEARTBEAT = "scheduler_heartbeat"
+    SCHEDULER_LEADER_HANDOVER = "scheduler_leader_handover"
+    SCHEDULER_LEADER_FAILOVER = "scheduler_leader_failover"
 
 
 class SignalDispatcher:
