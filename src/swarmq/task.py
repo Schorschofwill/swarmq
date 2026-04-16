@@ -5,6 +5,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 
+from swarmq.limits import parse_rate_limit
+
 
 class DeliveryMode(enum.Enum):
     AT_LEAST_ONCE = "at_least_once"
@@ -16,6 +18,17 @@ _VALID_BACKOFF_STRATEGIES = {"exponential", "linear", "fixed"}
 
 @dataclass(frozen=True)
 class TaskInfo:
+    """Declarative task metadata. Frozen — set once at class definition.
+
+    Field notes (only the less-obvious ones):
+      * ``rate_limit``: optional Celery-style rate limit string,
+        e.g. ``"100/m"``, ``"10/s"``, ``"1000/h"``. Enforced globally
+        across all workers via Valkey. Limited messages are requeued
+        with a per-Lua-script delay rather than DLQ'd. Validated at
+        construction (a bad string raises ``ValueError`` immediately).
+        Supported units: ``s``, ``m``/``min``, ``h``/``hour``.
+    """
+
     name: str
     queues: tuple[str, ...] = field(default=())
     soft_timeout: int | None = None
@@ -80,12 +93,8 @@ class TaskInfo:
         if self.retry_base_delay < 0:
             raise ValueError("retry_base_delay must be >= 0")
         if self.rate_limit is not None:
-            # Validate eagerly at construction time so a bad string fails
-            # in the task-module import, not inside the worker loop.
-            # Imported locally to avoid a circular dep via
-            # swarmq.limits -> swarmq.lua at module top-level.
-            from swarmq.limits import parse_rate_limit
-
+            # Validate eagerly at construction so a bad string fails at
+            # task-module import time, not inside the worker loop.
             parse_rate_limit(self.rate_limit)
 
 

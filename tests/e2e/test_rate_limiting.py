@@ -38,6 +38,7 @@ async def test_rate_limited_task_delays_but_never_drops(
 
     executed_task_ids: list[str] = []
     completed_event = asyncio.Event()
+    worker_online_event = asyncio.Event()
     rate_limited_count = 0
 
     class RateLimitedEchoTask(Task):
@@ -67,13 +68,17 @@ async def test_rate_limited_task_delays_but_never_drops(
             nonlocal rate_limited_count
             rate_limited_count += 1
 
+        @worker_app.on_signal(Signal.WORKER_ONLINE)
+        async def _on_worker_online(**_: Any) -> None:
+            worker_online_event.set()
+
         worker_task = asyncio.create_task(worker_app.start_worker())
 
         try:
-            # Let the worker settle before publishing, otherwise a dead
-            # worker process would fail the test with "queue not ready"
-            # noise rather than a rate-limit assertion failure.
-            await asyncio.sleep(0.5)
+            # Wait for the WORKER_ONLINE signal instead of sleeping —
+            # AGENTS.md forbids `asyncio.sleep` in tests for exactly
+            # this reason (synchronisation via events, not timers).
+            await asyncio.wait_for(worker_online_event.wait(), timeout=5.0)
 
             for i in range(total_messages):
                 await app.schedule(task_name, i)

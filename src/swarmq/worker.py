@@ -87,6 +87,104 @@ class Worker:
         """Return a live MiddlewareChain for the current message."""
         return self._middleware_chain_factory()
 
+    async def _try_apply_rate_limit(
+        self,
+        message: aio_pika.abc.AbstractIncomingMessage,
+        task_info: TaskInfo,
+        queue: str,
+        task_id: str,
+        task_name: str,
+    ) -> bool:
+        """Decide whether the message must be requeued for rate-limit reasons.
+
+        Returns ``True`` when the message was rate-limited and handled
+        (republished into the delay queue and acknowledged), so the
+        caller must stop processing it. Returns ``False`` when the
+        message should continue through the normal pipeline (no limit
+        configured, limiter not initialised, or the call was allowed).
+
+        The whole sequence — Valkey check, signal/log, broker republish,
+        ack — runs inside a single ``try`` so that a Valkey or broker
+        failure cannot leave the message in a half-processed state.
+        Mirrors ``_evaluate_retry``'s try/except contract around
+        ``publish_to_delay_queue``.
+        """
+        if task_info.rate_limit is None or self._rate_limiter is None:
+            return False
+
+        config = parse_rate_limit(task_info.rate_limit)
+        try:
+            allowed, remaining, retry_after_ms = await self._rate_limiter.check(
+                task_name, config
+            )
+        except Exception as exc:
+            # The limiter is the only side-effect-free decision-point we
+            # have. If Valkey is unreachable we cannot decide safely;
+            # nack(requeue=True) so the broker hands the message to the
+            # next worker that may have a healthier client. Important:
+            # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
+            logger.error(
+                "rate_limit_check_failed",
+                task_id=task_id,
+                task_name=task_name,
+                error=str(exc),
+            )
+            await self._broker.nack(message, requeue=True)
+            return True
+
+        if allowed:
+            return False
+
+        # Rate-limited. Track how often this exact message has bounced
+        # so operators (and TASK_RATE_LIMITED handlers) can see when a
+        # task has been stuck in the limiter loop. We don't auto-DLQ
+        # here — that decision belongs to the operator and is documented
+        # as a Non-Goal in plan 005. The header is the visible knob.
+        original_headers = dict(message.headers) if message.headers else {}
+        rl_count = int(original_headers.get("x-swarmq-rate-limit-count", 0)) + 1
+        original_headers["x-swarmq-rate-limit-count"] = rl_count
+
+        logger.info(
+            "task_rate_limited",
+            task_id=task_id,
+            task_name=task_name,
+            retry_after_ms=retry_after_ms,
+            remaining=remaining,
+            rate_limit_count=rl_count,
+        )
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_RATE_LIMITED,
+            task_id=task_id,
+            task_name=task_name,
+            retry_after_ms=retry_after_ms,
+            remaining=remaining,
+            rate_limit_count=rl_count,
+        )
+
+        try:
+            await self._broker.publish_to_delay_queue(
+                queue,
+                message.body,
+                delay_ms=retry_after_ms,
+                headers=original_headers,
+            )
+            await self._broker.ack(message)
+        except Exception as exc:
+            # Broker failure between publish and ack would create a
+            # duplicate (republished + redelivered original). nack with
+            # requeue=True keeps the original in flight for retry; the
+            # delay-queue copy may still arrive but the rate-limit check
+            # on the next consume cycle will naturally serialize them.
+            logger.error(
+                "rate_limit_requeue_failed",
+                task_id=task_id,
+                task_name=task_name,
+                error=str(exc),
+            )
+            await self._broker.nack(message, requeue=True)
+
+        return True
+
     async def start(self) -> None:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
@@ -222,49 +320,21 @@ class Worker:
                 await self._broker.nack(message, requeue=False)
                 return
 
-            # 5b. FIRE_AND_FORGET: ack immediately before execution
             task_info = task_class.task_info
+
+            # 5b. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
+            # so a Valkey or broker hiccup cannot drop a message that has
+            # already been acked. Rate-limited tasks never reach
+            # pre_execute or middleware: they are republished into the
+            # delay queue and ack'd as a single transactional unit.
+            if await self._try_apply_rate_limit(
+                message, task_info, queue, task_id, task_name,
+            ):
+                return
+
+            # 5c. FIRE_AND_FORGET: ack immediately before execution.
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                 await self._broker.ack(message)
-
-            # 5c. Rate limit check — before middleware, before pre_execute.
-            # A rate-limited task is *not* a task failure: re-enqueue with
-            # the Lua script's retry_after_ms delay, ack (or rely on the
-            # FIRE_AND_FORGET ack above), emit TASK_RATE_LIMITED, and stop.
-            # The delayed message will come back through the normal
-            # consume loop once the window has moved forward.
-            if task_info.rate_limit is not None and self._rate_limiter is not None:
-                config = parse_rate_limit(task_info.rate_limit)
-                allowed, remaining, retry_after_ms = await self._rate_limiter.check(
-                    task_name, config
-                )
-                if not allowed:
-                    logger.info(
-                        "task_rate_limited",
-                        task_id=task_id,
-                        task_name=task_name,
-                        retry_after_ms=retry_after_ms,
-                        remaining=remaining,
-                    )
-                    await self._signal_dispatcher.dispatch(
-                        Signal.TASK_RATE_LIMITED,
-                        task_id=task_id,
-                        task_name=task_name,
-                        retry_after_ms=retry_after_ms,
-                        remaining=remaining,
-                    )
-                    original_headers = (
-                        dict(message.headers) if message.headers else {}
-                    )
-                    await self._broker.publish_to_delay_queue(
-                        queue,
-                        message.body,
-                        delay_ms=retry_after_ms,
-                        headers=original_headers,
-                    )
-                    if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                        await self._broker.ack(message)
-                    return
 
             # Build canonical message_dict for middleware + track retry_count
             retry_count = message.headers.get("x-swarmq-retry-count", 0)

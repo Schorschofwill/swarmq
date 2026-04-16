@@ -24,7 +24,24 @@ AsyncHandler = Callable[..., Awaitable[Any]]
 
 
 class Signal(enum.Enum):
-    """Lifecycle signals emitted by SwarmQ components."""
+    """Lifecycle signals emitted by SwarmQ components.
+
+    Handler payloads (kwargs) per signal:
+      * TASK_ENQUEUED:    task_id, task_name, queue
+      * TASK_STARTED:     task_id, task_name
+      * TASK_COMPLETED:   task_id, task_name, duration_ms
+      * TASK_FAILED:      task_id, task_name, exception
+      * TASK_RETRYING:    task_id, retry_count, delay
+      * TASK_RATE_LIMITED: task_id, task_name, retry_after_ms,
+                          remaining, rate_limit_count
+        - retry_after_ms: ms the message will wait in the delay queue
+        - remaining: estimated requests still allowed in the window
+        - rate_limit_count: number of times this exact message has been
+          requeued by the rate limiter (operator-visible bounce counter)
+      * WORKER_ONLINE / WORKER_SHUTDOWN: worker_id
+
+    Handlers are invoked async; exceptions are swallowed and logged.
+    """
 
     # Task lifecycle
     TASK_ENQUEUED = "task_enqueued"
