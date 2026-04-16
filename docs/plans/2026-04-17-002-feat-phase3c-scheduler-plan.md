@@ -884,7 +884,7 @@ Unit-Tests + selektive Integration.
 
 ---
 
-- [ ] **Unit 8: Consumer-Dedup im Worker._handle_message**
+- [x] **Unit 8: Consumer-Dedup im Worker._handle_message**
 
 **Goal:** Worker prüft bei jedem Message mit `x-swarmq-schedfire`-Header
 per `backend.set_schedfire_dedup`, ob es eine Duplicate-Fire ist. Bei

@@ -693,6 +693,55 @@ class Worker:
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
+    async def _pre_start_schedfire_dedup(self, message) -> bool:
+        """Drop duplicate scheduled-fire messages before the pipeline.
+
+        When a message carries the ``x-swarmq-schedfire`` header, the
+        scheduler published it with a deterministic fire-key identity.
+        We SETNX that key (TTL from ``scheduler_dedup_ttl`` — large enough
+        to cover ``retry_max_delay``, see P1-1) and use the result to
+        decide:
+
+        * First delivery (SETNX succeeded): proceed normally. Return False.
+        * Duplicate (SETNX no-op): ack + clear contextvars + return True.
+          Caller (``_handle_message``) must early-return.
+
+        Runs BEFORE ``_pre_start_cancel_check`` so a duplicate fire never
+        enters cancel processing. Same pipeline-stage-ordering-discipline
+        as the cancel-check (both are ack-safe pre-semaphore checks).
+
+        Backend errors → nack(requeue=True); we cannot assume either
+        state and want a healthy worker to retry.
+        """
+        header_value = (message.headers or {}).get("x-swarmq-schedfire")
+        if not header_value:
+            return False
+
+        ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
+        try:
+            is_new = await self._backend.set_schedfire_dedup(
+                header_value, ttl_ms
+            )
+        except BackendConnectionError:
+            logger.error(
+                "schedfire_dedup_backend_error",
+                schedfire_key=header_value,
+            )
+            await self._broker.nack(message, requeue=True)
+            structlog.contextvars.clear_contextvars()
+            return True
+
+        if is_new:
+            return False
+
+        logger.info(
+            "schedfire_duplicate_acked",
+            schedfire_key=header_value,
+        )
+        await self._broker.ack(message)
+        structlog.contextvars.clear_contextvars()
+        return True
+
     async def _pre_start_cancel_check(
         self,
         message,
@@ -824,6 +873,14 @@ class Worker:
             queue=queue,
             worker_id=id(self),
         )
+
+        # 2a. Consumer-side schedfire dedup (Phase 3c Unit 8). Runs FIRST —
+        # before cancel-check, semaphore, rate-limit, lock — so a
+        # duplicate scheduled fire never enters any of those stages and
+        # costs no Valkey round-trips beyond the SETNX. Ack-safe
+        # pre-pipeline stage, same discipline as cancel-check.
+        if await self._pre_start_schedfire_dedup(message):
+            return
 
         # 2b. Pre-start cancel check (Phase 3b.3). Runs BEFORE semaphore
         # acquire so a cancelled message doesn't waste a slot, BEFORE
