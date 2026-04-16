@@ -785,7 +785,7 @@ gegen echten Valkey getestet (kein Mock).
 
 ---
 
-- [ ] **Unit 7: Scheduler-Modul — SchedulerStore + Idempotency-Helper**
+- [x] **Unit 7: Scheduler-Modul — SchedulerStore + Idempotency-Helper**
 
 **Goal:** Neues Modul `src/swarmq/scheduler.py` mit:
 - `ScheduleDefinition` (msgspec.Struct) — Schedule-Metadata.
