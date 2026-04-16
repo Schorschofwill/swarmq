@@ -28,6 +28,10 @@ def backend():
     b._url = "valkey://localhost:6379/0"
     b.connect = AsyncMock()
     b.close = AsyncMock()
+    # Cancel-flag primitives (Phase 3b.3). Default: no flag set.
+    b.is_cancelled = AsyncMock(return_value=False)
+    b.set_cancel_flag = AsyncMock(return_value=True)
+    b.clear_cancel_flag = AsyncMock()
     return b
 
 

@@ -335,6 +335,27 @@ Die Units sind strikt dependency-geordnet. Jede kann atomar committet werden
 und die Test-Suite muss am Ende jeder Unit grün sein (siehe AGENTS.md TDD-
 Pflicht).
 
+### Test-Strategie für Units 6 + 7 (erweitert über Plan-Scope hinaus)
+
+Auf Userwunsch werden Units 6 und 7 **überdurchschnittlich dicht** getestet.
+Drei Schichten, alle Error-Pfade explizit, Race-Conditions mit dediziertem
+Test, E2E in realer Umgebung:
+
+1. **Unit-Level (mocked)**: Alle Control-Flow-Pfade, alle Error-Branches,
+   alle DeliveryMode-Variations, structlog-Cleanup, Pipeline-Position-
+   Invariants.
+2. **Integration-Level (echter Broker+Backend via `docker-compose.swarmq-dev.yml`
+   auf Ports 5673/6380)**: Roundtrip-Verhalten, DQ-Retry-Interaktion,
+   Race-Conditions mit Timing-Assertions, Hard-Timeout-Regression.
+3. **E2E-Level (neue Datei `tests/e2e/test_cancellation.py`)**: Full stack
+   mit App-Context, Parallel-Cancels, Lock-Successor, SIGTERM-Verhalten.
+
+Unit-8-Drop (Brainstorm-Revision) wird für Units 6+7 teilweise zurückgezogen —
+wir legen `tests/e2e/test_cancellation.py` doch an, weil die Race- und
+Shutdown-Pfade nur E2E sicher verifizierbar sind. Lock-Successor und
+Shutdown-with-Monitor bleiben in bestehenden E2E-Dateien angedockt
+(`tests/e2e/test_locking.py` bzw. Shutdown-E2E).
+
 ---
 
 - [ ] **Unit 1: Exception + Signal Rename (Foundation)**

@@ -672,6 +672,113 @@ class Worker:
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
+    async def _pre_start_cancel_check(
+        self,
+        message,
+        task_id: str,
+        task_name: str,
+        queue: str,
+    ) -> bool:
+        """Check whether this message has been cancelled before execution.
+
+        Called at the earliest point in the pipeline — after deserialize,
+        before semaphore acquire, rate-limit, lock, and FAF-ack.  If the
+        cancel flag is set, stores an ``is_cancelled=True`` result
+        (AT_LEAST_ONCE) or skips storage (FAF with result_ttl=0),
+        dispatches TASK_CANCELLED, clears the flag, acks the message.
+
+        The helper is responsible for its own structlog cleanup when it
+        returns True: the main handler's finally is not reached on this
+        branch.
+
+        Returns:
+            True when the cancel was handled (caller must return
+            immediately). False when no cancel flag is set and normal
+            execution should proceed.
+        """
+        try:
+            is_cancelled = await self._backend.is_cancelled(task_id)
+        except BackendConnectionError:
+            logger.error("cancel_check_backend_error", task_id=task_id)
+            await self._broker.nack(message, requeue=True)
+            structlog.contextvars.clear_contextvars()
+            return True
+
+        if not is_cancelled:
+            return False
+
+        # Cancel flag is set. Resolve DeliveryMode + result_ttl from
+        # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
+        # the client's get_result does not hang forever waiting for a
+        # result that will never arrive).
+        try:
+            task_class = self._registry.get(task_name)
+            task_info = task_class.task_info
+            delivery = task_info.delivery
+            # result_ttl falls through: task → global → 86400.
+            result_ttl = task_info.result_ttl
+            if result_ttl is None:
+                if delivery is DeliveryMode.FIRE_AND_FORGET:
+                    result_ttl = 0
+                else:
+                    result_ttl = self._config.result_ttl
+        except TaskNotFoundError:
+            delivery = DeliveryMode.AT_LEAST_ONCE
+            result_ttl = self._config.result_ttl
+
+        try:
+            if result_ttl > 0:
+                result_data = {
+                    "task": {"id": task_id, "queue": queue, "name": task_name},
+                    "is_error": False,
+                    "is_cancelled": True,
+                    "error_message": "",
+                    "result": None,
+                }
+                result_bytes = encode_result(result_data)
+                await self._backend.store_result(
+                    task_id, result_bytes, result_ttl * 1000
+                )
+                try:
+                    await self._backend.publish_notification(task_id)
+                except Exception as exc:
+                    logger.warning(
+                        "publish_notification_failed",
+                        task_id=task_id,
+                        error=str(exc),
+                    )
+
+            # Clear the flag (log+swallow at backend boundary — Unit 3).
+            await self._backend.clear_cancel_flag(task_id)
+
+            # Ack the message.
+            await self._broker.ack(message)
+
+        except BackendConnectionError as exc:
+            # Result-write failure: nack(requeue=True) so a redelivery
+            # re-runs this branch.  Flag stays in Valkey (that's what
+            # triggers the re-cancel on redelivery).
+            logger.error(
+                "cancel_store_result_failed",
+                task_id=task_id,
+                error=str(exc),
+            )
+            await self._broker.nack(message, requeue=True)
+            structlog.contextvars.clear_contextvars()
+            return True
+
+        # Signal AFTER the broker ack so a handler that raises doesn't
+        # prevent the message from being committed.
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_CANCELLED,
+            task_id=task_id,
+            task_name=task_name,
+        )
+
+        logger.info("task_cancelled_pre_start", task_id=task_id, task_name=task_name)
+        structlog.contextvars.clear_contextvars()
+        return True
+
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
         # 1-2. Deserialize message body
@@ -696,6 +803,18 @@ class Worker:
             queue=queue,
             worker_id=id(self),
         )
+
+        # 2b. Pre-start cancel check (Phase 3b.3). Runs BEFORE semaphore
+        # acquire so a cancelled message doesn't waste a slot, BEFORE
+        # rate-limit and lock so those stages are not entered for
+        # cancelled work, and BEFORE FIRE_AND_FORGET early-ack in the
+        # main try/finally. The helper is responsible for its own
+        # structlog cleanup on the cancel branch — the main finally at
+        # the end of this method is not reached on this branch.
+        if await self._pre_start_cancel_check(
+            message, task_id, task_name, queue
+        ):
+            return
 
         # 3. Acquire semaphore
         await self._semaphore.acquire()

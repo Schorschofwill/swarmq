@@ -77,6 +77,10 @@ def backend():
     be.connect = AsyncMock()
     be.store_result = AsyncMock()
     be.close = AsyncMock()
+    # Cancel-flag primitives (Phase 3b.3). Default: no flag set.
+    be.is_cancelled = AsyncMock(return_value=False)
+    be.set_cancel_flag = AsyncMock(return_value=True)
+    be.clear_cancel_flag = AsyncMock()
     return be
 
 
