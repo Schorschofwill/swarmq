@@ -11,7 +11,12 @@ import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
+from swarmq.exceptions import (
+    ResultNotReadyError,
+    TaskCancelledError,
+    TaskError,
+    TaskNotFoundError,
+)
 from swarmq.middleware import (
     MessageContext,
     MiddlewareChain,
@@ -385,8 +390,18 @@ class Client:
 
     @staticmethod
     def _unpack(raw: bytes) -> Any:
-        """Decode a raw result and return the value or raise on error."""
+        """Decode a raw result and return the value or raise on cancel/error.
+
+        Priority: is_cancelled > is_error > success. Cancelled results
+        raise :class:`TaskCancelledError` even when ``is_error`` is also
+        set, because cancel bypasses the normal error pipeline and the
+        caller needs to distinguish a user-initiated abort from a task
+        failure.
+        """
         data = decode_result(raw)
+        if data.get("is_cancelled", False):
+            task_id = data.get("task", {}).get("id")
+            raise TaskCancelledError(task_id)
         if data.get("is_error"):
             raise TaskError(data.get("error_message", "unknown error"))
         return data["result"]

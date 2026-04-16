@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from swarmq.client import Client
-from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
+from swarmq.exceptions import (
+    ResultNotReadyError,
+    TaskCancelledError,
+    TaskError,
+    TaskNotFoundError,
+)
 from swarmq.serialization import decode_json, encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -194,6 +199,59 @@ async def test_get_result_error_raises_task_error(client, backend):
 
     with pytest.raises(TaskError, match="division by zero"):
         await client.get_result("err-task", timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# 9b. get_result() with is_cancelled result raises TaskCancelledError
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_result_cancelled_raises_task_cancelled_error(client, backend):
+    result_data = encode_result({
+        "task": {"id": "cancel-task", "queue": "default", "name": "t"},
+        "result": None,
+        "is_error": False,
+        "is_cancelled": True,
+        "error_message": "",
+    })
+    backend.get_result = AsyncMock(return_value=result_data)
+
+    with pytest.raises(TaskCancelledError) as excinfo:
+        await client.get_result("cancel-task", timeout=1)
+
+    assert "cancel-task" in str(excinfo.value)
+    assert isinstance(excinfo.value, TaskError)
+
+
+@pytest.mark.asyncio
+async def test_get_result_cancelled_takes_priority_over_error(client, backend):
+    """When both is_cancelled=True and is_error=True, TaskCancelledError wins."""
+    result_data = encode_result({
+        "task": {"id": "dual", "queue": "default", "name": "t"},
+        "result": None,
+        "is_error": True,
+        "is_cancelled": True,
+        "error_message": "some error",
+    })
+    backend.get_result = AsyncMock(return_value=result_data)
+
+    with pytest.raises(TaskCancelledError):
+        await client.get_result("dual", timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_get_result_legacy_result_without_is_cancelled_key(client, backend):
+    """Backward-compat: results stored before R3.6 have no is_cancelled key."""
+    result_data = encode_result({
+        "task": {"id": "legacy", "queue": "default", "name": "t"},
+        "result": 99,
+        "is_error": False,
+        # no is_cancelled key
+    })
+    backend.get_result = AsyncMock(return_value=result_data)
+
+    result = await client.get_result("legacy", timeout=1)
+    assert result == 99
 
 
 # ---------------------------------------------------------------------------
