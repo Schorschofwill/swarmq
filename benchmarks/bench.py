@@ -116,6 +116,13 @@ VALKEY_URL = os.getenv("VALKEY_URL", "valkey://localhost:6379/0")
 QUEUE_NAME = "bench_queue"
 RESULT_CHANNEL = "bench_results"
 
+# Upper bound for any per-scenario completion wait. 5 minutes is generous
+# for benchmark-scale workloads (n up to ~500k) but catches true hangs
+# long before CI or a human loses patience. On timeout we raise rather
+# than let the whole suite stall silently; stack dumps via SIGUSR1/USR2
+# give the operator the exact parking point.
+_BENCH_HANG_TIMEOUT = 300.0
+
 
 # ---------------------------------------------------------------------------
 # Ergebnis-Datenstruktur
@@ -212,9 +219,38 @@ class RabbitMQBench:
         if self.connection:
             await self.connection.close()
 
+    async def _ensure_connection(self) -> aio_pika.abc.AbstractRobustConnection:
+        """Return a live RobustConnection, reconnecting if the underlying
+        aiormq socket is dead.
+
+        A previous scenario can leave the shared connection in a state
+        where ``RobustConnection.is_closed`` still reports ``False`` but
+        the underlying aiormq connection is actually closed (observed
+        after a bursty close-storm when multiple consumer channels tear
+        down concurrently in full_pipeline). We therefore probe the
+        connection by opening a throwaway channel; on failure we rebuild
+        the RobustConnection outright.
+        """
+        if self.connection is None or self.connection.is_closed:
+            self.connection = await aio_pika.connect_robust(RABBITMQ_URL)
+            return self.connection
+        # Probe: try to open a channel. If the aiormq socket is dead the
+        # RobustConnection won't reopen it on demand and we get a stale
+        # 'closed' error. Replace the connection in that case.
+        try:
+            probe_ch = await self.connection.channel()
+            await probe_ch.close()
+        except (RuntimeError, aio_pika.exceptions.AMQPError, OSError):
+            try:
+                await self.connection.close()
+            except Exception:
+                pass
+            self.connection = await aio_pika.connect_robust(RABBITMQ_URL)
+        return self.connection
+
     async def purge(self) -> None:
-        assert self.connection
-        ch = await self.connection.channel()
+        conn = await self._ensure_connection()
+        ch = await conn.channel()
         queue = await ch.declare_queue(QUEUE_NAME, durable=True)
         await queue.purge()
         await ch.close()
@@ -258,7 +294,7 @@ class RabbitMQBench:
 
         consumer_tag = await queue.consume(on_message)
         t0 = time.perf_counter()
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         await queue.cancel(consumer_tag)
@@ -294,7 +330,7 @@ class RabbitMQBench:
             msg = AMQPMessage(body, delivery_mode=DeliveryMode.PERSISTENT)
             await ch_pub.default_exchange.publish(msg, routing_key=QUEUE_NAME)
 
-        await received.wait()
+        await asyncio.wait_for(received.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         await queue.cancel(consumer_tag)
@@ -358,7 +394,7 @@ class RabbitMQBench:
 
         t0 = time.perf_counter()
         tasks = [asyncio.create_task(consumer()) for _ in range(concurrency)]
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         for t in tasks:
@@ -422,13 +458,17 @@ class RabbitMQBench:
             c = per_producer + (1 if i < remainder else 0)
             producer_tasks.append(asyncio.create_task(producer(c)))
 
-        await asyncio.gather(*producer_tasks)
-        await done.wait()
-        dur = time.perf_counter() - t0
-
-        for t in consumer_tasks:
-            t.cancel()
-        await asyncio.gather(*consumer_tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*producer_tasks)
+            await done.wait()
+            dur = time.perf_counter() - t0
+        finally:
+            # Always tear down consumer tasks — even when a producer raises or
+            # done.wait() times out — otherwise orphaned consumers keep
+            # aiormq reader tasks alive into the next scenario.
+            for t in consumer_tasks:
+                t.cancel()
+            await asyncio.gather(*consumer_tasks, return_exceptions=True)
 
         return BenchResult(
             "RabbitMQ", "full_pipeline", n, producers + consumers,
@@ -467,7 +507,7 @@ class RabbitMQBench:
             body = f"{time.perf_counter()}|result_ready".encode()
             msg = AMQPMessage(body)
             await exchange.publish(msg, routing_key="")
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         await queue.cancel(consumer_tag)
@@ -497,7 +537,7 @@ class RabbitMQBench:
 
         consumer_tag = await queue.consume(on_message)
         t0 = time.perf_counter()
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         await queue.cancel(consumer_tag)
@@ -584,7 +624,7 @@ class ValkeyBench:
 
         t0 = time.perf_counter()
         tasks = [asyncio.create_task(pop_loop()) for _ in range(concurrency)]
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         for t in tasks:
@@ -628,7 +668,7 @@ class ValkeyBench:
 
         t0 = time.perf_counter()
         tasks = [asyncio.create_task(read_loop(f"c{i}")) for i in range(concurrency)]
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         for t in tasks:
@@ -663,7 +703,7 @@ class ValkeyBench:
         for _ in range(n):
             payload = f"{time.perf_counter()}|ping".encode()
             await self.client.lpush(QUEUE_NAME, payload)
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         consumer_task.cancel()
@@ -718,7 +758,7 @@ class ValkeyBench:
 
         t0 = time.perf_counter()
         tasks = [asyncio.create_task(consumer()) for _ in range(concurrency)]
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         for t in tasks:
@@ -773,7 +813,7 @@ class ValkeyBench:
             producer_tasks.append(asyncio.create_task(producer(c)))
 
         await asyncio.gather(*producer_tasks)
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         for t in consumer_tasks:
@@ -819,7 +859,7 @@ class ValkeyBench:
                 await pipe.execute()
                 pipe = self.client.pipeline()
         await pipe.execute()
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         listener_task.cancel()
@@ -865,7 +905,7 @@ class ValkeyBench:
 
         t0 = time.perf_counter()
         task = asyncio.create_task(read_loop())
-        await done.wait()
+        await asyncio.wait_for(done.wait(), timeout=_BENCH_HANG_TIMEOUT)
         dur = time.perf_counter() - t0
 
         task.cancel()
