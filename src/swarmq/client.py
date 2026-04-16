@@ -59,8 +59,9 @@ class Client:
             self._middleware_chain_factory = middleware_chain
         else:
             raise TypeError(
-                "middleware_chain must be a MiddlewareChain, a zero-arg "
-                "callable returning a MiddlewareChain, or None"
+                f"middleware_chain must be a MiddlewareChain, a zero-arg "
+                f"callable returning a MiddlewareChain, or None "
+                f"(got {type(middleware_chain).__name__})"
             )
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()

@@ -75,8 +75,9 @@ class Worker:
             self._middleware_chain_factory = middleware_chain
         else:
             raise TypeError(
-                "middleware_chain must be a MiddlewareChain, a zero-arg "
-                "callable returning a MiddlewareChain, or None"
+                f"middleware_chain must be a MiddlewareChain, a zero-arg "
+                f"callable returning a MiddlewareChain, or None "
+                f"(got {type(middleware_chain).__name__})"
             )
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
@@ -239,7 +240,8 @@ class Worker:
 
             # Resolve the middleware chain once per message so that any
             # add_middleware() calls made after Worker construction are
-            # visible to every hook for this message.
+            # visible to every hook for this message. Chain-build cost is
+            # sub-microsecond (list copy), negligible vs broker roundtrip.
             chain = self._get_chain()
 
             # Pre-execute hooks

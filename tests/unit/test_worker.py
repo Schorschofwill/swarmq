@@ -1862,23 +1862,16 @@ class TestWorkerMiddlewareAndSignals:
         (via SwarmQ.add_middleware) was invisible. The factory is invoked on
         every message so the chain reflects the current state.
         """
-        from swarmq.middleware import MiddlewareChain
-
         reg = TaskRegistry()
         reg.register(AddTask)
 
         chain_a = _make_middleware_chain_mock()
         chain_b = _make_middleware_chain_mock()
-        # Return chain_a first, chain_b on the second call — mimics
-        # add_middleware() producing a new chain after the first message.
-        factory_calls = [chain_a, chain_b]
-        factory = MagicMock(side_effect=lambda: factory_calls.pop(0))
-
-        # isinstance check in Worker.__init__ needs an actual subclass, not a
-        # MagicMock(spec=...). The factory is a plain callable that returns
-        # mocks — Worker classifies it as callable and stores it as-is.
-        # Sanity: MiddlewareChain import confirms the type we spec'd.
-        assert isinstance(chain_a, MiddlewareChain)
+        # A plain MagicMock (no spec=MiddlewareChain) fails the isinstance
+        # check in Worker.__init__ and is classified as a factory callable.
+        # side_effect=[chain_a, chain_b] returns chain_a first, chain_b next —
+        # mimics add_middleware() producing a new chain after the first message.
+        factory = MagicMock(side_effect=[chain_a, chain_b])
 
         w = Worker(
             broker=broker,
@@ -1901,8 +1894,7 @@ class TestWorkerMiddlewareAndSignals:
     async def test_factory_rejects_invalid_type(self, broker, backend, config):
         """Worker.__init__ rejects non-chain, non-callable, non-None inputs."""
         reg = TaskRegistry()
-        import pytest as _pytest
-        with _pytest.raises(TypeError, match="middleware_chain must be"):
+        with pytest.raises(TypeError, match="middleware_chain must be"):
             Worker(
                 broker=broker,
                 backend=backend,
