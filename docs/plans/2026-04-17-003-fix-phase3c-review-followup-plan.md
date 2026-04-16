@@ -1,0 +1,287 @@
+---
+title: "fix: Phase 3c Scheduler — Review-Follow-up (P1/P2 residual)"
+type: fix
+status: active
+date: 2026-04-17
+origin: docs/plans/2026-04-17-002-feat-phase3c-scheduler-plan.md
+---
+
+# fix: Phase 3c Scheduler — Review-Follow-up (P1/P2 residual)
+
+## Overview
+
+Folge-Plan für architektonisch größere Findings aus dem 13-Reviewer-
+Pass nach Merge von `feat/phase3c-scheduler`. Die Quick-Wins (11 items)
+wurden direkt auf dem Feature-Branch eingearbeitet (siehe Commit
+e657fa4). Hier geht es um Änderungen die entweder Architektur-Scope
+haben, Tests in größerem Umfang verändern, oder neue Produktfeatures
+einführen.
+
+## Problem Frame
+
+Die aktuelle Phase-3c-Implementation ist korrekt für den Happy-Path
+und die häufigsten Failure-Modi. Nach Review bleiben 10 Findings
+die ein kohärentes nächstes Commit-Batch benötigen:
+
+- **H-2** (HIGH / reliability R-002): Dedup-SETNX-Ordering — SETNX
+  wird pre-run gesetzt. Wenn der SETNX-Gewinner vor dem `ack`
+  crasht, wird die Message redelivered, aber jeder neue Worker
+  sieht den Key noch live (bis 3900s TTL) → `ack+skip` ohne
+  Execution → Task silently dropped für den gesamten Dedup-Horizont.
+  **At-most-once-Hole in einem at-least-once-System.** Architektonisch.
+
+- **H-5** (HIGH / project-standards PS-01): 23 `asyncio.sleep()`
+  in neuen Tests — AGENTS.md §Async-Code verbietet das
+  unconditional. Die meisten sind entweder Startup-Barrieren
+  (Worker-Ready), Post-Event-Damper (nach `first_done.wait()`),
+  oder TTL-Expiry-Waits in Integration-Tests.
+
+- **H-6** (HIGH / project-standards PS-02): `@pytest.mark.timeout(5)`
+  fehlt auf allen neuen async-Tests. Global ist 30s konfiguriert,
+  aber die Per-Test-Marker sind der AGENTS.md-Standard.
+
+- **M-2** (MEDIUM / agent-native + cli-readiness): `swarmq schedule
+  add` und `remove` haben kein `--format json`. Add-no-op-exit=0
+  ist ununterscheidbar vom echten Insert. Remove ist silent bei
+  missing Name.
+
+- **M-3** (MEDIUM / adversarial adv-008): `DecodeError`-Handler in
+  `sync_taskinfo_crons` überschreibt CLI-Einträge unkonditionell →
+  CD11-Verletzung bei Schema-Inkompatibilität.
+
+- **M-4** (MEDIUM / reliability R-003): Per-Schedule-
+  BackendConnectionError-Handling in `sync_taskinfo_crons` fehlt.
+  Partial-Sync-Abort ohne per-Schedule-Log.
+
+- **M-5** (MEDIUM / adversarial adv-007): `list_schedules()` crasht
+  auf eine malformed entry — ganzes `swarmq schedule list` hardet.
+
+- **M-7** (MEDIUM / api-contract AC-04): `LockManager.renew` akzeptiert
+  `max_concurrency>1` in Signature, raised Runtime-NotImplementedError.
+  Asymmetrisch zu `acquire()`.
+
+- **M-11** (MEDIUM / adversarial adv-005): Schedfire-Dedup-Key nutzt
+  `definition.fire_ts_ms` statt Zset-Score. Divergenz möglich bei
+  `update_static_schedule` mit zeitversetztem ZADD.
+
+- **M-14** (MEDIUM / reliability R-004): `add_schedule` /
+  `disable_schedule` sind hget+hset — zwei Round-Trips, TOCTOU.
+
+## Scope Boundaries
+
+**In-Scope:**
+- H-2 (dedup SETNX semantics) — Pre-run in-flight marker + post-run
+  completion marker.
+- H-5 (asyncio.sleep cleanup) — pragmatisch: nur die ersetzbaren
+  Sleeps durch Events ersetzen, Startup-Barrieren nach einer
+  kurzen Evaluation dokumentiert beibehalten oder durch einen
+  `worker.wait_ready()`-Helper ersetzen.
+- H-6 (pytest.mark.timeout) — via `pyproject.toml` global auf
+  test-file-basis, nicht per-test-dekorator.
+- M-2 (JSON-Output für add/remove) — klein + agent-wert.
+- M-3, M-4, M-5 (Hardening der Sync/List-Pfade).
+- M-7 (Typ-Guard für `renew`).
+- M-11 (fire_ts_ms aus Zset-Score).
+- M-14 (HSETNX + Lua für disable).
+
+**Out-of-Scope (deferred to separate plans):**
+- CLI-Module-Split (`cli.py` → `cli_schedule.py`) — ist cli.py
+  wirklich zu groß? Entscheidung beim DLQ-CLI-Plan.
+- Status-CLI-Horizon konfigurierbar (CLR-004) — kleines Feature,
+  eigener Plan.
+- SchedulerLoop-Config für Handover-Marker-TTL als eigenes Feld —
+  Fix in Quick-Wins deckt den Default-Fall ab, weiteres Tuning
+  nur bei konkretem User-Bedarf.
+- Security-Hardening (SEC-01/SEC-02: Länge-Limits auf Header und
+  Schedule-Namen) — Low-Severity, eigener Security-Pass sinnvoll.
+
+## Implementation Units
+
+---
+
+- [ ] **Unit 1: Dedup-SETNX Pre-run + Post-run Marker (H-2)**
+
+**Goal:** Splitting der Dedup-Logik in einen kurzen Pre-run-Lock
+und einen langen Post-run-Marker. Ziel: at-least-once-Garantie bei
+SETNX-winner-crash-before-ack wieder herstellen.
+
+**Approach:**
+- Neue Backend-Method `set_schedfire_inflight(key, ttl_ms) -> bool`
+  — SET NX mit kurzer TTL (z.B. `hard_timeout_ms + safety_margin`
+  oder fallback 5 Minuten). Zweck: duplicate während aktiver
+  Execution blockieren.
+- Bestehende `set_schedfire_dedup(...)` → bleibt als
+  "post-run-completion-marker".
+- Worker-Pipeline in `_pre_start_schedfire_dedup`: Check POST-
+  marker zuerst (wenn schon erfolgreich gerunned → skip).
+  Sonst: pre-run-SETNX mit kurzer TTL. Wenn erfolgreich → run.
+  Wenn nicht → genau ein anderer Worker hält ihn in-flight, skip.
+- Post-run (im normal-completion-finally): setze den Long-TTL-
+  Completion-Marker. Bei Error ohne Retry (permanent failure):
+  auch Completion-Marker setzen, damit kein anderer Worker versucht.
+- In-flight-key wird NICHT expliztit gelöscht — TTL läuft ab,
+  oder Completion-Marker wird als Indikator überschrieben.
+- Integration-Test: simulate SETNX-winner-crash → redelivery nach
+  TTL-Expiry → neue Worker-Instanz kann den Task erfolgreich
+  ausführen.
+
+**Files:**
+- Modify: `src/swarmq/backend/valkey.py` (neue `set_schedfire_inflight`)
+- Modify: `src/swarmq/worker.py` (`_pre_start_schedfire_dedup` +
+  neuer Post-run-Marker-Hook im `finally`)
+- Modify: `src/swarmq/config.py` (neues `scheduler_inflight_ttl`-Feld?)
+- Test: `tests/unit/test_worker.py`,
+  `tests/integration/test_worker_schedfire_dedup.py`
+
+**Verification:**
+- Unit + Integration grün.
+- Neues Integration-Test deckt den Crash-Before-Ack-Case explizit.
+
+---
+
+- [ ] **Unit 2: asyncio.sleep Cleanup in Tests (H-5)**
+
+**Goal:** Ersetze alle `asyncio.sleep`-Calls in Tests die als
+Post-Event-Damper oder TTL-Expiry-Waits dienen durch Event- oder
+Signal-basierte Barrieren. Startup-Barrieren durch einen expliziten
+`worker.wait_ready()` oder Signal-Wait.
+
+**Approach:**
+- Inventar: 23 `asyncio.sleep`-Calls in 7 Test-Dateien.
+- Klassifizieren: Startup (Worker-Ready), Post-Event (nach
+  first_done.wait), TTL-Wait (Valkey-Expiry).
+- Für Startup: `SCHEDULER_LEADER`-Signal als Barrier nutzen.
+- Für Post-Event: SignalDispatcher-Hook auf `TASK_COMPLETED` oder
+  `schedfire_duplicate_acked`-Log → asyncio.Event.
+- Für TTL-Wait: kann `asyncio.sleep` bleiben — das ist legitimer
+  TTL-Wait auf externe Zeit, kein synchronization-primitive.
+
+**Files:**
+- Modify: `tests/e2e/test_scheduler.py`
+- Modify: `tests/integration/test_scheduler_leader_election.py`
+- Modify: `tests/integration/test_worker_schedfire_dedup.py`
+- Evtl. `src/swarmq/worker.py`: `wait_ready()`-Helper der auf
+  internen `_ready_event` wartet.
+
+**Verification:**
+- Keine `asyncio.sleep`-Calls mehr für Synchronisation.
+- TTL-basierte Waits bleiben mit dokumentiertem Kommentar.
+
+---
+
+- [ ] **Unit 3: pytest-Timeout-Marker per-File (H-6)**
+
+**Goal:** `@pytest.mark.timeout(5)` auf allen neuen async Tests, oder
+file-scope marker via pytest-Convention.
+
+**Approach:**
+- Check ob `pytestmark = [pytest.mark.timeout(5)]` auf Modul-Ebene
+  einmal reicht (vs. 50+ per-method decorator).
+- Falls ja: ein `pytestmark`-Statement pro Test-Datei.
+
+**Files:**
+- Modify: alle neuen Test-Dateien in `tests/unit/`, `tests/integration/`,
+  `tests/e2e/` aus dem Phase-3c-Branch.
+
+---
+
+- [ ] **Unit 4: --format json für `swarmq schedule add` und `remove` (M-2)**
+
+**Goal:** Agent-readable JSON-Output plus boolean "did-it-happen"-
+Indicator für die mutierenden CLI-Commands.
+
+**Approach:**
+- `add --format json`: `{"inserted": bool, "name": str}`.
+  Wenn `already_exists`: `inserted=false`, exit=0.
+  Optional: separate exit-code (z.B. 3) für agents die auf exit-
+  code allein matchen.
+- `remove --format json`: `{"removed": bool, "permanent": bool,
+  "name": str}`. `removed=false` bei missing name, exit=0.
+- `ScheduleStore.remove_schedule()` und `disable_schedule()`
+  returnen einen `bool` (basierend auf HDEL-Return-Count bzw.
+  vorhandenem hget-Eintrag).
+
+---
+
+- [ ] **Unit 5: DecodeError + Partial-Sync Hardening (M-3, M-4, M-5)**
+
+**Goal:** sync_taskinfo_crons robust gegen einzelne malformed Entries
+und Valkey-Flaps. `list_schedules` toleriert schlechte Entries.
+
+**Approach:**
+- `sync_taskinfo_crons`: jeden `add_schedule`/`update_static_schedule`-
+  Call in try/except-`BackendConnectionError` mit per-Schedule-Log.
+- DecodeError-Pfad checkt existing.source erst wenn decode
+  erfolgreich — nur static-Einträge dürfen überschrieben werden;
+  malformed CLI-Einträge bleiben quarantined mit Log.
+- `list_schedules`: try/except pro entry, malformed Einträge
+  werden als `{"schedule_name": "<decode-error>"}` zurückgeliefert
+  mit Warning-Log.
+
+---
+
+- [ ] **Unit 6: Literal[1]-Annotation für LockManager.renew (M-7)**
+
+**Goal:** Statische Typ-Guard für `max_concurrency=1`-only-Parameter.
+
+**Approach:**
+- Import `typing.Literal`, ändere Signature zu
+  `max_concurrency: Literal[1] = 1`.
+- mypy flagged semaphore-Callsites zur Compile-Time statt Runtime.
+
+---
+
+- [ ] **Unit 7: Schedfire-Key nutzt Zset-Score (M-11)**
+
+**Goal:** Dedup-Key-Generation nutzt den authoritativen Zset-Score
+statt `definition.fire_ts_ms` (die divergieren können).
+
+**Approach:**
+- `SchedulerLoop._poll_tick` pass't `_score_ms` (aktuell ignoriert)
+  an `_fire_one`.
+- `_fire_one` baut `schedfire_key` aus dem Score, nicht aus
+  `definition.fire_ts_ms`.
+
+---
+
+- [ ] **Unit 8: HSETNX / Lua für add_schedule + disable_schedule (M-14)**
+
+**Goal:** Atomare insert-if-absent in `add_schedule` via HSETNX,
+atomare read-then-set in `disable_schedule` via kurzem Lua-Script.
+
+**Approach:**
+- `hsetnx_schedule_def(name, def_json) -> bool` als neue
+  Backend-Method.
+- `ScheduleStore.add_schedule` nutzt HSETNX + (wenn erfolgreich)
+  ZADD. HSETNX=0 → bestehender Eintrag, skip.
+- `disable_schedule` als 3-Zeilen-Lua-Script: HGET, decode JSON,
+  HSET + ZREM atomar.
+
+---
+
+## Risks & Dependencies
+
+- Unit 1 (Dedup-SETNX) ändert die at-least-once-Semantik spürbar.
+  **E2E-Test mit simulated crash ist Pflicht** bevor Unit 1 als
+  completed gilt.
+- Unit 2 (asyncio.sleep) könnte flaky-Tests revealen die aktuell
+  durch Sleeps maskiert waren. Plan: wenn Sleep durch Event ersetzt
+  wird und der Test dann failt, ist das ein echter Bug — fixen.
+
+## Success Metrics
+
+- Alle aufgelisteten P1/P2 Findings aus dem 13-Reviewer-Pass
+  abgehakt.
+- `grep -rn "asyncio.sleep" tests/` zählt nur TTL-Waits (mit
+  Kommentar) — nicht Synchronization.
+- `swarmq schedule add --format json` und `swarmq schedule remove
+  --format json` liefern agent-parseable Output.
+- Full test-suite (unit + integration + e2e) grün, neue Tests
+  für Crash-Before-Ack-Szenario grün.
+
+## Sources & References
+
+- Origin: [docs/plans/2026-04-17-002-feat-phase3c-scheduler-plan.md](2026-04-17-002-feat-phase3c-scheduler-plan.md)
+- Review-Run: `.context/compound-engineering/ce-review/20260417-002801-13057dc8/`
+- AGENTS.md §Async-Code-Discipline
+- Solution: docs/solutions/logic-errors/worker-pipeline-stage-ack-ordering-2026-04-16.md
