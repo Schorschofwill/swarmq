@@ -11,6 +11,7 @@ from swarmq.exceptions import (
     ResultSerializationError,
     Retry,
     SwarmQError,
+    TaskCancelledError,
     TaskError,
     TaskNotFoundError,
 )

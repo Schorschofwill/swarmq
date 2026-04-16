@@ -12,6 +12,7 @@ from swarmq.exceptions import (
     ResultSerializationError,
     Retry,
     SwarmQError,
+    TaskCancelledError,
     TaskError,
     TaskNotFoundError,
 )
@@ -61,6 +62,23 @@ def test_retry_delay_defaults_to_none():
 def test_no_retry_stores_reason():
     err = NoRetry(reason="bad input")
     assert err.reason == "bad input"
+
+
+def test_task_cancelled_error_is_task_error_subclass():
+    err = TaskCancelledError()
+    assert isinstance(err, TaskError)
+
+
+def test_task_cancelled_error_stores_task_id():
+    err = TaskCancelledError("task-123")
+    assert err.task_id == "task-123"
+    assert "task-123" in str(err)
+
+
+def test_task_cancelled_error_without_task_id():
+    err = TaskCancelledError()
+    assert err.task_id is None
+    assert str(err)  # some default message, non-empty
 
 
 @pytest.mark.parametrize(

@@ -34,8 +34,13 @@ def test_signal_enum_has_task_retrying():
     assert Signal.TASK_RETRYING.value == "task_retrying"
 
 
-def test_signal_enum_has_task_revoked():
-    assert Signal.TASK_REVOKED.value == "task_revoked"
+def test_signal_enum_has_task_cancelled():
+    assert Signal.TASK_CANCELLED.value == "task_cancelled"
+
+
+def test_signal_enum_task_revoked_removed():
+    """Safety check: old name is gone to prevent accidental reintroduction."""
+    assert not hasattr(Signal, "TASK_REVOKED")
 
 
 def test_signal_enum_has_task_expired():

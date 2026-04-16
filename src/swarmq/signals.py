@@ -32,6 +32,7 @@ class Signal(enum.Enum):
       * TASK_COMPLETED:   task_id, task_name, duration_ms
       * TASK_FAILED:      task_id, task_name, exception
       * TASK_RETRYING:    task_id, retry_count, delay
+      * TASK_CANCELLED:   task_id, task_name
       * TASK_RATE_LIMITED: task_id, task_name, retry_after_ms,
                           remaining, rate_limit_count
         - retry_after_ms: ms the message will wait in the delay queue
@@ -49,7 +50,7 @@ class Signal(enum.Enum):
     TASK_COMPLETED = "task_completed"
     TASK_FAILED = "task_failed"
     TASK_RETRYING = "task_retrying"
-    TASK_REVOKED = "task_revoked"
+    TASK_CANCELLED = "task_cancelled"
     TASK_EXPIRED = "task_expired"
     TASK_LOCKED = "task_locked"
     TASK_RATE_LIMITED = "task_rate_limited"
