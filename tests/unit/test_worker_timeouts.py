@@ -387,3 +387,172 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
     broker.ack.assert_awaited_once_with(msg)
     # No error result stored
     backend.store_result.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 10. Watchdog cleanup: hard-timeout watchdog is always cancelled, even when
+#     run_task raises an arbitrary exception (not just TimeoutError /
+#     CancelledError). Regression test for the watchdog-leak bug where the
+#     cancel lived only in the `else` branch of the try/except.
+# ---------------------------------------------------------------------------
+
+
+def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task]:
+    """Patch worker._hard_timeout_watchdog to track spawned watchdog tasks.
+
+    Returns a list that the test can inspect after _handle_message completes.
+    Each element is the actual asyncio.Task created for the watchdog coroutine.
+    """
+    created: list[asyncio.Task] = []
+    original = worker._hard_timeout_watchdog
+
+    async def tracking_watchdog(run_task, timeout):
+        # Record the *current* task (the watchdog task) on first yield so the
+        # test can assert on its state after _handle_message returns.
+        current = asyncio.current_task()
+        if current is not None:
+            created.append(current)
+        await original(run_task, timeout)
+
+    worker._hard_timeout_watchdog = tracking_watchdog  # type: ignore[assignment]
+    return created
+
+
+@pytest.mark.asyncio
+async def test_watchdog_cancelled_when_task_raises_exception(broker, backend, config):
+    """Task with hard_timeout raises ValueError immediately -> watchdog must be cancelled."""
+
+    class RaisingTask(Task):
+        task_info = TaskInfo(
+            name="raising",
+            queues=["default"],
+            hard_timeout=5,
+            max_retries=0,
+        )
+
+        async def run(self) -> str:
+            raise ValueError("boom")
+
+    reg = TaskRegistry()
+    reg.register(RaisingTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    tracked = _install_watchdog_tracker(w)
+
+    # Snapshot tasks before so we can compute orphans added by _handle_message.
+    tasks_before = asyncio.all_tasks()
+
+    msg = _make_message(_default_payload(name="raising", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    # Let any pending cancellations flush through the loop.
+    await asyncio.sleep(0)
+
+    # The watchdog must have been created and must be done() after handler
+    # returns (cancelled, not still sleeping for hard_timeout seconds).
+    assert len(tracked) == 1, "watchdog task should have been spawned exactly once"
+    watchdog_task = tracked[0]
+    assert watchdog_task.done(), "watchdog task must be done after _handle_message returns"
+
+    # No new tasks (other than the current test task) should remain.
+    tasks_after = asyncio.all_tasks()
+    orphans = (tasks_after - tasks_before) - {asyncio.current_task()}
+    # All orphans (if any) should be done — specifically, no pending watchdog.
+    assert all(t.done() for t in orphans), (
+        f"orphan pending tasks survived _handle_message: {orphans}"
+    )
+
+    # Error should still have been surfaced as an error result.
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is True
+    assert "boom" in stored["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_cancelled_when_task_soft_timeouts(broker, backend, config):
+    """Soft timeout fires while hard_timeout watchdog is sleeping -> watchdog must be cancelled."""
+
+    class SoftAndHardTask(Task):
+        task_info = TaskInfo(
+            name="soft_and_hard",
+            queues=["default"],
+            soft_timeout=0.05,
+            hard_timeout=5,
+            max_retries=0,
+        )
+
+        async def run(self) -> str:
+            await asyncio.sleep(1)
+            return "never"
+
+    reg = TaskRegistry()
+    reg.register(SoftAndHardTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    tracked = _install_watchdog_tracker(w)
+
+    tasks_before = asyncio.all_tasks()
+
+    msg = _make_message(_default_payload(name="soft_and_hard", args=[], kwargs={}))
+    await w._handle_message(msg)
+
+    await asyncio.sleep(0)
+
+    assert len(tracked) == 1
+    watchdog_task = tracked[0]
+    assert watchdog_task.done(), "watchdog must be cancelled when soft timeout fires first"
+
+    tasks_after = asyncio.all_tasks()
+    orphans = (tasks_after - tasks_before) - {asyncio.current_task()}
+    assert all(t.done() for t in orphans), (
+        f"orphan pending tasks survived _handle_message: {orphans}"
+    )
+
+    # Soft-timeout error result should have been stored.
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is True
+    assert "SoftTimeoutError" in stored["error_message"] or "soft timeout" in stored[
+        "error_message"
+    ].lower()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_cancelled_on_success(broker, backend, config):
+    """Baseline: watchdog is cleaned up when run_task completes successfully."""
+
+    class FastTask(Task):
+        task_info = TaskInfo(
+            name="fast",
+            queues=["default"],
+            hard_timeout=5,
+        )
+
+        async def run(self, a: int, b: int) -> int:
+            return a + b
+
+    reg = TaskRegistry()
+    reg.register(FastTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    tracked = _install_watchdog_tracker(w)
+
+    tasks_before = asyncio.all_tasks()
+
+    msg = _make_message(_default_payload(name="fast", args=[7, 35], kwargs={}))
+    await w._handle_message(msg)
+
+    await asyncio.sleep(0)
+
+    assert len(tracked) == 1
+    watchdog_task = tracked[0]
+    assert watchdog_task.done(), "watchdog must be cancelled after successful completion"
+
+    tasks_after = asyncio.all_tasks()
+    orphans = (tasks_after - tasks_before) - {asyncio.current_task()}
+    assert all(t.done() for t in orphans), (
+        f"orphan pending tasks survived _handle_message: {orphans}"
+    )
+
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is False
+    assert stored["result"] == 42

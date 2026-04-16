@@ -740,3 +740,93 @@ class TestClientMiddlewareAndSignals:
         # No post_enqueue, no signals
         middleware_chain.run_post_enqueue.assert_not_awaited()
         signal_dispatcher.dispatch.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # 10. Factory middleware_chain: middleware added AFTER Client
+    #     construction is visible on the next schedule() call.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_add_middleware_after_client_construction(
+        self, broker, backend, registry,
+    ):
+        """Factory reads a live list -> schedule() sees middleware added later.
+
+        This is the primary regression test for the middleware_chain snapshot
+        bug: before the fix, Client captured a MiddlewareChain snapshot at
+        __init__ time and appending to the source list had no effect.
+        """
+        from swarmq.middleware import Middleware, MiddlewareChain
+
+        # Live list — tests mutate this after Client construction.
+        live_middlewares: list[Middleware] = []
+
+        class Spy(Middleware):
+            def __init__(self) -> None:
+                self.pre_calls: list[dict] = []
+                self.post_calls: list[dict] = []
+
+            async def pre_enqueue(self, message: dict) -> None:
+                self.pre_calls.append(message)
+
+            async def post_enqueue(self, message: dict) -> None:
+                self.post_calls.append(message)
+
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            # Factory: reads the live list every time schedule() runs.
+            middleware_chain=lambda: MiddlewareChain(list(live_middlewares)),
+        )
+
+        # Step 1: list is empty -> no middleware fires.
+        await client.schedule("add", 1, 2, queue="math")
+        broker.publish.assert_awaited_once()
+
+        # Step 2: register middleware AFTER Client construction.
+        spy = Spy()
+        live_middlewares.append(spy)
+
+        await client.schedule("add", 3, 4, queue="math")
+
+        # Spy saw the second schedule() but not the first.
+        assert len(spy.pre_calls) == 1
+        assert len(spy.post_calls) == 1
+        assert spy.pre_calls[0]["task_name"] == "add"
+        assert spy.pre_calls[0]["args"] == [3, 4]
+
+    # ------------------------------------------------------------------
+    # 11. Backward compat: passing a static MiddlewareChain still works.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_client_accepts_static_middleware_chain(
+        self, broker, backend, registry,
+    ):
+        """A real MiddlewareChain instance is wrapped in a lambda internally."""
+        from swarmq.middleware import Middleware, MiddlewareChain
+
+        class Spy(Middleware):
+            def __init__(self) -> None:
+                self.pre_calls: list[dict] = []
+
+            async def pre_enqueue(self, message: dict) -> None:
+                self.pre_calls.append(message)
+
+        spy = Spy()
+        static_chain = MiddlewareChain([spy])
+
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=static_chain,
+        )
+
+        await client.schedule("add", 1, 2, queue="math")
+
+        assert len(spy.pre_calls) == 1
+        assert spy.pre_calls[0]["task_name"] == "add"
+        # Internal factory returns the same chain every time.
+        assert client._get_chain() is static_chain

@@ -245,60 +245,70 @@ class Worker:
                 run_task = asyncio.create_task(run_coro)
 
                 watchdog = None
-                if task_info.hard_timeout is not None:
-                    watchdog = asyncio.create_task(
-                        self._hard_timeout_watchdog(
-                            run_task, task_info.hard_timeout
-                        )
-                    )
-
                 try:
-                    result_value = await run_task
-                except asyncio.TimeoutError:
-                    soft_err = SoftTimeoutError(
-                        f"soft timeout after {task_info.soft_timeout}s"
-                    )
-                    is_error = True
-                    error_message = f"SoftTimeoutError: {soft_err}"
-                    task_exception = soft_err
-                    if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                        logger.error(
-                            "fire_and_forget_error", error=error_message
+                    if task_info.hard_timeout is not None:
+                        watchdog = asyncio.create_task(
+                            self._hard_timeout_watchdog(
+                                run_task, task_info.hard_timeout
+                            )
                         )
-                except asyncio.CancelledError:
-                    hard_err_msg = (
-                        f"hard timeout after {task_info.hard_timeout}s"
-                    )
-                    is_error = True
-                    error_message = hard_err_msg
-                    task_exception = RuntimeError(hard_err_msg)
-                    if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                        logger.error(
-                            "fire_and_forget_error", error=error_message
-                        )
-                except Exception as exc:
-                    is_error = True
-                    error_message = str(exc)
-                    task_exception = exc
-                    if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                        logger.error(
-                            "fire_and_forget_error", error=error_message
-                        )
-                else:
+
                     try:
-                        await task_instance.post_execution()
-                    except Exception as exc:
+                        result_value = await run_task
+                    except asyncio.TimeoutError:
+                        soft_err = SoftTimeoutError(
+                            f"soft timeout after {task_info.soft_timeout}s"
+                        )
                         is_error = True
-                        error_message = str(exc)
-                        task_exception = exc
-                        result_value = None
+                        error_message = f"SoftTimeoutError: {soft_err}"
+                        task_exception = soft_err
                         if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                             logger.error(
                                 "fire_and_forget_error", error=error_message
                             )
+                    except asyncio.CancelledError:
+                        hard_err_msg = (
+                            f"hard timeout after {task_info.hard_timeout}s"
+                        )
+                        is_error = True
+                        error_message = hard_err_msg
+                        task_exception = RuntimeError(hard_err_msg)
+                        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                            logger.error(
+                                "fire_and_forget_error", error=error_message
+                            )
+                    except Exception as exc:
+                        is_error = True
+                        error_message = str(exc)
+                        task_exception = exc
+                        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                            logger.error(
+                                "fire_and_forget_error", error=error_message
+                            )
+                    else:
+                        try:
+                            await task_instance.post_execution()
+                        except Exception as exc:
+                            is_error = True
+                            error_message = str(exc)
+                            task_exception = exc
+                            result_value = None
+                            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                                logger.error(
+                                    "fire_and_forget_error", error=error_message
+                                )
                 finally:
+                    # Outer finally: guarantees watchdog cleanup regardless of
+                    # which path was taken (success, soft/hard timeout, or any
+                    # other exception from run_task / post_execution). Awaiting
+                    # the cancelled watchdog ensures it fully completes so no
+                    # orphan task survives _handle_message.
                     if watchdog is not None and not watchdog.done():
                         watchdog.cancel()
+                        try:
+                            await watchdog
+                        except asyncio.CancelledError:
+                            pass
 
             # Emit post-execute / on-error hooks now that lifecycle is resolved
             duration_ms = (time.monotonic() - start_time) * 1000.0
@@ -396,8 +406,12 @@ class Worker:
 
             try:
                 await self._backend.publish_notification(task_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "publish_notification_failed",
+                    error=str(exc),
+                    task_id=task_id,
+                )
 
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 await self._broker.ack(message)
@@ -536,7 +550,14 @@ class Worker:
             await self._backend.store_result(
                 task_id, result_bytes, result_ttl * 1000
             )
-            await self._backend.publish_notification(task_id)
+            try:
+                await self._backend.publish_notification(task_id)
+            except Exception as exc:
+                logger.warning(
+                    "publish_notification_failed",
+                    error=str(exc),
+                    task_id=task_id,
+                )
         except Exception as store_exc:
             logger.warning("dlq_result_store_failed", error=str(store_exc))
 

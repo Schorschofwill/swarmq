@@ -43,7 +43,10 @@ class SwarmQ:
             broker,
             backend,
             registry=self.registry,
-            middleware_chain=self.middleware_chain,
+            # Pass a factory so add_middleware() calls made AFTER SwarmQ
+            # construction are visible on the next schedule(). Otherwise we
+            # would capture a stale snapshot of self._middlewares here.
+            middleware_chain=lambda: self.middleware_chain,
             signal_dispatcher=self._signal_dispatcher,
         )
 

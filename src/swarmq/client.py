@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -34,18 +35,46 @@ class Client:
         broker: RabbitMQBroker,
         backend: ValkeyBackend,
         registry: TaskRegistry | None = None,
-        middleware_chain: MiddlewareChain | None = None,
+        middleware_chain: MiddlewareChain
+        | Callable[[], MiddlewareChain]
+        | None = None,
         signal_dispatcher: SignalDispatcher | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._registry = registry
-        self._middleware_chain = (
-            middleware_chain if middleware_chain is not None else MiddlewareChain([])
-        )
+        # Accept either a static MiddlewareChain (backward compat) or a
+        # zero-arg factory callable that returns a fresh chain on each call.
+        # Storing a factory lets us see middleware registered AFTER Client
+        # construction — e.g. when SwarmQ.add_middleware() is called after
+        # the Client has already been built.
+        #
+        # Classification rule: anything that exposes ``run_pre_enqueue`` is
+        # treated as a chain-like object (real MiddlewareChain or a test
+        # double such as a MagicMock) and wrapped in a lambda. Otherwise a
+        # callable is treated as a zero-arg factory. ``None`` means an empty
+        # chain.
+        self._middleware_chain_factory: Callable[[], MiddlewareChain]
+        if middleware_chain is None:
+            empty = MiddlewareChain([])
+            self._middleware_chain_factory = lambda: empty
+        elif hasattr(middleware_chain, "run_pre_enqueue"):
+            static_chain = middleware_chain
+            self._middleware_chain_factory = lambda: static_chain
+        elif callable(middleware_chain):
+            self._middleware_chain_factory = middleware_chain
+        else:
+            raise TypeError(
+                "middleware_chain must be a MiddlewareChain, a zero-arg "
+                "callable returning a MiddlewareChain, or None"
+            )
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )
+
+    def _get_chain(self) -> MiddlewareChain:
+        """Return a live MiddlewareChain for the current schedule() call."""
+        return self._middleware_chain_factory()
 
     async def schedule(
         self,
@@ -91,13 +120,17 @@ class Client:
             "kwargs": kwargs,
         }
 
+        # Resolve the middleware chain once per schedule() call — the factory
+        # sees any middlewares registered after Client construction.
+        chain = self._get_chain()
+
         # pre_enqueue exceptions PROPAGATE — they can prevent the enqueue.
-        await self._middleware_chain.run_pre_enqueue(message_dict)
+        await chain.run_pre_enqueue(message_dict)
 
         await self._broker.publish(resolved_queue, encode_json(message))
 
         # post_enqueue + TASK_ENQUEUED signal only after successful publish.
-        await self._middleware_chain.run_post_enqueue(message_dict)
+        await chain.run_post_enqueue(message_dict)
         await self._signal_dispatcher.dispatch(
             Signal.TASK_ENQUEUED,
             task_id=task_id,
@@ -198,6 +231,10 @@ class Client:
         resolved_queues: list[str] = []
         task_names: list[str] = []
 
+        # Resolve the middleware chain once for this whole batch so that
+        # every pre_enqueue/post_enqueue hook sees the same chain instance.
+        chain = self._get_chain()
+
         # Pass 1: validate, resolve queue, build message_dicts + encoded
         # payloads. pre_enqueue is invoked sequentially; a raise aborts the
         # whole batch BEFORE any broker.publish coroutine is created or
@@ -246,7 +283,7 @@ class Client:
             # pre_enqueue: exception aborts the whole batch (propagate).
             # Coroutines for broker.publish are only created in Pass 2, so
             # nothing needs cleanup if this raises.
-            await self._middleware_chain.run_pre_enqueue(message_dict)
+            await chain.run_pre_enqueue(message_dict)
 
         # Pass 2: publish concurrently.
         coros = [
@@ -274,7 +311,7 @@ class Client:
             for i, r in enumerate(results):
                 if isinstance(r, BaseException):
                     continue
-                await self._middleware_chain.run_post_enqueue(message_dicts[i])
+                await chain.run_post_enqueue(message_dicts[i])
                 await self._signal_dispatcher.dispatch(
                     Signal.TASK_ENQUEUED,
                     task_id=task_ids[i],
@@ -286,7 +323,7 @@ class Client:
         # Pass 3: post_enqueue + TASK_ENQUEUED for each task after gather
         # succeeded.
         for i, message_dict in enumerate(message_dicts):
-            await self._middleware_chain.run_post_enqueue(message_dict)
+            await chain.run_post_enqueue(message_dict)
             await self._signal_dispatcher.dispatch(
                 Signal.TASK_ENQUEUED,
                 task_id=task_ids[i],

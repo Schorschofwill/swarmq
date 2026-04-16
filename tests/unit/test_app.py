@@ -389,6 +389,71 @@ class TestSwarmQMiddlewareAndSignals:
         assert handler1 in handlers
         assert handler2 in handlers
 
+    @pytest.mark.anyio()
+    async def test_add_middleware_after_swarmq_init_fires_in_client(
+        self, broker, backend,
+    ):
+        """Regression: middleware added AFTER SwarmQ.__init__ must still fire.
+
+        Before the fix, SwarmQ captured ``self.middleware_chain`` as a stale
+        MiddlewareChain snapshot when it constructed the Client. Calls to
+        ``add_middleware()`` appended to ``_middlewares`` but the Client kept
+        using the old snapshot, so middleware never ran for client-side
+        hooks.
+
+        This test creates a SwarmQ, registers a spy middleware AFTERWARDS,
+        schedules a task, and verifies the spy's pre_enqueue/post_enqueue
+        were called.
+        """
+        from swarmq.middleware import Middleware
+        from swarmq.task import Task, TaskInfo
+
+        # Register a task so schedule() passes registry validation.
+        saved = Task._registered_tasks.copy()
+        try:
+            Task._clear_registered_tasks()
+
+            class AddTask(Task):
+                task_info = TaskInfo(name="add", queues=["math"])
+
+                async def run(self, a: int, b: int) -> int:
+                    return a + b
+
+            app = SwarmQ(broker, backend)
+
+            # Mock broker.publish so we don't need a real AMQP connection.
+            broker.publish = AsyncMock()
+
+            class Spy(Middleware):
+                def __init__(self) -> None:
+                    self.pre_calls: list[dict] = []
+                    self.post_calls: list[dict] = []
+
+                async def pre_enqueue(self, message: dict) -> None:
+                    self.pre_calls.append(message)
+
+                async def post_enqueue(self, message: dict) -> None:
+                    self.post_calls.append(message)
+
+            spy = Spy()
+
+            # Register middleware AFTER SwarmQ construction — this is the
+            # case the bug broke.
+            app.add_middleware(spy)
+
+            task_id = await app.schedule("add", 1, 2)
+
+            broker.publish.assert_awaited_once()
+            assert len(spy.pre_calls) == 1
+            assert len(spy.post_calls) == 1
+            assert spy.pre_calls[0]["task_id"] == task_id
+            assert spy.pre_calls[0]["task_name"] == "add"
+            assert spy.pre_calls[0]["queue"] == "math"
+            assert spy.pre_calls[0]["args"] == [1, 2]
+            assert spy.post_calls[0]["task_id"] == task_id
+        finally:
+            Task._registered_tasks[:] = saved
+
 
 class TestSwarmQPublicAPIExports:
     def test_middleware_importable_from_swarmq(self):
