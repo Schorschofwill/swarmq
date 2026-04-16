@@ -835,6 +835,21 @@ class TestClientMiddlewareAndSignals:
         # Internal factory returns the same chain every time.
         assert client._get_chain() is static_chain
 
+    def test_client_rejects_invalid_middleware_chain_type(
+        self, broker, backend, registry,
+    ):
+        """Client.__init__ raises TypeError including the received type name."""
+        with pytest.raises(
+            TypeError,
+            match=r"middleware_chain must be.*got int",
+        ):
+            Client(
+                broker=broker,
+                backend=backend,
+                registry=registry,
+                middleware_chain=42,  # type: ignore[arg-type]
+            )
+
 
 # ---------------------------------------------------------------------------
 # delivery_mode resolution in message_dict

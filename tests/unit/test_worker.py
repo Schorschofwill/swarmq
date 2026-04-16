@@ -1894,7 +1894,7 @@ class TestWorkerMiddlewareAndSignals:
     async def test_factory_rejects_invalid_type(self, broker, backend, config):
         """Worker.__init__ rejects non-chain, non-callable, non-None inputs."""
         reg = TaskRegistry()
-        with pytest.raises(TypeError, match="middleware_chain must be"):
+        with pytest.raises(TypeError, match=r"middleware_chain must be.*got int"):
             Worker(
                 broker=broker,
                 backend=backend,
@@ -1902,3 +1902,116 @@ class TestWorkerMiddlewareAndSignals:
                 config=config,
                 middleware_chain=42,  # type: ignore[arg-type]
             )
+
+    @pytest.mark.asyncio
+    async def test_same_chain_across_hooks_within_one_message(
+        self, broker, backend, config
+    ):
+        """Factory is called exactly once per message; chain identity is stable
+        across pre_execute, on_error, and on_retry.
+
+        Failing task goes through pre_execute + on_error + on_retry (retry
+        path) — all three must see the chain factory returned first, not
+        call the factory again mid-message.
+        """
+        from swarmq.task import DeliveryMode, TaskInfo
+
+        class FailingTask(Task):
+            task_info = TaskInfo(
+                name="mw_retry_chain_identity",
+                queues=["default"],
+                delivery=DeliveryMode.AT_LEAST_ONCE,
+                max_retries=2,
+            )
+
+            async def run(self) -> None:
+                raise ValueError("boom")
+
+        reg = TaskRegistry()
+        reg.register(FailingTask)
+
+        chain_a = _make_middleware_chain_mock()
+        # A second chain we should NEVER see — if factory is called again
+        # mid-message, chain_b's run_on_error/run_on_retry would fire.
+        chain_b = _make_middleware_chain_mock()
+        factory = MagicMock(side_effect=[chain_a, chain_b])
+
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=factory,
+        )
+
+        msg = _make_message(
+            _default_payload(name="mw_retry_chain_identity", args=[], kwargs={})
+        )
+        await w._handle_message(msg)
+
+        assert factory.call_count == 1
+        chain_a.run_pre_execute.assert_awaited_once()
+        chain_a.run_on_error.assert_awaited_once()
+        chain_a.run_on_retry.assert_awaited_once()
+        chain_b.run_pre_execute.assert_not_awaited()
+        chain_b.run_on_error.assert_not_awaited()
+        chain_b.run_on_retry.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_accepts_static_middleware_chain_instance(
+        self, broker, backend, config
+    ):
+        """Worker with a real MiddlewareChain instance runs its hooks."""
+        from swarmq.middleware import Middleware, MiddlewareChain
+
+        captured: list[tuple[str, dict]] = []
+
+        class Spy(Middleware):
+            async def pre_execute(self, message: dict) -> None:
+                captured.append(("pre", dict(message)))
+
+            async def post_execute(
+                self, message: dict, result: object = None
+            ) -> None:
+                captured.append(("post", dict(message)))
+
+        chain = MiddlewareChain([Spy()])
+        reg = TaskRegistry()
+        reg.register(AddTask)
+
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=chain,
+        )
+
+        await w._handle_message(_make_message(_default_payload()))
+
+        assert [name for name, _ in captured] == ["pre", "post"]
+
+    @pytest.mark.asyncio
+    async def test_factory_exception_nacks_without_requeue(
+        self, broker, backend, config
+    ):
+        """A broken factory (raises on call) must nack(requeue=False), not crash."""
+        reg = TaskRegistry()
+        reg.register(AddTask)
+
+        def bad_factory() -> object:
+            raise RuntimeError("factory broken")
+
+        w = Worker(
+            broker=broker,
+            backend=backend,
+            registry=reg,
+            config=config,
+            middleware_chain=bad_factory,
+        )
+
+        msg = _make_message(_default_payload())
+        await w._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.ack.assert_not_awaited()

@@ -139,3 +139,37 @@ class MiddlewareChain:
                 mw,
                 lambda mw=mw: mw.on_retry(message, exception, retry_count, delay),
             )
+
+
+def coerce_middleware_chain_factory(
+    middleware_chain: "MiddlewareChain | Callable[[], MiddlewareChain] | None",
+) -> Callable[[], "MiddlewareChain"]:
+    """Normalize a Client/Worker ``middleware_chain`` argument to a zero-arg factory.
+
+    Accepts three shapes:
+    - ``None`` -> returns a factory yielding an empty chain.
+    - ``MiddlewareChain`` instance -> wraps it in a factory that always returns it
+      (backward-compat; the chain is static).
+    - zero-arg callable -> returned as-is; callers resolve the chain on every use
+      so mutations to the underlying middleware list are visible.
+
+    ``isinstance`` is deliberate over duck-typing: a callable object that
+    happens to expose ``run_pre_enqueue`` would otherwise collide with the
+    factory shape. If you need to plug in a custom chain implementation,
+    subclass ``MiddlewareChain`` so it passes ``isinstance``.
+
+    Raises ``TypeError`` with the received type name for anything else.
+    """
+    if middleware_chain is None:
+        empty = MiddlewareChain([])
+        return lambda: empty
+    if isinstance(middleware_chain, MiddlewareChain):
+        static_chain = middleware_chain
+        return lambda: static_chain
+    if callable(middleware_chain):
+        return middleware_chain
+    raise TypeError(
+        f"middleware_chain must be a MiddlewareChain, a zero-arg "
+        f"callable returning a MiddlewareChain, or None "
+        f"(got {type(middleware_chain).__name__})"
+    )

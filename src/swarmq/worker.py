@@ -26,7 +26,11 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
-from swarmq.middleware import MessageContext, MiddlewareChain
+from swarmq.middleware import (
+    MessageContext,
+    MiddlewareChain,
+    coerce_middleware_chain_factory,
+)
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, encode_result
 from swarmq.signals import Signal, SignalDispatcher
@@ -64,21 +68,9 @@ class Worker:
         # Storing a factory lets the worker see middleware registered AFTER
         # Worker construction — e.g. when SwarmQ.add_middleware() is called
         # after start_worker() has already built the Worker instance.
-        self._middleware_chain_factory: Callable[[], MiddlewareChain]
-        if middleware_chain is None:
-            empty = MiddlewareChain([])
-            self._middleware_chain_factory = lambda: empty
-        elif isinstance(middleware_chain, MiddlewareChain):
-            static_chain = middleware_chain
-            self._middleware_chain_factory = lambda: static_chain
-        elif callable(middleware_chain):
-            self._middleware_chain_factory = middleware_chain
-        else:
-            raise TypeError(
-                f"middleware_chain must be a MiddlewareChain, a zero-arg "
-                f"callable returning a MiddlewareChain, or None "
-                f"(got {type(middleware_chain).__name__})"
-            )
+        self._middleware_chain_factory = coerce_middleware_chain_factory(
+            middleware_chain
+        )
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )
@@ -242,7 +234,14 @@ class Worker:
             # add_middleware() calls made after Worker construction are
             # visible to every hook for this message. Chain-build cost is
             # sub-microsecond (list copy), negligible vs broker roundtrip.
-            chain = self._get_chain()
+            # A broken user-supplied factory must not crash the consumer
+            # loop — nack without requeue so the message hits the DLQ.
+            try:
+                chain = self._get_chain()
+            except Exception as exc:
+                logger.error("middleware_chain_factory_failed", error=str(exc))
+                await self._broker.nack(message, requeue=False)
+                return
 
             # Pre-execute hooks
             await chain.run_pre_execute(message_dict)

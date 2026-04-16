@@ -12,7 +12,11 @@ import structlog
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ResultNotReadyError, TaskError, TaskNotFoundError
-from swarmq.middleware import MessageContext, MiddlewareChain
+from swarmq.middleware import (
+    MessageContext,
+    MiddlewareChain,
+    coerce_middleware_chain_factory,
+)
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
 from swarmq.signals import Signal, SignalDispatcher
@@ -48,21 +52,9 @@ class Client:
         # Storing a factory lets us see middleware registered AFTER Client
         # construction — e.g. when SwarmQ.add_middleware() is called after
         # the Client has already been built.
-        self._middleware_chain_factory: Callable[[], MiddlewareChain]
-        if middleware_chain is None:
-            empty = MiddlewareChain([])
-            self._middleware_chain_factory = lambda: empty
-        elif isinstance(middleware_chain, MiddlewareChain):
-            static_chain = middleware_chain
-            self._middleware_chain_factory = lambda: static_chain
-        elif callable(middleware_chain):
-            self._middleware_chain_factory = middleware_chain
-        else:
-            raise TypeError(
-                f"middleware_chain must be a MiddlewareChain, a zero-arg "
-                f"callable returning a MiddlewareChain, or None "
-                f"(got {type(middleware_chain).__name__})"
-            )
+        self._middleware_chain_factory = coerce_middleware_chain_factory(
+            middleware_chain
+        )
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )

@@ -52,7 +52,13 @@ class SwarmQ:
         )
 
     def add_middleware(self, middleware: Middleware) -> None:
-        """Register a middleware to run for every task lifecycle event."""
+        """Register a middleware to run for every task lifecycle event.
+
+        Safe to call at any time, including AFTER ``SwarmQ()`` construction
+        and AFTER ``start_worker()``. Both the Client and the Worker resolve
+        the middleware chain per operation (schedule / message), so newly
+        registered middleware is visible from the next call onward.
+        """
         self._middlewares.append(middleware)
 
     def on_signal(

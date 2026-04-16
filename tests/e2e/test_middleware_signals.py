@@ -27,16 +27,6 @@ def _unique_queue() -> str:
     return f"e2e-{uuid.uuid4().hex[:12]}"
 
 
-def _refresh_client_middleware(app: SwarmQ) -> None:
-    """Rebuild ``app.client._middleware_chain`` from the current middleware list.
-
-    ``SwarmQ.__init__`` snapshots the (then-empty) middleware chain into the
-    client. Tests register middleware AFTER construction, so we need to push
-    the fresh chain into the existing client instance.
-    """
-    app.client._middleware_chain = app.middleware_chain
-
-
 # ---------------------------------------------------------------------------
 # Test 1: Custom Middleware receives pre_execute + post_execute
 # ---------------------------------------------------------------------------
@@ -260,10 +250,9 @@ async def test_pre_enqueue_exception_prevents_enqueue(
     backend = ValkeyBackend(valkey_url)
     app = SwarmQ(broker, backend, queues=[queue])
 
-    # Register the middleware on the publishing app AND push it into the
-    # already-constructed Client — __init__ snapshots the (empty) chain.
+    # SwarmQ wires a factory into the Client so middleware registered after
+    # construction is live — no snapshot refresh required.
     app.add_middleware(BlockingMiddleware())
-    _refresh_client_middleware(app)
 
     async with app:
         await broker.declare_queue(queue)

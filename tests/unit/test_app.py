@@ -463,37 +463,78 @@ class TestSwarmQMiddlewareAndSignals:
     async def test_add_middleware_after_swarmq_init_visible_to_worker(
         self, broker, backend,
     ):
-        """Regression: middleware added AFTER SwarmQ.__init__ must be visible
-        to the Worker on every message.
+        """Regression: middleware added AFTER SwarmQ.__init__ must fire for
+        Worker hooks, just like it does for Client hooks.
 
         Before the fix, SwarmQ.start_worker() passed ``self.middleware_chain``
         as a snapshot to Worker. ``add_middleware()`` appended to
         ``_middlewares`` but the Worker kept using the stale chain.
 
-        This test captures the Worker constructor, extracts the
-        middleware_chain factory, and verifies a post-construction
-        ``add_middleware()`` is reflected when the factory is invoked.
+        This test builds a SwarmQ, registers a Spy middleware AFTERWARDS,
+        constructs a real Worker via the same wiring start_worker() uses,
+        dispatches one message via ``_handle_message``, and asserts the Spy
+        observed pre_execute / post_execute.
         """
         from swarmq.middleware import Middleware
+        from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
+        from swarmq.worker import Worker
 
-        app = SwarmQ(broker, backend)
+        saved = Task._registered_tasks.copy()
+        try:
+            Task._clear_registered_tasks()
 
-        with patch("swarmq.app.Worker") as MockWorker:
-            mock_instance = MockWorker.return_value
-            mock_instance.start = AsyncMock()
+            class NoopTask(Task):
+                task_info = TaskInfo(name="noop", queues=["q"])
+
+                async def run(self) -> str:
+                    return "ok"
+
+            app = SwarmQ(broker, backend, queues=["q"])
 
             class Spy(Middleware):
-                pass
+                def __init__(self) -> None:
+                    self.pre_execute_calls: list[dict] = []
+                    self.post_execute_calls: list[tuple[dict, object]] = []
+
+                async def pre_execute(self, message: dict) -> None:
+                    self.pre_execute_calls.append(dict(message))
+
+                async def post_execute(
+                    self, message: dict, result: object = None
+                ) -> None:
+                    self.post_execute_calls.append((dict(message), result))
 
             spy = Spy()
             app.add_middleware(spy)  # AFTER SwarmQ() — was the bug path
-            await app.start_worker()
 
-            _, call_kwargs = MockWorker.call_args
-            factory = call_kwargs["middleware_chain"]
-            chain = factory()
+            # Mirror SwarmQ.start_worker()'s wiring: factory, not snapshot.
+            registry = TaskRegistry()
+            registry.register(NoopTask)
+            worker = Worker(
+                broker=broker,
+                backend=backend,
+                registry=registry,
+                config=app.config,
+                middleware_chain=lambda: app.middleware_chain,
+            )
 
-            assert spy in chain._middlewares
+            from tests.unit.test_worker import (
+                _default_payload,
+                _make_message,
+            )
+
+            msg = _make_message(
+                _default_payload(name="noop", queue="q", args=[])
+            )
+            await worker._handle_message(msg)
+
+            assert len(spy.pre_execute_calls) == 1
+            assert len(spy.post_execute_calls) == 1
+            assert spy.pre_execute_calls[0]["task_name"] == "noop"
+            assert spy.post_execute_calls[0][1] == "ok"
+        finally:
+            Task._registered_tasks[:] = saved
 
 
 class TestSwarmQPublicAPIExports:
