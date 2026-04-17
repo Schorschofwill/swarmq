@@ -182,16 +182,26 @@ class TestBackendRestart:
             stop_collecting = asyncio.Event()
 
             async def collect() -> None:
-                gen = client.watch_progress(task_id)
-                try:
-                    iterator_ready.set()
-                    async for info in gen:
-                        received.append(info)
-                        if stop_collecting.is_set():
-                            break
-                finally:
-                    with contextlib.suppress(Exception):
-                        await gen.aclose()
+                # Realistic-consumer loop: a full backend outage makes
+                # the in-generator HASH fallback raise
+                # BackendConnectionError (documented in
+                # test_network_chaos.py::test_pubsub_disconnect_...),
+                # which propagates out of the async generator. Callers
+                # wrap watch_progress in a restart loop. The d2d23f2
+                # resubscribe fix stays load-bearing because, without
+                # it, a freshly-started iterator subscribes through the
+                # same cached-dead pubsub and never sees live publishes.
+                while not stop_collecting.is_set():
+                    try:
+                        async for info in client.watch_progress(task_id):
+                            received.append(info)
+                            iterator_ready.set()
+                            if stop_collecting.is_set():
+                                return
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException:  # noqa: BLE001
+                        await asyncio.sleep(0.3)
 
             collect_task = asyncio.create_task(collect())
             try:
