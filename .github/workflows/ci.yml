@@ -1,0 +1,88 @@
+name: CI (pre-merge)
+
+# U4.1 — pre-merge gate. Goal ≤ 5 min. Runs unit + e2e + property-quick
+# + static. Chaos/stress/soak are nightly/weekly (see nightly.yml,
+# weekly.yml).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python 3.14
+        run: uv python install 3.14
+      - name: Sync dependencies
+        run: uv sync --extra test
+      - name: Run unit tests
+        run: uv run --extra test pytest tests/unit -q --tb=short
+      - name: Run property tests (quick profile)
+        env:
+          HYPOTHESIS_PROFILE: quick
+        run: uv run --extra test pytest tests/property -q --tb=short -m property
+
+  integration-and-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports: ["5673:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 3s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SWARMQ_TEST_RABBITMQ_PORT: "5673"
+      SWARMQ_TEST_VALKEY_PORT: "6380"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - name: Integration tests
+        run: uv run --extra test pytest tests/integration -q --tb=short
+      - name: E2E tests
+        run: uv run --extra test pytest tests/e2e -q --tb=short
+
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - name: Ruff
+        run: uv run --extra test ruff check src/ tests/
+      - name: mypy (non-strict gate — strict rollout in U4.2)
+        run: uv run --extra test mypy src/swarmq || true

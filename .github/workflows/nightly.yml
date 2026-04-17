@@ -1,0 +1,105 @@
+name: Nightly (chaos + stress + fuzz)
+
+# U4.3 — nightly schedule. Goal ≤ 30 min. Runs the opt-in suites that
+# are too slow / flaky for pre-merge.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # 02:00 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write  # for flaky-quarantine bot in U4.4
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - name: Chaos tests (toxiproxy + per-class compose stack)
+        run: uv run --extra test pytest tests/chaos -v --tb=short -m chaos --reruns 2 --reruns-delay 5
+        env:
+          # Disk-pressure tests are explicitly opt-in even in nightly.
+          SWARMQ_RUN_DISK_TESTS: "0"
+
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports: ["5673:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 10s --health-retries 12
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 3s --health-timeout 5s --health-retries 10
+    env:
+      SWARMQ_TEST_RABBITMQ_PORT: "5673"
+      SWARMQ_TEST_VALKEY_PORT: "6380"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - run: uv run --extra test pytest tests/stress -v --tb=short -m stress
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports: ["5673:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 10s --health-retries 12
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 3s --health-timeout 5s --health-retries 10
+    env:
+      SWARMQ_TEST_RABBITMQ_PORT: "5673"
+      SWARMQ_TEST_VALKEY_PORT: "6380"
+      HYPOTHESIS_PROFILE: thorough
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - run: uv run --extra test pytest tests/fuzz tests/property -v --tb=short -m "fuzz or property"
+
+  bandit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - run: uv tool install bandit
+      - name: Bandit (high-severity gate)
+        run: uvx bandit -r src/ -ll

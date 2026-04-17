@@ -1,0 +1,68 @@
+name: Weekly (mutation + soak)
+
+# U4.3 — weekly schedule. Goal ≤ 4h. Heavy jobs that don't gate
+# merges but provide deep regression-detection signal.
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"  # 02:00 UTC every Sunday
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: weekly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - name: Mutmut run
+        run: bash scripts/run_mutation.sh
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-results
+          path: |
+            .mutmut-cache
+            mutation-report.txt
+
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports: ["5673:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 10s --health-retries 12
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 3s --health-timeout 5s --health-retries 10
+    env:
+      SWARMQ_TEST_RABBITMQ_PORT: "5673"
+      SWARMQ_TEST_VALKEY_PORT: "6380"
+      SWARMQ_SOAK_HOURS: "1"  # Full 1h soak weekly.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - run: uv run --extra test pytest tests/soak -v --tb=short -m soak

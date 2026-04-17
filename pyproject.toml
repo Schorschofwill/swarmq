@@ -33,6 +33,8 @@ test = [
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
+    # E2E-Hardening Phase 3 U3.10 — mutation testing.
+    "mutmut",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -89,3 +91,11 @@ select = [
     "SIM", # flake8-simplify
     "RUF", # ruff-specific rules
 ]
+
+# E2E-Hardening Phase 3 U3.10 — mutation testing.
+# Runner scores mutants against the fast unit-test suite.
+[tool.mutmut]
+paths_to_mutate = "src/swarmq/"
+backup = false
+runner = "uv run --extra test pytest tests/unit -x --no-header -q"
+tests_dir = "tests/unit"
