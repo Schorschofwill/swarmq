@@ -18,7 +18,7 @@ from tests.chaos.conftest import (  # noqa: F401 — re-exported fixtures
 )
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     for item in items:
         if "tests/fuzz/" in str(item.fspath):
             item.add_marker(pytest.mark.fuzz)

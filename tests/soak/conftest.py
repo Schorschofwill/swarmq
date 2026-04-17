@@ -25,7 +25,7 @@ def _port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     for item in items:
         if "tests/soak/" in str(item.fspath):
             item.add_marker(pytest.mark.soak)
