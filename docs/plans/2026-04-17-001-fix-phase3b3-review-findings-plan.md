@@ -158,7 +158,7 @@ simplicity unless flag-reuse has already bitten a real caller.
 
 ---
 
-- [ ] **Unit 4: Post-execution cancel (REV-P2-6)**
+- [x] **Unit 4: Post-execution cancel (REV-P2-6)**
 
 **Goal:** Decide whether to extend cancel-monitor coverage past
 `run_task.done()` to include `post_execution`.
@@ -203,7 +203,7 @@ size.
 
 ---
 
-- [ ] **Unit 7: Magic-strings → `Literal` (REV-P2-9)**
+- [x] **Unit 7: Magic-strings → `Literal` (REV-P2-9)**
 
 **Goal:** Replace `cancel_reason[0] == "cancel"` / `"timeout"` with
 `Literal["cancel", "timeout"]` type annotation + named constants.

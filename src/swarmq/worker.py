@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
+from typing import Literal
 
 import aio_pika
 import structlog
@@ -63,6 +64,15 @@ from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
 
 logger = structlog.get_logger()
+
+
+# Cancel-reason discriminators for the CancelledError branch. Named
+# constants + Literal type so mypy catches typos at call-sites
+# instead of letting a misspelled reason silently fall into the
+# hard-timeout path (REV-P2-9).
+CancelReason = Literal["cancel", "timeout"]
+_CANCEL_REASON_CANCEL: CancelReason = "cancel"
+_CANCEL_REASON_TIMEOUT: CancelReason = "timeout"
 
 
 class WorkerState(enum.Enum):
@@ -1121,9 +1131,9 @@ class Worker:
                 # set_reason_if_unset — first writer wins. The
                 # CancelledError branch below reads cancel_reason[0] to
                 # decide which path to take.
-                cancel_reason: list[str | None] = [None]
+                cancel_reason: list[CancelReason | None] = [None]
 
-                def set_reason_if_unset(reason: str) -> None:
+                def set_reason_if_unset(reason: CancelReason) -> None:
                     if cancel_reason[0] is None:
                         cancel_reason[0] = reason
 
@@ -1159,7 +1169,7 @@ class Worker:
                         # cancel_reason box (Phase 3b.3).  The box is
                         # written BEFORE run_task.cancel() by whichever
                         # source fires first — first-writer-wins.
-                        if cancel_reason[0] == "cancel":
+                        if cancel_reason[0] == _CANCEL_REASON_CANCEL:
                             is_cancelled = True
                             # No task_exception / error_message: cancel
                             # bypasses the error pipeline entirely.
@@ -1270,19 +1280,53 @@ class Worker:
                 and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
                 and task_info.max_retries > 0
             ):
-                should_retry = await self._evaluate_retry(
-                    message,
-                    task_info,
-                    task_exception,
-                    queue,
-                    task_id,
-                    task_name,
-                    error_message,
-                    message_dict,
-                    chain,
-                )
-                if should_retry:
-                    return
+                # Post-execution cancel guard (REV-P2-6): a cancel that
+                # arrived WHILE post_execution was running or between
+                # run_task.done() and this branch wouldn't have been
+                # caught by the cancel-monitor (which stops polling as
+                # soon as run_task.done() fires). Re-check the flag
+                # here so a cancel that raced into the tail of the
+                # pipeline suppresses the retry. Timeout-wrapped like
+                # every other cancel-path backend call (REV-P1-3).
+                try:
+                    late_cancel = await self._backend.is_cancelled(
+                        task_id,
+                        op_timeout=self._config.backend_op_timeout,
+                    )
+                except BackendConnectionError:
+                    # Backend hiccup at this late stage: treat as "not
+                    # cancelled" and let the normal retry path decide.
+                    # The next pre-start check on the redelivered
+                    # message will still honor an actual cancel flag.
+                    late_cancel = False
+
+                if late_cancel:
+                    logger.info(
+                        "cancel_observed_post_execution",
+                        task_id=task_id,
+                        task_name=task_name,
+                    )
+                    # Flip state so downstream code treats this as a
+                    # cancel rather than an error → skip retry, store
+                    # is_cancelled=True result, clear flag, ack.
+                    is_cancelled = True
+                    is_error = False
+                    error_message = ""
+                    task_exception = None
+                else:
+                    should_retry = await self._evaluate_retry(
+                        message,
+                        task_info,
+                        task_exception,
+                        queue,
+                        task_id,
+                        task_name,
+                        error_message,
+                        message_dict,
+                        chain,
+                    )
+                    if should_retry:
+                        return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
             # Client._unpack reads it via .get() so pre-R3.6 consumers
@@ -1417,7 +1461,7 @@ class Worker:
         """
         await asyncio.sleep(timeout)
         if set_reason_if_unset is not None:
-            set_reason_if_unset("timeout")
+            set_reason_if_unset(_CANCEL_REASON_TIMEOUT)
         run_task.cancel()
 
     async def _cancel_monitor(
@@ -1452,7 +1496,7 @@ class Worker:
                 if await self._backend.is_cancelled(
                     task_id, op_timeout=self._config.backend_op_timeout,
                 ):
-                    set_reason_if_unset("cancel")
+                    set_reason_if_unset(_CANCEL_REASON_CANCEL)
                     run_task.cancel()
                     return
             except asyncio.CancelledError:
