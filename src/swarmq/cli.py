@@ -281,6 +281,126 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ---- dlq subcommand group (R3.10) -----------------------------------
+    dlq = subparsers.add_parser(
+        "dlq",
+        help="Inspect and recover messages from dead-letter queues.",
+        description=(
+            "Operate on {queue}.XQ — the broker-level dead-letter queue "
+            "that receives tasks which exhausted their retries, hit "
+            "NoRetry, or were routed via DLX by a permanent-failure "
+            "stage (lock render-fail, conflict-cap). Requires "
+            "SWARMQ_BROKER_URL (broker-only; no backend needed)."
+        ),
+    )
+    dlq_sub = dlq.add_subparsers(
+        dest="dlq_command", metavar="SUBCOMMAND", required=True,
+    )
+
+    # dlq list
+    dlq_list = dlq_sub.add_parser(
+        "list",
+        help="Non-destructively enumerate DLQ messages.",
+        description=(
+            "Drain-and-republish scan of {queue}.XQ. Shows task_id, "
+            "task_name, retry-count header, traceback preview, and "
+            "body size. Repeated calls are safe; messages stay in "
+            "the DLQ."
+        ),
+    )
+    dlq_list.add_argument(
+        "--queue", default="default",
+        help="Main queue name (DLQ resolved as {queue}.XQ). Default: default.",
+    )
+    dlq_list.add_argument(
+        "--limit", type=_positive_int, default=100,
+        help="Max messages to list (default: 100).",
+    )
+    dlq_list.add_argument(
+        "--format", choices=("table", "json"), default="table",
+        help="Output format (default: table).",
+    )
+
+    # dlq inspect
+    dlq_inspect = dlq_sub.add_parser(
+        "inspect",
+        help="Show full payload + headers of one DLQ message.",
+        description=(
+            "Locate a DLQ message by task_id (from payload.task.id) "
+            "and print its full headers + decoded body. "
+            "Non-destructive."
+        ),
+    )
+    dlq_inspect.add_argument("task_id", help="Task ID to locate.")
+    dlq_inspect.add_argument(
+        "--queue", default="default",
+        help="Main queue name (default: default).",
+    )
+    dlq_inspect.add_argument(
+        "--scan-limit", type=_positive_int, default=1000,
+        help="Max DLQ messages to scan (default: 1000).",
+    )
+    dlq_inspect.add_argument(
+        "--format", choices=("table", "json"), default="table",
+        help="Output format (default: table).",
+    )
+
+    # dlq retry
+    dlq_retry = dlq_sub.add_parser(
+        "retry",
+        help="Republish DLQ message(s) into the main queue.",
+        description=(
+            "Republish either a single DLQ message by task_id or every "
+            "message (--all). The x-swarmq-retry-count header is reset "
+            "so the task gets the full retry budget on redelivery; all "
+            "other headers (traceback, R3.5 dedup hash, etc.) survive."
+        ),
+    )
+    # argparse cannot mix positional + mutually-exclusive-group cleanly —
+    # model both via optional positional + --all, validate in the handler.
+    dlq_retry.add_argument(
+        "task_id", nargs="?", default=None,
+        help="Task ID to retry (omit when using --all).",
+    )
+    dlq_retry.add_argument(
+        "--all", action="store_true",
+        help="Retry every message in the DLQ.",
+    )
+    dlq_retry.add_argument(
+        "--queue", default="default",
+        help="Main queue name (default: default).",
+    )
+    dlq_retry.add_argument(
+        "--limit", type=_positive_int, default=10_000,
+        help="Safety cap for --all (default: 10000).",
+    )
+    dlq_retry.add_argument(
+        "--scan-limit", type=_positive_int, default=1000,
+        help="Max DLQ messages to scan when looking up task_id (default: 1000).",
+    )
+    dlq_retry.add_argument(
+        "--format", choices=("table", "json"), default="table",
+        help="Output format (default: table).",
+    )
+
+    # dlq purge
+    dlq_purge = dlq_sub.add_parser(
+        "purge",
+        help="Delete every message from the DLQ.",
+        description=(
+            "Native AMQP queue.purge() on {queue}.XQ. Irreversible; "
+            "messages are lost. Use with care."
+        ),
+    )
+    dlq_purge.add_argument(
+        "--queue", default="default",
+        help="Main queue name (default: default).",
+    )
+    dlq_purge.add_argument(
+        "--format", choices=("table", "json"), default="table",
+        help="Output format (default: table).",
+    )
+
     # inspect — introspect registered TaskInfo (including R3.5 dedup)
     inspect_parser = subparsers.add_parser(
         "inspect",
@@ -679,6 +799,218 @@ def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
     )
 
 
+async def _broker_from_env() -> RabbitMQBroker:
+    """Construct + connect a RabbitMQBroker from SWARMQ_BROKER_URL.
+
+    Shared helper for the dlq subcommands which only need the broker
+    (no backend). Mirrors :func:`_backend_from_env` in shape and error
+    semantics — raises :class:`ConfigurationError` with a concrete
+    example URL when the env var is missing.
+    """
+    broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
+    if not broker_url:
+        raise ConfigurationError(
+            "SWARMQ_BROKER_URL is not set; export it or pass it via env, "
+            "e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/"
+        )
+    broker = RabbitMQBroker(broker_url)
+    await broker.connect()
+    return broker
+
+
+def _format_dlq_list_table(entries: list[dict[str, Any]]) -> str:
+    """One row per DLQ entry — short header summary columns."""
+    if not entries:
+        return "(DLQ empty)"
+    rows = [("TASK_ID", "TASK_NAME", "RETRIES", "ERROR_PREVIEW", "BODY_BYTES")]
+    for e in entries:
+        headers = e.get("headers") or {}
+        retries = headers.get("x-swarmq-retry-count", "-")
+        traceback_hdr = headers.get("x-swarmq-traceback", "")
+        if isinstance(traceback_hdr, bytes):
+            traceback_hdr = traceback_hdr.decode("utf-8", errors="replace")
+        preview = (traceback_hdr.splitlines()[0] if traceback_hdr else "")[:60]
+        rows.append((
+            e.get("task_id") or "(malformed)",
+            e.get("task_name") or "-",
+            str(retries),
+            preview or "-",
+            str(e["body_size"]),
+        ))
+    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
+    return "\n".join(
+        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    )
+
+
+def _normalise_headers_for_json(
+    headers: dict[str, Any],
+) -> dict[str, Any]:
+    """Decode bytes-valued headers for JSON serialisability.
+
+    aio_pika sometimes surfaces header values as bytes when they come
+    off the wire. json.dumps refuses bytes; decode defensively so
+    agent/script consumers of --format json get clean strings.
+    """
+    out: dict[str, Any] = {}
+    for k, v in (headers or {}).items():
+        if isinstance(v, bytes):
+            out[k] = v.decode("utf-8", errors="replace")
+        else:
+            out[k] = v
+    return out
+
+
+async def _run_dlq_list(args: argparse.Namespace) -> None:
+    broker = await _broker_from_env()
+    try:
+        entries = await broker.list_dead_letter_queue(
+            args.queue, limit=args.limit,
+        )
+        if args.format == "json":
+            for e in entries:
+                e["headers"] = _normalise_headers_for_json(e.get("headers") or {})
+            sys.stdout.write(
+                json.dumps(entries, indent=2, default=str) + "\n"
+            )
+        else:
+            sys.stdout.write(_format_dlq_list_table(entries) + "\n")
+    finally:
+        await broker.close()
+
+
+async def _run_dlq_inspect(args: argparse.Namespace) -> None:
+    broker = await _broker_from_env()
+    try:
+        result = await broker.inspect_dead_letter_message(
+            args.queue, args.task_id, scan_limit=args.scan_limit,
+        )
+        if result is None:
+            if args.format == "json":
+                sys.stdout.write(json.dumps({
+                    "found": False, "task_id": args.task_id,
+                    "queue": args.queue,
+                }) + "\n")
+            else:
+                sys.stdout.write(
+                    f"task {args.task_id!r} not found in {args.queue}.XQ "
+                    f"(scanned {args.scan_limit} messages)\n"
+                )
+            return
+
+        result["headers"] = _normalise_headers_for_json(
+            result.get("headers") or {}
+        )
+
+        if args.format == "json":
+            sys.stdout.write(json.dumps(result, indent=2, default=str) + "\n")
+            return
+
+        sys.stdout.write(f"TASK_ID:   {result['task_id']}\n")
+        sys.stdout.write(f"QUEUE:     {result['queue']}.XQ\n")
+        sys.stdout.write(f"BODY_SIZE: {result['body_size']} bytes\n")
+        sys.stdout.write("HEADERS:\n")
+        if not result["headers"]:
+            sys.stdout.write("  (none)\n")
+        else:
+            for k, v in result["headers"].items():
+                sys.stdout.write(f"  {k}: {v}\n")
+        sys.stdout.write("BODY:\n")
+        if result["body"] is not None:
+            sys.stdout.write(
+                json.dumps(result["body"], indent=2, default=str) + "\n"
+            )
+        else:
+            sys.stdout.write(result["body_raw"] + "\n")
+    finally:
+        await broker.close()
+
+
+async def _run_dlq_retry(args: argparse.Namespace) -> None:
+    # Validate the task_id / --all pairing. argparse cannot model
+    # 'positional XOR --all' cleanly when the positional is optional,
+    # so enforce it here.
+    if args.all and args.task_id:
+        raise ConfigurationError(
+            "pass either a task_id positional argument OR --all, not both"
+        )
+    if not args.all and not args.task_id:
+        raise ConfigurationError(
+            "dlq retry requires either a task_id argument or --all"
+        )
+
+    broker = await _broker_from_env()
+    try:
+        if args.all:
+            moved = await broker.retry_all_dead_letter_messages(
+                args.queue, limit=args.limit,
+            )
+            if args.format == "json":
+                sys.stdout.write(json.dumps({
+                    "moved": moved, "queue": args.queue, "all": True,
+                }) + "\n")
+            else:
+                sys.stdout.write(
+                    f"republished {moved} message(s) from {args.queue}.XQ "
+                    f"to {args.queue}\n"
+                )
+            return
+
+        found = await broker.retry_dead_letter_message(
+            args.queue, args.task_id, scan_limit=args.scan_limit,
+        )
+        if args.format == "json":
+            sys.stdout.write(json.dumps({
+                "moved": 1 if found else 0, "queue": args.queue,
+                "task_id": args.task_id, "found": found,
+            }) + "\n")
+        elif found:
+            sys.stdout.write(
+                f"republished task {args.task_id!r} from {args.queue}.XQ "
+                f"to {args.queue}\n"
+            )
+        else:
+            sys.stdout.write(
+                f"task {args.task_id!r} not found in {args.queue}.XQ "
+                f"(scanned {args.scan_limit} messages)\n"
+            )
+    finally:
+        await broker.close()
+
+
+async def _run_dlq_purge(args: argparse.Namespace) -> None:
+    broker = await _broker_from_env()
+    try:
+        purged = await broker.purge_dead_letter_queue(args.queue)
+        if args.format == "json":
+            sys.stdout.write(json.dumps({
+                "purged": purged, "queue": args.queue,
+            }) + "\n")
+        else:
+            sys.stdout.write(
+                f"purged {purged} message(s) from {args.queue}.XQ\n"
+            )
+    finally:
+        await broker.close()
+
+
+async def _run_dlq_async(args: argparse.Namespace) -> None:
+    """Dispatch a parsed 'swarmq dlq <subcommand>' invocation."""
+    if args.dlq_command == "list":
+        await _run_dlq_list(args)
+    elif args.dlq_command == "inspect":
+        await _run_dlq_inspect(args)
+    elif args.dlq_command == "retry":
+        await _run_dlq_retry(args)
+    elif args.dlq_command == "purge":
+        await _run_dlq_purge(args)
+    else:  # pragma: no cover — argparse required=True guards this
+        raise ConfigurationError(
+            f"unknown dlq subcommand: {args.dlq_command!r}"
+        )
+
+
 async def _run_inspect_async(args: argparse.Namespace) -> None:
     """Import *args.module* and print TaskInfo metadata for each task.
 
@@ -756,6 +1088,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "schedule":
         runner = _run_schedule_async(args)
         error_prefix = f"swarmq schedule {args.schedule_command}"
+    elif args.command == "dlq":
+        runner = _run_dlq_async(args)
+        error_prefix = f"swarmq dlq {args.dlq_command}"
     elif args.command == "inspect":
         runner = _run_inspect_async(args)
         error_prefix = "swarmq inspect"

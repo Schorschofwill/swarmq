@@ -129,7 +129,10 @@ class TestBuildParser:
     def test_unknown_subcommand_rejected(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args(["dlq", "list"])
+            # Use a name we definitely haven't registered. Previously this
+            # test picked "dlq" for that purpose; dlq is now a real
+            # subcommand (R3.10), so switch to something obviously bogus.
+            parser.parse_args(["not-a-real-subcommand", "anything"])
 
 
 class TestVersion:
@@ -513,3 +516,161 @@ class TestInspectCommand:
         ns = argparse.Namespace(module="empty", format="table")
         with pytest.raises(ConfigurationError, match="no tasks registered"):
             await cli._run_inspect_async(ns)
+
+
+# ---- R3.10 DLQ CLI -----------------------------------------------------
+
+
+class TestDlqParser:
+    """Argparse shape for the dlq subcommand group."""
+
+    def test_dlq_list_defaults(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["dlq", "list"])
+        assert ns.command == "dlq"
+        assert ns.dlq_command == "list"
+        assert ns.queue == "default"
+        assert ns.limit == 100
+        assert ns.format == "table"
+
+    def test_dlq_list_overrides(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "dlq", "list",
+            "--queue", "work", "--limit", "50", "--format", "json",
+        ])
+        assert ns.queue == "work"
+        assert ns.limit == 50
+        assert ns.format == "json"
+
+    def test_dlq_inspect_requires_task_id(self):
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["dlq", "inspect"])
+
+    def test_dlq_inspect_accepts_task_id(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "dlq", "inspect", "abc-123", "--queue", "q",
+            "--scan-limit", "500",
+        ])
+        assert ns.task_id == "abc-123"
+        assert ns.queue == "q"
+        assert ns.scan_limit == 500
+
+    def test_dlq_retry_positional(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["dlq", "retry", "abc-123"])
+        assert ns.task_id == "abc-123"
+        assert ns.all is False
+
+    def test_dlq_retry_all_flag(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["dlq", "retry", "--all"])
+        assert ns.task_id is None
+        assert ns.all is True
+
+    def test_dlq_retry_rejects_zero_limit(self):
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["dlq", "retry", "--all", "--limit", "0"])
+
+    def test_dlq_purge_defaults(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["dlq", "purge"])
+        assert ns.dlq_command == "purge"
+        assert ns.queue == "default"
+
+
+class TestDlqHandlerValidation:
+    async def test_broker_from_env_requires_url(self, monkeypatch):
+        monkeypatch.delenv("SWARMQ_BROKER_URL", raising=False)
+        with pytest.raises(ConfigurationError, match="SWARMQ_BROKER_URL"):
+            await cli._broker_from_env()
+
+    async def test_retry_without_task_or_all_raises(self, monkeypatch):
+        monkeypatch.setenv(
+            "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
+        )
+        ns = argparse.Namespace(
+            task_id=None, all=False, queue="default",
+            limit=10_000, scan_limit=1000, format="table",
+        )
+        with pytest.raises(ConfigurationError, match="task_id"):
+            await cli._run_dlq_retry(ns)
+
+    async def test_retry_with_both_task_and_all_raises(self, monkeypatch):
+        monkeypatch.setenv(
+            "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
+        )
+        ns = argparse.Namespace(
+            task_id="t-1", all=True, queue="default",
+            limit=10_000, scan_limit=1000, format="table",
+        )
+        with pytest.raises(ConfigurationError, match="not both"):
+            await cli._run_dlq_retry(ns)
+
+
+class TestDlqFormatter:
+    """Pure-function table formatter — no broker / no argparse."""
+
+    def test_empty_renders_placeholder(self):
+        assert cli._format_dlq_list_table([]) == "(DLQ empty)"
+
+    def test_full_row_with_retry_and_traceback(self):
+        rendered = cli._format_dlq_list_table([{
+            "task_id": "abc-123",
+            "task_name": "add",
+            "queue": "work",
+            "headers": {
+                "x-swarmq-retry-count": 3,
+                "x-swarmq-traceback": "RuntimeError: boom\nmore lines",
+            },
+            "body_size": 128,
+        }])
+        lines = rendered.splitlines()
+        # Header row + data row.
+        assert len(lines) == 2
+        assert "abc-123" in lines[1]
+        assert "add" in lines[1]
+        assert "3" in lines[1]
+        assert "RuntimeError: boom" in lines[1]
+        assert "128" in lines[1]
+
+    def test_malformed_task_id_renders_placeholder(self):
+        rendered = cli._format_dlq_list_table([{
+            "task_id": None,
+            "task_name": None,
+            "queue": "work",
+            "headers": {},
+            "body_size": 10,
+        }])
+        assert "(malformed)" in rendered
+
+    def test_traceback_bytes_decoded(self):
+        rendered = cli._format_dlq_list_table([{
+            "task_id": "t",
+            "task_name": "n",
+            "queue": "q",
+            "headers": {
+                "x-swarmq-traceback": b"ValueError: bad input",
+            },
+            "body_size": 8,
+        }])
+        assert "ValueError: bad input" in rendered
+
+
+class TestDlqNormaliseHeaders:
+    def test_bytes_values_decoded(self):
+        result = cli._normalise_headers_for_json({
+            "x-swarmq-traceback": b"err",
+            "x-swarmq-retry-count": 3,
+        })
+        assert result["x-swarmq-traceback"] == "err"
+        assert result["x-swarmq-retry-count"] == 3
+
+    def test_empty_dict_passes_through(self):
+        assert cli._normalise_headers_for_json({}) == {}
+
+    def test_none_treated_as_empty(self):
+        assert cli._normalise_headers_for_json(None) == {}
