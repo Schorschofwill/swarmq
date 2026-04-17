@@ -41,9 +41,9 @@ from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import LockManager, lock_key
 from swarmq.lua import load_script
-from swarmq.serialization import encode_json
+from swarmq.serialization import compute_dedup_hash, encode_json
 from swarmq.signals import Signal, SignalDispatcher
-from swarmq.task import Task
+from swarmq.task import Task, TaskInfo
 
 logger = structlog.get_logger()
 
@@ -704,21 +704,75 @@ class SchedulerLoop:
             "kwargs": definition.kwargs,
         })
 
-        try:
-            await self._broker.publish(
-                definition.queue,
-                body,
-                headers={"x-swarmq-schedfire": schedfire_key},
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "scheduler_publish_failed",
-                schedule_name=schedule_name,
-                error=str(exc),
-            )
-            return  # Do NOT commit — retry on the next poll tick.
+        # --- R3.5 Unit 9: pre-publish SETNX for static crons, header
+        # propagation for client-originated deferred (cli_unique) ---
+        headers: dict[str, Any] = {"x-swarmq-schedfire": schedfire_key}
+        dup_detected = False
 
-        # Compute next_fire for cron, -1 for one-shots.
+        if definition.source == "cli_unique" and definition.dedup_hash:
+            # Client already SETNX'd this task at schedule(delay=/eta=) time.
+            # Propagate the hash so the worker can release the flag at its
+            # terminal path (completion-Mode) or pickup (start-Mode).
+            headers["x-swarmq-unique-hash"] = definition.dedup_hash
+            headers["x-swarmq-unique-until"] = self._resolve_unique_until(
+                definition.task_name
+            )
+        else:
+            # Static cron or plain CLI — resolve TaskInfo and SETNX here.
+            task_info = self._resolve_task_info(definition.task_name)
+            if task_info is not None and task_info.unique_for is not None:
+                dedup_hash = compute_dedup_hash(
+                    definition.task_name,
+                    tuple(definition.args),
+                    dict(definition.kwargs),
+                )
+                try:
+                    existing = await self._backend.setnx_unique(
+                        dedup_hash, task_id, task_info.unique_for * 1000,
+                    )
+                except BackendConnectionError as exc:
+                    logger.warning(
+                        "scheduler_unique_setnx_failed",
+                        schedule_name=schedule_name,
+                        error=str(exc),
+                    )
+                    return  # Retry on next poll; commit not called.
+
+                if existing is not None:
+                    await self._emit_duplicate_detected(
+                        existing_task_id=existing,
+                        task_name=definition.task_name,
+                        dedup_hash=dedup_hash,
+                    )
+                    logger.info(
+                        "swarmq.dedup.detected",
+                        existing_task_id=existing,
+                        task_name=definition.task_name,
+                        dedup_hash=dedup_hash,
+                        source="scheduler.fire",
+                    )
+                    dup_detected = True
+                else:
+                    headers["x-swarmq-unique-hash"] = dedup_hash
+                    headers["x-swarmq-unique-until"] = task_info.unique_until
+
+        if not dup_detected:
+            try:
+                await self._broker.publish(
+                    definition.queue, body, headers=headers,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "scheduler_publish_failed",
+                    schedule_name=schedule_name,
+                    error=str(exc),
+                )
+                return  # Do NOT commit — retry on the next poll tick.
+
+        # Compute next_fire for cron, -1 for one-shots. Runs even on dup-
+        # skip: commit_fire MUST advance the zset (otherwise the same
+        # schedule re-fires on every poll tick forever — see plan
+        # Unit 9 Risks "Double-SETNX-Race" commit-on-fail rationale).
         if definition.cron is None:
             next_fire_ts_ms = -1
             updated_def: ScheduleDefinition | None = None
@@ -744,7 +798,11 @@ class SchedulerLoop:
                 "scheduler_commit_failed",
                 schedule_name=schedule_name,
                 error=str(exc),
+                dup_detected=dup_detected,
             )
+            # On dup: next poll will re-observe the same score and re-emit
+            # the dup signal. Self-heals when Valkey recovers — signal
+            # noise is the accepted v1 trade-off for operator simplicity.
             return
 
         if not committed:
@@ -755,6 +813,60 @@ class SchedulerLoop:
                 schedule_name=schedule_name,
             )
             self._state = "standby"
+
+    def _resolve_task_info(self, task_name: str) -> "TaskInfo | None":
+        """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).
+
+        Scheduler has no direct registry reference — it reuses the same
+        ``Task._registered_tasks`` list that ``sync_taskinfo_crons``
+        walks. Linear scan is O(n); with n typically < 100 tasks this
+        is well below the per-fire ScheduleStore + broker round-trip
+        cost, so no index is introduced.
+        """
+        for task_class in Task._registered_tasks:
+            ti = getattr(task_class, "task_info", None)
+            if ti is not None and ti.name == task_name:
+                return ti
+        return None
+
+    def _resolve_unique_until(self, task_name: str) -> str:
+        """Lookup ``unique_until`` for cli_unique definitions (R3.5 Unit 9).
+
+        cli_unique schedules are client-originated (_schedule_deferred) and
+        don't persist ``unique_until`` — the worker applies TaskInfo's
+        value at release time. Defaulting to ``"completion"`` when the
+        task is unregistered matches the immediate-path semantics.
+        """
+        ti = self._resolve_task_info(task_name)
+        return ti.unique_until if ti is not None else "completion"
+
+    async def _emit_duplicate_detected(
+        self,
+        *,
+        existing_task_id: str,
+        task_name: str,
+        dedup_hash: str,
+    ) -> None:
+        """Dispatch TASK_DUPLICATE_DETECTED with source='scheduler.fire'.
+
+        Wrapped here because :meth:`_emit` is specialised for
+        scheduler-state signals (accepts only ``worker_id``). Handler
+        exceptions are swallowed via the same SignalDispatcher contract.
+        """
+        try:
+            await self._signals.dispatch(
+                Signal.TASK_DUPLICATE_DETECTED,
+                existing_task_id=existing_task_id,
+                task_name=task_name,
+                dedup_hash=dedup_hash,
+                source="scheduler.fire",
+            )
+        except Exception as exc:  # noqa: BLE001 — never abort on handler
+            logger.warning(
+                "scheduler_duplicate_signal_dispatch_error",
+                task_name=task_name,
+                error=str(exc),
+            )
 
     # ---- static-cron sync (Fork 1) -------------------------------------
 

@@ -672,3 +672,253 @@ class TestSyncTaskinfoCrons:
 
         # Both schedules were attempted even though the first failed
         assert store.add_schedule.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# R3.5 Unique Tasks — Scheduler._fire_one SETNX + dup-skip (Unit 9)
+# ---------------------------------------------------------------------------
+
+
+def _cron_def(
+    *, name="cron_unique", task_name="cron_task", fire_ts_ms=1_000,
+    args=(), kwargs=None, source="static", dedup_hash=None,
+) -> ScheduleDefinition:
+    return ScheduleDefinition(
+        schedule_name=name,
+        task_name=task_name,
+        args=args,
+        kwargs=kwargs if kwargs is not None else {},
+        queue="default",
+        cron="*/5 * * * *",
+        fire_ts_ms=fire_ts_ms,
+        source=source,
+        dedup_hash=dedup_hash,
+    )
+
+
+class TestSchedulerUniqueDedup:
+    """Scheduler-side SETNX + commit-on-dup for R3.5 cron/delay fires."""
+
+    async def test_static_cron_without_unique_for_does_not_call_setnx(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        class PlainCron(Task):
+            task_info = TaskInfo(
+                name="plain_task", queues=["default"],
+                cron="*/5 * * * *",
+            )
+            async def run(self): return None
+
+        backend.setnx_unique = AsyncMock()
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _cron_def(name="plain_task", task_name="plain_task")
+        store.poll_due.return_value = [("plain_task", 1_000, d)]
+
+        await loop._poll_tick()
+
+        backend.setnx_unique.assert_not_awaited()
+        broker.publish.assert_awaited_once()
+        # Only schedfire header, no unique hash.
+        headers = broker.publish.await_args.kwargs.get("headers") or {}
+        assert "x-swarmq-unique-hash" not in headers
+
+    async def test_static_cron_with_unique_for_sets_flag_and_header(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        class UniqueCron(Task):
+            task_info = TaskInfo(
+                name="uniq_task", queues=["default"],
+                cron="*/5 * * * *",
+                unique_for=120, unique_until="completion",
+            )
+            async def run(self): return None
+
+        backend.setnx_unique = AsyncMock(return_value=None)  # NX granted
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _cron_def(name="uniq_task", task_name="uniq_task")
+        store.poll_due.return_value = [("uniq_task", 1_000, d)]
+
+        await loop._poll_tick()
+
+        backend.setnx_unique.assert_awaited_once()
+        ttl_ms = backend.setnx_unique.await_args.args[2]
+        assert ttl_ms == 120_000
+
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert "x-swarmq-unique-hash" in headers
+        assert headers["x-swarmq-unique-until"] == "completion"
+        store.commit_fire.assert_awaited_once()
+
+    async def test_static_cron_dup_skips_publish_but_commits(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Dup path: no publish, but commit_fire MUST advance the zset
+        otherwise the scheduler re-polls the same entry forever."""
+        class UniqueCron(Task):
+            task_info = TaskInfo(
+                name="dup_task", queues=["default"],
+                cron="*/5 * * * *", unique_for=60,
+            )
+            async def run(self): return None
+
+        received: list[dict] = []
+        @signal_dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+        async def handler(**kwargs):
+            received.append(kwargs)
+
+        backend.setnx_unique = AsyncMock(return_value="t-existing")
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _cron_def(name="dup_task", task_name="dup_task")
+        store.poll_due.return_value = [("dup_task", 1_000, d)]
+
+        await loop._poll_tick()
+
+        broker.publish.assert_not_awaited()
+        store.commit_fire.assert_awaited_once()
+        assert len(received) == 1
+        assert received[0]["existing_task_id"] == "t-existing"
+        assert received[0]["source"] == "scheduler.fire"
+        assert received[0]["task_name"] == "dup_task"
+
+    async def test_cli_unique_source_skips_scheduler_setnx(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Producer already claimed the flag (Unit 7) — scheduler must not
+        re-SETNX or the flag's TTL would reset. Header is propagated from
+        the stored dedup_hash."""
+        class DeferredTask(Task):
+            task_info = TaskInfo(
+                name="deferred_uniq", queues=["default"],
+                unique_for=300, unique_until="start",
+            )
+            async def run(self): return None
+
+        backend.setnx_unique = AsyncMock()
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = ScheduleDefinition(
+            schedule_name="oneshot:xyz",
+            task_name="deferred_uniq",
+            args=(), kwargs={}, queue="default",
+            cron=None, fire_ts_ms=1_000,
+            source="cli_unique",
+            dedup_hash="pre-hashed-by-client",
+        )
+        store.poll_due.return_value = [("oneshot:xyz", 1_000, d)]
+
+        await loop._poll_tick()
+
+        backend.setnx_unique.assert_not_awaited()
+        broker.publish.assert_awaited_once()
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert headers["x-swarmq-unique-hash"] == "pre-hashed-by-client"
+        # unique_until resolved from TaskInfo (client doesn't persist it)
+        assert headers["x-swarmq-unique-until"] == "start"
+
+    async def test_cli_unique_without_registered_task_defaults_until_completion(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Task not registered in this worker → fall back to completion."""
+        backend.setnx_unique = AsyncMock()
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = ScheduleDefinition(
+            schedule_name="oneshot:mystery",
+            task_name="not_registered_here",
+            args=(), kwargs={}, queue="default",
+            cron=None, fire_ts_ms=1_000,
+            source="cli_unique",
+            dedup_hash="abc123",
+        )
+        store.poll_due.return_value = [("oneshot:mystery", 1_000, d)]
+
+        await loop._poll_tick()
+
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert headers["x-swarmq-unique-hash"] == "abc123"
+        assert headers["x-swarmq-unique-until"] == "completion"
+
+    async def test_setnx_backend_error_skips_publish_and_commit(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Valkey hiccup at SETNX → do NOT publish, do NOT commit. Next
+        poll tick retries."""
+        class UniqueCron(Task):
+            task_info = TaskInfo(
+                name="flap_task", queues=["default"],
+                cron="*/5 * * * *", unique_for=60,
+            )
+            async def run(self): return None
+
+        backend.setnx_unique = AsyncMock(
+            side_effect=BackendConnectionError("valkey down")
+        )
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _cron_def(name="flap_task", task_name="flap_task")
+        store.poll_due.return_value = [("flap_task", 1_000, d)]
+
+        await loop._poll_tick()
+
+        broker.publish.assert_not_awaited()
+        store.commit_fire.assert_not_awaited()
+
+    async def test_hash_stable_for_same_args_across_fires(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Two fires of the same schedule with same args produce the
+        same dedup_hash (Valkey sees repeat owner on second attempt)."""
+        class UniqueCron(Task):
+            task_info = TaskInfo(
+                name="repeat_task", queues=["default"],
+                cron="*/1 * * * *", unique_for=60,
+            )
+            async def run(self): return None
+
+        captured: list[str] = []
+
+        async def setnx_side_effect(dedup_hash, *_a, **_kw):
+            captured.append(dedup_hash)
+            return None
+
+        backend.setnx_unique = AsyncMock(side_effect=setnx_side_effect)
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _cron_def(
+            name="repeat_task", task_name="repeat_task",
+            args=(1, 2), kwargs={"x": "y"},
+        )
+        store.poll_due.return_value = [("repeat_task", 1_000, d)]
+
+        await loop._poll_tick()
+        # Reset broker/store for second tick so commit_fire doesn't see
+        # the first call in its counter (poll returns same item again).
+        store.poll_due.return_value = [("repeat_task", 2_000, d)]
+        await loop._poll_tick()
+
+        assert len(captured) == 2
+        assert captured[0] == captured[1]

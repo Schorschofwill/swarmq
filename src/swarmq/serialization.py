@@ -120,6 +120,21 @@ def canonical_encode(args: tuple, kwargs: dict) -> bytes:
     return _json_encoder.encode(canonical)
 
 
+def compute_dedup_hash(task_name: str, args: tuple, kwargs: dict) -> str:
+    """sha256-hex of task_name + canonical_encode(args, kwargs).
+
+    Shared helper for R3.5 producer-side SETNX: Client.schedule,
+    Client._schedule_deferred, Client.schedule_many, and
+    Scheduler._fire_one all derive the ``sq:unique:{hash}`` key with
+    this function so the same (task_name, args, kwargs) triple
+    always hashes to the same Valkey cell regardless of entry point.
+    """
+    import hashlib
+
+    payload = task_name.encode("utf-8") + b"\x00" + canonical_encode(args, kwargs)
+    return hashlib.sha256(payload).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # msgpack serialization (for Results)
 # ---------------------------------------------------------------------------

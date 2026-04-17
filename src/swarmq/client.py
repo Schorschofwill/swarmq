@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import time
 import uuid
 from collections.abc import Callable
@@ -27,7 +26,12 @@ from swarmq.middleware import (
 )
 from swarmq.registry import TaskRegistry
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
-from swarmq.serialization import canonical_encode, decode_result, encode_json
+from swarmq.serialization import (
+    canonical_encode,
+    compute_dedup_hash,
+    decode_result,
+    encode_json,
+)
 from swarmq.signals import Signal, SignalDispatcher
 
 logger = structlog.get_logger()
@@ -49,13 +53,7 @@ _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
 _MISSING: Any = object()
 
 
-def _compute_dedup_hash(task_name: str, args: tuple, kwargs: dict) -> str:
-    """sha256-hex of task_name + canonical_encode(args, kwargs).
-
-    Used as the Valkey key suffix `sq:unique:{hash}` for R3.5 dedup.
-    """
-    payload = task_name.encode("utf-8") + b"\x00" + canonical_encode(args, kwargs)
-    return hashlib.sha256(payload).hexdigest()
+_compute_dedup_hash = compute_dedup_hash  # backwards-compat alias
 
 
 class Client:
