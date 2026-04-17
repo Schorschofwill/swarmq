@@ -84,10 +84,17 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     * ``source="cli"`` — added via ``swarmq schedule add``. Treated as
       insert-if-absent; ``TaskInfo``-sync will never overwrite a CLI
       schedule (CD11).
+    * ``source="cli_unique"`` — one-shot deferred schedule
+      (``Client.schedule(delay=|eta=)``) whose producer already claimed
+      the R3.5 dedup flag at enqueue-time. Scheduler._fire_one skips
+      the pre-publish SETNX for this source and reuses
+      ``dedup_hash`` directly as the message header, partitioning
+      SETNX responsibility between client (deferred) and scheduler
+      (static cron). Origin plan Unit 7 / Risks "Double-SETNX-Race".
     * One-shot entries (delay/eta) — ``cron=None``, ``schedule_name``
-      is ``"oneshot:<uuid>"``, ``source="cli"``. Discriminated by
-      ``cron is None`` at commit-time: next_fire_ts = -1 signals
-      one-shot, which skips ZADD and triggers HDEL.
+      is ``"oneshot:<uuid>"``, ``source="cli"`` or ``"cli_unique"``.
+      Discriminated by ``cron is None`` at commit-time: next_fire_ts =
+      -1 signals one-shot, which skips ZADD and triggers HDEL.
     """
 
     schedule_name: str
@@ -97,9 +104,14 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     queue: str
     cron: str | None
     fire_ts_ms: int | None
-    source: Literal["static", "cli"]
+    source: Literal["static", "cli", "cli_unique"]
     disabled: bool = False
     last_fire_at: int | None = None
+    # R3.5 Unit 7: persisted dedup hash for source="cli_unique" entries.
+    # Optional with default None so msgpack/json roundtrip stays
+    # backwards-compatible with pre-R3.5 ScheduleDefinition entries in
+    # sq:sched:defs (new field at the end of the struct).
+    dedup_hash: str | None = None
 
 
 # ---------------------------------------------------------------------------

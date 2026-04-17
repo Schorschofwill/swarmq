@@ -182,6 +182,12 @@ class Client:
         # delay=0 is a normal immediate publish; only non-zero delay and
         # eta take the scheduler-store detour.
         if (delay is not None and delay > 0) or eta is not None:
+            # Resolve R3.5 dedup up here so deferred path + immediate path
+            # apply the same precedence rules (_MISSING → TaskInfo default,
+            # None → dedup off, int → explicit).
+            resolved_unique_for, resolved_unique_until = self._resolve_unique(
+                task_name, unique_for, unique_until
+            )
             return await self._schedule_deferred(
                 task_name,
                 list(args),
@@ -189,6 +195,8 @@ class Client:
                 resolved_queue=resolved_queue,
                 delay=delay,
                 eta=eta,
+                unique_for=resolved_unique_for,
+                unique_until=resolved_unique_until,
             )
 
         # --- build and publish message ---
@@ -593,12 +601,23 @@ class Client:
         resolved_queue: str,
         delay: float | None,
         eta: datetime | None,
+        unique_for: int | None = None,
+        unique_until: str = "completion",
     ) -> str:
         """Write a one-shot entry to the ScheduleStore and return task_id.
 
         The scheduler-loop in Unit 10 poll's, publishes with
         ``x-swarmq-schedfire`` header, and commits. The worker dedupes on
         the header (Unit 8), then runs the task like any other message.
+
+        R3.5 (Unit 7): when ``unique_for`` is set, claim the dedup flag
+        BEFORE the ScheduleStore insert with TTL ``(unique_for +
+        fire_offset_s) * 1000`` so the flag outlives the fire delay plus
+        the whole terminal window. The producer here is authoritative —
+        Scheduler._fire_one observes ``source="cli_unique"`` and skips
+        its own SETNX, avoiding the double-claim race. On duplicate we
+        emit ``TASK_DUPLICATE_DETECTED`` and return the existing task_id
+        silently, same API shape as the immediate path.
         """
         now_ms = int(time.time() * 1000)
         if eta is not None:
@@ -614,6 +633,36 @@ class Client:
             fire_ts_ms = now_ms + int(delay * 1000)
 
         task_id = str(uuid.uuid7())
+
+        # --- R3.5 Unit 7: producer-side SETNX before ScheduleStore insert ---
+        dedup_hash: str | None = None
+        if unique_for is not None:
+            dedup_hash = _compute_dedup_hash(task_name, tuple(args), kwargs)
+            # Fire offset: how long we wait before publish. Clamp to 0 so
+            # late-past eta does not shrink the TTL below unique_for itself.
+            fire_offset_s = max(0, (fire_ts_ms - now_ms) // 1000)
+            ttl_ms = (unique_for + int(fire_offset_s)) * 1000
+            existing = await self._backend.setnx_unique(
+                dedup_hash, task_id, ttl_ms
+            )
+            if existing is not None:
+                await self._signal_dispatcher.dispatch(
+                    Signal.TASK_DUPLICATE_DETECTED,
+                    existing_task_id=existing,
+                    task_name=task_name,
+                    dedup_hash=dedup_hash,
+                    source="client.schedule",
+                )
+                logger.info(
+                    "swarmq.dedup.detected",
+                    existing_task_id=existing,
+                    task_name=task_name,
+                    dedup_hash=dedup_hash,
+                    source="client.schedule",
+                    deferred=True,
+                )
+                return existing
+
         schedule_name = f"oneshot:{task_id}"
         definition = ScheduleDefinition(
             schedule_name=schedule_name,
@@ -623,7 +672,8 @@ class Client:
             queue=resolved_queue,
             cron=None,
             fire_ts_ms=fire_ts_ms,
-            source="cli",
+            source="cli_unique" if dedup_hash is not None else "cli",
+            dedup_hash=dedup_hash,
         )
 
         store = self._ensure_schedule_store()

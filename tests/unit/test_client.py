@@ -1332,3 +1332,150 @@ class TestClientUniqueSchedule:
             "add", queue="math", unique_for=60, b=2, a=1,
         )
         assert captured_hashes[0] == captured_hashes[1]
+
+
+# -----------------------------------------------------------------
+# R3.5 Unique Tasks — Client._schedule_deferred() dedup (Unit 7)
+# -----------------------------------------------------------------
+
+class TestClientUniqueDeferred:
+    """Producer-side SETNX dedup for delay/eta deferred schedules."""
+
+    @pytest.fixture
+    def backend_setnx(self, backend):
+        backend.setnx_unique = AsyncMock(return_value=None)  # NX granted
+        return backend
+
+    @pytest.fixture
+    def client_setnx(self, broker, backend_setnx, registry):
+        return Client(broker=broker, backend=backend_setnx, registry=registry)
+
+    async def test_deferred_without_unique_for_skips_setnx(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """delay= + no unique_for → no SETNX, ScheduleDefinition stays source=cli."""
+        await client_setnx.schedule("add", 1, queue="math", delay=60.0)
+        backend_setnx.setnx_unique.assert_not_awaited()
+        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        assert definition.source == "cli"
+        assert definition.dedup_hash is None
+
+    async def test_deferred_with_unique_for_sets_flag_and_persists_hash(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """delay=60 + unique_for=300 → SETNX with TTL 360_000ms; hash persisted."""
+        task_id = await client_setnx.schedule(
+            "add", 1, 2, queue="math", delay=60.0, unique_for=300,
+        )
+        backend_setnx.setnx_unique.assert_awaited_once()
+        call = backend_setnx.setnx_unique.await_args
+        dedup_hash = call[0][0]
+        stored_task_id = call[0][1]
+        ttl_ms = call[0][2]
+        assert len(dedup_hash) == 64  # sha256 hex
+        assert stored_task_id == task_id
+        # TTL = (unique_for + fire_offset) * 1000 — offset ~60s (delay)
+        # so total between 355_000 and 365_000 (slack for clock).
+        assert 355_000 <= ttl_ms <= 365_000
+
+        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        assert definition.source == "cli_unique"
+        assert definition.dedup_hash == dedup_hash
+
+    async def test_deferred_duplicate_returns_existing_and_skips_store(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """Dup: return existing task_id; no ScheduleStore.add_schedule call."""
+        backend_setnx.setnx_unique = AsyncMock(return_value="t-existing")
+        tid = await client_setnx.schedule(
+            "add", 1, queue="math", delay=10.0, unique_for=60,
+        )
+        assert tid == "t-existing"
+        _patched_schedule_store.add_schedule.assert_not_awaited()
+
+    async def test_deferred_duplicate_emits_signal(
+        self, broker, backend_setnx, registry, _patched_schedule_store,
+    ):
+        """TASK_DUPLICATE_DETECTED dispatched on deferred dedup conflict."""
+        from swarmq.signals import Signal, SignalDispatcher
+
+        dispatcher = SignalDispatcher()
+        received: list[dict] = []
+
+        @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+        async def handler(**kwargs):
+            received.append(kwargs)
+
+        backend_setnx.setnx_unique = AsyncMock(return_value="t-win")
+        client = Client(
+            broker=broker, backend=backend_setnx,
+            registry=registry, signal_dispatcher=dispatcher,
+        )
+        await client.schedule(
+            "add", 1, queue="math", delay=5.0, unique_for=30,
+        )
+        assert len(received) == 1
+        assert received[0]["existing_task_id"] == "t-win"
+        assert received[0]["source"] == "client.schedule"
+        assert received[0]["task_name"] == "add"
+
+    async def test_deferred_with_eta_ttl_covers_fire_plus_unique_for(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """eta=now+120s + unique_for=300 → TTL ≈ (300+120)*1000 ms."""
+        from datetime import UTC, datetime, timedelta
+        eta = datetime.now(UTC) + timedelta(seconds=120)
+        await client_setnx.schedule(
+            "add", 1, queue="math", eta=eta, unique_for=300,
+        )
+        ttl_ms = backend_setnx.setnx_unique.await_args[0][2]
+        # Range allows for any clock drift / asyncio scheduling.
+        assert 415_000 <= ttl_ms <= 425_000
+
+    async def test_deferred_past_eta_clamps_fire_offset_to_zero(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """eta in the past (within 1s lenience) → TTL == unique_for*1000."""
+        from datetime import UTC, datetime, timedelta
+        # Lenience window allows 1s past — use 0.5s in the past.
+        eta = datetime.now(UTC) - timedelta(milliseconds=500)
+        await client_setnx.schedule(
+            "add", 1, queue="math", eta=eta, unique_for=60,
+        )
+        ttl_ms = backend_setnx.setnx_unique.await_args[0][2]
+        # fire_offset clamped to 0, so TTL stays at unique_for * 1000.
+        assert ttl_ms == 60_000
+
+    async def test_deferred_client_modus_requires_explicit_unique_for(
+        self, broker, backend_setnx, _patched_schedule_store,
+    ):
+        """Without registry, _MISSING → no dedup; explicit unique_for works."""
+        client = Client(broker=broker, backend=backend_setnx, registry=None)
+        await client.schedule("add", queue="math", delay=10.0)
+        backend_setnx.setnx_unique.assert_not_awaited()
+
+        await client.schedule(
+            "add", queue="math", delay=10.0, unique_for=60,
+        )
+        backend_setnx.setnx_unique.assert_awaited_once()
+
+    async def test_deferred_setnx_call_before_store_insert(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """SETNX must happen BEFORE store.add_schedule — dup path skips store."""
+        call_order: list[str] = []
+
+        async def track_setnx(*args, **kwargs):
+            call_order.append("setnx")
+            return None
+
+        async def track_store(*args, **kwargs):
+            call_order.append("store")
+
+        backend_setnx.setnx_unique = AsyncMock(side_effect=track_setnx)
+        _patched_schedule_store.add_schedule = AsyncMock(side_effect=track_store)
+
+        await client_setnx.schedule(
+            "add", 1, queue="math", delay=10.0, unique_for=60,
+        )
+        assert call_order == ["setnx", "store"]
