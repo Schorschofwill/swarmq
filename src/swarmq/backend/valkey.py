@@ -8,6 +8,7 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import ValkeyError
 
 from swarmq.exceptions import BackendConnectionError
+from swarmq.lua import load_script
 
 logger = structlog.get_logger()
 
@@ -16,6 +17,9 @@ class ValkeyBackend:
     def __init__(self, url: str) -> None:
         self._url = url
         self._client: valkey.asyncio.Valkey | None = None
+        # R3.5: Lua script is lazy-registered on first use (registration
+        # requires a connected client). See _ensure_unique_release_script.
+        self._unique_release_script = None
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -49,6 +53,22 @@ class ValkeyBackend:
 
     def _sched_handover_key(self, owner_token: str) -> str:
         return f"sq:sched:handover:{owner_token}"
+
+    def _unique_key(self, dedup_hash: str) -> str:
+        return f"sq:unique:{dedup_hash}"
+
+    def _ensure_unique_release_script(self):
+        """Lazy-register unique_release.lua on first use.
+
+        Registration needs a live client; we register lazily so the backend
+        doesn't require Lua-script files present at ValkeyBackend() construction
+        time. Returns the registered AsyncScript (reused across calls).
+        """
+        if self._unique_release_script is None:
+            self._unique_release_script = self._client.register_script(
+                load_script("unique_release")
+            )
+        return self._unique_release_script
 
     async def store_result(
         self, task_id: str, result_data: bytes, ttl_ms: int,
@@ -155,6 +175,101 @@ class ValkeyBackend:
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
         return result == 1
+
+    # -----------------------------------------------------------------------
+    # R3.5 Unique Tasks — dedup flag operations
+    # -----------------------------------------------------------------------
+
+    async def setnx_unique(
+        self, dedup_hash: str, task_id: str, ttl_ms: int,
+        op_timeout: float | None = None,
+    ) -> str | None:
+        """Set dedup flag atomically; return existing owner on conflict.
+
+        Uses ``SET NX GET PX`` — a single atomic round-trip that either
+        claims the flag (returns None) or returns the existing owner
+        (the task_id of the task that won the race). Available since
+        Valkey/Redis 7.0+. Eliminates the TOCTOU gap of a
+        SETNX-then-GET two-step.
+
+        Returns:
+          None — NX granted, caller owns the flag for ttl_ms.
+          str  — Existing owner task_id; caller should treat as duplicate.
+
+        Raises BackendConnectionError on Valkey transport/timeout failure.
+        R3.5 callers (Client.schedule, Scheduler._fire_one) propagate this
+        as a hard failure — they cannot proceed without knowing dedup state.
+        """
+        try:
+            coro = self._client.set(
+                self._unique_key(dedup_hash),
+                task_id,
+                nx=True,
+                get=True,
+                px=ttl_ms,
+            )
+            if op_timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                result = await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"setnx_unique timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+        # valkey-py returns bytes on GET; None means NX was granted.
+        if result is None:
+            return None
+        if isinstance(result, bytes):
+            return result.decode("utf-8")
+        return str(result)
+
+    async def release_unique(
+        self, dedup_hash: str, task_id: str,
+        op_timeout: float | None = None,
+    ) -> bool:
+        """Release dedup flag only if *task_id* matches the stored owner.
+
+        Uses unique_release.lua (GET-and-compare-then-DEL atomic in one
+        EVAL). Protects against TTL-expiry-race where a second task
+        claimed the flag after TTL expiry and the first task's completion
+        release would otherwise DEL the wrong owner's flag.
+
+        Returns:
+          True  — flag released (we were the owner).
+          False — flag not released (foreign owner, TTL-expired, or
+                  never set). Non-exceptional outcome.
+
+        Failures are logged and swallowed (like clear_cancel_flag) —
+        an orphan flag self-heals via TTL, and a DEL failure must not
+        break the worker's terminal-path pipeline.
+        """
+        try:
+            script = self._ensure_unique_release_script()
+            coro = script(keys=[self._unique_key(dedup_hash)], args=[task_id])
+            if op_timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                result = await coro
+        except TimeoutError:
+            logger.warning(
+                "unique_release_timed_out",
+                dedup_hash=dedup_hash,
+                task_id=task_id,
+                error=f"timed out after {op_timeout}s",
+            )
+            return False
+        except (ValkeyError, OSError) as exc:
+            logger.warning(
+                "unique_release_backend_error",
+                dedup_hash=dedup_hash,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+        return int(result) == 1
 
     async def clear_cancel_flag(
         self, task_id: str, op_timeout: float | None = None,

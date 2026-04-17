@@ -57,3 +57,16 @@ def test_load_script_uses_utf8_encoding(tmp_path):
             assert load_script("_utf8_probe") == content
         finally:
             probe.unlink()
+
+
+def test_unique_release_script_loads_and_has_owner_check():
+    """R3.5 Unit 4: unique_release.lua ships, has the owner-check GET/
+    compare/DEL shape. Integration test against real Valkey lives in
+    tests/integration/test_valkey_unique.py (Unit 5)."""
+    script = load_script("unique_release")
+    assert "redis.call('GET'" in script
+    assert "redis.call('DEL'" in script
+    # Owner-check: the script must not unconditionally DEL.
+    assert "task_id" in script.lower() or "owner" in script.lower()
+    # Only KEYS[1] and ARGV[1] referenced — no semaphore/force branches.
+    assert "ARGV[2]" not in script
