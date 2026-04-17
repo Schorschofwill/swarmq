@@ -862,20 +862,49 @@ def _normalise_headers_for_json(
     return out
 
 
+# R3.10 review P3 #19: targeted lookups (dlq inspect / dlq retry <id>)
+# that find no match should exit with a distinct code so agent scripts
+# can branch on it without parsing JSON. 3 is traditionally "not found".
+_DLQ_NOT_FOUND_EXIT_CODE = 3
+
+
+class _DLQNotFound(Exception):
+    """Sentinel for not-found lookups so main() can exit 3 cleanly.
+
+    Carries no message — the handler writes the user-facing line to
+    stdout BEFORE raising. main() catches this and maps it to exit 3
+    without any additional stderr noise.
+    """
+
+
 async def _run_dlq_list(args: argparse.Namespace) -> None:
     broker = await _broker_from_env()
     try:
-        entries = await broker.list_dead_letter_queue(
+        entries, scanned = await broker.list_dead_letter_queue(
             args.queue, limit=args.limit,
         )
         if args.format == "json":
             for e in entries:
                 e["headers"] = _normalise_headers_for_json(e.get("headers") or {})
+            # Wrap in an envelope so agents can detect truncation
+            # without reasoning about exact-count equality (R3.10 P3 #18).
+            envelope = {
+                "entries": entries,
+                "scanned": scanned,
+                "limit": args.limit,
+                "truncated": scanned >= args.limit,
+                "queue": args.queue,
+            }
             sys.stdout.write(
-                json.dumps(entries, indent=2, default=str) + "\n"
+                json.dumps(envelope, indent=2, default=str) + "\n"
             )
         else:
             sys.stdout.write(_format_dlq_list_table(entries) + "\n")
+            if scanned >= args.limit:
+                sys.stdout.write(
+                    f"(truncated at --limit {args.limit}; "
+                    f"raise --limit to see more)\n"
+                )
     finally:
         await broker.close()
 
@@ -883,28 +912,40 @@ async def _run_dlq_list(args: argparse.Namespace) -> None:
 async def _run_dlq_inspect(args: argparse.Namespace) -> None:
     broker = await _broker_from_env()
     try:
-        result = await broker.inspect_dead_letter_message(
+        result, scanned = await broker.inspect_dead_letter_message(
             args.queue, args.task_id, scan_limit=args.scan_limit,
         )
         if result is None:
+            scan_exhausted = scanned >= args.scan_limit
             if args.format == "json":
                 sys.stdout.write(json.dumps({
                     "found": False, "task_id": args.task_id,
                     "queue": args.queue,
+                    "scanned": scanned,
+                    "scan_exhausted": scan_exhausted,
                 }) + "\n")
             else:
+                hint = (
+                    " — scan hit --scan-limit; raise it to keep looking"
+                    if scan_exhausted else ""
+                )
                 sys.stdout.write(
                     f"task {args.task_id!r} not found in {args.queue}.XQ "
-                    f"(scanned {args.scan_limit} messages)\n"
+                    f"(scanned {scanned} messages){hint}\n"
                 )
-            return
+            raise _DLQNotFound
 
         result["headers"] = _normalise_headers_for_json(
             result.get("headers") or {}
         )
 
         if args.format == "json":
-            sys.stdout.write(json.dumps(result, indent=2, default=str) + "\n")
+            # Add explicit found:true for symmetry with the miss shape
+            # (R3.10 P3 #18 — agent can do kwargs.get("found") uniformly).
+            payload = {"found": True, "scanned": scanned, **result}
+            sys.stdout.write(
+                json.dumps(payload, indent=2, default=str) + "\n"
+            )
             return
 
         sys.stdout.write(f"TASK_ID:   {result['task_id']}\n")
@@ -928,42 +969,62 @@ async def _run_dlq_inspect(args: argparse.Namespace) -> None:
 
 
 async def _run_dlq_retry(args: argparse.Namespace) -> None:
-    # Validate the task_id / --all pairing. argparse cannot model
-    # 'positional XOR --all' cleanly when the positional is optional,
-    # so enforce it here.
+    # Validate task_id / --all pairing. argparse can't cleanly model
+    # 'positional XOR --all' when the positional is optional, so we
+    # enforce it here and exit via parser.error()-equivalent (code 2),
+    # matching the exit-code contract for argument-shape errors
+    # (R3.10 P3 #12).
     if args.all and args.task_id:
-        raise ConfigurationError(
-            "pass either a task_id positional argument OR --all, not both"
+        sys.stderr.write(
+            "swarmq dlq retry: pass either a task_id positional "
+            "argument OR --all, not both\n"
         )
+        raise SystemExit(2)
     if not args.all and not args.task_id:
-        raise ConfigurationError(
-            "dlq retry requires either a task_id argument or --all"
+        sys.stderr.write(
+            "swarmq dlq retry: requires either a task_id argument or --all\n"
         )
+        raise SystemExit(2)
 
     broker = await _broker_from_env()
     try:
         if args.all:
-            moved = await broker.retry_all_dead_letter_messages(
+            moved, scanned = await broker.retry_all_dead_letter_messages(
                 args.queue, limit=args.limit,
             )
+            skipped = scanned - moved
             if args.format == "json":
                 sys.stdout.write(json.dumps({
-                    "moved": moved, "queue": args.queue, "all": True,
+                    "moved": moved,
+                    "scanned": scanned,
+                    "skipped_malformed": skipped,
+                    "truncated": scanned >= args.limit,
+                    "queue": args.queue,
+                    "all": True,
                 }) + "\n")
             else:
+                suffix = (
+                    f" ({skipped} malformed message(s) left in DLQ — "
+                    f"use 'dlq purge' to remove)"
+                    if skipped > 0 else ""
+                )
                 sys.stdout.write(
                     f"republished {moved} message(s) from {args.queue}.XQ "
-                    f"to {args.queue}\n"
+                    f"to {args.queue}{suffix}\n"
                 )
             return
 
-        found = await broker.retry_dead_letter_message(
+        found, scanned = await broker.retry_dead_letter_message(
             args.queue, args.task_id, scan_limit=args.scan_limit,
         )
         if args.format == "json":
             sys.stdout.write(json.dumps({
-                "moved": 1 if found else 0, "queue": args.queue,
-                "task_id": args.task_id, "found": found,
+                "moved": 1 if found else 0,
+                "queue": args.queue,
+                "task_id": args.task_id,
+                "found": found,
+                "scanned": scanned,
+                "scan_exhausted": scanned >= args.scan_limit,
             }) + "\n")
         elif found:
             sys.stdout.write(
@@ -971,10 +1032,16 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
                 f"to {args.queue}\n"
             )
         else:
+            hint = (
+                " — scan hit --scan-limit; raise it to keep looking"
+                if scanned >= args.scan_limit else ""
+            )
             sys.stdout.write(
                 f"task {args.task_id!r} not found in {args.queue}.XQ "
-                f"(scanned {args.scan_limit} messages)\n"
+                f"(scanned {scanned} messages){hint}\n"
             )
+        if not found:
+            raise _DLQNotFound
     finally:
         await broker.close()
 
@@ -1103,6 +1170,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Ctrl-C before the worker installed its own SIGINT handler;
         # treat as graceful exit, not a crash.
         return 0
+    except _DLQNotFound:
+        # dlq inspect / retry <task_id> found no match — distinct exit
+        # code so agent scripts can branch without parsing JSON
+        # (R3.10 P3 #19). User-facing line was already written by the
+        # handler; we emit no additional noise here.
+        return _DLQ_NOT_FOUND_EXIT_CODE
     except (
         ModuleNotFoundError,
         ConfigurationError,

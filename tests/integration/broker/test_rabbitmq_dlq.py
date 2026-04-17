@@ -82,8 +82,9 @@ async def _main_depth(broker: RabbitMQBroker, queue_name: str) -> int:
 
 async def test_list_empty_returns_empty(broker_and_queue):
     broker, qname = broker_and_queue
-    entries = await broker.list_dead_letter_queue(qname)
+    entries, scanned = await broker.list_dead_letter_queue(qname)
     assert entries == []
+    assert scanned == 0
 
 
 async def test_list_returns_each_message_exactly_once(broker_and_queue):
@@ -95,11 +96,12 @@ async def test_list_returns_each_message_exactly_once(broker_and_queue):
             headers={"x-swarmq-retry-count": 3},
         )
 
-    entries = await broker.list_dead_letter_queue(qname)
+    entries, scanned = await broker.list_dead_letter_queue(qname)
     seen_ids = [e["task_id"] for e in entries]
     assert sorted(seen_ids) == sorted(ids), (
         f"list must return every published task exactly once; got {seen_ids}"
     )
+    assert scanned == 3
     # And the DLQ retains all three (non-destructive).
     assert await _dlq_depth(broker, qname) == 3
 
@@ -110,8 +112,9 @@ async def test_list_respects_limit(broker_and_queue):
         await broker.publish_to_dead_letter_queue(
             qname, _make_body(f"t-{i}"),
         )
-    entries = await broker.list_dead_letter_queue(qname, limit=2)
+    entries, scanned = await broker.list_dead_letter_queue(qname, limit=2)
     assert len(entries) == 2
+    assert scanned == 2
     # DLQ still has all 5 after list (scan-only).
     assert await _dlq_depth(broker, qname) == 5
 
@@ -123,8 +126,9 @@ async def test_list_includes_headers_and_body_size(broker_and_queue):
         qname, body,
         headers={"x-swarmq-retry-count": 5, "x-swarmq-traceback": "boom"},
     )
-    entries = await broker.list_dead_letter_queue(qname)
+    entries, scanned = await broker.list_dead_letter_queue(qname)
     assert len(entries) == 1
+    assert scanned == 1
     e = entries[0]
     assert e["task_id"] == "t-1"
     assert e["task_name"] == "add"
@@ -137,8 +141,9 @@ async def test_list_includes_headers_and_body_size(broker_and_queue):
 async def test_list_surfaces_malformed_body_as_task_id_none(broker_and_queue):
     broker, qname = broker_and_queue
     await broker.publish_to_dead_letter_queue(qname, b"not-valid-json")
-    entries = await broker.list_dead_letter_queue(qname)
+    entries, scanned = await broker.list_dead_letter_queue(qname)
     assert len(entries) == 1
+    assert scanned == 1
     assert entries[0]["task_id"] is None
     assert entries[0]["task_name"] is None
 
@@ -159,7 +164,7 @@ async def test_inspect_returns_full_payload_on_match(broker_and_queue):
         headers={"x-swarmq-retry-count": 2, "x-swarmq-traceback": "trace"},
     )
 
-    result = await broker.inspect_dead_letter_message(qname, "wanted")
+    result, scanned = await broker.inspect_dead_letter_message(qname, "wanted")
     assert result is not None
     assert result["task_id"] == "wanted"
     assert result["queue"] == qname
@@ -167,6 +172,8 @@ async def test_inspect_returns_full_payload_on_match(broker_and_queue):
     assert result["body"]["args"] == [2, 3]
     assert result["body"]["kwargs"] == {"x": 1}
     assert result["headers"]["x-swarmq-retry-count"] == 2
+    # scanned <= 2 depending on break_after_first_match ordering.
+    assert 1 <= scanned <= 2
     # DLQ retains both messages.
     assert await _dlq_depth(broker, qname) == 2
 
@@ -174,15 +181,17 @@ async def test_inspect_returns_full_payload_on_match(broker_and_queue):
 async def test_inspect_missing_task_returns_none(broker_and_queue):
     broker, qname = broker_and_queue
     await broker.publish_to_dead_letter_queue(qname, _make_body("other"))
-    result = await broker.inspect_dead_letter_message(qname, "missing")
+    result, scanned = await broker.inspect_dead_letter_message(qname, "missing")
     assert result is None
+    assert scanned == 1
     assert await _dlq_depth(broker, qname) == 1
 
 
 async def test_inspect_empty_queue_returns_none(broker_and_queue):
     broker, qname = broker_and_queue
-    result = await broker.inspect_dead_letter_message(qname, "anything")
+    result, scanned = await broker.inspect_dead_letter_message(qname, "anything")
     assert result is None
+    assert scanned == 0
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +207,7 @@ async def test_retry_moves_matching_message_to_main(broker_and_queue):
         headers={"x-swarmq-retry-count": 3, "x-swarmq-traceback": "err"},
     )
 
-    moved = await broker.retry_dead_letter_message(qname, "move")
+    moved, scanned = await broker.retry_dead_letter_message(qname, "move")
     assert moved is True
     # DLQ shrunk by one; main gained one.
     assert await _dlq_depth(broker, qname) == 1
@@ -210,8 +219,9 @@ async def test_retry_missing_returns_false_and_leaves_dlq_intact(broker_and_queu
     await broker.publish_to_dead_letter_queue(qname, _make_body("a"))
     await broker.publish_to_dead_letter_queue(qname, _make_body("b"))
 
-    moved = await broker.retry_dead_letter_message(qname, "missing")
+    moved, scanned = await broker.retry_dead_letter_message(qname, "missing")
     assert moved is False
+    assert scanned == 2
     assert await _dlq_depth(broker, qname) == 2
     assert await _main_depth(broker, qname) == 0
 
@@ -225,7 +235,7 @@ async def test_retry_resets_retry_count_header(broker_and_queue):
         headers={"x-swarmq-retry-count": 5, "x-swarmq-traceback": "boom"},
     )
 
-    moved = await broker.retry_dead_letter_message(qname, "t-retry")
+    moved, _scanned = await broker.retry_dead_letter_message(qname, "t-retry")
     assert moved is True
 
     # Consume from the main queue to verify the forwarded headers.
@@ -256,25 +266,79 @@ async def test_retry_all_moves_everything(broker_and_queue):
             headers={"x-swarmq-retry-count": 3},
         )
 
-    moved = await broker.retry_all_dead_letter_messages(qname)
+    moved, scanned = await broker.retry_all_dead_letter_messages(qname)
     assert moved == 4
+    assert scanned == 4
     assert await _dlq_depth(broker, qname) == 0
     assert await _main_depth(broker, qname) == 4
 
 
 async def test_retry_all_empty_returns_zero(broker_and_queue):
     broker, qname = broker_and_queue
-    assert await broker.retry_all_dead_letter_messages(qname) == 0
+    moved, scanned = await broker.retry_all_dead_letter_messages(qname)
+    assert moved == 0
+    assert scanned == 0
 
 
 async def test_retry_all_respects_limit(broker_and_queue):
     broker, qname = broker_and_queue
     for i in range(5):
         await broker.publish_to_dead_letter_queue(qname, _make_body(f"t-{i}"))
-    moved = await broker.retry_all_dead_letter_messages(qname, limit=3)
+    moved, scanned = await broker.retry_all_dead_letter_messages(qname, limit=3)
     assert moved == 3
+    assert scanned == 3
     assert await _dlq_depth(broker, qname) == 2
     assert await _main_depth(broker, qname) == 3
+
+
+async def test_retry_all_skips_malformed_bodies(broker_and_queue):
+    """Review P2 #6 / ADV-003: retry_all must not forward unparseable
+    bodies to main (worker would just dead-letter them again)."""
+    broker, qname = broker_and_queue
+    await broker.publish_to_dead_letter_queue(qname, _make_body("valid-1"))
+    await broker.publish_to_dead_letter_queue(qname, b"not-json")
+    await broker.publish_to_dead_letter_queue(qname, _make_body("valid-2"))
+
+    moved, scanned = await broker.retry_all_dead_letter_messages(qname)
+    assert moved == 2, "only the two valid bodies should reach main"
+    assert scanned == 3
+    # Malformed body stays in DLQ for operator purge.
+    assert await _dlq_depth(broker, qname) == 1
+    assert await _main_depth(broker, qname) == 2
+
+
+async def test_retry_single_only_moves_first_match(broker_and_queue):
+    """Review P2 #3 / C-2: docstring promises 'first matching'. Enforce
+    it — duplicate task_ids in the DLQ yield exactly one move per call."""
+    broker, qname = broker_and_queue
+    # Two messages with the same task_id.
+    for _ in range(2):
+        await broker.publish_to_dead_letter_queue(qname, _make_body("dup"))
+
+    moved, _scanned = await broker.retry_dead_letter_message(qname, "dup")
+    assert moved is True
+    # Only ONE was moved; second copy remains in the DLQ.
+    assert await _main_depth(broker, qname) == 1
+    assert await _dlq_depth(broker, qname) == 1
+
+
+async def test_inspect_scan_limit_truncates_without_spurious_miss(
+    broker_and_queue,
+):
+    """Review P3 #21 / T-04: bounded-scan correctness. If the target is
+    at position scan_limit+1, inspect must return None + scanned_count
+    equal to scan_limit."""
+    broker, qname = broker_and_queue
+    await broker.publish_to_dead_letter_queue(qname, _make_body("a"))
+    await broker.publish_to_dead_letter_queue(qname, _make_body("b"))
+    await broker.publish_to_dead_letter_queue(qname, _make_body("target"))
+
+    # scan_limit=2 means target (at position 3) is unreachable.
+    result, scanned = await broker.inspect_dead_letter_message(
+        qname, "target", scan_limit=2,
+    )
+    assert result is None
+    assert scanned == 2
 
 
 # ---------------------------------------------------------------------------

@@ -583,12 +583,16 @@ class TestDlqParser:
 
 
 class TestDlqHandlerValidation:
+    @pytest.mark.timeout(5)
     async def test_broker_from_env_requires_url(self, monkeypatch):
         monkeypatch.delenv("SWARMQ_BROKER_URL", raising=False)
         with pytest.raises(ConfigurationError, match="SWARMQ_BROKER_URL"):
             await cli._broker_from_env()
 
-    async def test_retry_without_task_or_all_raises(self, monkeypatch):
+    @pytest.mark.timeout(5)
+    async def test_retry_without_task_or_all_exits_2(self, monkeypatch):
+        """Review P3 #12: bad argument shape exits 2 (argparse convention),
+        not 1 (runtime error)."""
         monkeypatch.setenv(
             "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
         )
@@ -596,10 +600,12 @@ class TestDlqHandlerValidation:
             task_id=None, all=False, queue="default",
             limit=10_000, scan_limit=1000, format="table",
         )
-        with pytest.raises(ConfigurationError, match="task_id"):
+        with pytest.raises(SystemExit) as excinfo:
             await cli._run_dlq_retry(ns)
+        assert excinfo.value.code == 2
 
-    async def test_retry_with_both_task_and_all_raises(self, monkeypatch):
+    @pytest.mark.timeout(5)
+    async def test_retry_with_both_task_and_all_exits_2(self, monkeypatch):
         monkeypatch.setenv(
             "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
         )
@@ -607,9 +613,9 @@ class TestDlqHandlerValidation:
             task_id="t-1", all=True, queue="default",
             limit=10_000, scan_limit=1000, format="table",
         )
-        with pytest.raises(ConfigurationError, match="not both"):
+        with pytest.raises(SystemExit) as excinfo:
             await cli._run_dlq_retry(ns)
-
+        assert excinfo.value.code == 2
 
 class TestDlqFormatter:
     """Pure-function table formatter — no broker / no argparse."""
