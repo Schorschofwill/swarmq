@@ -2928,7 +2928,7 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
 
     async def test_cancel_flag_set_acks_message(self, worker, broker, backend):
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -3031,7 +3031,7 @@ class TestWorkerPreStartCancelCheck:
         await w._handle_message(msg)
 
         backend.store_result.assert_not_awaited()
-        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_cancel_faf_with_explicit_result_ttl_stores_result(
@@ -3058,7 +3058,7 @@ class TestWorkerPreStartCancelCheck:
         await w._handle_message(msg)
 
         backend.store_result.assert_awaited_once()
-        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
 
     async def test_cancel_unknown_task_falls_back_to_at_least_once(
         self, broker, backend, config,
@@ -3362,7 +3362,7 @@ class TestRunningCancelInHandleMessage:
         """Flag flips to True during run() → CancelledError → is_cancelled=True."""
         call_count = [0]
 
-        async def is_cancelled_impl(task_id):
+        async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             # First poll returns False, second returns True.
             return call_count[0] >= 2
@@ -3381,7 +3381,7 @@ class TestRunningCancelInHandleMessage:
         assert decoded["result"] is None
 
         # Flag was cleared after result-write.
-        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
         broker.ack.assert_awaited_once()
         broker.nack.assert_not_awaited()
 
@@ -3391,7 +3391,7 @@ class TestRunningCancelInHandleMessage:
         """is_cancelled=True path dispatches TASK_CANCELLED, NOT TASK_COMPLETED/FAILED."""
         call_count = [0]
 
-        async def is_cancelled_impl(task_id):
+        async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
 
@@ -3443,7 +3443,7 @@ class TestRunningCancelInHandleMessage:
         w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
 
         call_count = [0]
-        async def is_cancelled_impl(task_id):
+        async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
@@ -3465,14 +3465,14 @@ class TestRunningCancelInHandleMessage:
     ):
         """clear_cancel_flag is called BEFORE broker.ack (Flag-lifecycle rule)."""
         call_count = [0]
-        async def is_cancelled_impl(task_id):
+        async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
         call_order: list[str] = []
         backend.clear_cancel_flag = AsyncMock(
-            side_effect=lambda tid: call_order.append("clear"),
+            side_effect=lambda tid, **_kw: call_order.append("clear"),
         )
         broker.ack = AsyncMock(
             side_effect=lambda msg: call_order.append("ack"),
@@ -3507,7 +3507,7 @@ class TestRunningCancelInHandleMessage:
         w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
 
         call_count = [0]
-        async def is_cancelled_impl(task_id):
+        async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
@@ -3522,7 +3522,7 @@ class TestRunningCancelInHandleMessage:
         await w._handle_message(msg)
 
         backend.store_result.assert_not_awaited()
-        backend.clear_cancel_flag.assert_awaited_once_with("abc-123")
+        backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
         assert len(captured) == 1
 
 
@@ -3558,7 +3558,7 @@ class TestHardTimeoutVsCancelRace:
 
         # Cancel fires after 100ms (well before hard_timeout=2s).
         call_count = [0]
-        async def is_cancelled_impl(task_id):
+        async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)

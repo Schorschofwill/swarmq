@@ -453,6 +453,20 @@ class Client:
         Returns:
             True when the flag was newly set, False when it already
             existed (i.e. a prior cancel() call is still in flight).
+
+        .. warning::
+
+           **Stale-flag zombie class** (REV-P2-5, accepted limitation).
+           The cancel flag lives for ``ttl_ms`` (24h by default) in
+           Valkey. If the same ``task_id`` is reused within that window
+           (e.g. deterministic IDs, nack-requeue redelivery after a
+           crash before clear_cancel_flag ran), the stale flag will
+           cancel the next delivery too. Two mitigations if you hit
+           this in production: (a) keep ``task_id`` unique per
+           schedule (uuid.uuid7 defaults do this), (b) shorten
+           ``ttl_ms`` to less than your expected redelivery window.
+           A flag-nonce scheme is tracked for a future release if
+           a real caller reports the issue.
         """
         if not task_id:
             raise ValueError("task_id must be a non-empty string")

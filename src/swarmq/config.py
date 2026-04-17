@@ -21,6 +21,12 @@ class SwarmQConfig:
     shutdown_timeout: int = 30
     queue_type: str = "quorum"
     cancel_poll_interval: float = 1.0
+    # Upper bound for individual Valkey operations used by the cancel
+    # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
+    # Valkey would otherwise wedge the cancel monitor at TCP-default
+    # latency. 5s is conservative for a local Valkey deployment
+    # (REV-P1-3).
+    backend_op_timeout: float = 5.0
     scheduler_poll_interval: float = 1.0
     scheduler_heartbeat_interval: float = 10.0
     scheduler_lock_ttl: float = 30.0
@@ -80,6 +86,10 @@ class SwarmQConfig:
         if env_cancel_poll:
             self.cancel_poll_interval = float(env_cancel_poll)
 
+        env_backend_op_timeout = os.environ.get("SWARMQ_BACKEND_OP_TIMEOUT", "")
+        if env_backend_op_timeout:
+            self.backend_op_timeout = float(env_backend_op_timeout)
+
         env_sched_poll = os.environ.get("SWARMQ_SCHEDULER_POLL_INTERVAL", "")
         if env_sched_poll:
             self.scheduler_poll_interval = float(env_sched_poll)
@@ -135,6 +145,12 @@ class SwarmQConfig:
 
         if self.cancel_poll_interval <= 0:
             msg = f"cancel_poll_interval must be > 0, got {self.cancel_poll_interval}"
+            raise ConfigurationError(msg)
+
+        if self.backend_op_timeout <= 0:
+            msg = (
+                f"backend_op_timeout must be > 0, got {self.backend_op_timeout}"
+            )
             raise ConfigurationError(msg)
 
         if self.scheduler_poll_interval <= 0:

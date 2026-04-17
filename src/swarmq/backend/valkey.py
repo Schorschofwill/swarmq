@@ -50,9 +50,25 @@ class ValkeyBackend:
     def _sched_handover_key(self, owner_token: str) -> str:
         return f"sq:sched:handover:{owner_token}"
 
-    async def store_result(self, task_id: str, result_data: bytes, ttl_ms: int) -> None:
+    async def store_result(
+        self, task_id: str, result_data: bytes, ttl_ms: int,
+        op_timeout: float | None = None,
+    ) -> None:
+        """Persist a task result under its task_id key with TTL.
+
+        *op_timeout* (seconds) bounds the Valkey SET so a slow backend
+        cannot wedge the worker finally-block (REV-P1-3).
+        """
         try:
-            await self._client.set(self._key(task_id), result_data, px=ttl_ms)
+            coro = self._client.set(self._key(task_id), result_data, px=ttl_ms)
+            if op_timeout is not None:
+                await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"store_result timed out after {op_timeout}s"
+            ) from exc
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
 
@@ -86,38 +102,83 @@ class ValkeyBackend:
     def create_pubsub(self) -> valkey.asyncio.client.PubSub:
         return self._client.pubsub()
 
-    async def set_cancel_flag(self, task_id: str, ttl_ms: int) -> bool:
+    async def set_cancel_flag(
+        self, task_id: str, ttl_ms: int, op_timeout: float | None = None,
+    ) -> bool:
         """Set the cancel flag for *task_id* atomically with TTL.
 
         Returns True when the flag was newly set, False when it already
         existed.  Uses ``SET NX PX`` — a single round-trip that handles
         idempotency (NX) and expiry (PX) together.  No Lua script needed.
+
+        *op_timeout* (seconds) wraps the underlying Valkey call in
+        ``asyncio.wait_for`` so a slow Valkey cannot wedge the caller
+        (REV-P1-3). Timeout surfaces as BackendConnectionError, same
+        as any other backend fault. None = no timeout enforced at this
+        layer (backwards-compatible default).
         """
         try:
-            result = await self._client.set(
+            coro = self._client.set(
                 self._cancel_key(task_id), "1", nx=True, px=ttl_ms
             )
+            if op_timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                result = await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"set_cancel_flag timed out after {op_timeout}s"
+            ) from exc
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
         return bool(result)
 
-    async def is_cancelled(self, task_id: str) -> bool:
-        """Return True when a cancel flag exists for *task_id*."""
+    async def is_cancelled(
+        self, task_id: str, op_timeout: float | None = None,
+    ) -> bool:
+        """Return True when a cancel flag exists for *task_id*.
+
+        *op_timeout* (seconds) wraps the Valkey EXISTS in
+        ``asyncio.wait_for`` so the cancel monitor cannot wedge
+        waiting on a slow backend (REV-P1-3).
+        """
         try:
-            result = await self._client.exists(self._cancel_key(task_id))
+            coro = self._client.exists(self._cancel_key(task_id))
+            if op_timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                result = await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"is_cancelled timed out after {op_timeout}s"
+            ) from exc
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
         return result == 1
 
-    async def clear_cancel_flag(self, task_id: str) -> None:
+    async def clear_cancel_flag(
+        self, task_id: str, op_timeout: float | None = None,
+    ) -> None:
         """Delete the cancel flag for *task_id*.
 
-        Failures are logged and swallowed — an orphan flag will self-heal
+        *op_timeout* (seconds) bounds the call; timeout is logged
+        like any other failure (REV-P1-3). Failures are logged and
+        swallowed — an orphan flag will self-heal
         via TTL, and a DEL failure must not break the worker pipeline
         (plan Unit 3 / Unit 6 Flag-DEL-Failure rule).
         """
         try:
-            await self._client.delete(self._cancel_key(task_id))
+            coro = self._client.delete(self._cancel_key(task_id))
+            if op_timeout is not None:
+                await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                await coro
+        except TimeoutError:
+            logger.warning(
+                "cancel_flag_delete_failed",
+                task_id=task_id,
+                error=f"timed out after {op_timeout}s",
+            )
         except (ValkeyError, OSError) as exc:
             logger.warning(
                 "cancel_flag_delete_failed", task_id=task_id, error=str(exc)

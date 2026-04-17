@@ -872,7 +872,9 @@ class Worker:
             execution should proceed.
         """
         try:
-            is_cancelled = await self._backend.is_cancelled(task_id)
+            is_cancelled = await self._backend.is_cancelled(
+                task_id, op_timeout=self._config.backend_op_timeout,
+            )
         except BackendConnectionError:
             logger.error("cancel_check_backend_error", task_id=task_id)
             await self._broker.nack(message, requeue=True)
@@ -912,7 +914,8 @@ class Worker:
                 }
                 result_bytes = encode_result(result_data)
                 await self._backend.store_result(
-                    task_id, result_bytes, result_ttl * 1000
+                    task_id, result_bytes, result_ttl * 1000,
+                    op_timeout=self._config.backend_op_timeout,
                 )
                 try:
                     await self._backend.publish_notification(task_id)
@@ -924,7 +927,9 @@ class Worker:
                     )
 
             # Clear the flag (log+swallow at backend boundary — Unit 3).
-            await self._backend.clear_cancel_flag(task_id)
+            await self._backend.clear_cancel_flag(
+                task_id, op_timeout=self._config.backend_op_timeout,
+            )
 
             # If this was a schedfire delivery we claimed in-flight,
             # mark it completed so a redelivery after in-flight-TTL
@@ -1254,7 +1259,7 @@ class Worker:
                 is_error or is_cancelled
             ):
                 if is_cancelled:
-                    await self._backend.clear_cancel_flag(task_id)
+                    await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
                 return
 
             # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
@@ -1321,7 +1326,7 @@ class Worker:
                 # when the task was cancelled — otherwise it lives until
                 # TTL expires and a task_id reuse would silently cancel.
                 if is_cancelled:
-                    await self._backend.clear_cancel_flag(task_id)
+                    await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
                 return
 
             # 9-11. Store result + ack/nack
@@ -1348,7 +1353,7 @@ class Worker:
             # a mid-op failure leaves the flag in place and a redelivery
             # re-triggers the cancel branch.
             if is_cancelled:
-                await self._backend.clear_cancel_flag(task_id)
+                await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
 
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 await self._broker.ack(message)
@@ -1362,25 +1367,35 @@ class Worker:
             await self._mark_schedfire_completed(message)
 
             # 12a. Release any task-locks acquired by this handler.
-            # Shielded against inner-cancel (CancelledError from run_task
-            # propagating into this finally). For outer-cancel (graceful
-            # shutdown cancelling the whole _handle_message task), the
-            # release is detached into self._detached_releases and
-            # _execute_shutdown awaits them before closing the backend.
+            #
+            # Previous implementation wrapped the release in
+            # ``asyncio.ensure_future(asyncio.shield(...))`` and tracked
+            # the SHIELD-wrapper task in _detached_releases. On outer-
+            # cancel the shield-wrapper got cancelled, but its inner
+            # coroutine kept running DETACHED and was never tracked —
+            # _execute_shutdown would see an already-done wrapper and
+            # close the backend while the real release was still in
+            # flight, leaving the lock held (REV-P1-1).
+            #
+            # Fix: schedule the inner release as its own Task first and
+            # track THAT task in _detached_releases. Then ``await
+            # asyncio.shield(inner)`` — shield only protects the await,
+            # not the task. Outer-cancel into this finally cancels the
+            # wait, but the inner Task keeps running; _execute_shutdown
+            # awaits it via _detached_releases before backend.close.
             if acquired_locks and self._lock_manager is not None:
-                release_task = asyncio.ensure_future(
-                    asyncio.shield(
-                        self._release_acquired_locks(handler_id, acquired_locks)
-                    )
+                inner = asyncio.create_task(
+                    self._release_acquired_locks(handler_id, acquired_locks)
                 )
-                self._detached_releases.add(release_task)
-                release_task.add_done_callback(self._detached_releases.discard)
+                self._detached_releases.add(inner)
+                inner.add_done_callback(self._detached_releases.discard)
                 try:
-                    await release_task
+                    await asyncio.shield(inner)
                 except asyncio.CancelledError:
-                    # Outer-cancel reached us. The shielded task keeps
-                    # running detached; _execute_shutdown will await it.
-                    # Re-raise so the caller's cancel is observed.
+                    # Outer-cancel reached us. ``inner`` is unaffected
+                    # (shield protected it); _execute_shutdown awaits
+                    # it via _detached_releases. Re-raise so the
+                    # caller's cancel is observed.
                     raise
             # 12b. Release semaphore
             self._semaphore.release()
@@ -1434,7 +1449,9 @@ class Worker:
                 if run_task in done:
                     # Task completed on its own — stop polling.
                     return
-                if await self._backend.is_cancelled(task_id):
+                if await self._backend.is_cancelled(
+                    task_id, op_timeout=self._config.backend_op_timeout,
+                ):
                     set_reason_if_unset("cancel")
                     run_task.cancel()
                     return

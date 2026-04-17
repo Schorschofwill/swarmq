@@ -97,7 +97,7 @@ implementation unit.
 
 ## Implementation Units
 
-- [ ] **Unit 1: Shield-orphan re-design (REV-P1-1)**
+- [x] **Unit 1: Shield-orphan re-design (REV-P1-1)**
 
 **Goal:** Track the INNER release coroutine in `_detached_releases`,
 not the shield-wrapper. Shutdown then awaits real release tasks.
@@ -123,7 +123,7 @@ GREEN.
 
 ---
 
-- [ ] **Unit 2: Backend-operation timeouts (REV-P1-3)**
+- [x] **Unit 2: Backend-operation timeouts (REV-P1-3)**
 
 **Goal:** Wrap `is_cancelled` / `store_result` / `clear_cancel_flag`
 in `asyncio.wait_for` with a configurable timeout. Default: 5s.
@@ -139,7 +139,7 @@ path) so the worker's error pipeline handles it consistently.
 
 ---
 
-- [ ] **Unit 3: Stale-flag-zombie mitigation (REV-P2-5)**
+- [x] **Unit 3: Stale-flag-zombie mitigation (REV-P2-5)**
 
 **Goal:** Decide between (a) documented-limitation + API warning, or
 (b) flag-nonce scheme (cancel sets flag with a task-specific fingerprint
