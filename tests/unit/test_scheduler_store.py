@@ -144,20 +144,26 @@ class TestScheduleDefinition:
 # ---------------------------------------------------------------------------
 
 
-def _make_store(hget_return=None):
+def _make_store(hget_return=None, hsetnx_return=True):
     """Build a ScheduleStore whose backend methods are mocks."""
     backend = MagicMock()
     backend._client = MagicMock()
+    # Three scripts registered now: sched_poll, sched_commit, sched_disable.
+    disable_script = AsyncMock()
     backend._client.register_script = MagicMock(
-        side_effect=[AsyncMock(), AsyncMock()]
+        side_effect=[AsyncMock(), AsyncMock(), disable_script]
     )
     backend.hget_schedule_def = AsyncMock(return_value=hget_return)
     backend.hset_schedule_def = AsyncMock()
+    backend.hsetnx_schedule_def = AsyncMock(return_value=hsetnx_return)
     backend.hdel_schedule_def = AsyncMock()
     backend.hgetall_schedule_defs = AsyncMock(return_value={})
     backend.zadd_schedule = AsyncMock()
     backend.zrem_schedule = AsyncMock()
-    return ScheduleStore(backend), backend
+    store = ScheduleStore(backend)
+    # Expose the disable script mock for assertions
+    backend._disable_script = disable_script
+    return store, backend
 
 
 def _def(**overrides) -> ScheduleDefinition:
@@ -176,14 +182,16 @@ def _def(**overrides) -> ScheduleDefinition:
 
 
 class TestScheduleStoreAddSchedule:
-    async def test_add_schedule_new_entry_writes_both_hset_and_zadd(self):
-        store, backend = _make_store(hget_return=None)
+    async def test_add_schedule_new_entry_writes_hsetnx_and_zadd(self):
+        # hsetnx returns True → new insert
+        store, backend = _make_store(hsetnx_return=True)
         d = _def(schedule_name="newly")
 
-        await store.add_schedule(d)
+        result = await store.add_schedule(d)
 
-        backend.hset_schedule_def.assert_awaited_once()
-        call_args = backend.hset_schedule_def.await_args
+        assert result is True
+        backend.hsetnx_schedule_def.assert_awaited_once()
+        call_args = backend.hsetnx_schedule_def.await_args
         assert call_args.args[0] == "newly"
         # Second arg is the JSON-encoded ScheduleDefinition
         decoded = msgspec.json.decode(
@@ -196,14 +204,14 @@ class TestScheduleStoreAddSchedule:
         )
 
     async def test_add_schedule_existing_entry_is_noop(self):
-        """CD11 insert-if-absent: an existing def is never overwritten by
-        add_schedule — regardless of source."""
-        existing = msgspec.json.encode(_def(schedule_name="existing"))
-        store, backend = _make_store(hget_return=existing)
+        """CD11 insert-if-absent: HSETNX=False → skip ZADD, return False."""
+        store, backend = _make_store(hsetnx_return=False)
 
-        await store.add_schedule(_def(schedule_name="existing", cron="0 * * * *"))
+        result = await store.add_schedule(
+            _def(schedule_name="existing", cron="0 * * * *")
+        )
 
-        backend.hset_schedule_def.assert_not_awaited()
+        assert result is False
         backend.zadd_schedule.assert_not_awaited()
 
 
@@ -239,35 +247,43 @@ class TestScheduleStoreRemoveAndDisable:
         backend.zrem_schedule.assert_awaited_once_with("drop")
         backend.hdel_schedule_def.assert_awaited_once_with("drop")
 
-    async def test_disable_schedule_sets_disabled_true(self):
+    async def test_disable_schedule_invokes_disable_script_with_disabled_true(self):
+        """Unit 8 / M-14: disable_schedule uses sched_disable.lua for
+        the atomic HSET+ZREM write-pair. The Python side still reads
+        and decodes first (msgspec shape stays in Python), then calls
+        the Lua script with the updated-def JSON."""
         existing = msgspec.json.encode(_def(schedule_name="p", disabled=False))
         store, backend = _make_store(hget_return=existing)
 
         await store.disable_schedule("p")
 
-        backend.hset_schedule_def.assert_awaited_once()
+        backend._disable_script.assert_awaited_once()
+        call = backend._disable_script.await_args
+        # keys=[defs_key, zset_key], args=[name, updated_def_json]
+        assert call.kwargs["args"][0] == "p"
         decoded = msgspec.json.decode(
-            backend.hset_schedule_def.await_args.args[1],
-            type=ScheduleDefinition,
+            call.kwargs["args"][1], type=ScheduleDefinition
         )
         assert decoded.disabled is True
-
-    async def test_disable_schedule_also_zrems_from_zset(self):
-        """Review-finding correctness C-02: disable must remove from zset
-        too, otherwise poll_due returns the entry every tick and burns
-        HGET bandwidth on skip-work."""
-        existing = msgspec.json.encode(_def(schedule_name="p", disabled=False))
-        store, backend = _make_store(hget_return=existing)
-
-        await store.disable_schedule("p")
-
-        backend.zrem_schedule.assert_awaited_once_with("p")
+        # Low-level zrem/hset/hsetnx must NOT be called directly —
+        # the script covers the write-pair atomically.
+        backend.zrem_schedule.assert_not_awaited()
+        backend.hset_schedule_def.assert_not_awaited()
 
     async def test_disable_schedule_missing_is_noop(self):
         store, backend = _make_store(hget_return=None)
         await store.disable_schedule("not-there")
+        backend._disable_script.assert_not_awaited()
         backend.hset_schedule_def.assert_not_awaited()
         backend.zrem_schedule.assert_not_awaited()
+
+    async def test_disable_schedule_malformed_entry_is_noop_with_log(self):
+        """Mirror of list_schedules' malformed-skip path: a corrupted
+        hash value must not crash disable_schedule. It logs and skips."""
+        store, backend = _make_store(hget_return=b"{not valid json")
+        await store.disable_schedule("corrupt")
+
+        backend._disable_script.assert_not_awaited()
 
 
 class TestScheduleStoreListSchedules:
@@ -287,10 +303,42 @@ class TestScheduleStoreListSchedules:
         backend.hgetall_schedule_defs.return_value = {}
         assert await store.list_schedules() == []
 
+    async def test_list_schedules_skips_malformed_entries(self):
+        """Unit 5 / M-5: one malformed entry must not break list_schedules
+        for the whole hash. Well-formed entries still come through."""
+        good = msgspec.json.encode(_def(schedule_name="good"))
+        store, backend = _make_store()
+        backend.hgetall_schedule_defs.return_value = {
+            b"good": good,
+            b"bad": b"{not valid json",
+        }
+
+        result = await store.list_schedules()
+
+        names = {d.schedule_name for d in result}
+        assert names == {"good"}  # malformed "bad" silently skipped
+
+    async def test_list_schedules_skips_incompatible_schema(self):
+        """An entry with a wrong schema (missing required field) also
+        gets skipped rather than crashing the whole list call."""
+        good = msgspec.json.encode(_def(schedule_name="good"))
+        # msgspec.json.decode(type=ScheduleDefinition) requires all
+        # kw_only fields — an arbitrary subset triggers DecodeError.
+        incompat = b'{"schedule_name":"orphan"}'
+        store, backend = _make_store()
+        backend.hgetall_schedule_defs.return_value = {
+            b"good": good,
+            b"orphan": incompat,
+        }
+
+        result = await store.list_schedules()
+        names = {d.schedule_name for d in result}
+        assert names == {"good"}
+
 
 class TestScheduleStoreErrorWrapping:
-    async def test_add_schedule_wraps_hset_error(self):
-        store, backend = _make_store(hget_return=None)
-        backend.hset_schedule_def.side_effect = BackendConnectionError("down")
+    async def test_add_schedule_wraps_hsetnx_error(self):
+        store, backend = _make_store(hsetnx_return=True)
+        backend.hsetnx_schedule_def.side_effect = BackendConnectionError("down")
         with pytest.raises(BackendConnectionError):
             await store.add_schedule(_def())

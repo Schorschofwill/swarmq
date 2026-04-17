@@ -203,7 +203,7 @@ Indicator für die mutierenden CLI-Commands.
 
 ---
 
-- [ ] **Unit 5: DecodeError + Partial-Sync Hardening (M-3, M-4, M-5)**
+- [x] **Unit 5: DecodeError + Partial-Sync Hardening (M-3, M-4, M-5)**
 
 **Goal:** sync_taskinfo_crons robust gegen einzelne malformed Entries
 und Valkey-Flaps. `list_schedules` toleriert schlechte Entries.
@@ -244,7 +244,7 @@ statt `definition.fire_ts_ms` (die divergieren können).
 
 ---
 
-- [ ] **Unit 8: HSETNX / Lua für add_schedule + disable_schedule (M-14)**
+- [x] **Unit 8: HSETNX / Lua für add_schedule + disable_schedule (M-14)**
 
 **Goal:** Atomare insert-if-absent in `add_schedule` via HSETNX,
 atomare read-then-set in `disable_schedule` via kurzem Lua-Script.

@@ -169,25 +169,28 @@ class ScheduleStore:
         self._commit_script = client.register_script(
             load_script("sched_commit")
         )
+        self._disable_script = client.register_script(
+            load_script("sched_disable")
+        )
 
     # ---- CRUD -----------------------------------------------------------
 
     async def add_schedule(self, definition: ScheduleDefinition) -> bool:
         """Insert a new schedule. Returns True on insert, False on no-op.
 
-        Insert-if-absent (CD11): when an entry already exists under
-        ``definition.schedule_name``, this method does nothing. Static
-        cron updates go through :meth:`update_static_schedule` (Fork 1).
+        Insert-if-absent (CD11) via HSETNX (Unit 8 / M-14): closes the
+        TOCTOU gap that the previous hget+hset sequence had against
+        concurrent callers. Two workers racing on the same
+        schedule_name now get a deterministic winner — HSETNX=1 wins,
+        HSETNX=0 loses. Static cron updates go through
+        :meth:`update_static_schedule` (Fork 1).
         """
-        existing = await self._backend.hget_schedule_def(
-            definition.schedule_name
-        )
-        if existing is not None:
-            return False
         payload = msgspec.json.encode(definition)
-        await self._backend.hset_schedule_def(
+        inserted = await self._backend.hsetnx_schedule_def(
             definition.schedule_name, payload
         )
+        if not inserted:
+            return False
         if definition.fire_ts_ms is not None:
             await self._backend.zadd_schedule(
                 definition.schedule_name, definition.fire_ts_ms
@@ -225,25 +228,71 @@ class ScheduleStore:
         prevents a later static-sync from resurrecting the entry
         because the disabled flag stays in the def JSON. The zset
         removal (review-finding correctness C-02) stops the poll
-        loop from repeatedly pulling the disabled entry every tick
-        and burning HGET bandwidth for work it cannot do.
+        loop from repeatedly pulling the disabled entry every tick.
+
+        Uses sched_disable.lua for the HSET+ZREM atomic write-pair
+        (Unit 8 / M-14): a concurrent remove or re-add on the same
+        schedule_name between our HGET and the write-pair can no
+        longer see a half-applied state. The HGET+decode step stays
+        in Python because Lua does not share our msgspec encoding.
         """
         existing = await self._backend.hget_schedule_def(schedule_name)
         if existing is None:
             return
-        current = msgspec.json.decode(existing, type=ScheduleDefinition)
+        try:
+            current = msgspec.json.decode(existing, type=ScheduleDefinition)
+        except msgspec.DecodeError as exc:
+            # Mirrors list_schedules: malformed entries stay parked for
+            # operator inspection (Unit 5 / M-3).
+            logger.warning(
+                "schedule_def_malformed_skipped",
+                schedule_name=schedule_name,
+                error=str(exc),
+                hint=(
+                    "run 'swarmq schedule remove --permanent <name>' "
+                    "to clear the malformed entry"
+                ),
+            )
+            return
         updated = msgspec.structs.replace(current, disabled=True)
-        await self._backend.hset_schedule_def(
-            schedule_name, msgspec.json.encode(updated)
-        )
-        await self._backend.zrem_schedule(schedule_name)
+        try:
+            await self._disable_script(
+                keys=[
+                    self._backend._sched_defs_key(),
+                    self._backend._sched_zset_key(),
+                ],
+                args=[schedule_name, msgspec.json.encode(updated)],
+            )
+        except BackendConnectionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — wrap at boundary
+            raise BackendConnectionError(
+                f"sched_disable failed for {schedule_name!r}: {exc}"
+            ) from exc
 
     async def list_schedules(self) -> list[ScheduleDefinition]:
+        """Return every decodable ScheduleDefinition in the defs hash.
+
+        Malformed entries (incompatible schema from a downgrade, or a
+        hand-edited payload) are logged at WARNING and skipped so that
+        one bad row cannot break ``swarmq schedule list`` for the whole
+        fleet (Unit 5 / M-5). Operators can still find the malformed
+        names via the log events.
+        """
         raw = await self._backend.hgetall_schedule_defs()
-        return [
-            msgspec.json.decode(payload, type=ScheduleDefinition)
-            for payload in raw.values()
-        ]
+        result: list[ScheduleDefinition] = []
+        for name, payload in raw.items():
+            try:
+                result.append(
+                    msgspec.json.decode(payload, type=ScheduleDefinition)
+                )
+            except msgspec.DecodeError as exc:
+                logger.warning(
+                    "schedule_def_malformed_skipped",
+                    schedule_name=_decode_bytes(name),
+                    error=str(exc),
+                )
+        return result
 
     # ---- Poll / commit --------------------------------------------------
 
@@ -735,17 +784,39 @@ class SchedulerLoop:
                 continue
 
             if existing_raw is None:
-                await self._store.add_schedule(definition)
+                # New entry — per-schedule error isolation so one
+                # BackendConnectionError does not abort the full sync
+                # (Unit 5 / M-4).
+                try:
+                    await self._store.add_schedule(definition)
+                except BackendConnectionError as exc:
+                    logger.warning(
+                        "scheduler_sync_add_failed",
+                        schedule_name=schedule_name,
+                        error=str(exc),
+                    )
                 continue
 
             try:
                 existing = msgspec.json.decode(
                     existing_raw, type=ScheduleDefinition
                 )
-            except msgspec.DecodeError:
-                # Malformed entry — best-effort overwrite with the
-                # valid one from code.
-                await self._store.update_static_schedule(definition)
+            except msgspec.DecodeError as exc:
+                # Unit 5 / M-3: do NOT silently overwrite on decode
+                # error. We cannot tell if the malformed bytes were
+                # source="cli" (CD11-protected) or source="static"
+                # (overwriteable). Preserve operator intent by
+                # leaving the entry untouched and logging loudly so
+                # operators can investigate + manually remove.
+                logger.error(
+                    "scheduler_sync_decode_error_skipped",
+                    schedule_name=schedule_name,
+                    error=str(exc),
+                    hint=(
+                        "run 'swarmq schedule remove --permanent <name>' "
+                        "to clear the malformed entry, then redeploy"
+                    ),
+                )
                 continue
 
             if existing.source == "cli":
@@ -774,7 +845,15 @@ class SchedulerLoop:
                 new_cron=task_info.cron,
                 disabled_preserved=existing.disabled,
             )
-            await self._store.update_static_schedule(propagated)
+            try:
+                await self._store.update_static_schedule(propagated)
+            except BackendConnectionError as exc:
+                # Per-schedule error isolation (Unit 5 / M-4).
+                logger.warning(
+                    "scheduler_sync_update_failed",
+                    schedule_name=schedule_name,
+                    error=str(exc),
+                )
 
     # ---- helpers --------------------------------------------------------
 

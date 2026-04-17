@@ -169,6 +169,21 @@ class ValkeyBackend:
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
 
+    async def hsetnx_schedule_def(
+        self, schedule_name: str, def_json: bytes
+    ) -> bool:
+        """Atomic insert-if-absent. Returns True when the field was
+        newly created, False when an entry already existed. Closes the
+        TOCTOU gap between ``hget`` + ``hset`` in ``add_schedule``
+        (Unit 8 / M-14)."""
+        try:
+            result = await self._client.hsetnx(
+                self._sched_defs_key(), schedule_name, def_json
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return int(result) == 1
+
     async def hget_schedule_def(self, schedule_name: str) -> bytes | None:
         try:
             return await self._client.hget(

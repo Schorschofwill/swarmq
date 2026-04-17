@@ -616,3 +616,59 @@ class TestSyncTaskinfoCrons:
 
         store.update_static_schedule.assert_not_awaited()
         store.add_schedule.assert_not_awaited()
+
+    async def test_sync_decode_error_does_not_overwrite(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Unit 5 / M-3: a malformed existing entry must NOT be silently
+        overwritten — the source (cli vs static) cannot be determined
+        from a malformed payload, so overwriting risks clobbering a
+        CD11-protected CLI entry. Log loudly and leave it alone."""
+        class SomeCron(Task):
+            task_info = TaskInfo(name="mystery", queues=["default"],
+                                 cron="*/5 * * * *")
+            async def run(self):
+                return None
+
+        backend.hget_schedule_def.return_value = b"{not valid json"
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        await loop.sync_taskinfo_crons()
+
+        store.add_schedule.assert_not_awaited()
+        store.update_static_schedule.assert_not_awaited()
+
+    async def test_sync_partial_failure_continues_iteration(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Unit 5 / M-4: a BackendConnectionError on one schedule must
+        not abort the sync for the rest. Two tasks defined; first add
+        raises, second must still be attempted."""
+        from swarmq.exceptions import BackendConnectionError as BCE
+
+        class CronA(Task):
+            task_info = TaskInfo(name="sync_a", queues=["default"],
+                                 cron="*/5 * * * *")
+            async def run(self): return None
+
+        class CronB(Task):
+            task_info = TaskInfo(name="sync_b", queues=["default"],
+                                 cron="0 3 * * *")
+            async def run(self): return None
+
+        backend.hget_schedule_def.return_value = None  # fresh for all
+        # First add_schedule call raises, second succeeds
+        store.add_schedule.side_effect = [BCE("valkey flap"), None]
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        # Must not raise — per-schedule error is logged and swallowed
+        await loop.sync_taskinfo_crons()
+
+        # Both schedules were attempted even though the first failed
+        assert store.add_schedule.await_count == 2
