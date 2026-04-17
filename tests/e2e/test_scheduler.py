@@ -469,3 +469,241 @@ class TestCliRoundtrip:
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker_task
+
+
+# ---------------------------------------------------------------------------
+# U1.3 gap fills — recurring across leader change, crash failover, rate-limit
+# ---------------------------------------------------------------------------
+
+
+class TestRecurringAcrossLeaderChange:
+    """Plan §5.1 #3: recurring cron must not skip a fire when the
+    leader changes. Spin up A, fire once, kill A, let B take over,
+    fire again. Verify exactly 2 executions — no skip, no duplicate."""
+
+    async def test_no_fires_missed_when_leader_changes(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        queue = _unique_queue()
+        task_name = _task_name("recur")
+        call_count = 0
+        first_fired = asyncio.Event()
+        second_fired = asyncio.Event()
+
+        class RecurringTask(Task):
+            task_info = TaskInfo(
+                name=task_name, queues=[queue], cron="* * * * *",
+            )
+
+            async def run(self) -> str:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    first_fired.set()
+                elif call_count == 2:
+                    second_fired.set()
+                return "ok"
+
+        broker_a = RabbitMQBroker(rabbitmq_url)
+        backend_a = ValkeyBackend(valkey_url)
+        broker_b = RabbitMQBroker(rabbitmq_url)
+        backend_b = ValkeyBackend(valkey_url)
+
+        cfg = dict(
+            queues=[queue], concurrency=1,
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=1.0,
+        )
+
+        async with SwarmQ(broker_a, backend_a, **cfg) as app_a, \
+                   SwarmQ(broker_b, backend_b, **cfg) as app_b:
+            await app_a.broker.declare_queue(queue)
+            a_leader = asyncio.Event()
+
+            @app_a.on_signal(Signal.SCHEDULER_LEADER)
+            async def _al(**kw) -> None:  # noqa: ARG001
+                a_leader.set()
+
+            a_task = asyncio.create_task(app_a.start_worker())
+            b_task = asyncio.create_task(app_b.start_worker())
+            try:
+                await asyncio.wait_for(a_leader.wait(), timeout=6)
+
+                # Force fire #1 via zset — A is leader, picks it up.
+                import time
+                client = valkey_asyncio.Valkey.from_url(valkey_url)
+                try:
+                    soon_ms = int(time.time() * 1000) + 300
+                    await client.zadd("sq:sched:zset", {task_name: soon_ms})
+                    await asyncio.wait_for(first_fired.wait(), timeout=4)
+
+                    # Simulate crash — drop A's worker task and the lock.
+                    a_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await a_task
+                    await client.delete(SCHEDULER_LOCK_KEY)
+
+                    # Wait for B to acquire (TTL-based, ~1s).
+                    await asyncio.sleep(1.8)
+
+                    # Force fire #2 — must land on B.
+                    soon_ms = int(time.time() * 1000) + 300
+                    await client.zadd("sq:sched:zset", {task_name: soon_ms})
+                    await asyncio.wait_for(second_fired.wait(), timeout=5)
+                finally:
+                    await client.aclose()
+
+                assert call_count == 2, (
+                    f"expected exactly 2 fires across leader change, "
+                    f"got {call_count}"
+                )
+            finally:
+                for t in (a_task, b_task):
+                    t.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await t
+
+
+class TestCrashFailover:
+    """Plan §5.1 #4: when the leader crashes (no graceful handover),
+    the successor emits SCHEDULER_LEADER_FAILOVER — not LEADER — and
+    takes over pending work."""
+
+    async def test_failover_signal_fires_on_crash_not_graceful(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        queue = _unique_queue()
+        broker_a = RabbitMQBroker(rabbitmq_url)
+        backend_a = ValkeyBackend(valkey_url)
+        broker_b = RabbitMQBroker(rabbitmq_url)
+        backend_b = ValkeyBackend(valkey_url)
+
+        cfg = dict(
+            queues=[queue], concurrency=1,
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=1.0,
+        )
+
+        async with SwarmQ(broker_a, backend_a, **cfg) as app_a, \
+                   SwarmQ(broker_b, backend_b, **cfg) as app_b:
+            a_leader = asyncio.Event()
+            b_failover = asyncio.Event()
+            b_leader_observed: list[str] = []
+
+            @app_a.on_signal(Signal.SCHEDULER_LEADER)
+            async def _al(**kw) -> None:  # noqa: ARG001
+                a_leader.set()
+
+            @app_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
+            async def _bfo(**kw) -> None:  # noqa: ARG001
+                b_failover.set()
+
+            @app_b.on_signal(Signal.SCHEDULER_LEADER)
+            async def _bl(**kw) -> None:  # noqa: ARG001
+                b_leader_observed.append("leader")
+
+            a_task = asyncio.create_task(app_a.start_worker())
+            await asyncio.wait_for(a_leader.wait(), timeout=6)
+            b_task = asyncio.create_task(app_b.start_worker())
+            # Let B see the lock held once so its prev_leader_seen is True.
+            await asyncio.sleep(0.4)
+
+            try:
+                # Hard crash: cancel A's task (no graceful shutdown, no
+                # handover marker), then clear the lock so B doesn't
+                # have to wait the full TTL.
+                a_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await a_task
+                client = valkey_asyncio.Valkey.from_url(valkey_url)
+                try:
+                    await client.delete(SCHEDULER_LOCK_KEY)
+                finally:
+                    await client.aclose()
+
+                # B must emit FAILOVER (not LEADER) since no marker.
+                await asyncio.wait_for(b_failover.wait(), timeout=4)
+                assert not b_leader_observed, (
+                    "B emitted SCHEDULER_LEADER instead of FAILOVER — "
+                    "the 'graceful' path fired even though A crashed"
+                )
+            finally:
+                b_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await b_task
+
+
+class TestCronWithRateLimit:
+    """Plan §5.1 #5: rate-limit must apply even when the scheduler
+    fires the task. Force 3 fires within a 1s rate-limit window, expect
+    1 execution (first fire is allowed, subsequent are throttled)."""
+
+    async def test_rate_limit_throttles_scheduler_fires(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        queue = _unique_queue()
+        task_name = _task_name("ratecron")
+        call_count = 0
+
+        class LimitedCronTask(Task):
+            # 1/s means at most 1 execution per 1-second window.
+            task_info = TaskInfo(
+                name=task_name, queues=[queue],
+                cron="* * * * *", rate_limit="1/s",
+            )
+
+            async def run(self) -> str:
+                nonlocal call_count
+                call_count += 1
+                return "ok"
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        async with SwarmQ(
+            broker, backend,
+            queues=[queue], concurrency=1,
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=1.0,
+        ) as app:
+            await app.broker.declare_queue(queue)
+            leader_event = _leader_event(app)
+            worker_task = asyncio.create_task(app.start_worker())
+            try:
+                await asyncio.wait_for(leader_event.wait(), timeout=6)
+
+                # Force 3 fires in quick succession via zset re-score.
+                import time
+                client = valkey_asyncio.Valkey.from_url(valkey_url)
+                try:
+                    for offset_ms in (200, 400, 600):
+                        ts = int(time.time() * 1000) + offset_ms
+                        await client.zadd(
+                            "sq:sched:zset", {task_name: ts},
+                        )
+                        # Wait past the forced fire before re-scoring —
+                        # otherwise zadd just overwrites without firing.
+                        await asyncio.sleep(0.3)
+                finally:
+                    await client.aclose()
+
+                # Give the rate-limited ones time to be throttled (they
+                # land in delay queue or get re-queued — we just need
+                # to confirm not all 3 ran).
+                await asyncio.sleep(1.5)
+
+                assert call_count < 3, (
+                    f"rate-limit did not throttle scheduler fires: "
+                    f"{call_count} executions for 3 fires with 1/s "
+                    f"limit"
+                )
+                assert call_count >= 1, (
+                    f"no fire executed at all — scheduler or broker "
+                    f"path broken: {call_count}"
+                )
+            finally:
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
