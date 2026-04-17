@@ -12,12 +12,12 @@ import pytest
 import valkey.asyncio as valkey_asyncio
 
 from swarmq.lua import load_script
+from swarmq.scheduler import SCHEDULER_LOCK_KEY as LOCK_KEY
 
 pytestmark = pytest.mark.integration
 
 ZSET_KEY = "sq:sched:zset"
 DEFS_KEY = "sq:sched:defs"
-LOCK_KEY = "sq:lock:scheduler:leader"
 
 
 @pytest.fixture

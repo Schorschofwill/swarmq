@@ -17,6 +17,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
+from swarmq.scheduler import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
@@ -88,7 +89,7 @@ class TestWorkerSchedulerIntegration:
             # Verify the lock exists in Valkey under the expected key.
             client = valkey_asyncio.Valkey.from_url(valkey_url)
             try:
-                owner = await client.get("sq:lock:scheduler:leader")
+                owner = await client.get(SCHEDULER_LOCK_KEY)
                 assert owner is not None
             finally:
                 await client.aclose()
@@ -113,7 +114,7 @@ class TestWorkerSchedulerIntegration:
         # Lock should be released (cleaned up).
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
-            owner = await client.get("sq:lock:scheduler:leader")
+            owner = await client.get(SCHEDULER_LOCK_KEY)
             assert owner is None
         finally:
             await client.aclose()

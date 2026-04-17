@@ -222,10 +222,22 @@ class TestScheduleStoreRemoveAndDisable:
         )
         assert decoded.disabled is True
 
+    async def test_disable_schedule_also_zrems_from_zset(self):
+        """Review-finding correctness C-02: disable must remove from zset
+        too, otherwise poll_due returns the entry every tick and burns
+        HGET bandwidth on skip-work."""
+        existing = msgspec.json.encode(_def(schedule_name="p", disabled=False))
+        store, backend = _make_store(hget_return=existing)
+
+        await store.disable_schedule("p")
+
+        backend.zrem_schedule.assert_awaited_once_with("p")
+
     async def test_disable_schedule_missing_is_noop(self):
         store, backend = _make_store(hget_return=None)
         await store.disable_schedule("not-there")
         backend.hset_schedule_def.assert_not_awaited()
+        backend.zrem_schedule.assert_not_awaited()
 
 
 class TestScheduleStoreListSchedules:

@@ -497,6 +497,72 @@ class TestSyncTaskinfoCrons:
         store.update_static_schedule.assert_awaited_once()
         store.add_schedule.assert_not_awaited()
 
+    async def test_sync_preserves_disabled_flag_on_static_cron_change(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Review-finding correctness C-01: an operator-disabled static
+        schedule must remain disabled after the cron string is modified
+        in code. Without this preservation, the next redeploy silently
+        reverses the operator's `schedule remove` intent."""
+        class ChangedDisabledCron(Task):
+            task_info = TaskInfo(name="disabled_static", queues=["default"],
+                                 cron="*/10 * * * *")
+            async def run(self):
+                return None
+
+        existing = ScheduleDefinition(
+            schedule_name="disabled_static", task_name="disabled_static",
+            args=(), kwargs={}, queue="default",
+            cron="*/5 * * * *",          # OLD cron — differs from code
+            fire_ts_ms=1_700_000_000_000,
+            source="static",
+            disabled=True,                # operator disabled this entry
+        )
+        import msgspec
+        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        await loop.sync_taskinfo_crons()
+
+        store.update_static_schedule.assert_awaited_once()
+        propagated = store.update_static_schedule.await_args.args[0]
+        assert propagated.disabled is True
+        assert propagated.cron == "*/10 * * * *"  # new cron applied
+
+    async def test_sync_disabled_false_stays_false_on_cron_change(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Inverse regression: the preservation path must not flip a
+        disabled=False entry to True."""
+        class ActiveCron(Task):
+            task_info = TaskInfo(name="active_static", queues=["default"],
+                                 cron="0 */4 * * *")
+            async def run(self):
+                return None
+
+        existing = ScheduleDefinition(
+            schedule_name="active_static", task_name="active_static",
+            args=(), kwargs={}, queue="default",
+            cron="0 3 * * *",
+            fire_ts_ms=1_700_000_000_000,
+            source="static",
+            disabled=False,
+        )
+        import msgspec
+        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        await loop.sync_taskinfo_crons()
+
+        propagated = store.update_static_schedule.await_args.args[0]
+        assert propagated.disabled is False
+
     async def test_sync_preserves_cli_source_even_on_cron_diff(
         self, backend, broker, config, lock_manager, store, signal_dispatcher,
         _cleanup_tasks,

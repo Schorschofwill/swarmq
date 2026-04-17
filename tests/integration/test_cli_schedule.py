@@ -15,6 +15,7 @@ import pytest
 import valkey.asyncio as valkey_asyncio
 
 from swarmq import cli
+from swarmq.scheduler import SCHEDULER_LOCK_KEY
 
 pytestmark = pytest.mark.integration
 
@@ -94,7 +95,7 @@ class TestAddWithAt:
             raw = await client.hget("sq:sched:defs", name)
             assert raw is not None
             import msgspec
-            from swarmq.scheduler import ScheduleDefinition
+            from swarmq.scheduler import ScheduleDefinition  # noqa: F401 (nested use)
             d = msgspec.json.decode(raw, type=ScheduleDefinition)
             assert d.cron is None
             assert d.source == "cli"
@@ -115,7 +116,7 @@ class TestRemove:
             raw = await client.hget("sq:sched:defs", name)
             assert raw is not None
             import msgspec
-            from swarmq.scheduler import ScheduleDefinition
+            from swarmq.scheduler import ScheduleDefinition  # noqa: F401 (nested use)
             d = msgspec.json.decode(raw, type=ScheduleDefinition)
             assert d.disabled is True
         finally:
@@ -157,7 +158,7 @@ class TestStatus:
     async def test_status_shows_leader_when_lock_held(self, _env, valkey_url):
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
-            await client.set("sq:lock:scheduler:leader", "w1:42:abcdef12")
+            await client.set(SCHEDULER_LOCK_KEY, "w1:42:abcdef12")
 
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -166,5 +167,5 @@ class TestStatus:
             data = json.loads(buf.getvalue())
             assert data["leader"] == "w1:42:abcdef12"
         finally:
-            await client.delete("sq:lock:scheduler:leader")
+            await client.delete(SCHEDULER_LOCK_KEY)
             await client.aclose()

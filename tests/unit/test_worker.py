@@ -3730,6 +3730,43 @@ class TestSchedfireDedup:
         # requeue=True so the message comes back and a healthy worker
         # can try again
         assert nack_call.kwargs.get("requeue") is True
+        # Review-finding api-contract AC-F4 + testing T-03: the in-memory
+        # dedup-count header increment must run. Note that
+        # AMQP nack(requeue=True) does NOT transmit this mutation back
+        # to the broker; the increment is observable in logs and in
+        # the current in-memory object only. That tradeoff is tracked
+        # separately as the "header-mutation-via-nack" gated finding.
+        assert msg.headers["x-swarmq-schedfire-dedup-count"] == 1
+
+    async def test_dedup_backend_error_accumulates_counter(
+        self, broker, backend, config
+    ):
+        """A message arriving with an existing dedup-count header gets
+        one more on each nack round, mirroring rate-limit-count."""
+        from swarmq.task import Task, TaskInfo
+        from swarmq.registry import TaskRegistry
+
+        class NoopTask(Task):
+            task_info = TaskInfo(name="noop_acc", queues=["default"])
+            async def run(self):
+                raise AssertionError("must not run on backend error")
+
+        registry = TaskRegistry()
+        registry.register(NoopTask)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        from swarmq.exceptions import BackendConnectionError as BCE
+        backend.set_schedfire_dedup.side_effect = BCE("valkey down")
+        msg = _make_message(
+            _default_payload(name="noop_acc", args=[], kwargs={}),
+            headers={
+                "x-swarmq-schedfire": "cron_a:1700000000000",
+                "x-swarmq-schedfire-dedup-count": 3,
+            },
+        )
+        await w._handle_message(msg)
+
+        assert msg.headers["x-swarmq-schedfire-dedup-count"] == 4
 
     async def test_worker_start_instantiates_scheduler(
         self, broker, backend, config, monkeypatch

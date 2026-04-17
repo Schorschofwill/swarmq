@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.scheduler import ScheduleDefinition, ScheduleStore
+from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
 
 pytestmark = pytest.mark.integration
 
@@ -110,12 +110,21 @@ class TestRemoveDisable:
         schedules = await store.list_schedules()
         assert not any(s.schedule_name == sched_name for s in schedules)
 
-    async def test_disable_sets_flag_without_removal(self, store, sched_name):
+    async def test_disable_sets_flag_and_removes_from_zset(
+        self, store, sched_name, valkey_client,
+    ):
+        """disable_schedule must (a) persist disabled=True in defs and
+        (b) remove the entry from the zset so poll_due stops returning
+        it every tick (review-finding correctness C-02)."""
         await store.add_schedule(_def(sched_name))
         await store.disable_schedule(sched_name)
 
         schedules = {s.schedule_name: s for s in await store.list_schedules()}
         assert schedules[sched_name].disabled is True
+
+        # zset entry must be gone — otherwise poll_due returns it forever.
+        zscore = await valkey_client.zscore("sq:sched:zset", sched_name)
+        assert zscore is None
 
 
 class TestPollDue:
@@ -144,7 +153,7 @@ class TestCommitFire:
         self, store, valkey_client, sched_name
     ):
         owner = uuid.uuid4().hex
-        await valkey_client.set("sq:lock:scheduler:leader", owner)
+        await valkey_client.set(SCHEDULER_LOCK_KEY, owner)
 
         d = _def(sched_name, fire_ts_ms=1_000)
         await store.add_schedule(d)
@@ -156,14 +165,14 @@ class TestCommitFire:
         schedules = {s.schedule_name: s for s in await store.list_schedules()}
         assert schedules[sched_name].last_fire_at == 2_000
 
-        await valkey_client.delete("sq:lock:scheduler:leader")
+        await valkey_client.delete(SCHEDULER_LOCK_KEY)
 
     async def test_commit_with_stale_owner_is_rejected(
         self, store, valkey_client, sched_name
     ):
         real = uuid.uuid4().hex
         stale = uuid.uuid4().hex
-        await valkey_client.set("sq:lock:scheduler:leader", real)
+        await valkey_client.set(SCHEDULER_LOCK_KEY, real)
 
         d = _def(sched_name, fire_ts_ms=1_000, last_fire_at=None)
         await store.add_schedule(d)
@@ -176,13 +185,13 @@ class TestCommitFire:
         schedules = {s.schedule_name: s for s in await store.list_schedules()}
         assert schedules[sched_name].last_fire_at is None
 
-        await valkey_client.delete("sq:lock:scheduler:leader")
+        await valkey_client.delete(SCHEDULER_LOCK_KEY)
 
     async def test_commit_one_shot_removes_entry(
         self, store, valkey_client, sched_name
     ):
         owner = uuid.uuid4().hex
-        await valkey_client.set("sq:lock:scheduler:leader", owner)
+        await valkey_client.set(SCHEDULER_LOCK_KEY, owner)
 
         d = _def(sched_name, cron=None, fire_ts_ms=1_000, source="cli")
         await store.add_schedule(d)
@@ -193,4 +202,4 @@ class TestCommitFire:
         schedules = await store.list_schedules()
         assert not any(s.schedule_name == sched_name for s in schedules)
 
-        await valkey_client.delete("sq:lock:scheduler:leader")
+        await valkey_client.delete(SCHEDULER_LOCK_KEY)

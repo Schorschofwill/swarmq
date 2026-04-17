@@ -18,6 +18,7 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.scheduler import SCHEDULER_LOCK_KEY
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
@@ -332,7 +333,7 @@ class TestGracefulHandover:
                 # deleting it directly.
                 client = valkey_asyncio.Valkey.from_url(valkey_url)
                 try:
-                    await client.delete("sq:lock:scheduler:leader")
+                    await client.delete(SCHEDULER_LOCK_KEY)
                 finally:
                     await client.aclose()
 

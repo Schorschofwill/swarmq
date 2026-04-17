@@ -434,9 +434,11 @@ class SchedulerLoop:
         if self._state == "leader":
             await self._emit(Signal.SCHEDULER_LEADER_HANDOVER)
             try:
+                # 2x heartbeat converted to ms — explicit factor-of-2
+                # safety margin over the seconds-to-ms conversion.
                 marker_ttl_ms = max(
                     _HANDOVER_MARKER_TTL_MS_FLOOR,
-                    int(self._config.scheduler_heartbeat_interval * 2_000),
+                    int(self._config.scheduler_heartbeat_interval * 2 * 1000),
                 )
                 await self._backend.set_schedfire_handover_marker(
                     self._owner_token, marker_ttl_ms
@@ -459,6 +461,10 @@ class SchedulerLoop:
                     "scheduler_lock_release_failed", error=str(exc)
                 )
 
+        # Idempotent — the leader path above already set this (R-005
+        # ordering fix); this call covers the standby path where the
+        # early-transition block was skipped entirely. Do not remove
+        # either call; they belong to different control-flow branches.
         self._stop_event.set()
         for task in (self._election_task, self._poll_task):
             if task is not None and not task.done():
@@ -672,7 +678,7 @@ class SchedulerLoop:
         """Reconcile static ``TaskInfo(cron=...)`` declarations into the
         ``sq:sched:defs`` hash.
 
-        Five resolution branches (in check order):
+        Six resolution branches (in check order):
 
         1. ``hget_schedule_def`` raises ``BackendConnectionError`` →
            log and skip this schedule, continue iteration.
