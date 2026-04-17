@@ -1333,6 +1333,31 @@ class TestClientUniqueSchedule:
         )
         assert captured_hashes[0] == captured_hashes[1]
 
+    # --- P1 #1 / COR-001: rollback claims on post-SETNX failure ---
+
+    async def test_publish_failure_rolls_back_dedup_flag(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """broker.publish raises after SETNX success → flag must be released.
+
+        Without rollback, subsequent schedule() with same args returns the
+        orphan task_id as `existing` for the full unique_for window.
+        """
+        backend_setnx.release_unique = AsyncMock(return_value=True)
+        broker.publish = AsyncMock(side_effect=RuntimeError("broker down"))
+
+        with pytest.raises(RuntimeError, match="broker down"):
+            await client_setnx.schedule(
+                "add", 1, 2, queue="math", unique_for=60,
+            )
+        backend_setnx.setnx_unique.assert_awaited_once()
+        backend_setnx.release_unique.assert_awaited_once()
+        # Same (hash, task_id) pair passed to both.
+        setnx_args = backend_setnx.setnx_unique.await_args.args
+        release_args = backend_setnx.release_unique.await_args.args
+        assert setnx_args[0] == release_args[0]  # dedup_hash
+        assert setnx_args[1] == release_args[1]  # task_id
+
 
 # -----------------------------------------------------------------
 # R3.5 Unique Tasks — Client._schedule_deferred() dedup (Unit 7)
@@ -1481,6 +1506,27 @@ class TestClientUniqueDeferred:
             "add", 1, queue="math", delay=10.0, unique_for=60,
         )
         assert call_order == ["setnx", "store"]
+
+    async def test_deferred_store_failure_rolls_back_flag(
+        self, client_setnx, backend_setnx, _patched_schedule_store,
+    ):
+        """store.add_schedule raises after SETNX success → flag released.
+
+        Particularly important for deferred with large delay: TTL is
+        (unique_for + fire_offset) which can be hours. An orphan flag
+        of that duration blocks re-schedule silently.
+        """
+        backend_setnx.release_unique = AsyncMock(return_value=True)
+        _patched_schedule_store.add_schedule = AsyncMock(
+            side_effect=RuntimeError("store error")
+        )
+
+        with pytest.raises(RuntimeError, match="store error"):
+            await client_setnx.schedule(
+                "add", 1, queue="math", delay=60.0, unique_for=300,
+            )
+        backend_setnx.setnx_unique.assert_awaited_once()
+        backend_setnx.release_unique.assert_awaited_once()
 
 
 # -----------------------------------------------------------------
@@ -1657,3 +1703,52 @@ class TestClientUniqueScheduleMany:
         assert ids[1] == "t-dup"
         # Only the fresh publish emits TASK_ENQUEUED.
         assert enqueued == [ids[0]]
+
+    # --- P1 #2 / COR-002 / ADV-004: rollback claims on partial batch failure ---
+
+    async def test_schedule_many_partial_publish_failure_rolls_back_failed_flags(
+        self, broker, backend_setnx, registry,
+    ):
+        """Element 1 publish raises → its flag is released; element 0's
+        successful publish keeps its flag (worker will release at terminal)."""
+        backend_setnx.release_unique = AsyncMock(return_value=True)
+
+        publish_calls = [0]
+
+        async def publish_mock(*_a, **_kw):
+            publish_calls[0] += 1
+            if publish_calls[0] == 2:
+                raise RuntimeError("broker blip on element 1")
+
+        broker.publish = AsyncMock(side_effect=publish_mock)
+
+        client = Client(broker=broker, backend=backend_setnx, registry=registry)
+        tasks = [("add", (1,), {}), ("add", (2,), {})]
+
+        with pytest.raises(RuntimeError, match="blip on element 1"):
+            await client.schedule_many(tasks, queue="math", unique_for=60)
+
+        # Exactly one rollback — for the failed publish's flag.
+        backend_setnx.release_unique.assert_awaited_once()
+
+    async def test_schedule_many_pass1_mid_loop_error_releases_prior_claims(
+        self, broker, backend_setnx,
+    ):
+        """TaskNotFoundError on element 1 must release element 0's flag."""
+        backend_setnx.release_unique = AsyncMock(return_value=True)
+
+        registry = MagicMock()
+        registry.has = MagicMock(side_effect=[True, False])
+        entry = MagicMock()
+        entry.task_info = TaskInfo(name="add", queues=["math"])
+        registry.get_entry = MagicMock(return_value=entry)
+
+        client = Client(broker=broker, backend=backend_setnx, registry=registry)
+        tasks = [("add", (1,), {}), ("unknown", (), {})]
+
+        with pytest.raises(TaskNotFoundError):
+            await client.schedule_many(tasks, queue="math", unique_for=60)
+
+        # One flag was claimed for element 0 before the error; it must
+        # be released.
+        backend_setnx.release_unique.assert_awaited_once()

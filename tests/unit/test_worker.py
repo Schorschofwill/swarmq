@@ -4185,3 +4185,45 @@ class TestWorkerUniqueRelease:
         )
         await worker._handle_message(msg)
         release_backend.release_unique.assert_not_awaited()
+
+    async def test_start_mode_rate_limited_keeps_flag_for_redelivery(
+        self, broker, backend, config,
+    ):
+        """P1 #4 / ADV-002 fix: start-mode release must NOT fire when the
+        message is rate-limited and requeued. Otherwise a concurrent
+        schedule() during the requeue window would bypass dedup."""
+        class RateStartTask(Task):
+            task_info = TaskInfo(
+                name="rl_start_task", queues=["default"],
+                rate_limit="1/s",
+                unique_for=60, unique_until="start",
+            )
+            async def run(self):
+                return None
+
+        registry = TaskRegistry()
+        registry.register(RateStartTask)
+
+        from swarmq.limits import RateLimiter
+        w = Worker(broker=broker, backend=backend, registry=registry,
+                   config=config)
+        rl = MagicMock(spec=RateLimiter)
+        rl.check = AsyncMock(return_value=(False, 0, 500))
+        w._rate_limiter = rl
+        backend.release_unique = AsyncMock(return_value=True)
+
+        msg = _make_message(
+            _default_payload(name="rl_start_task", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "3" * 64,
+                "x-swarmq-unique-until": "start",
+            },
+        )
+        await w._handle_message(msg)
+
+        # Rate-limit path re-published the message — no release at all.
+        broker.publish_to_delay_queue.assert_awaited_once()
+        backend.release_unique.assert_not_awaited()
+        headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
+        assert headers["x-swarmq-unique-hash"] == "3" * 64
+        assert headers["x-swarmq-unique-until"] == "start"

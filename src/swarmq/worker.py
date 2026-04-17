@@ -351,11 +351,9 @@ class Worker:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
-                # R3.5 Unit 11: release BEFORE ack so the flag clears
-                # even if ack is lost — owner-check protects against
-                # a TTL-race foreign owner in either ordering.
-                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.ack(message)
+                # Release AFTER successful ack (P1 #3 / ADV-001).
+                await self._maybe_release_unique(message, task_id, task_info)
             except Exception as broker_exc:
                 logger.error(
                     "lock_render_dlq_failed",
@@ -366,9 +364,11 @@ class Worker:
                     note="message routed via broker DLX to "
                          f"{queue}.XQ without diagnostic headers",
                 )
-                # Fallback DLX-nack is still terminal — release here too.
-                await self._maybe_release_unique(message, task_id, task_info)
+                # Fallback nack(requeue=False) still terminal (DLX
+                # routes it); release after the nack to keep the
+                # ack-ordering discipline uniform with the happy path.
                 await self._broker.nack(message, requeue=False)
+                await self._maybe_release_unique(message, task_id, task_info)
             return True
 
         # Empty-rendered lock guard. TaskInfo rejects literal lock="" and
@@ -393,8 +393,8 @@ class Worker:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
-                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.ack(message)
+                await self._maybe_release_unique(message, task_id, task_info)
             except Exception as broker_exc:
                 logger.error(
                     "lock_empty_render_dlq_failed",
@@ -404,8 +404,8 @@ class Worker:
                     note="message routed via broker DLX to "
                          f"{queue}.XQ without diagnostic headers",
                 )
-                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.nack(message, requeue=False)
+                await self._maybe_release_unique(message, task_id, task_info)
             return True
 
         owner_token = uuid.uuid4().hex
@@ -484,8 +484,8 @@ class Worker:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
-                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.ack(message)
+                await self._maybe_release_unique(message, task_id, task_info)
             except Exception as exc:
                 # DLQ-publish failure at the cap creates a hazard: nacking
                 # with requeue lets the message bounce back at count >= cap
@@ -508,9 +508,9 @@ class Worker:
                          "without diagnostic headers; recover wedged lock "
                          f"via valkey-cli DEL sq:lock:{lock_name}",
                 )
-                # Terminal DLX fallback — release before giving up.
-                await self._maybe_release_unique(message, task_id, task_info)
+                # Terminal DLX fallback — nack first, then release.
                 await self._broker.nack(message, requeue=False)
+                await self._maybe_release_unique(message, task_id, task_info)
             return True
 
         delay_ms = min(
@@ -1145,26 +1145,7 @@ class Worker:
 
             task_info = task_class.task_info
 
-            # 5a. R3.5 Unit 10: start-mode dedup release happens at
-            # pickup, BEFORE any stage that could nack(requeue=True).
-            # The unique flag's only purpose in start-mode is to gate
-            # enqueue-time dedup; once the worker has claimed the
-            # message, the flag must be released so the next
-            # legitimate schedule() call can enqueue. Owner-check in
-            # unique_release.lua protects against a foreign-owner DEL.
-            # BackendConnectionError is swallowed inside
-            # release_unique (log-only) — letting Valkey flap abort
-            # pickup would turn dedup into a liveness hazard.
-            unique_hash = self._extract_valid_unique_hash(message)
-            header_unique_until = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
-            effective_unique_until = header_unique_until or task_info.unique_until
-            if unique_hash and effective_unique_until == "start":
-                await self._backend.release_unique(
-                    unique_hash, task_id,
-                    op_timeout=self._config.backend_op_timeout,
-                )
-
-            # 5b. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
+            # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
             # so a Valkey or broker hiccup cannot drop a message that has
             # already been acked. Rate-limited tasks never reach
             # pre_execute or middleware: they are republished into the
@@ -1179,7 +1160,7 @@ class Worker:
                 skip_unique_release = True
                 return
 
-            # 5b'. Lock check — same FIRE_AND_FORGET-ordering discipline as
+            # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
             # rate-limit. Conflict path: requeue with exponential backoff
             # until the per-message cap, then DLQ. Acquired locks are
             # released in the finally below.
@@ -1196,7 +1177,29 @@ class Worker:
                 skip_unique_release = True
                 return
 
-            # 5c. FIRE_AND_FORGET: ack immediately before execution.
+            # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
+            # dedup release happens AFTER rate-limit / lock checks and
+            # BEFORE the FIRE_AND_FORGET ack. Releasing earlier would
+            # break dedup semantics in the requeue case: rate-limit or
+            # lock-conflict republishes the message with the header
+            # intact, a second schedule() call in the requeue window
+            # would win the SETNX, and both tasks would run. The flag
+            # must persist across requeue-based non-terminal stages and
+            # only release when the task is actually about to execute.
+            # Owner-check in unique_release.lua protects against a
+            # foreign-owner DEL; BackendConnectionError is swallowed
+            # inside release_unique (log-only) — letting Valkey flap
+            # abort pickup would turn dedup into a liveness hazard.
+            unique_hash = self._extract_valid_unique_hash(message)
+            header_unique_until = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
+            effective_unique_until = header_unique_until or task_info.unique_until
+            if unique_hash and effective_unique_until == "start":
+                await self._backend.release_unique(
+                    unique_hash, task_id,
+                    op_timeout=self._config.backend_op_timeout,
+                )
+
+            # 5d. FIRE_AND_FORGET: ack immediately before execution.
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                 await self._broker.ack(message)
 
@@ -1823,13 +1826,16 @@ class Worker:
             await self._broker.publish_to_dead_letter_queue(
                 queue, message.body, headers=headers
             )
-            # R3.5 Unit 11: release BEFORE ack; fallback-nack below
-            # still reaches the DLX and the flag must clear regardless
-            # of which ack path wins.
+            await self._broker.ack(message)
+            # R3.5 ce-review P1 #3 / ADV-001: release AFTER successful
+            # ack. If ack raises, the except branch nacks with
+            # requeue=True, and redelivery's terminal path must still
+            # be able to release the flag. Releasing before ack would
+            # make the redelivered task run a second time within the
+            # dedup window.
             await self._maybe_release_unique(
                 message, task_id, task_info_for_release
             )
-            await self._broker.ack(message)
         except Exception as broker_exc:
             logger.error("dlq_publish_failed", error=str(broker_exc))
             try:

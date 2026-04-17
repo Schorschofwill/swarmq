@@ -112,6 +112,14 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # backwards-compatible with pre-R3.5 ScheduleDefinition entries in
     # sq:sched:defs (new field at the end of the struct).
     dedup_hash: str | None = None
+    # R3.5 ce-review P1 #5 / ADV-007: persist unique_until alongside
+    # dedup_hash. Previously the scheduler re-resolved unique_until from
+    # TaskInfo at fire-time, which silently flipped release semantics when
+    # TaskInfo changed between enqueue and fire. The client knows the
+    # intended mode at enqueue time; persist it so fire-time is
+    # deterministic. Optional default "completion" matches the producer
+    # default used when the Client sees _MISSING.
+    unique_until: Literal["start", "completion"] = "completion"
 
 
 # ---------------------------------------------------------------------------
@@ -711,12 +719,12 @@ class SchedulerLoop:
 
         if definition.source == "cli_unique" and definition.dedup_hash:
             # Client already SETNX'd this task at schedule(delay=/eta=) time.
-            # Propagate the hash so the worker can release the flag at its
-            # terminal path (completion-Mode) or pickup (start-Mode).
+            # Propagate the hash + intended mode so the worker releases
+            # at the right point. unique_until is persisted on the
+            # definition (P1 #5 / ADV-007 fix) so post-deploy TaskInfo
+            # changes cannot silently flip release semantics.
             headers["x-swarmq-unique-hash"] = definition.dedup_hash
-            headers["x-swarmq-unique-until"] = self._resolve_unique_until(
-                definition.task_name
-            )
+            headers["x-swarmq-unique-until"] = definition.unique_until
         else:
             # Static cron or plain CLI — resolve TaskInfo and SETNX here.
             task_info = self._resolve_task_info(definition.task_name)
@@ -829,17 +837,6 @@ class SchedulerLoop:
             if ti is not None and ti.name == task_name:
                 return ti
         return None
-
-    def _resolve_unique_until(self, task_name: str) -> str:
-        """Lookup ``unique_until`` for cli_unique definitions (R3.5 Unit 9).
-
-        cli_unique schedules are client-originated (_schedule_deferred) and
-        don't persist ``unique_until`` — the worker applies TaskInfo's
-        value at release time. Defaulting to ``"completion"`` when the
-        task is unregistered matches the immediate-path semantics.
-        """
-        ti = self._resolve_task_info(task_name)
-        return ti.unique_until if ti is not None else "completion"
 
     async def _emit_duplicate_detected(
         self,

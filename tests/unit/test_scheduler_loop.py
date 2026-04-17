@@ -798,14 +798,9 @@ class TestSchedulerUniqueDedup:
     ):
         """Producer already claimed the flag (Unit 7) — scheduler must not
         re-SETNX or the flag's TTL would reset. Header is propagated from
-        the stored dedup_hash."""
-        class DeferredTask(Task):
-            task_info = TaskInfo(
-                name="deferred_uniq", queues=["default"],
-                unique_for=300, unique_until="start",
-            )
-            async def run(self): return None
-
+        the stored dedup_hash + unique_until (P1 #5 / ADV-007: unique_until
+        persisted alongside dedup_hash so post-deploy TaskInfo changes
+        cannot silently flip release semantics)."""
         backend.setnx_unique = AsyncMock()
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -818,6 +813,7 @@ class TestSchedulerUniqueDedup:
             cron=None, fire_ts_ms=1_000,
             source="cli_unique",
             dedup_hash="pre-hashed-by-client",
+            unique_until="start",
         )
         store.poll_due.return_value = [("oneshot:xyz", 1_000, d)]
 
@@ -827,14 +823,16 @@ class TestSchedulerUniqueDedup:
         broker.publish.assert_awaited_once()
         headers = broker.publish.await_args.kwargs["headers"]
         assert headers["x-swarmq-unique-hash"] == "pre-hashed-by-client"
-        # unique_until resolved from TaskInfo (client doesn't persist it)
+        # unique_until read directly from the persisted definition.
         assert headers["x-swarmq-unique-until"] == "start"
 
-    async def test_cli_unique_without_registered_task_defaults_until_completion(
+    async def test_cli_unique_pre_r35_entry_defaults_until_completion(
         self, backend, broker, config, lock_manager, store, signal_dispatcher,
         _cleanup_tasks,
     ):
-        """Task not registered in this worker → fall back to completion."""
+        """Legacy entries without unique_until (pre-P1-#5) decode with
+        the struct default 'completion'. Ensures backwards-compatibility
+        with schedules stored before the persisted field existed."""
         backend.setnx_unique = AsyncMock()
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -847,6 +845,7 @@ class TestSchedulerUniqueDedup:
             cron=None, fire_ts_ms=1_000,
             source="cli_unique",
             dedup_hash="abc123",
+            # unique_until omitted → struct default "completion"
         )
         store.poll_due.return_value = [("oneshot:mystery", 1_000, d)]
 
