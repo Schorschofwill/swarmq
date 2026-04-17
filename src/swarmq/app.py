@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
 
 from swarmq.backend.valkey import ValkeyBackend
@@ -11,6 +11,7 @@ from swarmq.client import _MISSING, Client, _MissingType
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
+from swarmq.progress import ProgressInfo
 from swarmq.registry import TaskRegistry
 from swarmq.signals import AsyncHandler, Signal, SignalDispatcher
 from swarmq.task import Task
@@ -132,6 +133,19 @@ class SwarmQ:
         return await self.client.run(
             task_name, *args, timeout=timeout, polling=polling, **kwargs
         )
+
+    async def get_progress(self, task_id: str) -> ProgressInfo | None:
+        """Forward to :meth:`Client.get_progress`."""
+        return await self.client.get_progress(task_id)
+
+    def watch_progress(self, task_id: str) -> AsyncIterator[ProgressInfo]:
+        """Forward to :meth:`Client.watch_progress`.
+
+        Not ``async def`` — returns the async generator directly so
+        callers can ``async for info in app.watch_progress(tid): ...``
+        without double-await.
+        """
+        return self.client.watch_progress(task_id)
 
     async def cancel(self, task_id: str) -> bool:
         """Request cancellation of *task_id*.

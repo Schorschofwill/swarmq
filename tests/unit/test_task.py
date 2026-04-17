@@ -652,3 +652,39 @@ class TestUpdateProgress:
         # Should not raise.
         await t.update_progress(1, 10)
         t._backend.set_progress.assert_awaited_once()
+
+    @pytest.mark.timeout(5)
+    async def test_final_flush_emitted_only_once(self):
+        """Repeated update_progress(total, total) must not bypass
+        the throttle forever (ADV-002 regression guard)."""
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic()
+
+        for _ in range(5):
+            await t.update_progress(10, 10, "done")
+
+        assert t._backend.set_progress.await_count == 1
+
+    @pytest.mark.timeout(5)
+    async def test_throttle_resets_after_interval(self):
+        """A third call after the 500ms floor has elapsed must flush.
+        Pins the throttle-expiry contract so a refactor that never
+        resets _last_progress_update is caught (KP-TG-03)."""
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic()
+
+        await t.update_progress(1, 100)
+        await t.update_progress(2, 100)  # throttled
+        # Rewind the last-update timestamp past the throttle window.
+        t._last_progress_update = _time.monotonic() - 1.0
+        await t.update_progress(3, 100)  # must flush
+
+        assert t._backend.set_progress.await_count == 2

@@ -86,7 +86,7 @@ async def test_set_progress_ttl_expiry(backend):
 async def test_publish_progress_reaches_subscriber(backend):
     task_id = _uniq()
     pubsub = backend.create_pubsub()
-    channel = backend._progress_channel(task_id)
+    channel = backend.progress_channel_name(task_id)
     await pubsub.subscribe(channel)
 
     try:

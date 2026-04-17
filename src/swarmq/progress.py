@@ -24,7 +24,12 @@ class ProgressInfo:
     ``started_at`` is an ISO-8601 string set when the worker begins
     execution; ``updated_at`` is refreshed on every surfaced update.
     ``eta_seconds`` is ``None`` when no meaningful estimate is
-    possible (current == 0 or total <= 0).
+    possible: current == 0, total <= 0, or the final update
+    (``current == total``). Gate completion on ``percent == 100.0``
+    rather than ``eta_seconds is not None``.
+
+    ``percent`` is stored as a 2-decimal-place rounded value. Callers
+    re-deriving from current/total may see a difference of up to 0.005.
     """
 
     current: int

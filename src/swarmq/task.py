@@ -250,7 +250,8 @@ class Task:
     _backend: "ValkeyBackend | None" = None
     _task_start_time: float | None = None
     _result_ttl_ms: int = 86_400_000  # 24h fallback
-    _last_progress_update: float = 0.0
+    _last_progress_update: float = 0.0  # instance write shadows on first update
+    _progress_final_flushed: bool = False  # single final flush per instance
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -304,6 +305,12 @@ class Task:
 
         loop_time = time.monotonic()
         is_final = current >= total
+        if is_final and self._progress_final_flushed:
+            # Final update already emitted — a task that repeatedly
+            # calls update_progress(total, total) (or a redundant
+            # explicit completion call) must not bypass the throttle
+            # forever. The HASH state is already terminal.
+            return
         if (
             not is_final
             and loop_time - self._last_progress_update < _PROGRESS_MIN_INTERVAL_S
@@ -351,11 +358,13 @@ class Task:
             return  # Skip publish if HSET failed — no point notifying.
 
         self._last_progress_update = loop_time
+        if is_final:
+            self._progress_final_flushed = True
 
         try:
             await self._backend.publish_progress(
                 self._task_id,
-                json.dumps({**fields}).encode("utf-8"),
+                json.dumps(fields).encode("utf-8"),
             )
         except Exception as exc:  # noqa: BLE001
             _progress_logger.warning(

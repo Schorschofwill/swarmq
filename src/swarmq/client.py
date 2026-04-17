@@ -507,11 +507,20 @@ class Client:
         treat None as "nothing observed yet", not "task complete".
 
         One-shot read; use :meth:`watch_progress` for a live stream.
+
+        Returns None when the HASH exists but is malformed (missing
+        required fields or non-parseable numerics). A malformed HASH is
+        treated as "nothing observable" rather than surfacing a decode
+        error — callers should never crash on a corrupt payload written
+        by a rogue publisher or a future schema version.
         """
         raw = await self._backend.get_progress(task_id)
         if raw is None:
             return None
-        return ProgressInfo.from_hash(raw)
+        try:
+            return ProgressInfo.from_hash(raw)
+        except ValueError:
+            return None
 
     async def watch_progress(
         self, task_id: str,
@@ -532,16 +541,33 @@ class Client:
         Cleanup happens in the finally of the underlying
         ``async_generator`` — unsubscribing from the channel on
         iterator close or caller break.
+
+        Error-handling contract:
+        - Malformed Pub/Sub messages (non-JSON or missing required
+          progress fields) are dropped silently; the iterator continues.
+        - Pub/Sub transport errors (disconnect, Valkey restart) fall
+          back to re-reading the HASH so the caller continues observing
+          authoritative state while the connection recovers.
+        - Setup failures (subscribe/drain) surface as
+          :class:`BackendConnectionError`; the iterator yields nothing
+          and the caller's ``async for`` completes cleanly.
         """
-        channel = self._backend._progress_channel(task_id)
+        channel = self._backend.progress_channel_name(task_id)
         pubsub = self._backend.create_pubsub()
         try:
-            await pubsub.subscribe(channel)
-            # Drain the subscribe-confirmation so later get_message
-            # calls don't return it as a false-positive update.
-            await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=0.05,
-            )
+            try:
+                await pubsub.subscribe(channel)
+                # Drain the subscribe-confirmation so later get_message
+                # calls don't return it as a false-positive update.
+                await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=0.05,
+                )
+            except Exception:
+                # Setup failure — yield any HASH we can read, then exit.
+                fallback = await self.get_progress(task_id)
+                if fallback is not None:
+                    yield fallback
+                return
 
             # Yield current state if present (bridges the gap between
             # 'an update was published just before subscribe landed'
@@ -559,6 +585,9 @@ class Client:
                     # Pub/Sub error (disconnection, etc) — fall back to
                     # re-reading the HASH so the caller sees *some*
                     # update stream even if Pub/Sub is flaking.
+                    fallback = await self.get_progress(task_id)
+                    if fallback is not None:
+                        yield fallback
                     await asyncio.sleep(0.5)
                     continue
                 if msg is None or msg.get("type") != "message":
@@ -569,7 +598,13 @@ class Client:
                         fields = _json.loads(data)
                     except ValueError:
                         continue
-                    info = ProgressInfo.from_hash(fields)
+                    try:
+                        info = ProgressInfo.from_hash(fields)
+                    except ValueError:
+                        # Malformed publish (rogue producer, future
+                        # schema) — drop and continue; never crash the
+                        # iterator on a bad payload.
+                        continue
                     if info is not None:
                         yield info
         finally:

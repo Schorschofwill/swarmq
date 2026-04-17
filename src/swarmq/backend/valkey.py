@@ -138,7 +138,12 @@ class ValkeyBackend:
     def _progress_key(self, task_id: str) -> str:
         return f"sq:progress:{task_id}"
 
-    def _progress_channel(self, task_id: str) -> str:
+    def progress_channel_name(self, task_id: str) -> str:
+        """Return the Pub/Sub channel name for *task_id*'s progress stream.
+
+        Public API: consumers (e.g. :class:`Client.watch_progress`)
+        subscribe to this channel. Stable across releases.
+        """
         return f"sq:progress:channel:{task_id}"
 
     async def set_progress(
@@ -207,7 +212,7 @@ class ValkeyBackend:
         """
         try:
             await self._client.publish(
-                self._progress_channel(task_id), payload,
+                self.progress_channel_name(task_id), payload,
             )
         except (ValkeyError, OSError):
             logger.warning(
