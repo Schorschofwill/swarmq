@@ -26,6 +26,11 @@ test = [
     "pytest-cov",
     "mypy",
     "ruff",
+    # E2E-Hardening Phase 2+ — toxiproxy REST + property-based + fuzz
+    "httpx",
+    "hypothesis",
+    "pytest-rerunfailures",
+    "freezegun",
 ]
 docs = [
     "mkdocs-material>=9.5",

@@ -1,0 +1,36 @@
+# Chaos-Stack: dedicated RabbitMQ + Valkey + Toxiproxy on randomised
+# ports (set via COMPOSE_PROJECT_NAME). The fixture in conftest.py
+# starts/stops this stack per test class.
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    # AOF on so Pub/Sub-adjacent state survives restarts where
+    # relevant chaos tests assert recovery semantics.
+    command: ["valkey-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  toxiproxy:
+    image: shopify/toxiproxy:latest
+    command: ["-host=0.0.0.0"]
+    ports:
+      - "${TOXI_ADMIN_PORT:-8474}:8474"
+      - "${RABBITMQ_PROXY_PORT:-5675}:5672"
+      - "${VALKEY_PROXY_PORT:-6381}:6379"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
