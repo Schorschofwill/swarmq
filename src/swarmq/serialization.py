@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
@@ -56,7 +57,20 @@ def _canonicalize(obj: Any) -> Any:
     Reject types with no single canonical form (bytes, dataclass,
     msgspec.Struct, custom classes) — caller must normalize them.
     """
-    if obj is None or isinstance(obj, (bool, int, float, str)):
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    # datetime IS date (isinstance-wise) — check datetime first.
+    # Float must reject NaN / +Inf / -Inf: msgspec encodes them as
+    # JSON null / Infinity / -Infinity, which either collides with
+    # None in the hash (NaN → null) or breaks hash stability across
+    # msgspec versions (ADV-003). Finite floats pass through.
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            raise TypeError(
+                "canonical_encode does not support NaN / +Inf / -Inf — "
+                "these have no stable JSON representation (NaN would "
+                "collide with None). Normalize upstream or disable dedup."
+            )
         return obj
     if isinstance(obj, UUID):
         return str(obj)

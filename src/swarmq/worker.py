@@ -1118,20 +1118,24 @@ class Worker:
         handler_id = uuid.uuid4()
         acquired_locks: list[_LockEntry] = []
         # R3.5 Unit 11 state: task_info visible in finally even if
-        # lookup fails; skip_unique_release=True marks non-terminal
-        # paths (broker redelivery keeps the flag alive for the
-        # next delivery). Default False = terminal; every branch
-        # that nack(requeue=True) or republishes via delay queue
-        # MUST set this to True, otherwise the flag gets released
-        # while a redelivered message is still in flight.
+        # lookup fails; _unique_release_pending tracks whether the
+        # finally block should fire _maybe_release_unique.
+        # Default TRUE = this delivery is terminal until a branch
+        # proves otherwise. Non-terminal branches (nack(requeue=True),
+        # delay-queue republish) MUST clear the flag to False —
+        # otherwise the dedup flag gets released while a redelivered
+        # copy of the message is still in flight, creating a bypass
+        # window (ce-review M-03 / P2 #12: name + direction chosen
+        # so that forgetting the mutation over-releases rather than
+        # under-releases; over-release is owner-check-safe).
         task_info: TaskInfo | None = None
-        skip_unique_release = False
+        _unique_release_pending = True
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():
                 # nack(requeue=True): broker redelivers with headers
                 # intact → keep the flag so redelivery can release.
-                skip_unique_release = True
+                _unique_release_pending = False
                 await self._broker.nack(message, requeue=True)
                 return
 
@@ -1157,7 +1161,7 @@ class Worker:
             if await self._try_apply_rate_limit(
                 message, task_info, queue, task_id, task_name,
             ):
-                skip_unique_release = True
+                _unique_release_pending = False
                 return
 
             # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
@@ -1166,15 +1170,15 @@ class Worker:
             # released in the finally below.
             # Terminal DLQ sub-paths inside the helper release the flag
             # inline (render-fail, empty-render, conflict-cap); non-
-            # terminal sub-paths requeue and preserve the header. Set
-            # skip_unique_release either way to avoid double-release
+            # terminal sub-paths requeue and preserve the header. Clear
+            # _unique_release_pending either way to avoid double-release
             # (terminal sub-paths already released) or premature release
             # (non-terminal sub-paths still in flight).
             if await self._try_apply_lock(
                 message, task_info, task_class, queue, task_id, task_name,
                 args, kwargs, handler_id, acquired_locks,
             ):
-                skip_unique_release = True
+                _unique_release_pending = False
                 return
 
             # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
@@ -1469,7 +1473,7 @@ class Worker:
                         # Either way the finally must NOT release:
                         # non-terminal would strand the redelivered
                         # message, terminal already released inline.
-                        skip_unique_release = True
+                        _unique_release_pending = False
                         return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
@@ -1527,7 +1531,7 @@ class Worker:
                     # Non-terminal — redelivery will re-run the task
                     # from scratch; keep the flag so next terminal
                     # path can release it.
-                    skip_unique_release = True
+                    _unique_release_pending = False
                     await self._broker.nack(message, requeue=True)
                 return
 
@@ -1563,16 +1567,14 @@ class Worker:
             # All main-body terminal paths (success, error, cancel,
             # DLQ, lock-conflict-cap, task_not_found nack=False,
             # lock-render-fail, middleware-factory-fail) flow through
-            # here. Non-terminal paths (rate-limit requeue, lock-
-            # conflict requeue, retry delay queue, store_result nack=
-            # True, shutdown nack=True) also hit this finally, but
-            # they preserve the x-swarmq-unique-hash header in the
-            # republished message so the next delivery re-runs the
-            # owner-check pipeline. Release is idempotent via owner-
-            # check — releasing here when the message will be
-            # redelivered is wrong, so guard on a local flag set by
-            # non-terminal branches below.
-            if not skip_unique_release:
+            # here with _unique_release_pending still True. Non-
+            # terminal paths (rate-limit requeue, lock-conflict
+            # requeue, retry delay queue, store_result nack=True,
+            # shutdown nack=True) also hit this finally, but they
+            # preserve the x-swarmq-unique-hash header in the
+            # republished message and clear _unique_release_pending
+            # so the next delivery re-runs the owner-check pipeline.
+            if _unique_release_pending:
                 await self._maybe_release_unique(
                     message, task_id, task_info,
                 )

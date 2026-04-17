@@ -1731,10 +1731,16 @@ class TestClientUniqueScheduleMany:
         # Exactly one rollback — for the failed publish's flag.
         backend_setnx.release_unique.assert_awaited_once()
 
-    async def test_schedule_many_pass1_mid_loop_error_releases_prior_claims(
+    async def test_schedule_many_validation_fails_before_any_setnx(
         self, broker, backend_setnx,
     ):
-        """TaskNotFoundError on element 1 must release element 0's flag."""
+        """TaskNotFoundError on any element aborts Pass 0 validation
+        BEFORE any SETNX fires, so no flags are claimed or orphaned.
+
+        This is a stricter guarantee than the sequential implementation
+        offered — parallel SETNX (P3 #22) makes fail-fast validation
+        free and removes an entire class of partial-claim scenarios.
+        """
         backend_setnx.release_unique = AsyncMock(return_value=True)
 
         registry = MagicMock()
@@ -1749,6 +1755,37 @@ class TestClientUniqueScheduleMany:
         with pytest.raises(TaskNotFoundError):
             await client.schedule_many(tasks, queue="math", unique_for=60)
 
-        # One flag was claimed for element 0 before the error; it must
-        # be released.
-        backend_setnx.release_unique.assert_awaited_once()
+        # No SETNX was called (validation fails first), so no rollback
+        # is needed either.
+        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.release_unique.assert_not_awaited()
+
+    async def test_schedule_many_parallel_setnx_pre_enqueue_fail_rolls_back(
+        self, broker, backend_setnx, registry,
+    ):
+        """If pre_enqueue raises during Pass 2 after all SETNX succeeded
+        in Pass 1, every claimed flag must be rolled back."""
+        from swarmq.middleware import Middleware, MiddlewareChain
+
+        backend_setnx.release_unique = AsyncMock(return_value=True)
+
+        class BoomMiddleware(Middleware):
+            call_count = 0
+
+            async def pre_enqueue(self, ctx):
+                type(self).call_count += 1
+                if type(self).call_count == 3:
+                    raise RuntimeError("pre_enqueue boom")
+
+        client = Client(
+            broker=broker, backend=backend_setnx, registry=registry,
+            middleware_chain=MiddlewareChain([BoomMiddleware()]),
+        )
+        tasks = [("add", (i,), {}) for i in range(3)]
+
+        with pytest.raises(RuntimeError, match="pre_enqueue boom"):
+            await client.schedule_many(tasks, queue="math", unique_for=60)
+
+        # All three SETNX fired in parallel; all three must be rolled back.
+        assert backend_setnx.setnx_unique.await_count == 3
+        assert backend_setnx.release_unique.await_count == 3

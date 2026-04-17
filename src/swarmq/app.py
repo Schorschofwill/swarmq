@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.client import _MISSING, Client
+from swarmq.client import _MISSING, Client, _MissingType
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
@@ -93,8 +93,8 @@ class SwarmQ:
         tasks: list[tuple[str, tuple, dict]],
         queue: str | None = None,
         *,
-        unique_for: int | None | Any = _MISSING,
-        unique_until: Literal["start", "completion"] | Any = _MISSING,
+        unique_for: int | None | _MissingType = _MISSING,
+        unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
     ) -> list[str]:
         """Forward to :meth:`Client.schedule_many` including R3.5 dedup kwargs."""
         return await self.client.schedule_many(

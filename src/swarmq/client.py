@@ -51,7 +51,32 @@ _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
 # None means "dedup explicitly disabled for this call"; _MISSING means
 # "fall through to TaskInfo default (or None in Client-Modus)".
 # Not exported — do NOT add to __init__.py.
-_MISSING: Any = object()
+#
+# Dedicated singleton class so type-checkers narrow int | None | _MissingType
+# unions at call sites (plain Any would collapse to Any). __slots__ keeps
+# the object tiny; __new__ enforces exactly one instance so `is _MISSING`
+# identity checks stay cheap.
+class _MissingType:
+    """Private singleton for the `_MISSING` sentinel. See module docstring."""
+    __slots__ = ()
+    _instance: "_MissingType | None" = None
+
+    def __new__(cls) -> "_MissingType":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:  # noqa: D401
+        return "<_MISSING>"
+
+    def __bool__(self) -> bool:
+        # Defensive: treat the sentinel as falsy in `if value:` style checks
+        # that might be written before reading the docstring. Proper checks
+        # use `value is _MISSING`.
+        return False
+
+
+_MISSING = _MissingType()
 
 
 class Client:
@@ -127,6 +152,54 @@ class Client:
             )
         return resolved_queue, delivery_mode
 
+    async def _claim_unique_flag(
+        self,
+        task_name: str,
+        args: tuple,
+        kwargs: dict,
+        task_id: str,
+        ttl_ms: int,
+        source: str,
+        **extra_signal_payload: Any,
+    ) -> tuple[str, str | None]:
+        """Attempt SETNX for the given (task_name, args, kwargs) tuple.
+
+        Returns ``(dedup_hash, existing_task_id)``:
+          * ``existing_task_id is None`` → flag claimed; caller proceeds
+            to publish and tag the message headers.
+          * ``existing_task_id is str`` → duplicate detected; caller
+            short-circuits and returns the existing owner's task_id.
+            TASK_DUPLICATE_DETECTED has already been dispatched with
+            the standard payload (existing_task_id, task_name,
+            dedup_hash, source) plus any ``extra_signal_payload`` keys
+            (e.g. batch_index for schedule_many).
+
+        Shared helper — single source of truth for the SETNX + dup-
+        signal shape used by ``Client.schedule``, ``_schedule_deferred``,
+        and ``schedule_many``. Changing the signal payload now requires
+        exactly one edit (plan M-01 / ce-review P2 #10).
+        """
+        dedup_hash = compute_dedup_hash(task_name, args, kwargs)
+        existing = await self._backend.setnx_unique(
+            dedup_hash, task_id, ttl_ms,
+            op_timeout=self._backend_op_timeout,
+        )
+        if existing is None:
+            return dedup_hash, None
+
+        payload: dict[str, Any] = {
+            "existing_task_id": existing,
+            "task_name": task_name,
+            "dedup_hash": dedup_hash,
+            "source": source,
+            **extra_signal_payload,
+        }
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_DUPLICATE_DETECTED, **payload,
+        )
+        logger.info("swarmq.dedup.detected", **payload)
+        return dedup_hash, existing
+
     async def _rollback_unique_claim(
         self, dedup_hash: str, task_id: str,
     ) -> None:
@@ -176,8 +249,8 @@ class Client:
         queue: str | None = None,
         delay: float | None = None,
         eta: datetime | None = None,
-        unique_for: int | None | Any = _MISSING,
-        unique_until: Literal["start", "completion"] | Any = _MISSING,
+        unique_for: int | None | _MissingType = _MISSING,
+        unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
         **kwargs: Any,
     ) -> str:
         """Submit a task for execution and return its task_id.
@@ -238,28 +311,13 @@ class Client:
         headers: dict[str, Any] = {}
 
         if resolved_unique_for is not None:
-            dedup_hash = compute_dedup_hash(task_name, args, kwargs)
-            existing = await self._backend.setnx_unique(
-                dedup_hash, task_id, resolved_unique_for * 1000,
-                op_timeout=self._backend_op_timeout,
+            dedup_hash, existing = await self._claim_unique_flag(
+                task_name, args, kwargs, task_id,
+                ttl_ms=resolved_unique_for * 1000,
+                source="client.schedule",
             )
             if existing is not None:
-                # Silent dedup — return existing owner's task_id, emit signal.
-                await self._signal_dispatcher.dispatch(
-                    Signal.TASK_DUPLICATE_DETECTED,
-                    existing_task_id=existing,
-                    task_name=task_name,
-                    dedup_hash=dedup_hash,
-                    source="client.schedule",
-                )
-                logger.info(
-                    "swarmq.dedup.detected",
-                    existing_task_id=existing,
-                    task_name=task_name,
-                    dedup_hash=dedup_hash,
-                    source="client.schedule",
-                )
-                return existing
+                return existing  # Silent dedup — signal already emitted.
             # Flag acquired — tag the message so the worker can release
             # at the right point (start-mode: pickup; completion-mode: terminal).
             headers[HEADER_UNIQUE_HASH] = dedup_hash
@@ -327,8 +385,8 @@ class Client:
     def _resolve_unique(
         self,
         task_name: str,
-        unique_for: int | None | Any,
-        unique_until: Any,
+        unique_for: int | None | _MissingType,
+        unique_until: Literal["start", "completion"] | _MissingType,
     ) -> tuple[int | None, str]:
         """Resolve effective unique_for / unique_until for a schedule() call.
 
@@ -439,8 +497,8 @@ class Client:
         tasks: list[tuple[str, tuple, dict]],
         queue: str | None = None,
         *,
-        unique_for: int | None | Any = _MISSING,
-        unique_until: Literal["start", "completion"] | Any = _MISSING,
+        unique_for: int | None | _MissingType = _MISSING,
+        unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
     ) -> list[str]:
         """Submit multiple tasks for execution and return their task_ids.
 
@@ -485,58 +543,112 @@ class Client:
         # every pre_enqueue/post_enqueue hook sees the same chain instance.
         chain = self._get_chain()
 
-        # Pass 1: validate, resolve queue, build message_dicts + encoded
-        # payloads. pre_enqueue is invoked sequentially; a raise aborts the
-        # whole batch BEFORE any broker.publish coroutine is created or
-        # awaited. Any exception here rolls back the flags already
-        # claimed so far.
+        # Pass 0 (sync): validate + generate task_ids + compute dedup
+        # parameters per element. Any validation error aborts before a
+        # single network call, so no rollback is needed yet.
+        # Layout per index:
+        #   prepped[i] = {
+        #       "task_name", "args", "kwargs", "task_id", "queue",
+        #       "delivery_mode", "unique_until",
+        #       "dedup_hash": str | None,       # sha256 hex or None
+        #       "dedup_ttl_ms": int | None,     # SETNX TTL
+        #   }
+        prepped: list[dict[str, Any]] = []
+        for i, (task_name, args, kwargs) in enumerate(tasks):
+            if self._registry is not None and not self._registry.has(task_name):
+                raise TaskNotFoundError(task_name)
+            resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
+                task_name, queue,
+            )
+            resolved_unique_for, resolved_unique_until = self._resolve_unique(
+                task_name, unique_for, unique_until,
+            )
+            if resolved_unique_for is not None:
+                dedup_hash_precomp: str | None = compute_dedup_hash(
+                    task_name, args, kwargs,
+                )
+                ttl_ms: int | None = resolved_unique_for * 1000
+            else:
+                dedup_hash_precomp = None
+                ttl_ms = None
+            prepped.append({
+                "task_name": task_name,
+                "args": args,
+                "kwargs": kwargs,
+                "task_id": str(uuid.uuid7()),
+                "queue": resolved_queue,
+                "delivery_mode": delivery_mode,
+                "unique_until": resolved_unique_until,
+                "dedup_hash": dedup_hash_precomp,
+                "dedup_ttl_ms": ttl_ms,
+            })
+
+        # Pass 1 (parallel): fire all SETNX calls concurrently. Sequential
+        # loop was the main per-batch latency cost for dedup-tagged
+        # batches — N * Valkey_RTT grew linearly with batch size. Gather
+        # amortises that to 1 * RTT (plan PERF-01 / ce-review P3 #22).
+        setnx_tasks: dict[int, asyncio.Task[str | None]] = {}
+        for i, entry in enumerate(prepped):
+            if entry["dedup_hash"] is None:
+                continue
+            setnx_tasks[i] = asyncio.create_task(
+                self._backend.setnx_unique(
+                    entry["dedup_hash"], entry["task_id"],
+                    entry["dedup_ttl_ms"],
+                    op_timeout=self._backend_op_timeout,
+                ),
+            )
+        setnx_results: dict[int, str | None] = {}
+        setnx_errors: dict[int, BaseException] = {}
+        if setnx_tasks:
+            await asyncio.gather(*setnx_tasks.values(), return_exceptions=True)
+            for i, t in setnx_tasks.items():
+                exc = t.exception()
+                if exc is None:
+                    setnx_results[i] = t.result()
+                else:
+                    setnx_errors[i] = exc
+
+        # Pass 2 (sequential): iterate in input order, emit per-element
+        # signals / build headers / register pre_enqueue. Ordering
+        # matters here: TASK_DUPLICATE_DETECTED handlers see events
+        # in batch-index order which matches the sequential contract.
+        # If any SETNX raised (setnx_errors non-empty) we rollback all
+        # successful claims and re-raise the first error.
         try:
-            for i, (task_name, args, kwargs) in enumerate(tasks):
-                # --- validation (registry mode only) ---
-                if self._registry is not None:
-                    if not self._registry.has(task_name):
-                        raise TaskNotFoundError(task_name)
+            if setnx_errors:
+                raise next(iter(setnx_errors.values()))
 
-                # --- queue resolution chain + delivery_mode resolution ---
-                resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
-                    task_name, queue
-                )
-
-                # --- R3.5 dedup resolution (per-element TaskInfo lookup) ---
-                resolved_unique_for, resolved_unique_until = self._resolve_unique(
-                    task_name, unique_for, unique_until
-                )
-
-                task_id = str(uuid.uuid7())
+            for i, entry in enumerate(prepped):
+                task_name = entry["task_name"]
+                args = entry["args"]
+                kwargs = entry["kwargs"]
+                task_id = entry["task_id"]
+                resolved_queue = entry["queue"]
+                delivery_mode = entry["delivery_mode"]
+                dedup_hash = entry["dedup_hash"]
                 headers: dict[str, Any] = {}
 
-                if resolved_unique_for is not None:
-                    dedup_hash = compute_dedup_hash(task_name, args, kwargs)
-                    existing = await self._backend.setnx_unique(
-                        dedup_hash, task_id, resolved_unique_for * 1000,
-                        op_timeout=self._backend_op_timeout,
-                    )
+                if dedup_hash is not None:
+                    existing = setnx_results.get(i)
                     if existing is not None:
+                        # Duplicate — emit signal, fill result slot, skip.
+                        payload = {
+                            "existing_task_id": existing,
+                            "task_name": task_name,
+                            "dedup_hash": dedup_hash,
+                            "source": "client.schedule_many",
+                            "batch_index": i,
+                        }
                         await self._signal_dispatcher.dispatch(
-                            Signal.TASK_DUPLICATE_DETECTED,
-                            existing_task_id=existing,
-                            task_name=task_name,
-                            dedup_hash=dedup_hash,
-                            source="client.schedule_many",
-                            batch_index=i,
+                            Signal.TASK_DUPLICATE_DETECTED, **payload,
                         )
-                        logger.info(
-                            "swarmq.dedup.detected",
-                            existing_task_id=existing,
-                            task_name=task_name,
-                            dedup_hash=dedup_hash,
-                            source="client.schedule_many",
-                            batch_index=i,
-                        )
+                        logger.info("swarmq.dedup.detected", **payload)
                         task_ids[i] = existing
-                        continue  # Dup slot filled; skip publish bookkeeping.
+                        continue
+                    # Flag claimed — record for rollback + headers.
                     headers[HEADER_UNIQUE_HASH] = dedup_hash
-                    headers[HEADER_UNIQUE_UNTIL] = resolved_unique_until
+                    headers[HEADER_UNIQUE_UNTIL] = entry["unique_until"]
                     claimed_flags[i] = (dedup_hash, task_id)
 
                 task_ids[i] = task_id
@@ -566,16 +678,20 @@ class Client:
                 }
                 message_dicts[i] = message_dict
 
-                # pre_enqueue: exception aborts the whole batch (propagate).
-                # Coroutines for broker.publish are only created in Pass 2, so
-                # nothing needs cleanup if this raises. Duplicates skip the
-                # hook — pre_enqueue implies "about to enqueue a new message"
-                # and duplicates never do.
+                # pre_enqueue: exception aborts the whole batch.
                 await chain.run_pre_enqueue(message_dict)
         except BaseException:
-            # Pass 1 aborted — release every flag claimed so far.
-            for dh, tid in claimed_flags.values():
-                await self._rollback_unique_claim(dh, tid)
+            # Pass 2 aborted — release every flag already claimed in
+            # Pass 1 regardless of which batch position failed (all
+            # claims are equally orphaned since we never reach publish).
+            for i, entry in enumerate(prepped):
+                if entry["dedup_hash"] is None:
+                    continue
+                if setnx_results.get(i) is None and i in setnx_tasks:
+                    # Claim succeeded in Pass 1.
+                    await self._rollback_unique_claim(
+                        entry["dedup_hash"], entry["task_id"],
+                    )
             raise
 
         # Pass 2: publish concurrently. Only non-dup positions participate.
@@ -769,7 +885,6 @@ class Client:
         # --- R3.5 Unit 7: producer-side SETNX before ScheduleStore insert ---
         dedup_hash: str | None = None
         if unique_for is not None:
-            dedup_hash = compute_dedup_hash(task_name, tuple(args), kwargs)
             # Fire offset: how long we wait before publish. Use ceiling
             # division so sub-second delays (e.g. delay=0.9) still contribute
             # a full second of TTL padding — floor would truncate to 0 and
@@ -778,25 +893,12 @@ class Client:
             fire_offset_ms = max(0, fire_ts_ms - now_ms)
             fire_offset_s = (fire_offset_ms + 999) // 1000  # ceiling division
             ttl_ms = (unique_for + int(fire_offset_s)) * 1000
-            existing = await self._backend.setnx_unique(
-                dedup_hash, task_id, ttl_ms,
-                op_timeout=self._backend_op_timeout,
+            dedup_hash, existing = await self._claim_unique_flag(
+                task_name, tuple(args), kwargs, task_id,
+                ttl_ms=ttl_ms,
+                source="client.schedule_deferred",
             )
             if existing is not None:
-                await self._signal_dispatcher.dispatch(
-                    Signal.TASK_DUPLICATE_DETECTED,
-                    existing_task_id=existing,
-                    task_name=task_name,
-                    dedup_hash=dedup_hash,
-                    source="client.schedule_deferred",
-                )
-                logger.info(
-                    "swarmq.dedup.detected",
-                    existing_task_id=existing,
-                    task_name=task_name,
-                    dedup_hash=dedup_hash,
-                    source="client.schedule_deferred",
-                )
                 return existing
 
         schedule_name = f"oneshot:{task_id}"

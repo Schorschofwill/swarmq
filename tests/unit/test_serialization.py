@@ -374,3 +374,23 @@ class TestCanonicalEncode:
             (), {"b": 1}
         )
         assert canonical_encode(("a",), {}) != canonical_encode(("a",), {"b": 1})
+
+    # --- ce-review P2 #14 / ADV-003: NaN / Inf must be rejected ---
+
+    def test_nan_rejected(self):
+        with pytest.raises(TypeError, match="NaN"):
+            canonical_encode((), {"x": float("nan")})
+
+    def test_positive_infinity_rejected(self):
+        with pytest.raises(TypeError, match="Inf"):
+            canonical_encode((), {"x": float("inf")})
+
+    def test_negative_infinity_rejected(self):
+        with pytest.raises(TypeError, match="Inf"):
+            canonical_encode((), {"x": float("-inf")})
+
+    def test_finite_floats_still_accepted(self):
+        """Regression guard: normal floats pass through."""
+        a = canonical_encode((), {"x": 1.5})
+        b = canonical_encode((), {"x": 1.5})
+        assert a == b
