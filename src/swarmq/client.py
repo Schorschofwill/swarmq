@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+import json as _json
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -26,6 +27,7 @@ from swarmq.middleware import (
 )
 from swarmq.registry import TaskRegistry
 from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
+from swarmq.progress import ProgressInfo
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import (
     canonical_encode,
@@ -491,6 +493,91 @@ class Client:
                     await pubsub.aclose()
                 except Exception:
                     pass
+
+    # ------------------------------------------------------------------
+    # R3.7 Progress tracking — consumer side
+    # ------------------------------------------------------------------
+
+    async def get_progress(self, task_id: str) -> ProgressInfo | None:
+        """Read the current progress HASH for *task_id*.
+
+        Returns ``None`` when no progress has been recorded — either
+        the task never called :meth:`Task.update_progress`, the TTL
+        has expired, or the task_id is unknown. The caller should
+        treat None as "nothing observed yet", not "task complete".
+
+        One-shot read; use :meth:`watch_progress` for a live stream.
+        """
+        raw = await self._backend.get_progress(task_id)
+        if raw is None:
+            return None
+        return ProgressInfo.from_hash(raw)
+
+    async def watch_progress(
+        self, task_id: str,
+    ) -> AsyncIterator[ProgressInfo]:
+        """Stream progress updates for *task_id*.
+
+        Subscribes to the per-task Pub/Sub channel FIRST (so an update
+        arriving between the initial read and subscription isn't
+        missed), then yields the last known HASH state if present,
+        then streams every subsequent :meth:`Task.update_progress`
+        publish.
+
+        The iterator never completes on its own — the caller must
+        ``break`` when satisfied (typical: after a ProgressInfo with
+        ``percent == 100.0`` or after observing a terminal signal via
+        another channel).
+
+        Cleanup happens in the finally of the underlying
+        ``async_generator`` — unsubscribing from the channel on
+        iterator close or caller break.
+        """
+        channel = self._backend._progress_channel(task_id)
+        pubsub = self._backend.create_pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            # Drain the subscribe-confirmation so later get_message
+            # calls don't return it as a false-positive update.
+            await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=0.05,
+            )
+
+            # Yield current state if present (bridges the gap between
+            # 'an update was published just before subscribe landed'
+            # and 'nothing has been published yet').
+            initial = await self.get_progress(task_id)
+            if initial is not None:
+                yield initial
+
+            while True:
+                try:
+                    msg = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=0.1,
+                    )
+                except Exception:
+                    # Pub/Sub error (disconnection, etc) — fall back to
+                    # re-reading the HASH so the caller sees *some*
+                    # update stream even if Pub/Sub is flaking.
+                    await asyncio.sleep(0.5)
+                    continue
+                if msg is None or msg.get("type") != "message":
+                    continue
+                data = msg.get("data")
+                if isinstance(data, bytes):
+                    try:
+                        fields = _json.loads(data)
+                    except ValueError:
+                        continue
+                    info = ProgressInfo.from_hash(fields)
+                    if info is not None:
+                        yield info
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+            except Exception:
+                pass
 
     async def schedule_many(
         self,

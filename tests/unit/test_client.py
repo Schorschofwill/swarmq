@@ -1789,3 +1789,43 @@ class TestClientUniqueScheduleMany:
         # All three SETNX fired in parallel; all three must be rolled back.
         assert backend_setnx.setnx_unique.await_count == 3
         assert backend_setnx.release_unique.await_count == 3
+
+
+# ---------------------------------------------------------------------------
+# R3.7 — Client.get_progress + Client.watch_progress
+# ---------------------------------------------------------------------------
+
+
+class TestClientProgress:
+    @pytest.fixture
+    def progress_backend(self, backend):
+        backend.get_progress = AsyncMock(return_value=None)
+        return backend
+
+    async def test_get_progress_returns_none_on_empty_hash(
+        self, progress_backend, broker, registry,
+    ):
+        progress_backend.get_progress = AsyncMock(return_value=None)
+        client = Client(
+            broker=broker, backend=progress_backend, registry=registry,
+        )
+        assert await client.get_progress("task-x") is None
+
+    async def test_get_progress_decodes_populated_hash(
+        self, progress_backend, broker, registry,
+    ):
+        progress_backend.get_progress = AsyncMock(return_value={
+            b"current": b"3", b"total": b"10", b"percent": b"30.00",
+            b"message": b"three", b"updated_at": b"2026-04-17T10:30Z",
+            b"started_at": b"2026-04-17T10:29Z", b"eta_seconds": b"7",
+        })
+        client = Client(
+            broker=broker, backend=progress_backend, registry=registry,
+        )
+        info = await client.get_progress("task-x")
+        assert info is not None
+        assert info.current == 3
+        assert info.total == 10
+        assert info.percent == 30.00
+        assert info.message == "three"
+        assert info.eta_seconds == 7
