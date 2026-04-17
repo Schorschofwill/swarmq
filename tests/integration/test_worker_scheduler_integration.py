@@ -22,7 +22,7 @@ from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 def _unique_queue() -> str:

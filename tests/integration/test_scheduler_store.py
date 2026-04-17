@@ -13,7 +13,7 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 @pytest.fixture

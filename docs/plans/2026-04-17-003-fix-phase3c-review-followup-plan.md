@@ -169,7 +169,7 @@ Signal-basierte Barrieren. Startup-Barrieren durch einen expliziten
 
 ---
 
-- [ ] **Unit 3: pytest-Timeout-Marker per-File (H-6)**
+- [x] **Unit 3: pytest-Timeout-Marker per-File (H-6)**
 
 **Goal:** `@pytest.mark.timeout(5)` auf allen neuen async Tests, oder
 file-scope marker via pytest-Convention.
@@ -220,7 +220,7 @@ und Valkey-Flaps. `list_schedules` toleriert schlechte Entries.
 
 ---
 
-- [ ] **Unit 6: Literal[1]-Annotation für LockManager.renew (M-7)**
+- [x] **Unit 6: Literal[1]-Annotation für LockManager.renew (M-7)**
 
 **Goal:** Statische Typ-Guard für `max_concurrency=1`-only-Parameter.
 
@@ -231,7 +231,7 @@ und Valkey-Flaps. `list_schedules` toleriert schlechte Entries.
 
 ---
 
-- [ ] **Unit 7: Schedfire-Key nutzt Zset-Score (M-11)**
+- [x] **Unit 7: Schedfire-Key nutzt Zset-Score (M-11)**
 
 **Goal:** Dedup-Key-Generation nutzt den authoritativen Zset-Score
 statt `definition.fire_ts_ms` (die divergieren können).

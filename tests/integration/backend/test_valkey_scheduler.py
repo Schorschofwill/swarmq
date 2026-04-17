@@ -14,7 +14,7 @@ import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 @pytest.fixture

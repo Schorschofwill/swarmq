@@ -18,7 +18,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 def _unique_queue() -> str:

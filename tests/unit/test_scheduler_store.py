@@ -24,6 +24,9 @@ from swarmq.scheduler import (
     parse_schedfire_key,
 )
 
+# AGENTS.md §Async-Code testen rule 3: 5s per-test timeout.
+pytestmark = [pytest.mark.timeout(5)]
+
 
 # ---------------------------------------------------------------------------
 # SCHEDULER_LOCK_KEY — live-derivation invariant (Unit 10 / Fork B1)

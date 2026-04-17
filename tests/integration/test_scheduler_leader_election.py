@@ -24,7 +24,7 @@ from swarmq.scheduler import (
 )
 from swarmq.signals import Signal, SignalDispatcher
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 async def _make_loop(rabbitmq_url, valkey_url, *, owner_token,

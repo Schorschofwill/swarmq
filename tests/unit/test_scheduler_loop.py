@@ -23,6 +23,11 @@ from swarmq.scheduler import (
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 
+# AGENTS.md §Async-Code testen rule 3: 5s per-test timeout. Narrower
+# than the pyproject default (30s); fails fast on deadlock without
+# burning CI time (Unit 3 / H-6).
+pytestmark = [pytest.mark.timeout(5)]
+
 
 @pytest.fixture
 def config():
@@ -295,6 +300,27 @@ class TestPollLoop:
         assert commit_args.args[1] > 0
         # owner_token is passed through
         assert commit_args.args[3] == "test-owner"
+
+    async def test_schedfire_key_uses_zset_score_not_definition_ts(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        """Unit 7 / M-11: the schedfire-dedup key must be derived from
+        the authoritative zset score returned by poll_due, not from
+        definition.fire_ts_ms which can diverge during update_static_schedule."""
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        # Simulate divergence: zset score says 1000, definition thinks 9999.
+        # The dedup key must reflect 1000 (what consumers will see on
+        # redelivery once the broker carries the header forward).
+        d = _def(name="drift", cron="*/5 * * * *", fire_ts_ms=9_999)
+        store.poll_due.return_value = [("drift", 1_000, d)]
+
+        await loop._poll_tick()
+
+        headers = broker.publish.await_args.kwargs.get("headers") or {}
+        assert headers["x-swarmq-schedfire"] == "drift:1000"
 
     async def test_oneshot_commit_uses_neg_one_and_no_def(
         self, backend, broker, config, lock_manager, store, signal_dispatcher

@@ -13,6 +13,8 @@ handles cache eviction.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import valkey.asyncio as valkey_asyncio
 
 from swarmq.exceptions import BackendConnectionError
@@ -148,7 +150,7 @@ class LockManager:
         lock_name: str,
         owner_token: str,
         ttl_ms: int,
-        max_concurrency: int = 1,
+        max_concurrency: Literal[1] = 1,
     ) -> bool:
         """Extend the TTL of a mutex lock we still own (heartbeat path).
 
@@ -158,10 +160,11 @@ class LockManager:
         whether to keep asserting leadership — a ``False`` means the lock
         was lost and the caller should transition back to standby.
 
-        Mutex-only for v1 (Review-Finding P2-8). Calling with
-        ``max_concurrency > 1`` raises ``NotImplementedError`` — the
-        underlying script uses ``GET`` on the lock key and would otherwise
-        hit WRONGTYPE against a semaphore SortedSet.
+        Mutex-only for v1. ``max_concurrency`` is typed as ``Literal[1]``
+        (Unit 6 / M-7) so static type-checkers (mypy, pyright) surface
+        semaphore callers at the call-site instead of letting them reach
+        the runtime guard. The runtime check is retained as a safety net
+        for untyped callers and dynamic invocations.
         """
         if max_concurrency != 1:
             raise NotImplementedError(

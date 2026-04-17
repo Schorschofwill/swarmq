@@ -586,7 +586,7 @@ class SchedulerLoop:
             logger.warning("scheduler_poll_due_failed", error=str(exc))
             return
 
-        for schedule_name, _score_ms, definition in due:
+        for schedule_name, score_ms, definition in due:
             if self._state != "leader":
                 # Lost leadership mid-batch — abort remaining items so
                 # the new leader handles them (Review-Finding Unit 10
@@ -594,21 +594,22 @@ class SchedulerLoop:
                 return
             if definition.disabled:
                 continue
-            await self._fire_one(schedule_name, definition)
+            await self._fire_one(schedule_name, score_ms, definition)
 
     async def _fire_one(
-        self, schedule_name: str, definition: ScheduleDefinition
+        self,
+        schedule_name: str,
+        score_ms: int,
+        definition: ScheduleDefinition,
     ) -> None:
-        fire_ts_ms = definition.fire_ts_ms
-        if fire_ts_ms is None:
-            # Defensive — every entry in zset must have a score.
-            logger.warning(
-                "scheduler_entry_without_fire_ts",
-                schedule_name=schedule_name,
-            )
-            return
-
-        schedfire_key = make_schedfire_key(schedule_name, fire_ts_ms)
+        # Use the authoritative zset score, not definition.fire_ts_ms
+        # (Unit 7 / M-11). The two can diverge briefly during a static-
+        # cron update where update_static_schedule writes a new
+        # fire_ts_ms into defs before the ZADD lands, or if an operator
+        # hand-edits the zset. The dedup key must match what will
+        # actually be published so a redelivered message hits the
+        # same SETNX cell.
+        schedfire_key = make_schedfire_key(schedule_name, score_ms)
 
         # Build the task message body — same shape as Client.schedule.
         task_id = str(uuid.uuid7())

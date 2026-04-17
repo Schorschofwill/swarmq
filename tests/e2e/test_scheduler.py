@@ -23,6 +23,12 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
+# AGENTS.md §Async-Code testen rule 3: 5s per-test timeout. The fire
+# tests use asyncio.wait_for(done.wait(), timeout=5) internally; the
+# module-level marker is a second line of defence against a genuine
+# deadlock (e.g. scheduler not starting).
+pytestmark = [pytest.mark.timeout(5)]
+
 
 def _unique_queue() -> str:
     return f"e2e-sched-{uuid.uuid4().hex[:10]}"
