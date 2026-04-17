@@ -54,8 +54,46 @@ def _unique_queue() -> str:
     return f"chaos-rx-{uuid.uuid4().hex[:10]}"
 
 
+async def _warmup_proxied_endpoints(chaos_stack: ChaosStack) -> None:
+    """Open + close a short-lived broker/backend connection.
+
+    The ``chaos_stack`` fixture waits on the toxiproxy admin port but
+    not on the two proxied upstream ports. Connecting through a freshly
+    registered proxy sometimes hits a transient "server connection
+    unexpectedly closed" on the first attempt — toxiproxy hasn't yet
+    established the upstream TCP session. A throwaway connect inside a
+    small retry loop makes the proxies deterministic before the real
+    test starts touching them.
+    """
+    last_exc: BaseException | None = None
+    for _ in range(5):
+        try:
+            broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
+            backend = ValkeyBackend(chaos_stack.valkey_url)
+            try:
+                await broker.connect()
+                await backend.connect()
+            finally:
+                await broker.close()
+                await backend.close()
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            await asyncio.sleep(0.8)
+    raise RuntimeError(
+        f"chaos_stack proxied endpoints never warmed up: {last_exc!r}",
+    )
+
+
 class TestResourceExhaustion:
     """All three tests share the per-class chaos_stack fixture."""
+
+    @pytest.fixture(autouse=True)
+    async def _warmup(self, chaos_stack: ChaosStack) -> None:
+        """Ensure the proxied broker/backend ports respond before each
+        test. See :func:`_warmup_proxied_endpoints` — this absorbs the
+        first-connect race window after toxiproxy proxy registration."""
+        await _warmup_proxied_endpoints(chaos_stack)
 
     # ------------------------------------------------------------------
     # Test 1 — prefetch=1 (concurrency=1) → strictly serial execution

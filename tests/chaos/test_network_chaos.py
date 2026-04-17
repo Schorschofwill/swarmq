@@ -501,13 +501,30 @@ class TestNetworkChaos:
                         "watch_progress never bound to the channel"
                     )
 
-                # Drop Valkey for ~2s. The subscriber's pub/sub socket
-                # dies; valkey-py's command-level retry does NOT apply.
+                # Drop Valkey for 4s. The subscriber's pub/sub socket
+                # sees a TCP RST from toxiproxy; valkey-py's command-
+                # level retry does NOT cover the long-held pub/sub
+                # socket. 4s is empirically enough for the `get_message
+                # timeout=0.1` loop in watch_progress to try at least
+                # one read against the dead socket and raise
+                # ConnectionError, which triggers the resubscribe path.
+                # Shorter windows (2s) sometimes race — toxiproxy
+                # comes back up before valkey-py's pubsub reader
+                # observes the RST, and the resubscribe is skipped.
                 await toxiproxy.down("vkey")
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(4.0)
                 await toxiproxy.up("vkey")
-                # Let the resubscribe loop in watch_progress land.
-                await asyncio.sleep(2.0)
+                # Sanity check: pub_backend recovers via its command-
+                # level retry. A ping succeeds when the path is open.
+                for _ in range(20):
+                    try:
+                        await pub_backend._client.ping()
+                        break
+                    except Exception:  # noqa: BLE001
+                        await asyncio.sleep(0.2)
+                # Wait longer — the resubscribe loop in watch_progress
+                # is paced at 0.5s per cycle with timeout=0.1.
+                await asyncio.sleep(4.0)
 
                 # Post-recovery publish. We may need a couple of
                 # attempts — the pub_backend client was also mid-
@@ -519,13 +536,30 @@ class TestNetworkChaos:
                     "updated_at": "2026-04-17T00:00:01+00:00",
                 }
                 deadline = asyncio.get_event_loop().time() + 15.0
+                channel_name = pub_backend.progress_channel_name(task_id)
+                last_subscriber_count = 0
                 while asyncio.get_event_loop().time() < deadline:
+                    # Publish and also query subscriber count — if it's
+                    # 0 after recovery, the watcher hasn't resubscribed
+                    # yet (so our publish would never be received).
+                    try:
+                        count_resp = await pub_backend._client.execute_command(
+                            "PUBSUB", "NUMSUB", channel_name,
+                        )
+                        # response is [channel, count]
+                        last_subscriber_count = int(count_resp[1])
+                    except Exception:  # noqa: BLE001
+                        last_subscriber_count = -1
                     await pub_backend.publish_progress(
                         task_id, json.dumps(post_fields).encode("utf-8"),
                     )
                     await asyncio.sleep(0.5)
                     if any(i.message == "post-recovery" for i in received):
                         break
+                print(
+                    f"DEBUG: last subscriber count={last_subscriber_count}, "
+                    f"received messages={[i.message for i in received]!r}"
+                )
 
                 assert any(
                     i.message == "post-recovery" for i in received

@@ -137,6 +137,30 @@ async def _queue_message_count(stack: ChaosStack, queue: str) -> int:
         await conn.close()
 
 
+async def _wait_amqp_reachable(url: str, timeout: float = 30.0) -> None:
+    """Retry opening an AMQP connection until it succeeds.
+
+    The ``chaos_stack`` fixture waits for the toxiproxy admin port and
+    for ``docker compose`` healthchecks, but the path
+    ``client → toxiproxy → rabbitmq`` can still flake the first few
+    hundred milliseconds after RabbitMQ reports "healthy" (Erlang VM
+    warm-up, AMQP handshake queue not drained yet). Retrying here
+    absorbs the race without slowing the happy path — one try is
+    usually enough.
+    """
+    deadline = time.monotonic() + timeout
+    last: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            conn = await aio_pika.connect_robust(url, timeout=3)
+            await conn.close()
+            return
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            await asyncio.sleep(0.5)
+    raise RuntimeError(f"amqp never reachable at {url}: {last!r}")
+
+
 async def _drain_queue_count(
     stack: ChaosStack, queue: str, limit: int = 50,
 ) -> int:
@@ -190,6 +214,7 @@ class TestMessageCorruption:
         """
         queue = f"chaos-corrupt-headers-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
+        await _wait_amqp_reachable(chaos_stack.rabbitmq_url)
 
         # Declare queues BEFORE starting the worker so the broker
         # accepts the raw publish. The worker will declare them too on
@@ -294,6 +319,7 @@ class TestMessageCorruption:
         """
         queue = f"chaos-corrupt-result-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
+        await _wait_amqp_reachable(chaos_stack.rabbitmq_url)
 
         proc = _spawn_worker(chaos_stack, queue, concurrency=2)
         try:
@@ -478,6 +504,7 @@ class TestMessageCorruption:
         """
         queue = f"chaos-bad-unique-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
+        await _wait_amqp_reachable(chaos_stack.rabbitmq_url)
 
         # Declare queues so the direct publish has somewhere to land.
         pre_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)

@@ -199,9 +199,20 @@ class TestBackendRestart:
                 # Give the subscriber time to enter its select loop
                 # + yield the initial snapshot.
                 await asyncio.sleep(0.5)
+                assert received, (
+                    "baseline failed: subscriber never saw the initial "
+                    "HASH snapshot — watch_progress wiring is broken"
+                )
 
                 _docker_restart(f"{chaos_stack.project}-valkey-1")
                 await _wait_valkey_reachable(chaos_stack.valkey_url)
+                # Let the in-generator resubscribe path land. Valkey-py's
+                # pubsub socket is definitively dead after a container
+                # restart; the except-handler in watch_progress needs
+                # enough real time to see the raise, call
+                # _subscribe_and_drain, and return to the get_message
+                # loop. 4s covers the 0.5s backoff + socket reconnect.
+                await asyncio.sleep(4.0)
 
                 # New backend for publishing — original backend's
                 # socket went down with the restart.
@@ -222,11 +233,16 @@ class TestBackendRestart:
                     )
                     # Spam publishes across a generous window — at
                     # least one must land after watch_progress has
-                    # re-subscribed.
-                    deadline = time.monotonic() + 25.0
+                    # re-subscribed. Also re-write the HASH on every
+                    # loop so the fallback path yields a fresh value
+                    # when the exception-handler branch runs.
+                    deadline = time.monotonic() + 30.0
                     while time.monotonic() < deadline:
                         if any(info.message == "post" for info in received):
                             break
+                        await pub_backend.set_progress(
+                            task_id, post_fields, ttl_ms=60_000,
+                        )
                         await pub_backend.publish_progress(
                             task_id, json.dumps(post_fields).encode(),
                         )

@@ -7,11 +7,14 @@ import socket
 
 import pytest
 
+# Soak tests default to the swarmq-dev Docker stack
+# (docker-compose.swarmq-dev.yml): RabbitMQ 5673/15673, Valkey 6380.
+# Override via env vars if running against a different stack.
 _RABBITMQ_HOST = os.environ.get("SWARMQ_TEST_RABBITMQ_HOST", "localhost")
-_RABBITMQ_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ_PORT", "5672"))
-_RABBITMQ_MGMT_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ_MGMT_PORT", "15672"))
+_RABBITMQ_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ_PORT", "5673"))
+_RABBITMQ_MGMT_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ_MGMT_PORT", "15673"))
 _VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
-_VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
+_VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6380"))
 
 
 def _port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
