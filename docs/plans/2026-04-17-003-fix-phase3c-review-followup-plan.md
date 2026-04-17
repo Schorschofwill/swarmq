@@ -259,7 +259,7 @@ atomare read-then-set in `disable_schedule` via kurzem Lua-Script.
 
 ---
 
-- [ ] **Unit 9: Dedup-Counter-Header persistiert über Redelivery (Fork A)**
+- [x] **Unit 9: Dedup-Counter-Header persistiert über Redelivery (Fork A)**
 
 **Goal:** `x-swarmq-schedfire-dedup-count`-Inkrement muss in der
 requeueten Message sichtbar sein. Aktuell mutiert der Worker
@@ -336,7 +336,7 @@ Counter-Code entfernen, dann Log-Wording verifizieren.
 
 ---
 
-- [ ] **Unit 10: `SCHEDULER_LOCK_KEY` als Live-Derivation (Fork B)**
+- [x] **Unit 10: `SCHEDULER_LOCK_KEY` als Live-Derivation (Fork B)**
 
 **Goal:** Der Lock-Key-Wert wird zur Import-Zeit aus
 `locking.lock_key(SCHEDULER_LOCK_NAME)` berechnet statt hand-getippt.

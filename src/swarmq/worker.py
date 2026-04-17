@@ -763,15 +763,21 @@ class Worker:
                 header_value, ttl_ms
             )
         except BackendConnectionError:
-            # Ack-ordering discipline Rule 3: per-stage requeue counter.
-            # Mirror x-swarmq-rate-limit-count / x-swarmq-lock-conflict-count
-            # so operators see the bounce in headers (learnings reviewer).
-            prior = int(message.headers.get("x-swarmq-schedfire-dedup-count", 0))
-            message.headers["x-swarmq-schedfire-dedup-count"] = prior + 1
+            # Observability via structured log only. The rate-limit and
+            # lock-conflict stages carry an x-swarmq-*-count header, but
+            # those stages republish via publish_to_delay_queue + ack
+            # original — the in-memory header mutation survives because
+            # the publish-side carries it. Here we use nack(requeue=True)
+            # because Valkey flaps are a backend fault, not a per-message
+            # policy decision; letting the broker handle redelivery
+            # timing avoids picking an arbitrary delay value. AMQP
+            # nack-with-requeue does NOT transmit in-memory header
+            # mutations to the redelivered message, so a counter header
+            # would be broken by construction — we omit it (Unit 9 /
+            # Fork A2). Operators observe bounces via the log event.
             logger.error(
                 "schedfire_dedup_backend_error",
                 schedfire_key=header_value,
-                requeue_count=prior + 1,
             )
             await self._broker.nack(message, requeue=True)
             structlog.contextvars.clear_contextvars()

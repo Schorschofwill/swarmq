@@ -3730,24 +3730,26 @@ class TestSchedfireDedup:
         # requeue=True so the message comes back and a healthy worker
         # can try again
         assert nack_call.kwargs.get("requeue") is True
-        # Review-finding api-contract AC-F4 + testing T-03: the in-memory
-        # dedup-count header increment must run. Note that
-        # AMQP nack(requeue=True) does NOT transmit this mutation back
-        # to the broker; the increment is observable in logs and in
-        # the current in-memory object only. That tradeoff is tracked
-        # separately as the "header-mutation-via-nack" gated finding.
-        assert msg.headers["x-swarmq-schedfire-dedup-count"] == 1
 
-    async def test_dedup_backend_error_accumulates_counter(
+        # Unit 9 / Fork A2: no header mutation on the nack path — AMQP
+        # nack-with-requeue does not transmit in-memory header changes
+        # back to the broker, so a counter header would be broken by
+        # construction. Observability is via the structured
+        # schedfire_dedup_backend_error log event (visible in stderr
+        # capture above) — not via headers.
+        assert "x-swarmq-schedfire-dedup-count" not in msg.headers
+
+    async def test_dedup_backend_error_does_not_touch_existing_headers(
         self, broker, backend, config
     ):
-        """A message arriving with an existing dedup-count header gets
-        one more on each nack round, mirroring rate-limit-count."""
+        """Unit 9 guard: pre-existing headers on the message (e.g. an
+        operator-injected tracking header) pass through unchanged — we
+        don't mutate the message object on the nack path at all."""
         from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
 
         class NoopTask(Task):
-            task_info = TaskInfo(name="noop_acc", queues=["default"])
+            task_info = TaskInfo(name="noop_pass", queues=["default"])
             async def run(self):
                 raise AssertionError("must not run on backend error")
 
@@ -3757,16 +3759,18 @@ class TestSchedfireDedup:
 
         from swarmq.exceptions import BackendConnectionError as BCE
         backend.set_schedfire_dedup.side_effect = BCE("valkey down")
+        original_headers = {
+            "x-swarmq-schedfire": "cron_a:1700000000000",
+            "x-tracking-id": "abc-123",
+        }
         msg = _make_message(
-            _default_payload(name="noop_acc", args=[], kwargs={}),
-            headers={
-                "x-swarmq-schedfire": "cron_a:1700000000000",
-                "x-swarmq-schedfire-dedup-count": 3,
-            },
+            _default_payload(name="noop_pass", args=[], kwargs={}),
+            headers=dict(original_headers),
         )
         await w._handle_message(msg)
 
-        assert msg.headers["x-swarmq-schedfire-dedup-count"] == 4
+        # Headers unchanged — no mutation, no counter addition
+        assert msg.headers == original_headers
 
     async def test_worker_start_instantiates_scheduler(
         self, broker, backend, config, monkeypatch

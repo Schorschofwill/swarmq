@@ -14,12 +14,39 @@ import msgspec
 import pytest
 
 from swarmq.exceptions import BackendConnectionError
+from swarmq.locking import lock_key
 from swarmq.scheduler import (
+    SCHEDULER_LOCK_KEY,
+    SCHEDULER_LOCK_NAME,
     ScheduleDefinition,
     ScheduleStore,
     make_schedfire_key,
     parse_schedfire_key,
 )
+
+
+# ---------------------------------------------------------------------------
+# SCHEDULER_LOCK_KEY — live-derivation invariant (Unit 10 / Fork B1)
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulerLockKey:
+    """Regression guard for the live-derivation invariant. If
+    ``locking.lock_key()`` ever becomes non-trivial (e.g. gains a tenant
+    prefix), these tests catch silent drift between the scheduler's
+    constant and the LockManager's actual key format."""
+
+    def test_matches_lock_manager_derivation(self):
+        """SCHEDULER_LOCK_KEY must equal lock_key(SCHEDULER_LOCK_NAME).
+        This is by construction today — if it ever fails, someone
+        hand-typed the constant and bypassed the derivation."""
+        assert SCHEDULER_LOCK_KEY == lock_key(SCHEDULER_LOCK_NAME)
+
+    def test_expected_format(self):
+        """Snapshot of today's key format. Failure here means the
+        prefix changed — update sched_commit.lua expectations and
+        any operator docs at the same time."""
+        assert SCHEDULER_LOCK_KEY == "sq:lock:scheduler:leader"
 
 
 # ---------------------------------------------------------------------------

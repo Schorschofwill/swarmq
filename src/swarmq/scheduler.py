@@ -39,7 +39,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import LockManager
+from swarmq.locking import LockManager, lock_key
 from swarmq.lua import load_script
 from swarmq.serialization import encode_json
 from swarmq.signals import Signal, SignalDispatcher
@@ -52,10 +52,12 @@ SCHEDULER_LOCK_NAME = "scheduler:leader"
 """Logical lock name — LockManager's automatic ``sq:lock:`` prefix
 yields the final Valkey key ``sq:lock:scheduler:leader``."""
 
-SCHEDULER_LOCK_KEY = "sq:lock:scheduler:leader"
-"""Final Valkey key for the leader lock. Single source of truth for
-the owner-check in sched_commit.lua and the CLI status view. Must match
-``locking._LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME``."""
+SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
+"""Final Valkey key for the leader lock. Derived live from
+``locking.lock_key()`` so the invariant ``SCHEDULER_LOCK_KEY ==
+_LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME`` holds by construction — if
+the prefix ever changes, ``sched_commit.lua``'s owner-check and the
+CLI status view stay in sync automatically (Unit 10 / Fork B1)."""
 
 _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 """Minimum TTL for the handover marker (5s). The actual TTL used is
