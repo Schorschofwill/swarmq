@@ -11,7 +11,6 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from typing import Literal
 
 import aio_pika
 import structlog
@@ -19,6 +18,14 @@ import structlog
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backoff import calculate_backoff
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.cancellation import (
+    CANCEL_REASON_CANCEL,
+    CANCEL_REASON_TIMEOUT,
+    CancelReason,
+    build_cancel_result_dict,
+    build_error_result_dict,
+    build_result_dict,
+)
 from swarmq.config import SwarmQConfig
 from swarmq.limits import RateLimiter, parse_rate_limit
 from swarmq.locking import LockManager, compute_lock_ttl_ms
@@ -64,15 +71,6 @@ from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
 
 logger = structlog.get_logger()
-
-
-# Cancel-reason discriminators for the CancelledError branch. Named
-# constants + Literal type so mypy catches typos at call-sites
-# instead of letting a misspelled reason silently fall into the
-# hard-timeout path (REV-P2-9).
-CancelReason = Literal["cancel", "timeout"]
-_CANCEL_REASON_CANCEL: CancelReason = "cancel"
-_CANCEL_REASON_TIMEOUT: CancelReason = "timeout"
 
 
 class WorkerState(enum.Enum):
@@ -915,13 +913,9 @@ class Worker:
 
         try:
             if result_ttl > 0:
-                result_data = {
-                    "task": {"id": task_id, "queue": queue, "name": task_name},
-                    "is_error": False,
-                    "is_cancelled": True,
-                    "error_message": "",
-                    "result": None,
-                }
+                result_data = build_cancel_result_dict(
+                    task_id=task_id, queue=queue, task_name=task_name,
+                )
                 result_bytes = encode_result(result_data)
                 await self._backend.store_result(
                     task_id, result_bytes, result_ttl * 1000,
@@ -1169,7 +1163,7 @@ class Worker:
                         # cancel_reason box (Phase 3b.3).  The box is
                         # written BEFORE run_task.cancel() by whichever
                         # source fires first — first-writer-wins.
-                        if cancel_reason[0] == _CANCEL_REASON_CANCEL:
+                        if cancel_reason[0] == CANCEL_REASON_CANCEL:
                             is_cancelled = True
                             # No task_exception / error_message: cancel
                             # bypasses the error pipeline entirely.
@@ -1331,26 +1325,25 @@ class Worker:
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
             # Client._unpack reads it via .get() so pre-R3.6 consumers
             # don't break when the key is absent.
-            result_data = {
-                "task": {"id": task_id, "queue": queue, "name": task_name},
-                "is_error": is_error,
-                "is_cancelled": is_cancelled,
-                "error_message": error_message,
-                "result": None if (is_error or is_cancelled) else result_value,
-            }
+            result_data = build_result_dict(
+                task_id=task_id,
+                queue=queue,
+                task_name=task_name,
+                is_error=is_error,
+                is_cancelled=is_cancelled,
+                error_message=error_message,
+                result=None if (is_error or is_cancelled) else result_value,
+            )
 
             # 7. Serialize result
             try:
                 result_bytes = encode_result(result_data)
             except ResultSerializationError as exc:
                 logger.error("result_serialization_failed", error=str(exc))
-                result_data = {
-                    "task": {"id": task_id, "queue": queue, "name": task_name},
-                    "is_error": True,
-                    "is_cancelled": False,
-                    "error_message": str(exc),
-                    "result": None,
-                }
+                result_data = build_error_result_dict(
+                    task_id=task_id, queue=queue, task_name=task_name,
+                    error_message=str(exc),
+                )
                 result_bytes = encode_result(result_data)
 
             # 8. Resolve result_ttl
@@ -1461,7 +1454,7 @@ class Worker:
         """
         await asyncio.sleep(timeout)
         if set_reason_if_unset is not None:
-            set_reason_if_unset(_CANCEL_REASON_TIMEOUT)
+            set_reason_if_unset(CANCEL_REASON_TIMEOUT)
         run_task.cancel()
 
     async def _cancel_monitor(
@@ -1496,7 +1489,7 @@ class Worker:
                 if await self._backend.is_cancelled(
                     task_id, op_timeout=self._config.backend_op_timeout,
                 ):
-                    set_reason_if_unset(_CANCEL_REASON_CANCEL)
+                    set_reason_if_unset(CANCEL_REASON_CANCEL)
                     run_task.cancel()
                     return
             except asyncio.CancelledError:
@@ -1616,13 +1609,10 @@ class Worker:
     ) -> None:
         """Store error result in backend, publish to .XQ, and ack original message."""
         # Store error result so callers of get_result() get a response
-        result_data = {
-            "task": {"id": task_id, "queue": queue, "name": task_name},
-            "is_error": True,
-            "is_cancelled": False,
-            "error_message": error_message,
-            "result": None,
-        }
+        result_data = build_error_result_dict(
+            task_id=task_id, queue=queue, task_name=task_name,
+            error_message=error_message,
+        )
         try:
             result_bytes = encode_result(result_data)
             result_ttl = self._config.result_ttl or 86400

@@ -188,7 +188,7 @@ cancel-path nack-requeues; cap at LOCK_CONFLICT_DLQ_CAP-equivalent
 
 ---
 
-- [ ] **Unit 6: Extract `cancellation.py` + `_build_cancel_result_dict` (REV-P2-8, P2-10)**
+- [x] **Unit 6: Extract `cancellation.py` + `_build_cancel_result_dict` (REV-P2-8, P2-10)**
 
 **Goal:** New module `src/swarmq/cancellation.py` containing
 `CancelCheckResult` dataclass, `_pre_start_cancel_check` helper,
