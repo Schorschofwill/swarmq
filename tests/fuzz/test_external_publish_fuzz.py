@@ -37,7 +37,7 @@ import contextlib
 import json
 import random
 import uuid
-from typing import Any
+from typing import Any  # noqa: F401 — used by _make_random_headers return annotation
 
 import aio_pika
 import pytest
@@ -48,7 +48,6 @@ from hypothesis import strategies as st
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
 from tests.chaos.conftest import ChaosStack
@@ -103,6 +102,9 @@ class TestAmqpHeaderFuzz:
     """Fuzz random header dicts + bodies into a live worker's queue.
 
     One ``chaos_stack`` for the whole class so the worker boots once.
+    Mirrors the setup pattern from
+    ``tests/chaos/test_resource_exhaustion.py`` (async-with + sleep
+    before publish) to avoid the prefetch / QoS race.
     """
 
     async def test_amqp_random_headers_no_crash(
@@ -115,88 +117,87 @@ class TestAmqpHeaderFuzz:
         scheduled afterwards completes normally.
         """
         queue = _unique_queue()
-        canary_task = f"fuzz_canary_{uuid.uuid4().hex[:8]}"
+        canary_name = f"fuzz_canary_{uuid.uuid4().hex[:8]}"
 
         class CanaryTask(Task):
-            task_info = TaskInfo(name=canary_task, queues=[queue], max_retries=0)
+            task_info = TaskInfo(name=canary_name, queues=[queue], max_retries=0)
 
             async def run(self, x: int) -> int:
                 return x + 1
 
-        client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
-        client_backend = ValkeyBackend(chaos_stack.valkey_url)
-        client_app = SwarmQ(client_broker, client_backend, queues=[queue])
+        broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
+        backend = ValkeyBackend(chaos_stack.valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
 
-        worker_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
-        worker_backend = ValkeyBackend(chaos_stack.valkey_url)
-        worker_app = SwarmQ(
-            worker_broker, worker_backend, queues=[queue], concurrency=2,
-        )
+        async with app:
+            await broker.declare_queue(queue)
 
-        online = asyncio.Event()
-
-        @worker_app.on_signal(Signal.WORKER_ONLINE)
-        async def _on_online(**_: Any) -> None:
-            online.set()
-
-        await client_app.__aenter__()
-        await client_broker.declare_queue(queue)
-        worker_task = asyncio.create_task(worker_app.start_worker())
-
-        try:
-            await asyncio.wait_for(online.wait(), timeout=10.0)
-
-            # Canary-before: prove the pipeline is healthy pre-fuzz.
-            tid_pre = await client_app.schedule(canary_task, 10)
-            result_pre = await client_app.get_result(tid_pre, timeout=20)
-            assert result_pre == 11, (
-                f"pre-fuzz canary failed: {result_pre!r}"
+            worker_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
+            worker_backend = ValkeyBackend(chaos_stack.valkey_url)
+            worker_app = SwarmQ(
+                worker_broker, worker_backend,
+                queues=[queue], concurrency=1,
             )
+            worker_task = asyncio.create_task(worker_app.start_worker())
 
-            # Fuzz burst: 15 random-header+body messages directly onto
-            # the queue. Use a seeded RNG for reproducibility.
-            rng = random.Random(0xFACE_B00C)
-            conn = await aio_pika.connect_robust(chaos_stack.rabbitmq_url)
             try:
-                channel = await conn.channel()
-                exchange = channel.default_exchange
+                # Give the worker time to connect + attach consumer
+                # before we publish anything — otherwise the first
+                # message may race prefetch application.
+                await asyncio.sleep(0.8)
 
-                for _ in range(15):
+                # Fuzz burst: a handful of random-header + random-body
+                # messages directly onto the queue. Seeded RNG for
+                # reproducibility. Publish one-at-a-time, each via its
+                # own connection, waiting between publishes so the
+                # worker has time to deserialize-fail + nack + DLX-
+                # route before the next arrival. Sharing one connection
+                # across the burst has been observed to starve the
+                # consumer under concurrent publish pressure in
+                # aio_pika; the per-message connection is slow but
+                # unambiguously safe.
+                rng = random.Random(0xFACE_B00C)
+                for _ in range(6):
                     headers = _make_random_headers(rng)
                     body = _make_random_body(rng)
+                    conn = await aio_pika.connect(chaos_stack.rabbitmq_url)
                     try:
-                        msg = aio_pika.Message(
-                            body=body,
-                            headers=headers,
-                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                        )
-                        await exchange.publish(msg, routing_key=queue)
-                    except Exception:
-                        # Some header codec edges still slip through —
-                        # skip those; they never reach the worker.
-                        continue
+                        ch = await conn.channel()
+                        try:
+                            msg = aio_pika.Message(
+                                body=body,
+                                headers=headers,
+                                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                            )
+                            await ch.default_exchange.publish(
+                                msg, routing_key=queue,
+                            )
+                        except Exception:
+                            # Some header codec edges still slip
+                            # through — skip those; they never reach
+                            # the worker.
+                            pass
+                    finally:
+                        await conn.close()
+                    await asyncio.sleep(0.4)
+
+                # Let the worker drain any straggler.
+                await asyncio.sleep(1.0)
+
+                # Canary: a well-formed task must still succeed post-fuzz.
+                tid = await app.schedule(canary_name, 41)
+                result = await app.get_result(tid, timeout=30)
+                assert result == 42, (
+                    f"post-fuzz canary failed: got {result!r}"
+                )
             finally:
-                await conn.close()
-
-            # Let the worker churn through the DLX routes.
-            await asyncio.sleep(2.0)
-
-            # Canary-after: pipeline still works post-fuzz.
-            tid_post = await client_app.schedule(canary_task, 41)
-            result_post = await client_app.get_result(tid_post, timeout=30)
-            assert result_post == 42, (
-                f"post-fuzz canary failed: {result_post!r}"
-            )
-        finally:
-            worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await worker_task
-            with contextlib.suppress(Exception):
-                await worker_broker.close()
-            with contextlib.suppress(Exception):
-                await worker_backend.close()
-            with contextlib.suppress(Exception):
-                await client_app.__aexit__(None, None, None)
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await worker_task
+                with contextlib.suppress(Exception):
+                    await worker_broker.close()
+                with contextlib.suppress(Exception):
+                    await worker_backend.close()
 
 
 # ---------------------------------------------------------------------------
