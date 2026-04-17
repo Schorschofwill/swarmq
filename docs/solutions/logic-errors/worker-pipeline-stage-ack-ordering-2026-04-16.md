@@ -1,7 +1,7 @@
 ---
 title: "Worker pipeline stages: ack-ordering and the FIRE_AND_FORGET data-loss trap"
 date: 2026-04-16
-last_updated: 2026-04-16
+last_updated: 2026-04-17
 category: logic-errors
 module: swarmq
 problem_type: logic_error
@@ -219,3 +219,4 @@ The try/except mirror to `_evaluate_retry` matters because broker faults during 
 - **Rule 2 refinement (DLX semantics)**: `docs/solutions/logic-errors/nack-requeue-false-routes-via-dlx-not-data-loss-2026-04-16.md` — Phase 3b.2 review-iteration findings on transient vs permanent error handling and DLX-honest log wording
 - Phase 3b.2 fix commits applying the refinement: `95cc2d6`, `8b9ff67`
 - Adjacent learning: `docs/solutions/patterns/measure-before-planning-variance-claims-2026-04-16.md` — same session, on review-finding confidence vs library-specific contracts
+- **R3.5 extensions (2026-04-17)**: `docs/solutions/patterns/r3-5-unique-tasks-implementation-learnings-2026-04-17.md` — unique-flag release-side patterns that complement Rule 1-4 here. Specifically: (a) release-only helpers (`_maybe_release_unique`) do not follow the `_try_apply_*` gate shape; they attach to existing terminal paths via `_unique_release_pending` state. (b) Release must run AFTER ack at DLQ sites, not before — a release-before-ack + ack-fail combination redelivers the message with the flag already gone and lets the task run twice in the dedup window. (c) Start-mode release at pickup must be placed AFTER rate-limit / lock stages, not before; otherwise rate-limit requeue opens a dedup-bypass window.
