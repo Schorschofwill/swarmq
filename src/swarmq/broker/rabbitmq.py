@@ -1,10 +1,38 @@
 """RabbitMQ broker implementation."""
 
+import asyncio
 import json
 
 import aio_pika
+from aio_pika.exceptions import (
+    AMQPChannelError,
+    ChannelClosed,
+    ChannelInvalidStateError,
+    ConnectionClosed,
+)
 
 from swarmq.exceptions import BrokerConnectionError
+
+# How long to wait for the connection/channel to become ready again
+# during a reconnect before surfacing BrokerConnectionError. U1.1
+# (2026-04-17): the toxiproxy spike showed publish-during-reconnect
+# fails with CancelledError; the broker now waits instead.
+_CHANNEL_READY_TIMEOUT_S = 10.0
+
+# Transient failure modes that indicate the channel/connection is in a
+# reconnect-transition state. Safe to retry after a short backoff.
+# CancelledError is included because aio_pika's internal drain_future
+# surfaces as CancelledError when the transport is closed mid-publish
+# (2026-04-17 spike evidence). We guard against swallowing task-level
+# cancellation via asyncio.current_task().cancelling() below.
+_CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
+    ChannelInvalidStateError,
+    ChannelClosed,
+    AMQPChannelError,
+    ConnectionClosed,
+    asyncio.CancelledError,
+)
+_PUBLISH_MAX_ATTEMPTS = 5
 
 
 class RabbitMQBroker:
@@ -15,6 +43,11 @@ class RabbitMQBroker:
         self._publish_channel = None
         self._consume_channel = None
         self._consumer_tags: list[tuple] = []  # list of (queue, consumer_tag)
+        # U1.1: QoS state re-applied after channel recreate. Without
+        # this, a reconnected consumer silently loses its prefetch.
+        self._consume_prefetch: int | None = None
+        # Guard against two concurrent channel-reopen operations.
+        self._channel_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         if self._connection is not None:
@@ -32,9 +65,111 @@ class RabbitMQBroker:
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
 
+    async def _ensure_publish_channel(self):
+        """Return a ready publish channel; recreate if dropped.
+
+        aio_pika's RobustChannel auto-reopens after a transport blip,
+        but operations initiated during the `is_closed=True` window
+        fail (CancelledError / ChannelInvalidStateError). Spike
+        evidence: docs/solutions/spikes/2026-04-17-toxiproxy-
+        reconnect-spike.md. This guard waits for the connection to
+        be ready, then reopens the channel if still closed, before
+        returning it to the caller.
+        """
+        return await self._ensure_channel("_publish_channel")
+
+    async def _ensure_consume_channel(self):
+        """Return a ready consume channel; recreate if dropped.
+
+        Same contract as :meth:`_ensure_publish_channel`, but also
+        re-applies the previous QoS prefetch on a recreated channel
+        — otherwise the reconnected consumer silently loses its
+        rate-limiting setting.
+        """
+        chan = await self._ensure_channel("_consume_channel")
+        if self._consume_prefetch is not None:
+            # Cheap no-op when already set; always safe to call.
+            await chan.set_qos(prefetch_count=self._consume_prefetch)
+        return chan
+
+    async def _publish_with_retry(
+        self, routing_key: str, msg: "aio_pika.Message",
+    ) -> None:
+        """Publish with bounded retry across reconnect transitions.
+
+        aio_pika's RobustChannel recovers automatically, but operations
+        initiated during the transition window fail with
+        ChannelInvalidStateError or CancelledError from the internal
+        drain_future. We retry with exponential backoff, recreating
+        the channel between attempts. Task-level cancellation (caller
+        cancelled the publish) is preserved by re-raising when
+        current_task().cancelling() indicates our task is being
+        cancelled.
+        """
+        last_exc: BaseException | None = None
+        for attempt in range(_PUBLISH_MAX_ATTEMPTS):
+            pub = await self._ensure_publish_channel()
+            try:
+                await pub.default_exchange.publish(msg, routing_key=routing_key)
+                return
+            except _CHANNEL_TRANSIENT_ERRORS as exc:
+                # Distinguish task-level cancellation from aio_pika's
+                # internal drain cancellation. If our own task is being
+                # cancelled, propagate.
+                if isinstance(exc, asyncio.CancelledError):
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling() > 0:
+                        raise
+                last_exc = exc
+                # Drop the potentially broken channel so the next
+                # _ensure_publish_channel recreates it.
+                if self._publish_channel is not None:
+                    try:
+                        if not self._publish_channel.is_closed:
+                            await self._publish_channel.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._publish_channel = None
+                await asyncio.sleep(0.05 * (2 ** attempt))
+        raise BrokerConnectionError(
+            f"publish to {routing_key!r} failed after "
+            f"{_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
+        ) from last_exc
+
+    async def _ensure_channel(self, attr: str):
+        channel = getattr(self, attr)
+        if channel is not None and not channel.is_closed:
+            return channel
+        async with self._channel_lock:
+            # Re-check under the lock — another coroutine may have
+            # reopened while we were waiting.
+            channel = getattr(self, attr)
+            if channel is not None and not channel.is_closed:
+                return channel
+            if self._connection is None:
+                raise BrokerConnectionError("broker not connected")
+            try:
+                await asyncio.wait_for(
+                    self._connection.ready(),
+                    timeout=_CHANNEL_READY_TIMEOUT_S,
+                )
+            except TimeoutError as exc:
+                raise BrokerConnectionError(
+                    f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s"
+                ) from exc
+            try:
+                channel = await self._connection.channel()
+            except Exception as exc:  # noqa: BLE001
+                raise BrokerConnectionError(
+                    f"channel reopen failed: {exc}"
+                ) from exc
+            setattr(self, attr, channel)
+            return channel
+
     async def declare_queue(self, queue_name: str) -> None:
+        pub = await self._ensure_publish_channel()
         # Main queue — DLX points to dead-letter queue
-        await self._publish_channel.declare_queue(
+        await pub.declare_queue(
             queue_name,
             durable=True,
             arguments={
@@ -44,7 +179,7 @@ class RabbitMQBroker:
             },
         )
         # Delay queue — DLX points back to main queue
-        await self._publish_channel.declare_queue(
+        await pub.declare_queue(
             f"{queue_name}.DQ",
             durable=True,
             arguments={
@@ -54,7 +189,7 @@ class RabbitMQBroker:
             },
         )
         # Dead-letter queue
-        await self._publish_channel.declare_queue(
+        await pub.declare_queue(
             f"{queue_name}.XQ",
             durable=True,
             arguments={
@@ -68,10 +203,7 @@ class RabbitMQBroker:
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             **properties,
         )
-        await self._publish_channel.default_exchange.publish(
-            msg,
-            routing_key=queue_name,
-        )
+        await self._publish_with_retry(queue_name, msg)
 
     async def publish_to_delay_queue(
         self,
@@ -86,10 +218,7 @@ class RabbitMQBroker:
             expiration=delay_ms / 1000,
             headers=headers or {},
         )
-        await self._publish_channel.default_exchange.publish(
-            msg,
-            routing_key=f"{queue_name}.DQ",
-        )
+        await self._publish_with_retry(f"{queue_name}.DQ", msg)
 
     async def publish_to_dead_letter_queue(
         self,
@@ -102,14 +231,14 @@ class RabbitMQBroker:
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             headers=headers or {},
         )
-        await self._publish_channel.default_exchange.publish(
-            msg,
-            routing_key=f"{queue_name}.XQ",
-        )
+        await self._publish_with_retry(f"{queue_name}.XQ", msg)
 
     async def consume(self, queue_name: str, callback, prefetch_count: int) -> None:
-        await self._consume_channel.set_qos(prefetch_count=prefetch_count)
-        queue = await self._consume_channel.get_queue(queue_name)
+        # Remember the prefetch so _ensure_consume_channel can re-apply
+        # it after a channel recreate.
+        self._consume_prefetch = prefetch_count
+        chan = await self._ensure_consume_channel()
+        queue = await chan.get_queue(queue_name)
         consumer_tag = await queue.consume(callback)
         self._consumer_tags.append((queue, consumer_tag))
 
@@ -136,7 +265,8 @@ class RabbitMQBroker:
 
     async def _dlq_queue(self, queue_name: str):
         """Get a handle on ``{queue_name}.XQ``."""
-        return await self._publish_channel.get_queue(f"{queue_name}.XQ")
+        pub = await self._ensure_publish_channel()
+        return await pub.get_queue(f"{queue_name}.XQ")
 
     @staticmethod
     def _parse_task_fields(body: bytes) -> tuple[str | None, str | None, dict | None]:
@@ -293,6 +423,7 @@ class RabbitMQBroker:
                     if to_main and skip_malformed_on_move and is_malformed:
                         to_main = False
 
+                    pub = await self._ensure_publish_channel()
                     if to_main:
                         forward_headers = dict(headers)
                         # Reset retry-count so the operator's "try this
@@ -305,7 +436,7 @@ class RabbitMQBroker:
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             headers=forward_headers,
                         )
-                        await self._publish_channel.default_exchange.publish(
+                        await pub.default_exchange.publish(
                             msg_out, routing_key=queue_name,
                         )
                     else:
@@ -315,7 +446,7 @@ class RabbitMQBroker:
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             headers=dict(headers),
                         )
-                        await self._publish_channel.default_exchange.publish(
+                        await pub.default_exchange.publish(
                             msg_out, routing_key=f"{queue_name}.XQ",
                         )
                 except BaseException as exc:  # noqa: BLE001

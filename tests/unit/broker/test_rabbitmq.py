@@ -38,8 +38,8 @@ class TestRabbitMQBrokerDeclareQueue:
     @pytest.fixture()
     def connected_broker(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._publish_channel = AsyncMock()
-        broker._consume_channel = AsyncMock()
+        broker._publish_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
+        broker._consume_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         broker._connection = AsyncMock()
         return broker
 
@@ -80,7 +80,7 @@ class TestRabbitMQBrokerDeclareQueue:
 class TestRabbitMQBrokerPublish:
     async def test_publish_sends_message_with_persistent_delivery(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._publish_channel = AsyncMock()
+        broker._publish_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
         await broker.publish("tasks", b'{"task": "data"}')
@@ -97,7 +97,7 @@ class TestRabbitMQBrokerPublish:
 class TestRabbitMQBrokerConsume:
     async def test_consume_sets_qos_and_starts_consuming(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._consume_channel = AsyncMock()
+        broker._consume_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         mock_queue = AsyncMock()
         broker._consume_channel.get_queue.return_value = mock_queue
         callback = AsyncMock()
@@ -183,7 +183,7 @@ class TestRabbitMQBrokerClose:
 class TestRabbitMQBrokerPublishToDelayQueue:
     async def test_publish_to_delay_queue_sends_to_dq_with_ttl(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._publish_channel = AsyncMock()
+        broker._publish_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
         await broker.publish_to_delay_queue(
@@ -202,7 +202,7 @@ class TestRabbitMQBrokerPublishToDelayQueue:
 
     async def test_publish_to_delay_queue_without_headers(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._publish_channel = AsyncMock()
+        broker._publish_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
         await broker.publish_to_delay_queue("tasks", b"body", delay_ms=1000)
@@ -216,7 +216,7 @@ class TestRabbitMQBrokerPublishToDelayQueue:
 class TestRabbitMQBrokerPublishToDeadLetterQueue:
     async def test_publish_to_dead_letter_queue_sends_to_xq(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._publish_channel = AsyncMock()
+        broker._publish_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
         await broker.publish_to_dead_letter_queue(
@@ -234,7 +234,7 @@ class TestRabbitMQBrokerPublishToDeadLetterQueue:
 
     async def test_publish_to_dead_letter_queue_without_headers(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._publish_channel = AsyncMock()
+        broker._publish_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
         await broker.publish_to_dead_letter_queue("tasks", b"body")

@@ -153,7 +153,7 @@ class TestBrokerCancelConsume:
     async def test_cancel_consume_cancels_all_consumer_tags(self):
         """cancel_consume() calls queue.cancel() for each stored consumer tag."""
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
-        broker._consume_channel = AsyncMock()
+        broker._consume_channel = AsyncMock(is_closed=False); broker._connection = AsyncMock()
 
         # Simulate two queues being consumed
         mock_queue_1 = AsyncMock()
