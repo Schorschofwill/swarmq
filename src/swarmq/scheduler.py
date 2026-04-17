@@ -215,20 +215,39 @@ class ScheduleStore:
                 definition.schedule_name, definition.fire_ts_ms
             )
 
-    async def remove_schedule(self, schedule_name: str) -> None:
-        """Permanently remove a schedule (ZREM + HDEL)."""
+    async def remove_schedule(self, schedule_name: str) -> bool:
+        """Permanently remove a schedule (ZREM + HDEL).
+
+        Returns True when the entry existed and was actually removed,
+        False when no entry was present (both HDEL and ZREM no-oped).
+        Callers (CLI, agents) use the boolean to tell "removed" from
+        "missing" without a second HEXISTS round-trip (Unit 4 / M-2).
+        """
+        # HEXISTS first so the return value reflects whether there was
+        # anything to remove. Two extra bytes on the wire; saves an
+        # entire HGET round-trip that callers would otherwise do.
+        try:
+            existed = bool(
+                await self._backend._client.hexists(
+                    self._backend._sched_defs_key(), schedule_name
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise BackendConnectionError(
+                f"hexists failed for {schedule_name!r}: {exc}"
+            ) from exc
         await self._backend.zrem_schedule(schedule_name)
         await self._backend.hdel_schedule_def(schedule_name)
+        return existed
 
-    async def disable_schedule(self, schedule_name: str) -> None:
+    async def disable_schedule(self, schedule_name: str) -> bool:
         """Mark an existing schedule disabled AND remove it from the
         due-set so the poll loop no longer touches it.
 
-        Missing schedule is a no-op. Insert-if-absent (CD11) then
-        prevents a later static-sync from resurrecting the entry
-        because the disabled flag stays in the def JSON. The zset
-        removal (review-finding correctness C-02) stops the poll
-        loop from repeatedly pulling the disabled entry every tick.
+        Returns True when the entry existed and was disabled, False
+        when no entry was present OR the existing entry was malformed
+        (in which case we log + skip rather than overwriting; Unit 4
+        /M-2 boolean lets the CLI distinguish "disabled" from "no-op").
 
         Uses sched_disable.lua for the HSET+ZREM atomic write-pair
         (Unit 8 / M-14): a concurrent remove or re-add on the same
@@ -238,7 +257,7 @@ class ScheduleStore:
         """
         existing = await self._backend.hget_schedule_def(schedule_name)
         if existing is None:
-            return
+            return False
         try:
             current = msgspec.json.decode(existing, type=ScheduleDefinition)
         except msgspec.DecodeError as exc:
@@ -253,7 +272,7 @@ class ScheduleStore:
                     "to clear the malformed entry"
                 ),
             )
-            return
+            return False
         updated = msgspec.structs.replace(current, disabled=True)
         try:
             await self._disable_script(
@@ -269,6 +288,7 @@ class ScheduleStore:
             raise BackendConnectionError(
                 f"sched_disable failed for {schedule_name!r}: {exc}"
             ) from exc
+        return True
 
     async def list_schedules(self) -> list[ScheduleDefinition]:
         """Return every decodable ScheduleDefinition in the defs hash.

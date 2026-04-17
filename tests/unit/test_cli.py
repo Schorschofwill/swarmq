@@ -359,6 +359,27 @@ class TestScheduleParser:
         ns = parser.parse_args(["schedule", "remove", "abc", "--permanent"])
         assert ns.permanent is True
 
+    def test_add_format_json(self):
+        """Unit 4 / M-2: agent-parseable output."""
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "add", "x", "--cron", "* * * * *",
+            "--task", "t", "--format", "json",
+        ])
+        assert ns.format == "json"
+
+    def test_add_format_defaults_to_table(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "add", "x", "--cron", "* * * * *", "--task", "t",
+        ])
+        assert ns.format == "table"
+
+    def test_remove_format_json(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["schedule", "remove", "x", "--format", "json"])
+        assert ns.format == "json"
+
     def test_status_default_limit(self):
         parser = cli._build_parser()
         ns = parser.parse_args(["schedule", "status"])

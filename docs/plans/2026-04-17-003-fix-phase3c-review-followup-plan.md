@@ -185,7 +185,7 @@ file-scope marker via pytest-Convention.
 
 ---
 
-- [ ] **Unit 4: --format json für `swarmq schedule add` und `remove` (M-2)**
+- [x] **Unit 4: --format json für `swarmq schedule add` und `remove` (M-2)**
 
 **Goal:** Agent-readable JSON-Output plus boolean "did-it-happen"-
 Indicator für die mutierenden CLI-Commands.

@@ -221,6 +221,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default="default",
         help="Target queue (default: default).",
     )
+    sched_add.add_argument(
+        "--format",
+        choices=("table", "json"),
+        default="table",
+        help=(
+            "Output format (default: table). Use 'json' for agent-"
+            "parseable output with an explicit 'inserted' boolean."
+        ),
+    )
 
     # remove
     sched_remove = schedule_sub.add_parser(
@@ -235,6 +244,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Hard-delete (ZREM + HDEL). Without this flag the schedule "
             "is only disabled — useful when you want insert-if-absent "
             "to keep blocking re-syncs from code."
+        ),
+    )
+    sched_remove.add_argument(
+        "--format",
+        choices=("table", "json"),
+        default="table",
+        help=(
+            "Output format (default: table). Use 'json' for agent-"
+            "parseable output with an explicit 'removed' boolean."
         ),
     )
 
@@ -423,7 +441,13 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
     try:
         store = ScheduleStore(backend)
         inserted = await store.add_schedule(definition)
-        if inserted:
+        if getattr(args, "format", "table") == "json":
+            sys.stdout.write(json.dumps({
+                "inserted": inserted,
+                "name": args.name,
+                "already_exists": not inserted,
+            }) + "\n")
+        elif inserted:
             sys.stdout.write(f"added schedule {args.name!r}\n")
         else:
             sys.stdout.write(
@@ -439,11 +463,27 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
     try:
         store = ScheduleStore(backend)
         if args.permanent:
-            await store.remove_schedule(args.name)
-            sys.stdout.write(f"permanently removed schedule {args.name!r}\n")
+            changed = await store.remove_schedule(args.name)
+            action = "removed"
         else:
-            await store.disable_schedule(args.name)
-            sys.stdout.write(f"disabled schedule {args.name!r}\n")
+            changed = await store.disable_schedule(args.name)
+            action = "disabled"
+
+        if getattr(args, "format", "table") == "json":
+            sys.stdout.write(json.dumps({
+                "removed": changed,
+                "permanent": bool(args.permanent),
+                "name": args.name,
+            }) + "\n")
+            return
+
+        if changed:
+            verb = "permanently removed" if args.permanent else "disabled"
+            sys.stdout.write(f"{verb} schedule {args.name!r}\n")
+        else:
+            sys.stdout.write(
+                f"schedule {args.name!r} not found — {action} was a no-op\n"
+            )
     finally:
         await backend.close()
 

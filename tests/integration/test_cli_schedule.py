@@ -35,6 +35,7 @@ def _ns_add(**overrides) -> argparse.Namespace:
         args="[]",
         kwargs="{}",
         queue="default",
+        format="table",
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -44,8 +45,10 @@ def _ns_list(format="table"):
     return argparse.Namespace(format=format)
 
 
-def _ns_remove(name, permanent=False):
-    return argparse.Namespace(name=name, permanent=permanent)
+def _ns_remove(name, permanent=False, format="table"):
+    return argparse.Namespace(
+        name=name, permanent=permanent, format=format
+    )
 
 
 def _ns_status(limit=10, format="table"):
@@ -169,3 +172,74 @@ class TestStatus:
         finally:
             await client.delete(SCHEDULER_LOCK_KEY)
             await client.aclose()
+
+
+class TestAddRemoveJsonOutput:
+    """Unit 4 / M-2: agent-parseable JSON output for mutating
+    subcommands. Boolean fields let agents distinguish insert-vs-
+    no-op and removed-vs-missing without parsing prose."""
+
+    async def test_add_json_reports_inserted_true(self, _env, valkey_url):
+        name = f"add-{uuid.uuid4().hex[:8]}"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            await cli._run_schedule_add(_ns_add(name=name, format="json"))
+        import json
+        data = json.loads(buf.getvalue())
+        assert data == {"inserted": True, "name": name, "already_exists": False}
+
+    async def test_add_json_reports_already_exists(self, _env, valkey_url):
+        name = f"dup-{uuid.uuid4().hex[:8]}"
+        # First add succeeds
+        await cli._run_schedule_add(_ns_add(name=name))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            await cli._run_schedule_add(_ns_add(name=name, format="json"))
+        import json
+        data = json.loads(buf.getvalue())
+        assert data == {"inserted": False, "name": name, "already_exists": True}
+
+    async def test_remove_json_reports_removed_true(self, _env, valkey_url):
+        name = f"rm-{uuid.uuid4().hex[:8]}"
+        await cli._run_schedule_add(_ns_add(name=name))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            await cli._run_schedule_remove(
+                _ns_remove(name, permanent=True, format="json")
+            )
+        import json
+        data = json.loads(buf.getvalue())
+        assert data == {"removed": True, "permanent": True, "name": name}
+
+    async def test_remove_json_reports_missing(self, _env, valkey_url):
+        """Missing name → removed=false, exit still 0. Agents can tell
+        no-op from success via the boolean."""
+        name = f"ghost-{uuid.uuid4().hex[:8]}"
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            await cli._run_schedule_remove(
+                _ns_remove(name, permanent=True, format="json")
+            )
+        import json
+        data = json.loads(buf.getvalue())
+        assert data == {"removed": False, "permanent": True, "name": name}
+
+    async def test_remove_disable_json_reports_removed_bool(
+        self, _env, valkey_url
+    ):
+        """Non-permanent remove also reports a removed-bool in JSON
+        mode. True when an entry was disabled, False on no-op."""
+        name = f"dis-{uuid.uuid4().hex[:8]}"
+        await cli._run_schedule_add(_ns_add(name=name))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            await cli._run_schedule_remove(
+                _ns_remove(name, permanent=False, format="json")
+            )
+        import json
+        data = json.loads(buf.getvalue())
+        assert data == {"removed": True, "permanent": False, "name": name}
