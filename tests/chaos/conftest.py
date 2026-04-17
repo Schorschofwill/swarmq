@@ -228,11 +228,3 @@ async def toxiproxy(chaos_stack: ChaosStack) -> AsyncIterator[ToxiproxyClient]:
             await client.aclose()
 
 
-async def _wait_until(predicate, timeout: float, interval: float = 0.2) -> bool:
-    """Helper for chaos tests: poll a predicate until True or timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if await predicate() if asyncio.iscoroutinefunction(predicate) else predicate():
-            return True
-        await asyncio.sleep(interval)
-    return False

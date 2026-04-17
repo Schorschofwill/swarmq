@@ -65,7 +65,7 @@ class RabbitMQBroker:
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
 
-    async def _ensure_publish_channel(self):
+    async def _ensure_publish_channel(self) -> "aio_pika.abc.AbstractChannel":
         """Return a ready publish channel; recreate if dropped.
 
         aio_pika's RobustChannel auto-reopens after a transport blip,
@@ -78,7 +78,7 @@ class RabbitMQBroker:
         """
         return await self._ensure_channel("_publish_channel")
 
-    async def _ensure_consume_channel(self):
+    async def _ensure_consume_channel(self) -> "aio_pika.abc.AbstractChannel":
         """Return a ready consume channel; recreate if dropped.
 
         Same contract as :meth:`_ensure_publish_channel`, but also
@@ -130,13 +130,17 @@ class RabbitMQBroker:
                     except Exception:  # noqa: BLE001
                         pass
                     self._publish_channel = None
-                await asyncio.sleep(0.05 * (2 ** attempt))
+                # Skip the backoff sleep on the final attempt — we are
+                # about to raise anyway. Saves up to 800ms latency at
+                # exhaustion (ce-review R-4).
+                if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
+                    await asyncio.sleep(0.05 * (2 ** attempt))
         raise BrokerConnectionError(
             f"publish to {routing_key!r} failed after "
             f"{_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
         ) from last_exc
 
-    async def _ensure_channel(self, attr: str):
+    async def _ensure_channel(self, attr: str) -> "aio_pika.abc.AbstractChannel":
         channel = getattr(self, attr)
         if channel is not None and not channel.is_closed:
             return channel
@@ -155,13 +159,15 @@ class RabbitMQBroker:
                 )
             except TimeoutError as exc:
                 raise BrokerConnectionError(
-                    f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s"
+                    f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
+                    f"(reopening {attr!r} on {self._url!r})"
                 ) from exc
             try:
                 channel = await self._connection.channel()
             except Exception as exc:  # noqa: BLE001
                 raise BrokerConnectionError(
-                    f"channel reopen failed: {exc}"
+                    f"channel reopen failed for {attr!r} on "
+                    f"{self._url!r}: {exc}"
                 ) from exc
             setattr(self, attr, channel)
             return channel

@@ -135,8 +135,8 @@ async def _poison_queue(
                 tid = await client_app.schedule(task_name)
                 task_ids.append(tid)
             # Poll DLQ count until all landed (max 15s).
-            deadline = asyncio.get_event_loop().time() + 15.0
-            while asyncio.get_event_loop().time() < deadline:
+            deadline = asyncio.get_running_loop().time() + 15.0
+            while asyncio.get_running_loop().time() < deadline:
                 if await _dlq_count(rabbitmq_url, queue) >= count:
                     break
                 await asyncio.sleep(0.2)

@@ -568,8 +568,8 @@ class TestNetworkChaos:
                 # need several attempts to reattach and see a live
                 # publish in the same cycle. 15s is generous; on a
                 # healthy run the subscriber reattaches within 1-2s.
-                deadline = asyncio.get_event_loop().time() + 15.0
-                while asyncio.get_event_loop().time() < deadline:
+                deadline = asyncio.get_running_loop().time() + 15.0
+                while asyncio.get_running_loop().time() < deadline:
                     await pub_backend.publish_progress(
                         task_id, json.dumps(post_fields).encode("utf-8"),
                     )

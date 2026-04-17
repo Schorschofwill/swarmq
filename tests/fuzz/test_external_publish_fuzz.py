@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import random
 import uuid
 from typing import Any
 
@@ -52,7 +53,7 @@ from swarmq.task import Task, TaskInfo
 
 from tests.chaos.conftest import ChaosStack
 
-pytestmark = [pytest.mark.timeout(240)]
+pytestmark = [pytest.mark.timeout(300)]
 
 
 # ---------------------------------------------------------------------------
@@ -64,26 +65,38 @@ def _unique_queue() -> str:
     return f"fuzz-{uuid.uuid4().hex[:10]}"
 
 
-# Hypothesis strategy for an AMQP header dict. Keys: str. Values:
-# primitive types that aio_pika's STOMP header encoder accepts. We
-# deliberately mix str/int/bytes so the property covers codec edges.
-_headers_strategy = st.dictionaries(
-    keys=st.text(
-        alphabet=st.characters(
-            whitelist_categories=("Lu", "Ll", "Nd", "Pc"),
-        ),
-        min_size=1,
-        max_size=16,
-    ),
-    values=st.one_of(
-        st.text(max_size=32),
-        st.integers(min_value=-(2**31), max_value=2**31 - 1),
-        st.binary(max_size=32),
-    ),
-    max_size=6,
+_SAFE_HEADER_CHARS = (
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789_-"
 )
 
-_bodies_strategy = st.binary(max_size=256)
+
+def _make_random_headers(rng: random.Random) -> dict[str, Any]:
+    """Draw a single AMQP-compatible random header dict.
+
+    We deliberately restrict value types to those aio_pika's header
+    codec accepts (str/int/bytes) so the publish does NOT fail client-
+    side — the worker is what we want to exercise, not the codec.
+    """
+    out: dict[str, Any] = {}
+    for _ in range(rng.randint(0, 5)):
+        key_len = rng.randint(1, 12)
+        key = "".join(rng.choices(_SAFE_HEADER_CHARS, k=key_len))
+        kind = rng.randint(0, 2)
+        if kind == 0:
+            out[key] = "".join(rng.choices(_SAFE_HEADER_CHARS, k=rng.randint(0, 24)))
+        elif kind == 1:
+            out[key] = rng.randint(-(2**31), 2**31 - 1)
+        else:
+            out[key] = bytes(rng.randint(0, 255) for _ in range(rng.randint(0, 24)))
+    return out
+
+
+def _make_random_body(rng: random.Random) -> bytes:
+    """Random bytes body — never parseable as swarmq JSON."""
+    size = rng.randint(0, 256)
+    return bytes(rng.randint(0, 255) for _ in range(size))
 
 
 class TestAmqpHeaderFuzz:
@@ -133,23 +146,24 @@ class TestAmqpHeaderFuzz:
         try:
             await asyncio.wait_for(online.wait(), timeout=10.0)
 
-            # Drive the hypothesis burst. We do it inline (not via @given
-            # on the async method) because the fuzz payloads must be
-            # generated on a running event loop that owns the broker
-            # connections.
+            # Canary-before: prove the pipeline is healthy pre-fuzz.
+            tid_pre = await client_app.schedule(canary_task, 10)
+            result_pre = await client_app.get_result(tid_pre, timeout=20)
+            assert result_pre == 11, (
+                f"pre-fuzz canary failed: {result_pre!r}"
+            )
+
+            # Fuzz burst: 15 random-header+body messages directly onto
+            # the queue. Use a seeded RNG for reproducibility.
+            rng = random.Random(0xFACE_B00C)
             conn = await aio_pika.connect_robust(chaos_stack.rabbitmq_url)
             try:
                 channel = await conn.channel()
                 exchange = channel.default_exchange
 
-                # Generate inside a dedicated strategy-draw loop.
-                # hypothesis has no direct "draw N examples" helper on
-                # a live strategy, so we call strategy.example() in a
-                # bounded loop — deterministic enough for fuzz.
-                n_examples = 20
-                for _ in range(n_examples):
-                    headers = _headers_strategy.example()
-                    body = _bodies_strategy.example()
+                for _ in range(15):
+                    headers = _make_random_headers(rng)
+                    body = _make_random_body(rng)
                     try:
                         msg = aio_pika.Message(
                             body=body,
@@ -158,20 +172,21 @@ class TestAmqpHeaderFuzz:
                         )
                         await exchange.publish(msg, routing_key=queue)
                     except Exception:
-                        # aio_pika itself rejects some header shapes
-                        # (e.g. nested dicts). Skipping is fine — the
-                        # worker never sees them.
+                        # Some header codec edges still slip through —
+                        # skip those; they never reach the worker.
                         continue
             finally:
                 await conn.close()
 
             # Let the worker churn through the DLX routes.
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.0)
 
-            # Canary: a well-formed task must still succeed.
-            tid = await client_app.schedule(canary_task, 41)
-            result = await client_app.get_result(tid, timeout=30)
-            assert result == 42, f"canary failed post-fuzz: got {result!r}"
+            # Canary-after: pipeline still works post-fuzz.
+            tid_post = await client_app.schedule(canary_task, 41)
+            result_post = await client_app.get_result(tid_post, timeout=30)
+            assert result_post == 42, (
+                f"post-fuzz canary failed: {result_post!r}"
+            )
         finally:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

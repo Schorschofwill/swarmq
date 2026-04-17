@@ -6,16 +6,18 @@ sequences against a real Valkey.
 
 Invariants pinned here:
 
-1. 2-period sliding bound — the script implements the Cloudflare
+1. 3-period structural bound — the script implements the Cloudflare
    sliding-window approximation (two fixed counters weighted by the
-   elapsed ratio). Its provable guarantee is NOT "any period <=
-   limit" but "across any span of 2 * period, count <= 2 * limit".
-   The approximation intentionally allows a small burst straddling
-   a bucket boundary — documented in the Lua docstring. We pin the
-   2-period bound across hypothesis-generated delay sequences.
+   elapsed ratio). Each per-bucket counter is INCR-capped at
+   ``limit``, so a 2 * period sliding span can overlap at most three
+   consecutive buckets and therefore contain at most ``3 * limit``
+   accepts. The approximation intentionally lets a small burst slip
+   across a bucket boundary — documented in the Lua docstring. We
+   pin the 3-period structural bound across hypothesis-generated
+   delay sequences.
 2. Denial persistence — once the limit is reached inside one window,
-   further calls stay denied until the burst counters expire
-   (TTL = 2 * period) and/or decay.
+   subsequent zero-sleep retries stay denied; after ``2 * period``
+   the counters expire / decay and a fresh call is accepted again.
 
 Uses the dev stack Valkey on ``localhost:6380`` (env-override matches
 the E2E convention). Hypothesis is bounded with
@@ -71,21 +73,6 @@ _LIMIT = 3
 _PERIOD_MS = 500
 
 
-@pytest.fixture
-async def valkey_client():
-    client = valkey_asyncio.Valkey.from_url(_VALKEY_URL)
-    try:
-        await client.ping()
-        yield client
-    finally:
-        await client.aclose()
-
-
-@pytest.fixture
-async def limiter(valkey_client):
-    return RateLimiter(valkey_client)
-
-
 def _fresh_task_name() -> str:
     return f"prop-{uuid.uuid4().hex[:10]}"
 
@@ -115,18 +102,19 @@ def _fresh_task_name() -> str:
 def test_window_invariant_under_random_call_sequence(
     delays_ms: list[int],
 ) -> None:
-    """For any random delay sequence, the 2-period bound holds.
+    """For any random delay sequence, the 3-period bound holds.
 
     We replay the generated delays against a fresh Valkey key, record
     ``(monotonic_ms, allowed)`` for every call, and assert that across
     any 2 * period sliding span ending at an accepted call, the total
-    accept count is <= 2 * limit.
+    accept count is <= 3 * limit.
 
-    This is the bound the sliding-window approximation actually
-    guarantees (see the docstring at the top of this file). A strict
-    1-period invariant would over-constrain: bursts straddling a
-    bucket boundary with elapsed_ratio close to zero legitimately
-    slip through in the Cloudflare approximation.
+    This is the hard structural bound the Lua script provides: each
+    per-bucket counter is INCR-capped at ``limit``, a 2 * period span
+    can overlap at most 3 consecutive buckets, so the span can hold
+    at most 3 * limit accepts. A tighter 2 * limit bound would
+    over-constrain — the Cloudflare approximation legitimately lets
+    bursts slip across boundaries when ``elapsed_ratio`` is small.
     """
 
     async def _run() -> list[tuple[float, bool]]:
@@ -153,18 +141,9 @@ def test_window_invariant_under_random_call_sequence(
     observations = asyncio.run(_run())
     accepted_ts = [t for t, ok in observations if ok]
 
-    # Structural bound: the Lua script INCRs a per-bucket counter and
-    # rejects once ``current_count >= max_requests``, so every
-    # ``period``-wide fixed bucket holds AT MOST ``limit`` accepts.
-    # A 2 * period sliding span can overlap up to 3 consecutive
-    # buckets (when the span straddles two boundaries), giving a
-    # structural maximum of 3 * limit accepts in any such span.
-    #
-    # This rules out real regressions like "counter never rolls over"
-    # (would let count -> infinity inside one span) or "old data
-    # leaks forever" (would make span counts grow unboundedly) while
-    # tolerating the documented Cloudflare approximation's burst-on-
-    # boundary behaviour.
+    # 3-period structural bound: 2 * period sliding span overlaps at
+    # most 3 consecutive buckets, each INCR-capped at ``limit``, so
+    # max accepts in the span is 3 * limit. See module docstring.
     span = 2 * _PERIOD_MS
     for i, end in enumerate(accepted_ts):
         start = end - span
@@ -172,8 +151,8 @@ def test_window_invariant_under_random_call_sequence(
             1 for t in accepted_ts[: i + 1] if t >= start
         )
         assert in_span <= 3 * _LIMIT, (
-            f"2x-window bound broken: {in_span} accepted in "
-            f"[{start:.1f}, {end:.1f}] ms, 3*limit={3 * _LIMIT}; "
+            f"3-period structural bound broken: {in_span} accepted "
+            f"in [{start:.1f}, {end:.1f}] ms, 3*limit={3 * _LIMIT}; "
             f"observations={observations}"
         )
 
@@ -194,25 +173,18 @@ async def _call(limiter: RateLimiter, name: str) -> bool:
 def test_denial_persistent_until_window_shifts() -> None:
     """Burst to the limit, confirm denial, wait out the window, retry.
 
-    The sliding-window counter uses the Cloudflare approximation —
-    decay from the previous window is proportional to how far we are
-    into the current one. After 2 full windows have elapsed without
-    traffic both the current and previous counters have either expired
-    (TTL = 2 * period) or decayed, so new calls must be accepted again.
-
-    What we pin:
+    Flow:
 
     * Phase 1 — the first ``_LIMIT`` calls succeed.
     * Phase 2 — the very next call (same tight burst, no sleep) is
       denied. This is the hard INCR-based rejection path in the Lua
       script (see ``sliding_window_counter.lua``).
     * Phase 3 — an immediate retry (still within the burst window,
-      no sleep) stays denied. The approximation cannot allow further
-      calls while the current bucket is saturated.
+      no sleep) stays denied; the current bucket is saturated.
     * Phase 4 — after waiting ``2.1 * period`` seconds so that BOTH
       the current and previous buckets have expired (TTL = 2 *
-      period) and/or the approximation has fully decayed, a fresh
-      call is accepted again.
+      period) and the approximation has fully decayed, a fresh call
+      is accepted again.
 
     We deliberately do NOT test partial sleeps (e.g. 0.25 * period):
     the Cloudflare approximation's decay from the previous bucket
@@ -236,9 +208,8 @@ def test_denial_persistent_until_window_shifts() -> None:
             mid_denied = [await _call(limiter, task)]
             # Phase 3: zero-sleep retry — same bucket, still denied.
             still_denied = [await _call(limiter, task)]
-            # Phase 4: wait past two full windows so prev+current expire
-            # (script sets TTL = 2 * window) and the approximation
-            # decays to zero. A fresh call must be accepted.
+            # Phase 4: wait past two full windows so prev+current
+            # expire (TTL = 2 * window) and decay to zero.
             await asyncio.sleep((_PERIOD_MS / 1000.0) * 2.1)
             allowed_again = [await _call(limiter, task)]
 
@@ -252,19 +223,16 @@ def test_denial_persistent_until_window_shifts() -> None:
 
     burst, still_denied, allowed_again = asyncio.run(_run())
 
-    # Phase 1 + 2: exactly `_LIMIT` True followed by one False.
     assert burst[:_LIMIT] == [True] * _LIMIT, (
         f"first {_LIMIT} calls must be allowed, got {burst}"
     )
     assert burst[_LIMIT] is False, (
         f"call number {_LIMIT + 1} must be denied, got {burst}"
     )
-    # Phase 3: immediate retry in the same bucket stays denied.
     assert still_denied == [False], (
         f"zero-sleep retry in the same bucket must stay denied: "
         f"{still_denied}"
     )
-    # Phase 4: window fully shifted, burst counter decayed.
     assert allowed_again == [True], (
         f"after >= 2 periods the counter must accept again: {allowed_again}"
     )
