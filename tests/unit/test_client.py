@@ -1479,3 +1479,179 @@ class TestClientUniqueDeferred:
             "add", 1, queue="math", delay=10.0, unique_for=60,
         )
         assert call_order == ["setnx", "store"]
+
+
+# -----------------------------------------------------------------
+# R3.5 Unique Tasks — Client.schedule_many() dedup (Unit 8)
+# -----------------------------------------------------------------
+
+class TestClientUniqueScheduleMany:
+    """Batch-API per-element SETNX and duplicate handling."""
+
+    @pytest.fixture
+    def backend_setnx(self, backend):
+        backend.setnx_unique = AsyncMock(return_value=None)
+        return backend
+
+    @pytest.fixture
+    def client_setnx(self, broker, backend_setnx, registry):
+        return Client(broker=broker, backend=backend_setnx, registry=registry)
+
+    async def test_schedule_many_without_unique_for_is_unchanged(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """Baseline: no unique_for → no SETNX, headers absent."""
+        tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
+        ids = await client_setnx.schedule_many(tasks, queue="math")
+        assert len(ids) == 2
+        backend_setnx.setnx_unique.assert_not_awaited()
+        for call in broker.publish.await_args_list:
+            assert call.kwargs.get("headers") is None
+
+    async def test_schedule_many_per_element_setnx_and_header(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """unique_for=60 → SETNX per task, header carried on publish."""
+        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        ids = await client_setnx.schedule_many(
+            tasks, queue="math", unique_for=60,
+        )
+        assert len(ids) == 3
+        assert backend_setnx.setnx_unique.await_count == 3
+        assert broker.publish.await_count == 3
+        for call in broker.publish.await_args_list:
+            headers = call.kwargs["headers"]
+            assert "x-swarmq-unique-hash" in headers
+            assert headers["x-swarmq-unique-until"] == "completion"
+
+    async def test_schedule_many_duplicate_returns_existing_at_position(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """Dup element gets existing_task_id; non-dups get fresh ids.
+
+        Sequence: element 0 duplicate, element 1 fresh, element 2 duplicate.
+        """
+        returns = iter(["t-existing-0", None, "t-existing-2"])
+
+        async def setnx_mock(*_args, **_kwargs):
+            return next(returns)
+
+        backend_setnx.setnx_unique = AsyncMock(side_effect=setnx_mock)
+
+        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        ids = await client_setnx.schedule_many(
+            tasks, queue="math", unique_for=60,
+        )
+        assert len(ids) == 3
+        assert ids[0] == "t-existing-0"
+        assert ids[2] == "t-existing-2"
+        # Middle fresh id is a uuid7.
+        import uuid as _uuid
+        assert _uuid.UUID(ids[1]).version == 7
+        # Only the single non-dup publishes.
+        assert broker.publish.await_count == 1
+
+    async def test_schedule_many_duplicate_emits_signal_with_batch_index(
+        self, broker, backend_setnx, registry,
+    ):
+        """Dup path emits TASK_DUPLICATE_DETECTED with batch_index + schedule_many source."""
+        from swarmq.signals import Signal, SignalDispatcher
+
+        dispatcher = SignalDispatcher()
+        received: list[dict] = []
+
+        @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+        async def handler(**kwargs):
+            received.append(kwargs)
+
+        returns = iter([None, "t-dup", None])
+
+        async def setnx_mock(*_a, **_kw):
+            return next(returns)
+
+        backend_setnx.setnx_unique = AsyncMock(side_effect=setnx_mock)
+        client = Client(
+            broker=broker, backend=backend_setnx,
+            registry=registry, signal_dispatcher=dispatcher,
+        )
+        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        await client.schedule_many(tasks, queue="math", unique_for=60)
+        assert len(received) == 1
+        assert received[0]["existing_task_id"] == "t-dup"
+        assert received[0]["source"] == "client.schedule_many"
+        assert received[0]["batch_index"] == 1
+
+    async def test_schedule_many_batch_override_none_disables_dedup(
+        self, broker, backend_setnx,
+    ):
+        """Batch-level unique_for=None disables SETNX for all elements."""
+        registry = MagicMock()
+        registry.has = MagicMock(return_value=True)
+        entry = MagicMock()
+        entry.task_info = TaskInfo(
+            name="add", queues=["math"], unique_for=30,
+        )
+        registry.get_entry = MagicMock(return_value=entry)
+        client = Client(broker=broker, backend=backend_setnx, registry=registry)
+
+        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        await client.schedule_many(tasks, queue="math", unique_for=None)
+        backend_setnx.setnx_unique.assert_not_awaited()
+
+    async def test_schedule_many_uses_taskinfo_default_when_missing(
+        self, broker, backend_setnx,
+    ):
+        """_MISSING resolves per-element TaskInfo.unique_for."""
+        registry = MagicMock()
+        registry.has = MagicMock(return_value=True)
+        entry = MagicMock()
+        entry.task_info = TaskInfo(
+            name="add", queues=["math"], unique_for=45, unique_until="start",
+        )
+        registry.get_entry = MagicMock(return_value=entry)
+        client = Client(broker=broker, backend=backend_setnx, registry=registry)
+
+        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        await client.schedule_many(tasks, queue="math")
+        assert backend_setnx.setnx_unique.await_count == 2
+        # All elements use the TaskInfo default TTL.
+        for call in backend_setnx.setnx_unique.await_args_list:
+            assert call.args[2] == 45_000
+        for call in broker.publish.await_args_list:
+            assert call.kwargs["headers"]["x-swarmq-unique-until"] == "start"
+
+    async def test_schedule_many_empty_list_still_returns_empty(
+        self, client_setnx, backend_setnx,
+    ):
+        ids = await client_setnx.schedule_many([], queue="math", unique_for=60)
+        assert ids == []
+        backend_setnx.setnx_unique.assert_not_awaited()
+
+    async def test_schedule_many_duplicates_skip_task_enqueued_signal(
+        self, broker, backend_setnx, registry,
+    ):
+        """A duplicated element must NOT emit TASK_ENQUEUED (dup replaces it)."""
+        from swarmq.signals import Signal, SignalDispatcher
+
+        dispatcher = SignalDispatcher()
+        enqueued: list[str] = []
+
+        @dispatcher.on_signal(Signal.TASK_ENQUEUED)
+        async def handler(**kwargs):
+            enqueued.append(kwargs["task_id"])
+
+        returns = iter([None, "t-dup"])
+
+        async def setnx_mock(*_a, **_kw):
+            return next(returns)
+
+        backend_setnx.setnx_unique = AsyncMock(side_effect=setnx_mock)
+        client = Client(
+            broker=broker, backend=backend_setnx,
+            registry=registry, signal_dispatcher=dispatcher,
+        )
+        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        ids = await client.schedule_many(tasks, queue="math", unique_for=60)
+        assert ids[1] == "t-dup"
+        # Only the fresh publish emits TASK_ENQUEUED.
+        assert enqueued == [ids[0]]

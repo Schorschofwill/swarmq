@@ -395,20 +395,39 @@ class Client:
         self,
         tasks: list[tuple[str, tuple, dict]],
         queue: str | None = None,
+        *,
+        unique_for: int | None | Any = _MISSING,
+        unique_until: Literal["start", "completion"] | Any = _MISSING,
     ) -> list[str]:
         """Submit multiple tasks for execution and return their task_ids.
 
         Each element of *tasks* is a (task_name, args, kwargs) tuple.
         All messages are published concurrently via asyncio.gather.
+
+        R3.5 dedup (Unit 8): the batch-level ``unique_for`` /
+        ``unique_until`` kwargs override TaskInfo defaults for every
+        element (same precedence as the immediate path — _MISSING falls
+        through to TaskInfo when a registry is available, None disables
+        dedup, int sets the TTL). Duplicates emit
+        ``TASK_DUPLICATE_DETECTED`` with ``batch_index=i`` in the
+        payload and the returned list places the existing owner's
+        task_id at index ``i`` — list length always equals
+        ``len(tasks)``.
         """
         if not tasks:
             return []
 
-        task_ids: list[str] = []
-        message_dicts: list[MessageContext] = []
-        encoded_messages: list[bytes] = []
-        resolved_queues: list[str] = []
-        task_names: list[str] = []
+        # Positional result slots so dup-indices and success-indices
+        # stay aligned with the input list. Dup slots are filled in
+        # Pass 1; success slots overwrite their uuid7 in Pass 2 (no-op)
+        # and get published / signalled.
+        task_ids: list[str] = [""] * len(tasks)
+        publish_indices: list[int] = []  # positions that actually publish
+        message_dicts: dict[int, MessageContext] = {}
+        encoded_messages: dict[int, bytes] = {}
+        resolved_queues: dict[int, str] = {}
+        task_names: dict[int, str] = {}
+        dedup_headers: dict[int, dict[str, Any]] = {}
 
         # Resolve the middleware chain once for this whole batch so that
         # every pre_enqueue/post_enqueue hook sees the same chain instance.
@@ -418,7 +437,7 @@ class Client:
         # payloads. pre_enqueue is invoked sequentially; a raise aborts the
         # whole batch BEFORE any broker.publish coroutine is created or
         # awaited.
-        for task_name, args, kwargs in tasks:
+        for i, (task_name, args, kwargs) in enumerate(tasks):
             # --- validation (registry mode only) ---
             if self._registry is not None:
                 if not self._registry.has(task_name):
@@ -429,10 +448,46 @@ class Client:
                 task_name, queue
             )
 
+            # --- R3.5 dedup resolution (per-element TaskInfo lookup) ---
+            resolved_unique_for, resolved_unique_until = self._resolve_unique(
+                task_name, unique_for, unique_until
+            )
+
             task_id = str(uuid.uuid7())
-            task_ids.append(task_id)
-            task_names.append(task_name)
-            resolved_queues.append(resolved_queue)
+            headers: dict[str, Any] = {}
+
+            if resolved_unique_for is not None:
+                dedup_hash = _compute_dedup_hash(task_name, args, kwargs)
+                existing = await self._backend.setnx_unique(
+                    dedup_hash, task_id, resolved_unique_for * 1000,
+                )
+                if existing is not None:
+                    await self._signal_dispatcher.dispatch(
+                        Signal.TASK_DUPLICATE_DETECTED,
+                        existing_task_id=existing,
+                        task_name=task_name,
+                        dedup_hash=dedup_hash,
+                        source="client.schedule_many",
+                        batch_index=i,
+                    )
+                    logger.info(
+                        "swarmq.dedup.detected",
+                        existing_task_id=existing,
+                        task_name=task_name,
+                        dedup_hash=dedup_hash,
+                        source="client.schedule_many",
+                        batch_index=i,
+                    )
+                    task_ids[i] = existing
+                    continue  # Dup slot filled; skip publish bookkeeping.
+                headers["x-swarmq-unique-hash"] = dedup_hash
+                headers["x-swarmq-unique-until"] = resolved_unique_until
+
+            task_ids[i] = task_id
+            publish_indices.append(i)
+            task_names[i] = task_name
+            resolved_queues[i] = resolved_queue
+            dedup_headers[i] = headers
 
             message = {
                 "task": {
@@ -443,7 +498,7 @@ class Client:
                 "args": list(args),
                 "kwargs": kwargs,
             }
-            encoded_messages.append(encode_json(message))
+            encoded_messages[i] = encode_json(message)
 
             message_dict: MessageContext = {
                 "task_id": task_id,
@@ -453,26 +508,34 @@ class Client:
                 "kwargs": kwargs,
                 "delivery_mode": delivery_mode,
             }
-            message_dicts.append(message_dict)
+            message_dicts[i] = message_dict
 
             # pre_enqueue: exception aborts the whole batch (propagate).
             # Coroutines for broker.publish are only created in Pass 2, so
-            # nothing needs cleanup if this raises.
+            # nothing needs cleanup if this raises. Duplicates skip the
+            # hook — pre_enqueue implies "about to enqueue a new message"
+            # and duplicates never do.
             await chain.run_pre_enqueue(message_dict)
 
-        # Pass 2: publish concurrently.
+        # Pass 2: publish concurrently. Only non-dup positions participate.
         coros = [
-            self._broker.publish(resolved_queues[i], encoded_messages[i])
-            for i in range(len(tasks))
+            self._broker.publish(
+                resolved_queues[i],
+                encoded_messages[i],
+                headers=dedup_headers[i] if dedup_headers[i] else None,
+            )
+            for i in publish_indices
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)
         errors = [
-            (i, r) for i, r in enumerate(results) if isinstance(r, BaseException)
+            (publish_indices[k], r)
+            for k, r in enumerate(results) if isinstance(r, BaseException)
         ]
         if errors:
             # Log partially-submitted task_ids so they can be recovered
             submitted = [
-                task_ids[i] for i, r in enumerate(results)
+                task_ids[publish_indices[k]]
+                for k, r in enumerate(results)
                 if not isinstance(r, BaseException)
             ]
             if submitted:
@@ -483,22 +546,24 @@ class Client:
                 )
             # Run post_enqueue + TASK_ENQUEUED only for the successful ones
             # before raising, so observers aren't left with a half-emitted state.
-            for i, r in enumerate(results):
+            for k, r in enumerate(results):
                 if isinstance(r, BaseException):
                     continue
-                await chain.run_post_enqueue(message_dicts[i])
+                idx = publish_indices[k]
+                await chain.run_post_enqueue(message_dicts[idx])
                 await self._signal_dispatcher.dispatch(
                     Signal.TASK_ENQUEUED,
-                    task_id=task_ids[i],
-                    task_name=task_names[i],
-                    queue=resolved_queues[i],
+                    task_id=task_ids[idx],
+                    task_name=task_names[idx],
+                    queue=resolved_queues[idx],
                 )
             raise errors[0][1]
 
-        # Pass 3: post_enqueue + TASK_ENQUEUED for each task after gather
-        # succeeded.
-        for i, message_dict in enumerate(message_dicts):
-            await chain.run_post_enqueue(message_dict)
+        # Pass 3: post_enqueue + TASK_ENQUEUED for each non-dup task.
+        # Duplicates never fire TASK_ENQUEUED (they emit
+        # TASK_DUPLICATE_DETECTED in Pass 1 instead).
+        for i in publish_indices:
+            await chain.run_post_enqueue(message_dicts[i])
             await self._signal_dispatcher.dispatch(
                 Signal.TASK_ENQUEUED,
                 task_id=task_ids[i],
