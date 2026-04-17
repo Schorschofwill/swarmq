@@ -131,6 +131,90 @@ class ValkeyBackend:
     def create_pubsub(self) -> valkey.asyncio.client.PubSub:
         return self._client.pubsub()
 
+    # -----------------------------------------------------------------------
+    # R3.7 Progress tracking — HASH state + Pub/Sub fan-out
+    # -----------------------------------------------------------------------
+
+    def _progress_key(self, task_id: str) -> str:
+        return f"sq:progress:{task_id}"
+
+    def _progress_channel(self, task_id: str) -> str:
+        return f"sq:progress:channel:{task_id}"
+
+    async def set_progress(
+        self,
+        task_id: str,
+        fields: dict[str, str],
+        ttl_ms: int,
+        op_timeout: float | None = None,
+    ) -> None:
+        """Write the progress HASH for *task_id* with a refreshed TTL.
+
+        Uses a pipeline so the HSET and PEXPIRE are a single round-trip
+        — atomicity between them is not required, but the cost saving
+        is meaningful for progress-heavy tasks. Raises
+        :class:`BackendConnectionError` on transport failure; the
+        caller (Task.update_progress) swallows-and-logs to keep
+        progress best-effort.
+        """
+        key = self._progress_key(task_id)
+        try:
+            async with self._client.pipeline(transaction=False) as pipe:
+                pipe.hset(key, mapping=fields)
+                pipe.pexpire(key, ttl_ms)
+                coro = pipe.execute()
+                if op_timeout is not None:
+                    await asyncio.wait_for(coro, timeout=op_timeout)
+                else:
+                    await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"set_progress timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def get_progress(
+        self, task_id: str, op_timeout: float | None = None,
+    ) -> dict[bytes, bytes] | None:
+        """Return the raw Valkey HASH for *task_id* or None when absent.
+
+        None covers both "never written" and "TTL-expired". Caller
+        decodes via :meth:`ProgressInfo.from_hash`.
+        """
+        try:
+            coro = self._client.hgetall(self._progress_key(task_id))
+            if op_timeout is not None:
+                raw = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                raw = await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"get_progress timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return raw if raw else None
+
+    async def publish_progress(
+        self, task_id: str, payload: bytes,
+    ) -> None:
+        """PUBLISH the progress delta to the per-task channel.
+
+        Failures are logged and swallowed — Pub/Sub is best-effort and
+        the authoritative state is the HASH, not the channel. Mirror
+        the :meth:`publish_notification` discipline.
+        """
+        try:
+            await self._client.publish(
+                self._progress_channel(task_id), payload,
+            )
+        except (ValkeyError, OSError):
+            logger.warning(
+                "publish_progress_failed",
+                task_id=task_id, exc_info=True,
+            )
+
     async def set_cancel_flag(
         self, task_id: str, ttl_ms: int, op_timeout: float | None = None,
     ) -> bool:
