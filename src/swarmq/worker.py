@@ -18,6 +18,7 @@ import structlog
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backoff import calculate_backoff
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.cancellation import (
     CANCEL_REASON_CANCEL,
     CANCEL_REASON_TIMEOUT,
@@ -997,13 +998,36 @@ class Worker:
         structlog.contextvars.clear_contextvars()
         return True
 
+    @staticmethod
+    def _extract_valid_unique_hash(message) -> str | None:
+        """Read and validate the unique-hash header from an incoming message.
+
+        Producer sites emit a sha256 hex digest (64 lowercase hex chars).
+        Any message whose header deviates — missing, wrong type, wrong
+        length, non-hex — is treated as "no flag": the worker skips
+        release rather than forwarding unvalidated bytes to Valkey as a
+        key. Defends against adversarial producers that could otherwise
+        amplify a malformed header into a large per-message Valkey key
+        (plan Risks / R3.5 ADV-005).
+        """
+        unique_hash = (message.headers or {}).get(HEADER_UNIQUE_HASH)
+        if not isinstance(unique_hash, str) or len(unique_hash) != 64:
+            return None
+        # Cheap manual hex check — re.match on a 64-char string is
+        # faster than compiling a regex but still O(n).
+        if not all(c in "0123456789abcdef" for c in unique_hash):
+            return None
+        return unique_hash
+
     async def _maybe_release_unique(
         self, message, task_id: str, task_info: TaskInfo | None = None,
     ) -> None:
         """Release the R3.5 dedup flag if this message carries one.
 
         Contract:
-          * No-op when the message lacks ``x-swarmq-unique-hash`` header.
+          * No-op when the message lacks a valid ``x-swarmq-unique-hash``
+            header (missing, wrong type, not a 64-char lowercase hex
+            digest).
           * No-op in ``start``-mode at terminal paths — Unit 10 already
             released at pickup (owner-check would fail here anyway).
           * ``completion``-mode (default): call ``backend.release_unique``;
@@ -1016,23 +1040,26 @@ class Worker:
         Backend errors are swallowed inside ``release_unique`` — an
         orphan flag self-heals via TTL and a release failure must not
         break the worker's terminal-path pipeline (same discipline as
-        ``clear_cancel_flag``).
+        ``clear_cancel_flag``). ``op_timeout`` bounds the Valkey call
+        so the finally block can't wedge on a slow backend.
         """
-        headers = message.headers or {}
-        unique_hash = headers.get("x-swarmq-unique-hash")
-        if not unique_hash:
+        unique_hash = self._extract_valid_unique_hash(message)
+        if unique_hash is None:
             return
         # Prefer the header over TaskInfo — per-call overrides from
         # Client.schedule set the header, and we want those overrides
         # to flow end-to-end. TaskInfo is the fallback when the header
         # is absent or malformed.
-        header_mode = headers.get("x-swarmq-unique-until")
+        header_mode = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
         mode = header_mode or (
             task_info.unique_until if task_info is not None else "completion"
         )
         if mode == "start":
             return  # Release already happened at pickup (Unit 10).
-        await self._backend.release_unique(unique_hash, task_id)
+        await self._backend.release_unique(
+            unique_hash, task_id,
+            op_timeout=self._config.backend_op_timeout,
+        )
 
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
@@ -1128,13 +1155,14 @@ class Worker:
             # BackendConnectionError is swallowed inside
             # release_unique (log-only) — letting Valkey flap abort
             # pickup would turn dedup into a liveness hazard.
-            unique_hash = (message.headers or {}).get("x-swarmq-unique-hash")
-            header_unique_until = (message.headers or {}).get(
-                "x-swarmq-unique-until"
-            )
+            unique_hash = self._extract_valid_unique_hash(message)
+            header_unique_until = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
             effective_unique_until = header_unique_until or task_info.unique_until
             if unique_hash and effective_unique_until == "start":
-                await self._backend.release_unique(unique_hash, task_id)
+                await self._backend.release_unique(
+                    unique_hash, task_id,
+                    op_timeout=self._config.backend_op_timeout,
+                )
 
             # 5b. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
             # so a Valkey or broker hiccup cannot drop a message that has

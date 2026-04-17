@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
@@ -129,8 +130,6 @@ def compute_dedup_hash(task_name: str, args: tuple, kwargs: dict) -> str:
     this function so the same (task_name, args, kwargs) triple
     always hashes to the same Valkey cell regardless of entry point.
     """
-    import hashlib
-
     payload = task_name.encode("utf-8") + b"\x00" + canonical_encode(args, kwargs)
     return hashlib.sha256(payload).hexdigest()
 

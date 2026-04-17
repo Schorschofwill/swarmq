@@ -3863,7 +3863,22 @@ class TestWorkerUniqueRelease:
     """Start-mode pickup release (Unit 10) and completion-mode terminal
     release (Unit 11). Focus on behavioural contracts, not line-by-line
     coverage of every terminal path — each path is exercised by one
-    targeted test."""
+    targeted test.
+
+    Header values MUST be 64-char lowercase hex (worker validates the
+    format; invalid strings are treated as "no flag" to defend against
+    adversarial producers).
+    """
+
+    # Fixed 64-char hex digests for deterministic assertions.
+    HASH_DEFAULT = "a" * 64
+    HASH_FAIL = "b" * 64
+    HASH_RETRY = "c" * 64
+    HASH_DLQ = "d" * 64
+    HASH_RATE_LIMIT = "e" * 64
+    HASH_OVERRIDE = "f" * 64
+    HASH_TNF = "1" * 64  # task-not-found test
+    HASH_MW = "2" * 64  # middleware-factory-fail test
 
     @pytest.fixture
     def release_backend(self, backend):
@@ -3874,7 +3889,7 @@ class TestWorkerUniqueRelease:
         return _make_message(
             _default_payload(name=task_name),
             headers={
-                "x-swarmq-unique-hash": "abc-hash",
+                "x-swarmq-unique-hash": self.HASH_DEFAULT,
                 "x-swarmq-unique-until": unique_until,
             },
         )
@@ -3921,7 +3936,7 @@ class TestWorkerUniqueRelease:
 
         release_backend.release_unique.assert_awaited_once()
         call_args = release_backend.release_unique.await_args.args
-        assert call_args[0] == "abc-hash"
+        assert call_args[0] == self.HASH_DEFAULT
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_completion_mode_releases_on_task_exception(
@@ -3941,7 +3956,7 @@ class TestWorkerUniqueRelease:
         msg = _make_message(
             _default_payload(name="fail", args=[], kwargs={}),
             headers={
-                "x-swarmq-unique-hash": "h-fail",
+                "x-swarmq-unique-hash": self.HASH_FAIL,
                 "x-swarmq-unique-until": "completion",
             },
         )
@@ -3970,7 +3985,7 @@ class TestWorkerUniqueRelease:
         msg = _make_message(
             _default_payload(name="retry_task", args=[], kwargs={}),
             headers={
-                "x-swarmq-unique-hash": "h-retry",
+                "x-swarmq-unique-hash": self.HASH_RETRY,
                 "x-swarmq-unique-until": "completion",
             },
         )
@@ -3981,7 +3996,7 @@ class TestWorkerUniqueRelease:
             "headers"
         ]
         # Header merge preserves the original dedup identity.
-        assert forwarded_headers["x-swarmq-unique-hash"] == "h-retry"
+        assert forwarded_headers["x-swarmq-unique-hash"] == self.HASH_RETRY
         assert forwarded_headers["x-swarmq-unique-until"] == "completion"
         assert forwarded_headers["x-swarmq-retry-count"] == 1
         # Release must NOT fire — redelivery still owns the flag.
@@ -4007,7 +4022,7 @@ class TestWorkerUniqueRelease:
         msg = _make_message(
             _default_payload(name="noretry_task", args=[], kwargs={}),
             headers={
-                "x-swarmq-unique-hash": "h-dlq",
+                "x-swarmq-unique-hash": self.HASH_DLQ,
                 "x-swarmq-unique-until": "completion",
             },
         )
@@ -4018,7 +4033,7 @@ class TestWorkerUniqueRelease:
         dlq_headers = broker.publish_to_dead_letter_queue.await_args.kwargs[
             "headers"
         ]
-        assert dlq_headers["x-swarmq-unique-hash"] == "h-dlq"
+        assert dlq_headers["x-swarmq-unique-hash"] == self.HASH_DLQ
 
     async def test_rate_limit_requeue_preserves_header_skips_release(
         self, broker, backend, config,
@@ -4046,7 +4061,7 @@ class TestWorkerUniqueRelease:
         msg = _make_message(
             _default_payload(name="rl_task", args=[], kwargs={}),
             headers={
-                "x-swarmq-unique-hash": "h-rl",
+                "x-swarmq-unique-hash": self.HASH_RATE_LIMIT,
                 "x-swarmq-unique-until": "completion",
             },
         )
@@ -4054,7 +4069,7 @@ class TestWorkerUniqueRelease:
 
         broker.publish_to_delay_queue.assert_awaited_once()
         headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
-        assert headers["x-swarmq-unique-hash"] == "h-rl"
+        assert headers["x-swarmq-unique-hash"] == self.HASH_RATE_LIMIT
         backend.release_unique.assert_not_awaited()
 
     async def test_shutdown_nack_requeue_skips_release(
@@ -4099,7 +4114,7 @@ class TestWorkerUniqueRelease:
         msg = _make_message(
             _default_payload(name="add_c"),
             headers={
-                "x-swarmq-unique-hash": "h-override",
+                "x-swarmq-unique-hash": self.HASH_OVERRIDE,
                 "x-swarmq-unique-until": "start",  # per-call override
             },
         )
@@ -4108,3 +4123,65 @@ class TestWorkerUniqueRelease:
         # In start mode release happens at pickup. Exactly one release
         # call — the completion-mode release in finally is a no-op.
         assert backend.release_unique.await_count == 1
+
+    # --- R3.5 review follow-up: missing terminal-path coverage (TEST-001, TEST-002) ---
+
+    async def test_task_not_found_with_unique_header_releases_flag(
+        self, worker, broker, release_backend,
+    ):
+        """Unregistered task + unique header → nack(requeue=False), release fires in finally."""
+        msg = _make_message(
+            _default_payload(name="unknown_task"),
+            headers={
+                "x-swarmq-unique-hash": self.HASH_TNF,
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await worker._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        release_backend.release_unique.assert_awaited_once()
+        call_args = release_backend.release_unique.await_args.args
+        assert call_args[0] == self.HASH_TNF
+
+    async def test_middleware_factory_failure_with_unique_header_releases_flag(
+        self, broker, backend, config,
+    ):
+        """Bad middleware chain factory → nack(requeue=False), release fires."""
+        registry = TaskRegistry()
+        registry.register(AddTask)
+        backend.release_unique = AsyncMock(return_value=True)
+
+        def broken_factory():
+            raise RuntimeError("middleware factory is broken")
+
+        w = Worker(
+            broker=broker, backend=backend, registry=registry,
+            config=config, middleware_chain=broken_factory,
+        )
+        msg = _make_message(
+            _default_payload(),
+            headers={
+                "x-swarmq-unique-hash": self.HASH_MW,
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        backend.release_unique.assert_awaited_once()
+
+    async def test_malformed_unique_hash_header_is_ignored(
+        self, worker, broker, release_backend,
+    ):
+        """Adversarial producer: 100KB header value. Worker must reject
+        (format validation) and never forward to Valkey."""
+        msg = _make_message(
+            _default_payload(),
+            headers={
+                "x-swarmq-unique-hash": "x" * 100_000,  # not 64-char hex
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await worker._handle_message(msg)
+        release_backend.release_unique.assert_not_awaited()

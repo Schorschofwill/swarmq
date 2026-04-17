@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.client import Client
+from swarmq.client import _MISSING, Client
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
@@ -49,6 +49,8 @@ class SwarmQ:
             # would capture a stale snapshot of self._middlewares here.
             middleware_chain=lambda: self.middleware_chain,
             signal_dispatcher=self._signal_dispatcher,
+            # R3.5 REL-001: bound every setnx_unique on the enqueue path.
+            backend_op_timeout=self.config.backend_op_timeout,
         )
 
     def add_middleware(self, middleware: Middleware) -> None:
@@ -90,8 +92,16 @@ class SwarmQ:
         self,
         tasks: list[tuple[str, tuple, dict]],
         queue: str | None = None,
+        *,
+        unique_for: int | None | Any = _MISSING,
+        unique_until: Literal["start", "completion"] | Any = _MISSING,
     ) -> list[str]:
-        return await self.client.schedule_many(tasks, queue=queue)
+        """Forward to :meth:`Client.schedule_many` including R3.5 dedup kwargs."""
+        return await self.client.schedule_many(
+            tasks, queue=queue,
+            unique_for=unique_for,
+            unique_until=unique_until,
+        )
 
     async def get_results(
         self,

@@ -25,6 +25,7 @@ from swarmq.middleware import (
     coerce_middleware_chain_factory,
 )
 from swarmq.registry import TaskRegistry
+from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import (
     canonical_encode,
@@ -53,9 +54,6 @@ _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
 _MISSING: Any = object()
 
 
-_compute_dedup_hash = compute_dedup_hash  # backwards-compat alias
-
-
 class Client:
     """Schedule tasks and retrieve results.
 
@@ -75,10 +73,17 @@ class Client:
         | Callable[[], MiddlewareChain]
         | None = None,
         signal_dispatcher: SignalDispatcher | None = None,
+        backend_op_timeout: float | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._registry = registry
+        # R3.5: bound every Valkey call on the enqueue hot path so a
+        # hung backend cannot wedge Client.schedule. None preserves
+        # pre-R3.5 behavior (no enforcement at the Client layer);
+        # SwarmQ passes config.backend_op_timeout through so app-mode
+        # callers inherit the same guard the Worker already uses.
+        self._backend_op_timeout = backend_op_timeout
         # Accept either a static MiddlewareChain (backward compat) or a
         # zero-arg factory callable that returns a fresh chain on each call.
         # Storing a factory lets us see middleware registered AFTER Client
@@ -208,9 +213,10 @@ class Client:
         headers: dict[str, Any] = {}
 
         if resolved_unique_for is not None:
-            dedup_hash = _compute_dedup_hash(task_name, args, kwargs)
+            dedup_hash = compute_dedup_hash(task_name, args, kwargs)
             existing = await self._backend.setnx_unique(
-                dedup_hash, task_id, resolved_unique_for * 1000
+                dedup_hash, task_id, resolved_unique_for * 1000,
+                op_timeout=self._backend_op_timeout,
             )
             if existing is not None:
                 # Silent dedup — return existing owner's task_id, emit signal.
@@ -231,8 +237,8 @@ class Client:
                 return existing
             # Flag acquired — tag the message so the worker can release
             # at the right point (start-mode: pickup; completion-mode: terminal).
-            headers["x-swarmq-unique-hash"] = dedup_hash
-            headers["x-swarmq-unique-until"] = resolved_unique_until
+            headers[HEADER_UNIQUE_HASH] = dedup_hash
+            headers[HEADER_UNIQUE_UNTIL] = resolved_unique_until
 
         message = {
             "task": {
@@ -455,9 +461,10 @@ class Client:
             headers: dict[str, Any] = {}
 
             if resolved_unique_for is not None:
-                dedup_hash = _compute_dedup_hash(task_name, args, kwargs)
+                dedup_hash = compute_dedup_hash(task_name, args, kwargs)
                 existing = await self._backend.setnx_unique(
                     dedup_hash, task_id, resolved_unique_for * 1000,
+                    op_timeout=self._backend_op_timeout,
                 )
                 if existing is not None:
                     await self._signal_dispatcher.dispatch(
@@ -478,8 +485,8 @@ class Client:
                     )
                     task_ids[i] = existing
                     continue  # Dup slot filled; skip publish bookkeeping.
-                headers["x-swarmq-unique-hash"] = dedup_hash
-                headers["x-swarmq-unique-until"] = resolved_unique_until
+                headers[HEADER_UNIQUE_HASH] = dedup_hash
+                headers[HEADER_UNIQUE_UNTIL] = resolved_unique_until
 
             task_ids[i] = task_id
             publish_indices.append(i)
@@ -700,13 +707,18 @@ class Client:
         # --- R3.5 Unit 7: producer-side SETNX before ScheduleStore insert ---
         dedup_hash: str | None = None
         if unique_for is not None:
-            dedup_hash = _compute_dedup_hash(task_name, tuple(args), kwargs)
-            # Fire offset: how long we wait before publish. Clamp to 0 so
-            # late-past eta does not shrink the TTL below unique_for itself.
-            fire_offset_s = max(0, (fire_ts_ms - now_ms) // 1000)
+            dedup_hash = compute_dedup_hash(task_name, tuple(args), kwargs)
+            # Fire offset: how long we wait before publish. Use ceiling
+            # division so sub-second delays (e.g. delay=0.9) still contribute
+            # a full second of TTL padding — floor would truncate to 0 and
+            # let the flag expire before the task finishes running. Clamp
+            # to 0 so late-past eta does not shrink TTL below unique_for.
+            fire_offset_ms = max(0, fire_ts_ms - now_ms)
+            fire_offset_s = (fire_offset_ms + 999) // 1000  # ceiling division
             ttl_ms = (unique_for + int(fire_offset_s)) * 1000
             existing = await self._backend.setnx_unique(
-                dedup_hash, task_id, ttl_ms
+                dedup_hash, task_id, ttl_ms,
+                op_timeout=self._backend_op_timeout,
             )
             if existing is not None:
                 await self._signal_dispatcher.dispatch(
@@ -714,15 +726,14 @@ class Client:
                     existing_task_id=existing,
                     task_name=task_name,
                     dedup_hash=dedup_hash,
-                    source="client.schedule",
+                    source="client.schedule_deferred",
                 )
                 logger.info(
                     "swarmq.dedup.detected",
                     existing_task_id=existing,
                     task_name=task_name,
                     dedup_hash=dedup_hash,
-                    source="client.schedule",
-                    deferred=True,
+                    source="client.schedule_deferred",
                 )
                 return existing
 

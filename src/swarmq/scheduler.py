@@ -729,6 +729,7 @@ class SchedulerLoop:
                 try:
                     existing = await self._backend.setnx_unique(
                         dedup_hash, task_id, task_info.unique_for * 1000,
+                        op_timeout=self._config.backend_op_timeout,
                     )
                 except BackendConnectionError as exc:
                     logger.warning(

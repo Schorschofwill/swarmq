@@ -40,13 +40,22 @@ class Signal(enum.Enum):
         - rate_limit_count: number of times this exact message has been
           requeued by the rate limiter (operator-visible bounce counter)
       * TASK_DUPLICATE_DETECTED: existing_task_id, task_name, dedup_hash,
-                                 source
+                                 source [, batch_index]
         - existing_task_id: id of the previously-enqueued task that won
           the SETNX race; caller may poll its result with client.get_result
         - dedup_hash: sha256 hex of canonical_encode(args, kwargs)
-        - source: "client.schedule" | "client.schedule_many" |
-          "scheduler.fire" — operators can filter Scheduler-induced dup
-          noise (leader failover) from user-facing dups
+        - source: one of
+          "client.schedule" | "client.schedule_deferred" |
+          "client.schedule_many" | "scheduler.fire"
+          Operators can filter Scheduler-induced dup noise (leader
+          failover) via source="scheduler.fire" and differentiate
+          immediate vs deferred client enqueues via the two
+          "client.schedule*" variants.
+        - batch_index: optional int, ONLY present when
+          source="client.schedule_many" — the position in the input
+          list at which the duplicate was detected. Handlers MUST use
+          kwargs.get("batch_index") (not kwargs["batch_index"]) to avoid
+          KeyError on non-batch sources.
       * WORKER_ONLINE / WORKER_SHUTDOWN: worker_id
       * SCHEDULER_LEADER:          worker_id (this worker just became leader,
                                    either first-time or via clean handover)

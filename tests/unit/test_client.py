@@ -1305,7 +1305,7 @@ class TestClientUniqueSchedule:
         """Hash must be stable across calls with identical args+kwargs."""
         captured_hashes: list[str] = []
 
-        async def capture_setnx(h, _tid, _ttl):
+        async def capture_setnx(h, _tid, _ttl, **_kw):
             captured_hashes.append(h)
             return None
 
@@ -1320,7 +1320,7 @@ class TestClientUniqueSchedule:
         """kwarg insertion order must not affect hash (canonical_encode key-sort)."""
         captured_hashes: list[str] = []
 
-        async def capture_setnx(h, _tid, _ttl):
+        async def capture_setnx(h, _tid, _ttl, **_kw):
             captured_hashes.append(h)
             return None
 
@@ -1416,7 +1416,9 @@ class TestClientUniqueDeferred:
         )
         assert len(received) == 1
         assert received[0]["existing_task_id"] == "t-win"
-        assert received[0]["source"] == "client.schedule"
+        # Deferred path now emits a distinct source literal (review
+        # AC-01 / COR-003 fix) so operators can filter deferred dups.
+        assert received[0]["source"] == "client.schedule_deferred"
         assert received[0]["task_name"] == "add"
 
     async def test_deferred_with_eta_ttl_covers_fire_plus_unique_for(

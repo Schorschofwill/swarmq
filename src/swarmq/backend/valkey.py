@@ -19,7 +19,7 @@ class ValkeyBackend:
         self._client: valkey.asyncio.Valkey | None = None
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
-        self._unique_release_script = None
+        self._unique_release_script: valkey.asyncio.client.Script | None = None
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -57,13 +57,22 @@ class ValkeyBackend:
     def _unique_key(self, dedup_hash: str) -> str:
         return f"sq:unique:{dedup_hash}"
 
-    def _ensure_unique_release_script(self):
+    def _ensure_unique_release_script(self) -> valkey.asyncio.client.Script:
         """Lazy-register unique_release.lua on first use.
 
         Registration needs a live client; we register lazily so the backend
         doesn't require Lua-script files present at ValkeyBackend() construction
         time. Returns the registered AsyncScript (reused across calls).
+
+        Raises BackendConnectionError when called before ``connect()`` — the
+        caller path (release_unique) then logs-and-swallows consistent with
+        its owner-check-can-fail contract.
         """
+        if self._client is None:
+            raise BackendConnectionError(
+                "ValkeyBackend not connected; call connect() before "
+                "unique-release operations"
+            )
         if self._unique_release_script is None:
             self._unique_release_script = self._client.register_script(
                 load_script("unique_release")
@@ -259,6 +268,17 @@ class ValkeyBackend:
                 dedup_hash=dedup_hash,
                 task_id=task_id,
                 error=f"timed out after {op_timeout}s",
+            )
+            return False
+        except BackendConnectionError as exc:
+            # Pre-connect path (caller passed a non-connected backend).
+            # Swallow to match clear_cancel_flag: terminal-path callers
+            # must not crash on a release failure.
+            logger.warning(
+                "unique_release_backend_error",
+                dedup_hash=dedup_hash,
+                task_id=task_id,
+                error=str(exc),
             )
             return False
         except (ValkeyError, OSError) as exc:
