@@ -207,14 +207,17 @@ class ValkeyBackend:
     async def set_schedfire_dedup(
         self, schedfire_key: str, ttl_ms: int
     ) -> bool:
-        """Consumer-side dedup for scheduled-fire messages.
+        """Consumer-side "completed" dedup for scheduled-fire messages.
 
-        Returns ``True`` when this is the first delivery observed for the
-        given schedfire-key (SETNX succeeded), ``False`` on duplicate.
-        Caller uses the boolean to decide whether to run or ack+skip the
-        message. TTL must be configured to cover the retry horizon
-        (``scheduler_dedup_ttl >= retry_max_delay``, enforced at config
-        validation, Review-Finding P1-1).
+        Sets a long-TTL marker AFTER the task has finished executing
+        (Unit 1 / H-2). Returns True when this was the first write
+        (the task is now marked completed and any redelivery must be
+        skipped), False when another worker already wrote the same
+        completed marker (race-loser; idempotent).
+
+        TTL must be configured to cover the retry horizon
+        (``scheduler_dedup_ttl >= retry_max_delay``, enforced at
+        config validation, Review-Finding P1-1).
         """
         try:
             result = await self._client.set(
@@ -224,6 +227,55 @@ class ValkeyBackend:
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
         return bool(result)
+
+    def _sched_inflight_key(self, schedfire_key: str) -> str:
+        """Separate namespace from the completed marker so the two
+        TTLs can coexist without collision. A task in-flight has
+        ``sq:sched:inflight:<key>`` set; once completed, that expires
+        naturally and ``sq:sched:fired:<key>`` takes over as the
+        long-lived block."""
+        return f"sq:sched:inflight:{schedfire_key}"
+
+    async def set_schedfire_inflight(
+        self, schedfire_key: str, ttl_ms: int
+    ) -> bool:
+        """Claim the in-flight slot for a scheduled-fire message.
+
+        Pre-run SETNX with a short TTL (typically ``scheduler_inflight_ttl
+        * 1000`` ms). Returns True when this caller is the first to
+        claim the slot — it should proceed to run the task and write
+        the long-TTL completed marker via :meth:`set_schedfire_dedup`
+        in its finally block. Returns False when another worker holds
+        the slot already — ack + skip.
+
+        If the worker that won the slot crashes before writing the
+        completed marker, the in-flight key expires on the short TTL
+        and the next redelivery can re-run (restoring at-least-once).
+        This is the fix for the pre-run-only-SETNX silent-drop hole
+        (Unit 1 / H-2 / reliability R-002).
+        """
+        try:
+            result = await self._client.set(
+                self._sched_inflight_key(schedfire_key), "1",
+                nx=True, px=ttl_ms,
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return bool(result)
+
+    async def is_schedfire_completed(self, schedfire_key: str) -> bool:
+        """Fast check whether the long-TTL completed marker already
+        exists for this key. Used BEFORE the in-flight SETNX so that
+        a task which finished successfully and whose broker-level ack
+        was lost (causing RabbitMQ to redeliver) stays ack+skipped
+        for the full retry-horizon window."""
+        try:
+            result = await self._client.exists(
+                self._sched_fired_key(schedfire_key)
+            )
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return result == 1
 
     async def set_schedfire_handover_marker(
         self, owner_token: str, ttl_ms: int

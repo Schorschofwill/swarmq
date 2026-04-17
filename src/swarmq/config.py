@@ -27,6 +27,13 @@ class SwarmQConfig:
     # Sentinel — None means "compute max(60, retry_max_delay + 300) in
     # __post_init__". Explicit value overrides the computation.
     scheduler_dedup_ttl: float | None = None
+    # In-flight marker TTL (seconds). Pre-run SETNX with this TTL
+    # blocks duplicate schedfire deliveries WHILE the task runs; the
+    # long-TTL completed marker takes over once the task finishes
+    # (Unit 1 / H-2). 300s default covers typical task runtimes plus
+    # a large safety margin before the marker expires and a
+    # redelivery of a still-in-flight message could double-run.
+    scheduler_inflight_ttl: float = 300.0
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -88,6 +95,10 @@ class SwarmQConfig:
         env_sched_dedup_ttl = os.environ.get("SWARMQ_SCHEDULER_DEDUP_TTL", "")
         if env_sched_dedup_ttl:
             self.scheduler_dedup_ttl = float(env_sched_dedup_ttl)
+
+        env_sched_inflight_ttl = os.environ.get("SWARMQ_SCHEDULER_INFLIGHT_TTL", "")
+        if env_sched_inflight_ttl:
+            self.scheduler_inflight_ttl = float(env_sched_inflight_ttl)
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
         # retry horizon and prevent retried schedule-fires from bypassing
@@ -170,5 +181,12 @@ class SwarmQConfig:
                 "retried schedule-fire cannot bypass consumer-side dedup; "
                 f"got dedup_ttl={self.scheduler_dedup_ttl}, "
                 f"retry_max_delay={self.retry_max_delay}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.scheduler_inflight_ttl <= 0:
+            msg = (
+                "scheduler_inflight_ttl must be > 0, got "
+                f"{self.scheduler_inflight_ttl}"
             )
             raise ConfigurationError(msg)

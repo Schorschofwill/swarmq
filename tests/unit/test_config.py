@@ -409,3 +409,44 @@ def test_config_scheduler_dedup_ttl_equal_retry_max_delay_ok():
         scheduler_dedup_ttl=3600.0,
     )
     assert cfg.scheduler_dedup_ttl == 3600.0
+
+
+def test_config_scheduler_inflight_ttl_default():
+    """Unit 1 / H-2: pre-run marker TTL. 300s is wide enough for most
+    task runtimes without leaving a crashed worker's slot locked for
+    the full completed-marker TTL."""
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_inflight_ttl == 300.0
+
+
+def test_config_scheduler_inflight_ttl_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_INFLIGHT_TTL", "120.0")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.scheduler_inflight_ttl == 120.0
+
+
+def test_config_scheduler_inflight_ttl_explicit():
+    cfg = SwarmQConfig(
+        broker_url="redis://localhost",
+        backend_url="redis://localhost",
+        scheduler_inflight_ttl=60.0,
+    )
+    assert cfg.scheduler_inflight_ttl == 60.0
+
+
+def test_config_scheduler_inflight_ttl_zero_raises():
+    with pytest.raises(ConfigurationError, match="scheduler_inflight_ttl"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_inflight_ttl=0,
+        )
+
+
+def test_config_scheduler_inflight_ttl_negative_raises():
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            scheduler_inflight_ttl=-5.0,
+        )

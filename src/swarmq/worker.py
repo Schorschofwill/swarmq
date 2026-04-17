@@ -116,6 +116,12 @@ class Worker:
         # running the scheduler loop" (only possible if explicitly
         # disabled; default is enabled).
         self._scheduler: SchedulerLoop | None = None
+        # Schedfire in-flight claims. Keyed by id(message) because
+        # aio_pika's IncomingMessage forbids dynamic attribute
+        # assignment. Populated when _pre_start_schedfire_dedup wins
+        # the inflight SETNX, read + popped by _mark_schedfire_completed
+        # in the finally block (Unit 1 / H-2).
+        self._schedfire_inflight_claims: dict[int, str] = {}
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
         # AT_LEAST_ONCE redelivery within the same worker). Values are the
@@ -734,65 +740,112 @@ class Worker:
         task.add_done_callback(self._active_tasks.discard)
 
     async def _pre_start_schedfire_dedup(self, message) -> bool:
-        """Drop duplicate scheduled-fire messages before the pipeline.
+        """Two-marker schedfire dedup (Unit 1 / H-2 / reliability R-002).
 
-        When a message carries the ``x-swarmq-schedfire`` header, the
-        scheduler published it with a deterministic fire-key identity.
-        We SETNX that key (TTL from ``scheduler_dedup_ttl`` — large enough
-        to cover ``retry_max_delay``, see P1-1) and use the result to
-        decide:
+        Three-state check:
 
-        * First delivery (SETNX succeeded): proceed normally. Return False.
-        * Duplicate (SETNX no-op): ack + clear contextvars + return True.
-          Caller (``_handle_message``) must early-return.
+        1. **Completed marker present** (``sq:sched:fired:<key>``) → a
+           previous delivery of this fire already finished. Ack + skip.
+        2. **Completed absent, in-flight SETNX succeeded**
+           (``sq:sched:inflight:<key>``) → we own the run now. Caller
+           proceeds to the full pipeline. The finally block in
+           ``_handle_message`` writes the completed marker on exit
+           regardless of success (idempotent).
+        3. **Completed absent, in-flight SETNX lost** → another worker
+           is currently running this fire. Ack + skip. If that worker
+           crashes before writing the completed marker, the in-flight
+           key expires on its short TTL (default 300s) and the next
+           redelivery can re-run. That closes the silent-drop hole the
+           one-marker design had (SETNX winner crash → key persists
+           for 3900s → at-most-once failure mode).
 
-        Runs BEFORE ``_pre_start_cancel_check`` so a duplicate fire never
-        enters cancel processing. Same pipeline-stage-ordering-discipline
-        as the cancel-check (both are ack-safe pre-semaphore checks).
-
-        Backend errors → nack(requeue=True); we cannot assume either
-        state and want a healthy worker to retry.
+        Backend errors → nack(requeue=True); we cannot safely classify
+        the state and want a healthy worker to retry later.
         """
         header_value = (message.headers or {}).get("x-swarmq-schedfire")
         if not header_value:
             return False
 
-        ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
         try:
-            is_new = await self._backend.set_schedfire_dedup(
-                header_value, ttl_ms
+            already_completed = await self._backend.is_schedfire_completed(
+                header_value
             )
         except BackendConnectionError:
-            # Observability via structured log only. The rate-limit and
-            # lock-conflict stages carry an x-swarmq-*-count header, but
-            # those stages republish via publish_to_delay_queue + ack
-            # original — the in-memory header mutation survives because
-            # the publish-side carries it. Here we use nack(requeue=True)
-            # because Valkey flaps are a backend fault, not a per-message
-            # policy decision; letting the broker handle redelivery
-            # timing avoids picking an arbitrary delay value. AMQP
-            # nack-with-requeue does NOT transmit in-memory header
-            # mutations to the redelivered message, so a counter header
-            # would be broken by construction — we omit it (Unit 9 /
-            # Fork A2). Operators observe bounces via the log event.
             logger.error(
                 "schedfire_dedup_backend_error",
                 schedfire_key=header_value,
+                stage="completed_check",
             )
             await self._broker.nack(message, requeue=True)
             structlog.contextvars.clear_contextvars()
             return True
 
-        if is_new:
+        if already_completed:
+            logger.info(
+                "schedfire_completed_duplicate_acked",
+                schedfire_key=header_value,
+            )
+            await self._broker.ack(message)
+            structlog.contextvars.clear_contextvars()
+            return True
+
+        inflight_ttl_ms = int(self._config.scheduler_inflight_ttl * 1000)
+        try:
+            claimed = await self._backend.set_schedfire_inflight(
+                header_value, inflight_ttl_ms
+            )
+        except BackendConnectionError:
+            logger.error(
+                "schedfire_dedup_backend_error",
+                schedfire_key=header_value,
+                stage="inflight_claim",
+            )
+            await self._broker.nack(message, requeue=True)
+            structlog.contextvars.clear_contextvars()
+            return True
+
+        if claimed:
+            # This worker owns the run. Stash the key in a Worker-local
+            # dict keyed by id(message) so the finally block in
+            # _handle_message can look it up and write the completed
+            # marker once the task finishes. (aio_pika's IncomingMessage
+            # rejects dynamic attribute assignment.)
+            self._schedfire_inflight_claims[id(message)] = header_value
             return False
 
+        # Another worker is running it right now.
         logger.info(
-            "schedfire_duplicate_acked",
+            "schedfire_inflight_duplicate_acked",
             schedfire_key=header_value,
         )
         await self._broker.ack(message)
         structlog.contextvars.clear_contextvars()
         return True
+
+    async def _mark_schedfire_completed(self, message) -> None:
+        """Write the long-TTL completed marker after a schedfire task
+        finished (success OR failure — both count as "this fire was
+        processed"). Called from the ``_handle_message`` finally block.
+
+        No-ops when the message was not a schedfire delivery or when
+        this worker did not win the in-flight claim (the key attribute
+        is only set on the happy path in ``_pre_start_schedfire_dedup``).
+        Failures are logged and swallowed — an orphan in-flight marker
+        self-heals via its short TTL."""
+        # Pop from the Worker-local claims dict (see __init__). No-op
+        # when the message was not a schedfire delivery we claimed.
+        schedfire_key = self._schedfire_inflight_claims.pop(id(message), None)
+        if not schedfire_key:
+            return
+        ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
+        try:
+            await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
+        except BackendConnectionError as exc:
+            logger.warning(
+                "schedfire_completed_write_failed",
+                schedfire_key=schedfire_key,
+                error=str(exc),
+            )
 
     async def _pre_start_cancel_check(
         self,
@@ -872,6 +925,12 @@ class Worker:
 
             # Clear the flag (log+swallow at backend boundary — Unit 3).
             await self._backend.clear_cancel_flag(task_id)
+
+            # If this was a schedfire delivery we claimed in-flight,
+            # mark it completed so a redelivery after in-flight-TTL
+            # expiry does not re-run the task (Unit 1 / H-2). User-
+            # initiated cancel counts as "this fire was processed."
+            await self._mark_schedfire_completed(message)
 
             # Ack the message.
             await self._broker.ack(message)
@@ -1295,6 +1354,13 @@ class Worker:
                 await self._broker.ack(message)
 
         finally:
+            # 12-pre. Write the schedfire completed marker if this message
+            # was a schedfire delivery we claimed in-flight. Must run
+            # BEFORE broker-level ack is reconsidered downstream — a
+            # redelivery racing our in-flight key expiry must see the
+            # completed marker (Unit 1 / H-2).
+            await self._mark_schedfire_completed(message)
+
             # 12a. Release any task-locks acquired by this handler.
             # Shielded against inner-cancel (CancelledError from run_task
             # propagating into this finally). For outer-cancel (graceful

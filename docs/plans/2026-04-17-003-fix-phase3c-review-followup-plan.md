@@ -1,8 +1,9 @@
 ---
 title: "fix: Phase 3c Scheduler — Review-Follow-up (P1/P2 residual)"
 type: fix
-status: active
+status: completed
 date: 2026-04-17
+completed: 2026-04-17
 origin: docs/plans/2026-04-17-002-feat-phase3c-scheduler-plan.md
 ---
 
@@ -99,7 +100,7 @@ die ein kohärentes nächstes Commit-Batch benötigen:
 
 ---
 
-- [ ] **Unit 1: Dedup-SETNX Pre-run + Post-run Marker (H-2)**
+- [x] **Unit 1: Dedup-SETNX Pre-run + Post-run Marker (H-2)**
 
 **Goal:** Splitting der Dedup-Logik in einen kurzen Pre-run-Lock
 und einen langen Post-run-Marker. Ziel: at-least-once-Garantie bei

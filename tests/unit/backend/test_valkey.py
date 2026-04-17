@@ -679,3 +679,76 @@ def _async_iter(items):
         for item in items:
             yield item
     return gen()
+
+
+class TestValkeyBackendSchedfireInflight:
+    """Unit 1 / H-2: two-marker dedup. In-flight (short TTL) blocks
+    concurrent workers from double-running a task while it's executing;
+    completed (long TTL) blocks redeliveries after successful completion."""
+
+    def test_sched_inflight_key(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert (
+            backend._sched_inflight_key("cron_a:1234567890")
+            == "sq:sched:inflight:cron_a:1234567890"
+        )
+
+    async def test_set_schedfire_inflight_wins_on_first_call(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.return_value = True  # SETNX wins
+        backend._client = mock_client
+
+        result = await backend.set_schedfire_inflight("cron_a:1", 300_000)
+
+        mock_client.set.assert_awaited_once_with(
+            "sq:sched:inflight:cron_a:1", "1", nx=True, px=300_000
+        )
+        assert result is True
+
+    async def test_set_schedfire_inflight_loses_on_conflict(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.return_value = None  # another worker holds it
+        backend._client = mock_client
+
+        result = await backend.set_schedfire_inflight("cron_a:1", 300_000)
+        assert result is False
+
+    async def test_set_schedfire_inflight_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.set.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.set_schedfire_inflight("cron_a:1", 300_000)
+
+
+class TestValkeyBackendIsSchedfireCompleted:
+    async def test_is_completed_returns_true_when_key_exists(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.exists.return_value = 1
+        backend._client = mock_client
+
+        result = await backend.is_schedfire_completed("cron_a:1")
+        mock_client.exists.assert_awaited_once_with("sq:sched:fired:cron_a:1")
+        assert result is True
+
+    async def test_is_completed_returns_false_when_key_missing(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.exists.return_value = 0
+        backend._client = mock_client
+
+        assert await backend.is_schedfire_completed("cron_a:1") is False
+
+    async def test_is_completed_wraps_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.exists.side_effect = ValkeyError("nope")
+        backend._client = mock_client
+
+        with pytest.raises(BackendConnectionError):
+            await backend.is_schedfire_completed("cron_a:1")
