@@ -1957,8 +1957,9 @@ class TestClientProgress:
         pubsub.unsubscribe = AsyncMock()
         pubsub.aclose = AsyncMock()
         pubsub.get_message = AsyncMock(side_effect=[
-            None,  # drain
+            None,  # initial drain
             ConnectionError("pubsub flap"),
+            None,  # resubscribe drain (spike-finding fix)
             {"type": "message", "data": self._valid_payload(10, 10)},
         ])
         progress_backend.create_pubsub = Mock(return_value=pubsub)
@@ -1981,6 +1982,92 @@ class TestClientProgress:
         currents = [i.current for i in observed]
         assert 7 in currents
         assert currents[-1] == 10
+
+    async def test_watch_progress_resubscribes_after_pubsub_disconnect(
+        self, progress_backend, broker, registry,
+    ):
+        # Spike-finding (2026-04-17): valkey-py pub/sub does NOT auto-
+        # reconnect after socket reset. The iterator must actively call
+        # subscribe() again, otherwise the subscriber is dead forever
+        # even after the connection recovers.
+        progress_backend.get_progress = AsyncMock(return_value=None)
+        pubsub = AsyncMock()
+        pubsub.subscribe = AsyncMock()
+        pubsub.unsubscribe = AsyncMock()
+        pubsub.aclose = AsyncMock()
+        pubsub.get_message = AsyncMock(side_effect=[
+            None,  # initial drain
+            ConnectionError("socket reset"),
+            None,  # resubscribe drain
+            {"type": "message", "data": self._valid_payload(10, 10)},
+        ])
+        progress_backend.create_pubsub = Mock(return_value=pubsub)
+
+        with patch("swarmq.client.asyncio.sleep", new=AsyncMock()):
+            client = Client(
+                broker=broker, backend=progress_backend, registry=registry,
+            )
+            observed = []
+            gen = client.watch_progress("task-x")
+            try:
+                async for info in gen:
+                    observed.append(info)
+                    if info.percent >= 100.0:
+                        break
+            finally:
+                await gen.aclose()
+
+        # subscribe() was called twice: once at setup, once at recovery.
+        assert pubsub.subscribe.await_count == 2
+        # And the post-recovery message reached the caller.
+        assert observed[-1].current == 10
+
+    async def test_watch_progress_resubscribe_also_failing_keeps_trying(
+        self, progress_backend, broker, registry,
+    ):
+        # Pub/Sub disconnect + resubscribe attempt also fails. The
+        # iterator must NOT crash — it should yield a HASH snapshot
+        # and keep trying on the next loop iteration.
+        progress_backend.get_progress = AsyncMock(side_effect=[
+            None,  # initial read (nothing yet)
+            self._valid_hash(3, 10),  # fallback during flap
+            self._valid_hash(10, 10),  # fallback after second flap
+        ])
+        pubsub = AsyncMock()
+        pubsub.subscribe = AsyncMock(side_effect=[
+            None,  # initial subscribe OK
+            ConnectionError("still down"),  # resubscribe fails too
+            None,  # second resubscribe OK
+        ])
+        pubsub.unsubscribe = AsyncMock()
+        pubsub.aclose = AsyncMock()
+        pubsub.get_message = AsyncMock(side_effect=[
+            None,  # initial drain
+            ConnectionError("flap 1"),
+            ConnectionError("flap 2"),
+            None,  # drain after second resubscribe
+            {"type": "message", "data": self._valid_payload(10, 10)},
+        ])
+        progress_backend.create_pubsub = Mock(return_value=pubsub)
+
+        with patch("swarmq.client.asyncio.sleep", new=AsyncMock()):
+            client = Client(
+                broker=broker, backend=progress_backend, registry=registry,
+            )
+            observed = []
+            gen = client.watch_progress("task-x")
+            try:
+                async for info in gen:
+                    observed.append(info)
+                    if info.percent >= 100.0:
+                        break
+            finally:
+                await gen.aclose()
+
+        # Caller saw HASH fallbacks (3/10, 10/10) despite repeated flaps.
+        currents = [i.current for i in observed]
+        assert 3 in currents
+        assert 10 in currents
 
     async def test_watch_progress_finally_cleans_up_on_break(
         self, progress_backend, broker, registry,

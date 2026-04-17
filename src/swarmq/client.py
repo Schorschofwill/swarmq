@@ -545,23 +545,28 @@ class Client:
         Error-handling contract:
         - Malformed Pub/Sub messages (non-JSON or missing required
           progress fields) are dropped silently; the iterator continues.
-        - Pub/Sub transport errors (disconnect, Valkey restart) fall
-          back to re-reading the HASH so the caller continues observing
-          authoritative state while the connection recovers.
-        - Setup failures (subscribe/drain) surface as
-          :class:`BackendConnectionError`; the iterator yields nothing
-          and the caller's ``async for`` completes cleanly.
+        - Pub/Sub transport errors (disconnect, Valkey restart): the
+          iterator yields a HASH snapshot for authoritative state, then
+          actively re-subscribes to the channel. valkey-py does not
+          auto-resubscribe after a socket reset — confirmed empirically
+          in the 2026-04-17 toxiproxy spike.
+        - Setup failures (initial subscribe/drain) surface as a single
+          HASH snapshot, then the iterator completes cleanly.
         """
         channel = self._backend.progress_channel_name(task_id)
         pubsub = self._backend.create_pubsub()
+
+        async def _subscribe_and_drain() -> None:
+            await pubsub.subscribe(channel)
+            # Drain the subscribe-confirmation so later get_message
+            # calls don't return it as a false-positive update.
+            await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=0.05,
+            )
+
         try:
             try:
-                await pubsub.subscribe(channel)
-                # Drain the subscribe-confirmation so later get_message
-                # calls don't return it as a false-positive update.
-                await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=0.05,
-                )
+                await _subscribe_and_drain()
             except Exception:
                 # Setup failure — yield any HASH we can read, then exit.
                 fallback = await self.get_progress(task_id)
@@ -582,12 +587,22 @@ class Client:
                         ignore_subscribe_messages=True, timeout=0.1,
                     )
                 except Exception:
-                    # Pub/Sub error (disconnection, etc) — fall back to
-                    # re-reading the HASH so the caller sees *some*
-                    # update stream even if Pub/Sub is flaking.
+                    # Pub/Sub error (disconnect, Valkey restart, etc).
+                    # Step 1: surface HASH snapshot so caller keeps
+                    # observing authoritative state while we recover.
                     fallback = await self.get_progress(task_id)
                     if fallback is not None:
                         yield fallback
+                    # Step 2: actively re-subscribe. valkey-py's retry
+                    # policy covers commands but NOT the long-held
+                    # pub/sub socket — without this call the subscriber
+                    # never sees another message (spike finding).
+                    try:
+                        await _subscribe_and_drain()
+                    except Exception:
+                        # Still no reach to Valkey — back off and keep
+                        # trying on the next loop iteration.
+                        pass
                     await asyncio.sleep(0.5)
                     continue
                 if msg is None or msg.get("type") != "message":

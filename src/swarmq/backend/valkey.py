@@ -4,13 +4,25 @@ import asyncio
 
 import structlog
 import valkey.asyncio
+from valkey.asyncio.retry import Retry
+from valkey.backoff import ExponentialBackoff
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
+from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 from valkey.exceptions import ValkeyError
 
 from swarmq.exceptions import BackendConnectionError
 from swarmq.lua import load_script
 
 logger = structlog.get_logger()
+
+# Transient transport errors that should be retried transparently by the
+# valkey-py client. Application-level errors (ResponseError, DataError,
+# etc.) are NOT retried — they're programmer errors, not connectivity.
+_TRANSIENT_ERRORS: list[type[Exception]] = [
+    ValkeyConnectionError,
+    ValkeyTimeoutError,
+    OSError,
+]
 
 
 class ValkeyBackend:
@@ -25,7 +37,16 @@ class ValkeyBackend:
         if self._client is not None:
             return
         try:
-            self._client = valkey.asyncio.Valkey.from_url(self._url)
+            # Reliability hardening (2026-04-17 toxiproxy spike): command-
+            # level retry on transient transport errors with exponential
+            # backoff capped at 2s. health_check_interval=30 detects
+            # half-open connections before they surface to callers.
+            self._client = valkey.asyncio.Valkey.from_url(
+                self._url,
+                retry=Retry(ExponentialBackoff(cap=2.0, base=0.05), retries=5),
+                retry_on_error=_TRANSIENT_ERRORS,
+                health_check_interval=30,
+            )
             await self._client.ping()
         except (ValkeyConnectionError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc

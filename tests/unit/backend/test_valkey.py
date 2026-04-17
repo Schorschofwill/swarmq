@@ -27,7 +27,16 @@ class TestValkeyBackendConnect:
         with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client) as mock_from_url:
             await backend.connect()
 
-        mock_from_url.assert_called_once_with(url)
+        # Reliability hardening (2026-04-17 spike): retry policy +
+        # health_check_interval are now passed — verify url + presence
+        # of retry kwargs without binding the test to the exact Retry
+        # implementation.
+        mock_from_url.assert_called_once()
+        call = mock_from_url.call_args
+        assert call.args == (url,)
+        assert "retry" in call.kwargs
+        assert call.kwargs["health_check_interval"] == 30
+        assert OSError in call.kwargs["retry_on_error"]
         mock_client.ping.assert_awaited_once()
 
 
