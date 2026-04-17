@@ -259,6 +259,155 @@ atomare read-then-set in `disable_schedule` via kurzem Lua-Script.
 
 ---
 
+- [ ] **Unit 9: Dedup-Counter-Header persistiert über Redelivery (Fork A)**
+
+**Goal:** `x-swarmq-schedfire-dedup-count`-Inkrement muss in der
+requeueten Message sichtbar sein. Aktuell mutiert der Worker
+`message.headers` in-memory und ruft `nack(requeue=True)`; AMQP-
+Semantik ignoriert die Mutation und redelivered die Original-Header.
+Der Counter bleibt effektiv bei 1 egal wie oft Valkey flappt.
+
+**Requirements:** Re-Review-Finding P1-Fork-A (correctness C-FIX-01 +
+kieran KP-02 + agent-native Warning 1, 3 Reviewer Agreement).
+
+**Dependencies:** Eigenständig. Kann parallel zu Unit 1 laufen.
+
+**Files:**
+- Modify: `src/swarmq/worker.py` (`_pre_start_schedfire_dedup`
+  BackendConnectionError-Pfad)
+- Test: `tests/unit/test_worker.py`
+- Test: `tests/integration/test_worker_schedfire_dedup.py` (neuer Test
+  für Counter-Akkumulation über echte Redelivery)
+
+**Approach — gewählte Variante A2 (empfohlen):** Header-Mutation
+entfernen, Log-Zeile als einzige Observability-Quelle behalten.
+
+- Der Counter-Inkrement-Code-Pfad wird entfernt:
+  ```
+  prior = int(message.headers.get("x-swarmq-schedfire-dedup-count", 0))
+  message.headers["x-swarmq-schedfire-dedup-count"] = prior + 1
+  ```
+  entfällt. Der strukturierte `logger.error("schedfire_dedup_backend_error",
+  schedfire_key=header_value)` bleibt — Operators sehen Bounces im
+  Log-Stream (JSON-strukturiert, greppable).
+- Der existierende Unit-Test `test_dedup_backend_error_nacks_for_requeue`
+  (der jetzt den Counter-Assert enthält, Commit `1e5432e`) wird
+  geändert: Counter-Assertion entfernt; Assert stattdessen dass das
+  Log-Event emittiert wurde (via `structlog.testing.capture_logs`).
+- Der Akkumulations-Test (`test_dedup_backend_error_accumulates_counter`)
+  wird entfernt — der Counter akkumuliert nicht und soll es auch nicht.
+
+**Rationale für A2 statt A1 (publish_to_delay_queue-Pattern):**
+- Die transiente Valkey-Unavailability ist ein seltener Fall; der
+  Broker-Side-Retry via `nack(requeue=True)` ist angemessen.
+- `publish_to_delay_queue` erfordert einen Delay-Wert — der bei
+  Valkey-Transient nicht offensichtlich wählbar ist (1s? 5s?
+  exponential?). Die rate-limit/lock-Pfade nutzen kalibrierte
+  Delays aus der Lua-Script-Antwort bzw. expliziter Config. Für
+  Valkey-Flap gibt's diese Kalibrierung nicht.
+- Die Symmetrie-Verletzung mit rate-limit/lock wird explizit in
+  einem Code-Kommentar adressiert: „Valkey flaps are a backend
+  fault, not a per-message policy decision; let the broker handle
+  redelivery timing."
+
+**Alternative Varianten (nicht gewählt):**
+- **A1 publish_to_delay_queue:** konsistent mit rate-limit/lock,
+  aber zusätzliche Komplexität ohne klaren Mehrwert für den
+  transienten Valkey-Fall.
+- **A3 Status quo + Doku:** behält den broken Code-Pfad, der bei
+  Code-Audits verwirrt. Abgelehnt.
+
+**Execution note:** Test-first — Log-Emission-Test zuerst, dann
+Counter-Code entfernen, dann Log-Wording verifizieren.
+
+**Test scenarios:**
+- Happy path — BackendConnectionError bei dedup-SETNX → `logger.error`
+  mit `event="schedfire_dedup_backend_error"` wird emittiert, `schedfire_key`
+  korrekt propagiert, `nack(requeue=True)` läuft.
+- Edge — Message mit pre-existing (vererbtem) Counter-Header wird
+  nicht berührt. Header passt durch ohne Mutation — Operator-Tools
+  die externe Counter-Logik hinzufügen sind davon nicht betroffen.
+
+**Verification:**
+- Unit-Suite grün. Log-Inhalt als einzige Observability-Source
+  verifiziert.
+- Integration-Test mit zwei sequenziellen BCE-Rounds zeigt: zwei
+  Log-Events emittiert, Counter-Header nie im Broker-Delivery sichtbar.
+
+---
+
+- [ ] **Unit 10: `SCHEDULER_LOCK_KEY` als Live-Derivation (Fork B)**
+
+**Goal:** Der Lock-Key-Wert wird zur Import-Zeit aus
+`locking.lock_key(SCHEDULER_LOCK_NAME)` berechnet statt hand-getippt.
+Die Invariante „SCHEDULER_LOCK_KEY == locking._LOCK_KEY_PREFIX +
+SCHEDULER_LOCK_NAME" ist damit by construction korrekt — kein
+silent-break wenn der Prefix ändert.
+
+**Requirements:** Re-Review-Finding P2-Fork-B (maintainability M-FIX-02
++ reliability NEW-001 + kieran RR-02, 3 Reviewer Agreement).
+
+**Dependencies:** Unit 1-8 berühren den Key-Wert nicht; Unit 10 ist
+unabhängig.
+
+**Files:**
+- Modify: `src/swarmq/scheduler.py` (Constant-Derivation)
+- Test: `tests/unit/test_scheduler_store.py` (neuer
+  `test_scheduler_lock_key_matches_lock_manager_prefix`)
+
+**Approach — gewählte Variante B1 (empfohlen):** Statische
+Live-Derivation mit Import aus `locking`.
+
+- In `scheduler.py`:
+  ```
+  from swarmq.locking import lock_key
+  ...
+  SCHEDULER_LOCK_NAME = "scheduler:leader"
+  SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
+  ```
+- Docstring präzisieren: „Live-derived; kann sich nicht von
+  `locking._LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME` unterscheiden."
+- Der Test `test_scheduler_lock_key_matches_lock_manager_prefix`
+  importiert `_LOCK_KEY_PREFIX` und `SCHEDULER_LOCK_NAME` und
+  vergleicht — dient als guardrail falls `lock_key()` jemals auf
+  non-trivial mapping erweitert wird.
+
+**Rationale für B1 statt B2 (Runtime-Assertion):**
+- B1 ist fail-fast zur Import-Zeit; B2 braucht `__debug__`-guarded
+  assert der zur Runtime läuft und bei `-O` verschwindet.
+- B1 hat Null Overhead; B2 führt jeden Worker-Start eine Compare-
+  Operation aus.
+
+**Alternative Varianten (nicht gewählt):**
+- **B2 Runtime-Assertion:** mehr Boilerplate, `-O` macht sie wirkungslos.
+- **B3 Status quo + Doku:** lässt die silent-break-Gefahr stehen.
+
+**Execution note:** Test-first. Der Test failed aktuell weil der Wert
+hand-getippt ist — greift nur wenn `lock_key("scheduler:leader")`
+zufällig das gleiche liefert (was er tut), daher eigentlich nicht
+rot. Wir machen ihn rot durch Temporär-Änderung in `locking.py`
+(prefix auf z.B. `"sq:lck:"` — dann passt der Test und fängt die
+Divergenz ab; danach Prefix zurücksetzen und Derivation einführen).
+Simpler: wir implementieren einfach die Derivation und der Test
+dient als Regression-Guard.
+
+**Test scenarios:**
+- `SCHEDULER_LOCK_KEY == lock_key(SCHEDULER_LOCK_NAME)` — by
+  construction, aber als Regression-Guard geprüft.
+- Der Wert entspricht dem erwarteten Format
+  `"sq:lock:scheduler:leader"` (Snapshot-Test, falls jemand den
+  Prefix versehentlich ändert).
+- `SCHEDULER_LOCK_KEY` wird von CLI + scheduler.py-commit_fire
+  als identischer String genutzt (via `id(constant)` oder
+  Import-Equality).
+
+**Verification:**
+- Unit-Tests grün.
+- Linter-Check: kein hand-getippter `"sq:lock:scheduler:leader"`
+  Literal mehr im Code (bereits durch Safe-Auto-Fixes erreicht).
+
+---
+
 ## Risks & Dependencies
 
 - Unit 1 (Dedup-SETNX) ändert die at-least-once-Semantik spürbar.
@@ -267,6 +416,13 @@ atomare read-then-set in `disable_schedule` via kurzem Lua-Script.
 - Unit 2 (asyncio.sleep) könnte flaky-Tests revealen die aktuell
   durch Sleeps maskiert waren. Plan: wenn Sleep durch Event ersetzt
   wird und der Test dann failt, ist das ein echter Bug — fixen.
+- Unit 9 (Dedup-Counter) entfernt einen beobachtbaren Header den
+  externe Tools theoretisch lesen könnten. Risk gering weil der
+  Header erst seit Commit `e657fa4` existiert und nie korrekt
+  persistierte — kein realistischer Consumer hat sich darauf
+  verlassen können. Changelog-Notiz reicht.
+- Unit 10 (Lock-Key-Derivation) ist defensiv; der aktuelle hand-
+  getippte Wert ist gleichwertig zum derivierten. Risk: Null.
 
 ## Success Metrics
 
