@@ -350,6 +350,10 @@ class Worker:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
+                # R3.5 Unit 11: release BEFORE ack so the flag clears
+                # even if ack is lost — owner-check protects against
+                # a TTL-race foreign owner in either ordering.
+                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.ack(message)
             except Exception as broker_exc:
                 logger.error(
@@ -361,6 +365,8 @@ class Worker:
                     note="message routed via broker DLX to "
                          f"{queue}.XQ without diagnostic headers",
                 )
+                # Fallback DLX-nack is still terminal — release here too.
+                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.nack(message, requeue=False)
             return True
 
@@ -386,6 +392,7 @@ class Worker:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
+                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.ack(message)
             except Exception as broker_exc:
                 logger.error(
@@ -396,6 +403,7 @@ class Worker:
                     note="message routed via broker DLX to "
                          f"{queue}.XQ without diagnostic headers",
                 )
+                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.nack(message, requeue=False)
             return True
 
@@ -475,6 +483,7 @@ class Worker:
                 await self._broker.publish_to_dead_letter_queue(
                     queue, message.body, headers=original_headers,
                 )
+                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.ack(message)
             except Exception as exc:
                 # DLQ-publish failure at the cap creates a hazard: nacking
@@ -498,6 +507,8 @@ class Worker:
                          "without diagnostic headers; recover wedged lock "
                          f"via valkey-cli DEL sq:lock:{lock_name}",
                 )
+                # Terminal DLX fallback — release before giving up.
+                await self._maybe_release_unique(message, task_id, task_info)
                 await self._broker.nack(message, requeue=False)
             return True
 
@@ -905,6 +916,7 @@ class Worker:
         # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
         # the client's get_result does not hang forever waiting for a
         # result that will never arrive).
+        task_info: TaskInfo | None = None
         try:
             task_class = self._registry.get(task_name)
             task_info = task_class.task_info
@@ -950,6 +962,13 @@ class Worker:
             # initiated cancel counts as "this fire was processed."
             await self._mark_schedfire_completed(message)
 
+            # R3.5 Unit 11: pre-start cancel is a terminal path — the
+            # task never ran; release the dedup flag so a future
+            # legitimate schedule() can enqueue again. task_info is
+            # None when task is unregistered (fallback to completion
+            # mode inside _maybe_release_unique).
+            await self._maybe_release_unique(message, task_id, task_info)
+
             # Ack the message.
             await self._broker.ack(message)
 
@@ -978,6 +997,43 @@ class Worker:
         structlog.contextvars.clear_contextvars()
         return True
 
+    async def _maybe_release_unique(
+        self, message, task_id: str, task_info: TaskInfo | None = None,
+    ) -> None:
+        """Release the R3.5 dedup flag if this message carries one.
+
+        Contract:
+          * No-op when the message lacks ``x-swarmq-unique-hash`` header.
+          * No-op in ``start``-mode at terminal paths — Unit 10 already
+            released at pickup (owner-check would fail here anyway).
+          * ``completion``-mode (default): call ``backend.release_unique``;
+            owner-check protects against TTL-expiry-race (first task's
+            flag was reclaimed by a second task before first finished).
+          * When ``task_info`` is None (task not registered) → treat as
+            completion mode. Better to attempt release than leave an
+            orphan flag until TTL.
+
+        Backend errors are swallowed inside ``release_unique`` — an
+        orphan flag self-heals via TTL and a release failure must not
+        break the worker's terminal-path pipeline (same discipline as
+        ``clear_cancel_flag``).
+        """
+        headers = message.headers or {}
+        unique_hash = headers.get("x-swarmq-unique-hash")
+        if not unique_hash:
+            return
+        # Prefer the header over TaskInfo — per-call overrides from
+        # Client.schedule set the header, and we want those overrides
+        # to flow end-to-end. TaskInfo is the fallback when the header
+        # is absent or malformed.
+        header_mode = headers.get("x-swarmq-unique-until")
+        mode = header_mode or (
+            task_info.unique_until if task_info is not None else "completion"
+        )
+        if mode == "start":
+            return  # Release already happened at pickup (Unit 10).
+        await self._backend.release_unique(unique_hash, task_id)
+
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
         # 1-2. Deserialize message body
@@ -991,6 +1047,8 @@ class Worker:
             kwargs = payload["kwargs"]
         except Exception as exc:
             logger.error("deserialize_failed", error=str(exc))
+            # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
+            # unknown). Accepted limitation — flag self-heals via TTL.
             await self._broker.nack(message, requeue=False)
             return
 
@@ -1032,9 +1090,21 @@ class Worker:
         # AT_LEAST_ONCE redelivery within the same worker.
         handler_id = uuid.uuid4()
         acquired_locks: list[_LockEntry] = []
+        # R3.5 Unit 11 state: task_info visible in finally even if
+        # lookup fails; skip_unique_release=True marks non-terminal
+        # paths (broker redelivery keeps the flag alive for the
+        # next delivery). Default False = terminal; every branch
+        # that nack(requeue=True) or republishes via delay queue
+        # MUST set this to True, otherwise the flag gets released
+        # while a redelivered message is still in flight.
+        task_info: TaskInfo | None = None
+        skip_unique_release = False
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():
+                # nack(requeue=True): broker redelivers with headers
+                # intact → keep the flag so redelivery can release.
+                skip_unique_release = True
                 await self._broker.nack(message, requeue=True)
                 return
 
@@ -1048,24 +1118,54 @@ class Worker:
 
             task_info = task_class.task_info
 
+            # 5a. R3.5 Unit 10: start-mode dedup release happens at
+            # pickup, BEFORE any stage that could nack(requeue=True).
+            # The unique flag's only purpose in start-mode is to gate
+            # enqueue-time dedup; once the worker has claimed the
+            # message, the flag must be released so the next
+            # legitimate schedule() call can enqueue. Owner-check in
+            # unique_release.lua protects against a foreign-owner DEL.
+            # BackendConnectionError is swallowed inside
+            # release_unique (log-only) — letting Valkey flap abort
+            # pickup would turn dedup into a liveness hazard.
+            unique_hash = (message.headers or {}).get("x-swarmq-unique-hash")
+            header_unique_until = (message.headers or {}).get(
+                "x-swarmq-unique-until"
+            )
+            effective_unique_until = header_unique_until or task_info.unique_until
+            if unique_hash and effective_unique_until == "start":
+                await self._backend.release_unique(unique_hash, task_id)
+
             # 5b. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
             # so a Valkey or broker hiccup cannot drop a message that has
             # already been acked. Rate-limited tasks never reach
             # pre_execute or middleware: they are republished into the
             # delay queue and ack'd as a single transactional unit.
+            # Any "handled" return is a requeue (delay queue or nack=True)
+            # — the original message's x-swarmq-unique-hash header is
+            # preserved in the republished copy (Unit 11 header
+            # preservation), so the flag must stay claimed.
             if await self._try_apply_rate_limit(
                 message, task_info, queue, task_id, task_name,
             ):
+                skip_unique_release = True
                 return
 
             # 5b'. Lock check — same FIRE_AND_FORGET-ordering discipline as
             # rate-limit. Conflict path: requeue with exponential backoff
             # until the per-message cap, then DLQ. Acquired locks are
             # released in the finally below.
+            # Terminal DLQ sub-paths inside the helper release the flag
+            # inline (render-fail, empty-render, conflict-cap); non-
+            # terminal sub-paths requeue and preserve the header. Set
+            # skip_unique_release either way to avoid double-release
+            # (terminal sub-paths already released) or premature release
+            # (non-terminal sub-paths still in flight).
             if await self._try_apply_lock(
                 message, task_info, task_class, queue, task_id, task_name,
                 args, kwargs, handler_id, acquired_locks,
             ):
+                skip_unique_release = True
                 return
 
             # 5c. FIRE_AND_FORGET: ack immediately before execution.
@@ -1329,6 +1429,16 @@ class Worker:
                         chain,
                     )
                     if should_retry:
+                        # Retry path covers two outcomes:
+                        #   * delay-queue republish (non-terminal —
+                        #     header preserved, next delivery runs the
+                        #     full pipeline again),
+                        #   * _send_to_dlq (terminal — releases
+                        #     inline).
+                        # Either way the finally must NOT release:
+                        # non-terminal would strand the redelivered
+                        # message, terminal already released inline.
+                        skip_unique_release = True
                         return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
@@ -1383,6 +1493,10 @@ class Worker:
             except BackendConnectionError:
                 logger.error("backend_connection_error")
                 if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                    # Non-terminal — redelivery will re-run the task
+                    # from scratch; keep the flag so next terminal
+                    # path can release it.
+                    skip_unique_release = True
                     await self._broker.nack(message, requeue=True)
                 return
 
@@ -1411,6 +1525,26 @@ class Worker:
             # redelivery racing our in-flight key expiry must see the
             # completed marker (Unit 1 / H-2).
             await self._mark_schedfire_completed(message)
+
+            # 12-pre-b. R3.5 Unit 11: completion-mode dedup release.
+            # No-op in start-mode (Unit 10 already released at pickup),
+            # no-op when the message has no x-swarmq-unique-hash header.
+            # All main-body terminal paths (success, error, cancel,
+            # DLQ, lock-conflict-cap, task_not_found nack=False,
+            # lock-render-fail, middleware-factory-fail) flow through
+            # here. Non-terminal paths (rate-limit requeue, lock-
+            # conflict requeue, retry delay queue, store_result nack=
+            # True, shutdown nack=True) also hit this finally, but
+            # they preserve the x-swarmq-unique-hash header in the
+            # republished message so the next delivery re-runs the
+            # owner-check pipeline. Release is idempotent via owner-
+            # check — releasing here when the message will be
+            # redelivered is wrong, so guard on a local flag set by
+            # non-terminal branches below.
+            if not skip_unique_release:
+                await self._maybe_release_unique(
+                    message, task_id, task_info,
+                )
 
             # 12a. Release any task-locks acquired by this handler.
             #
@@ -1583,11 +1717,16 @@ class Worker:
             delay=delay_seconds,
         )
 
-        # 6. Publish to delay queue with incremented retry count
-        headers = {
-            "x-swarmq-retry-count": retry_count + 1,
-            "x-swarmq-traceback": error_message,
-        }
+        # 6. Publish to delay queue with incremented retry count.
+        # R3.5 Unit 11: merge original headers so x-swarmq-unique-hash
+        # (and any future stage-specific header) survives redelivery.
+        # Otherwise the flag would zombie in Valkey until TTL while the
+        # retry succeeds and the terminal-release finds no header to
+        # release on. Same merge pattern as rate-limit (worker.py ~208)
+        # and lock-conflict requeue (worker.py ~443).
+        headers = {**(dict(message.headers) if message.headers else {})}
+        headers["x-swarmq-retry-count"] = retry_count + 1
+        headers["x-swarmq-traceback"] = error_message
         try:
             await self._broker.publish_to_delay_queue(
                 queue, message.body, delay_ms=delay_ms, headers=headers
@@ -1639,12 +1778,28 @@ class Worker:
         except Exception as store_exc:
             logger.warning("dlq_result_store_failed", error=str(store_exc))
 
-        headers = {
-            "x-swarmq-traceback": error_message,
-        }
+        # R3.5 Unit 11: preserve all inbound headers so a message that
+        # reached DLQ via retry-exhaustion still carries its original
+        # x-swarmq-unique-hash for operator introspection (inline
+        # release below takes care of the actual flag cleanup).
+        headers = {**(dict(message.headers) if message.headers else {})}
+        headers["x-swarmq-traceback"] = error_message
+        # Fetch task_info for release-mode; unregistered tasks default
+        # to completion (see _maybe_release_unique contract).
+        try:
+            task_class = self._registry.get(task_name)
+            task_info_for_release = task_class.task_info
+        except TaskNotFoundError:
+            task_info_for_release = None
         try:
             await self._broker.publish_to_dead_letter_queue(
                 queue, message.body, headers=headers
+            )
+            # R3.5 Unit 11: release BEFORE ack; fallback-nack below
+            # still reaches the DLX and the flag must clear regardless
+            # of which ack path wins.
+            await self._maybe_release_unique(
+                message, task_id, task_info_for_release
             )
             await self._broker.ack(message)
         except Exception as broker_exc:
@@ -1653,4 +1808,7 @@ class Worker:
                 await self._broker.nack(message, requeue=True)
             except Exception:
                 pass
+            # nack(requeue=True) is non-terminal — leave the flag so
+            # the redelivery's terminal path releases it. No release
+            # here.
         logger.warning("task_sent_to_dlq", error=error_message)

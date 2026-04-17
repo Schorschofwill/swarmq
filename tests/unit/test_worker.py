@@ -3852,3 +3852,259 @@ class TestSchedfireDedup:
         await w._handle_message(msg)
 
         broker.ack.assert_awaited_once_with(msg)
+
+
+# ---------------------------------------------------------------------------
+# R3.5 Unique Tasks — Worker release (Units 10 + 11)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerUniqueRelease:
+    """Start-mode pickup release (Unit 10) and completion-mode terminal
+    release (Unit 11). Focus on behavioural contracts, not line-by-line
+    coverage of every terminal path — each path is exercised by one
+    targeted test."""
+
+    @pytest.fixture
+    def release_backend(self, backend):
+        backend.release_unique = AsyncMock(return_value=True)
+        return backend
+
+    def _unique_message(self, *, unique_until="completion", task_name="add"):
+        return _make_message(
+            _default_payload(name=task_name),
+            headers={
+                "x-swarmq-unique-hash": "abc-hash",
+                "x-swarmq-unique-until": unique_until,
+            },
+        )
+
+    async def test_no_header_skips_release_entirely(
+        self, worker, broker, release_backend,
+    ):
+        """Baseline: messages without the header never call release_unique."""
+        msg = _make_message(_default_payload())
+        await worker._handle_message(msg)
+        release_backend.release_unique.assert_not_awaited()
+
+    async def test_start_mode_releases_at_pickup(
+        self, worker, broker, release_backend,
+    ):
+        """unique_until=start → release BEFORE execution."""
+        call_order: list[str] = []
+
+        async def track_release(*_a, **_kw):
+            call_order.append("release")
+            return True
+
+        async def track_store(*_a, **_kw):
+            call_order.append("store_result")
+
+        release_backend.release_unique = AsyncMock(side_effect=track_release)
+        release_backend.store_result = AsyncMock(side_effect=track_store)
+
+        msg = self._unique_message(unique_until="start")
+        await worker._handle_message(msg)
+
+        # Release fires before the task's result is stored (start-mode).
+        assert call_order[0] == "release"
+        assert "store_result" in call_order
+        # Only one release call in start-mode (no completion-release).
+        assert call_order.count("release") == 1
+
+    async def test_completion_mode_releases_at_success(
+        self, worker, broker, release_backend,
+    ):
+        """unique_until=completion → release during terminal success path."""
+        msg = self._unique_message(unique_until="completion")
+        await worker._handle_message(msg)
+
+        release_backend.release_unique.assert_awaited_once()
+        call_args = release_backend.release_unique.await_args.args
+        assert call_args[0] == "abc-hash"
+        broker.ack.assert_awaited_once_with(msg)
+
+    async def test_completion_mode_releases_on_task_exception(
+        self, broker, backend, config,
+    ):
+        """Task raises → release still fires in finally."""
+        class FailTask(Task):
+            task_info = TaskInfo(name="fail", queues=["default"])
+            async def run(self):
+                raise RuntimeError("boom")
+
+        registry = TaskRegistry()
+        registry.register(FailTask)
+        backend.release_unique = AsyncMock(return_value=True)
+        w = Worker(broker=broker, backend=backend, registry=registry,
+                   config=config)
+        msg = _make_message(
+            _default_payload(name="fail", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "h-fail",
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+        backend.release_unique.assert_awaited_once()
+
+    async def test_retry_path_preserves_unique_header_and_skips_release(
+        self, broker, backend, config,
+    ):
+        """Retry → publish_to_delay_queue must carry x-swarmq-unique-hash
+        forward AND the finally must NOT release (redelivery still owns
+        the flag)."""
+        class RetryTask(Task):
+            task_info = TaskInfo(
+                name="retry_task", queues=["default"],
+                max_retries=2,
+            )
+            async def run(self):
+                raise RuntimeError("try again")
+
+        registry = TaskRegistry()
+        registry.register(RetryTask)
+        backend.release_unique = AsyncMock(return_value=True)
+        w = Worker(broker=broker, backend=backend, registry=registry,
+                   config=config)
+        msg = _make_message(
+            _default_payload(name="retry_task", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "h-retry",
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+
+        broker.publish_to_delay_queue.assert_awaited_once()
+        forwarded_headers = broker.publish_to_delay_queue.await_args.kwargs[
+            "headers"
+        ]
+        # Header merge preserves the original dedup identity.
+        assert forwarded_headers["x-swarmq-unique-hash"] == "h-retry"
+        assert forwarded_headers["x-swarmq-unique-until"] == "completion"
+        assert forwarded_headers["x-swarmq-retry-count"] == 1
+        # Release must NOT fire — redelivery still owns the flag.
+        backend.release_unique.assert_not_awaited()
+
+    async def test_dlq_noretry_releases_unique(
+        self, broker, backend, config,
+    ):
+        """NoRetry exception → direct DLQ path releases inline."""
+        class NoRetryTask(Task):
+            task_info = TaskInfo(
+                name="noretry_task", queues=["default"],
+                max_retries=3,
+            )
+            async def run(self):
+                raise NoRetry("do not retry")
+
+        registry = TaskRegistry()
+        registry.register(NoRetryTask)
+        backend.release_unique = AsyncMock(return_value=True)
+        w = Worker(broker=broker, backend=backend, registry=registry,
+                   config=config)
+        msg = _make_message(
+            _default_payload(name="noretry_task", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "h-dlq",
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        backend.release_unique.assert_awaited()
+        dlq_headers = broker.publish_to_dead_letter_queue.await_args.kwargs[
+            "headers"
+        ]
+        assert dlq_headers["x-swarmq-unique-hash"] == "h-dlq"
+
+    async def test_rate_limit_requeue_preserves_header_skips_release(
+        self, broker, backend, config,
+    ):
+        """Rate-limited tasks requeue with header intact; no release."""
+        class RateTask(Task):
+            task_info = TaskInfo(
+                name="rl_task", queues=["default"],
+                rate_limit="1/s",
+            )
+            async def run(self):
+                return None
+
+        registry = TaskRegistry()
+        registry.register(RateTask)
+
+        from swarmq.limits import RateLimiter
+        w = Worker(broker=broker, backend=backend, registry=registry,
+                   config=config)
+        rl = MagicMock(spec=RateLimiter)
+        rl.check = AsyncMock(return_value=(False, 0, 500))
+        w._rate_limiter = rl
+        backend.release_unique = AsyncMock(return_value=True)
+
+        msg = _make_message(
+            _default_payload(name="rl_task", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "h-rl",
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+
+        broker.publish_to_delay_queue.assert_awaited_once()
+        headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
+        assert headers["x-swarmq-unique-hash"] == "h-rl"
+        backend.release_unique.assert_not_awaited()
+
+    async def test_shutdown_nack_requeue_skips_release(
+        self, worker, broker, release_backend,
+    ):
+        """Shutdown-in-progress nack(requeue=True) leaves the flag."""
+        msg = self._unique_message(unique_until="completion")
+        worker._shutdown_event.set()
+        await worker._handle_message(msg)
+        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        release_backend.release_unique.assert_not_awaited()
+
+    async def test_pre_start_cancel_releases_unique(
+        self, worker, broker, release_backend,
+    ):
+        """Pre-start cancel → release flag, ack message."""
+        release_backend.is_cancelled = AsyncMock(return_value=True)
+        msg = self._unique_message(unique_until="completion")
+        await worker._handle_message(msg)
+        release_backend.release_unique.assert_awaited_once()
+        broker.ack.assert_awaited_once_with(msg)
+
+    async def test_header_unique_until_wins_over_taskinfo_default(
+        self, broker, backend, config,
+    ):
+        """Per-call override via header → worker honours start even when
+        TaskInfo defaults to completion."""
+        class AddTaskCompletion(Task):
+            task_info = TaskInfo(
+                name="add_c", queues=["default"],
+                unique_for=60, unique_until="completion",
+            )
+            async def run(self, a: int, b: int):
+                return a + b
+
+        registry = TaskRegistry()
+        registry.register(AddTaskCompletion)
+        backend.release_unique = AsyncMock(return_value=True)
+        w = Worker(broker=broker, backend=backend, registry=registry,
+                   config=config)
+
+        msg = _make_message(
+            _default_payload(name="add_c"),
+            headers={
+                "x-swarmq-unique-hash": "h-override",
+                "x-swarmq-unique-until": "start",  # per-call override
+            },
+        )
+        await w._handle_message(msg)
+
+        # In start mode release happens at pickup. Exactly one release
+        # call — the completion-mode release in finally is a no-op.
+        assert backend.release_unique.await_count == 1
