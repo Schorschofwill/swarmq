@@ -1241,6 +1241,29 @@ class Worker:
 
             # 6. Create task instance, run lifecycle
             task_instance = task_class()
+
+            # R3.7 progress-tracking wiring. Task.update_progress relies
+            # on these four instance attributes; if the task never calls
+            # update_progress, setting them is a handful of wasted cycles.
+            # Resolving result_ttl once here mirrors the cascade used
+            # further below for the result-storage path (task_info →
+            # config → 86400 fallback).
+            progress_result_ttl = task_info.result_ttl
+            if progress_result_ttl is None:
+                if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                    progress_result_ttl = 0
+                else:
+                    progress_result_ttl = self._config.result_ttl
+            if progress_result_ttl in (None, 0):
+                # result_ttl=0 means "don't store results" — progress
+                # gets the default 24h fallback so it's still inspectable
+                # during the task's run.
+                progress_result_ttl = 86400
+            task_instance._task_id = task_id
+            task_instance._backend = self._backend
+            task_instance._task_start_time = time.monotonic()
+            task_instance._result_ttl_ms = progress_result_ttl * 1000
+
             result_value = None
             is_error = False
             is_cancelled = False

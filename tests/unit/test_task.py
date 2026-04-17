@@ -518,3 +518,137 @@ def test_task_subclass_reserved_param_error_mentions_all_reserved():
     msg = str(excinfo.value)
     assert "unique_for" in msg
     assert "unique_until" in msg
+
+
+# ---------------------------------------------------------------------------
+# R3.7 — Task.update_progress
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateProgress:
+    """Direct-call semantics of Task.update_progress (R3.7 Unit 3)."""
+
+    @pytest.mark.timeout(5)
+    async def test_noop_without_worker_wiring(self):
+        """No backend / no task_id → silently skip. Keeps unit-test
+        call-sites portable with direct instantiation."""
+        t = Task()
+        # Should not raise.
+        await t.update_progress(5, 10, "halfway")
+
+    @pytest.mark.timeout(5)
+    async def test_writes_hash_and_publishes_on_first_call(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "abc-1"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic() - 2.0
+        t._result_ttl_ms = 60_000
+
+        await t.update_progress(3, 10, "three of ten")
+
+        t._backend.set_progress.assert_awaited_once()
+        call_args = t._backend.set_progress.await_args
+        assert call_args.args[0] == "abc-1"
+        fields = call_args.args[1]
+        assert fields["current"] == "3"
+        assert fields["total"] == "10"
+        assert fields["percent"] == "30.00"
+        assert fields["message"] == "three of ten"
+        # ETA sanity: 2s elapsed at 3/10 → ~4.67s remaining.
+        assert int(fields["eta_seconds"]) in {4, 5}
+        t._backend.publish_progress.assert_awaited_once()
+
+    @pytest.mark.timeout(5)
+    async def test_throttles_second_call_within_window(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "abc-1"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic()
+
+        await t.update_progress(1, 100)
+        await t.update_progress(2, 100)  # within 500ms → skipped
+
+        assert t._backend.set_progress.await_count == 1
+
+    @pytest.mark.timeout(5)
+    async def test_final_update_always_flushes(self):
+        """current == total bypasses throttling (R3.7 R4 — force-flush)."""
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "abc-1"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic()
+
+        await t.update_progress(1, 10)
+        await t.update_progress(10, 10, "done")  # final → must flush
+
+        assert t._backend.set_progress.await_count == 2
+        last_fields = t._backend.set_progress.await_args.args[1]
+        assert last_fields["current"] == "10"
+        assert last_fields["percent"] == "100.00"
+
+    @pytest.mark.timeout(5)
+    async def test_zero_total_noop(self):
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        await t.update_progress(5, 0)
+        t._backend.set_progress.assert_not_awaited()
+
+    @pytest.mark.timeout(5)
+    async def test_negative_current_noop(self):
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        await t.update_progress(-1, 10)
+        t._backend.set_progress.assert_not_awaited()
+
+    @pytest.mark.timeout(5)
+    async def test_first_update_eta_is_empty_when_current_zero(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic()
+
+        await t.update_progress(0, 10, "starting")
+        fields = t._backend.set_progress.await_args.args[1]
+        assert fields["eta_seconds"] == ""
+
+    @pytest.mark.timeout(5)
+    async def test_backend_hset_failure_swallowed(self):
+        """Valkey blip must NOT crash the task body (R3.7 best-effort contract)."""
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._backend.set_progress = AsyncMock(side_effect=RuntimeError("valkey down"))
+        t._task_start_time = _time.monotonic()
+        # Should not raise.
+        await t.update_progress(1, 10)
+        # Publish is skipped when HSET failed.
+        t._backend.publish_progress.assert_not_awaited()
+
+    @pytest.mark.timeout(5)
+    async def test_publish_failure_swallowed(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._backend.publish_progress = AsyncMock(
+            side_effect=RuntimeError("pubsub down")
+        )
+        t._task_start_time = _time.monotonic()
+        # Should not raise.
+        await t.update_progress(1, 10)
+        t._backend.set_progress.assert_awaited_once()

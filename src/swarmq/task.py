@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import enum
 import inspect
+import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+import structlog
 from croniter import CroniterBadCronError, croniter
 
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
+
+if TYPE_CHECKING:
+    from swarmq.backend.valkey import ValkeyBackend
+
+_progress_logger = structlog.get_logger()
 
 # Cron syntax we intentionally do NOT support in v1: L (last), W (nearest
 # weekday), # (nth weekday of month). Rejected at construction so the failure
@@ -223,9 +231,26 @@ class TaskInfo:
             )
 
 
+_PROGRESS_MIN_INTERVAL_S = 0.5
+"""R3.7: throttle progress-update writes to at most 1 per this
+interval, UNLESS current == total (final-flush always honoured)."""
+
+
 class Task:
     task_info: TaskInfo
     _registered_tasks: list[type] = []
+
+    # R3.7 progress-tracking state. The worker sets these as instance
+    # attrs after constructing the task and before pre_execution.
+    # Class-level defaults mean subclasses that override __init__
+    # without calling super() still get the attrs — any Subclass().x
+    # lookup falls back to the class dict. All defaults are immutable
+    # scalars so there is no shared-state hazard.
+    _task_id: str | None = None
+    _backend: "ValkeyBackend | None" = None
+    _task_start_time: float | None = None
+    _result_ttl_ms: int = 86_400_000  # 24h fallback
+    _last_progress_update: float = 0.0
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -245,6 +270,98 @@ class Task:
 
     async def post_execution(self) -> None:
         pass
+
+    async def update_progress(
+        self,
+        current: int,
+        total: int,
+        message: str = "",
+    ) -> None:
+        """Record progress for this task (R3.7).
+
+        Throttled at 500ms per Task instance; the *final* update
+        (``current == total``) always flushes regardless. No-op when
+        the task wasn't wired by a worker (unit-test usage), when
+        ``total <= 0``, or when ``current < 0``.
+
+        Progress is best-effort: transient Valkey failures are logged
+        and swallowed — they must not crash the task body. The stored
+        HASH TTL matches the resolved result_ttl, so progress cleanup
+        is automatic once the result itself TTL-expires.
+
+        ETA is computed as ``elapsed / current * (total - current)``
+        and is ``None`` at the zeroth update (current == 0). Simple
+        linear extrapolation — adequate for UX progress bars, not a
+        precise completion estimate for non-linear workloads.
+        """
+        if self._backend is None or self._task_id is None:
+            # Unit-test usage or worker wiring bug. Silently no-op so
+            # the task body stays portable across direct-call and
+            # worker-dispatched invocations.
+            return
+        if total <= 0 or current < 0:
+            return
+
+        loop_time = time.monotonic()
+        is_final = current >= total
+        if (
+            not is_final
+            and loop_time - self._last_progress_update < _PROGRESS_MIN_INTERVAL_S
+        ):
+            return
+
+        percent = (current / total * 100.0) if total > 0 else 0.0
+        started_at_iso = (
+            datetime.fromtimestamp(self._task_start_time, tz=UTC).isoformat()
+            if self._task_start_time is not None
+            else ""
+        )
+        elapsed = (
+            (loop_time - self._task_start_time)
+            if self._task_start_time is not None
+            else 0.0
+        )
+        if current > 0 and elapsed > 0 and not is_final:
+            eta_seconds: int | None = int(elapsed / current * (total - current))
+        else:
+            eta_seconds = None
+
+        fields: dict[str, str] = {
+            "current": str(current),
+            "total": str(total),
+            "percent": f"{percent:.2f}",
+            "message": message,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "started_at": started_at_iso,
+            "eta_seconds": str(eta_seconds) if eta_seconds is not None else "",
+        }
+
+        # Write HASH + publish Pub/Sub — both best-effort. A Valkey
+        # blip must not abort task execution; the authoritative state
+        # is the HASH (Pub/Sub is the optional real-time channel).
+        try:
+            await self._backend.set_progress(
+                self._task_id, fields, ttl_ms=self._result_ttl_ms,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _progress_logger.warning(
+                "update_progress_hset_failed",
+                task_id=self._task_id, error=str(exc),
+            )
+            return  # Skip publish if HSET failed — no point notifying.
+
+        self._last_progress_update = loop_time
+
+        try:
+            await self._backend.publish_progress(
+                self._task_id,
+                json.dumps({**fields}).encode("utf-8"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _progress_logger.warning(
+                "update_progress_publish_failed",
+                task_id=self._task_id, error=str(exc),
+            )
 
 
 def _check_run_signature_reserved_params(cls: type) -> None:
