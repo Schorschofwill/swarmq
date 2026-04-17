@@ -31,6 +31,8 @@ test = [
     "hypothesis",
     "pytest-rerunfailures",
     "freezegun",
+    # U2.1 chaos: RSS-polling for the OOM-simulation test.
+    "psutil",
 ]
 docs = [
     "mkdocs-material>=9.5",
