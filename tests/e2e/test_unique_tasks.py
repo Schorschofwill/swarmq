@@ -257,3 +257,70 @@ async def test_locking_and_unique_combined(
     assert len(captured_dups) == 1
     # Executed exactly twice — once per unique arg-set.
     assert run_markers == ["5:a", "5:b"]
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: TTL-expiry race — first task's flag expires while it runs,
+# second task claims the flag, first's completion release must not DEL
+# the second's flag (ce-review P3 #26 / plan Unit 11 edge case)
+# ---------------------------------------------------------------------------
+
+
+async def test_ttl_expiry_race_owner_check_protects_second_task(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """unique_for=1 + task that runs for ~1.5s: flag expires mid-run;
+    a second schedule within the window SETNX-succeeds (fresh flag).
+    When the first task completes, its completion release attempts
+    DEL but the Lua owner-check fails — the second task's flag
+    survives intact so its own completion can release it normally.
+    """
+    queue = _unique_queue()
+    task_name = _task_name("race")
+    run_count = asyncio.Event()
+    marker_hits: list[str] = []
+
+    class RaceTask(Task):
+        task_info = TaskInfo(
+            name=task_name, queues=[queue],
+            unique_for=1,  # 1-second TTL
+            unique_until="completion",
+        )
+
+        async def run(self, tag: str) -> str:
+            marker_hits.append(tag)
+            # Run longer than unique_for so the flag expires mid-run.
+            await asyncio.sleep(1.3)
+            if len(marker_hits) >= 2:
+                run_count.set()
+            return tag
+
+    client_broker = RabbitMQBroker(rabbitmq_url)
+    client_backend = ValkeyBackend(valkey_url)
+    client_app = SwarmQ(client_broker, client_backend, queues=[queue])
+
+    async with client_app:
+        await client_broker.declare_queue(queue)
+
+        async with _running_worker(rabbitmq_url, valkey_url, queue):
+            # First schedule; task starts running, flag TTL is 1s.
+            tid_1 = await client_app.schedule(task_name, tag="first")
+            # Wait past TTL expiry so a fresh SETNX can succeed, but
+            # while the first task is still mid-run.
+            await asyncio.sleep(1.1)
+            tid_2 = await client_app.schedule(task_name, tag="second")
+            # Distinct task_ids prove both enqueued successfully.
+            assert tid_1 != tid_2
+
+            r1 = await client_app.get_result(tid_1, timeout=6)
+            r2 = await client_app.get_result(tid_2, timeout=6)
+            assert r1 == "first"
+            assert r2 == "second"
+            # Both tasks ran.
+            assert marker_hits == ["first", "second"]
+
+            # Post-run: second task's completion released its own flag
+            # (owner-check prevented the first task from clobbering it).
+            # A third schedule with the same args gets a NEW task_id.
+            tid_3 = await client_app.schedule(task_name, tag="second")
+            assert tid_3 != tid_2  # fresh task_id, flag was cleared

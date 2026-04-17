@@ -444,3 +444,72 @@ class TestScheduleHandlerValidation:
         )
         with pytest.raises(ConfigurationError, match="--at"):
             await cli._run_schedule_add(ns)
+
+
+# ---- R3.5 ce-review P3 #23: CLI surface for dedup ------------------
+
+class TestScheduleAddUniqueFor:
+    """Argparse coverage for --unique-for / --unique-until on schedule add."""
+
+    def test_unique_for_defaults_to_none(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "add", "test",
+            "--cron", "* * * * *", "--task", "t",
+        ])
+        assert ns.unique_for is None
+        assert ns.unique_until == "completion"
+
+    def test_unique_for_accepts_positive_int(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "schedule", "add", "test",
+            "--cron", "* * * * *", "--task", "t",
+            "--unique-for", "60", "--unique-until", "start",
+        ])
+        assert ns.unique_for == 60
+        assert ns.unique_until == "start"
+
+    def test_unique_for_rejects_zero(self, capsys):
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "schedule", "add", "test",
+                "--cron", "* * * * *", "--task", "t",
+                "--unique-for", "0",
+            ])
+
+
+class TestInspectCommand:
+    """Argparse + import-side behaviour for the new `swarmq inspect` cmd."""
+
+    def test_inspect_requires_module(self, capsys):
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["inspect"])
+
+    def test_inspect_table_default(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "inspect", "--module", "some.module",
+        ])
+        assert ns.module == "some.module"
+        assert ns.format == "table"
+
+    def test_inspect_json_format(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args([
+            "inspect", "--module", "some.module", "--format", "json",
+        ])
+        assert ns.format == "json"
+
+    async def test_inspect_module_without_tasks_raises(self, monkeypatch):
+        """Empty module → ConfigurationError (same discipline as worker)."""
+        import importlib
+        from swarmq.task import Task
+
+        Task._clear_registered_tasks()
+        monkeypatch.setattr(importlib, "import_module", lambda m: None)
+        ns = argparse.Namespace(module="empty", format="table")
+        with pytest.raises(ConfigurationError, match="no tasks registered"):
+            await cli._run_inspect_async(ns)

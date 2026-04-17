@@ -23,7 +23,7 @@ import sys
 import time
 import traceback
 from datetime import UTC, datetime
-from typing import Sequence
+from typing import Any, Sequence
 
 import msgspec
 
@@ -36,6 +36,7 @@ from swarmq.exceptions import (
     ConfigurationError,
 )
 from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
+from swarmq.serialization import compute_dedup_hash
 from swarmq.task import Task
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -222,6 +223,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Target queue (default: default).",
     )
     sched_add.add_argument(
+        "--unique-for",
+        type=_positive_int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "R3.5 dedup TTL in seconds. When set, the CLI claims the "
+            "dedup flag at enqueue time (source=cli_unique). A second "
+            "'schedule add --unique-for=...' with the same task + args "
+            "+ kwargs within the TTL window is rejected as a duplicate."
+        ),
+    )
+    sched_add.add_argument(
+        "--unique-until",
+        choices=("start", "completion"),
+        default="completion",
+        help=(
+            "R3.5 dedup release mode (default: completion). 'start' "
+            "releases the flag at worker pickup so a re-schedule can "
+            "enqueue before the task finishes; 'completion' keeps the "
+            "flag until the task reaches a terminal state. Ignored "
+            "when --unique-for is not set."
+        ),
+    )
+    sched_add.add_argument(
         "--format",
         choices=("table", "json"),
         default="table",
@@ -254,6 +279,30 @@ def _build_parser() -> argparse.ArgumentParser:
             "Output format (default: table). Use 'json' for agent-"
             "parseable output with an explicit 'removed' boolean."
         ),
+    )
+
+    # inspect — introspect registered TaskInfo (including R3.5 dedup)
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="List registered tasks and their TaskInfo metadata.",
+        description=(
+            "Import a module, register its Task subclasses, and print "
+            "their declarative TaskInfo fields — queues, retry config, "
+            "rate_limit, lock, R3.5 unique_for / unique_until. Read-only; "
+            "does not connect to broker or backend."
+        ),
+    )
+    inspect_parser.add_argument(
+        "--module",
+        required=True,
+        metavar="DOTTED.PATH",
+        help="Python module whose Task subclasses to introspect.",
+    )
+    inspect_parser.add_argument(
+        "--format",
+        choices=("table", "json"),
+        default="table",
+        help="Output format (default: table).",
     )
 
     # status
@@ -342,19 +391,26 @@ async def _backend_from_env() -> ValkeyBackend:
 
 
 def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
-    """Plain-text table for terminal output — stable column ordering."""
+    """Plain-text table for terminal output — stable column ordering.
+
+    Columns include R3.5 dedup state (DEDUP + UNIQUE_UNTIL) so operators
+    can tell client-originated deferred-dedup entries from plain CLI or
+    static-cron ones at a glance (ce-review P3 #23).
+    """
     if not schedules:
         return "(no schedules)"
-    # Columns: NAME, CRON, TASK, QUEUE, NEXT_FIRE, DISABLED, SOURCE
-    rows = [
-        ("NAME", "CRON", "TASK", "QUEUE", "NEXT_FIRE", "DISABLED", "SOURCE")
-    ]
+    rows = [(
+        "NAME", "CRON", "TASK", "QUEUE", "NEXT_FIRE",
+        "DISABLED", "SOURCE", "DEDUP", "UNIQUE_UNTIL",
+    )]
     for s in schedules:
         next_fire = (
             datetime.fromtimestamp(s.fire_ts_ms / 1000, tz=UTC).isoformat()
             if s.fire_ts_ms is not None
             else "-"
         )
+        dedup_state = f"{s.dedup_hash[:8]}…" if s.dedup_hash else "-"
+        unique_until = s.unique_until if s.dedup_hash else "-"
         rows.append((
             s.schedule_name,
             s.cron or "-",
@@ -363,6 +419,8 @@ def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
             next_fire,
             "yes" if s.disabled else "no",
             s.source,
+            dedup_state,
+            unique_until,
         ))
     widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
     lines = [
@@ -426,29 +484,82 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
         cron = None
         fire_ts_ms = int(dt.timestamp() * 1000)
 
-    definition = ScheduleDefinition(
-        schedule_name=args.name,
-        task_name=args.task,
-        args=tuple(parsed_args),
-        kwargs=parsed_kwargs,
-        queue=args.queue,
-        cron=cron,
-        fire_ts_ms=fire_ts_ms,
-        source="cli",
-    )
+    # R3.5 ce-review P3 #23: --unique-for claims the dedup flag before
+    # the ScheduleStore insert, matching Client._schedule_deferred
+    # semantics. On duplicate, the insert is skipped and the existing
+    # claim's owner is reported so operators can correlate.
+    unique_for: int | None = getattr(args, "unique_for", None)
+    unique_until: str = getattr(args, "unique_until", "completion")
 
     backend = await _backend_from_env()
+    dedup_hash: str | None = None
+    existing_owner: str | None = None
     try:
-        store = ScheduleStore(backend)
-        inserted = await store.add_schedule(definition)
+        if unique_for is not None:
+            dedup_hash = compute_dedup_hash(
+                args.task, tuple(parsed_args), parsed_kwargs,
+            )
+            # TTL = unique_for + fire_offset, ceiling-div so sub-second
+            # deltas still get a full second of padding (same formula
+            # as Client._schedule_deferred).
+            now_ms = int(time.time() * 1000)
+            fire_offset_ms = max(0, fire_ts_ms - now_ms)
+            fire_offset_s = (fire_offset_ms + 999) // 1000
+            ttl_ms = (unique_for + int(fire_offset_s)) * 1000
+            existing_owner = await backend.setnx_unique(
+                dedup_hash, args.name, ttl_ms,
+            )
+
+        definition = ScheduleDefinition(
+            schedule_name=args.name,
+            task_name=args.task,
+            args=tuple(parsed_args),
+            kwargs=parsed_kwargs,
+            queue=args.queue,
+            cron=cron,
+            fire_ts_ms=fire_ts_ms,
+            source="cli_unique" if dedup_hash is not None else "cli",
+            dedup_hash=dedup_hash,
+            unique_until=unique_until,
+        )
+
+        if existing_owner is not None:
+            # Dup detected — don't insert; surface the clash to the
+            # operator. The flag already belongs to another schedule.
+            inserted = False
+        else:
+            store = ScheduleStore(backend)
+            try:
+                inserted = await store.add_schedule(definition)
+            except BaseException:
+                # Rollback the dedup claim on store failure (P1 #1).
+                if dedup_hash is not None:
+                    try:
+                        await backend.release_unique(dedup_hash, args.name)
+                    except Exception:
+                        pass
+                raise
+
         if getattr(args, "format", "table") == "json":
-            sys.stdout.write(json.dumps({
+            payload = {
                 "inserted": inserted,
                 "name": args.name,
                 "already_exists": not inserted,
-            }) + "\n")
+            }
+            if unique_for is not None:
+                payload["dedup_hash"] = dedup_hash
+                payload["unique_until"] = unique_until
+                if existing_owner is not None:
+                    payload["duplicate_of"] = existing_owner
+            sys.stdout.write(json.dumps(payload) + "\n")
         elif inserted:
             sys.stdout.write(f"added schedule {args.name!r}\n")
+        elif existing_owner is not None:
+            sys.stdout.write(
+                f"schedule {args.name!r} rejected — dedup flag already "
+                f"held by {existing_owner!r} (args duplicate within "
+                f"{unique_for}s TTL)\n"
+            )
         else:
             sys.stdout.write(
                 f"schedule {args.name!r} already exists; use "
@@ -541,6 +652,77 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         await backend.close()
 
 
+def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
+    """Plain-text rendering for 'swarmq inspect'. Shows one row per task."""
+    if not entries:
+        return "(no tasks registered)"
+    rows = [(
+        "TASK", "QUEUES", "DELIVERY", "RETRIES",
+        "RATE_LIMIT", "LOCK", "UNIQUE_FOR", "UNIQUE_UNTIL", "CRON",
+    )]
+    for e in entries:
+        rows.append((
+            e["name"],
+            ",".join(e["queues"]),
+            e["delivery"],
+            str(e["max_retries"]),
+            e["rate_limit"] or "-",
+            e["lock"] or "-",
+            "-" if e["unique_for"] is None else str(e["unique_for"]),
+            e["unique_until"] if e["unique_for"] is not None else "-",
+            e["cron"] or "-",
+        ))
+    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
+    return "\n".join(
+        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    )
+
+
+async def _run_inspect_async(args: argparse.Namespace) -> None:
+    """Import *args.module* and print TaskInfo metadata for each task.
+
+    Read-only; no broker / backend connection. R3.5 ce-review P3 #23:
+    exposes the declarative dedup configuration so agents and operators
+    can discover which tasks have unique_for set without reading source.
+    """
+    importlib.import_module(args.module)
+    if not Task._registered_tasks:
+        raise ConfigurationError(
+            f"no tasks registered after importing {args.module!r}; "
+            "ensure your tasks subclass swarmq.Task and the module's "
+            "top-level imports execute the class definitions"
+        )
+
+    entries: list[dict[str, Any]] = []
+    for task_class in Task._registered_tasks:
+        ti = task_class.task_info
+        entries.append({
+            "name": ti.name,
+            "class": f"{task_class.__module__}.{task_class.__qualname__}",
+            "queues": list(ti.queues),
+            "delivery": ti.delivery.value,
+            "max_retries": ti.max_retries,
+            "retry_backoff": ti.retry_backoff,
+            "retry_base_delay": ti.retry_base_delay,
+            "soft_timeout": ti.soft_timeout,
+            "hard_timeout": ti.hard_timeout,
+            "result_ttl": ti.result_ttl,
+            "rate_limit": ti.rate_limit,
+            "lock": ti.lock,
+            "max_concurrency": ti.max_concurrency,
+            "cron": ti.cron,
+            "unique_for": ti.unique_for,
+            "unique_until": ti.unique_until,
+        })
+    entries.sort(key=lambda e: e["name"])
+
+    if args.format == "json":
+        sys.stdout.write(json.dumps(entries, indent=2) + "\n")
+    else:
+        sys.stdout.write(_format_inspect_table(entries) + "\n")
+
+
 async def _run_schedule_async(args: argparse.Namespace) -> None:
     """Dispatch a parsed 'swarmq schedule <subcommand>' invocation."""
     if args.schedule_command == "list":
@@ -574,6 +756,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "schedule":
         runner = _run_schedule_async(args)
         error_prefix = f"swarmq schedule {args.schedule_command}"
+    elif args.command == "inspect":
+        runner = _run_inspect_async(args)
+        error_prefix = "swarmq inspect"
     else:  # pragma: no cover — argparse required=True guards this
         parser.error(f"unknown command: {args.command!r}")
 

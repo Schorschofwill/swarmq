@@ -4186,6 +4186,97 @@ class TestWorkerUniqueRelease:
         await worker._handle_message(msg)
         release_backend.release_unique.assert_not_awaited()
 
+    async def test_lock_conflict_cap_dlq_releases_unique(
+        self, broker, backend, config,
+    ):
+        """Lock-conflict at DLQ cap terminal → release_unique fires AFTER
+        ack (P1 #3 ordering)."""
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+        backend.release_unique = AsyncMock(return_value=True)
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(
+            _default_payload(name="locked", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "4" * 64,
+                "x-swarmq-unique-until": "completion",
+                "x-swarmq-lock-conflict-count": 9,  # 9+1 = cap
+            },
+        )
+        await w._handle_message(msg)
+
+        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        broker.ack.assert_awaited_once_with(msg)
+        backend.release_unique.assert_awaited()
+
+    async def test_lock_conflict_requeue_preserves_header_skips_release(
+        self, broker, backend, config,
+    ):
+        """Lock-conflict below cap → requeue with unique-hash header; no release."""
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+        backend.release_unique = AsyncMock(return_value=True)
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=False)
+
+        msg = _make_message(
+            _default_payload(name="locked", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "5" * 64,
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+
+        broker.publish_to_delay_queue.assert_awaited_once()
+        headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
+        assert headers["x-swarmq-unique-hash"] == "5" * 64
+        backend.release_unique.assert_not_awaited()
+
+    async def test_cancel_observed_post_execution_releases_unique(
+        self, broker, backend, config,
+    ):
+        """Late cancel path (flag set while run() was executing) falls
+        through to the is_cancelled branch — release fires normally in
+        the finally block via _unique_release_pending=True default."""
+        class CancellableTask(Task):
+            task_info = TaskInfo(
+                name="cancellable", queues=["default"],
+                max_retries=1,
+            )
+
+            async def run(self):
+                raise RuntimeError("will retry unless late cancel fires")
+
+        reg = TaskRegistry()
+        reg.register(CancellableTask)
+        # is_cancelled returns True at the post-execution re-check
+        # (normal pre-start check path is not hit because we set the
+        # flag only after run() started).
+        backend.is_cancelled = AsyncMock(side_effect=[False, True])
+        backend.release_unique = AsyncMock(return_value=True)
+        backend.clear_cancel_flag = AsyncMock()
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        msg = _make_message(
+            _default_payload(name="cancellable", args=[], kwargs={}),
+            headers={
+                "x-swarmq-unique-hash": "6" * 64,
+                "x-swarmq-unique-until": "completion",
+            },
+        )
+        await w._handle_message(msg)
+
+        # late_cancel flipped to cancel path: stores cancel result, acks,
+        # clears cancel flag, finally releases unique flag.
+        broker.ack.assert_awaited_once_with(msg)
+        backend.clear_cancel_flag.assert_awaited()
+        backend.release_unique.assert_awaited_once()
+
     async def test_start_mode_rate_limited_keeps_flag_for_redelivery(
         self, broker, backend, config,
     ):

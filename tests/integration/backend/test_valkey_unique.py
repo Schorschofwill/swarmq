@@ -104,3 +104,42 @@ async def test_release_unique_idempotent_after_release(valkey_url: str):
         assert await backend.release_unique("h-idem", "t-1") is False
     finally:
         await backend.close()
+
+
+# ---- ce-review P3 #24 / REL-005: NOSCRIPT recovery regression ----
+
+
+async def test_release_unique_survives_script_flush(valkey_url: str):
+    """SCRIPT FLUSH between setnx and release must not break release.
+
+    valkey-py's AsyncScript auto-reloads the script on NOSCRIPT via EVAL
+    fallback. This test pins that recovery path by explicitly flushing
+    the cache between the two calls — without auto-reload the release
+    would raise, leaving a stuck flag for the full TTL.
+    """
+    backend = ValkeyBackend(valkey_url)
+    await backend.connect()
+    try:
+        assert await backend.setnx_unique("h-noscript", "t-1", 60_000) is None
+        # Forcibly evict every Lua script from Valkey's cache. Next
+        # EVALSHA will raise NOSCRIPT; AsyncScript retries with EVAL.
+        await backend._client.script_flush()
+        assert await backend.release_unique("h-noscript", "t-1") is True
+        # And a fresh SETNX claims the key again — proves state is clean.
+        assert await backend.setnx_unique("h-noscript", "t-2", 60_000) is None
+    finally:
+        await backend.release_unique("h-noscript", "t-2")
+        await backend.close()
+
+
+async def test_release_unique_pre_connect_returns_false(valkey_url: str):
+    """Calling release_unique before connect() must not crash the worker.
+
+    Tests the KP-003 fix: _ensure_unique_release_script raises
+    BackendConnectionError on a non-connected client, release_unique
+    log-swallows it, and the caller sees a clean False return.
+    """
+    backend = ValkeyBackend(valkey_url)
+    # Intentionally NOT connected.
+    released = await backend.release_unique("h-unconnected", "t-1")
+    assert released is False
