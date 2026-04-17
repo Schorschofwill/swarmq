@@ -104,6 +104,8 @@ class TestSchedfireDedup:
         key = f"{schedule_name}:1700000000000"
         # Very short TTL — within pytest-timeout, wait for expiry
         assert await backend.set_schedfire_dedup(key, 200) is True
+        # Real-clock TTL wait, not synchronization — Valkey's expiry
+        # is based on wall time and has no observable event.
         await asyncio.sleep(0.5)
         # After expiry the key is gone, SETNX succeeds again
         assert await backend.set_schedfire_dedup(key, 60_000) is True
@@ -123,6 +125,7 @@ class TestHandoverMarker:
     async def test_marker_expires_on_ttl(self, backend):
         token = uuid.uuid4().hex
         await backend.set_schedfire_handover_marker(token, 200)
+        # Real-clock TTL wait, not synchronization.
         await asyncio.sleep(0.5)
         # Expired marker is invisible to the standby — counts as failover
         assert await backend.get_and_del_schedfire_handover_marker() is False

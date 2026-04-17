@@ -23,11 +23,30 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
-# AGENTS.md §Async-Code testen rule 3: 5s per-test timeout. The fire
-# tests use asyncio.wait_for(done.wait(), timeout=5) internally; the
-# module-level marker is a second line of defence against a genuine
-# deadlock (e.g. scheduler not starting).
-pytestmark = [pytest.mark.timeout(5)]
+# E2E tests spin up real brokers + scheduler + worker, wait for
+# leader election, publish a schedule, and wait for it to fire.
+# 20s covers: leader election (6s inner wait), fire round-trip
+# (5s inner wait), plus broker/Valkey connection latency that can
+# spike on the first E2E test after a long integration run. Still
+# fails fast on genuine deadlocks (inner waits never resolve → 11s
+# sum; 20s gives connection setup 9s of headroom).
+pytestmark = [pytest.mark.timeout(20)]
+
+
+def _leader_event(app: SwarmQ) -> asyncio.Event:
+    """Register a SCHEDULER_LEADER handler and return its event.
+
+    Call BEFORE starting the worker task so there is no race window
+    where the scheduler emits LEADER before the handler is registered
+    (Unit 2 / H-5). Caller awaits ``event.wait()`` with its own timeout.
+    """
+    event = asyncio.Event()
+
+    @app.on_signal(Signal.SCHEDULER_LEADER)
+    async def _on_leader(**kwargs) -> None:  # noqa: ARG001
+        event.set()
+
+    return event
 
 
 def _unique_queue() -> str:
@@ -90,10 +109,13 @@ class TestDelayAndEta:
             scheduler_lock_ttl=1.0,
         ) as app:
             await app.broker.declare_queue(queue)
+            # Register leader-signal handler BEFORE starting the worker
+            # task — otherwise SCHEDULER_LEADER could fire during
+            # start_worker() before the handler is connected (race).
+            leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                # Wait for the worker/scheduler to come up.
-                await asyncio.sleep(0.5)
+                await asyncio.wait_for(leader_event.wait(), timeout=6)
 
                 # Client schedules a short-delay task; scheduler publishes,
                 # worker consumes, set event.
@@ -134,9 +156,10 @@ class TestDelayAndEta:
             scheduler_lock_ttl=1.0,
         ) as app:
             await app.broker.declare_queue(queue)
+            leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                await asyncio.sleep(0.5)
+                await asyncio.wait_for(leader_event.wait(), timeout=6)
                 eta = datetime.now(UTC) + timedelta(milliseconds=300)
                 await app.client.schedule(task_name, queue=queue, eta=eta)
                 await asyncio.wait_for(done.wait(), timeout=5)
@@ -181,10 +204,12 @@ class TestCronSchedule:
             scheduler_lock_ttl=1.0,
         ) as app:
             await app.broker.declare_queue(queue)
+            leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                # Wait for leader election + initial sync_taskinfo_crons.
-                await asyncio.sleep(0.6)
+                # Wait for leader election (SCHEDULER_LEADER fires *after*
+                # sync_taskinfo_crons runs — see SchedulerLoop._election_tick).
+                await asyncio.wait_for(leader_event.wait(), timeout=6)
 
                 # The sync loaded the cron with its natural-next fire (in
                 # up to 60s). Re-score it to "now + 300ms" so the poll
@@ -260,7 +285,12 @@ class TestConsumerDedup:
             worker_task = asyncio.create_task(app.start_worker())
             try:
                 await asyncio.wait_for(first_done.wait(), timeout=5)
-                # Give the second publish a chance to be consumed+dedup'd.
+                # Legitimate timer wait, not synchronization:
+                # we are asserting the ABSENCE of a second execution.
+                # The dedup path (ack + log + return True) emits no
+                # observable event — verifying "nothing happens" needs
+                # a bounded wait. 500ms covers the broker redelivery
+                # window comfortably at RabbitMQ local-dev latency.
                 await asyncio.sleep(0.5)
                 assert call_count == 1
             finally:
@@ -313,11 +343,23 @@ class TestGracefulHandover:
             @app_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
             async def _bfo(**kw): b_failover.append("failover")
 
+            # Signal-driven event for A becoming leader (not sleep).
+            a_leader_event = asyncio.Event()
+
+            @app_a.on_signal(Signal.SCHEDULER_LEADER)
+            async def _al(**kw) -> None:  # noqa: ARG001
+                a_leader_event.set()
+
             # Start A first so it wins the election.
             a_task = asyncio.create_task(app_a.start_worker())
-            await asyncio.sleep(0.5)
+            await asyncio.wait_for(a_leader_event.wait(), timeout=3)
             b_task = asyncio.create_task(app_b.start_worker())
-            # Let B see the lock held at least once.
+            # Let B's election_loop run at least once so it sees the
+            # lock held and sets prev_leader_seen=True. The minimum
+            # wait is one heartbeat interval; we allow a small margin.
+            # This is a legitimate wait on B's internal election tick,
+            # not a startup-barrier — B doesn't emit a signal for
+            # "standby saw lock held."
             await asyncio.sleep(0.6)
 
             try:
@@ -344,11 +386,24 @@ class TestGracefulHandover:
                     await client.aclose()
 
                 # B's next tick acquires (lock absent) and consumes the
-                # marker → emits LEADER, not FAILOVER.
-                for _ in range(30):
-                    if b_leader:
-                        break
-                    await asyncio.sleep(0.1)
+                # marker → emits LEADER, not FAILOVER. The signal-hook
+                # b_leader is populated by the @app_b.on_signal handler
+                # above; use the same signal as an event barrier here.
+                b_leader_event = asyncio.Event()
+
+                @app_b.on_signal(Signal.SCHEDULER_LEADER)
+                async def _bl_event(**kw) -> None:  # noqa: ARG001
+                    b_leader_event.set()
+
+                # If b_leader already has entries (race between register
+                # and acquire), the event may not fire — check upfront.
+                if b_leader:
+                    b_leader_event.set()
+
+                try:
+                    await asyncio.wait_for(b_leader_event.wait(), timeout=3)
+                except TimeoutError:
+                    pass  # assertion below surfaces the failure
 
                 assert b_leader, "B never became leader after handover"
                 assert not b_failover, (

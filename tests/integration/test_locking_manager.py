@@ -201,6 +201,8 @@ class TestRenew:
         token = uuid.uuid4().hex
         # Short TTL, wait for it to die naturally, then attempt renew.
         assert await lock_manager.acquire(lock_name, token, 300, 1) is True
+        # Real-clock TTL wait — Valkey expiry is wall-clock based, no
+        # observable event. Not a synchronization sleep.
         await asyncio.sleep(0.6)
         assert await lock_manager.renew(lock_name, token, 60_000) is False
 

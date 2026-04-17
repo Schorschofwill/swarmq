@@ -77,9 +77,13 @@ class TestSchedfireDedupIntegration:
 
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                # First delivery executes, duplicate is ack+skipped.
-                # Wait a bit past the second delivery to be sure.
+                # First delivery executes → done.set().
                 await asyncio.wait_for(done.wait(), timeout=5)
+                # Legitimate timer wait, not synchronization: we are
+                # asserting the ABSENCE of a second execution. The
+                # dedup path (ack + log + return True) emits no
+                # observable event, so a bounded wait is the only
+                # way to test "nothing happens."
                 await asyncio.sleep(0.5)
             finally:
                 worker_task.cancel()

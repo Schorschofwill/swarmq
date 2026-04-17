@@ -77,12 +77,39 @@ class TestLeaderElectionIntegration:
             owner_token=f"B-{uuid.uuid4().hex[:6]}", dispatcher=d_b,
         )
 
+        # Track leader/standby transitions via events.
+        a_leader_evt = asyncio.Event()
+        b_leader_evt = asyncio.Event()
+
+        @d_a.on_signal(Signal.SCHEDULER_LEADER)
+        async def _ae(**kw) -> None:  # noqa: ARG001
+            a_leader_evt.set()
+
+        @d_b.on_signal(Signal.SCHEDULER_LEADER)
+        async def _be(**kw) -> None:  # noqa: ARG001
+            b_leader_evt.set()
+
         try:
             await loop_a.start()
-            await asyncio.sleep(0.1)
             await loop_b.start()
-            # Allow both loops to have run their election_tick.
-            await asyncio.sleep(0.6)
+            # Wait until at least one side signals LEADER — whichever
+            # wins the race is the leader; the other stays standby.
+            done, _ = await asyncio.wait(
+                [
+                    asyncio.create_task(a_leader_evt.wait()),
+                    asyncio.create_task(b_leader_evt.wait()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=3,
+            )
+            assert done, "neither loop became leader within 3s"
+            # Bounded grace to catch a pathological second-election.
+            # One heartbeat_interval (0.2s) is enough for the loser's
+            # acquire to return False; we wait a bit longer to be safe.
+            # This is legitimate — no event is emitted for "standby
+            # saw lock held"; we observe the absence of a second
+            # SCHEDULER_LEADER emission.
+            await asyncio.sleep(0.3)
 
             leader_count = int(loop_a.state == "leader") + int(
                 loop_b.state == "leader"
@@ -122,19 +149,32 @@ class TestLeaderElectionIntegration:
             lock_ttl=lock_ttl,
         )
 
+        # Event barriers for A-becomes-leader and B-failover.
+        a_leader_evt = asyncio.Event()
+
+        @d_a.on_signal(Signal.SCHEDULER_LEADER)
+        async def _ae(**kw) -> None:  # noqa: ARG001
+            a_leader_evt.set()
+
+        failover_evt = asyncio.Event()
+
+        @d_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
+        async def _fe(**kw) -> None:  # noqa: ARG001
+            failover_evt.set()
+
         try:
             await loop_a.start()
-            # Wait until A has the lock.
-            for _ in range(30):
-                if loop_a.state == "leader":
-                    break
-                await asyncio.sleep(0.05)
+            await asyncio.wait_for(a_leader_evt.wait(), timeout=3)
             assert loop_a.state == "leader"
 
             # Start B as standby — it must see the lock held and set
             # prev_leader_seen so the failover heuristic kicks in.
             await loop_b.start()
             # Give B at least one election_tick where acquire returns False.
+            # No signal is emitted for "standby saw lock held"; the
+            # minimum wait is one heartbeat_interval (0.2s) plus a
+            # small margin. This is a legitimate wait on B's internal
+            # state, not a startup-barrier.
             await asyncio.sleep(0.4)
             assert loop_b._prev_leader_seen is True
 
@@ -146,9 +186,11 @@ class TestLeaderElectionIntegration:
             if loop_a._poll_task:
                 loop_a._poll_task.cancel()
 
-            # Wait past TTL + B's heartbeat_interval — B should acquire
-            # and emit FAILOVER.
-            await asyncio.sleep(lock_ttl + 0.8)
+            # Wait for B's FAILOVER signal. TTL-wait for lock expiry
+            # (lock_ttl=0.8s) is unavoidable — we are waiting on
+            # Valkey's real-time expiry clock, not a synchronization
+            # primitive. The event wait adds a bounded upper limit.
+            await asyncio.wait_for(failover_evt.wait(), timeout=lock_ttl + 2.0)
             assert loop_b.state == "leader"
             assert fo_events == [Signal.SCHEDULER_LEADER_FAILOVER]
         finally:
@@ -184,16 +226,27 @@ class TestLeaderElectionIntegration:
             owner_token=f"B-{uuid.uuid4().hex[:6]}", dispatcher=d_b,
         )
 
+        # Event for A-becomes-leader and for B-acquires.
+        a_leader_evt = asyncio.Event()
+
+        @d_a.on_signal(Signal.SCHEDULER_LEADER)
+        async def _ae(**kw) -> None:  # noqa: ARG001
+            a_leader_evt.set()
+
+        b_leader_evt = asyncio.Event()
+
+        @d_b.on_signal(Signal.SCHEDULER_LEADER)
+        async def _be(**kw) -> None:  # noqa: ARG001
+            b_leader_evt.set()
+
         try:
             await loop_a.start()
-            for _ in range(30):
-                if loop_a.state == "leader":
-                    break
-                await asyncio.sleep(0.05)
+            await asyncio.wait_for(a_leader_evt.wait(), timeout=3)
             assert loop_a.state == "leader"
 
             await loop_b.start()
-            # B sees the lock held at least once.
+            # B sees the lock held at least once — no event for
+            # "standby saw lock held", one heartbeat wait is unavoidable.
             await asyncio.sleep(0.4)
             assert loop_b._prev_leader_seen is True
 
@@ -201,7 +254,7 @@ class TestLeaderElectionIntegration:
             await loop_a.stop()
 
             # B's next tick acquires and emits LEADER (not FAILOVER).
-            await asyncio.sleep(0.6)
+            await asyncio.wait_for(b_leader_evt.wait(), timeout=2)
             assert loop_b.state == "leader"
             assert b_leader == [Signal.SCHEDULER_LEADER]
             assert b_failover == []

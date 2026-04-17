@@ -77,13 +77,16 @@ class TestWorkerSchedulerIntegration:
             config=config, signal_dispatcher=dispatcher,
         )
 
+        # Event barrier for leader signal (Unit 2 / H-5).
+        leader_evt = asyncio.Event()
+
+        @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
+        async def _leader_barrier(**kw) -> None:  # noqa: ARG001
+            leader_evt.set()
+
         worker_task = asyncio.create_task(worker.start())
         try:
-            # Wait for the leader signal.
-            for _ in range(30):
-                if leader_events:
-                    break
-                await asyncio.sleep(0.1)
+            await asyncio.wait_for(leader_evt.wait(), timeout=3)
             assert leader_events, "SCHEDULER_LEADER never emitted"
 
             # Verify the lock exists in Valkey under the expected key.

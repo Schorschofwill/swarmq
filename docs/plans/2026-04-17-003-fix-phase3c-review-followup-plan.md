@@ -139,7 +139,7 @@ SETNX-winner-crash-before-ack wieder herstellen.
 
 ---
 
-- [ ] **Unit 2: asyncio.sleep Cleanup in Tests (H-5)**
+- [x] **Unit 2: asyncio.sleep Cleanup in Tests (H-5)**
 
 **Goal:** Ersetze alle `asyncio.sleep`-Calls in Tests die als
 Post-Event-Damper oder TTL-Expiry-Waits dienen durch Event- oder
