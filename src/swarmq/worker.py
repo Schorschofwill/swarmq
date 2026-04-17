@@ -884,6 +884,15 @@ class Worker:
                 task_id, op_timeout=self._config.backend_op_timeout,
             )
         except BackendConnectionError:
+            # Observability is via the structured log event only (REV-P2-7
+            # scope-down). An x-swarmq-cancel-deferred-count header was
+            # originally planned, but AMQP nack(requeue=True) redelivers
+            # the stored message — in-memory header mutations are lost,
+            # as confirmed by the Phase 3c Fork-A2 decision for the
+            # sibling schedfire-dedup path. A per-message cap has no
+            # defensive value against a systemic Valkey outage (every
+            # message bounces the same way); operators rely on Valkey
+            # up/down alerts instead.
             logger.error("cancel_check_backend_error", task_id=task_id)
             await self._broker.nack(message, requeue=True)
             structlog.contextvars.clear_contextvars()

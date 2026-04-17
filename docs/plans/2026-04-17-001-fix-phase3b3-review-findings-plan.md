@@ -1,8 +1,9 @@
 ---
 title: "fix: Phase 3b.3 review findings"
 type: fix
-status: active
+status: completed
 date: 2026-04-17
+completed: 2026-04-17
 origin: docs/plans/2026-04-16-009-feat-phase3b3-task-cancellation-plan.md
 review_run: .context/compound-engineering/ce-review/20260416-222406-a2113afd/
 ---
@@ -173,7 +174,7 @@ re-check `is_cancelled` from backend before deciding to retry. Catches
 
 ---
 
-- [ ] **Unit 5: Per-stage counter header (REV-P2-7)**
+- [x] **Unit 5: Per-stage counter header (REV-P2-7)**
 
 **Goal:** Add `x-swarmq-cancel-deferred-count` header to pre-start
 cancel-path nack-requeues; cap at LOCK_CONFLICT_DLQ_CAP-equivalent
@@ -216,7 +217,7 @@ size.
 
 ---
 
-- [ ] **Unit 8: Test-discipline cleanup (REV-P2-11, P2-12)**
+- [x] **Unit 8: Test-discipline cleanup (REV-P2-11, P2-12)**
 
 **Goal:** Replace `asyncio.sleep` readiness barriers with
 `asyncio.Event` / fixture-readiness-signals. Remove direct-call tests
@@ -232,7 +233,7 @@ behavior.
 
 ---
 
-- [ ] **Unit 9: P3 cleanup batch**
+- [x] **Unit 9: P3 cleanup batch**
 
 **Goal:** Cosmetic / low-impact findings bundled:
 - Named constant `_CANCEL_DEFAULT_TTL_MS = 86_400_000`

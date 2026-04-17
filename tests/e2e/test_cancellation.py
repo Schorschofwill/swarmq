@@ -25,6 +25,13 @@ from swarmq.exceptions import TaskCancelledError
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 
+# E2E cancel tests start workers, schedule tasks, and observe both
+# happy-path results and cancel-flag propagation. The 30s inner
+# asyncio.sleep used by one scenario (SIGTERM-during-cancel) sets
+# the outer bound; 35s pytest-timeout gives headroom. Still fails
+# fast on real deadlocks (scheduler/broker never coming up).
+pytestmark = [pytest.mark.timeout(35)]
+
 
 def _unique_queue() -> str:
     return f"e2e-cancel-{uuid.uuid4().hex[:10]}"

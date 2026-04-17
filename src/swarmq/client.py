@@ -32,6 +32,14 @@ from swarmq.signals import Signal, SignalDispatcher
 logger = structlog.get_logger()
 
 
+# Default TTL for the cancel flag. 24h is wide enough to outlive the
+# typical retry-horizon + redelivery window while still self-healing
+# orphaned flags within a day (REV-P3 cleanup). Callers who want a
+# tighter window (e.g. deterministic task_id systems vulnerable to
+# stale-flag-zombie, see Client.cancel docstring) can override.
+_DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
+
+
 class Client:
     """Schedule tasks and retrieve results.
 
@@ -435,7 +443,9 @@ class Client:
         task_id = await self.schedule(task_name, *args, queue=queue, **kwargs)
         return await self.get_result(task_id, timeout=timeout, polling=polling)
 
-    async def cancel(self, task_id: str, ttl_ms: int = 86_400_000) -> bool:
+    async def cancel(
+        self, task_id: str, ttl_ms: int = _DEFAULT_CANCEL_FLAG_TTL_MS,
+    ) -> bool:
         """Request cancellation of *task_id*.
 
         Fire-and-forget: sets the Valkey cancel flag (with TTL) and

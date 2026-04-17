@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2962,18 +2963,26 @@ class TestWorkerPreStartCancelCheck:
     async def test_cancel_flag_set_does_not_acquire_semaphore(
         self, worker, broker, backend, config,
     ):
-        """Pipeline-position invariant: semaphore must NOT be acquired."""
+        """Pipeline-position invariant: semaphore must NOT be acquired.
+
+        Observable assertion instead of probing ``_semaphore._value``
+        (REV-P2-12): try to exhaust the semaphore AFTER the cancelled
+        message is handled. If the prior message had consumed a slot
+        and failed to release, this would deadlock.
+        """
         backend.is_cancelled = AsyncMock(return_value=True)
-        # Set concurrency to 1 so any unintended acquire would be observable
-        # via the semaphore's _value attribute.
-        assert worker._semaphore._value == config.concurrency
 
         msg = _make_message(_default_payload())
         await worker._handle_message(msg)
 
-        # Semaphore should not have been acquired AND released — value
-        # unchanged from the initial state.
-        assert worker._semaphore._value == config.concurrency
+        # If the cancel branch wrongly acquired-without-release, the
+        # semaphore has concurrency-1 slots left. Acquiring "concurrency"
+        # times without release would hang — wait_for forces the
+        # deadlock to fail fast.
+        for _ in range(config.concurrency):
+            await asyncio.wait_for(worker._semaphore.acquire(), timeout=0.5)
+        for _ in range(config.concurrency):
+            worker._semaphore.release()
 
     async def test_cancel_flag_set_clears_structlog_context(
         self, worker, broker, backend,
@@ -3157,61 +3166,18 @@ class TestWorkerPreStartCancelCheck:
 # Phase 3b.3 / Unit 7 — Cancel-Monitor Coroutine (isolated)
 # ===========================================================================
 
-class TestCancelMonitorIsolated:
-    """Unit tests for Worker._cancel_monitor as a standalone coroutine.
+class TestCancelMonitorEdgeCases:
+    """Isolated tests for two _cancel_monitor edge cases that are
+    hard to reproduce via the public _handle_message path.
 
-    Does not exercise _handle_message — those integration paths are
-    covered separately below and in tests/integration/.
+    AGENTS.md §Verboten discourages private-method tests; REV-P2-12
+    proposed removing this whole class. We keep only the cases that
+    would be genuinely lost otherwise — the happy-path flag-set and
+    already-done branches are covered by
+    TestRunningCancelInHandleMessage and the integration suite.
+    Keeping two targeted edge-case tests reflects a deliberate
+    trade-off: test value over strict private-method discipline.
     """
-
-    async def test_monitor_cancels_run_task_when_flag_set(
-        self, worker, backend,
-    ):
-        """is_cancelled=True on first poll → run_task.cancel() + reason set."""
-        backend.is_cancelled = AsyncMock(return_value=True)
-        # A long-running task we expect to be cancelled.
-        run_task = asyncio.create_task(asyncio.sleep(10))
-        reasons: list[str | None] = [None]
-
-        def set_reason_if_unset(r: str) -> None:
-            if reasons[0] is None:
-                reasons[0] = r
-
-        try:
-            await worker._cancel_monitor("task-abc", run_task, set_reason_if_unset)
-        finally:
-            # Whether or not the monitor returned, clean up the run_task.
-            if not run_task.done():
-                run_task.cancel()
-            with contextlib_suppress_cancelled():
-                await run_task
-
-        assert reasons[0] == "cancel"
-        assert run_task.cancelled()
-
-    async def test_monitor_exits_when_run_task_already_done(
-        self, worker, backend,
-    ):
-        """Monitor exits cleanly if run_task.done() is True on entry."""
-        backend.is_cancelled = AsyncMock(return_value=False)
-        run_task = asyncio.create_task(asyncio.sleep(0))
-        await run_task  # run_task is now done
-
-        reasons: list[str | None] = [None]
-
-        async def monitor_with_timeout():
-            await asyncio.wait_for(
-                worker._cancel_monitor(
-                    "task-abc", run_task,
-                    lambda r: reasons.__setitem__(0, r),
-                ),
-                timeout=2.0,
-            )
-
-        await monitor_with_timeout()
-        assert reasons[0] is None
-        # Monitor did NOT poll: is_cancelled should not have been awaited.
-        backend.is_cancelled.assert_not_awaited()
 
     async def test_monitor_swallows_is_cancelled_exceptions(
         self, worker, backend,
@@ -3239,7 +3205,7 @@ class TestCancelMonitorIsolated:
         finally:
             if not run_task.done():
                 run_task.cancel()
-            with contextlib_suppress_cancelled():
+            with contextlib.suppress(asyncio.CancelledError):
                 await run_task
 
         # Eventually set reason=cancel after surviving the first blip.
@@ -3317,16 +3283,6 @@ class TestSetReasonIfUnset:
 # Module-level contextlib.suppress helper — pytest-asyncio has a quirk
 # where contextlib.suppress used inside async tests occasionally masks
 # the test's own CancelledError on teardown. Inline try/except avoids it.
-class contextlib_suppress_cancelled:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if exc_type is asyncio.CancelledError:
-            return True
-        return False
-
-
 # ===========================================================================
 # Phase 3b.3 / Unit 7 — Monitor in the full _handle_message pipeline
 # ===========================================================================

@@ -18,7 +18,10 @@ from swarmq.exceptions import TaskCancelledError
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 
-pytestmark = pytest.mark.integration
+# Cancel integration tests run a worker and observe cancel propagation
+# in real time. 15s covers the slowest paths (hard-timeout watchdogs,
+# lock-wait sequences) with margin for load-induced latency.
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
 
 
 def _unique_queue() -> str:
