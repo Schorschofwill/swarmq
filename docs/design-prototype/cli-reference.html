@@ -158,19 +158,31 @@ swarmq schedule &lt;task_name&gt; [--arg key=value]... [--delay SECONDS]
     <hr>
 
     <h2 id="dlq">swarmq dlq</h2>
-    <p>Inspect and manipulate dead-letter queues.</p>
+    <p>Inspect and recover messages from dead-letter queues (R3.10). Uses
+    the <code>task_id</code> from the payload as the identifier — RabbitMQ
+    has no stable intrinsic message ID across <code>basic.get</code>
+    calls.</p>
 
     <div class="api-signature">
-swarmq dlq (list | requeue &lt;message_id&gt; | purge &lt;queue&gt;)
+swarmq dlq list [--queue Q] [--limit N] [--format table|json]
+swarmq dlq inspect &lt;task_id&gt; [--queue Q] [--scan-limit N] [--format ...]
+swarmq dlq retry &lt;task_id&gt; [--queue Q] [--scan-limit N] [--format ...]
+swarmq dlq retry --all [--queue Q] [--limit N] [--format ...]
+swarmq dlq purge [--queue Q] [--format ...]
     </div>
 
     <div class="callout warn">
       <svg class="cico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
       <div class="cbody">
         <span class="callout-title">Destructive</span>
-        <code>purge</code> removes every message in the target queue and cannot be undone. Prefer <code>requeue</code> for recoverable failures.
+        <code>purge</code> removes every message in the DLQ and cannot be undone. Prefer <code>retry --all</code> to move valid messages back to the main queue (malformed-body messages are left behind for operator inspection).
       </div>
     </div>
+
+    <p>Exit codes: <code>0</code> success, <code>1</code>
+    configuration or broker-connection error, <code>2</code> bad
+    argument shape, <code>3</code> targeted lookup found no match
+    (<code>inspect</code> / <code>retry &lt;task_id&gt;</code>).</p>
 
     <hr>
 

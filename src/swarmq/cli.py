@@ -510,6 +510,27 @@ async def _backend_from_env() -> ValkeyBackend:
     return backend
 
 
+def _render_table(rows: list[tuple[str, ...]], empty_label: str) -> str:
+    """Render a list of tuples as a two-space-separated, left-aligned table.
+
+    The first row is the header; every subsequent row is data. Column
+    widths are computed across the full set so header + data align.
+    Returns *empty_label* when only the header row would be rendered.
+
+    Shared helper for all CLI table formatters (schedule, inspect,
+    dlq list) — R3.10 review P3 #14 / M-3 / KP-5 deduplicated three
+    identical copies.
+    """
+    if len(rows) <= 1:
+        return empty_label
+    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
+    lines = [
+        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    ]
+    return "\n".join(lines)
+
+
 def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
     """Plain-text table for terminal output — stable column ordering.
 
@@ -517,8 +538,6 @@ def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
     can tell client-originated deferred-dedup entries from plain CLI or
     static-cron ones at a glance (ce-review P3 #23).
     """
-    if not schedules:
-        return "(no schedules)"
     rows = [(
         "NAME", "CRON", "TASK", "QUEUE", "NEXT_FIRE",
         "DISABLED", "SOURCE", "DEDUP", "UNIQUE_UNTIL",
@@ -542,12 +561,7 @@ def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
             dedup_state,
             unique_until,
         ))
-    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
-    lines = [
-        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
-        for row in rows
-    ]
-    return "\n".join(lines)
+    return _render_table(rows, "(no schedules)")
 
 
 async def _run_schedule_list(args: argparse.Namespace) -> None:
@@ -774,8 +788,6 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
 
 def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
     """Plain-text rendering for 'swarmq inspect'. Shows one row per task."""
-    if not entries:
-        return "(no tasks registered)"
     rows = [(
         "TASK", "QUEUES", "DELIVERY", "RETRIES",
         "RATE_LIMIT", "LOCK", "UNIQUE_FOR", "UNIQUE_UNTIL", "CRON",
@@ -792,11 +804,7 @@ def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
             e["unique_until"] if e["unique_for"] is not None else "-",
             e["cron"] or "-",
         ))
-    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
-    return "\n".join(
-        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
-        for row in rows
-    )
+    return _render_table(rows, "(no tasks registered)")
 
 
 async def _broker_from_env() -> RabbitMQBroker:
@@ -820,8 +828,6 @@ async def _broker_from_env() -> RabbitMQBroker:
 
 def _format_dlq_list_table(entries: list[dict[str, Any]]) -> str:
     """One row per DLQ entry — short header summary columns."""
-    if not entries:
-        return "(DLQ empty)"
     rows = [("TASK_ID", "TASK_NAME", "RETRIES", "ERROR_PREVIEW", "BODY_BYTES")]
     for e in entries:
         headers = e.get("headers") or {}
@@ -837,11 +843,7 @@ def _format_dlq_list_table(entries: list[dict[str, Any]]) -> str:
             preview or "-",
             str(e["body_size"]),
         ))
-    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
-    return "\n".join(
-        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
-        for row in rows
-    )
+    return _render_table(rows, "(DLQ empty)")
 
 
 def _normalise_headers_for_json(

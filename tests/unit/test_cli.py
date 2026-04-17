@@ -7,6 +7,7 @@ lifecycle is mocked so these tests do not touch a broker.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -680,3 +681,253 @@ class TestDlqNormaliseHeaders:
 
     def test_none_treated_as_empty(self):
         assert cli._normalise_headers_for_json(None) == {}
+
+
+class TestDlqHandlerOrchestration:
+    """Unit coverage for _run_dlq_* handler orchestration (review P2 #8 /
+    T-01 / T-02). Each test mocks the broker + env var, then exercises
+    one handler's output / dispatch branches without needing RabbitMQ.
+    """
+
+    @pytest.fixture
+    def mock_broker(self, monkeypatch):
+        """Patch _broker_from_env to return a MagicMock-backed broker."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        broker = MagicMock()
+        broker.close = AsyncMock()
+        broker.list_dead_letter_queue = AsyncMock()
+        broker.inspect_dead_letter_message = AsyncMock()
+        broker.retry_dead_letter_message = AsyncMock()
+        broker.retry_all_dead_letter_messages = AsyncMock()
+        broker.purge_dead_letter_queue = AsyncMock()
+
+        async def fake_from_env():
+            return broker
+
+        monkeypatch.setenv(
+            "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
+        )
+        monkeypatch.setattr(cli, "_broker_from_env", fake_from_env)
+        return broker
+
+    @pytest.mark.timeout(5)
+    async def test_list_json_output_wraps_envelope(self, mock_broker, capsys):
+        mock_broker.list_dead_letter_queue.return_value = (
+            [{"task_id": "t-1", "task_name": "add", "queue": "q",
+              "headers": {"x-swarmq-retry-count": 3}, "body_size": 128}],
+            1,
+        )
+        ns = argparse.Namespace(queue="q", limit=100, format="json")
+        await cli._run_dlq_list(ns)
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["scanned"] == 1
+        assert payload["limit"] == 100
+        assert payload["truncated"] is False
+        assert payload["queue"] == "q"
+        assert len(payload["entries"]) == 1
+        mock_broker.close.assert_awaited_once()
+
+    @pytest.mark.timeout(5)
+    async def test_list_table_truncated_hint_when_at_limit(
+        self, mock_broker, capsys,
+    ):
+        mock_broker.list_dead_letter_queue.return_value = (
+            [{"task_id": f"t-{i}", "task_name": "x", "queue": "q",
+              "headers": {}, "body_size": 10} for i in range(2)],
+            2,
+        )
+        ns = argparse.Namespace(queue="q", limit=2, format="table")
+        await cli._run_dlq_list(ns)
+        out = capsys.readouterr().out
+        assert "truncated at --limit 2" in out
+
+    @pytest.mark.timeout(5)
+    async def test_inspect_found_json_adds_found_true(self, mock_broker, capsys):
+        mock_broker.inspect_dead_letter_message.return_value = (
+            {"task_id": "t-1", "task_name": "add", "queue": "q",
+             "headers": {}, "body": {"task": {"id": "t-1"}},
+             "body_raw": '{"task":{"id":"t-1"}}', "body_size": 20},
+            1,
+        )
+        ns = argparse.Namespace(
+            task_id="t-1", queue="q", scan_limit=1000, format="json",
+        )
+        await cli._run_dlq_inspect(ns)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["found"] is True
+        assert payload["scanned"] == 1
+
+    @pytest.mark.timeout(5)
+    async def test_inspect_not_found_raises_dlq_not_found(
+        self, mock_broker, capsys,
+    ):
+        mock_broker.inspect_dead_letter_message.return_value = (None, 5)
+        ns = argparse.Namespace(
+            task_id="missing", queue="q", scan_limit=1000, format="json",
+        )
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_inspect(ns)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["found"] is False
+        assert payload["scanned"] == 5
+        assert payload["scan_exhausted"] is False
+
+    @pytest.mark.timeout(5)
+    async def test_inspect_table_body_raw_fallback_for_malformed(
+        self, mock_broker, capsys,
+    ):
+        mock_broker.inspect_dead_letter_message.return_value = (
+            {"task_id": None, "task_name": None, "queue": "q",
+             "headers": {}, "body": None, "body_raw": "not-json",
+             "body_size": 8},
+            1,
+        )
+        ns = argparse.Namespace(
+            task_id=None, queue="q", scan_limit=1000, format="table",
+        )
+        # Passing task_id=None happens to be what you'd hit if you tried
+        # to inspect a malformed DLQ message; this test pins the
+        # body_raw fallback branch.
+        mock_broker.inspect_dead_letter_message.return_value = (
+            mock_broker.inspect_dead_letter_message.return_value[0], 1,
+        )
+        await cli._run_dlq_inspect(ns)
+        out = capsys.readouterr().out
+        assert "not-json" in out
+
+    @pytest.mark.timeout(5)
+    async def test_retry_single_success_json_shape(self, mock_broker, capsys):
+        mock_broker.retry_dead_letter_message.return_value = (True, 3)
+        ns = argparse.Namespace(
+            task_id="t-1", all=False, queue="q",
+            limit=10_000, scan_limit=1000, format="json",
+        )
+        await cli._run_dlq_retry(ns)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["found"] is True
+        assert payload["moved"] == 1
+        assert payload["scanned"] == 3
+
+    @pytest.mark.timeout(5)
+    async def test_retry_single_not_found_exits_via_sentinel(
+        self, mock_broker, capsys,
+    ):
+        mock_broker.retry_dead_letter_message.return_value = (False, 1000)
+        ns = argparse.Namespace(
+            task_id="missing", all=False, queue="q",
+            limit=10_000, scan_limit=1000, format="json",
+        )
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_retry(ns)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["found"] is False
+        assert payload["scan_exhausted"] is True
+
+    @pytest.mark.timeout(5)
+    async def test_retry_all_json_reports_skipped_malformed(
+        self, mock_broker, capsys,
+    ):
+        mock_broker.retry_all_dead_letter_messages.return_value = (4, 5)
+        ns = argparse.Namespace(
+            task_id=None, all=True, queue="q",
+            limit=10_000, scan_limit=1000, format="json",
+        )
+        await cli._run_dlq_retry(ns)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["moved"] == 4
+        assert payload["scanned"] == 5
+        assert payload["skipped_malformed"] == 1
+        assert payload["truncated"] is False
+
+    @pytest.mark.timeout(5)
+    async def test_retry_all_table_warns_about_skipped_malformed(
+        self, mock_broker, capsys,
+    ):
+        mock_broker.retry_all_dead_letter_messages.return_value = (3, 4)
+        ns = argparse.Namespace(
+            task_id=None, all=True, queue="q",
+            limit=10_000, scan_limit=1000, format="table",
+        )
+        await cli._run_dlq_retry(ns)
+        out = capsys.readouterr().out
+        assert "republished 3" in out
+        assert "1 malformed" in out
+
+    @pytest.mark.timeout(5)
+    async def test_purge_json_shape(self, mock_broker, capsys):
+        mock_broker.purge_dead_letter_queue.return_value = 7
+        ns = argparse.Namespace(queue="q", format="json")
+        await cli._run_dlq_purge(ns)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {"purged": 7, "queue": "q"}
+
+    @pytest.mark.timeout(5)
+    async def test_dispatch_all_four_commands(self, mock_broker):
+        """Dispatcher _run_dlq_async routes the four subcommand strings
+        to the right handler (P2 #8 / T-02)."""
+        mock_broker.list_dead_letter_queue.return_value = ([], 0)
+        mock_broker.inspect_dead_letter_message.return_value = (None, 0)
+        mock_broker.retry_all_dead_letter_messages.return_value = (0, 0)
+        mock_broker.purge_dead_letter_queue.return_value = 0
+
+        # list
+        ns = argparse.Namespace(
+            dlq_command="list", queue="q", limit=10, format="json",
+        )
+        await cli._run_dlq_async(ns)
+        mock_broker.list_dead_letter_queue.assert_awaited_once()
+
+        # inspect not-found raises sentinel; swallow for this smoke.
+        ns = argparse.Namespace(
+            dlq_command="inspect", task_id="x", queue="q",
+            scan_limit=10, format="json",
+        )
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_async(ns)
+        mock_broker.inspect_dead_letter_message.assert_awaited_once()
+
+        # retry --all
+        ns = argparse.Namespace(
+            dlq_command="retry", task_id=None, all=True, queue="q",
+            limit=10, scan_limit=10, format="json",
+        )
+        await cli._run_dlq_async(ns)
+        mock_broker.retry_all_dead_letter_messages.assert_awaited_once()
+
+        # purge
+        ns = argparse.Namespace(
+            dlq_command="purge", queue="q", format="json",
+        )
+        await cli._run_dlq_async(ns)
+        mock_broker.purge_dead_letter_queue.assert_awaited_once()
+
+
+class TestRenderTable:
+    """Shared table renderer used by three CLI formatters (P3 #14)."""
+
+    def test_empty_returns_label(self):
+        assert cli._render_table([("H",)], "(empty)") == "(empty)"
+
+    def test_header_plus_data_aligned(self):
+        out = cli._render_table(
+            [("A", "BB"), ("x", "yy"), ("zzz", "w")],
+            empty_label="(none)",
+        )
+        lines = out.splitlines()
+        assert len(lines) == 3
+        # All data cells should start at the same column (header alignment).
+        assert lines[0].startswith("A  ") or lines[0].startswith("A   ")
+
+
+class TestDlqNotFoundExitCode:
+    """main() maps _DLQNotFound to exit code 3 (review P3 #19)."""
+
+    def test_main_returns_3_on_dlq_not_found(self, monkeypatch):
+        async def raiser(_args):
+            raise cli._DLQNotFound
+
+        monkeypatch.setattr(cli, "_run_dlq_async", raiser)
+        rc = cli.main(["dlq", "inspect", "nope", "--queue", "x"])
+        assert rc == 3
