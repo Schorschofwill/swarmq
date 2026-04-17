@@ -44,11 +44,21 @@ packages = ["src/swarmq"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
+# Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
+# Stress, Soak, Property, Fuzz, Mutation laufen nur explizit via
+# `pytest -m chaos` o.ä. — Dev-Loop bleibt <= 15s.
+addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation'"
 markers = [
     "unit: unit tests",
     "integration: integration tests",
     "e2e: end-to-end tests",
     "slow: slow-running tests",
+    "chaos: chaos-engineering tests (docker + toxiproxy, opt-in, nightly)",
+    "stress: high-parallelism stress tests (opt-in, nightly)",
+    "soak: long-running soak tests (opt-in, weekly)",
+    "property: hypothesis property-based tests (opt-in, nightly thorough)",
+    "fuzz: byte/json fuzzing tests (opt-in, nightly)",
+    "mutation: marker for mutmut configuration (not invoked directly)",
 ]
 
 [tool.mypy]
