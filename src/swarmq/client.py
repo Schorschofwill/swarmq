@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -26,7 +27,7 @@ from swarmq.middleware import (
 )
 from swarmq.registry import TaskRegistry
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
-from swarmq.serialization import decode_result, encode_json
+from swarmq.serialization import canonical_encode, decode_result, encode_json
 from swarmq.signals import Signal, SignalDispatcher
 
 logger = structlog.get_logger()
@@ -38,6 +39,23 @@ logger = structlog.get_logger()
 # tighter window (e.g. deterministic task_id systems vulnerable to
 # stale-flag-zombie, see Client.cancel docstring) can override.
 _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
+
+
+# R3.5 Unique Tasks: module-private sentinel that distinguishes
+# "caller did not pass a value" from "caller explicitly passed None".
+# None means "dedup explicitly disabled for this call"; _MISSING means
+# "fall through to TaskInfo default (or None in Client-Modus)".
+# Not exported — do NOT add to __init__.py.
+_MISSING: Any = object()
+
+
+def _compute_dedup_hash(task_name: str, args: tuple, kwargs: dict) -> str:
+    """sha256-hex of task_name + canonical_encode(args, kwargs).
+
+    Used as the Valkey key suffix `sq:unique:{hash}` for R3.5 dedup.
+    """
+    payload = task_name.encode("utf-8") + b"\x00" + canonical_encode(args, kwargs)
+    return hashlib.sha256(payload).hexdigest()
 
 
 class Client:
@@ -130,15 +148,21 @@ class Client:
         queue: str | None = None,
         delay: float | None = None,
         eta: datetime | None = None,
+        unique_for: int | None | Any = _MISSING,
+        unique_until: Literal["start", "completion"] | Any = _MISSING,
         **kwargs: Any,
     ) -> str:
         """Submit a task for execution and return its task_id.
 
-        Reserved keyword-only args ``delay`` and ``eta`` (mutually
-        exclusive) defer the publish until the scheduler fires the
-        entry. Tasks accepting ``delay`` / ``eta`` as payload-arg names
-        are rejected at ``@app.task`` registration (P1-3), so this
-        signature cannot collide with user payloads.
+        Reserved keyword-only args ``delay``, ``eta``, ``unique_for``,
+        ``unique_until`` cannot collide with user payloads because they
+        are reserved at ``@app.task`` registration (P1-3).
+
+        Dedup (R3.5) is silent-by-default: a duplicate ``schedule`` call
+        within ``unique_for`` seconds returns the *existing* task_id
+        instead of a new one, and emits ``TASK_DUPLICATE_DETECTED``
+        for observability. No exception is raised — the API shape
+        stays ``schedule() -> str``.
         """
         # --- validation (registry mode only) ---
         if self._registry is not None:
@@ -169,6 +193,41 @@ class Client:
 
         # --- build and publish message ---
         task_id = str(uuid.uuid7())
+
+        # --- R3.5 dedup resolution ---
+        resolved_unique_for, resolved_unique_until = self._resolve_unique(
+            task_name, unique_for, unique_until
+        )
+        dedup_hash: str | None = None
+        headers: dict[str, Any] = {}
+
+        if resolved_unique_for is not None:
+            dedup_hash = _compute_dedup_hash(task_name, args, kwargs)
+            existing = await self._backend.setnx_unique(
+                dedup_hash, task_id, resolved_unique_for * 1000
+            )
+            if existing is not None:
+                # Silent dedup — return existing owner's task_id, emit signal.
+                await self._signal_dispatcher.dispatch(
+                    Signal.TASK_DUPLICATE_DETECTED,
+                    existing_task_id=existing,
+                    task_name=task_name,
+                    dedup_hash=dedup_hash,
+                    source="client.schedule",
+                )
+                logger.info(
+                    "swarmq.dedup.detected",
+                    existing_task_id=existing,
+                    task_name=task_name,
+                    dedup_hash=dedup_hash,
+                    source="client.schedule",
+                )
+                return existing
+            # Flag acquired — tag the message so the worker can release
+            # at the right point (start-mode: pickup; completion-mode: terminal).
+            headers["x-swarmq-unique-hash"] = dedup_hash
+            headers["x-swarmq-unique-until"] = resolved_unique_until
+
         message = {
             "task": {
                 "id": task_id,
@@ -196,7 +255,13 @@ class Client:
         # pre_enqueue exceptions PROPAGATE — they can prevent the enqueue.
         await chain.run_pre_enqueue(message_dict)
 
-        await self._broker.publish(resolved_queue, encode_json(message))
+        # broker.publish forwards **properties to aio_pika.Message(**), which
+        # accepts ``headers=`` natively. Empty dict is harmless.
+        await self._broker.publish(
+            resolved_queue,
+            encode_json(message),
+            headers=headers if headers else None,
+        )
 
         # post_enqueue + TASK_ENQUEUED signal only after successful publish.
         await chain.run_post_enqueue(message_dict)
@@ -207,6 +272,43 @@ class Client:
             queue=resolved_queue,
         )
         return task_id
+
+    def _resolve_unique(
+        self,
+        task_name: str,
+        unique_for: int | None | Any,
+        unique_until: Any,
+    ) -> tuple[int | None, str]:
+        """Resolve effective unique_for / unique_until for a schedule() call.
+
+        Rules (origin CD1):
+          - unique_for is _MISSING: look up TaskInfo default if registry
+            is available; otherwise None (dedup off) in Client-Modus.
+          - unique_for is None (explicit): dedup off for this call,
+            even if TaskInfo sets a default.
+          - unique_for is int: use this value.
+        unique_until follows the same pattern with default "completion".
+        """
+        final_for: int | None
+        final_until: str = "completion"
+
+        if unique_for is _MISSING:
+            final_for = None
+            if self._registry is not None and self._registry.has(task_name):
+                entry = self._registry.get_entry(task_name)
+                final_for = entry.task_info.unique_for
+                final_until = entry.task_info.unique_until
+        else:
+            final_for = unique_for
+
+        if unique_until is _MISSING:
+            # Already set from TaskInfo above (or still "completion" default
+            # in Client-Modus).
+            pass
+        else:
+            final_until = unique_until
+
+        return final_for, final_until
 
     async def get_result(
         self,

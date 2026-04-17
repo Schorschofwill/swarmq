@@ -1140,3 +1140,195 @@ class TestClientScheduleDelayEta:
         c = _Client(broker=broker, backend=backend, registry=None)
         with pytest.raises(RuntimeError, match="connected"):
             await c.schedule("add", queue="math", delay=1.0)
+
+
+# -----------------------------------------------------------------
+# R3.5 Unique Tasks — Client.schedule() dedup (Unit 6)
+# -----------------------------------------------------------------
+
+class TestClientUniqueSchedule:
+    """Producer-side SETNX dedup in Client.schedule()."""
+
+    @pytest.fixture
+    def backend_setnx(self, backend):
+        """Backend variant with setnx_unique mocked — default NX granted."""
+        backend.setnx_unique = AsyncMock(return_value=None)  # NX success
+        return backend
+
+    @pytest.fixture
+    def client_setnx(self, broker, backend_setnx, registry):
+        return Client(broker=broker, backend=backend_setnx, registry=registry)
+
+    async def test_schedule_without_unique_for_is_unchanged(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """No unique_for kwarg + TaskInfo default is None → no SETNX call,
+        no dedup header."""
+        task_id = await client_setnx.schedule("add", 1, 2, queue="math")
+        broker.publish.assert_awaited_once()
+        backend_setnx.setnx_unique.assert_not_awaited()
+        call_kwargs = broker.publish.await_args.kwargs
+        # headers=None when no dedup (or absent entirely)
+        assert call_kwargs.get("headers") is None
+
+    async def test_schedule_with_unique_for_calls_setnx_and_sets_header(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        task_id = await client_setnx.schedule(
+            "add", 1, 2, queue="math", unique_for=60,
+        )
+        backend_setnx.setnx_unique.assert_awaited_once()
+        setnx_call = backend_setnx.setnx_unique.await_args
+        dedup_hash = setnx_call[0][0]
+        stored_task_id = setnx_call[0][1]
+        ttl_ms = setnx_call[0][2]
+        assert len(dedup_hash) == 64  # sha256 hex
+        assert stored_task_id == task_id
+        assert ttl_ms == 60_000
+        # Header set on publish
+        publish_kwargs = broker.publish.await_args.kwargs
+        assert publish_kwargs["headers"]["x-swarmq-unique-hash"] == dedup_hash
+        assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "completion"
+
+    async def test_schedule_duplicate_returns_existing_task_id(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """Silent dedup: schedule() returns existing task_id, does not publish."""
+        backend_setnx.setnx_unique = AsyncMock(return_value="t-existing")
+        task_id = await client_setnx.schedule(
+            "add", 1, 2, queue="math", unique_for=60,
+        )
+        assert task_id == "t-existing"
+        broker.publish.assert_not_awaited()
+
+    async def test_schedule_duplicate_emits_signal(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """TASK_DUPLICATE_DETECTED signal emitted with expected payload."""
+        from swarmq.signals import Signal, SignalDispatcher
+
+        dispatcher = SignalDispatcher()
+        received: list[dict] = []
+
+        @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+        async def handler(**kwargs):
+            received.append(kwargs)
+
+        backend_setnx.setnx_unique = AsyncMock(return_value="t-win")
+        client = Client(
+            broker=broker, backend=backend_setnx,
+            registry=client_setnx._registry,
+            signal_dispatcher=dispatcher,
+        )
+        returned = await client.schedule(
+            "add", 1, 2, queue="math", unique_for=60,
+        )
+        assert returned == "t-win"
+        assert len(received) == 1
+        assert received[0]["existing_task_id"] == "t-win"
+        assert received[0]["task_name"] == "add"
+        assert received[0]["source"] == "client.schedule"
+        assert len(received[0]["dedup_hash"]) == 64
+
+    async def test_schedule_per_call_override_none_disables_dedup(
+        self, client_setnx, broker, backend_setnx,
+    ):
+        """Per-call unique_for=None overrides TaskInfo default."""
+        # Registry fixture's task_info has no unique_for (None by default).
+        # Use explicit None — same outcome.
+        await client_setnx.schedule(
+            "add", 1, 2, queue="math", unique_for=None,
+        )
+        backend_setnx.setnx_unique.assert_not_awaited()
+
+    async def test_schedule_unique_for_uses_taskinfo_default(
+        self, broker, backend_setnx,
+    ):
+        """When kwarg is _MISSING (not passed), use TaskInfo.unique_for."""
+        # Build registry with unique_for=30 TaskInfo default.
+        registry = MagicMock()
+        registry.has = MagicMock(return_value=True)
+        entry = MagicMock()
+        entry.task_info = TaskInfo(
+            name="add", queues=["math"], unique_for=30, unique_until="start",
+        )
+        registry.get_entry = MagicMock(return_value=entry)
+
+        client = Client(broker=broker, backend=backend_setnx, registry=registry)
+        await client.schedule("add", 1, queue="math")
+
+        backend_setnx.setnx_unique.assert_awaited_once()
+        assert backend_setnx.setnx_unique.await_args[0][2] == 30_000
+        publish_kwargs = broker.publish.await_args.kwargs
+        assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
+
+    async def test_schedule_client_modus_ignores_taskinfo_default(
+        self, broker, backend_setnx,
+    ):
+        """Client-Modus (registry=None) can't resolve TaskInfo — _MISSING → None."""
+        client = Client(broker=broker, backend=backend_setnx, registry=None)
+        await client.schedule("add", 1, queue="math")  # no unique_for
+        backend_setnx.setnx_unique.assert_not_awaited()
+
+    async def test_schedule_client_modus_explicit_unique_for_works(
+        self, broker, backend_setnx,
+    ):
+        """Client-Modus still honors explicit per-call unique_for."""
+        client = Client(broker=broker, backend=backend_setnx, registry=None)
+        await client.schedule(
+            "add", 1, queue="math", unique_for=60, unique_until="start",
+        )
+        backend_setnx.setnx_unique.assert_awaited_once()
+        publish_kwargs = broker.publish.await_args.kwargs
+        assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
+
+    async def test_schedule_per_call_unique_until_overrides_taskinfo(
+        self, broker, backend_setnx,
+    ):
+        """Per-call unique_until overrides TaskInfo default."""
+        registry = MagicMock()
+        registry.has = MagicMock(return_value=True)
+        entry = MagicMock()
+        entry.task_info = TaskInfo(
+            name="add", queues=["math"], unique_for=30, unique_until="completion",
+        )
+        registry.get_entry = MagicMock(return_value=entry)
+
+        client = Client(broker=broker, backend=backend_setnx, registry=registry)
+        await client.schedule("add", 1, queue="math", unique_until="start")
+        publish_kwargs = broker.publish.await_args.kwargs
+        assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
+
+    async def test_schedule_same_args_produce_stable_hash(
+        self, client_setnx, backend_setnx,
+    ):
+        """Hash must be stable across calls with identical args+kwargs."""
+        captured_hashes: list[str] = []
+
+        async def capture_setnx(h, _tid, _ttl):
+            captured_hashes.append(h)
+            return None
+
+        backend_setnx.setnx_unique = AsyncMock(side_effect=capture_setnx)
+        await client_setnx.schedule("add", 1, 2, queue="math", unique_for=60)
+        await client_setnx.schedule("add", 1, 2, queue="math", unique_for=60)
+        assert captured_hashes[0] == captured_hashes[1]
+
+    async def test_schedule_different_kwargs_order_same_hash(
+        self, client_setnx, backend_setnx,
+    ):
+        """kwarg insertion order must not affect hash (canonical_encode key-sort)."""
+        captured_hashes: list[str] = []
+
+        async def capture_setnx(h, _tid, _ttl):
+            captured_hashes.append(h)
+            return None
+
+        backend_setnx.setnx_unique = AsyncMock(side_effect=capture_setnx)
+        await client_setnx.schedule(
+            "add", queue="math", unique_for=60, a=1, b=2,
+        )
+        await client_setnx.schedule(
+            "add", queue="math", unique_for=60, b=2, a=1,
+        )
+        assert captured_hashes[0] == captured_hashes[1]
