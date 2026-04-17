@@ -428,3 +428,93 @@ def test_task_subclass_without_run_method_allowed():
         task_info = TaskInfo(name="bare", queues=["q"])
 
     assert BareTask in Task._registered_tasks
+
+
+# -----------------------------------------------------------------------
+# R3.5 Unique Tasks — TaskInfo.unique_for / unique_until validation
+# -----------------------------------------------------------------------
+
+
+def test_taskinfo_unique_defaults_are_none_and_completion():
+    t = TaskInfo(name="t", queues=["q"])
+    assert t.unique_for is None
+    assert t.unique_until == "completion"
+
+
+def test_taskinfo_unique_for_positive_accepted():
+    t = TaskInfo(name="t", queues=["q"], unique_for=60)
+    assert t.unique_for == 60
+
+
+def test_taskinfo_unique_until_start_accepted():
+    t = TaskInfo(name="t", queues=["q"], unique_for=60, unique_until="start")
+    assert t.unique_until == "start"
+
+
+def test_taskinfo_unique_for_zero_raises():
+    """origin CD6: unique_for=0 is a fail-fast, not silent normalize to None."""
+    with pytest.raises(ValueError, match="unique_for=0"):
+        TaskInfo(name="t", queues=["q"], unique_for=0)
+
+
+def test_taskinfo_unique_for_negative_raises():
+    with pytest.raises(ValueError, match="unique_for must be > 0"):
+        TaskInfo(name="t", queues=["q"], unique_for=-5)
+
+
+def test_taskinfo_unique_until_invalid_literal_raises():
+    with pytest.raises(ValueError, match="unique_until must be"):
+        TaskInfo(
+            name="t",
+            queues=["q"],
+            unique_for=60,
+            unique_until="invalid",  # type: ignore[arg-type]
+        )
+
+
+def test_taskinfo_unique_until_without_unique_for_is_accepted():
+    """origin CD6: unique_until set without unique_for does NOT raise;
+    it's silently ignored (dedup inactive). Avoids sentinel discrimination
+    on the frozen dataclass."""
+    t = TaskInfo(name="t", queues=["q"], unique_until="start")
+    assert t.unique_for is None
+    assert t.unique_until == "start"  # preserved but unused
+
+
+def test_task_subclass_reserved_unique_for_raises():
+    Task._clear_registered_tasks()
+
+    with pytest.raises(ValueError, match="unique_for"):
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            async def run(self, *, unique_for=None):
+                return unique_for
+
+
+def test_task_subclass_reserved_unique_until_raises():
+    Task._clear_registered_tasks()
+
+    with pytest.raises(ValueError, match="unique_until"):
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            async def run(self, *, unique_until=None):
+                return unique_until
+
+
+def test_task_subclass_reserved_param_error_mentions_all_reserved():
+    """Migration hint in error message includes all four reserved names
+    so users who hit delay/eta today still see the full picture."""
+    Task._clear_registered_tasks()
+
+    with pytest.raises(ValueError) as excinfo:
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            async def run(self, *, delay=None):
+                return delay
+
+    msg = str(excinfo.value)
+    assert "unique_for" in msg
+    assert "unique_until" in msg

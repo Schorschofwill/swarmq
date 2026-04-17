@@ -39,6 +39,14 @@ class Signal(enum.Enum):
         - remaining: estimated requests still allowed in the window
         - rate_limit_count: number of times this exact message has been
           requeued by the rate limiter (operator-visible bounce counter)
+      * TASK_DUPLICATE_DETECTED: existing_task_id, task_name, dedup_hash,
+                                 source
+        - existing_task_id: id of the previously-enqueued task that won
+          the SETNX race; caller may poll its result with client.get_result
+        - dedup_hash: sha256 hex of canonical_encode(args, kwargs)
+        - source: "client.schedule" | "client.schedule_many" |
+          "scheduler.fire" — operators can filter Scheduler-induced dup
+          noise (leader failover) from user-facing dups
       * WORKER_ONLINE / WORKER_SHUTDOWN: worker_id
       * SCHEDULER_LEADER:          worker_id (this worker just became leader,
                                    either first-time or via clean handover)
@@ -66,6 +74,7 @@ class Signal(enum.Enum):
     TASK_EXPIRED = "task_expired"
     TASK_LOCKED = "task_locked"
     TASK_RATE_LIMITED = "task_rate_limited"
+    TASK_DUPLICATE_DETECTED = "task_duplicate_detected"
 
     # Worker lifecycle
     WORKER_ONLINE = "worker_online"

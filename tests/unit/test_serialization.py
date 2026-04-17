@@ -9,10 +9,11 @@ import pytest
 
 from swarmq.exceptions import ResultSerializationError
 from swarmq.serialization import (
-    encode_json,
+    canonical_encode,
     decode_json,
-    encode_result,
     decode_result,
+    encode_json,
+    encode_result,
 )
 
 
@@ -251,3 +252,125 @@ class TestNestedStructures:
         assert decoded["id"] == uid
         assert decoded["amount"] == Decimal("99.99")
         assert decoded["items"] == [Decimal("10.00"), Decimal("20.00")]
+
+
+class TestCanonicalEncode:
+    """Unit 1 (R3.5): canonical_encode produces deterministic bytes for
+    (args, kwargs) regardless of kwarg-order or type variation. Used for
+    sha256-dedup hashing in R3.5 Unique Tasks."""
+
+    def test_key_order_stable(self):
+        assert canonical_encode((), {"a": 1, "b": 2}) == canonical_encode(
+            (), {"b": 2, "a": 1}
+        )
+
+    def test_nested_key_order_stable(self):
+        assert canonical_encode((), {"x": {"b": 1, "a": 2}}) == canonical_encode(
+            (), {"x": {"a": 2, "b": 1}}
+        )
+
+    def test_positional_args_distinguish(self):
+        assert canonical_encode(("foo",), {}) != canonical_encode(("bar",), {})
+
+    def test_list_order_significant(self):
+        assert canonical_encode(([1, 2, 3],), {}) != canonical_encode(
+            ([3, 2, 1],), {}
+        )
+
+    def test_tuple_list_equivalence(self):
+        """Invariant: tuples and lists produce equal hashes (JSON encodes
+        both as arrays). Required for Scheduler hash-reconstruction after
+        ScheduleStore roundtrip (tuples serialized as lists)."""
+        assert canonical_encode((1, 2, 3), {}) == canonical_encode(
+            [1, 2, 3], {}
+        )
+
+    def test_uuid_normalized_to_str(self):
+        uid = UUID("12345678-1234-5678-1234-567812345678")
+        assert canonical_encode((), {"id": uid}) == canonical_encode(
+            (), {"id": str(uid)}
+        )
+
+    def test_datetime_normalized_to_isoformat(self):
+        dt = datetime(2026, 1, 1, 12, 0, 0)
+        assert canonical_encode((), {"ts": dt}) == canonical_encode(
+            (), {"ts": dt.isoformat()}
+        )
+
+    def test_decimal_normalized_to_str(self):
+        assert canonical_encode((), {"d": Decimal("1.10")}) == canonical_encode(
+            (), {"d": "1.10"}
+        )
+
+    def test_set_sorted_and_listified(self):
+        assert canonical_encode((), {"s": {3, 1, 2}}) == canonical_encode(
+            (), {"s": [1, 2, 3]}
+        )
+
+    def test_frozenset_same_as_set(self):
+        assert canonical_encode((), {"s": frozenset({3, 1, 2})}) == canonical_encode(
+            (), {"s": [1, 2, 3]}
+        )
+
+    def test_empty_inputs_deterministic(self):
+        result = canonical_encode((), {})
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+        assert canonical_encode((), {}) == result
+
+    def test_int_vs_float_distinguished(self):
+        """Documented limitation: int(1) and float(1.0) hash differently.
+        Users who want conversion must normalize themselves."""
+        assert canonical_encode((), {"n": 1}) != canonical_encode((), {"n": 1.0})
+
+    def test_mixed_type_set_rejected(self):
+        with pytest.raises(TypeError, match="mixed element types"):
+            canonical_encode((), {"s": {1, "a"}})
+
+    def test_bytes_rejected(self):
+        with pytest.raises(TypeError, match="bytes"):
+            canonical_encode((), {"k": b"bytes"})
+
+    def test_non_str_dict_key_rejected(self):
+        with pytest.raises(TypeError, match="str dict keys"):
+            canonical_encode((), {1: "a"})  # type: ignore[dict-item]
+
+    def test_dataclass_rejected(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class Dummy:
+            x: int
+
+        with pytest.raises(TypeError, match="does not support"):
+            canonical_encode((), {"d": Dummy(x=1)})
+
+    def test_custom_class_rejected(self):
+        class Custom:
+            pass
+
+        with pytest.raises(TypeError, match="does not support"):
+            canonical_encode((), {"c": Custom()})
+
+    def test_deeply_nested_structure(self):
+        """Recursive canonicalization works through multiple layers."""
+        a = canonical_encode(
+            (), {"outer": {"b": [1, {"nested": UUID(int=0)}], "a": 2}}
+        )
+        b = canonical_encode(
+            (),
+            {
+                "outer": {
+                    "a": 2,
+                    "b": [1, {"nested": str(UUID(int=0))}],
+                }
+            },
+        )
+        assert a == b
+
+    def test_args_and_kwargs_both_used(self):
+        """Both positional and keyword args affect the hash."""
+        assert canonical_encode(("a",), {"b": 1}) != canonical_encode(
+            (), {"b": 1}
+        )
+        assert canonical_encode(("a",), {}) != canonical_encode(("a",), {"b": 1})

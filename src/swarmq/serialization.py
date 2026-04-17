@@ -41,6 +41,86 @@ def decode_json(data: bytes, type_hint: type | None = None) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# canonical_encode: deterministic bytes for dedup hashing
+# ---------------------------------------------------------------------------
+
+
+def _canonicalize(obj: Any) -> Any:
+    """Pre-normalize a value into a form that JSON-encodes deterministically.
+
+    Contract: identical semantic inputs produce identical bytes under
+    msgspec.json.Encoder, regardless of call-site key order or type
+    variation between UUID vs str, datetime vs iso-string, etc.
+
+    Reject types with no single canonical form (bytes, dataclass,
+    msgspec.Struct, custom classes) — caller must normalize them.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, UUID):
+        return str(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, date):
+        return obj.isoformat()
+    if isinstance(obj, time):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, dict):
+        # Sort keys; reject non-str keys (JSON constraint, makes sort stable).
+        result = {}
+        for key in sorted(obj.keys()):
+            if not isinstance(key, str):
+                raise TypeError(
+                    "canonical_encode requires str dict keys; "
+                    f"got {type(key).__name__!r}"
+                )
+            result[key] = _canonicalize(obj[key])
+        return result
+    if isinstance(obj, (list, tuple)):
+        return [_canonicalize(item) for item in obj]
+    if isinstance(obj, (set, frozenset)):
+        # Sort; raises TypeError for mixed/unsortable elements.
+        try:
+            items = sorted(obj)
+        except TypeError as exc:
+            raise TypeError(
+                f"canonical_encode cannot sort {type(obj).__name__} "
+                f"with mixed element types: {exc}"
+            ) from exc
+        return [_canonicalize(item) for item in items]
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        raise TypeError(
+            "canonical_encode does not support bytes; "
+            "dedup requires JSON-native args. Convert to str before scheduling, "
+            "or disable dedup for this task."
+        )
+    raise TypeError(
+        f"canonical_encode does not support {type(obj).__name__}; "
+        "dedup requires JSON-native or pre-normalizable args. "
+        "Convert to str/dict before scheduling, or disable dedup for this task."
+    )
+
+
+def canonical_encode(args: tuple, kwargs: dict) -> bytes:
+    """Produce deterministic JSON bytes for (args, kwargs) dedup hashing.
+
+    Pre-normalizes values (UUID→str, datetime→iso, Decimal→str, set→sorted list)
+    and sorts dict keys recursively before msgspec.json encoding. Guarantees
+    hash stability across call-site kwarg-order and supported-type variation.
+
+    Raises TypeError for unsupported types (bytes, dataclass, custom classes).
+    Raises TypeError for non-str dict keys and mixed-type sets.
+    """
+    canonical = {
+        "args": _canonicalize(list(args)),
+        "kwargs": _canonicalize(dict(kwargs)),
+    }
+    return _json_encoder.encode(canonical)
+
+
+# ---------------------------------------------------------------------------
 # msgpack serialization (for Results)
 # ---------------------------------------------------------------------------
 

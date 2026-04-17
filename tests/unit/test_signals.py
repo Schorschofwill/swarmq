@@ -294,3 +294,41 @@ async def test_dispatch_with_no_handlers_accepts_kwargs():
 
     # kwargs with no handlers — also a safe no-op
     await dispatcher.dispatch(Signal.SCHEDULER_STANDBY, foo="bar", n=1)
+
+
+# -------------------------------------------------------------------
+# R3.5: TASK_DUPLICATE_DETECTED signal
+# -------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_task_duplicate_detected_dispatches_with_payload():
+    """Signal fires with expected payload keys (existing_task_id,
+    task_name, dedup_hash, source)."""
+    dispatcher = SignalDispatcher()
+    received: list[dict] = []
+
+    @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+    async def handler(**kwargs):
+        received.append(kwargs)
+
+    await dispatcher.dispatch(
+        Signal.TASK_DUPLICATE_DETECTED,
+        existing_task_id="t-123",
+        task_name="send_email",
+        dedup_hash="abc",
+        source="client.schedule",
+    )
+
+    assert len(received) == 1
+    assert received[0] == {
+        "existing_task_id": "t-123",
+        "task_name": "send_email",
+        "dedup_hash": "abc",
+        "source": "client.schedule",
+    }
+
+
+def test_task_duplicate_detected_is_member_of_signal_enum():
+    assert Signal.TASK_DUPLICATE_DETECTED.value == "task_duplicate_detected"
+    assert Signal.TASK_DUPLICATE_DETECTED in Signal

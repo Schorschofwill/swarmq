@@ -7,6 +7,7 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Literal
 
 from croniter import CroniterBadCronError, croniter
 
@@ -20,9 +21,13 @@ _FORBIDDEN_CRON_CHARS = re.compile(r"[LW#]")
 
 # Task.run parameter names reserved by Client.schedule. A task that accepts
 # these as its own arguments would silently lose its payload because
-# schedule(delay=) / schedule(eta=) intercepts them before kwargs forwarding.
-# See plan Review-Finding P1-3 for the migration hint users get.
-_RESERVED_RUN_PARAM_NAMES = frozenset({"delay", "eta"})
+# schedule(delay=) / schedule(eta=) / schedule(unique_for=) intercepts them
+# before kwargs forwarding. See plan Review-Finding P1-3 for the migration
+# hint users get.
+_RESERVED_RUN_PARAM_NAMES = frozenset({"delay", "eta", "unique_for", "unique_until"})
+
+UniqueUntil = Literal["start", "completion"]
+_VALID_UNIQUE_UNTIL: frozenset[str] = frozenset({"start", "completion"})
 
 
 class DeliveryMode(enum.Enum):
@@ -72,6 +77,8 @@ class TaskInfo:
     max_concurrency: int = 1
     cron: str | None = None
     catchup: bool = False
+    unique_for: int | None = None
+    unique_until: UniqueUntil = "completion"
 
     def __init__(
         self,
@@ -90,6 +97,8 @@ class TaskInfo:
         max_concurrency: int = 1,
         cron: str | None = None,
         catchup: bool = False,
+        unique_for: int | None = None,
+        unique_until: UniqueUntil = "completion",
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -110,6 +119,8 @@ class TaskInfo:
         object.__setattr__(self, "max_concurrency", max_concurrency)
         object.__setattr__(self, "cron", cron)
         object.__setattr__(self, "catchup", catchup)
+        object.__setattr__(self, "unique_for", unique_for)
+        object.__setattr__(self, "unique_until", unique_until)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -187,6 +198,30 @@ class TaskInfo:
                     f"cron is not a valid expression: {self.cron!r} ({exc})"
                 ) from exc
 
+        # R3.5 Unique Tasks validation (origin CD6):
+        # - unique_for == 0 → ValueError (fail-fast; silent normalize to
+        #   None would mask user typos).
+        # - unique_for < 0 → ValueError.
+        # - unique_until not in literal domain → ValueError (defensive;
+        #   type annotation already guards this at msgspec/IDE layer).
+        # - unique_until set without unique_for → silently ignored (no
+        #   ValueError to avoid sentinel discrimination on the frozen
+        #   dataclass "is the value default or explicit").
+        if self.unique_for is not None:
+            if self.unique_for == 0:
+                raise ValueError(
+                    "unique_for=0 is invalid; use None to disable dedup"
+                )
+            if self.unique_for < 0:
+                raise ValueError(
+                    f"unique_for must be > 0 (got {self.unique_for})"
+                )
+        if self.unique_until not in _VALID_UNIQUE_UNTIL:
+            raise ValueError(
+                f"unique_until must be one of {sorted(_VALID_UNIQUE_UNTIL)}, "
+                f"got {self.unique_until!r}"
+            )
+
 
 class Task:
     task_info: TaskInfo
@@ -237,7 +272,8 @@ def _check_run_signature_reserved_params(cls: type) -> None:
             f"task {cls.__name__!r} accepts reserved parameter name(s) "
             f"[{conflict_list}], which conflicts with Client.schedule's "
             f"scheduling keywords. Rename the task parameter(s) "
-            f"(e.g. 'delay' -> 'retry_delay', 'eta' -> 'run_at'). "
+            f"(e.g. 'delay' -> 'retry_delay', 'eta' -> 'run_at', "
+            f"'unique_for' -> 'dedup_ttl', 'unique_until' -> 'dedup_mode'). "
             f"There is no escape-hatch keyword in Client.schedule — the "
             f"rename is required."
         )
