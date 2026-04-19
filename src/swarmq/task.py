@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import inspect
 import json
@@ -252,6 +253,11 @@ class Task:
     _result_ttl_ms: int = 86_400_000  # 24h fallback
     _last_progress_update: float = 0.0  # instance write shadows on first update
     _progress_final_flushed: bool = False  # single final flush per instance
+    # Per-instance asyncio.Lock for throttle read-compare-write.
+    # Lazy-initialised on first update_progress call (asyncio.Lock cannot
+    # be created at module-load time when no event loop is running, and a
+    # class-level instance would be shared across all Task instances).
+    _progress_lock: "asyncio.Lock | None" = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -303,19 +309,33 @@ class Task:
         if total <= 0 or current < 0:
             return
 
-        loop_time = time.monotonic()
-        is_final = current >= total
-        if is_final and self._progress_final_flushed:
-            # Final update already emitted — a task that repeatedly
-            # calls update_progress(total, total) (or a redundant
-            # explicit completion call) must not bypass the throttle
-            # forever. The HASH state is already terminal.
-            return
-        if (
-            not is_final
-            and loop_time - self._last_progress_update < _PROGRESS_MIN_INTERVAL_S
-        ):
-            return
+        # Lazy-init the lock — asyncio.Lock cannot live as a class
+        # attribute (would be shared across instances) and cannot be
+        # created at module-load time without a running loop.
+        if self._progress_lock is None:
+            self._progress_lock = asyncio.Lock()
+
+        # Hold the lock across the throttle-check + reservation step
+        # only. The HSET / publish run outside the lock so heavy progress
+        # bursts don't serialise on Valkey latency. Reserving the
+        # timestamp BEFORE awaiting prevents the read-compare-write race
+        # surfaced by U3.8 stress test (200 concurrent calls all read
+        # stale _last_progress_update, all pass the throttle, all write).
+        async with self._progress_lock:
+            loop_time = time.monotonic()
+            is_final = current >= total
+            if is_final and self._progress_final_flushed:
+                return
+            if (
+                not is_final
+                and loop_time - self._last_progress_update < _PROGRESS_MIN_INTERVAL_S
+            ):
+                return
+            # Reserve the slot now so concurrent callers see the new
+            # timestamp on their throttle check.
+            self._last_progress_update = loop_time
+            if is_final:
+                self._progress_final_flushed = True
 
         percent = (current / total * 100.0) if total > 0 else 0.0
         started_at_iso = (
@@ -356,10 +376,6 @@ class Task:
                 task_id=self._task_id, error=str(exc),
             )
             return  # Skip publish if HSET failed — no point notifying.
-
-        self._last_progress_update = loop_time
-        if is_final:
-            self._progress_final_flushed = True
 
         try:
             await self._backend.publish_progress(

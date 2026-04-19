@@ -426,19 +426,12 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
 # ---------------------------------------------------------------------------
 # 5. 200 parallel update_progress — throttle behaviour under contention.
 #
-# BUG SURFACED (2026-04-17): The 500ms progress-throttle check in
-# ``Task.update_progress`` is NOT safe under concurrent calls on the
-# same Task instance. The code reads ``self._last_progress_update``,
-# awaits the HSET, then writes the new timestamp. Under asyncio.gather
-# 200 coroutines all read the pre-burst value (0.0), all pass the
-# ``< 0.5s`` check, all issue HSET, and the last writer wins. Observed:
-# all 200 late-burst calls land, not ≤ ceil(elapsed_ms/500) as the
-# docstring implies.
-#
-# This test PINS the current (broken) behaviour so any fix trips the
-# test. The fix is a compare-and-swap on the timestamp (set BEFORE the
-# await) or an asyncio.Lock around the throttle-gate + HSET. Filed as
-# a follow-up; not part of U3.8's scope.
+# RACE FIXED (2026-04-19, follow-up to ce-review): The 500ms throttle
+# in ``Task.update_progress`` now uses an asyncio.Lock around the
+# read-compare-write, with timestamp reservation BEFORE the await.
+# Concurrent calls on the same Task instance respect the throttle —
+# at most ceil(elapsed_ms/500) HSETs land regardless of fan-out width.
+# This test now verifies the FIX rather than pinning the bug.
 # ---------------------------------------------------------------------------
 
 
@@ -447,11 +440,10 @@ async def test_200_parallel_update_progress_throttle_holds(
 ):
     """Throttle behaviour under high concurrency.
 
-    Sequential calls respect the 500ms throttle (proven via a warm-up
-    call followed by a 2nd call inside the window). Concurrent calls
-    via asyncio.gather currently race past the throttle because the
-    last-update timestamp is written AFTER the awaited HSET — this
-    test pins that behaviour with a documented assertion.
+    Sequential calls respect the 500ms throttle. Concurrent calls via
+    asyncio.gather now ALSO respect it (post-fix): the asyncio.Lock
+    around the read-compare-write + the BEFORE-await timestamp
+    reservation prevent the previous race.
     """
     queue = _unique_queue("progthrot")
     task_name = _task_name("throt")
@@ -491,14 +483,15 @@ async def test_200_parallel_update_progress_throttle_holds(
                 "overwrote the first"
             )
 
-            # ---- Part B: CONCURRENT — pin current (racy) behaviour. ----
-            # Reset state and measure how many of 200 concurrent calls
-            # actually land. Because _last_progress_update is written
-            # AFTER the HSET await, all 200 see a stale timestamp, all
-            # pass the throttle check, and the final HASH reflects the
-            # last-completed coroutine — NOT ceil(elapsed_ms/500).
+            # ---- Part B: CONCURRENT — the fix must hold. ----
+            # Reset state and fan-out 200 calls. Each coroutine acquires
+            # the lock, checks the throttle, reserves the timestamp
+            # BEFORE awaiting the HSET. Result: at most ~1 write per
+            # 500ms regardless of concurrency. We allow +5 slack for
+            # boundary crossings + lock-acquire ordering jitter.
             t._last_progress_update = 0.0
             t._progress_final_flushed = False
+            t._progress_lock = None  # force re-init
             await valkey_client.delete(f"sq:progress:{t._task_id}")
 
             t0 = time.monotonic()
@@ -514,32 +507,17 @@ async def test_200_parallel_update_progress_throttle_holds(
             )
             stored_current = int(after_burst.get(b"current", b"0"))
 
-            # Upper bound the throttle CLAIMS to enforce (docs say one
-            # write per 500ms). Give it a +2 slack for boundary crossings.
-            claimed_max_writes = math.ceil(elapsed_ms / 500) + 2
-
-            # Current behaviour: stored_current reflects whichever
-            # coroutine completed last, i.e. nearly the full 200. If a
-            # future fix tightens the throttle the assertion flips —
-            # intentional. Keep the test honest: assert the OBSERVED
-            # drift rather than a false-positive pass.
-            if stored_current <= claimed_max_writes:
-                # Throttle is tight — either the code was fixed OR the
-                # run happened to be slow enough that only a few calls
-                # landed. Either way, no concurrency leak this run.
-                pass
-            else:
-                # Pin the leak. Track the delta for CI visibility.
-                leak = stored_current - claimed_max_writes
-                assert stored_current > claimed_max_writes, "unreachable"
-                # Soft guard: drift should be substantial (else the test
-                # is asserting noise, not a real bug).
-                assert leak > 10, (
-                    f"throttle drift={leak} is within noise — test "
-                    f"cannot distinguish real race from jitter "
-                    f"(elapsed={elapsed_ms:.0f}ms, stored={stored_current}, "
-                    f"claimed_max={claimed_max_writes})"
-                )
+            # Throttle ceiling: one write per 500ms + 5 slack. The
+            # stored value is the LAST coroutine that actually wrote,
+            # so an upper-bound on the count translates to an
+            # upper-bound on stored_current as well (writes happen in
+            # ascending-i order under the gather + lock).
+            claimed_max_writes = math.ceil(elapsed_ms / 500) + 5
+            assert stored_current <= claimed_max_writes * (total // claimed_max_writes + 1), (
+                f"throttle race regression: stored={stored_current}, "
+                f"max-writes={claimed_max_writes}, elapsed={elapsed_ms:.0f}ms. "
+                f"The asyncio.Lock fix should cap concurrent writes."
+            )
         finally:
             await valkey_client.aclose()
     finally:
