@@ -89,8 +89,13 @@ asyncio.run(main())
 - **CLI** — `swarmq worker`, `swarmq schedule`, `swarmq dlq *`,
   `swarmq inspect`.
 
-### Operations (Phase 5, partial)
+### Operations (Phase 4 + Phase 5)
 
+- **Multi-process workers** (`--processes N`) — supervisor starts N
+  subprocesses, restarts crashed workers (5/hr limit), reloads on
+  SIGHUP via `os.execvp`.
+- **Autoscaling** (`--autoscale=MIN,MAX`) — queue-depth-driven
+  scale up/down with 30s cooldown and 60s idle window.
 - **Prometheus metrics** (`pip install swarmq[metrics]`) — 7 metrics
   exposed on `/metrics`, drop-in no-op when the dep is absent.
 - **Health endpoints** — `/health` (liveness) + `/ready` (broker +
@@ -127,9 +132,9 @@ list in `src/swarmq/config.py`.
 
 ## What's planned next
 
-Active Phase 4 (operator features) — Priorities, Expiry (`max_age`),
-Burst-Mode (`worker --burst`), ProcessManager, Autoscaling.
-Phase 5 remaining — hot reload, machine-readable agent docs.
+Phase 4 operator features complete (Priorities, Expiry, Burst,
+ProcessManager, Autoscaling). Phase 5 remaining — file-watch hot
+reload (R5.3), machine-readable agent docs (R5.5).
 Workflow primitives (`chain` / `group` / `chord`) and bulk-throughput
 optimisation deferred — see
 `docs/brainstorms/implementation-order-requirements.md`.

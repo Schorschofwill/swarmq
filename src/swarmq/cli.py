@@ -69,6 +69,32 @@ def _positive_float(raw: str) -> float:
     return value
 
 
+def _autoscale_range(raw: str) -> tuple[int, int]:
+    """argparse type-function for ``--autoscale=MIN,MAX``.
+
+    R4.7: accepts two positive integers separated by a comma. MIN
+    must be >= 1 and MAX must be >= MIN. Values outside that grammar
+    raise :class:`argparse.ArgumentTypeError` so the parser surfaces
+    a single clean error line instead of a Python traceback.
+    """
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"--autoscale must be MIN,MAX (got {raw!r})"
+        )
+    try:
+        low, high = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--autoscale values must be integers (got {raw!r})"
+        ) from exc
+    if low < 1 or high < low:
+        raise argparse.ArgumentTypeError(
+            f"--autoscale requires 1 <= MIN <= MAX (got MIN={low} MAX={high})"
+        )
+    return low, high
+
+
 def _queue_list(raw: str) -> list[str]:
     """Comma-separated queue names with whitespace stripped.
 
@@ -207,6 +233,34 @@ def _build_parser() -> argparse.ArgumentParser:
             "TaskInfo(priority='high'|'low') route correctly. Without "
             "this flag, priority-tagged tasks publish to "
             "{queue}.high/.low which are never consumed."
+        ),
+    )
+    worker.add_argument(
+        "--processes",
+        "-p",
+        type=_positive_int,
+        default=1,
+        metavar="N",
+        help=(
+            "R4.6: run N worker subprocesses under a supervisor "
+            "(ProcessManager). Default 1 keeps the legacy in-process "
+            "behaviour. Subprocesses use multiprocessing spawn — fresh "
+            "broker/backend connections per worker. The supervisor "
+            "auto-restarts crashed workers (max 5 restarts per hour), "
+            "and reloads on SIGHUP via os.execvp()."
+        ),
+    )
+    worker.add_argument(
+        "--autoscale",
+        type=_autoscale_range,
+        default=None,
+        metavar="MIN,MAX",
+        help=(
+            "R4.7: enable autoscaling between MIN..MAX workers based "
+            "on queue depth. Scale-up when pending tasks exceed "
+            "50 * active workers; scale-down after 60s of sustained "
+            "idle. 30s cooldown between decisions. Implies "
+            "--processes (the initial count is clamped into [MIN,MAX])."
         ),
     )
     worker.add_argument(
@@ -1227,6 +1281,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "worker":
+        # R4.6/R4.7: when the user opted into multi-process mode,
+        # dispatch to the synchronous supervisor. The supervisor
+        # itself runs no asyncio loop — subprocesses do.
+        use_multi = (
+            getattr(args, "processes", 1) > 1
+            or getattr(args, "autoscale", None) is not None
+        )
+        if use_multi:
+            from swarmq.process_manager import run_multi_process_worker
+            try:
+                return run_multi_process_worker(args)
+            except (
+                ConfigurationError,
+                BrokerConnectionError,
+                BackendConnectionError,
+            ) as exc:
+                sys.stderr.write(f"swarmq worker: {exc}\n")
+                if getattr(args, "log_level", "INFO") == "DEBUG":
+                    traceback.print_exc(file=sys.stderr)
+                return 1
         runner = _run_worker_async(args)
         error_prefix = "swarmq worker"
     elif args.command == "schedule":

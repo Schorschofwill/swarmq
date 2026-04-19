@@ -476,3 +476,168 @@ class ProcessManager:
         except ProcessLookupError:
             # Already gone — bookkeeping will clean up in _check_dead.
             pass
+
+
+# ---------------------------------------------------------------------------
+# Worker subprocess entry + CLI bridge
+# ---------------------------------------------------------------------------
+#
+# These helpers sit in this module (not cli.py) so they are importable
+# from a spawned subprocess without side-effects. A spawn-started
+# process re-imports the module that defines its ``target`` — keeping
+# the entry here avoids re-running argparse during child import.
+
+
+def worker_subprocess_entry(
+    worker_id: int,
+    shutdown_event,
+    module: str,
+    queues: list[str],
+    concurrency: int,
+    log_level: str,
+    log_format: str,
+    burst: bool,
+    burst_idle_timeout: float,
+    priorities: bool,
+    metrics_port: int | None,
+    health_port: int | None,
+) -> None:
+    """Run a single worker inside a spawned subprocess.
+
+    The parent supervisor calls this via ``multiprocessing.Process``.
+    We rebuild the arg namespace from primitives (so everything is
+    pickle-safe across the spawn boundary) and hand it to the
+    existing ``_run_worker_async`` path unchanged.
+
+    A background asyncio task polls ``shutdown_event`` (a
+    ``multiprocessing.Event``) and triggers graceful shutdown by
+    raising SIGTERM on our own PID — this re-uses the Worker's
+    existing signal-driven shutdown flow without coupling to its
+    private API.
+    """
+    import asyncio
+    import argparse as _argparse
+    import logging as _stdlib_logging
+    import os
+    import signal as _signal
+
+    # Re-import here rather than at module top so
+    # ``multiprocessing.Process`` can pickle this module cheaply.
+    from swarmq.cli import _run_worker_async
+
+    # Logging is fresh-configured per subprocess. structlog picks up
+    # its global config on first use, but stdlib logging is
+    # per-process — reset level so child inherits parent's verbosity.
+    _stdlib_logging.basicConfig(level=log_level)
+
+    ns = _argparse.Namespace(
+        module=module,
+        queues=list(queues),
+        concurrency=concurrency,
+        log_level=log_level,
+        log_format=log_format,
+        burst=burst,
+        burst_idle_timeout=burst_idle_timeout,
+        priorities=priorities,
+        metrics_port=metrics_port,
+        health_port=health_port,
+    )
+
+    async def _run() -> None:
+        async def _watch_shutdown() -> None:
+            # Poll the cross-process event; when set, raise SIGTERM
+            # on ourselves so the Worker's R2.5 graceful-shutdown
+            # handler fires naturally.
+            loop = asyncio.get_event_loop()
+            while True:
+                if shutdown_event.is_set():
+                    os.kill(os.getpid(), _signal.SIGTERM)
+                    return
+                await asyncio.sleep(0.3)
+                del loop  # silence ruff
+
+        watcher = asyncio.create_task(_watch_shutdown())
+        try:
+            await _run_worker_async(ns)
+        finally:
+            watcher.cancel()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        return
+
+
+def _make_queue_depth_sampler(
+    broker_url: str, queues: list[str],
+) -> Callable[[], int]:
+    """Build a **synchronous** sampler the ProcessManager can call.
+
+    The supervisor has no asyncio loop; our broker API is async. We
+    open a throwaway connection each call, sum depth across all
+    configured queues, and close. 10s cadence makes this cheap.
+    """
+    import asyncio
+
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+
+    def sample() -> int:
+        async def _run() -> int:
+            broker = RabbitMQBroker(broker_url)
+            await broker.connect()
+            try:
+                total = 0
+                for q in queues:
+                    total += await broker.get_queue_depth(q)
+                return total
+            finally:
+                await broker.close()
+
+        return asyncio.run(_run())
+
+    return sample
+
+
+def run_multi_process_worker(args) -> int:
+    """CLI entry for ``swarmq worker --processes N`` / ``--autoscale``.
+
+    Called from :func:`swarmq.cli.main` when the user opted into the
+    multi-process path. Synchronous (the supervisor runs in the
+    parent process without an event loop).
+    """
+    import os
+
+    broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
+    backend_url = os.environ.get("SWARMQ_BACKEND_URL", "")
+    if not broker_url or not backend_url:
+        # Keep the error message aligned with the single-process path.
+        from swarmq.exceptions import ConfigurationError
+        raise ConfigurationError(
+            "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set",
+        )
+
+    queue_depth_fn: QueueDepthFn | None = None
+    if args.autoscale is not None:
+        queue_depth_fn = _make_queue_depth_sampler(broker_url, list(args.queues))
+
+    worker_args = (
+        args.module,
+        list(args.queues),
+        args.concurrency,
+        args.log_level,
+        args.log_format,
+        args.burst,
+        args.burst_idle_timeout,
+        args.priorities,
+        args.metrics_port,
+        args.health_port,
+    )
+
+    pm = ProcessManager(
+        num_workers=args.processes,
+        worker_entry=worker_subprocess_entry,
+        worker_args=worker_args,
+        autoscale=args.autoscale,
+        queue_depth_fn=queue_depth_fn,
+    )
+    return pm.run()
