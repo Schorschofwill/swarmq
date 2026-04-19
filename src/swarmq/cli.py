@@ -152,6 +152,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default="human",
         help="Log output format (default: human). 'json' for agent/log-aggregator consumption.",
     )
+    worker.add_argument(
+        "--burst",
+        action="store_true",
+        help=(
+            "Burst mode (R4.5): exit cleanly once all configured queues "
+            "have been idle for --burst-idle-timeout seconds. Useful for "
+            "batch / cron-style deployments where a worker should drain "
+            "and exit rather than long-poll forever."
+        ),
+    )
+    worker.add_argument(
+        "--burst-idle-timeout",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help=(
+            "Seconds of queue silence required before --burst exits "
+            "(default: 5.0). Ignored without --burst."
+        ),
+    )
 
     # ---- schedule subcommand group (Phase 3c Unit 12) --------------------
     schedule = subparsers.add_parser(
@@ -487,6 +507,8 @@ async def _run_worker_async(args: argparse.Namespace) -> None:
         concurrency=args.concurrency,
         log_level=args.log_level,
         log_json=(args.log_format == "json"),
+        burst_mode=args.burst,
+        burst_idle_timeout=args.burst_idle_timeout,
     )
     async with app:
         await app.start_worker()

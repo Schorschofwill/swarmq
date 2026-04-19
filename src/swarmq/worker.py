@@ -147,6 +147,11 @@ class Worker:
         # and likely fail with BackendConnectionError, leaving the lock
         # held until TTL.
         self._detached_releases: set[asyncio.Task] = set()
+        # R4.5 Burst-Mode state. Initialised at start() time; the
+        # monitor coroutine reads it every poll. monotonic() so wall-
+        # clock jumps don't trigger a false-idle exit.
+        self._last_message_received_at: float = 0.0
+        self._burst_monitor_task: asyncio.Task | None = None
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -655,9 +660,46 @@ class Worker:
             Signal.WORKER_ONLINE, worker_id=str(id(self))
         )
 
+        # R4.5 Burst-Mode: launch the idle monitor only when burst is
+        # enabled. The monitor sets _shutdown_event after the queues
+        # have been silent for burst_idle_timeout seconds, exiting the
+        # await below and triggering the same graceful path SIGTERM uses.
+        if self._config.burst_mode:
+            self._last_message_received_at = time.monotonic()
+            self._burst_monitor_task = asyncio.create_task(
+                self._burst_monitor()
+            )
+
         # Block until shutdown is requested
         await self._shutdown_event.wait()
         await self._execute_shutdown()
+
+    async def _burst_monitor(self) -> None:
+        """Poll the idle clock; trigger shutdown when burst-timeout elapses.
+
+        Idle window starts at start() and resets on every _on_message
+        delivery. Polls every burst_idle_timeout/4 (max 1s) so a typical
+        burst worker exits within ~25% of timeout once all queues drain.
+        Cancellation-safe: returns silently when the worker is already
+        shutting down.
+        """
+        timeout = self._config.burst_idle_timeout
+        poll_interval = min(1.0, max(0.1, timeout / 4))
+        try:
+            while not self._shutdown_event.is_set():
+                idle_for = time.monotonic() - self._last_message_received_at
+                if idle_for >= timeout and not self._active_tasks:
+                    logger.info(
+                        "burst_idle_exit",
+                        idle_for_s=round(idle_for, 2),
+                        burst_idle_timeout=timeout,
+                    )
+                    self._request_shutdown()
+                    return
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            # Normal during _execute_shutdown teardown.
+            pass
 
     async def stop(self) -> None:
         """Close broker and backend connections."""
@@ -755,6 +797,10 @@ class Worker:
 
     async def _on_message(self, message) -> None:
         """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
+        # R4.5 Burst-Mode: every delivered message resets the idle clock.
+        # _burst_monitor uses this to decide when 'all queues idle' has
+        # held long enough to warrant a clean exit.
+        self._last_message_received_at = time.monotonic()
         task = asyncio.create_task(self._handle_message(message))
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)

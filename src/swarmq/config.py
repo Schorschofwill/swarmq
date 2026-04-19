@@ -40,6 +40,13 @@ class SwarmQConfig:
     # a large safety margin before the marker expires and a
     # redelivery of a still-in-flight message could double-run.
     scheduler_inflight_ttl: float = 300.0
+    # R4.5 Burst-Mode: when True, the worker exits cleanly once all
+    # configured queues have been idle for `burst_idle_timeout` seconds
+    # without delivering a single message. Used for batch/cron-style
+    # deployments where the worker is meant to drain a queue and exit
+    # rather than long-poll forever.
+    burst_mode: bool = False
+    burst_idle_timeout: float = 5.0
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
