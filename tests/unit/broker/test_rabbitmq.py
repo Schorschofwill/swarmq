@@ -96,6 +96,72 @@ class TestRabbitMQBrokerDeclareQueue:
             await broker.declare_queue("tasks")
 
 
+class TestRabbitMQBrokerGetQueueDepth:
+    """R4.7 Autoscaling — passive-declare for queue depth."""
+
+    async def test_sums_main_and_delay_counts(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+
+        # Two throwaway channels, one per queue name.
+        chan_main = AsyncMock(is_closed=False)
+        chan_delay = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(side_effect=[chan_main, chan_delay])
+
+        q_main = AsyncMock()
+        q_main.declaration_result = type("R", (), {"message_count": 5})()
+        q_delay = AsyncMock()
+        q_delay.declaration_result = type("R", (), {"message_count": 3})()
+        chan_main.declare_queue = AsyncMock(return_value=q_main)
+        chan_delay.declare_queue = AsyncMock(return_value=q_delay)
+
+        depth = await broker.get_queue_depth("tasks")
+        assert depth == 8
+        chan_main.declare_queue.assert_awaited_once_with("tasks", passive=True)
+        chan_delay.declare_queue.assert_awaited_once_with(
+            "tasks.DQ", passive=True,
+        )
+        chan_main.close.assert_awaited()
+        chan_delay.close.assert_awaited()
+
+    async def test_missing_queue_returns_zero(self):
+        import aio_pika.exceptions
+
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        chan_main = AsyncMock(is_closed=True)
+        chan_delay = AsyncMock(is_closed=True)
+        conn.channel = AsyncMock(side_effect=[chan_main, chan_delay])
+        chan_main.declare_queue = AsyncMock(
+            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
+        )
+        chan_delay.declare_queue = AsyncMock(
+            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
+        )
+
+        depth = await broker.get_queue_depth("tasks")
+        assert depth == 0
+
+    async def test_raises_when_not_connected(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._connection = None
+        with pytest.raises(BrokerConnectionError, match="not connected"):
+            await broker.get_queue_depth("tasks")
+
+    async def test_wraps_transport_errors(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        chan = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(return_value=chan)
+        chan.declare_queue = AsyncMock(side_effect=ConnectionError("gone"))
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.get_queue_depth("tasks")
+
+
 class TestRabbitMQBrokerPublish:
     async def test_publish_sends_message_with_persistent_delivery(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")

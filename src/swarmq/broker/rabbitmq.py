@@ -9,6 +9,7 @@ from aio_pika.exceptions import (
     AMQPChannelError,
     ChannelClosed,
     ChannelInvalidStateError,
+    ChannelNotFoundEntity,
     ConnectionClosed,
 )
 
@@ -640,3 +641,47 @@ class RabbitMQBroker:
             raise
         except Exception as exc:  # noqa: BLE001
             raise BrokerConnectionError(str(exc)) from exc
+
+    async def get_queue_depth(self, queue_name: str) -> int:
+        """Return the total pending-message count for ``queue_name``
+        and its delay companion ``{queue_name}.DQ`` (R4.7 Autoscaling).
+
+        Uses AMQP ``declare(passive=True)`` which returns the current
+        ``message_count`` without modifying the queue — safe to poll
+        at a 10s cadence. If a queue does not exist yet (worker not
+        started, fresh deployment) the broker raises
+        :class:`ChannelNotFoundEntity` **and closes the channel**
+        (AMQP semantics); we treat that as 0 depth and use a
+        short-lived dedicated channel per call so a missing queue
+        does not poison the publish channel.
+
+        DLQ depth is deliberately excluded: XQ backlog is not
+        work-to-do, it's work-that-failed and should not drive
+        scale-up.
+        """
+        if self._connection is None or self._connection.is_closed:
+            raise BrokerConnectionError("broker is not connected")
+        total = 0
+        for name in (queue_name, f"{queue_name}.DQ"):
+            # Throwaway channel per queue — a failed passive-declare
+            # closes the channel, so we cannot share one across both
+            # lookups without re-opening in between.
+            channel = None
+            try:
+                channel = await self._connection.channel()
+                q = await channel.declare_queue(name, passive=True)
+                result = getattr(q, "declaration_result", None)
+                if result is not None:
+                    total += int(getattr(result, "message_count", 0))
+            except ChannelNotFoundEntity:
+                # Queue does not exist yet — counts as 0 depth.
+                continue
+            except Exception as exc:  # noqa: BLE001
+                raise BrokerConnectionError(str(exc)) from exc
+            finally:
+                if channel is not None and not channel.is_closed:
+                    try:
+                        await channel.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        return total
