@@ -41,7 +41,9 @@ class ProgressInfo:
     eta_seconds: int | None = None
 
     @classmethod
-    def from_hash(cls, raw: dict) -> "ProgressInfo | None":
+    def from_hash(
+        cls, raw: "dict[bytes, bytes] | dict[str, str]",
+    ) -> "ProgressInfo | None":
         """Decode a Valkey HGETALL response into a ProgressInfo.
 
         Accepts both ``dict[bytes, bytes]`` (default valkey-py
@@ -58,14 +60,18 @@ class ProgressInfo:
         if not raw:
             return None
 
+        # Normalise the dual-shape dict into a single str->str view.
+        # Bytes-keyed entries (valkey-py default) and str-keyed entries
+        # (test fixtures) are both accepted; both are decoded once here
+        # so the rest of the method deals only with strs.
+        normalised: dict[str, str] = {}
+        for k, v in raw.items():
+            k_str = k.decode("utf-8") if isinstance(k, bytes) else k
+            v_str = v.decode("utf-8") if isinstance(v, bytes) else v
+            normalised[k_str] = v_str
+
         def _decode(key: str) -> str | None:
-            # Valkey-py hashes return bytes keys/values; hand-built
-            # test fixtures use strs. Accept both.
-            for k in (key, key.encode("utf-8")):
-                if k in raw:
-                    v = raw[k]
-                    return v.decode("utf-8") if isinstance(v, bytes) else v
-            return None
+            return normalised.get(key)
 
         current_raw = _decode("current")
         total_raw = _decode("total")
@@ -76,8 +82,8 @@ class ProgressInfo:
             )
 
         eta_raw = _decode("eta_seconds")
-        eta_seconds = (
-            int(eta_raw) if eta_raw not in (None, "") else None
+        eta_seconds: int | None = (
+            int(eta_raw) if eta_raw is not None and eta_raw != "" else None
         )
 
         return cls(

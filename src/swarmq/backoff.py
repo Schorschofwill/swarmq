@@ -25,10 +25,10 @@ def calculate_backoff(
 
     if strategy == "exponential":
         jitter = random.uniform(1.0, 2.0)
-        return min(base_delay * (2 ** attempt) * jitter, max_delay)
+        return float(min(base_delay * (2 ** attempt) * jitter, max_delay))
 
     if strategy == "linear":
         jitter = random.uniform(1.0, 2.0)
-        return min(base_delay * (attempt + 1) * jitter, max_delay)
+        return float(min(base_delay * (attempt + 1) * jitter, max_delay))
 
     raise ValueError(f"Unknown backoff strategy: {strategy!r}")
