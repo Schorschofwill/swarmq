@@ -367,25 +367,18 @@ class TestWorkerCrash:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
-    @pytest.mark.skip(
-        reason=(
-            "Chaos limitation: quorum queues in SwarmQ's default broker "
-            "config have no x-delivery-limit, so a deterministically "
-            "SIGSEGV-ing task is redelivered indefinitely and never "
-            "lands in the DLQ. Turning this into a passing test would "
-            "require adding x-delivery-limit to the queue declaration "
-            "(out of scope for U2.1) or a worker-side 'give up after "
-            "N hard crashes' heuristic (out of scope — none exists). "
-            "See docs/plans/2026-04-17-007-feat-e2e-hardening-plan.md "
-            "U2.1 for the documented failure mode."
-        )
-    )
     async def test_segv_panic_redelivers_then_dlqs_after_max_retries(
         self, chaos_stack: ChaosStack, _cleanup_tasks
     ) -> None:
         """SIGSEGV via ``ctypes.string_at(0)`` kills the worker; each
-        redelivery dies again. Without an x-delivery-limit the message
-        loops forever — documented chaos finding, hence skipped."""
+        redelivery dies again. The quorum-queue x-delivery-limit=20
+        (added post-U2.1) provides the terminal DLQ path — the message
+        is redelivered up to 20 times then routed to {queue}.XQ by the
+        broker.
+
+        Uses a 90s deadline because each redelivery spawns a fresh
+        subprocess worker; the 20-delivery loop takes ~30-60s on the
+        chaos stack."""
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
 
@@ -400,15 +393,18 @@ class TestWorkerCrash:
             async with app:
                 await app.schedule("chaos_segv", queue=queue)
 
-                # We'd expect the task to land in DLQ after a few
-                # redeliveries. Without delivery-limit, this loop never
-                # terminates — test is @pytest.mark.skip above.
-                deadline = time.monotonic() + 30.0
+                # x-delivery-limit=20 provides the terminal DLQ path.
+                # Each redelivery respawns a subprocess worker that
+                # immediately SIGSEGVs — ~30-60s total on chaos stack.
+                deadline = time.monotonic() + 90.0
                 while time.monotonic() < deadline:
                     if await _dlq_count(chaos_stack, queue) >= 1:
                         break
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
 
-                assert await _dlq_count(chaos_stack, queue) == 1
+                assert await _dlq_count(chaos_stack, queue) >= 1, (
+                    "x-delivery-limit=20 did not route SIGSEGV loop "
+                    "to DLQ within 90s"
+                )
         finally:
             _kill_subprocess(proc)

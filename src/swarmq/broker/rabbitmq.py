@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from typing import Any
 
 import aio_pika
 from aio_pika.exceptions import (
@@ -190,14 +191,23 @@ class RabbitMQBroker:
     async def declare_queue(self, queue_name: str) -> None:
         pub = await self._ensure_publish_channel()
         # Main queue — DLX points to dead-letter queue
+        main_args: dict[str, Any] = {
+            "x-queue-type": self._queue_type,
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": f"{queue_name}.XQ",
+        }
+        # Quorum-queue safety net (ce-review / U2.1 skip): without
+        # x-delivery-limit a deterministically-crashing task
+        # (SIGSEGV/OOM) is redelivered forever by the broker, never
+        # reaching max_retries. 20 covers ~3-4 task-level retries per
+        # delivery plus generous broker-hiccup headroom while still
+        # providing a terminal DLQ path.
+        if self._queue_type == "quorum":
+            main_args["x-delivery-limit"] = 20
         await pub.declare_queue(
             queue_name,
             durable=True,
-            arguments={
-                "x-queue-type": self._queue_type,
-                "x-dead-letter-exchange": "",
-                "x-dead-letter-routing-key": f"{queue_name}.XQ",
-            },
+            arguments=main_args,
         )
         # Delay queue — DLX points back to main queue
         await pub.declare_queue(
