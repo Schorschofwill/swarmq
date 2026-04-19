@@ -39,6 +39,8 @@ from typing import Callable
 
 import structlog
 
+from swarmq.logging import sanitize_url
+
 logger = structlog.get_logger()
 
 # Signals the parent captures. Blocked before spawning children so
@@ -66,13 +68,20 @@ def _unblock_signals() -> None:
 
 @dataclass
 class WorkerInfo:
-    """Per-worker bookkeeping: process handle, logical id, restart state."""
+    """Per-worker bookkeeping: process handle, logical id, restart state.
+
+    ``restart_timestamps`` carries the rolling-window history across
+    successive generations of a crash-then-restart slot. Each entry
+    is ``time.monotonic()`` at the moment a replacement was spawned.
+    Entries older than ``ProcessManager.RESTART_WINDOW`` are pruned
+    in :meth:`ProcessManager._maybe_restart` so the count reflects a
+    true sliding window, not a since-last-event gap.
+    """
 
     process: multiprocessing.Process
     worker_id: int
-    restart_count: int = 0
-    last_restart: float = field(default_factory=time.monotonic)
     expected_shutdown: bool = False  # True when Autoscaler scaled down
+    restart_timestamps: list[float] = field(default_factory=list)
 
 
 # Queue-depth sampling signature: returns the total pending count
@@ -378,31 +387,39 @@ class ProcessManager:
             self._maybe_restart(info)
 
     def _maybe_restart(self, old: WorkerInfo) -> None:
-        """Restart ``old`` respecting the rolling-window rate limit."""
-        now = time.monotonic()
-        if now - old.last_restart > self.RESTART_WINDOW:
-            restart_count = 0
-        else:
-            restart_count = old.restart_count + 1
+        """Restart ``old`` respecting the rolling-window rate limit.
 
-        if restart_count >= self.MAX_RESTARTS:
+        ce-review C-01 / REL-02: true sliding window. Prunes
+        ``restart_timestamps`` to entries inside
+        ``[now - RESTART_WINDOW, now]`` and blocks when the count
+        hits ``MAX_RESTARTS`` — regardless of how the events are
+        distributed within the window. The previous single-gap
+        check allowed a full new series of 5 restarts after any
+        quiet period of ``RESTART_WINDOW`` seconds.
+        """
+        now = time.monotonic()
+        cutoff = now - self.RESTART_WINDOW
+        timestamps = [t for t in old.restart_timestamps if t >= cutoff]
+
+        if len(timestamps) >= self.MAX_RESTARTS:
             logger.error(
                 "worker_restart_limit_exceeded",
                 worker_id=old.worker_id,
                 limit=self.MAX_RESTARTS,
                 window_s=self.RESTART_WINDOW,
+                recent_restarts=len(timestamps),
             )
             return
 
+        timestamps.append(now)
         logger.info(
             "worker_restarting",
             worker_id=old.worker_id,
-            attempt=restart_count + 1,
+            attempt=len(timestamps),
             limit=self.MAX_RESTARTS,
         )
         new = self._start_worker()
-        new.restart_count = restart_count
-        new.last_restart = now
+        new.restart_timestamps = timestamps
 
     # ------------------------------------------------------------------
     # R4.7 Autoscaling
@@ -415,21 +432,34 @@ class ProcessManager:
         caller adapts async broker APIs into a sync wrapper (see
         :func:`make_queue_depth_sampler`).
         """
-        assert self._autoscale is not None
-        assert self._queue_depth_fn is not None
+        # ce-review M-7: use explicit checks instead of asserts so
+        # the invariant survives python -O deployments. Constructor
+        # already enforces these, but a subtle refactor could later
+        # violate them.
+        if self._autoscale is None or self._queue_depth_fn is None:
+            return
 
         now = time.monotonic()
         if now - self._last_autoscale_sample < self.AUTOSCALE_SAMPLE_INTERVAL:
             return
-        self._last_autoscale_sample = now
 
+        # ce-review C-02: check cooldown BEFORE advancing the sample
+        # timestamp. Otherwise a cooldown early-return consumes the
+        # sample slot, extending the effective dead-time by up to
+        # AUTOSCALE_SAMPLE_INTERVAL beyond the documented cooldown.
         if now - self._last_scale_decision < self.SCALE_COOLDOWN_S:
             return
+
+        self._last_autoscale_sample = now
 
         try:
             depth = self._queue_depth_fn()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("autoscale_sample_failed", error=str(exc))
+            # ce-review SEC-03: sanitize_url strips embedded AMQP
+            # credentials before the exception text reaches structlog.
+            logger.warning(
+                "autoscale_sample_failed", error=sanitize_url(str(exc)),
+            )
             return
 
         min_w, max_w = self._autoscale
@@ -548,13 +578,11 @@ def worker_subprocess_entry(
             # Poll the cross-process event; when set, raise SIGTERM
             # on ourselves so the Worker's R2.5 graceful-shutdown
             # handler fires naturally.
-            loop = asyncio.get_event_loop()
             while True:
                 if shutdown_event.is_set():
                     os.kill(os.getpid(), _signal.SIGTERM)
                     return
                 await asyncio.sleep(0.3)
-                del loop  # silence ruff
 
         watcher = asyncio.create_task(_watch_shutdown())
         try:

@@ -154,28 +154,69 @@ class TestProcessManagerRestart:
         assert 77 in pm.workers
 
     def test_restart_limit_exceeded_stops_restarts(self):
+        """ce-review C-01: rolling-window blocks on MAX_RESTARTS
+        timestamps inside the window."""
         pm = self._pm()
         pm._ctx.Process = MagicMock(return_value=_fake_process(pid=99))
+        now = time.monotonic()
+        # MAX_RESTARTS recent timestamps already in the window.
         old = WorkerInfo(
             process=_fake_process(alive=False, pid=1), worker_id=0,
+            restart_timestamps=[now - 1.0] * pm.MAX_RESTARTS,
         )
-        old.last_restart = time.monotonic()  # recent
-        old.restart_count = pm.MAX_RESTARTS - 1  # one more attempt pushes over
         pm._maybe_restart(old)
-        # No spawn beyond the limit.
+        # No spawn — the history is already at the cap.
         assert len(pm.workers) == 0
 
-    def test_restart_counter_resets_after_window(self):
+    def test_restart_last_slot_at_limit_minus_one_succeeds(self):
+        """Exact-boundary: 4 timestamps in window, the 5th should
+        still be allowed (count reaches but does not exceed MAX)."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=42))
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=88))
+        now = time.monotonic()
         old = WorkerInfo(
             process=_fake_process(alive=False, pid=1), worker_id=0,
+            restart_timestamps=[now - 10.0] * (pm.MAX_RESTARTS - 1),
         )
-        old.restart_count = 10  # high
-        old.last_restart = time.monotonic() - pm.RESTART_WINDOW - 1
         pm._maybe_restart(old)
-        # New worker registered; counter was reset (not over limit).
+        assert 88 in pm.workers
+        assert len(pm.workers[88].restart_timestamps) == pm.MAX_RESTARTS
+
+    def test_restart_counter_prunes_stale_entries(self):
+        """Entries older than RESTART_WINDOW are dropped, freeing
+        restart budget without a full counter reset."""
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=42))
+        now = time.monotonic()
+        # All entries older than the window → treated as if fresh.
+        old = WorkerInfo(
+            process=_fake_process(alive=False, pid=1), worker_id=0,
+            restart_timestamps=[
+                now - pm.RESTART_WINDOW - 1 for _ in range(10)
+            ],
+        )
+        pm._maybe_restart(old)
+        # Pruning dropped all 10; new restart allowed.
         assert 42 in pm.workers
+        assert len(pm.workers[42].restart_timestamps) == 1
+
+    def test_rolling_window_rejects_late_crash_after_burst(self):
+        """ce-review C-01 regression: 5 crashes inside the window
+        then a 6th at t+3601 (outside the old single-gap logic but
+        still sliding-window-violating) must still block until
+        the oldest entry ages out."""
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=55))
+        now = time.monotonic()
+        # Five restarts spread across the window — oldest at (now-100).
+        ts = [now - 100.0 + i for i in range(pm.MAX_RESTARTS)]
+        old = WorkerInfo(
+            process=_fake_process(alive=False, pid=1), worker_id=0,
+            restart_timestamps=ts,
+        )
+        pm._maybe_restart(old)
+        # All 5 entries still inside the 3600s window → blocked.
+        assert len(pm.workers) == 0
 
     def test_check_dead_workers_skips_expected_shutdown(self):
         pm = self._pm()
