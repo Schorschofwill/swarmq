@@ -1,16 +1,13 @@
 # SwarmQ
 
-Python task queue on RabbitMQ + Valkey, built async-first.
+Async-first Python task queue on RabbitMQ + Valkey.
 
-> **Status:** early development — Phase 3 of 5. The core round-trip,
-> retry/DLQ, middleware, signals, and global rate limiting are in.
-> Locking, deduplication, cancellation, scheduler, and full CLI are
-> still on the roadmap. Not production-tested by anyone but the author.
+> **Status:** Phase 3 + E2E hardening complete; Phase 5 in progress
+> (metrics + health endpoints landed, hot-reload + agent-docs to come).
+> 1280+ tests across unit / integration / e2e / chaos / property / fuzz
+> / stress suites. Not yet production-tested by anyone but the author.
 
 ## Quick Start
-
-Bring up the broker and backend, then run a worker against your tasks
-in one command — no Python entrypoint required.
 
 ```bash
 # 1. Start RabbitMQ + Valkey (compose file lives in this repo)
@@ -18,7 +15,7 @@ docker compose up -d
 
 # 2. Define a task
 cat > myapp/tasks.py <<'EOF'
-from swarmq.task import Task, TaskInfo
+from swarmq import Task, TaskInfo
 
 class SendEmail(Task):
     task_info = TaskInfo(name="send_email", queues=["default"])
@@ -36,42 +33,84 @@ export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
 swarmq worker --module myapp.tasks --queues default --concurrency 10
 ```
 
-The worker handles SIGTERM/SIGINT for graceful shutdown. To consume
-multiple queues: `--queues default,emails,priority`. For
-agent/log-aggregator output: `--log-format json`.
+The worker handles SIGTERM / SIGINT for graceful shutdown. Multiple
+queues: `--queues default,emails,priority`. Structured logs:
+`--log-format json`.
 
-## What works today
+## Hello World — Client side
 
-- RabbitMQ broker + Valkey result backend
-- At-least-once delivery with retries, exponential/linear/fixed backoff,
-  DLQ routing
-- Middleware (6 hooks: pre/post enqueue, pre/post execute, on_error,
-  on_retry) with stack semantics
-- Signal/event system (14 lifecycle signals + `@on_signal` decorator)
-- Global rate limiting via Lua + sliding-window counter
-  (`TaskInfo(rate_limit="100/m")`)
-- Soft and hard timeouts, semaphore-bounded concurrency
-- Pub/Sub-based result notification (no result-polling latency)
-- Graceful shutdown with task drain
-- 476 tests (unit + integration + e2e) on CI-equivalent local runs
+```python
+import asyncio
+from swarmq import SwarmQ, RabbitMQBroker, ValkeyBackend
+import myapp.tasks  # noqa — auto-registers SendEmail
 
-## What's planned next
+async def main():
+    app = SwarmQ(
+        RabbitMQBroker("amqp://guest:guest@localhost:5672/"),
+        ValkeyBackend("valkey://localhost:6379/0"),
+        queues=["default"],
+    )
+    async with app:
+        task_id = await app.schedule(
+            "send_email", to="op@example.com", subject="hi",
+        )
+        result = await app.get_result(task_id, timeout=10)
+        print(result)  # sent to op@example.com
 
-- Phase 3b.2: Task locking (mutex + semaphore) and unique tasks (deduplication)
-- Phase 3b.3: Task cancellation
-- Phase 3c rest: Scheduler, progress tracking, additional CLI subcommands
-  (`dlq`, `schedule`)
-- Phase 4: Workflow primitives (chain / group / chord), bulk enqueue,
-  task expiry
-- Phase 5: Prometheus metrics, health endpoints, autoscaling
+asyncio.run(main())
+```
 
-See `docs/brainstorms/implementation-order-requirements.md` for the
-full roadmap and `docs/plans/` for per-phase plans.
+## What's in the box
+
+### Core (Phase 1+2+3)
+
+- **At-least-once delivery** with Quorum-Queue durability and
+  `x-delivery-limit=20` against pathological redelivery loops.
+- **Retries** with exponential / linear / fixed backoff +
+  configurable `max_retries`, `NoRetry`, `Retry(delay=...)`.
+- **DLQ** routing for retry-exhaustion + `swarmq dlq list/inspect/
+  retry/purge` CLI for operator recovery.
+- **Middleware** stack with 6 hooks (pre/post enqueue, pre/post
+  execute, on_error, on_retry).
+- **Signals** — 14 lifecycle events with `@app.on_signal(...)`
+  decorator.
+- **Rate limiting** — Cloudflare 2-period sliding window via Lua
+  (`TaskInfo(rate_limit="100/m")`).
+- **Locking** — mutex + semaphore via Valkey atomic primitives, with
+  format-string keys (`lock="user:{user_id}"`).
+- **Unique tasks** — dedup by canonical-encoded args, with
+  `unique_until="start"` or `"completion"`.
+- **Cancellation** — pre-pickup + during-execution via
+  `Client.cancel(task_id)`, dedicated `TASK_CANCELLED` signal.
+- **Scheduler** — cron, delayed (`eta=...`), recurring with
+  leader-election failover.
+- **Progress tracking** — `Task.update_progress(current, total, msg)`
+  + `Client.get_progress` / `Client.watch_progress` AsyncIterator.
+- **CLI** — `swarmq worker`, `swarmq schedule`, `swarmq dlq *`,
+  `swarmq inspect`.
+
+### Operations (Phase 5, partial)
+
+- **Prometheus metrics** (`pip install swarmq[metrics]`) — 7 metrics
+  exposed on `/metrics`, drop-in no-op when the dep is absent.
+- **Health endpoints** — `/health` (liveness) + `/ready` (broker +
+  backend reachable, structured 503 body).
+
+### Reliability hardening (E2E + Chaos suites)
+
+- **Channel-recreate** survives RabbitMQ broker restarts mid-publish.
+- **Pub/Sub resubscribe** survives Valkey restarts mid-stream.
+- **Toxiproxy chaos suite** verifies behavior under network latency,
+  bandwidth limits, slicer (packet loss), full disconnect, and
+  partial partitions.
+- **Property-based tests** on dedup-hash, serialization, backoff,
+  rate-limiter; **fuzz-tests** on message parsers and external
+  publishers.
 
 ## Configuration
 
-Worker behaviour is configured via environment variables and CLI flags
-(CLI flag wins where both are set).
+Worker behaviour is configured via env vars and CLI flags (CLI flag
+wins where both are set).
 
 | Variable / flag | Default | Purpose |
 |---|---|---|
@@ -82,55 +121,77 @@ Worker behaviour is configured via environment variables and CLI flags
 | `--log-level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `--log-format` | `human` | `human` or `json` |
 
-`SWARMQ_*` env vars also exist for `RESULT_TTL`, `QUEUES`,
-`CONCURRENCY`, `LOG_LEVEL`, `LOG_JSON` — see `src/swarmq/config.py`.
+Other env vars: `SWARMQ_RESULT_TTL`, `SWARMQ_QUEUES`,
+`SWARMQ_CONCURRENCY`, `SWARMQ_LOG_LEVEL`, `SWARMQ_LOG_JSON`. Full
+list in `src/swarmq/config.py`.
+
+## What's planned next
+
+Active Phase 4 (operator features) — Priorities, Expiry (`max_age`),
+Burst-Mode (`worker --burst`), ProcessManager, Autoscaling.
+Phase 5 remaining — hot reload, machine-readable agent docs.
+Workflow primitives (`chain` / `group` / `chord`) and bulk-throughput
+optimisation deferred — see
+`docs/brainstorms/implementation-order-requirements.md`.
 
 ## Project layout
 
 ```
-src/swarmq/        library code
-  app.py           SwarmQ application — broker/backend wiring + start_worker
-  worker.py        Consumer loop with middleware, signals, rate-limit, retry
-  client.py        Schedule API and result retrieval
-  task.py          Task base class + TaskInfo
-  middleware.py    Middleware base + chain
-  signals.py       Signal enum + dispatcher
-  limits.py        RateLimiter + parser
-  lua/             Lua scripts loaded into Valkey
-  broker/          RabbitMQ broker
-  backend/         Valkey backend
-tests/             unit + integration + e2e
-benchmarks/        bench.py with --repeat for stable median measurements
+src/swarmq/
+  app.py             SwarmQ application
+  worker.py          Consumer loop
+  client.py          Schedule API + result retrieval
+  task.py            Task base + TaskInfo
+  middleware.py      Middleware base + chain
+  signals.py         Signal enum + dispatcher
+  limits.py          RateLimiter + parser
+  locking.py         Mutex / semaphore
+  cancellation.py    Cancel-flag protocol
+  progress.py        ProgressInfo (R3.7)
+  scheduler.py       Embedded cron + delayed scheduler
+  metrics.py         Prometheus exporter (R5.1)
+  health.py          /health + /ready (R5.2)
+  cli.py             argparse entrypoint
+  lua/               Lua scripts loaded into Valkey
+  broker/rabbitmq.py
+  backend/valkey.py
+tests/
+  unit/              ~895 fast, no infra
+  integration/       broker + backend, real Docker
+  e2e/               full client + worker round-trip
+  chaos/             toxiproxy + container restarts (opt-in, nightly)
+  property/          hypothesis property-based (opt-in)
+  fuzz/              byte + JSON fuzz (opt-in)
+  stress/            high-parallelism (opt-in)
+  soak/              1h leak detection (opt-in, weekly)
 docs/
-  brainstorms/     requirements documents (per feature)
-  plans/           implementation plans (per feature)
-  solutions/       postmortem-style learnings
-  recherche-*.md   external library / pattern research
+  brainstorms/       requirements (per feature)
+  plans/             implementation plans (per feature)
+  solutions/         postmortem-style learnings
+  testing/           test strategy + feature-parity matrix
 ```
 
 ## Development
 
 ```bash
-# Run all tests (476 currently)
-uv run pytest tests/
+# Fast dev loop — unit only
+uv run --extra test pytest tests/unit -q
 
-# Run benchmarks against the docker-compose stack
-docker compose up -d
-cd benchmarks && uv run --with-requirements requirements.txt python -u bench.py --repeat 5
+# E2E suite (needs docker compose up -d)
+SWARMQ_TEST_RABBITMQ_PORT=5673 SWARMQ_TEST_VALKEY_PORT=6380 \
+  uv run --extra test pytest tests/e2e -q
+
+# Chaos suite (starts its own toxiproxy stack per test class)
+uv run --extra test pytest tests/chaos -q -m chaos
+
+# Property + fuzz
+uv run --extra test pytest tests/property tests/fuzz -q -m "property or fuzz"
 ```
 
-For hacking on the library, see `AGENTS.md` for the coding conventions
-and TDD discipline expected.
+Three-tier CI in `.github/workflows/`: pre-merge (≤5 min, every PR),
+nightly (chaos + stress + fuzz), weekly (mutation + 1h soak).
 
-## Honest comparison
-
-How does SwarmQ stack up against Celery, Dramatiq, TaskIQ, arq, RQ,
-Huey? A side-by-side table is on the roadmap but deferred until the
-CLI exists (you are reading the README that closes that milestone) so
-that "stranger can run a worker without writing bootstrap code"
-becomes true. The comparison will live at `docs/comparison.html` once
-written; in the meantime, see `docs/evaluation-task-queues.md` for the
-research that informed SwarmQ's design.
+For coding conventions and TDD discipline see `AGENTS.md`.
 
 ## License
 
