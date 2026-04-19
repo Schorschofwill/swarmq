@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -58,7 +59,7 @@ except ImportError:  # pragma: no cover — optional
     _HAVE_PROMETHEUS = False
 
 if TYPE_CHECKING:
-    from aiohttp import web
+    from swarmq.signals import SignalDispatcher
 
 logger = logging.getLogger("swarmq.metrics")
 
@@ -196,9 +197,18 @@ class MetricsServer:
         self._server: asyncio.base_events.Server | None = None
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(
-            self._handle_client, host=self._host, port=self._port,
-        )
+        try:
+            self._server = await asyncio.start_server(
+                self._handle_client, host=self._host, port=self._port,
+            )
+        except OSError as exc:
+            # Port conflict / unreachable host. Surface as RuntimeError
+            # with operational context instead of propagating the raw
+            # OSError into worker.start() (ce-review REL-01).
+            raise RuntimeError(
+                f"metrics_server bind failed on {self._host}:{self._port}: "
+                f"{exc.strerror or exc}"
+            ) from exc
         logger.info(
             "metrics_server_started",
             extra={"host": self._host, "port": self._port},
@@ -218,23 +228,39 @@ class MetricsServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            # Read the request line + headers; we only need the path.
-            request_line = await asyncio.wait_for(
-                reader.readline(), timeout=5.0,
-            )
-            if not request_line:
-                writer.close()
-                return
+            # Request-line + header drain both bounded by a single
+            # deadline — prevents slow-header DoS (ce-review SEC-002).
             try:
-                method, path, _ = request_line.decode("ascii").split(" ", 2)
-            except ValueError:
-                await self._write_response(writer, 400, b"bad request\n")
+                async with asyncio.timeout(5.0):
+                    request_line = await reader.readline()
+                    if not request_line:
+                        writer.close()
+                        return
+                    # ASCII-only request line; binary junk (TLS probes
+                    # on a plaintext port, random scanners) returns
+                    # 400 cleanly instead of flooding logs with
+                    # UnicodeDecodeError stack traces (SEC-003).
+                    try:
+                        method, path, _ = (
+                            request_line.decode("ascii").split(" ", 2)
+                        )
+                    except (ValueError, UnicodeDecodeError):
+                        await self._write_response(writer, 400, b"bad request\n")
+                        return
+                    # Drain headers (bounded by the outer timeout AND
+                    # a safety line-count cap).
+                    for _ in range(200):
+                        line = await reader.readline()
+                        if line in (b"\r\n", b"\n", b""):
+                            break
+                    else:
+                        await self._write_response(
+                            writer, 400, b"headers too large\n",
+                        )
+                        return
+            except TimeoutError:
+                await self._write_response(writer, 408, b"request timeout\n")
                 return
-            # Drain headers.
-            while True:
-                line = await reader.readline()
-                if line in (b"\r\n", b"\n", b""):
-                    break
 
             if method != "GET":
                 await self._write_response(writer, 405, b"method not allowed\n")
@@ -266,7 +292,8 @@ class MetricsServer:
         content_type: str = "text/plain; charset=utf-8",
     ) -> None:
         reason = {200: "OK", 400: "Bad Request", 404: "Not Found",
-                  405: "Method Not Allowed"}.get(status, "Unknown")
+                  405: "Method Not Allowed", 408: "Request Timeout",
+                  503: "Service Unavailable"}.get(status, "Unknown")
         writer.write(
             f"HTTP/1.1 {status} {reason}\r\n"
             f"Content-Type: {content_type}\r\n"
@@ -279,7 +306,7 @@ class MetricsServer:
 @asynccontextmanager
 async def serve_metrics(
     metrics: Metrics, host: str = "0.0.0.0", port: int = 9090,
-):
+) -> AsyncIterator["MetricsServer"]:
     """Async context manager: start MetricsServer on enter, stop on exit."""
     server = MetricsServer(metrics, host=host, port=port)
     await server.start()
@@ -289,7 +316,9 @@ async def serve_metrics(
         await server.stop()
 
 
-def install_signal_collectors(dispatcher: Any, metrics: Metrics) -> None:
+def install_signal_collectors(
+    dispatcher: "SignalDispatcher", metrics: Metrics,
+) -> None:
     """Register Metrics-updater handlers on the given SignalDispatcher.
 
     Called once by the worker during start-up. Each registered handler
@@ -359,4 +388,15 @@ def install_signal_collectors(dispatcher: Any, metrics: Metrics) -> None:
             task_name=kw.get("task_name", ""),
             queue=kw.get("queue", ""),
             outcome="duplicate",
+        ).inc()
+
+    @dispatcher.on_signal(Signal.TASK_EXPIRED)
+    async def _task_expired(**kw: Any) -> None:
+        # R4.4 Task Expiry — outcome="expired" label documented in the
+        # module docstring. Without this handler the counter would
+        # never increment (ce-review T-06/TG-001).
+        metrics.tasks_total.labels(
+            task_name=kw.get("task_name", ""),
+            queue=kw.get("queue", ""),
+            outcome="expired",
         ).inc()

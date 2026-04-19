@@ -2958,7 +2958,11 @@ class TestWorkerPreStartCancelCheck:
         await worker._handle_message(msg)
 
         assert len(captured) == 1
-        assert captured[0] == {"task_id": "abc-123", "task_name": "add"}
+        # ce-review COR-M-01 / PR fix: queue label now included so
+        # metrics collectors can attribute cancellations per queue.
+        assert captured[0] == {
+            "task_id": "abc-123", "task_name": "add", "queue": "default",
+        }
 
     async def test_cancel_flag_set_does_not_acquire_semaphore(
         self, worker, broker, backend, config,

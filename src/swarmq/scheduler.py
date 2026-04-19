@@ -714,7 +714,14 @@ class SchedulerLoop:
 
         # --- R3.5 Unit 9: pre-publish SETNX for static crons, header
         # propagation for client-originated deferred (cli_unique) ---
-        headers: dict[str, Any] = {"x-swarmq-schedfire": schedfire_key}
+        # ce-review COR-M-03: stamp HEADER_ENQUEUED_AT so R4.4 max_age
+        # works for scheduler-fired tasks (cron + delay + eta). Without
+        # this the worker's _check_max_age_expired saw no header and
+        # treated every scheduled message as non-expiring.
+        headers: dict[str, Any] = {
+            "x-swarmq-schedfire": schedfire_key,
+            "x-swarmq-enqueued-at": int(time.time()),
+        }
         dup_detected = False
 
         if definition.source == "cli_unique" and definition.dedup_hash:

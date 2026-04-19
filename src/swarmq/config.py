@@ -219,3 +219,22 @@ class SwarmQConfig:
                 f"{self.scheduler_inflight_ttl}"
             )
             raise ConfigurationError(msg)
+
+        # R4.5 Burst-Mode env-var overrides (ce-review CLR-01).
+        env_burst = os.environ.get("SWARMQ_BURST_MODE", "")
+        if env_burst:
+            self.burst_mode = env_burst.lower() in ("true", "1", "yes")
+        env_burst_timeout = os.environ.get("SWARMQ_BURST_IDLE_TIMEOUT", "")
+        if env_burst_timeout:
+            self.burst_idle_timeout = float(env_burst_timeout)
+        if self.burst_idle_timeout <= 0:
+            msg = (
+                "burst_idle_timeout must be > 0, got "
+                f"{self.burst_idle_timeout}"
+            )
+            raise ConfigurationError(msg)
+
+        # R4.3 Task Priorities env-var override (ce-review CLR-04).
+        env_priorities = os.environ.get("SWARMQ_PRIORITIES", "")
+        if env_priorities:
+            self.priorities = env_priorities.lower() in ("true", "1", "yes")

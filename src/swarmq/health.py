@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -53,8 +54,33 @@ class HealthChecker:
         self._backend = backend
         self._timeout = timeout_s
 
+    @staticmethod
+    def _sanitise_error(exc: BaseException) -> str:
+        """Return a minimally-informative error tag for the /ready body.
+
+        ce-review SEC-001 / REL-07: valkey-py and aio_pika exception
+        messages embed host:port (and in some code paths the full URL
+        with credentials). /ready is typically behind a reverse proxy
+        but may be externally reachable in some deployments, so we
+        return only the exception class + a short static reason and
+        log the full detail server-side.
+        """
+        cls = type(exc).__name__
+        # Heuristic: if the exception message is short and does NOT
+        # look like a URL/host:port leak, keep it; otherwise collapse
+        # to the class name only.
+        msg = str(exc)
+        if not msg:
+            return cls
+        if len(msg) > 120 or "://" in msg or "@" in msg:
+            return cls
+        # Strip obvious host:port fragments (match '<alnum>.<alnum>:NNNN').
+        import re
+        msg = re.sub(r"[\w.-]+:\d+", "<redacted>", msg)
+        return f"{cls}: {msg}"
+
     async def check_backend(self) -> tuple[bool, str | None]:
-        """Return (ok, error_message_or_None)."""
+        """Return (ok, error_tag_or_None)."""
         try:
             client = self._backend._client
             if client is None:
@@ -62,7 +88,8 @@ class HealthChecker:
             await asyncio.wait_for(client.ping(), timeout=self._timeout)
             return True, None
         except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
+            logger.info("check_backend_failed", exc_info=exc)
+            return False, self._sanitise_error(exc)
 
     async def check_broker(self) -> tuple[bool, str | None]:
         try:
@@ -75,7 +102,8 @@ class HealthChecker:
             await asyncio.wait_for(conn.ready(), timeout=self._timeout)
             return True, None
         except Exception as exc:  # noqa: BLE001
-            return False, f"{type(exc).__name__}: {exc}"
+            logger.info("check_broker_failed", exc_info=exc)
+            return False, self._sanitise_error(exc)
 
     async def check_all(self) -> dict:
         """Return a structured snapshot suitable for JSON serialisation."""
@@ -118,9 +146,15 @@ class HealthServer:
         self._server: asyncio.base_events.Server | None = None
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(
-            self._handle_client, host=self._host, port=self._port,
-        )
+        try:
+            self._server = await asyncio.start_server(
+                self._handle_client, host=self._host, port=self._port,
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"health_server bind failed on {self._host}:{self._port}: "
+                f"{exc.strerror or exc}"
+            ) from exc
         logger.info(
             "health_server_started",
             extra={"host": self._host, "port": self._port},
@@ -140,21 +174,31 @@ class HealthServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            request_line = await asyncio.wait_for(
-                reader.readline(), timeout=5.0,
-            )
-            if not request_line:
-                writer.close()
-                return
+            # Request-line + header drain both bounded by a single
+            # deadline — prevents slow-header DoS (ce-review SEC-002).
             try:
-                method, path, _ = request_line.decode("ascii").split(" ", 2)
-            except ValueError:
-                await self._write(writer, 400, b"bad request\n")
+                async with asyncio.timeout(5.0):
+                    request_line = await reader.readline()
+                    if not request_line:
+                        writer.close()
+                        return
+                    try:
+                        method, path, _ = (
+                            request_line.decode("ascii").split(" ", 2)
+                        )
+                    except (ValueError, UnicodeDecodeError):
+                        await self._write(writer, 400, b"bad request\n")
+                        return
+                    for _ in range(200):
+                        line = await reader.readline()
+                        if line in (b"\r\n", b"\n", b""):
+                            break
+                    else:
+                        await self._write(writer, 400, b"headers too large\n")
+                        return
+            except TimeoutError:
+                await self._write(writer, 408, b"request timeout\n")
                 return
-            while True:
-                line = await reader.readline()
-                if line in (b"\r\n", b"\n", b""):
-                    break
 
             if method != "GET":
                 await self._write(writer, 405, b"method not allowed\n")
@@ -196,7 +240,8 @@ class HealthServer:
     ) -> None:
         reason = {
             200: "OK", 400: "Bad Request", 404: "Not Found",
-            405: "Method Not Allowed", 503: "Service Unavailable",
+            405: "Method Not Allowed", 408: "Request Timeout",
+            503: "Service Unavailable",
         }.get(status, "Unknown")
         writer.write(
             f"HTTP/1.1 {status} {reason}\r\n"
@@ -213,7 +258,7 @@ async def serve_health(
     *,
     host: str = "0.0.0.0",
     port: int = 8080,
-):
+) -> AsyncIterator["HealthServer"]:
     """Async context manager: start HealthServer on enter, stop on exit."""
     server = HealthServer(checker, host=host, port=port)
     await server.start()

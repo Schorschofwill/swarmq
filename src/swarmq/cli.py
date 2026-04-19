@@ -56,6 +56,19 @@ def _positive_int(raw: str) -> int:
     return value
 
 
+def _positive_float(raw: str) -> float:
+    """argparse type-function — rejects values <= 0 with a clear message."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {raw!r}") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"must be > 0 (got {value})"
+        )
+    return value
+
+
 def _queue_list(raw: str) -> list[str]:
     """Comma-separated queue names with whitespace stripped.
 
@@ -163,13 +176,27 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     worker.add_argument(
+        "--priorities",
+        action="store_true",
+        help=(
+            "R4.3: auto-declare + consume the high/normal/low triplet "
+            "for every --queues base queue, so tasks with "
+            "TaskInfo(priority='high'|'low') route correctly. Without "
+            "this flag, priority-tagged tasks publish to "
+            "{queue}.high/.low which are never consumed."
+        ),
+    )
+    worker.add_argument(
         "--burst-idle-timeout",
-        type=float,
+        type=_positive_float,
         default=5.0,
         metavar="SECONDS",
         help=(
             "Seconds of queue silence required before --burst exits "
-            "(default: 5.0). Ignored without --burst."
+            "(default: 5.0). The idle clock starts at worker-ready and "
+            "resets on every delivered message. Ignored without --burst. "
+            "Exit code 0 on clean drain (indistinguishable from SIGTERM; "
+            "grep logs for 'burst_idle_exit' to distinguish)."
         ),
     )
 
@@ -509,6 +536,7 @@ async def _run_worker_async(args: argparse.Namespace) -> None:
         log_json=(args.log_format == "json"),
         burst_mode=args.burst,
         burst_idle_timeout=args.burst_idle_timeout,
+        priorities=args.priorities,
     )
     async with app:
         await app.start_worker()

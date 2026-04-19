@@ -236,10 +236,27 @@ class Worker:
         # Route to DLQ + ack. Same pattern as _send_to_dlq but inline
         # because the DLQ semantics of 'expired' differ from 'error'
         # (different signal, no retry-count bump).
-        await self._broker.publish_to_dead_letter_queue(
-            queue, message.body, headers=dict(message.headers or {}),
-        )
-        await self._broker.ack(message)
+        #
+        # ce-review REL-02: guard the DLQ publish + ack pair. Without
+        # this, a broker hiccup between store_result (succeeded above)
+        # and the publish_to_dead_letter_queue call leaves the
+        # TaskError('expired') result in Valkey while the original
+        # message cycles through redelivery, generating duplicate
+        # TASK_EXPIRED signals. nack(requeue=True) preserves the
+        # message so a subsequent delivery retries the terminal path.
+        try:
+            await self._broker.publish_to_dead_letter_queue(
+                queue, message.body, headers=dict(message.headers or {}),
+            )
+            await self._broker.ack(message)
+        except BrokerConnectionError:
+            logger.warning("task_expired_dlq_publish_failed")
+            try:
+                await self._broker.nack(message, requeue=True)
+            except BrokerConnectionError:
+                # Double-failure — let the message TTL / broker
+                # redeliver-limit be the safety net.
+                logger.error("task_expired_nack_also_failed")
         return True
 
     async def _try_apply_rate_limit(
@@ -715,6 +732,32 @@ class Worker:
         )
         await self._scheduler.start()
 
+        # ce-review COR-M-05: warn when a registered task declares
+        # priority != "normal" but the worker is not configured for
+        # priority routing. Without the warning, a publish to
+        # {queue}.high is silently dropped into a queue nobody
+        # consumes and get_result() times out with no diagnostic.
+        if not self._config.priorities:
+            priority_tasks: list[str] = []
+            for task_name in self._registry.get_all():
+                try:
+                    ti = self._registry.get(task_name).task_info
+                except Exception:  # noqa: BLE001
+                    continue
+                if getattr(ti, "priority", "normal") != "normal":
+                    priority_tasks.append(f"{task_name}({ti.priority})")
+            if priority_tasks:
+                logger.warning(
+                    "registered_priority_tasks_with_priorities_disabled",
+                    tasks=priority_tasks[:20],
+                    hint=(
+                        "Enable worker priorities (SwarmQConfig.priorities="
+                        "True) or change TaskInfo.priority='normal' to "
+                        "avoid silent message drop into .high/.low queues "
+                        "nobody consumes."
+                    ),
+                )
+
         # R4.3 Task Priorities: expand each base queue into the
         # high/normal/low triplet when priorities are enabled.
         #
@@ -1146,6 +1189,7 @@ class Worker:
             Signal.TASK_CANCELLED,
             task_id=task_id,
             task_name=task_name,
+            queue=queue,
         )
 
         logger.info("task_cancelled_pre_start", task_id=task_id, task_name=task_name)
@@ -1403,7 +1447,8 @@ class Worker:
             # Pre-execute hooks
             await chain.run_pre_execute(message_dict)
             await self._signal_dispatcher.dispatch(
-                Signal.TASK_STARTED, task_id=task_id, task_name=task_name
+                Signal.TASK_STARTED,
+                task_id=task_id, task_name=task_name, queue=queue,
             )
             start_time = time.monotonic()
 
@@ -1567,6 +1612,7 @@ class Worker:
                     Signal.TASK_CANCELLED,
                     task_id=task_id,
                     task_name=task_name,
+                    queue=queue,
                 )
             elif is_error and task_exception is not None:
                 await chain.run_on_error(
@@ -1576,6 +1622,7 @@ class Worker:
                     Signal.TASK_FAILED,
                     task_id=task_id,
                     task_name=task_name,
+                    queue=queue,
                     exception=str(task_exception),
                 )
             else:
@@ -1586,6 +1633,7 @@ class Worker:
                     Signal.TASK_COMPLETED,
                     task_id=task_id,
                     task_name=task_name,
+                    queue=queue,
                     duration_ms=duration_ms,
                 )
 
@@ -1937,6 +1985,8 @@ class Worker:
         await self._signal_dispatcher.dispatch(
             Signal.TASK_RETRYING,
             task_id=task_id,
+            task_name=task_name,
+            queue=queue,
             retry_count=retry_count + 1,
             delay=delay_seconds,
         )
