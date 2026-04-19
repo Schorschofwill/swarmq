@@ -109,9 +109,9 @@ realer Use-Case die API-Form klärt):*
 
 - R5.1. Prometheus Metrics: Optionale Dependency. `/metrics` Endpoint auf konfigurierbarem Port. 7 Metriken (tasks_total, task_duration, tasks_active, queue_depth, worker_uptime, retries_total, dlq_messages). Referenz: `aufgabe.md` Abschnitt 12, `docs/recherche-operational-features.md` Abschnitt 5.
 - R5.2. Health Check Endpoints: HTTP-Server (minimaler asyncio Server). GET /health (Liveness), GET /ready (Readiness: Broker + Backend verbunden). CLI: `swarmq worker --check`. Referenz: `aufgabe.md` Abschnitt 7.6, `docs/recherche-operational-features.md` Abschnitt 3.
-- R5.3. Hot Reload: File-Watching auf Task-Module. Worker-Restart bei Aenderung. SIGHUP als manueller Trigger. Referenz: `aufgabe.md` Abschnitt 7.8.
+- R5.3. Hot Reload: File-Watching auf Task-Module. Worker-Restart bei Aenderung. SIGHUP als manueller Trigger. Referenz: `aufgabe.md` Abschnitt 7.8. **Verschoben (2026-04-19):** sinnvoll erst nach R4.6 ProcessManager — ohne diesen bleibt Hot Reload eine halbe Loesung (Single-Worker self-execvp statt orchestrierter Subprocess-Restart).
 - R5.4. Entwickler-Dokumentation: HTML-Seiten mit Getting Started, Core Concepts, Task-Definition, Client API, Worker, Middleware, Serialisierung, Error Handling, Testing, CLI Reference. Referenz: `aufgabe.md` Abschnitt 17.1.
-- R5.5. KI-Agenten-Dokumentation: Maschinenlesbare API-Spec, Message-Formate, CLI-Spec, Entscheidungsbaeume, Beispiele, Fehlerkatalog. Referenz: `aufgabe.md` Abschnitt 17.2.
+- R5.5. KI-Agenten-Dokumentation: Maschinenlesbare API-Spec, Message-Formate, CLI-Spec, Entscheidungsbaeume, Beispiele, Fehlerkatalog. Referenz: `aufgabe.md` Abschnitt 17.2. **Teilweise erfuellt (2026-04-19):** mkdocs-Site unter `website/` enthaelt vollstaendige Reference (API + CLI + Configuration + Errors + Changelog) plus Tutorials/Guides/Explanation. Eine separate maschinenlesbare JSON/YAML-Spec ist deferred bis ein konkreter Konsument sie braucht.
 
 ## Abhaengigkeitsgraph
 
