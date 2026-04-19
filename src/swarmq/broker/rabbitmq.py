@@ -82,13 +82,17 @@ class RabbitMQBroker:
         """Return a ready consume channel; recreate if dropped.
 
         Same contract as :meth:`_ensure_publish_channel`, but also
-        re-applies the previous QoS prefetch on a recreated channel
-        — otherwise the reconnected consumer silently loses its
-        rate-limiting setting.
+        re-applies the previous QoS prefetch when the channel was
+        freshly recreated — otherwise the reconnected consumer
+        silently loses its rate-limiting setting. On the fast path
+        (healthy channel), set_qos is NOT called (ce-review R-2/C-02:
+        an AMQP Basic.Qos RPC per consume access is wasteful and its
+        failure was previously unguarded).
         """
-        chan = await self._ensure_channel("_consume_channel")
-        if self._consume_prefetch is not None:
-            # Cheap no-op when already set; always safe to call.
+        chan, was_recreated = await self._ensure_channel_tracked(
+            "_consume_channel",
+        )
+        if was_recreated and self._consume_prefetch is not None:
             await chan.set_qos(prefetch_count=self._consume_prefetch)
         return chan
 
@@ -141,15 +145,26 @@ class RabbitMQBroker:
         ) from last_exc
 
     async def _ensure_channel(self, attr: str) -> "aio_pika.abc.AbstractChannel":
+        """Thin wrapper around :meth:`_ensure_channel_tracked` for
+        callers that don't need the was-recreated signal."""
+        chan, _ = await self._ensure_channel_tracked(attr)
+        return chan
+
+    async def _ensure_channel_tracked(
+        self, attr: str,
+    ) -> tuple["aio_pika.abc.AbstractChannel", bool]:
+        """Return (channel, was_recreated). Lets callers apply per-
+        recreate state (QoS prefetch, consumer re-registration)
+        exactly when a new underlying channel was opened."""
         channel = getattr(self, attr)
         if channel is not None and not channel.is_closed:
-            return channel
+            return channel, False
         async with self._channel_lock:
             # Re-check under the lock — another coroutine may have
             # reopened while we were waiting.
             channel = getattr(self, attr)
             if channel is not None and not channel.is_closed:
-                return channel
+                return channel, False
             if self._connection is None:
                 raise BrokerConnectionError("broker not connected")
             try:
@@ -170,7 +185,7 @@ class RabbitMQBroker:
                     f"{self._url!r}: {exc}"
                 ) from exc
             setattr(self, attr, channel)
-            return channel
+            return channel, True
 
     async def declare_queue(self, queue_name: str) -> None:
         pub = await self._ensure_publish_channel()
@@ -244,6 +259,10 @@ class RabbitMQBroker:
         # it after a channel recreate.
         self._consume_prefetch = prefetch_count
         chan = await self._ensure_consume_channel()
+        # Apply QoS on the initial consume() — _ensure_consume_channel
+        # only re-applies after a recreate (ce-review R-2/C-02: avoid
+        # an AMQP RPC per every consume-channel access).
+        await chan.set_qos(prefetch_count=prefetch_count)
         queue = await chan.get_queue(queue_name)
         consumer_tag = await queue.consume(callback)
         self._consumer_tags.append((queue, consumer_tag))
