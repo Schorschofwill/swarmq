@@ -176,6 +176,29 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     worker.add_argument(
+        "--metrics-port",
+        type=_positive_int,
+        default=None,
+        metavar="PORT",
+        help=(
+            "R5.1: serve Prometheus /metrics on the given port. "
+            "Auto-wires the signal-based collectors (task_total, "
+            "retries_total, etc.). Requires 'pip install swarmq[metrics]'. "
+            "Default bind: 127.0.0.1."
+        ),
+    )
+    worker.add_argument(
+        "--health-port",
+        type=_positive_int,
+        default=None,
+        metavar="PORT",
+        help=(
+            "R5.2: serve /health + /ready on the given port. /ready "
+            "pings broker + backend (2s timeout) and returns structured "
+            "JSON. Default bind: 127.0.0.1."
+        ),
+    )
+    worker.add_argument(
         "--priorities",
         action="store_true",
         help=(
@@ -537,6 +560,8 @@ async def _run_worker_async(args: argparse.Namespace) -> None:
         burst_mode=args.burst,
         burst_idle_timeout=args.burst_idle_timeout,
         priorities=args.priorities,
+        metrics_port=args.metrics_port,
+        health_port=args.health_port,
     )
     async with app:
         await app.start_worker()

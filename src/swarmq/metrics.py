@@ -31,7 +31,7 @@ method. Attaching the HTTP exposition server is a worker-side concern
 
 from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: F401 — used in type hints
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -82,7 +82,7 @@ class _NoopMetric:
     ``metric.labels(queue="q").inc()`` work unchanged.
     """
 
-    def labels(self, *_a: Any, **_kw: Any) -> "_NoopMetric":
+    def labels(self, *_a: Any, **_kw: Any) -> _NoopMetric:
         return self
 
     def inc(self, _amount: float = 1.0) -> None: pass
@@ -97,11 +97,21 @@ class Metrics:
     Constructed once per worker/app. When prometheus_client is absent,
     every metric is a :class:`_NoopMetric` so the hot path stays free
     of ``if enabled`` branches.
+
+    **Label cardinality warning (ce-review SEC-005).**
+    ``task_name`` and ``queue`` labels are passed through verbatim
+    from the message payload — they are NOT validated or normalised.
+    Applications that embed user-controlled data in task names (e.g.
+    ``send_email_user_12345``) will produce one Prometheus time series
+    per unique value, which can OOM the Prometheus server and expose
+    the embedded identifier to any scraper. Keep task names bounded
+    (ideally a small enum) and route per-entity state through task
+    arguments, not task names.
     """
 
     def __init__(
         self,
-        registry: "CollectorRegistry | None" = None,
+        registry: CollectorRegistry | None = None,
         namespace: str = "swarmq",
     ) -> None:
         self._enabled = _HAVE_PROMETHEUS
@@ -184,129 +194,54 @@ class Metrics:
 class MetricsServer:
     """Minimal asyncio HTTP server exposing ``/metrics``.
 
-    Uses the stdlib only — an aiohttp-style `web.Application` would
-    pull in an extra dependency for one endpoint. The server lives
-    inside the worker event loop and is shut down in tandem with the
-    worker.
+    Uses the stdlib via :class:`swarmq._http.AsyncHttpServer`
+    (ce-review M-01 dedup). The server lives inside the worker event
+    loop and is shut down in tandem with the worker.
+
+    **Bind-host default: ``127.0.0.1``** (ce-review SEC-004). Production
+    deployments should front the worker with a reverse proxy /
+    firewall boundary; /metrics has no built-in auth and task_name
+    labels may carry sensitive payload if the application author
+    embeds identifiers in task names (see ce-review SEC-005). Bind
+    to ``0.0.0.0`` explicitly when the scraper runs on another host
+    and the network path is otherwise restricted.
     """
 
-    def __init__(self, metrics: Metrics, host: str = "0.0.0.0", port: int = 9090) -> None:
+    def __init__(
+        self, metrics: Metrics,
+        host: str = "127.0.0.1", port: int = 9090,
+    ) -> None:
+        from swarmq._http import AsyncHttpServer
         self._metrics = metrics
-        self._host = host
-        self._port = port
-        self._server: asyncio.base_events.Server | None = None
+        self._server = AsyncHttpServer(
+            self._handle_request,
+            host=host, port=port, label="metrics_server",
+        )
 
     async def start(self) -> None:
-        try:
-            self._server = await asyncio.start_server(
-                self._handle_client, host=self._host, port=self._port,
-            )
-        except OSError as exc:
-            # Port conflict / unreachable host. Surface as RuntimeError
-            # with operational context instead of propagating the raw
-            # OSError into worker.start() (ce-review REL-01).
-            raise RuntimeError(
-                f"metrics_server bind failed on {self._host}:{self._port}: "
-                f"{exc.strerror or exc}"
-            ) from exc
-        logger.info(
-            "metrics_server_started",
-            extra={"host": self._host, "port": self._port},
-        )
+        await self._server.start()
 
     async def stop(self) -> None:
-        if self._server is None:
-            return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
-        logger.info("metrics_server_stopped")
+        await self._server.stop()
 
-    async def _handle_client(
+    async def _handle_request(
         self,
-        reader: asyncio.StreamReader,
+        method: str,
+        path: str,
         writer: asyncio.StreamWriter,
     ) -> None:
-        try:
-            # Request-line + header drain both bounded by a single
-            # deadline — prevents slow-header DoS (ce-review SEC-002).
-            try:
-                async with asyncio.timeout(5.0):
-                    request_line = await reader.readline()
-                    if not request_line:
-                        writer.close()
-                        return
-                    # ASCII-only request line; binary junk (TLS probes
-                    # on a plaintext port, random scanners) returns
-                    # 400 cleanly instead of flooding logs with
-                    # UnicodeDecodeError stack traces (SEC-003).
-                    try:
-                        method, path, _ = (
-                            request_line.decode("ascii").split(" ", 2)
-                        )
-                    except (ValueError, UnicodeDecodeError):
-                        await self._write_response(writer, 400, b"bad request\n")
-                        return
-                    # Drain headers (bounded by the outer timeout AND
-                    # a safety line-count cap).
-                    for _ in range(200):
-                        line = await reader.readline()
-                        if line in (b"\r\n", b"\n", b""):
-                            break
-                    else:
-                        await self._write_response(
-                            writer, 400, b"headers too large\n",
-                        )
-                        return
-            except TimeoutError:
-                await self._write_response(writer, 408, b"request timeout\n")
-                return
-
-            if method != "GET":
-                await self._write_response(writer, 405, b"method not allowed\n")
-                return
-            if path.split("?")[0] != "/metrics":
-                await self._write_response(writer, 404, b"not found\n")
-                return
-
-            body = self._metrics.render()
-            await self._write_response(writer, 200, body, CONTENT_TYPE)
-        except Exception:  # noqa: BLE001
-            logger.exception("metrics_handler_failed")
-        finally:
-            try:
-                await writer.drain()
-            except Exception:  # noqa: BLE001
-                pass
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001
-                pass
-
-    @staticmethod
-    async def _write_response(
-        writer: asyncio.StreamWriter,
-        status: int,
-        body: bytes,
-        content_type: str = "text/plain; charset=utf-8",
-    ) -> None:
-        reason = {200: "OK", 400: "Bad Request", 404: "Not Found",
-                  405: "Method Not Allowed", 408: "Request Timeout",
-                  503: "Service Unavailable"}.get(status, "Unknown")
-        writer.write(
-            f"HTTP/1.1 {status} {reason}\r\n"
-            f"Content-Type: {content_type}\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            f"Connection: close\r\n\r\n".encode("ascii")
-        )
-        writer.write(body)
+        from swarmq._http import write_http_response
+        if path.split("?")[0] != "/metrics":
+            await write_http_response(writer, 404, b"not found\n")
+            return
+        body = self._metrics.render()
+        await write_http_response(writer, 200, body, CONTENT_TYPE)
 
 
 @asynccontextmanager
 async def serve_metrics(
-    metrics: Metrics, host: str = "0.0.0.0", port: int = 9090,
-) -> AsyncIterator["MetricsServer"]:
+    metrics: Metrics, host: str = "127.0.0.1", port: int = 9090,
+) -> AsyncIterator[MetricsServer]:
     """Async context manager: start MetricsServer on enter, stop on exit."""
     server = MetricsServer(metrics, host=host, port=port)
     await server.start()
@@ -317,7 +252,7 @@ async def serve_metrics(
 
 
 def install_signal_collectors(
-    dispatcher: "SignalDispatcher", metrics: Metrics,
+    dispatcher: SignalDispatcher, metrics: Metrics,
 ) -> None:
     """Register Metrics-updater handlers on the given SignalDispatcher.
 

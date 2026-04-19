@@ -53,6 +53,15 @@ class SwarmQConfig:
     # proportionally more in-flight slots under saturation. Opt-in so
     # existing single-queue deployments stay on their one-queue topology.
     priorities: bool = False
+    # R5.1/R5.2 auto-wire (ce-review REL-06). When set, Worker.start()
+    # constructs a :class:`Metrics`, registers signal collectors, and
+    # serves /metrics on the given port. Same for health on its port.
+    # None on both disables the HTTP surfaces — the operator can still
+    # build a Metrics instance manually and attach their own server.
+    metrics_port: int | None = None
+    metrics_host: str = "127.0.0.1"
+    health_port: int | None = None
+    health_host: str = "127.0.0.1"
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -238,3 +247,17 @@ class SwarmQConfig:
         env_priorities = os.environ.get("SWARMQ_PRIORITIES", "")
         if env_priorities:
             self.priorities = env_priorities.lower() in ("true", "1", "yes")
+
+        # R5.1/R5.2 env-var overrides (ce-review REL-06).
+        env_metrics_port = os.environ.get("SWARMQ_METRICS_PORT", "")
+        if env_metrics_port:
+            self.metrics_port = int(env_metrics_port)
+        env_metrics_host = os.environ.get("SWARMQ_METRICS_HOST", "")
+        if env_metrics_host:
+            self.metrics_host = env_metrics_host
+        env_health_port = os.environ.get("SWARMQ_HEALTH_PORT", "")
+        if env_health_port:
+            self.health_port = int(env_health_port)
+        env_health_host = os.environ.get("SWARMQ_HEALTH_HOST", "")
+        if env_health_host:
+            self.health_host = env_health_host

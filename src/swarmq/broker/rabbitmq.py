@@ -196,6 +196,26 @@ class RabbitMQBroker:
             "x-dead-letter-exchange": "",
             "x-dead-letter-routing-key": f"{queue_name}.XQ",
         }
+        try:
+            await self._declare_queue_triplet(pub, queue_name, main_args)
+        except aio_pika.exceptions.AMQPChannelError as exc:
+            # ce-review REL-05: a pre-existing queue with mismatched
+            # arguments raises aio_pika ChannelClosed (PRECONDITION_FAILED).
+            # Without this wrap, the CLI surfaces a raw aio_pika traceback
+            # instead of a clean 'queue arg conflict' message.
+            raise BrokerConnectionError(
+                f"declare_queue {queue_name!r} failed: {exc}. "
+                f"Existing queue likely has different x-queue-type or "
+                f"x-dead-letter-* args. Delete the queue via the RabbitMQ "
+                f"management UI / CLI and retry, or match the existing args."
+            ) from exc
+
+    async def _declare_queue_triplet(
+        self,
+        pub: "aio_pika.abc.AbstractChannel",
+        queue_name: str,
+        main_args: dict[str, Any],
+    ) -> None:
         # Quorum-queue safety net (ce-review / U2.1 skip): without
         # x-delivery-limit a deterministically-crashing task
         # (SIGSEGV/OOM) is redelivered forever by the broker, never

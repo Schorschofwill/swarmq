@@ -45,8 +45,8 @@ class HealthChecker:
 
     def __init__(
         self,
-        broker: "RabbitMQBroker",
-        backend: "ValkeyBackend",
+        broker: RabbitMQBroker,
+        backend: ValkeyBackend,
         *,
         timeout_s: float = 2.0,
     ) -> None:
@@ -87,7 +87,7 @@ class HealthChecker:
                 return False, "backend not connected"
             await asyncio.wait_for(client.ping(), timeout=self._timeout)
             return True, None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.info("check_backend_failed", exc_info=exc)
             return False, self._sanitise_error(exc)
 
@@ -101,7 +101,7 @@ class HealthChecker:
             # complete.
             await asyncio.wait_for(conn.ready(), timeout=self._timeout)
             return True, None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.info("check_broker_failed", exc_info=exc)
             return False, self._sanitise_error(exc)
 
@@ -129,136 +129,66 @@ class HealthServer:
     so an operator can run health on a different port (typical pattern:
     health on the same port as the worker proxy, metrics on the
     metrics-scraping port).
+
+    **Bind-host default: ``127.0.0.1``** (ce-review SEC-004).
+    Kubernetes liveness / readiness probes run in the same network
+    namespace as the pod by default, so loopback is sufficient. Bind
+    to ``0.0.0.0`` only when the probe originates outside the pod /
+    container.
     """
 
     def __init__(
         self,
         checker: HealthChecker,
         *,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8080,
         liveness_started: float | None = None,
     ) -> None:
+        from swarmq._http import AsyncHttpServer
         self._checker = checker
-        self._host = host
-        self._port = port
         self._started_at = liveness_started or time.monotonic()
-        self._server: asyncio.base_events.Server | None = None
+        self._server = AsyncHttpServer(
+            self._handle_request,
+            host=host, port=port, label="health_server",
+        )
 
     async def start(self) -> None:
-        try:
-            self._server = await asyncio.start_server(
-                self._handle_client, host=self._host, port=self._port,
-            )
-        except OSError as exc:
-            raise RuntimeError(
-                f"health_server bind failed on {self._host}:{self._port}: "
-                f"{exc.strerror or exc}"
-            ) from exc
-        logger.info(
-            "health_server_started",
-            extra={"host": self._host, "port": self._port},
-        )
+        await self._server.start()
 
     async def stop(self) -> None:
-        if self._server is None:
-            return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
-        logger.info("health_server_stopped")
+        await self._server.stop()
 
-    async def _handle_client(
+    async def _handle_request(
         self,
-        reader: asyncio.StreamReader,
+        method: str,
+        path: str,
         writer: asyncio.StreamWriter,
     ) -> None:
-        try:
-            # Request-line + header drain both bounded by a single
-            # deadline — prevents slow-header DoS (ce-review SEC-002).
-            try:
-                async with asyncio.timeout(5.0):
-                    request_line = await reader.readline()
-                    if not request_line:
-                        writer.close()
-                        return
-                    try:
-                        method, path, _ = (
-                            request_line.decode("ascii").split(" ", 2)
-                        )
-                    except (ValueError, UnicodeDecodeError):
-                        await self._write(writer, 400, b"bad request\n")
-                        return
-                    for _ in range(200):
-                        line = await reader.readline()
-                        if line in (b"\r\n", b"\n", b""):
-                            break
-                    else:
-                        await self._write(writer, 400, b"headers too large\n")
-                        return
-            except TimeoutError:
-                await self._write(writer, 408, b"request timeout\n")
-                return
-
-            if method != "GET":
-                await self._write(writer, 405, b"method not allowed\n")
-                return
-
-            base_path = path.split("?")[0]
-            if base_path == "/health":
-                body = json.dumps({
-                    "status": "ok",
-                    "uptime_s": round(time.monotonic() - self._started_at, 3),
-                }).encode()
-                await self._write(writer, 200, body, "application/json")
-            elif base_path == "/ready":
-                snapshot = await self._checker.check_all()
-                status = 200 if snapshot["ready"] else 503
-                body = json.dumps(snapshot).encode()
-                await self._write(writer, status, body, "application/json")
-            else:
-                await self._write(writer, 404, b"not found\n")
-        except Exception:  # noqa: BLE001
-            logger.exception("health_handler_failed")
-        finally:
-            try:
-                await writer.drain()
-            except Exception:  # noqa: BLE001
-                pass
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001
-                pass
-
-    @staticmethod
-    async def _write(
-        writer: asyncio.StreamWriter,
-        status: int,
-        body: bytes,
-        content_type: str = "text/plain; charset=utf-8",
-    ) -> None:
-        reason = {
-            200: "OK", 400: "Bad Request", 404: "Not Found",
-            405: "Method Not Allowed", 408: "Request Timeout",
-            503: "Service Unavailable",
-        }.get(status, "Unknown")
-        writer.write(
-            f"HTTP/1.1 {status} {reason}\r\n"
-            f"Content-Type: {content_type}\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            f"Connection: close\r\n\r\n".encode("ascii")
-        )
-        writer.write(body)
+        from swarmq._http import write_http_response
+        base_path = path.split("?")[0]
+        if base_path == "/health":
+            body = json.dumps({
+                "status": "ok",
+                "uptime_s": round(time.monotonic() - self._started_at, 3),
+            }).encode()
+            await write_http_response(writer, 200, body, "application/json")
+        elif base_path == "/ready":
+            snapshot = await self._checker.check_all()
+            status = 200 if snapshot["ready"] else 503
+            body = json.dumps(snapshot).encode()
+            await write_http_response(writer, status, body, "application/json")
+        else:
+            await write_http_response(writer, 404, b"not found\n")
 
 
 @asynccontextmanager
 async def serve_health(
     checker: HealthChecker,
     *,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8080,
-) -> AsyncIterator["HealthServer"]:
+) -> AsyncIterator[HealthServer]:
     """Async context manager: start HealthServer on enter, stop on exit."""
     server = HealthServer(checker, host=host, port=port)
     await server.start()

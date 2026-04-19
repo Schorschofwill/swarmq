@@ -152,6 +152,11 @@ class Worker:
         # clock jumps don't trigger a false-idle exit.
         self._last_message_received_at: float = 0.0
         self._burst_monitor_task: asyncio.Task | None = None
+        # R5.1/R5.2 auto-wire state (ce-review REL-06). Populated in
+        # start() when config.metrics_port / config.health_port are set.
+        self._metrics = None  # type: ignore[assignment]
+        self._metrics_server = None  # type: ignore[assignment]
+        self._health_server = None  # type: ignore[assignment]
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -732,6 +737,35 @@ class Worker:
         )
         await self._scheduler.start()
 
+        # ce-review REL-06: auto-wire Prometheus metrics + health
+        # endpoints when config flags set. Operator no longer needs
+        # to construct Metrics + install_signal_collectors + MetricsServer
+        # manually — the default wiring is opt-in via metrics_port /
+        # health_port config.
+        if self._config.metrics_port is not None:
+            from swarmq.metrics import (
+                Metrics,
+                MetricsServer,
+                install_signal_collectors,
+            )
+            self._metrics = Metrics()
+            install_signal_collectors(self._signal_dispatcher, self._metrics)
+            self._metrics_server = MetricsServer(
+                self._metrics,
+                host=self._config.metrics_host,
+                port=self._config.metrics_port,
+            )
+            await self._metrics_server.start()
+        if self._config.health_port is not None:
+            from swarmq.health import HealthChecker, HealthServer
+            checker = HealthChecker(self._broker, self._backend)
+            self._health_server = HealthServer(
+                checker,
+                host=self._config.health_host,
+                port=self._config.health_port,
+            )
+            await self._health_server.start()
+
         # ce-review COR-M-05: warn when a registered task declares
         # priority != "normal" but the worker is not configured for
         # priority routing. Without the warning, a publish to
@@ -862,6 +896,20 @@ class Worker:
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_SHUTDOWN, worker_id=str(id(self))
         )
+
+        # Stop auto-wired HTTP surfaces first so scrapers / probes
+        # get a clean connection-close rather than hitting a worker
+        # in mid-drain. Idempotent when not started.
+        if self._metrics_server is not None:
+            try:
+                await self._metrics_server.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("metrics_server_stop_failed")
+        if self._health_server is not None:
+            try:
+                await self._health_server.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("health_server_stop_failed")
 
         # 1. DRAINING: stop accepting new messages
         await self._broker.cancel_consume()
