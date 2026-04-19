@@ -429,7 +429,11 @@ class RabbitMQBroker:
                     if to_main and skip_malformed_on_move and is_malformed:
                         to_main = False
 
-                    pub = await self._ensure_publish_channel()
+                    # Route through _publish_with_retry (ce-review R-1 /
+                    # C-01 / KP-002): transient channel errors during
+                    # reconnect windows must not silently drop drained
+                    # messages. Same contract as every other publish
+                    # site.
                     if to_main:
                         forward_headers = dict(headers)
                         # Reset retry-count so the operator's "try this
@@ -442,9 +446,7 @@ class RabbitMQBroker:
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             headers=forward_headers,
                         )
-                        await pub.default_exchange.publish(
-                            msg_out, routing_key=queue_name,
-                        )
+                        await self._publish_with_retry(queue_name, msg_out)
                     else:
                         # Back into the DLQ. Headers preserved verbatim.
                         msg_out = aio_pika.Message(
@@ -452,10 +454,16 @@ class RabbitMQBroker:
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             headers=dict(headers),
                         )
-                        await pub.default_exchange.publish(
-                            msg_out, routing_key=f"{queue_name}.XQ",
+                        await self._publish_with_retry(
+                            f"{queue_name}.XQ", msg_out,
                         )
-                except BaseException as exc:  # noqa: BLE001
+                except asyncio.CancelledError:
+                    # Honour task-level cancellation — do not collect
+                    # and swallow. _publish_with_retry already handles
+                    # the aio_pika internal drain_future CancelledError
+                    # via current_task().cancelling() guard.
+                    raise
+                except Exception as exc:  # noqa: BLE001
                     errors.append(exc)
             if errors:
                 # Wrap the first collected failure in a
