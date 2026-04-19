@@ -15,6 +15,7 @@ from swarmq.exceptions import (
     TaskError,
     TaskNotFoundError,
 )
+from swarmq.metrics import Metrics, MetricsServer, install_signal_collectors, serve_metrics
 from swarmq.middleware import MessageContext, Middleware
 from swarmq.progress import ProgressInfo
 from swarmq.signals import Signal, SignalDispatcher

@@ -35,6 +35,9 @@ test = [
     "psutil",
     # E2E-Hardening Phase 3 U3.10 — mutation testing.
     "mutmut",
+    # R5.1: tests/unit/test_metrics.py asserts the real registry shape,
+    # not just the no-op fallback. Same package as the [metrics] extra.
+    "prometheus_client",
 ]
 docs = [
     "mkdocs-material>=9.5",
