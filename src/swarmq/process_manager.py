@@ -122,8 +122,11 @@ class ProcessManager:
     # Parent-loop tick.
     MONITOR_INTERVAL = 0.5
 
-    # Graceful-shutdown phases.
-    SHUTDOWN_GRACE_S = 10.0
+    # Graceful-shutdown phases (defaults — overridable per-instance via
+    # ``shutdown_grace_s`` to align with ``SwarmQConfig.shutdown_timeout``
+    # so a subprocess actually gets its configured drain budget.
+    # ce-review REL-01).
+    SHUTDOWN_GRACE_S = 30.0
     SHUTDOWN_TERM_S = 5.0
 
     # Autoscaling knobs.
@@ -140,6 +143,7 @@ class ProcessManager:
         *,
         autoscale: tuple[int, int] | None = None,
         queue_depth_fn: QueueDepthFn | None = None,
+        shutdown_grace_s: float | None = None,
     ) -> None:
         if autoscale is not None:
             min_w, max_w = autoscale
@@ -159,6 +163,18 @@ class ProcessManager:
         self._worker_args = worker_args
         self._autoscale = autoscale
         self._queue_depth_fn = queue_depth_fn
+        # Per-instance override of the phase-1 shutdown budget
+        # (ce-review REL-01). Without this, any task running longer
+        # than the class default was killed mid-execution regardless
+        # of the configured SwarmQConfig.shutdown_timeout.
+        if shutdown_grace_s is not None:
+            if shutdown_grace_s <= 0:
+                raise ValueError(
+                    f"shutdown_grace_s must be > 0 (got {shutdown_grace_s})",
+                )
+            self.shutdown_grace_s = float(shutdown_grace_s)
+        else:
+            self.shutdown_grace_s = self.SHUTDOWN_GRACE_S
 
         self._ctx = multiprocessing.get_context("spawn")
         self.shutdown_event = self._ctx.Event()
@@ -272,7 +288,7 @@ class ProcessManager:
         self.shutdown_event.set()
 
         # Phase 1: cooperative exit via shutdown_event.
-        deadline = time.monotonic() + self.SHUTDOWN_GRACE_S
+        deadline = time.monotonic() + self.shutdown_grace_s
         while time.monotonic() < deadline:
             if not any(w.process.is_alive() for w in self.workers.values()):
                 break
@@ -596,6 +612,15 @@ def worker_subprocess_entry(
         return
 
 
+#: Total wall-clock budget for one queue-depth sample cycle including
+#: connect + all get_queue_depth calls + close. Beyond this, we give
+#: up for this tick and let the next one retry — otherwise a stuck
+#: AMQP connect would block the monitor loop for the full TCP timeout
+#: (~2 min) and stall crash detection + autoscale decisions. ce-review
+#: REL-05.
+SAMPLE_TIMEOUT_S = 5.0
+
+
 def _make_queue_depth_sampler(
     broker_url: str, queues: list[str],
 ) -> Callable[[], int]:
@@ -604,6 +629,8 @@ def _make_queue_depth_sampler(
     The supervisor has no asyncio loop; our broker API is async. We
     open a throwaway connection each call, sum depth across all
     configured queues, and close. 10s cadence makes this cheap.
+    Wrapped in :data:`SAMPLE_TIMEOUT_S` so a stuck broker does not
+    hang the supervisor (ce-review REL-05).
     """
     import asyncio
 
@@ -612,14 +639,22 @@ def _make_queue_depth_sampler(
     def sample() -> int:
         async def _run() -> int:
             broker = RabbitMQBroker(broker_url)
-            await broker.connect()
             try:
-                total = 0
-                for q in queues:
-                    total += await broker.get_queue_depth(q)
-                return total
+                async with asyncio.timeout(SAMPLE_TIMEOUT_S):
+                    await broker.connect()
+                    total = 0
+                    for q in queues:
+                        total += await broker.get_queue_depth(q)
+                    return total
             finally:
-                await broker.close()
+                # Close may itself hang under broker failure — bound
+                # it separately so the outer timeout does not leak
+                # into the next sampler call.
+                try:
+                    async with asyncio.timeout(1.0):
+                        await broker.close()
+                except (TimeoutError, Exception):  # noqa: BLE001
+                    pass
 
         return asyncio.run(_run())
 
@@ -648,6 +683,13 @@ def run_multi_process_worker(args) -> int:
     if args.autoscale is not None:
         queue_depth_fn = _make_queue_depth_sampler(broker_url, list(args.queues))
 
+    # ce-review REL-01: resolve SwarmQConfig.shutdown_timeout once in
+    # the parent and pass it as the phase-1 grace so a subprocess's
+    # graceful-shutdown flow has the budget it was configured for.
+    from swarmq.config import SwarmQConfig
+    cfg = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
+    shutdown_grace_s = float(cfg.shutdown_timeout)
+
     worker_args = (
         args.module,
         list(args.queues),
@@ -667,5 +709,6 @@ def run_multi_process_worker(args) -> int:
         worker_args=worker_args,
         autoscale=args.autoscale,
         queue_depth_fn=queue_depth_fn,
+        shutdown_grace_s=shutdown_grace_s,
     )
     return pm.run()

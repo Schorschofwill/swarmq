@@ -15,7 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from swarmq.process_manager import ProcessManager, WorkerInfo
+from swarmq.process_manager import (
+    ProcessManager,
+    WorkerInfo,
+    _make_queue_depth_sampler,
+    worker_subprocess_entry,
+)
 
 
 def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 1234):
@@ -93,7 +98,7 @@ class TestProcessManagerCore:
 
     def test_shutdown_phase1_only_when_workers_exit_cleanly(self):
         pm = ProcessManager(num_workers=2, worker_entry=_entry_stub)
-        pm.SHUTDOWN_GRACE_S = 0.5
+        pm.shutdown_grace_s = 0.5
         pm.SHUTDOWN_TERM_S = 0.5
         p1 = _fake_process(alive=False, pid=1)
         p2 = _fake_process(alive=False, pid=2)
@@ -108,7 +113,7 @@ class TestProcessManagerCore:
 
     def test_shutdown_escalates_to_sigterm_then_sigkill(self):
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
-        pm.SHUTDOWN_GRACE_S = 0.01
+        pm.shutdown_grace_s = 0.01
         pm.SHUTDOWN_TERM_S = 0.01
         p = _fake_process(alive=True, pid=1)
         pm.workers = {1: WorkerInfo(process=p, worker_id=0)}
@@ -411,3 +416,160 @@ class TestProcessManagerAutoscale:
         assert pm._idle_since is not None
         pm._autoscale_tick()  # load → resets
         assert pm._idle_since is None
+
+
+# ---------------------------------------------------------------------------
+# ce-review residuals: worker_subprocess_entry + sampler
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerSubprocessEntry:
+    """ce-review T-04: cover the spawn-boundary entry + shutdown watcher.
+
+    The function runs inside a subprocess in production; the unit test
+    drives the same code path in-process with the cross-process Event
+    swapped for ``threading.Event`` (duck-type compatible).
+    """
+
+    def test_shutdown_event_triggers_sigterm_on_self(self, monkeypatch):
+        """Worker ignores the event (simulating a stuck worker) — the
+        watcher must still deliver SIGTERM so the Worker's own signal
+        handler can drive graceful shutdown."""
+        import asyncio
+        import threading
+
+        shutdown_event = threading.Event()
+        kills: list[tuple[int, int]] = []
+        worker_exited = threading.Event()
+
+        def fake_kill(pid, sig):
+            kills.append((pid, sig))
+            # Simulate SIGTERM causing the worker to exit.
+            worker_exited.set()
+
+        async def fake_run_worker_async(ns):
+            # Model a non-cooperative worker that does NOT consult
+            # shutdown_event. Exit only when SIGTERM is "delivered".
+            while not worker_exited.is_set():
+                await asyncio.sleep(0.02)
+
+        monkeypatch.setattr("swarmq.process_manager.os.kill", fake_kill)
+        monkeypatch.setattr(
+            "swarmq.cli._run_worker_async", fake_run_worker_async,
+        )
+
+        timer = threading.Timer(0.1, shutdown_event.set)
+        timer.start()
+        try:
+            worker_subprocess_entry(
+                worker_id=0,
+                shutdown_event=shutdown_event,
+                module="dummy.module",
+                queues=["default"],
+                concurrency=1,
+                log_level="ERROR",
+                log_format="human",
+                burst=False,
+                burst_idle_timeout=5.0,
+                priorities=False,
+                metrics_port=None,
+                health_port=None,
+            )
+        finally:
+            timer.cancel()
+
+        import os
+        import signal as _signal
+        assert kills, "shutdown watcher never called os.kill"
+        pid, sig = kills[0]
+        assert pid == os.getpid()
+        assert sig == _signal.SIGTERM
+
+    def test_keyboard_interrupt_returns_cleanly(self, monkeypatch):
+        """KeyboardInterrupt from inside the worker must not propagate
+        out of the entry — otherwise multiprocessing logs a traceback."""
+        import threading
+
+        async def raise_kbd(ns):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("swarmq.cli._run_worker_async", raise_kbd)
+
+        # Should return None, not raise.
+        worker_subprocess_entry(
+            worker_id=0,
+            shutdown_event=threading.Event(),
+            module="dummy.module",
+            queues=["default"],
+            concurrency=1,
+            log_level="ERROR",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+        )
+
+
+class TestQueueDepthSampler:
+    """ce-review T-05 + REL-05: sampler success path + timeout bound."""
+
+    def test_sums_multi_queue_depth(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        class FakeBroker:
+            def __init__(self, url):
+                self.url = url
+
+            async def connect(self):
+                return None
+
+            async def get_queue_depth(self, q):
+                return {"a": 3, "b": 7, "c": 0}[q]
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(
+            "swarmq.process_manager.RabbitMQBroker"
+            if False else "swarmq.broker.rabbitmq.RabbitMQBroker",
+            FakeBroker,
+        )
+        sampler = _make_queue_depth_sampler("amqp://x", ["a", "b", "c"])
+        assert sampler() == 10
+
+    def test_timeout_does_not_hang(self, monkeypatch):
+        """A stuck broker.connect() must not block the sampler
+        beyond SAMPLE_TIMEOUT_S (ce-review REL-05)."""
+        import asyncio
+
+        class HangingBroker:
+            def __init__(self, url):
+                pass
+
+            async def connect(self):
+                # Block effectively forever.
+                await asyncio.sleep(3600)
+
+            async def get_queue_depth(self, q):
+                return 0
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(
+            "swarmq.broker.rabbitmq.RabbitMQBroker", HangingBroker,
+        )
+        # Shrink the timeout so the test completes quickly while still
+        # exercising the same code path.
+        monkeypatch.setattr(
+            "swarmq.process_manager.SAMPLE_TIMEOUT_S", 0.2,
+        )
+        sampler = _make_queue_depth_sampler("amqp://x", ["a"])
+
+        # Sampler raises TimeoutError on the outer asyncio.timeout —
+        # the caller (_autoscale_tick) swallows it. Verify the
+        # exception type is a TimeoutError-compatible.
+        with pytest.raises(TimeoutError):
+            sampler()
