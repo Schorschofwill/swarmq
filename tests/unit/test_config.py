@@ -450,3 +450,68 @@ def test_config_scheduler_inflight_ttl_negative_raises():
             backend_url="redis://localhost",
             scheduler_inflight_ttl=-5.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4/5 auto-wire env vars (ce-review PS-02 / T-06)
+# ---------------------------------------------------------------------------
+
+
+def test_swarmq_burst_mode_env_enables(monkeypatch):
+    monkeypatch.setenv("SWARMQ_BURST_MODE", "1")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.burst_mode is True
+
+
+def test_swarmq_burst_idle_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("SWARMQ_BURST_IDLE_TIMEOUT", "2.5")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.burst_idle_timeout == 2.5
+
+
+def test_swarmq_burst_idle_timeout_zero_raises(monkeypatch):
+    monkeypatch.setenv("SWARMQ_BURST_IDLE_TIMEOUT", "0")
+    with pytest.raises(ConfigurationError, match="burst_idle_timeout"):
+        SwarmQConfig(broker_url="x", backend_url="x")
+
+
+def test_swarmq_priorities_env_enables(monkeypatch):
+    monkeypatch.setenv("SWARMQ_PRIORITIES", "yes")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.priorities is True
+
+
+def test_swarmq_metrics_port_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_METRICS_PORT", "9999")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.metrics_port == 9999
+
+
+def test_swarmq_metrics_port_non_integer_raises(monkeypatch):
+    monkeypatch.setenv("SWARMQ_METRICS_PORT", "abc")
+    with pytest.raises(ConfigurationError, match="must be an integer"):
+        SwarmQConfig(broker_url="x", backend_url="x")
+
+
+def test_swarmq_metrics_port_out_of_range_raises(monkeypatch):
+    monkeypatch.setenv("SWARMQ_METRICS_PORT", "99999")
+    with pytest.raises(ConfigurationError, match="1..65535"):
+        SwarmQConfig(broker_url="x", backend_url="x")
+
+
+def test_swarmq_health_port_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_HEALTH_PORT", "8081")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.health_port == 8081
+
+
+def test_swarmq_metrics_host_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_METRICS_HOST", "0.0.0.0")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.metrics_host == "0.0.0.0"
+
+
+def test_swarmq_health_host_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_HEALTH_HOST", "0.0.0.0")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.health_host == "0.0.0.0"

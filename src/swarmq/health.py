@@ -22,16 +22,34 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
 
 logger = logging.getLogger("swarmq.health")
+
+
+class _DependencyState(TypedDict):
+    ok: bool
+    error: str | None
+
+
+class ReadinessSnapshot(TypedDict):
+    """Shape of :meth:`HealthChecker.check_all` (ce-review KP-003).
+
+    Documented for callers that compose /ready checks (Kubernetes
+    probes, test fixtures, downstream health aggregators).
+    """
+
+    ready: bool
+    broker: _DependencyState
+    backend: _DependencyState
 
 
 class HealthChecker:
@@ -74,8 +92,10 @@ class HealthChecker:
             return cls
         if len(msg) > 120 or "://" in msg or "@" in msg:
             return cls
-        # Strip obvious host:port fragments (match '<alnum>.<alnum>:NNNN').
-        import re
+        # Strip host:port fragments. Two patterns:
+        #  (a) '[::1]:6379' — IPv6 bracket notation (ce-review SEC-F1)
+        #  (b) 'host.example:6379' — v4 / DNS
+        msg = re.sub(r"\[[0-9a-fA-F:]+\]:\d+", "<redacted>", msg)
         msg = re.sub(r"[\w.-]+:\d+", "<redacted>", msg)
         return f"{cls}: {msg}"
 
@@ -105,21 +125,15 @@ class HealthChecker:
             logger.info("check_broker_failed", exc_info=exc)
             return False, self._sanitise_error(exc)
 
-    async def check_all(self) -> dict:
+    async def check_all(self) -> "ReadinessSnapshot":
         """Return a structured snapshot suitable for JSON serialisation."""
         broker_ok, broker_err = await self.check_broker()
         backend_ok, backend_err = await self.check_backend()
-        return {
-            "ready": broker_ok and backend_ok,
-            "broker": {
-                "ok": broker_ok,
-                "error": broker_err,
-            },
-            "backend": {
-                "ok": backend_ok,
-                "error": backend_err,
-            },
-        }
+        return ReadinessSnapshot(
+            ready=broker_ok and backend_ok,
+            broker=_DependencyState(ok=broker_ok, error=broker_err),
+            backend=_DependencyState(ok=backend_ok, error=backend_err),
+        )
 
 
 class HealthServer:

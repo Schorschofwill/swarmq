@@ -77,7 +77,15 @@ async def parse_http_request(
     """
     try:
         async with asyncio.timeout(_REQUEST_TIMEOUT_S):
-            request_line = await reader.readline()
+            # StreamReader.readline() wraps LimitOverrunError in
+            # ValueError when the line exceeds the 64 KB default limit.
+            # Catch at the readline boundary so the client gets 400 and
+            # we log-and-move-on instead of _accept()'s broad except
+            # logging a full exception trace (ce-review SEC-F2).
+            try:
+                request_line = await reader.readline()
+            except ValueError as exc:
+                raise BadRequest("request line too long") from exc
             if not request_line:
                 return None
             try:
@@ -86,7 +94,10 @@ async def parse_http_request(
                 raise BadRequest("malformed request line") from exc
             # Drain headers (bounded by outer timeout AND line-count cap).
             for _ in range(_MAX_HEADER_LINES):
-                line = await reader.readline()
+                try:
+                    line = await reader.readline()
+                except ValueError as exc:
+                    raise BadRequest("header line too long") from exc
                 if line in (b"\r\n", b"\n", b""):
                     break
             else:

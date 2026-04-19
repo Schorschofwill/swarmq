@@ -12,6 +12,49 @@ import pytest
 from swarmq.health import HealthChecker, HealthServer, serve_health
 
 
+class TestSanitiseError:
+    """ce-review T-04 / SEC-F1 — edge cases in HealthChecker._sanitise_error."""
+
+    def test_empty_message_returns_class_name(self):
+        exc = TimeoutError()
+        assert HealthChecker._sanitise_error(exc) == "TimeoutError"
+
+    def test_url_like_message_collapses_to_class_name(self):
+        exc = ConnectionError("amqp://user:pw@host/vhost")
+        assert HealthChecker._sanitise_error(exc) == "ConnectionError"
+
+    def test_at_symbol_collapses_to_class_name(self):
+        # Could be embedded credentials; conservative collapse.
+        exc = ConnectionError("user@host")
+        assert HealthChecker._sanitise_error(exc) == "ConnectionError"
+
+    def test_long_message_collapses_to_class_name(self):
+        exc = ConnectionError("x" * 121)
+        assert HealthChecker._sanitise_error(exc) == "ConnectionError"
+
+    def test_host_port_redacted(self):
+        exc = ConnectionError("connecting to localhost:6379")
+        result = HealthChecker._sanitise_error(exc)
+        assert "localhost:6379" not in result
+        assert "<redacted>" in result
+
+    def test_ipv6_bracket_host_port_redacted(self):
+        """ce-review SEC-F1 — IPv6 bracket notation must be redacted."""
+        exc = ConnectionError("Error connecting to [::1]:6379")
+        result = HealthChecker._sanitise_error(exc)
+        assert "[::1]:6379" not in result
+        assert "<redacted>" in result
+
+    def test_ipv6_full_address_redacted(self):
+        exc = ConnectionError("tried [2001:db8::1]:8080 and failed")
+        result = HealthChecker._sanitise_error(exc)
+        assert "2001:db8::1" not in result
+
+    def test_short_message_without_leak_preserved(self):
+        exc = ValueError("bad config")
+        assert HealthChecker._sanitise_error(exc) == "ValueError: bad config"
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

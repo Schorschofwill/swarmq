@@ -12,8 +12,14 @@ import time
 import uuid
 from collections.abc import Callable
 
+from typing import TYPE_CHECKING
+
 import aio_pika
 import structlog
+
+if TYPE_CHECKING:
+    from swarmq.health import HealthServer
+    from swarmq.metrics import Metrics, MetricsServer
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backoff import calculate_backoff
@@ -154,9 +160,12 @@ class Worker:
         self._burst_monitor_task: asyncio.Task | None = None
         # R5.1/R5.2 auto-wire state (ce-review REL-06). Populated in
         # start() when config.metrics_port / config.health_port are set.
-        self._metrics = None  # type: ignore[assignment]
-        self._metrics_server = None  # type: ignore[assignment]
-        self._health_server = None  # type: ignore[assignment]
+        # Proper Optional typing (kieran KP-001 / M-04) — TYPE_CHECKING
+        # import keeps the runtime dependency lazy without the
+        # type: ignore suppressions.
+        self._metrics: Metrics | None = None
+        self._metrics_server: MetricsServer | None = None
+        self._health_server: HealthServer | None = None
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -742,29 +751,62 @@ class Worker:
         # to construct Metrics + install_signal_collectors + MetricsServer
         # manually — the default wiring is opt-in via metrics_port /
         # health_port config.
-        if self._config.metrics_port is not None:
-            from swarmq.metrics import (
-                Metrics,
-                MetricsServer,
-                install_signal_collectors,
-            )
-            self._metrics = Metrics()
-            install_signal_collectors(self._signal_dispatcher, self._metrics)
-            self._metrics_server = MetricsServer(
-                self._metrics,
-                host=self._config.metrics_host,
-                port=self._config.metrics_port,
-            )
-            await self._metrics_server.start()
-        if self._config.health_port is not None:
-            from swarmq.health import HealthChecker, HealthServer
-            checker = HealthChecker(self._broker, self._backend)
-            self._health_server = HealthServer(
-                checker,
-                host=self._config.health_host,
-                port=self._config.health_port,
-            )
-            await self._health_server.start()
+        #
+        # ce-review COR-001/REL-F-01: the partial-start cleanup path
+        # wraps the whole observability bring-up. A failure after
+        # scheduler.start() OR after metrics_server.start() now unwinds
+        # whatever previously succeeded before re-raising, so a port
+        # conflict on --health-port no longer orphans the metrics
+        # socket. Scheduler + broker-consume cleanup happens in
+        # _execute_shutdown which is NOT reached on this path, so we
+        # call a dedicated _rollback_partial_start_observability helper.
+        try:
+            if self._config.metrics_port is not None:
+                from swarmq.metrics import (
+                    Metrics,
+                    MetricsServer,
+                    install_signal_collectors,
+                )
+                self._metrics = Metrics()
+                install_signal_collectors(
+                    self._signal_dispatcher, self._metrics,
+                )
+                self._metrics_server = MetricsServer(
+                    self._metrics,
+                    host=self._config.metrics_host,
+                    port=self._config.metrics_port,
+                )
+                await self._metrics_server.start()
+            if self._config.health_port is not None:
+                from swarmq.health import HealthChecker, HealthServer
+                checker = HealthChecker(self._broker, self._backend)
+                self._health_server = HealthServer(
+                    checker,
+                    host=self._config.health_host,
+                    port=self._config.health_port,
+                )
+                await self._health_server.start()
+        except Exception:
+            # COR-002 tail: the scheduler has already started; its
+            # leader-election + poll tasks would leak as "Task was
+            # destroyed but it is pending!" on loop teardown without
+            # this rollback.
+            if self._metrics_server is not None:
+                try:
+                    await self._metrics_server.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("rollback_metrics_stop_failed")
+            if self._health_server is not None:
+                try:
+                    await self._health_server.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("rollback_health_stop_failed")
+            if self._scheduler is not None:
+                try:
+                    await self._scheduler.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("rollback_scheduler_stop_failed")
+            raise
 
         # ce-review COR-M-05: warn when a registered task declares
         # priority != "normal" but the worker is not configured for

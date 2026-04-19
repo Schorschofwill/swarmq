@@ -8,6 +8,26 @@ from dataclasses import dataclass, field
 from swarmq.exceptions import ConfigurationError
 
 
+def _parse_port(raw: str, env_var: str) -> int:
+    """Parse an env-var port value with range validation.
+
+    Mirrors the CLI-side ``_positive_int`` guard (ce-review kieran
+    RR-02). A bad port surfaces here as ``ConfigurationError`` rather
+    than a confusing ``OSError`` at bind time.
+    """
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"{env_var} must be an integer, got {raw!r}"
+        ) from exc
+    if not 1 <= port <= 65535:
+        raise ConfigurationError(
+            f"{env_var} must be in 1..65535, got {port}"
+        )
+    return port
+
+
 @dataclass
 class SwarmQConfig:
     broker_url: str = ""
@@ -249,15 +269,22 @@ class SwarmQConfig:
             self.priorities = env_priorities.lower() in ("true", "1", "yes")
 
         # R5.1/R5.2 env-var overrides (ce-review REL-06).
+        # ce-review kieran RR-02: validate port ranges at config-time
+        # so a bad env var produces a ConfigurationError instead of a
+        # confusing OSError at bind time.
         env_metrics_port = os.environ.get("SWARMQ_METRICS_PORT", "")
         if env_metrics_port:
-            self.metrics_port = int(env_metrics_port)
+            self.metrics_port = _parse_port(
+                env_metrics_port, "SWARMQ_METRICS_PORT",
+            )
         env_metrics_host = os.environ.get("SWARMQ_METRICS_HOST", "")
         if env_metrics_host:
             self.metrics_host = env_metrics_host
         env_health_port = os.environ.get("SWARMQ_HEALTH_PORT", "")
         if env_health_port:
-            self.health_port = int(env_health_port)
+            self.health_port = _parse_port(
+                env_health_port, "SWARMQ_HEALTH_PORT",
+            )
         env_health_host = os.environ.get("SWARMQ_HEALTH_HOST", "")
         if env_health_host:
             self.health_host = env_health_host

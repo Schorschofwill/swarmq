@@ -78,6 +78,23 @@ class TestRabbitMQBrokerDeclareQueue:
         dlq_args = dlq_call.kwargs["arguments"]
         assert dlq_args["x-queue-type"] == "quorum"
 
+    async def test_declare_queue_wraps_amqp_channel_error(self, connected_broker):
+        """ce-review REL-05 / T-02: pre-existing queue with mismatched
+        args raises aio_pika AMQPChannelError → we wrap it in
+        BrokerConnectionError with a fix hint."""
+        import aio_pika.exceptions
+
+        from swarmq.exceptions import BrokerConnectionError
+
+        broker = connected_broker
+        broker._publish_channel.declare_queue = AsyncMock(
+            side_effect=aio_pika.exceptions.ChannelPreconditionFailed(
+                "arg-mismatch",
+            ),
+        )
+        with pytest.raises(BrokerConnectionError, match="Existing queue"):
+            await broker.declare_queue("tasks")
+
 
 class TestRabbitMQBrokerPublish:
     async def test_publish_sends_message_with_persistent_delivery(self):
