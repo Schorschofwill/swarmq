@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from typing import Any
 
@@ -624,17 +625,88 @@ async def test_signal_task_locked(
     assert payload["lock_conflict_count"] >= 1
 
 
-@pytest.mark.skip(
-    reason="TASK_EXPIRED is declared in signals.py but never dispatched "
-           "by the worker or client. No public API currently marks a "
-           "task as expired (eta-in-the-past still schedules normally). "
-           "Slot reserved for the future TTL-expiry emit path."
-)
 async def test_signal_task_expired(
     rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
 ):
-    """TASK_EXPIRED — placeholder until the expiry emit path lands."""
-    pass  # pragma: no cover
+    """TASK_EXPIRED fires when a message's enqueue age exceeds
+    TaskInfo(max_age=...) at consume time (R4.4).
+
+    Uses a manually-patched enqueued_at header (set to 1h in the past)
+    so the test doesn't need to wait for the max_age window to elapse.
+    """
+    queue = _unique_queue()
+    task_name = _task_name("expired")
+    captured: list[dict] = []
+    expired_event = asyncio.Event()
+
+    class ExpiringTask(Task):
+        task_info = TaskInfo(
+            name=task_name, queues=[queue], max_retries=0,
+            max_age=10,
+        )
+
+        async def run(self) -> str:  # pragma: no cover — never runs
+            return "should_not_run"
+
+    # Client-side: publish directly via a raw aio_pika channel with a
+    # stale enqueued-at header — simulates a message that has been
+    # sitting in the queue past its max_age.
+    import aio_pika
+    conn = await aio_pika.connect_robust(rabbitmq_url)
+    try:
+        ch = await conn.channel()
+        # Declare via SwarmQ so queue args match.
+        broker_for_decl = RabbitMQBroker(rabbitmq_url)
+        await broker_for_decl.connect()
+        try:
+            await broker_for_decl.declare_queue(queue)
+        finally:
+            await broker_for_decl.close()
+        stale_ts = int(time.time()) - 3600  # 1h ago, max_age=10
+        await ch.default_exchange.publish(
+            aio_pika.Message(
+                body=(
+                    b'{"task": {"id": "expired-id-1", '
+                    b'"name": "' + task_name.encode() + b'", '
+                    b'"queue": "' + queue.encode() + b'"}, '
+                    b'"args": [], "kwargs": {}}'
+                ),
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                headers={"x-swarmq-enqueued-at": stale_ts},
+            ),
+            routing_key=queue,
+        )
+        await ch.close()
+    finally:
+        await conn.close()
+
+    # Worker-side: consume, expect TASK_EXPIRED, NOT task execution.
+    worker_broker = RabbitMQBroker(rabbitmq_url)
+    worker_backend = ValkeyBackend(valkey_url)
+    worker_app = SwarmQ(
+        worker_broker, worker_backend, queues=[queue], concurrency=1,
+    )
+
+    @worker_app.on_signal(Signal.TASK_EXPIRED)
+    async def _cap(**kw: Any) -> None:
+        captured.append(kw)
+        expired_event.set()
+
+    worker_task = asyncio.create_task(worker_app.start_worker())
+    try:
+        await asyncio.wait_for(expired_event.wait(), timeout=10)
+    finally:
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_task
+        await worker_broker.close()
+        await worker_backend.close()
+
+    assert len(captured) == 1
+    assert captured[0]["task_name"] == task_name
+    assert captured[0]["queue"] == queue
+    assert captured[0]["max_age_s"] == 10
+    assert captured[0]["age_s"] >= 3600
 
 
 # ---------------------------------------------------------------------------

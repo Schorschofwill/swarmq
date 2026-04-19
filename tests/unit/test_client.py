@@ -1164,13 +1164,15 @@ class TestClientUniqueSchedule:
         self, client_setnx, broker, backend_setnx,
     ):
         """No unique_for kwarg + TaskInfo default is None → no SETNX call,
-        no dedup header."""
+        only R4.4 enqueued-at header (no dedup headers)."""
         task_id = await client_setnx.schedule("add", 1, 2, queue="math")
         broker.publish.assert_awaited_once()
         backend_setnx.setnx_unique.assert_not_awaited()
         call_kwargs = broker.publish.await_args.kwargs
-        # headers=None when no dedup (or absent entirely)
-        assert call_kwargs.get("headers") is None
+        headers = call_kwargs.get("headers")
+        assert headers is not None
+        assert set(headers.keys()) == {"x-swarmq-enqueued-at"}
+        assert isinstance(headers["x-swarmq-enqueued-at"], int)
 
     async def test_schedule_with_unique_for_calls_setnx_and_sets_header(
         self, client_setnx, broker, backend_setnx,
@@ -1549,13 +1551,17 @@ class TestClientUniqueScheduleMany:
     async def test_schedule_many_without_unique_for_is_unchanged(
         self, client_setnx, broker, backend_setnx,
     ):
-        """Baseline: no unique_for → no SETNX, headers absent."""
+        """Baseline: no unique_for → no SETNX, only R4.4 enqueued-at header."""
         tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
         ids = await client_setnx.schedule_many(tasks, queue="math")
         assert len(ids) == 2
         backend_setnx.setnx_unique.assert_not_awaited()
         for call in broker.publish.await_args_list:
-            assert call.kwargs.get("headers") is None
+            headers = call.kwargs.get("headers")
+            # R4.4: enqueued-at is always stamped; dedup headers are absent.
+            assert headers is not None
+            assert set(headers.keys()) == {"x-swarmq-enqueued-at"}
+            assert isinstance(headers["x-swarmq-enqueued-at"], int)
 
     async def test_schedule_many_per_element_setnx_and_header(
         self, client_setnx, broker, backend_setnx,

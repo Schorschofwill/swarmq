@@ -18,7 +18,7 @@ import structlog
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backoff import calculate_backoff
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
+from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.cancellation import (
     CANCEL_REASON_CANCEL,
     CANCEL_REASON_TIMEOUT,
@@ -156,6 +156,91 @@ class Worker:
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
         return self._middleware_chain_factory()
+
+    async def _check_max_age_expired(
+        self,
+        message: "aio_pika.abc.AbstractIncomingMessage",
+        task_info: TaskInfo,
+        queue: str,
+        task_id: str,
+        task_name: str,
+    ) -> bool:
+        """R4.4 — route expired messages to the DLQ with TASK_EXPIRED.
+
+        Returns True when the message was expired and handled; caller
+        exits the main pipeline. Returns False on the happy path.
+
+        ``max_age=None`` disables the check entirely. A missing
+        ``x-swarmq-enqueued-at`` header is treated as 'not expired'
+        (defensive — pre-R4.4 producers + external producers).
+        """
+        if task_info.max_age is None:
+            return False
+        headers = message.headers or {}
+        enqueued_at = headers.get(HEADER_ENQUEUED_AT)
+        if enqueued_at is None:
+            return False
+        try:
+            enqueued_ts = int(enqueued_at)
+        except (TypeError, ValueError):
+            # Malformed header — treat as non-expiring rather than DLQ
+            # on a header-shape bug. An expired task with a corrupt
+            # header still gets MAX_RETRIES redeliveries + x-delivery-
+            # limit as the fallback safety net.
+            return False
+        now = int(time.time())
+        age = now - enqueued_ts
+        if age < task_info.max_age:
+            return False
+
+        logger.warning(
+            "task_expired",
+            task_id=task_id,
+            task_name=task_name,
+            queue=queue,
+            age_s=age,
+            max_age_s=task_info.max_age,
+        )
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_EXPIRED,
+            task_id=task_id,
+            task_name=task_name,
+            queue=queue,
+            age_s=age,
+            max_age_s=task_info.max_age,
+        )
+        # Store an error result so callers waiting on get_result() see
+        # a clean TaskError("expired") instead of an indefinite timeout.
+        try:
+            await self._backend.store_result(
+                task_id,
+                build_result_dict(
+                    task_id=task_id,
+                    queue=queue,
+                    task_name=task_name,
+                    is_error=True,
+                    is_cancelled=False,
+                    error_message=(
+                        f"task expired: age {age}s exceeds "
+                        f"max_age {task_info.max_age}s"
+                    ),
+                ),
+                ttl_ms=(task_info.result_ttl or self._config.result_ttl) * 1000,
+                op_timeout=self._config.backend_op_timeout,
+            )
+        except BackendConnectionError:
+            # Best-effort: if the backend is down, the message still
+            # routes to the DLQ for operator inspection.
+            logger.warning("task_expired_result_store_failed")
+
+        # Route to DLQ + ack. Same pattern as _send_to_dlq but inline
+        # because the DLQ semantics of 'expired' differ from 'error'
+        # (different signal, no retry-count bump).
+        await self._broker.publish_to_dead_letter_queue(
+            queue, message.body, headers=dict(message.headers or {}),
+        )
+        await self._broker.ack(message)
+        return True
 
     async def _try_apply_rate_limit(
         self,
@@ -1194,6 +1279,20 @@ class Worker:
                 return
 
             task_info = task_class.task_info
+
+            # R4.4 Task Expiry: check max_age BEFORE any execution
+            # stages. An expired message takes the DLQ path without
+            # entering rate-limit, lock, pre_execute, etc. The enqueue
+            # time is stamped at publish (see Client.schedule +
+            # schedule_many), so this runs on every delivery including
+            # retry-after-delay-queue — each retry's clock starts from
+            # the ORIGINAL enqueue, which is the intended semantic
+            # (expiry is a wall-time contract, not a per-delivery one).
+            if await self._check_max_age_expired(
+                message, task_info, queue, task_id, task_name,
+            ):
+                _unique_release_pending = False
+                return
 
             # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
             # so a Valkey or broker hiccup cannot drop a message that has

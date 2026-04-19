@@ -14,3 +14,9 @@ from __future__ import annotations
 # (completion-mode release).
 HEADER_UNIQUE_HASH = "x-swarmq-unique-hash"
 HEADER_UNIQUE_UNTIL = "x-swarmq-unique-until"
+
+# R4.4 Task Expiry — unix-epoch seconds (int) set by the client at
+# publish time; worker compares (now - enqueued_at) to task_info.max_age
+# on consume. Expired messages route to DLQ with TASK_EXPIRED signal
+# instead of running.
+HEADER_ENQUEUED_AT = "x-swarmq-enqueued-at"

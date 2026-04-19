@@ -88,6 +88,12 @@ class TaskInfo:
     catchup: bool = False
     unique_for: int | None = None
     unique_until: UniqueUntil = "completion"
+    # R4.4 Task Expiry. When set, the message carries an
+    # x-swarmq-enqueued-at header at publish time; the worker checks
+    # (now - enqueued_at) > max_age at consume time and routes the
+    # message to the DLQ with a TASK_EXPIRED signal instead of
+    # running it. Seconds. None disables expiry.
+    max_age: int | None = None
 
     def __init__(
         self,
@@ -108,6 +114,7 @@ class TaskInfo:
         catchup: bool = False,
         unique_for: int | None = None,
         unique_until: UniqueUntil = "completion",
+        max_age: int | None = None,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -130,6 +137,7 @@ class TaskInfo:
         object.__setattr__(self, "catchup", catchup)
         object.__setattr__(self, "unique_for", unique_for)
         object.__setattr__(self, "unique_until", unique_until)
+        object.__setattr__(self, "max_age", max_age)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -156,6 +164,8 @@ class TaskInfo:
             # Validate eagerly at construction so a bad string fails at
             # task-module import time, not inside the worker loop.
             parse_rate_limit(self.rate_limit)
+        if self.max_age is not None and self.max_age <= 0:
+            raise ValueError("max_age must be > 0 when set")
         if self.max_concurrency < 1:
             raise ValueError(
                 f"max_concurrency must be >= 1 (got {self.max_concurrency})"

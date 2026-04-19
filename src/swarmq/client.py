@@ -26,7 +26,7 @@ from swarmq.middleware import (
     coerce_middleware_chain_factory,
 )
 from swarmq.registry import TaskRegistry
-from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
+from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.progress import ProgressInfo
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import (
@@ -324,6 +324,12 @@ class Client:
             # at the right point (start-mode: pickup; completion-mode: terminal).
             headers[HEADER_UNIQUE_HASH] = dedup_hash
             headers[HEADER_UNIQUE_UNTIL] = resolved_unique_until
+
+        # R4.4 Task Expiry: always stamp the enqueue time. Worker
+        # compares (now - enqueued_at) to task_info.max_age at pickup.
+        # Timestamp is unconditional so tasks with task_info.max_age=None
+        # can still be debugged (header is useful even without expiry).
+        headers[HEADER_ENQUEUED_AT] = int(time.time())
 
         message = {
             "task": {
@@ -787,6 +793,9 @@ class Client:
                     headers[HEADER_UNIQUE_HASH] = dedup_hash
                     headers[HEADER_UNIQUE_UNTIL] = entry["unique_until"]
                     claimed_flags[i] = (dedup_hash, task_id)
+
+                # R4.4: always stamp enqueue time (see schedule()).
+                headers[HEADER_ENQUEUED_AT] = int(time.time())
 
                 task_ids[i] = task_id
                 publish_indices.append(i)
