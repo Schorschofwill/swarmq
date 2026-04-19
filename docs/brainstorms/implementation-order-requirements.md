@@ -28,7 +28,7 @@ Phase 0: Projektstruktur          [kein Produktionscode]
 Phase 1: Minimaler Roundtrip      [Task -> Queue -> Worker -> Ergebnis]
 Phase 2: Produktionsfaehiger Kern [Retries, DLQ, Shutdown, Logging]
 Phase 3: Komfort-Features         [Middleware, Scheduler, CLI, Rate Limiting]
-Phase 4: Erweiterte Features      [Workflows, Bulk, Priorities, Autoscaling]
+Phase 4: Erweiterte Features      [Priorities, Expiry, Burst, ProcessManager, Autoscaling — Workflows + Bulk-Optim. verschoben]
 Phase 5: Operations               [Metrics, Health Checks, Docs]
 ```
 
@@ -87,13 +87,23 @@ Phase 5: Operations               [Metrics, Health Checks, Docs]
 
 **Phase 4 — Erweiterte Features**
 
-- R4.1. Workflow-Primitiven: `Signature` (via `Task.s()` Klassenmethode und `sig("name", ...)` Funktion). `chain()`, `group()`, `chord()`. Chord-Completion via atomarem Lua INCR+Check in Valkey. Resultat-Weitergabe inline (<64KB) oder via Valkey-Referenz. Referenz: `aufgabe.md` Abschnitt 6.6, `docs/recherche-workflows-cancel-progress.md`, `docs/recherche-deepening-lua-scripts.md` Abschnitt 7.
-- R4.2. Bulk Enqueue: `schedule_many([(task_name, args, kwargs), ...])`. Batch-Publish mit Publisher Confirms + Valkey Pipeline fuer Result-Keys. Referenz: `aufgabe.md` Abschnitt 6.4, `docs/recherche-operational-features.md` Abschnitt 6.
+Reihenfolge geändert (2026-04-19): R4.1 Workflows + R4.2 Bulk-Enqueue
+nach hinten verschoben. Operator-Features (Priorities, Expiry, Burst,
+ProcessManager, Autoscaling) liefern unmittelbaren Production-Wert;
+die Workflow-Primitiven sind eine Ergänzung, die einen aktiven
+Use-Case braucht, um sinnvoll dimensioniert zu werden.
+
 - R4.3. Task-Prioritaeten: Separate Queues (high/default/low) statt RabbitMQ Priority Queues (Quorum-kompatibel). Gewichtete Consumption (3:2:1). priority-Feld in TaskInfo mapped auf Queue-Suffix. Referenz: `aufgabe.md` Abschnitt 4.1 (priority), `docs/recherche-operational-features.md` Abschnitt 7.
 - R4.4. Task Expiry (max_age): Application-Level-Check bei Consumption (Timestamp in Message-Header + max_age → verwerfen wenn abgelaufen). RabbitMQ per-message TTL als Sicherheitsnetz (1.5x max_age). Signal TASK_EXPIRED. DLQ-Eintrag. Referenz: `aufgabe.md` Abschnitt 4.1 (max_age), `docs/recherche-operational-features.md` Abschnitt 8.
 - R4.5. Burst Mode: `swarmq worker --burst`. Consumer-Loop mit Idle-Timeout. Exit 0 wenn alle Queues leer. Referenz: `aufgabe.md` Abschnitt 7.5, `docs/recherche-operational-features.md` Abschnitt 2.
 - R4.6. ProcessManager: Multiprocessing mit spawn-Kontext. Worker-Prozesse starten/ueberwachen. Auto-Restart bei Crash (max_restarts=5 pro Worker pro Stunde, danach ERROR-Log und Worker als failed markiert). SIGHUP-Reload via os.execvp(). Referenz: `prototypes/worker_prototype.py`, `aufgabe.md` Abschnitt 7.
 - R4.7. Worker Autoscaling: `--autoscale=max,min`. ProcessManager passt Worker-Anzahl basierend auf Queue-Tiefe an. Scale-Up bei voller Auslastung, Scale-Down bei Idle. Cooldown zwischen Skalierungen. Referenz: `aufgabe.md` Abschnitt 7.4, `docs/recherche-operational-features.md` Abschnitt 4.
+
+*Verschoben — Bearbeitung nach Phase 5 (oder später, sobald ein
+realer Use-Case die API-Form klärt):*
+
+- R4.1. Workflow-Primitiven: `Signature` (via `Task.s()` Klassenmethode und `sig("name", ...)` Funktion). `chain()`, `group()`, `chord()`. Chord-Completion via atomarem Lua INCR+Check in Valkey. Resultat-Weitergabe inline (<64KB) oder via Valkey-Referenz. Referenz: `aufgabe.md` Abschnitt 6.6, `docs/recherche-workflows-cancel-progress.md`, `docs/recherche-deepening-lua-scripts.md` Abschnitt 7.
+- R4.2. Bulk Enqueue (Erweiterung): `schedule_many` mit Batch-Publish + Publisher-Confirms-Pipeline + Valkey-Pipeline fuer Result-Keys. Anmerkung: die Basis-Form von `schedule_many` ist bereits in R3.5 (Unique-Tasks) implementiert; R4.2 hebt sie auf den Throughput-optimierten Modus. Referenz: `aufgabe.md` Abschnitt 6.4, `docs/recherche-operational-features.md` Abschnitt 6.
 
 **Phase 5 — Operations**
 
