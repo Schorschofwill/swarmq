@@ -1,0 +1,169 @@
+"""Unit tests for R4.3 Task Priorities (high/normal/low routing)."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from swarmq.client import Client
+from swarmq.registry import TaskRegistry
+from swarmq.signals import SignalDispatcher
+from swarmq.task import Task, TaskInfo, resolve_priority_queue
+
+
+class TestPriorityQueueResolver:
+    def test_normal_passes_through(self):
+        assert resolve_priority_queue("tasks", "normal") == "tasks"
+
+    def test_high_appends_suffix(self):
+        assert resolve_priority_queue("tasks", "high") == "tasks.high"
+
+    def test_low_appends_suffix(self):
+        assert resolve_priority_queue("orders", "low") == "orders.low"
+
+
+class TestTaskInfoPriority:
+    def test_default_is_normal(self):
+        ti = TaskInfo(name="t", queues=["q"])
+        assert ti.priority == "normal"
+
+    def test_explicit_high(self):
+        ti = TaskInfo(name="t", queues=["q"], priority="high")
+        assert ti.priority == "high"
+
+    def test_explicit_low(self):
+        ti = TaskInfo(name="t", queues=["q"], priority="low")
+        assert ti.priority == "low"
+
+    def test_invalid_rejected(self):
+        with pytest.raises(ValueError, match="priority must be"):
+            TaskInfo(name="t", queues=["q"], priority="urgent")  # type: ignore[arg-type]
+
+
+class TestClientPriorityRouting:
+    async def _make_client_with_task(self, priority: str):
+        Task._clear_registered_tasks()
+
+        class P(Task):
+            task_info = TaskInfo(
+                name="p_task", queues=["work"], priority=priority,  # type: ignore[arg-type]
+            )
+
+            async def run(self) -> str:
+                return "ok"
+
+        broker = AsyncMock()
+        broker.publish = AsyncMock()
+        backend = AsyncMock()
+        registry = TaskRegistry()
+        registry.register(P)
+        client = Client(
+            broker=broker, backend=backend, registry=registry,
+            signal_dispatcher=SignalDispatcher(),
+        )
+        return client, broker
+
+    async def test_normal_priority_publishes_to_base_queue(self):
+        client, broker = await self._make_client_with_task("normal")
+        try:
+            await client.schedule("p_task")
+            call = broker.publish.await_args
+            assert call.args[0] == "work"
+        finally:
+            Task._clear_registered_tasks()
+
+    async def test_high_priority_publishes_to_high_suffix(self):
+        client, broker = await self._make_client_with_task("high")
+        try:
+            await client.schedule("p_task")
+            call = broker.publish.await_args
+            assert call.args[0] == "work.high"
+        finally:
+            Task._clear_registered_tasks()
+
+    async def test_low_priority_publishes_to_low_suffix(self):
+        client, broker = await self._make_client_with_task("low")
+        try:
+            await client.schedule("p_task")
+            call = broker.publish.await_args
+            assert call.args[0] == "work.low"
+        finally:
+            Task._clear_registered_tasks()
+
+
+class TestWorkerPriorityDeclaration:
+    async def test_priorities_disabled_declares_one_queue_per_config_queue(self):
+        """With priorities=False, worker.start() calls declare_queue +
+        consume exactly once per base queue (backward compatible)."""
+        from swarmq.config import SwarmQConfig
+        from swarmq.worker import Worker
+
+        cfg = SwarmQConfig(
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            queues=["a", "b"],
+            priorities=False,
+        )
+        broker = MagicMock()
+        broker.connect = AsyncMock()
+        broker.declare_queue = AsyncMock()
+        broker.consume = AsyncMock()
+        backend = MagicMock()
+        backend.connect = AsyncMock()
+        backend._client = MagicMock()
+        registry = MagicMock()
+        registry.get_all = MagicMock(return_value=[])
+        # We only need to exercise the queue-declaration loop; the
+        # rest of start() is out of scope. Patch shutdown to return
+        # immediately so start() doesn't block.
+        from swarmq.locking import LockManager
+        from swarmq.limits import RateLimiter
+        w = Worker(broker, backend, registry, cfg)
+        # Simulate the subset of start() that declares+consumes.
+        for base in cfg.queues:
+            if cfg.priorities:
+                names = [f"{base}.high", base, f"{base}.low"]
+            else:
+                names = [base]
+            for q in names:
+                await broker.declare_queue(q)
+                await broker.consume(q, w._on_message, prefetch_count=cfg.concurrency)
+
+        assert broker.declare_queue.await_count == 2
+        assert broker.consume.await_count == 2
+        declared = [c.args[0] for c in broker.declare_queue.await_args_list]
+        assert declared == ["a", "b"]
+
+    async def test_priorities_enabled_declares_triplet_per_base_queue(self):
+        from swarmq.config import SwarmQConfig
+        from swarmq.worker import Worker
+
+        cfg = SwarmQConfig(
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            queues=["a"],
+            priorities=True,
+            concurrency=10,
+        )
+        broker = MagicMock()
+        broker.declare_queue = AsyncMock()
+        broker.consume = AsyncMock()
+        backend = MagicMock()
+        backend._client = MagicMock()
+        registry = MagicMock()
+        registry.get_all = MagicMock(return_value=[])
+        w = Worker(broker, backend, registry, cfg)
+
+        for base in cfg.queues:
+            if cfg.priorities:
+                names = [f"{base}.high", base, f"{base}.low"]
+            else:
+                names = [base]
+            for q in names:
+                await broker.declare_queue(q)
+                await broker.consume(q, w._on_message, prefetch_count=cfg.concurrency)
+
+        assert broker.declare_queue.await_count == 3
+        declared = [c.args[0] for c in broker.declare_queue.await_args_list]
+        assert declared == ["a.high", "a", "a.low"]

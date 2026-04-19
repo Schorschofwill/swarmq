@@ -143,15 +143,23 @@ class Client:
         """
         resolved_queue = queue
         delivery_mode = "at_least_once"
+        priority: str = "normal"
         if self._registry is not None:
             entry = self._registry.get_entry(task_name)
             if resolved_queue is None:
                 resolved_queue = entry.task_info.queues[0]
             delivery_mode = entry.task_info.delivery.value
+            priority = entry.task_info.priority
         if resolved_queue is None:
             raise ValueError(
                 "No queue specified and no registry available to resolve one"
             )
+        # R4.3: apply priority suffix (.high / .low). 'normal' passes
+        # through unchanged. Only applied when the registry knows the
+        # task — a bare client.schedule(name, queue=...) without a
+        # registered task stays on the explicit queue.
+        if priority != "normal":
+            resolved_queue = f"{resolved_queue}.{priority}"
         return resolved_queue, delivery_mode
 
     async def _claim_unique_flag(

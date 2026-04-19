@@ -715,13 +715,36 @@ class Worker:
         )
         await self._scheduler.start()
 
-        for queue_name in self._config.queues:
-            await self._broker.declare_queue(queue_name)
-            await self._broker.consume(
-                queue_name,
-                self._on_message,
-                prefetch_count=self._config.concurrency,
-            )
+        # R4.3 Task Priorities: expand each base queue into the
+        # high/normal/low triplet when priorities are enabled.
+        #
+        # Semantics: high-priority drain first under LIGHT load simply
+        # because RabbitMQ delivers from whichever of the three queues
+        # has a message. Under FULL saturation the channel-level
+        # prefetch is shared fairly — true weighted prefetch (3:2:1)
+        # would require separate channels per priority, which is
+        # deferred to a follow-up. For v1 operators still get:
+        #   * queue-level visibility of priority splits (DLQ list,
+        #     queue-depth metrics per priority)
+        #   * the routing contract (priority="high" → {queue}.high)
+        #   * independent TTL / retry config per priority via
+        #     separate TaskInfo instances if needed
+        for base_queue in self._config.queues:
+            if self._config.priorities:
+                queue_names = [
+                    f"{base_queue}.high",
+                    base_queue,
+                    f"{base_queue}.low",
+                ]
+            else:
+                queue_names = [base_queue]
+            for queue_name in queue_names:
+                await self._broker.declare_queue(queue_name)
+                await self._broker.consume(
+                    queue_name,
+                    self._on_message,
+                    prefetch_count=self._config.concurrency,
+                )
 
         self._state = WorkerState.RUNNING
 

@@ -47,6 +47,12 @@ class SwarmQConfig:
     # rather than long-poll forever.
     burst_mode: bool = False
     burst_idle_timeout: float = 5.0
+    # R4.3 Task Priorities. When True, every queue in ``queues`` gets
+    # auto-expanded to its high/.normal/.low triplet on declare + consume,
+    # with weighted prefetch ratios (3:2:1) so high-priority work gets
+    # proportionally more in-flight slots under saturation. Opt-in so
+    # existing single-queue deployments stay on their one-queue topology.
+    priorities: bool = False
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")

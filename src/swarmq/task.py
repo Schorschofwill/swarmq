@@ -36,6 +36,11 @@ _FORBIDDEN_CRON_CHARS = re.compile(r"[LW#]")
 _RESERVED_RUN_PARAM_NAMES = frozenset({"delay", "eta", "unique_for", "unique_until"})
 
 UniqueUntil = Literal["start", "completion"]
+# R4.3: three-level priority mapped onto queue name suffixes. Plan
+# rules out RabbitMQ native priority queues (not Quorum-compatible) in
+# favour of separate high/normal/low queues with weighted prefetch
+# ratios on the consumer side.
+PriorityLevel = Literal["high", "normal", "low"]
 _VALID_UNIQUE_UNTIL: frozenset[str] = frozenset({"start", "completion"})
 
 
@@ -94,6 +99,11 @@ class TaskInfo:
     # message to the DLQ with a TASK_EXPIRED signal instead of
     # running it. Seconds. None disables expiry.
     max_age: int | None = None
+    # R4.3 Task Priorities. 'high' and 'low' get a queue-name suffix
+    # ('.high' / '.low') at publish time. Worker-side auto-declaration
+    # is gated on SwarmQConfig.priorities=True (opt-in to keep existing
+    # single-queue deployments unchanged).
+    priority: PriorityLevel = "normal"
 
     def __init__(
         self,
@@ -115,6 +125,7 @@ class TaskInfo:
         unique_for: int | None = None,
         unique_until: UniqueUntil = "completion",
         max_age: int | None = None,
+        priority: PriorityLevel = "normal",
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -138,6 +149,7 @@ class TaskInfo:
         object.__setattr__(self, "unique_for", unique_for)
         object.__setattr__(self, "unique_until", unique_until)
         object.__setattr__(self, "max_age", max_age)
+        object.__setattr__(self, "priority", priority)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -166,6 +178,11 @@ class TaskInfo:
             parse_rate_limit(self.rate_limit)
         if self.max_age is not None and self.max_age <= 0:
             raise ValueError("max_age must be > 0 when set")
+        if self.priority not in ("high", "normal", "low"):
+            raise ValueError(
+                f"priority must be 'high' | 'normal' | 'low', "
+                f"got {self.priority!r}"
+            )
         if self.max_concurrency < 1:
             raise ValueError(
                 f"max_concurrency must be >= 1 (got {self.max_concurrency})"
@@ -429,3 +446,15 @@ def _check_run_signature_reserved_params(cls: type) -> None:
             f"There is no escape-hatch keyword in Client.schedule — the "
             f"rename is required."
         )
+
+
+def resolve_priority_queue(base_queue: str, priority: PriorityLevel) -> str:
+    """Return the routing-key queue name for a given base queue + priority.
+
+    'normal' maps to the base queue unchanged; 'high' and 'low' append
+    the priority as a suffix. Consumers must declare the suffixed
+    variants separately — see :meth:`RabbitMQBroker.declare_queue`.
+    """
+    if priority == "normal":
+        return base_queue
+    return f"{base_queue}.{priority}"
