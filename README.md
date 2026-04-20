@@ -92,10 +92,16 @@ asyncio.run(main())
 ### Operations (Phase 4 + Phase 5)
 
 - **Multi-process workers** (`--processes N`) — supervisor starts N
-  subprocesses, restarts crashed workers (5/hr limit), reloads on
-  SIGHUP via `os.execvp`.
+  subprocesses, restarts crashed workers (5/hr rolling-window limit),
+  reloads on SIGHUP via `os.execvp`. SIGHUP replays the `sys.argv`
+  snapshot captured at supervisor start (by design — in-process
+  argv-mutation cannot influence the re-exec vector). Sichere
+  Launch-Entrypoints (Container CMD, systemd ExecStart) bleiben die
+  Trust-Grenze für das initiale argv.
 - **Autoscaling** (`--autoscale=MIN,MAX`) — queue-depth-driven
-  scale up/down with 30s cooldown and 60s idle window.
+  scale up/down with 30s cooldown, 60s idle window, and a 30s
+  minimum worker age that suppresses spawn→immediate-kill churn
+  when a crashed worker is restarted during an idle period.
 - **Prometheus metrics** (`pip install swarmq[metrics]`) — 7 metrics
   exposed on `/metrics`, drop-in no-op when the dep is absent.
 - **Health endpoints** — `/health` (liveness) + `/ready` (broker +

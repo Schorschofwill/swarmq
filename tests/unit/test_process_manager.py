@@ -315,6 +315,10 @@ class TestProcessManagerAutoscale:
         pm.AUTOSCALE_SAMPLE_INTERVAL = 0.0  # always tick in tests
         pm.SCALE_COOLDOWN_S = 0.0
         pm.SCALE_DOWN_IDLE_S = 0.0
+        # ce-review Unit 5: default 30s would defer every scale-down
+        # in tests (WorkerInfo.spawned_at ≈ now). Zero it so scale
+        # scenarios exercise the decision logic, not the age gate.
+        pm.SCALE_MIN_AGE_S = 0.0
         return pm
 
     def test_scale_up_when_depth_exceeds_threshold(self):
@@ -614,3 +618,156 @@ class TestWorkerConfig:
         cfg = _make_test_cfg()
         with pytest.raises(dataclasses.FrozenInstanceError):
             cfg.module = "mutated"
+
+
+class TestReloadOrphanGuard:
+    """ce-review REL-03 / Unit 4: execvp only when no children survive."""
+
+    def _base_pm(self) -> ProcessManager:
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        return pm
+
+    def test_execvp_called_when_no_alive_children(self):
+        """Happy path: workers dict empty → guard passes → execvp fires."""
+        pm = self._base_pm()
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.os.execvp") as execvp:
+            pm.run()
+            execvp.assert_called_once()
+
+    def test_execvp_blocked_when_alive_child_remains(self):
+        """Guard fires: live worker after shutdown → WARNING + return 0."""
+        pm = self._base_pm()
+        survivor = _fake_process(alive=True, pid=999)
+        pm.workers = {999: WorkerInfo(process=survivor, worker_id=0)}
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.os.execvp") as execvp:
+            rc = pm.run()
+            execvp.assert_not_called()
+            assert rc == 0  # clean exit — systemd must not restart
+
+    def test_execvp_oserror_surfaces_return_1(self):
+        """If execvp itself fails (bad sys.executable), return 1 with
+        ERROR log — not a raw traceback."""
+        pm = self._base_pm()
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.os.execvp",
+                   side_effect=OSError("permission denied")):
+            rc = pm.run()
+            assert rc == 1
+
+
+class TestArgvSnapshot:
+    """ce-review SEC-01 / Unit 6: argv frozen at __init__."""
+
+    def test_argv_captured_on_init(self, monkeypatch):
+        import sys as _sys
+        monkeypatch.setattr(
+            _sys, "argv", ["swarmq", "worker", "--module=x"],
+        )
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
+        assert pm._startup_argv == ["swarmq", "worker", "--module=x"]
+
+    def test_sys_argv_mutation_does_not_affect_snapshot(self, monkeypatch):
+        """Post-__init__ mutation of sys.argv must NOT be visible in
+        the snapshot used by execvp."""
+        import sys as _sys
+        monkeypatch.setattr(_sys, "argv", ["swarmq", "worker"])
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
+        _sys.argv[0] = "mutated"
+        _sys.argv.append("--evil")
+        assert pm._startup_argv == ["swarmq", "worker"]
+
+    def test_execvp_uses_snapshot_not_live_argv(self, monkeypatch):
+        import sys as _sys
+        monkeypatch.setattr(
+            _sys, "argv", ["swarmq", "worker", "--module=safe"],
+        )
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        # Mutate sys.argv between __init__ and run():
+        _sys.argv.append("--injected")
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.os.execvp") as execvp:
+            pm.run()
+            execvp.assert_called_once()
+            _, argv_used = execvp.call_args.args
+            # argv is [sys.executable, *snapshot] — not live sys.argv.
+            assert "--injected" not in argv_used
+            assert "--module=safe" in argv_used
+
+
+class TestScaleDownMinAge:
+    """ce-review C-03 / Unit 5: age-gate on scale-down candidates."""
+
+    def _pm_with_age(self, min_age_s: float) -> ProcessManager:
+        pm = ProcessManager(
+            num_workers=3, worker_entry=_entry_stub,
+            autoscale=(1, 5), queue_depth_fn=lambda: 0,
+        )
+        pm._ctx = MagicMock()
+        pm.SCALE_MIN_AGE_S = min_age_s
+        return pm
+
+    def test_young_worker_not_selected(self):
+        """All workers < SCALE_MIN_AGE_S → _scale_down_one is no-op."""
+        pm = self._pm_with_age(min_age_s=30.0)
+        now = time.monotonic()
+        # All spawned <1s ago
+        p1 = _fake_process(pid=1)
+        p2 = _fake_process(pid=2)
+        pm.workers = {
+            1: WorkerInfo(process=p1, worker_id=0, spawned_at=now - 0.5),
+            2: WorkerInfo(process=p2, worker_id=1, spawned_at=now - 0.2),
+        }
+        pm._scale_down_one()
+        p1.terminate.assert_not_called()
+        p2.terminate.assert_not_called()
+
+    def test_old_worker_selected(self):
+        pm = self._pm_with_age(min_age_s=30.0)
+        now = time.monotonic()
+        p1 = _fake_process(pid=1)
+        pm.workers = {
+            1: WorkerInfo(process=p1, worker_id=0, spawned_at=now - 120.0),
+        }
+        pm._scale_down_one()
+        p1.terminate.assert_called_once()
+
+    def test_mix_selects_old_youngest_eligible(self):
+        """2 old + 1 young; youngest of the eligible set wins (highest
+        worker_id among ages >= threshold)."""
+        pm = self._pm_with_age(min_age_s=30.0)
+        now = time.monotonic()
+        p_old1 = _fake_process(pid=1)   # worker_id=0, age 120s
+        p_old2 = _fake_process(pid=2)   # worker_id=1, age 60s
+        p_young = _fake_process(pid=3)  # worker_id=2, age 5s
+        pm.workers = {
+            1: WorkerInfo(process=p_old1, worker_id=0, spawned_at=now - 120.0),
+            2: WorkerInfo(process=p_old2, worker_id=1, spawned_at=now - 60.0),
+            3: WorkerInfo(process=p_young, worker_id=2, spawned_at=now - 5.0),
+        }
+        pm._scale_down_one()
+        # Expect worker_id=1 (highest id among eligible) — NOT the young one.
+        p_old1.terminate.assert_not_called()
+        p_old2.terminate.assert_called_once()
+        p_young.terminate.assert_not_called()

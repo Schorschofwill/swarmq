@@ -79,12 +79,18 @@ class WorkerInfo:
     Entries older than ``ProcessManager.RESTART_WINDOW`` are pruned
     in :meth:`ProcessManager._maybe_restart` so the count reflects a
     true sliding window, not a since-last-event gap.
+
+    ``spawned_at`` is set to ``time.monotonic()`` at construction time
+    and consumed by :meth:`ProcessManager._scale_down_one` to protect
+    freshly spawned replacements from immediate scale-down (ce-review
+    C-03 / Unit 5).
     """
 
     process: multiprocessing.Process
     worker_id: int
     expected_shutdown: bool = False  # True when Autoscaler scaled down
     restart_timestamps: list[float] = field(default_factory=list)
+    spawned_at: float = field(default_factory=time.monotonic)
 
 
 # Queue-depth sampling signature: returns the total pending count
@@ -184,6 +190,14 @@ class ProcessManager:
     SCALE_DOWN_IDLE_S = 60.0  # sustained idle window before scale-down
     SCALE_COOLDOWN_S = 30.0  # minimum gap between scale actions
     AUTOSCALE_SAMPLE_INTERVAL = 10.0
+    # Minimum worker age before the autoscaler may pick it for
+    # scale-down (ce-review C-03 / Unit 5). Derived from
+    # ``max(AUTOSCALE_SAMPLE_INTERVAL, SCALE_COOLDOWN_S)`` — protects
+    # the crash → _maybe_restart → _autoscale_tick churn path where
+    # a freshly spawned replacement would otherwise be eligible on
+    # the very next tick. Must stay < SCALE_DOWN_IDLE_S so steady-
+    # state scale-down is unaffected.
+    SCALE_MIN_AGE_S = 30.0
 
     def __init__(
         self,
@@ -238,6 +252,12 @@ class ProcessManager:
         self._last_autoscale_sample = 0.0
         self._idle_since: float | None = None
 
+        # ce-review SEC-01 / Unit 6: freeze argv at supervisor start.
+        # SIGHUP reload uses this snapshot so in-process mutation
+        # (buggy 3rd-party lib rewriting sys.argv) cannot change the
+        # re-exec vector. Copy, not reference.
+        self._startup_argv: list[str] = list(sys.argv)
+
     # ------------------------------------------------------------------
     # Public entry-point
     # ------------------------------------------------------------------
@@ -267,8 +287,39 @@ class ProcessManager:
             self._collect_zombies()
 
         if self._reload_requested:
-            logger.info("process_manager_reload_execvp")
-            os.execvp(sys.executable, [sys.executable] + sys.argv)  # noqa: S606
+            # ce-review REL-03 / Unit 4: orphan-guard. If any child
+            # survived Phase-3 SIGKILL (typically D-state: NFS stall,
+            # dying disk), os.execvp would replace the parent image
+            # and orphan the child to init/systemd. Prefer clean
+            # no-reload exit over orphan.
+            alive = [
+                w for w in self.workers.values() if w.process.is_alive()
+            ]
+            if alive:
+                logger.warning(
+                    "reload_aborted_alive_children",
+                    alive_count=len(alive),
+                    alive_pids=[w.process.pid for w in alive],
+                    hint=(
+                        "re-send SIGHUP once all workers have exited; "
+                        "a D-state process (uninterruptible kernel wait) "
+                        "may require host-level intervention"
+                    ),
+                )
+                # Return 0 (clean exit): systemd / k8s must NOT
+                # restart us — operator needs to act.
+                return 0
+            try:
+                logger.info("process_manager_reload_execvp")
+                # ce-review SEC-01 / Unit 6: use the argv snapshot
+                # captured in __init__, not live sys.argv.
+                os.execvp(  # noqa: S606
+                    sys.executable,
+                    [sys.executable] + self._startup_argv,
+                )
+            except OSError as exc:
+                logger.error("reload_execvp_failed", error=str(exc))
+                return 1
 
         return retcode
 
@@ -555,12 +606,32 @@ class ProcessManager:
             self._idle_since = None
 
     def _scale_down_one(self) -> None:
-        """Tell the youngest worker to drain + exit (SIGTERM)."""
+        """Tell the youngest eligible worker to drain + exit (SIGTERM).
+
+        ce-review C-03 / Unit 5: workers younger than
+        :attr:`SCALE_MIN_AGE_S` are excluded. Without this, a
+        crash → ``_maybe_restart`` → ``_autoscale_tick`` sequence
+        would spawn a replacement and immediately kill it, producing
+        pointless process churn.
+        """
         if not self.workers:
             return
-        # Youngest first — oldest workers have accumulated warm caches.
+        now = time.monotonic()
+        eligible = {
+            pid: w for pid, w in self.workers.items()
+            if (now - w.spawned_at) >= self.SCALE_MIN_AGE_S
+        }
+        if not eligible:
+            logger.debug(
+                "autoscale_down_deferred_all_young",
+                total=len(self.workers),
+                min_age_s=self.SCALE_MIN_AGE_S,
+            )
+            return
+        # Youngest (highest worker_id) among the eligible — oldest
+        # workers have warmer caches.
         target_pid, info = max(
-            self.workers.items(), key=lambda kv: kv[1].worker_id,
+            eligible.items(), key=lambda kv: kv[1].worker_id,
         )
         logger.info(
             "autoscale_down",
