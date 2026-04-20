@@ -19,6 +19,7 @@ import importlib
 import importlib.metadata
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -67,6 +68,37 @@ def _positive_float(raw: str) -> float:
             f"must be > 0 (got {value})"
         )
     return value
+
+
+#: Dotted Python-3 identifier grammar (PEP 3131-compliant). ``\w`` under
+#: ``re.UNICODE`` matches ASCII alphanumerics + underscore plus every
+#: Python-valid Unicode letter/digit (café, 日本 etc.). ``[^\W\d]`` =
+#: word-char but not digit = a valid identifier start. We block
+#: shell-injection-shaped inputs (/, -, whitespace), **not** valid
+#: Python names in non-ASCII languages. Security scope: this is a
+#: reliability/UX guard, NOT a code-execution sandbox — importlib still
+#: imports any regex-compliant name, so the argv trust boundary (Unit 6
+#: startup-snapshot + Unit 8 docs) is the real threat gate.
+_DOTTED_IDENTIFIER_RE = re.compile(
+    r"^[^\W\d]\w*(\.[^\W\d]\w*)*$",
+    re.UNICODE,
+)
+
+
+def _dotted_module_name(raw: str) -> str:
+    """argparse type-function: accept dotted Python identifiers.
+
+    Rejects obvious non-imports (paths, hyphens, leading digits, empty
+    segments) with a clear error. PEP 3131 Unicode identifiers are
+    accepted because Python itself accepts them as module names and
+    SwarmQ does not target an ASCII-only operator base.
+    """
+    if not _DOTTED_IDENTIFIER_RE.match(raw):
+        raise argparse.ArgumentTypeError(
+            f"--module {raw!r} is not a dotted Python identifier "
+            "(expected: package.module.submodule)"
+        )
+    return raw
 
 
 def _autoscale_range(raw: str) -> tuple[int, int]:
@@ -158,6 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     worker.add_argument(
         "--module",
         required=True,
+        type=_dotted_module_name,
         metavar="DOTTED.PATH",
         help=(
             "Python module containing Task subclasses to register, "
@@ -539,6 +572,7 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument(
         "--module",
         required=True,
+        type=_dotted_module_name,
         metavar="DOTTED.PATH",
         help="Python module whose Task subclasses to introspect.",
     )

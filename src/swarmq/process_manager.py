@@ -30,6 +30,7 @@ Reference: ``prototypes/worker_prototype.py`` (design blueprint).
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import multiprocessing
 import os
 import signal
@@ -40,6 +41,7 @@ from typing import Callable
 
 import structlog
 
+from swarmq.exceptions import ConfigurationError
 from swarmq.logging import sanitize_url
 
 logger = structlog.get_logger()
@@ -695,6 +697,47 @@ def _make_queue_depth_sampler(
     return sample
 
 
+def _validate_module_importable(module: str) -> None:
+    """Pre-flight check: raise ConfigurationError if ``module`` cannot
+    be resolved (ce-review REL-07 / Unit 2).
+
+    Runs in the PARENT before the supervisor starts, so a typo or
+    a filesystem-level missing module fails once with a clear error
+    instead of looping through the 5-per-hour subprocess restart cap.
+
+    Known limitations (find_spec is not a Sandbox — dokumentiert im
+    Plan unter Unit 2). Die folgenden Fälle laufen weiterhin in den
+    Subprocess-Restart-Loop, weil find_spec das Modul NICHT lädt:
+
+    - fehlende transitive Dependency (tasks.py existiert, importiert
+      aber ein nicht installiertes Paket)
+    - kaputte C-Extension / ABI-Mismatch
+    - env-abhängige Top-Level-Imports mit Parent/Child-Divergenz
+    - Zirkuläre Imports, die partiell resolven
+    - Namespace-Package-Shadowing über PYTHONPATH-Order
+
+    Für diese Fälle greift das Restart-Rate-Limit (5/h). Operator soll
+    ``swarmq inspect --module ...`` nutzen um Import-Fehler vorab zu
+    diagnostizieren.
+    """
+    try:
+        spec = importlib.util.find_spec(module)
+    except (ImportError, ValueError) as exc:
+        # ImportError covers ModuleNotFoundError + the "no package
+        # specified for '.relative'" case; ValueError handles some
+        # malformed dotted paths depending on Python version.
+        raise ConfigurationError(
+            f"--module {module!r} cannot be imported: {exc}",
+        ) from exc
+    # ``spec.origin is None`` für Namespace-Packages ohne __init__.py —
+    # find_spec liefert einen spec, aber import_module wird scheitern.
+    if spec is None or spec.origin is None:
+        raise ConfigurationError(
+            f"--module {module!r} resolves to no loadable spec — "
+            "check spelling, PYTHONPATH, and __init__.py presence",
+        )
+
+
 def run_multi_process_worker(args) -> int:
     """CLI entry for ``swarmq worker --processes N`` / ``--autoscale``.
 
@@ -702,16 +745,17 @@ def run_multi_process_worker(args) -> int:
     multi-process path. Synchronous (the supervisor runs in the
     parent process without an event loop).
     """
-    import os
-
     broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
     backend_url = os.environ.get("SWARMQ_BACKEND_URL", "")
     if not broker_url or not backend_url:
-        # Keep the error message aligned with the single-process path.
-        from swarmq.exceptions import ConfigurationError
         raise ConfigurationError(
             "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set",
         )
+
+    # ce-review Unit 2: fail fast on obviously-unimportable --module
+    # instead of letting the 5-restart-per-hour cap burn through a
+    # slot before the operator sees the error.
+    _validate_module_importable(args.module)
 
     queue_depth_fn: QueueDepthFn | None = None
     if args.autoscale is not None:

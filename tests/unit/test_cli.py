@@ -75,6 +75,62 @@ class TestPositiveIntType:
             cli._positive_int("abc")
 
 
+class TestDottedModuleName:
+    """ce-review Unit 3: --module format validation via _dotted_module_name."""
+
+    def test_plain_dotted_accepted(self):
+        assert cli._dotted_module_name("myapp.tasks") == "myapp.tasks"
+
+    def test_single_segment_accepted(self):
+        assert cli._dotted_module_name("tasks") == "tasks"
+
+    def test_underscore_prefix_accepted(self):
+        assert cli._dotted_module_name("_private.worker._impl") == "_private.worker._impl"
+
+    def test_unicode_identifier_accepted(self):
+        """PEP 3131 — valid Python 3 identifier must pass the regex."""
+        assert cli._dotted_module_name("café.tasks") == "café.tasks"
+        assert cli._dotted_module_name("日本.tasks") == "日本.tasks"
+
+    def test_hyphen_rejected(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="dotted"):
+            cli._dotted_module_name("my-app.tasks")
+
+    def test_path_rejected(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="dotted"):
+            cli._dotted_module_name("/etc/passwd")
+
+    def test_empty_segment_rejected(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="dotted"):
+            cli._dotted_module_name("myapp..tasks")
+
+    def test_leading_digit_rejected(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="dotted"):
+            cli._dotted_module_name("123.main")
+
+    def test_leading_dot_rejected(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="dotted"):
+            cli._dotted_module_name(".hidden")
+
+    def test_empty_string_rejected(self):
+        with pytest.raises(argparse.ArgumentTypeError, match="dotted"):
+            cli._dotted_module_name("")
+
+    def test_worker_parser_rejects_invalid_module(self):
+        """Regression guard: validator wired into worker subparser."""
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["worker", "--module", "my-app.tasks"])
+
+    def test_inspect_parser_rejects_invalid_module(self):
+        """ce-review F-05: inspect subparser has its own --module —
+        must carry the same validator, else it's a lower-friction
+        bypass path."""
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["inspect", "--module", "/etc/passwd"])
+
+
 class TestBuildParser:
     def test_worker_subcommand_with_minimum_args(self):
         parser = cli._build_parser()
