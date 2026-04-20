@@ -289,7 +289,7 @@ class TestProcessManagerRestart:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvp") as execvp:
+             patch("swarmq.process_manager.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
 
@@ -637,7 +637,7 @@ class TestReloadOrphanGuard:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvp") as execvp:
+             patch("swarmq.process_manager.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
 
@@ -651,7 +651,7 @@ class TestReloadOrphanGuard:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvp") as execvp:
+             patch("swarmq.process_manager.os.execvpe") as execvp:
             rc = pm.run()
             execvp.assert_not_called()
             assert rc == 0  # clean exit — systemd must not restart
@@ -665,7 +665,7 @@ class TestReloadOrphanGuard:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvp",
+             patch("swarmq.process_manager.os.execvpe",
                    side_effect=OSError("permission denied")):
             rc = pm.run()
             assert rc == 1
@@ -707,13 +707,41 @@ class TestArgvSnapshot:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvp") as execvp:
+             patch("swarmq.process_manager.os.execvpe") as execvpe:
             pm.run()
-            execvp.assert_called_once()
-            _, argv_used = execvp.call_args.args
+            execvpe.assert_called_once()
+            _, argv_used, _ = execvpe.call_args.args
             # argv is [sys.executable, *snapshot] — not live sys.argv.
             assert "--injected" not in argv_used
             assert "--module=safe" in argv_used
+
+    def test_env_snapshot_captured_on_init(self, monkeypatch):
+        """ce-review SEC-ENV-01: os.environ is snapshotted at init."""
+        monkeypatch.setenv("SWARMQ_TEST_ENV", "initial")
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
+        assert pm._startup_env.get("SWARMQ_TEST_ENV") == "initial"
+        # Mutation after __init__ does not bleed into the snapshot.
+        monkeypatch.setenv("SWARMQ_TEST_ENV", "mutated")
+        assert pm._startup_env.get("SWARMQ_TEST_ENV") == "initial"
+
+    def test_execvpe_uses_env_snapshot(self, monkeypatch):
+        """Reload uses captured env, not live os.environ."""
+        monkeypatch.setenv("PYTHONPATH", "/safe/path")
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        # Attacker-like mutation after init.
+        monkeypatch.setenv("PYTHONPATH", "/tmp/evil:/safe/path")
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.os.execvpe") as execvpe:
+            pm.run()
+            _, _, env_used = execvpe.call_args.args
+            assert env_used.get("PYTHONPATH") == "/safe/path"
+            assert "/tmp/evil" not in env_used.get("PYTHONPATH", "")
 
 
 class TestScaleDownMinAge:

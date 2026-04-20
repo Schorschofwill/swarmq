@@ -118,6 +118,13 @@ class WorkerConfig:
     list mutation. ``__post_init__`` runtime-enforces a pickle-safe
     type allowlist so the invariant survives future programmatic
     callers that bypass argparse validation.
+
+    The allowlist check is shallow: tuple/list field contents are
+    not recursively type-checked. In production that is fine because
+    ``queues`` is always built from argparse's ``list[str]`` output
+    via ``tuple(args.queues)``. A future programmatic caller passing
+    ``queues=(lambda: None,)`` would still fail, but at
+    ``pickle.dumps`` time, not at construction.
     """
 
     module: str
@@ -191,12 +198,15 @@ class ProcessManager:
     SCALE_COOLDOWN_S = 30.0  # minimum gap between scale actions
     AUTOSCALE_SAMPLE_INTERVAL = 10.0
     # Minimum worker age before the autoscaler may pick it for
-    # scale-down (ce-review C-03 / Unit 5). Derived from
-    # ``max(AUTOSCALE_SAMPLE_INTERVAL, SCALE_COOLDOWN_S)`` — protects
-    # the crash → _maybe_restart → _autoscale_tick churn path where
-    # a freshly spawned replacement would otherwise be eligible on
-    # the very next tick. Must stay < SCALE_DOWN_IDLE_S so steady-
-    # state scale-down is unaffected.
+    # scale-down (ce-review C-03 / Unit 5). Literal 30.0, matching
+    # max(AUTOSCALE_SAMPLE_INTERVAL=10, SCALE_COOLDOWN_S=30) at the
+    # current defaults — protects the crash → _maybe_restart →
+    # _autoscale_tick churn path where a freshly spawned replacement
+    # would otherwise be eligible on the very next tick. Must stay
+    # < SCALE_DOWN_IDLE_S so steady-state scale-down is unaffected.
+    # If you subclass and change AUTOSCALE_SAMPLE_INTERVAL or
+    # SCALE_COOLDOWN_S, override SCALE_MIN_AGE_S to stay
+    # >= max(AUTOSCALE_SAMPLE_INTERVAL, SCALE_COOLDOWN_S).
     SCALE_MIN_AGE_S = 30.0
 
     def __init__(
@@ -252,11 +262,14 @@ class ProcessManager:
         self._last_autoscale_sample = 0.0
         self._idle_since: float | None = None
 
-        # ce-review SEC-01 / Unit 6: freeze argv at supervisor start.
-        # SIGHUP reload uses this snapshot so in-process mutation
-        # (buggy 3rd-party lib rewriting sys.argv) cannot change the
-        # re-exec vector. Copy, not reference.
+        # ce-review SEC-01 / Unit 6: freeze argv AND environment at
+        # supervisor start. SIGHUP reload uses these snapshots so
+        # in-process mutation (buggy 3rd-party lib rewriting sys.argv
+        # or mutating os.environ['PYTHONPATH']) cannot change the
+        # re-exec vector. Both are shallow copies; argv is list[str]
+        # (strings are immutable) and env is dict[str, str].
         self._startup_argv: list[str] = list(sys.argv)
+        self._startup_env: dict[str, str] = dict(os.environ)
 
     # ------------------------------------------------------------------
     # Public entry-point
@@ -266,8 +279,11 @@ class ProcessManager:
         """Blocking supervisor entry-point. Returns a POSIX exit code.
 
         On ``SIGHUP``, returns after graceful-shutdown and re-execs
-        via ``os.execvp(sys.executable, [sys.executable] + sys.argv)``
-        — the call does not return.
+        via ``os.execvpe(sys.executable, [sys.executable] +
+        self._startup_argv, self._startup_env)`` — the call does not
+        return. The argv and env snapshots were captured in
+        :meth:`__init__` to defeat in-process mutation of either
+        trust surface.
         """
         logger.info(
             "process_manager_start",
@@ -311,11 +327,16 @@ class ProcessManager:
                 return 0
             try:
                 logger.info("process_manager_reload_execvp")
-                # ce-review SEC-01 / Unit 6: use the argv snapshot
-                # captured in __init__, not live sys.argv.
-                os.execvp(  # noqa: S606
+                # ce-review SEC-01 / Unit 6: use the argv AND env
+                # snapshots captured in __init__. execvpe closes the
+                # env side of the trust boundary so in-process
+                # os.environ mutation (e.g., a library flipping
+                # PYTHONPATH) cannot influence the re-exec'd
+                # interpreter's import resolution.
+                os.execvpe(  # noqa: S606
                     sys.executable,
                     [sys.executable] + self._startup_argv,
+                    self._startup_env,
                 )
             except OSError as exc:
                 logger.error("reload_execvp_failed", error=str(exc))
@@ -679,10 +700,12 @@ def worker_subprocess_entry(
     import os
     import signal as _signal
 
-    # ce-review M-3 / Unit 7: static import against a public symbol.
-    # Spawn re-imports modules fresh, so no pickle concern; lifting
-    # this here converts a runtime-invisible rename failure into a
-    # parent-start ImportError.
+    # ce-review M-3 / Unit 7: import a public symbol so a rename in
+    # cli.py is detectable via tests rather than a silent subprocess
+    # crash at runtime. Spawn re-imports modules fresh — the import
+    # executes in the child, not the parent. The win is symbol-
+    # stability (public vs private underscore name), not earlier
+    # error surface.
     from swarmq.cli import run_worker_async
 
     # Logging is fresh-configured per subprocess. structlog picks up
@@ -790,6 +813,14 @@ def _validate_module_importable(module: str) -> None:
     Für diese Fälle greift das Restart-Rate-Limit (5/h). Operator soll
     ``swarmq inspect --module ...`` nutzen um Import-Fehler vorab zu
     diagnostizieren.
+
+    ce-review SEC-FINDSPEC-01: note that resolving ``pkg.sub`` via
+    find_spec imports and executes ``pkg/__init__.py`` in THIS
+    process (the supervisor). For most operators that is harmless;
+    for packages with side-effectful top-level code (thread spawn,
+    signal-handler installation) the effects are visible in the
+    supervisor's process state. The check runs only at startup
+    (inside ``run_multi_process_worker``), not on SIGHUP-reload.
     """
     try:
         spec = importlib.util.find_spec(module)
