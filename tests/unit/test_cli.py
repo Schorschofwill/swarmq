@@ -167,7 +167,7 @@ class TestMainErrorRendering:
         side_effect: BaseException,
         capsys,
     ) -> tuple[int, str]:
-        with patch.object(cli, "_run_worker_async", new_callable=AsyncMock) as mock:
+        with patch.object(cli, "run_worker_async", new_callable=AsyncMock) as mock:
             mock.side_effect = side_effect
             rc = cli.main(
                 [
@@ -222,14 +222,14 @@ class TestMainErrorRendering:
         assert "Traceback" in err
 
     def test_keyboard_interrupt_exits_zero(self, capsys):
-        with patch.object(cli, "_run_worker_async", new_callable=AsyncMock) as mock:
+        with patch.object(cli, "run_worker_async", new_callable=AsyncMock) as mock:
             mock.side_effect = KeyboardInterrupt()
             rc = cli.main(["worker", "--module", "myapp"])
         assert rc == 0
 
 
 # ---------------------------------------------------------------------------
-# _run_worker_async error paths (without spawning a real worker)
+# run_worker_async error paths (without spawning a real worker)
 # ---------------------------------------------------------------------------
 
 
@@ -246,7 +246,7 @@ class TestRunWorkerAsync:
             log_format="human",
         )
         with pytest.raises(ModuleNotFoundError):
-            await cli._run_worker_async(ns)
+            await cli.run_worker_async(ns)
 
     @pytest.mark.asyncio
     async def test_no_tasks_registered_raises_configuration_error(
@@ -264,7 +264,7 @@ class TestRunWorkerAsync:
         monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         with pytest.raises(ConfigurationError, match="no tasks registered"):
-            await cli._run_worker_async(ns)
+            await cli.run_worker_async(ns)
 
     @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(
@@ -288,7 +288,7 @@ class TestRunWorkerAsync:
         monkeypatch.delenv("SWARMQ_BROKER_URL", raising=False)
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         with pytest.raises(ConfigurationError, match="SWARMQ_BROKER_URL"):
-            await cli._run_worker_async(ns)
+            await cli.run_worker_async(ns)
 
 
 # ---------------------------------------------------------------------------

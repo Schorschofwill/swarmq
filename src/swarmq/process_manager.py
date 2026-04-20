@@ -29,6 +29,7 @@ Reference: ``prototypes/worker_prototype.py`` (design blueprint).
 
 from __future__ import annotations
 
+import dataclasses
 import multiprocessing
 import os
 import signal
@@ -88,6 +89,53 @@ class WorkerInfo:
 # across all configured queues. May raise — the supervisor swallows
 # and logs.
 QueueDepthFn = Callable[[], int]
+
+
+_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_PICKLE_SAFE_TYPES = (str, int, float, bool, tuple, type(None))
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkerConfig:
+    """Pickle-safe configuration bundle for a spawned worker.
+
+    Crosses the multiprocessing spawn boundary as the sole payload
+    inside ``worker_args``. Collapses the former 11-parameter
+    :func:`worker_subprocess_entry` signature into one object so a
+    new CLI flag is a single-site edit (add the field, set it in
+    :func:`run_multi_process_worker`).
+
+    ``queues`` is ``tuple[str, ...]`` — not ``list[str]`` — so the
+    ``frozen=True`` immutability promise is not violated by in-place
+    list mutation. ``__post_init__`` runtime-enforces a pickle-safe
+    type allowlist so the invariant survives future programmatic
+    callers that bypass argparse validation.
+    """
+
+    module: str
+    queues: tuple[str, ...]
+    concurrency: int
+    log_level: str
+    log_format: str
+    burst: bool
+    burst_idle_timeout: float
+    priorities: bool
+    metrics_port: int | None
+    health_port: int | None
+
+    def __post_init__(self) -> None:
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            if not isinstance(value, _PICKLE_SAFE_TYPES):
+                raise TypeError(
+                    f"WorkerConfig.{f.name} must be pickle-safe; "
+                    f"got {type(value).__name__}",
+                )
+        if self.log_level not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"WorkerConfig.log_level must be one of "
+                f"{_VALID_LOG_LEVELS}; got {self.log_level!r}",
+            )
 
 
 class ProcessManager:
@@ -537,23 +585,14 @@ class ProcessManager:
 def worker_subprocess_entry(
     worker_id: int,
     shutdown_event,
-    module: str,
-    queues: list[str],
-    concurrency: int,
-    log_level: str,
-    log_format: str,
-    burst: bool,
-    burst_idle_timeout: float,
-    priorities: bool,
-    metrics_port: int | None,
-    health_port: int | None,
+    cfg: WorkerConfig,
 ) -> None:
     """Run a single worker inside a spawned subprocess.
 
     The parent supervisor calls this via ``multiprocessing.Process``.
-    We rebuild the arg namespace from primitives (so everything is
-    pickle-safe across the spawn boundary) and hand it to the
-    existing ``_run_worker_async`` path unchanged.
+    ``cfg`` crosses the pickle boundary as the sole typed payload;
+    we expand it into an ``argparse.Namespace`` for the existing
+    ``run_worker_async`` path, which remains unchanged.
 
     A background asyncio task polls ``shutdown_event`` (a
     ``multiprocessing.Event``) and triggers graceful shutdown by
@@ -567,27 +606,22 @@ def worker_subprocess_entry(
     import os
     import signal as _signal
 
-    # Re-import here rather than at module top so
-    # ``multiprocessing.Process`` can pickle this module cheaply.
-    from swarmq.cli import _run_worker_async
+    # ce-review M-3 / Unit 7: static import against a public symbol.
+    # Spawn re-imports modules fresh, so no pickle concern; lifting
+    # this here converts a runtime-invisible rename failure into a
+    # parent-start ImportError.
+    from swarmq.cli import run_worker_async
 
     # Logging is fresh-configured per subprocess. structlog picks up
     # its global config on first use, but stdlib logging is
     # per-process — reset level so child inherits parent's verbosity.
-    _stdlib_logging.basicConfig(level=log_level)
+    _stdlib_logging.basicConfig(level=cfg.log_level)
 
-    ns = _argparse.Namespace(
-        module=module,
-        queues=list(queues),
-        concurrency=concurrency,
-        log_level=log_level,
-        log_format=log_format,
-        burst=burst,
-        burst_idle_timeout=burst_idle_timeout,
-        priorities=priorities,
-        metrics_port=metrics_port,
-        health_port=health_port,
-    )
+    # asdict converts tuple → list (dataclasses has no tuple-preservation);
+    # Namespace callers expect list-typed queues so we re-wrap explicitly.
+    kwargs = dataclasses.asdict(cfg)
+    kwargs["queues"] = list(kwargs["queues"])
+    ns = _argparse.Namespace(**kwargs)
 
     async def _run() -> None:
         async def _watch_shutdown() -> None:
@@ -602,7 +636,7 @@ def worker_subprocess_entry(
 
         watcher = asyncio.create_task(_watch_shutdown())
         try:
-            await _run_worker_async(ns)
+            await run_worker_async(ns)
         finally:
             watcher.cancel()
 
@@ -687,26 +721,26 @@ def run_multi_process_worker(args) -> int:
     # the parent and pass it as the phase-1 grace so a subprocess's
     # graceful-shutdown flow has the budget it was configured for.
     from swarmq.config import SwarmQConfig
-    cfg = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
-    shutdown_grace_s = float(cfg.shutdown_timeout)
+    sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
+    shutdown_grace_s = float(sq_config.shutdown_timeout)
 
-    worker_args = (
-        args.module,
-        list(args.queues),
-        args.concurrency,
-        args.log_level,
-        args.log_format,
-        args.burst,
-        args.burst_idle_timeout,
-        args.priorities,
-        args.metrics_port,
-        args.health_port,
+    worker_cfg = WorkerConfig(
+        module=args.module,
+        queues=tuple(args.queues),
+        concurrency=args.concurrency,
+        log_level=args.log_level,
+        log_format=args.log_format,
+        burst=args.burst,
+        burst_idle_timeout=args.burst_idle_timeout,
+        priorities=args.priorities,
+        metrics_port=args.metrics_port,
+        health_port=args.health_port,
     )
 
     pm = ProcessManager(
         num_workers=args.processes,
         worker_entry=worker_subprocess_entry,
-        worker_args=worker_args,
+        worker_args=(worker_cfg,),
         autoscale=args.autoscale,
         queue_depth_fn=queue_depth_fn,
         shutdown_grace_s=shutdown_grace_s,

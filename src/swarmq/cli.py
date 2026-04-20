@@ -570,7 +570,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run_worker_async(args: argparse.Namespace) -> None:
+async def run_worker_async(args: argparse.Namespace) -> None:
     """Import the user's module, build SwarmQ, run start_worker.
 
     Errors propagate to the synchronous ``main()`` for uniform
@@ -1301,7 +1301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if getattr(args, "log_level", "INFO") == "DEBUG":
                     traceback.print_exc(file=sys.stderr)
                 return 1
-        runner = _run_worker_async(args)
+        runner = run_worker_async(args)
         error_prefix = "swarmq worker"
     elif args.command == "schedule":
         runner = _run_schedule_async(args)

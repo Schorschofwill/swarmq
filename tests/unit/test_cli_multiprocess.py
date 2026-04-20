@@ -159,4 +159,12 @@ class TestRunMultiProcessWorker:
             PM.assert_called_once()
             kwargs = PM.call_args.kwargs
             assert kwargs["autoscale"] is None
-            assert PM.call_args.kwargs["num_workers"] == 3
+            assert kwargs["num_workers"] == 3
+            # ce-review F-4: assert WorkerConfig shape to prevent silent
+            # drift when worker_args becomes a tuple of unrelated values.
+            from swarmq.process_manager import WorkerConfig
+            worker_args = kwargs["worker_args"]
+            assert len(worker_args) == 1
+            assert isinstance(worker_args[0], WorkerConfig)
+            assert worker_args[0].module == "x"
+            assert worker_args[0].queues == ("default",)
