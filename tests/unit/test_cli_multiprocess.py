@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from swarmq.cli import _autoscale_range, _build_parser, main
+from swarmq.cli import _autoscale_range, _build_parser, _watch_dir_path, main
 
 
 class TestAutoscaleRangeParser:
@@ -59,6 +59,67 @@ class TestWorkerParserFlags:
         parser = _build_parser()
         args = parser.parse_args(["worker", "--module=x"])
         assert args.autoscale is None
+
+
+class TestWatchDirPathType:
+    """R5.3 Unit 1: --watch-dir validator."""
+
+    def test_existing_directory_accepted(self, tmp_path):
+        result = _watch_dir_path(str(tmp_path))
+        # Resolved to absolute path.
+        assert result == str(tmp_path.resolve())
+
+    def test_nonexistent_path_rejected(self, tmp_path):
+        missing = tmp_path / "does-not-exist"
+        with pytest.raises(argparse.ArgumentTypeError, match="not an existing directory"):
+            _watch_dir_path(str(missing))
+
+    def test_file_rejected(self, tmp_path):
+        f = tmp_path / "not_a_dir.txt"
+        f.write_text("x")
+        with pytest.raises(argparse.ArgumentTypeError, match="not an existing directory"):
+            _watch_dir_path(str(f))
+
+
+class TestReloadFlag:
+    """R5.3 Unit 1: --reload + --watch-dir argparse layer."""
+
+    def test_reload_default_is_false(self):
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--module=x"])
+        assert args.reload is False
+
+    def test_watch_dir_default_is_none(self):
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--module=x"])
+        assert args.watch_dir is None
+
+    def test_reload_flag_sets_true(self):
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--module=x", "--reload"])
+        assert args.reload is True
+
+    def test_watch_dir_repeatable(self, tmp_path):
+        d1 = tmp_path / "d1"
+        d2 = tmp_path / "d2"
+        d1.mkdir()
+        d2.mkdir()
+        parser = _build_parser()
+        args = parser.parse_args([
+            "worker", "--module=x",
+            "--reload",
+            "--watch-dir", str(d1),
+            "--watch-dir", str(d2),
+        ])
+        assert args.watch_dir == [str(d1.resolve()), str(d2.resolve())]
+
+    def test_watch_dir_invalid_path_exits(self):
+        parser = _build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "worker", "--module=x",
+                "--watch-dir", "/definitely/not/existing/path/xyz",
+            ])
 
 
 class TestMainRouting:

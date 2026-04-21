@@ -9,6 +9,8 @@ suite if/when needed.
 
 from __future__ import annotations
 
+import argparse
+import os
 import signal
 import time
 from unittest.mock import MagicMock, patch
@@ -619,6 +621,27 @@ class TestWorkerConfig:
         with pytest.raises(dataclasses.FrozenInstanceError):
             cfg.module = "mutated"
 
+    def test_reload_defaults_to_false_and_empty_watch_dirs(self):
+        """R5.3 Unit 2: new fields default to (False, ())."""
+        cfg = _make_test_cfg()
+        assert cfg.reload is False
+        assert cfg.watch_dirs == ()
+
+    def test_reload_fields_pickle_roundtrip(self):
+        """R5.3 Unit 2: extended fields survive the spawn boundary."""
+        import pickle
+        cfg = _make_test_cfg(reload=True, watch_dirs=("/tmp/a", "/tmp/b"))
+        restored = pickle.loads(pickle.dumps(cfg))
+        assert restored.reload is True
+        assert restored.watch_dirs == ("/tmp/a", "/tmp/b")
+        assert restored == cfg
+
+    def test_rejects_list_watch_dirs(self):
+        """R5.3 Unit 2: watch_dirs must be tuple, not list."""
+        import pytest
+        with pytest.raises(TypeError, match="pickle-safe"):
+            _make_test_cfg(watch_dirs=["/tmp/x"])
+
 
 class TestReloadOrphanGuard:
     """ce-review REL-03 / Unit 4: execvp only when no children survive."""
@@ -799,3 +822,182 @@ class TestScaleDownMinAge:
         p_old1.terminate.assert_not_called()
         p_old2.terminate.assert_called_once()
         p_young.terminate.assert_not_called()
+
+
+class TestFileWatcherIntegration:
+    """R5.3 Unit 6: ProcessManager wiring of the optional FileWatcher."""
+
+    def _pm(self, **kw) -> ProcessManager:
+        return ProcessManager(num_workers=0, worker_entry=_entry_stub, **kw)
+
+    def test_reload_disabled_keeps_watcher_none(self):
+        pm = self._pm()
+        assert pm._reload is False
+        assert pm._file_watcher is None
+
+    def test_reload_enabled_stores_watch_dirs(self):
+        pm = self._pm(reload=True, watch_dirs=("/a", "/b"))
+        assert pm._reload is True
+        assert pm._watch_dirs == ("/a", "/b")
+
+    def test_run_starts_and_stops_watcher(self):
+        """With --reload active, the supervisor must arm the watcher
+        between _setup_signals and _monitor_loop, and stop it in
+        finally — regardless of _monitor_loop's return code."""
+        pm = self._pm(reload=True, watch_dirs=("/tmp",))
+        fake_watcher = MagicMock()
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch(
+                 "swarmq.hot_reload.FileWatcher",
+                 return_value=fake_watcher,
+             ):
+            pm.run()
+        fake_watcher.start.assert_called_once()
+        fake_watcher.stop.assert_called_once()
+
+    def test_run_without_reload_never_imports_watcher(self):
+        """Smoke-test: with reload=False, FileWatcher must never be
+        constructed — the optional-dep path stays cold."""
+        pm = self._pm(reload=False)
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.hot_reload.FileWatcher") as FW:
+            pm.run()
+        FW.assert_not_called()
+
+    def test_run_stops_watcher_even_when_monitor_raises(self):
+        pm = self._pm(reload=True, watch_dirs=("/tmp",))
+        fake_watcher = MagicMock()
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(
+                 pm, "_monitor_loop",
+                 side_effect=RuntimeError("monitor bug"),
+             ), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch(
+                 "swarmq.hot_reload.FileWatcher",
+                 return_value=fake_watcher,
+             ):
+            with pytest.raises(RuntimeError, match="monitor bug"):
+                pm.run()
+        fake_watcher.stop.assert_called_once()
+
+
+class TestReloadRoutingThroughCLI:
+    """R5.3 Unit 6: run_multi_process_worker fails fast on missing dep
+    and resolves watch-dirs before handing off to ProcessManager."""
+
+    def _args(self, **over):
+        ns = argparse.Namespace(
+            module="json",  # stdlib, always resolvable
+            queues=["default"],
+            concurrency=1,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            processes=1,
+            autoscale=None,
+            reload=False,
+            watch_dir=None,
+        )
+        for k, v in over.items():
+            setattr(ns, k, v)
+        return ns
+
+    def _env(self):
+        return {
+            "SWARMQ_BROKER_URL": "amqp://x",
+            "SWARMQ_BACKEND_URL": "valkey://x",
+        }
+
+    def test_reload_false_skips_watcher_wiring(self):
+        from swarmq.process_manager import run_multi_process_worker
+
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch(
+                 "swarmq.process_manager.ProcessManager",
+                 return_value=pm_mock,
+             ) as PM, \
+             patch(
+                 "swarmq.process_manager._validate_module_importable"
+             ):
+            rc = run_multi_process_worker(self._args())
+        assert rc == 0
+        kwargs = PM.call_args.kwargs
+        assert kwargs["reload"] is False
+        assert kwargs["watch_dirs"] == ()
+
+    def test_reload_true_resolves_dirs_and_passes_through(self):
+        from swarmq.process_manager import run_multi_process_worker
+
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch(
+                 "swarmq.process_manager.ProcessManager",
+                 return_value=pm_mock,
+             ) as PM, \
+             patch(
+                 "swarmq.process_manager._validate_module_importable"
+             ):
+            rc = run_multi_process_worker(self._args(reload=True))
+        assert rc == 0
+        kwargs = PM.call_args.kwargs
+        assert kwargs["reload"] is True
+        # json is a real stdlib package — resolved parent must be non-empty.
+        assert len(kwargs["watch_dirs"]) == 1
+        assert kwargs["watch_dirs"][0].endswith("json")
+
+    def test_reload_true_without_watchfiles_raises(self):
+        from swarmq.exceptions import ConfigurationError
+        from swarmq.process_manager import run_multi_process_worker
+
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch(
+                 "swarmq.process_manager._validate_module_importable"
+             ), \
+             patch.dict("sys.modules", {"watchfiles": None}):
+            with pytest.raises(ConfigurationError, match=r"swarmq\[reload\]"):
+                run_multi_process_worker(self._args(reload=True))
+
+    def test_watch_dir_without_reload_logs_warning(self):
+        """--watch-dir without --reload must warn (not error)."""
+        from swarmq.process_manager import run_multi_process_worker
+
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch(
+                 "swarmq.process_manager.ProcessManager",
+                 return_value=pm_mock,
+             ), \
+             patch(
+                 "swarmq.process_manager._validate_module_importable"
+             ), \
+             patch(
+                 "swarmq.process_manager.logger"
+             ) as mock_logger:
+            run_multi_process_worker(
+                self._args(watch_dir=["/tmp"]),
+            )
+        # At least one warning call carries the ignore event name.
+        warn_events = [
+            call.args[0] for call in mock_logger.warning.call_args_list
+            if call.args
+        ]
+        assert "watch_dir_ignored_without_reload" in warn_events

@@ -147,6 +147,7 @@ nav:
       - Rate limiting: guides/rate-limiting.md
       - Locking and deduplication: guides/locking-and-dedup.md
       - Dead letter queues: guides/dead-letter-queues.md
+      - Hot reload (dev-only): guides/hot-reload.md
       - Testing tasks: guides/testing-tasks.md
   - Reference:
       - reference/index.md

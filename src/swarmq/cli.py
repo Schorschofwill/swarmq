@@ -23,8 +23,10 @@ import re
 import sys
 import time
 import traceback
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, Sequence
+from pathlib import Path
+from typing import Any
 
 import msgspec
 
@@ -125,6 +127,21 @@ def _autoscale_range(raw: str) -> tuple[int, int]:
             f"--autoscale requires 1 <= MIN <= MAX (got MIN={low} MAX={high})"
         )
     return low, high
+
+
+def _watch_dir_path(raw: str) -> str:
+    """argparse type-function for ``--watch-dir PATH``.
+
+    R5.3: accepts only existing directories and returns an absolute
+    path so duplicate-dir-with-different-relative-spelling collapses
+    cleanly at parse-time instead of watchfiles discovering it later.
+    """
+    p = Path(raw)
+    if not p.is_dir():
+        raise argparse.ArgumentTypeError(
+            f"--watch-dir {raw!r} is not an existing directory"
+        )
+    return str(p.resolve())
 
 
 def _queue_list(raw: str) -> list[str]:
@@ -294,6 +311,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "50 * active workers; scale-down after 60s of sustained "
             "idle. 30s cooldown between decisions. Implies "
             "--processes (the initial count is clamped into [MIN,MAX])."
+        ),
+    )
+    worker.add_argument(
+        "--reload",
+        action="store_true",
+        help=(
+            "R5.3: watch task modules for changes and trigger the "
+            "existing SIGHUP reload pipeline (ProcessManager execvp). "
+            "Developer-only — do not use in production. Requires "
+            "'pip install swarmq[reload]'."
+        ),
+    )
+    worker.add_argument(
+        "--watch-dir",
+        action="append",
+        type=_watch_dir_path,
+        dest="watch_dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "R5.3: directory to watch (repeatable). Without this flag, "
+            "the parent directory of --module's resolved source file is "
+            "used. Ignored without --reload (a WARNING is logged)."
         ),
     )
     worker.add_argument(

@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 fast = ["orjson"]
 metrics = ["prometheus_client"]
+# R5.3: file-watch hot-reload trigger. Rust-backed, ~1 MB wheel —
+# kept optional so non-reload deployments skip the footprint.
+reload = ["watchfiles>=0.21"]
 test = [
     "pytest",
     "pytest-asyncio",

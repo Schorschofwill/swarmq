@@ -37,7 +37,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 import structlog
 
@@ -137,6 +137,11 @@ class WorkerConfig:
     priorities: bool
     metrics_port: int | None
     health_port: int | None
+    # R5.3: pipeline-uniform fields. Watcher lives in the supervisor
+    # (not the worker subprocess), but routing them through WorkerConfig
+    # avoids the supervisor-only-flag drift that R4.6-H Unit 1 removed.
+    reload: bool = False
+    watch_dirs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):
@@ -218,6 +223,8 @@ class ProcessManager:
         autoscale: tuple[int, int] | None = None,
         queue_depth_fn: QueueDepthFn | None = None,
         shutdown_grace_s: float | None = None,
+        reload: bool = False,
+        watch_dirs: tuple[str, ...] = (),
     ) -> None:
         if autoscale is not None:
             min_w, max_w = autoscale
@@ -271,6 +278,13 @@ class ProcessManager:
         self._startup_argv: list[str] = list(sys.argv)
         self._startup_env: dict[str, str] = dict(os.environ)
 
+        # R5.3 Unit 6: optional file-watch hot-reload trigger. The
+        # watcher lives in a daemon thread and fires SIGHUP at our own
+        # PID — the existing _on_reload_signal handler does the work.
+        self._reload: bool = bool(reload)
+        self._watch_dirs: tuple[str, ...] = tuple(watch_dirs)
+        self._file_watcher: Any | None = None  # FileWatcher, lazy-imported
+
     # ------------------------------------------------------------------
     # Public entry-point
     # ------------------------------------------------------------------
@@ -296,9 +310,33 @@ class ProcessManager:
         self._setup_signals()
         _unblock_signals()
 
+        # R5.3 Unit 6: arm the file-watcher AFTER _setup_signals so the
+        # SIGHUP handler is guaranteed to be installed by the time the
+        # watcher can fire its first trigger. Kept lazy-imported so the
+        # `watchfiles` optional dep is not required on the import path.
+        if self._reload:
+            logger.warning(
+                "hot_reload_enabled",
+                reason="development feature — do not use in production",
+                watch_dirs=list(self._watch_dirs),
+            )
+            from swarmq.hot_reload import FileWatcher
+
+            self._file_watcher = FileWatcher(
+                watch_dirs=self._watch_dirs,
+                trigger=lambda: os.kill(os.getpid(), signal.SIGHUP),
+                is_busy=lambda: self._reload_requested,
+            )
+            self._file_watcher.start()
+
         try:
             retcode = self._monitor_loop()
         finally:
+            if self._file_watcher is not None:
+                try:
+                    self._file_watcher.stop()
+                except Exception:
+                    logger.warning("file_watcher_stop_failed", exc_info=True)
             self._shutdown_all_workers()
             self._collect_zombies()
 
@@ -870,6 +908,29 @@ def run_multi_process_worker(args) -> int:
     sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
     shutdown_grace_s = float(sq_config.shutdown_timeout)
 
+    reload_enabled = bool(getattr(args, "reload", False))
+    watch_dirs_raw = getattr(args, "watch_dir", None) or ()
+
+    # R5.3: --watch-dir without --reload is almost certainly an operator
+    # typo. Warn (don't error) so the worker still starts, but surface
+    # the ignored list so it's not silently dropped.
+    if watch_dirs_raw and not reload_enabled:
+        logger.warning(
+            "watch_dir_ignored_without_reload",
+            watch_dirs=list(watch_dirs_raw),
+        )
+
+    resolved_watch_dirs: tuple[str, ...] = ()
+    if reload_enabled:
+        from swarmq.hot_reload import (
+            check_watchfiles_available,
+            resolve_watch_dirs,
+        )
+
+        # Fail-fast if the optional [reload] extra is missing.
+        check_watchfiles_available()
+        resolved_watch_dirs = resolve_watch_dirs(args.module, watch_dirs_raw)
+
     worker_cfg = WorkerConfig(
         module=args.module,
         queues=tuple(args.queues),
@@ -881,6 +942,8 @@ def run_multi_process_worker(args) -> int:
         priorities=args.priorities,
         metrics_port=args.metrics_port,
         health_port=args.health_port,
+        reload=reload_enabled,
+        watch_dirs=resolved_watch_dirs,
     )
 
     pm = ProcessManager(
@@ -890,5 +953,7 @@ def run_multi_process_worker(args) -> int:
         autoscale=args.autoscale,
         queue_depth_fn=queue_depth_fn,
         shutdown_grace_s=shutdown_grace_s,
+        reload=reload_enabled,
+        watch_dirs=resolved_watch_dirs,
     )
     return pm.run()

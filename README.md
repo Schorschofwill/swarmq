@@ -106,6 +106,10 @@ asyncio.run(main())
   exposed on `/metrics`, drop-in no-op when the dep is absent.
 - **Health endpoints** — `/health` (liveness) + `/ready` (broker +
   backend reachable, structured 503 body).
+- **Hot reload** (`--reload`, `pip install swarmq[reload]`) — file-
+  watch trigger that fires the existing SIGHUP drain-and-execvpe
+  pipeline. Developer-only (WARNING log on every start); see
+  `website/guides/hot-reload.md`.
 
 ### Reliability hardening (E2E + Chaos suites)
 
@@ -139,8 +143,9 @@ list in `src/swarmq/config.py`.
 ## What's planned next
 
 Phase 4 operator features complete (Priorities, Expiry, Burst,
-ProcessManager, Autoscaling). Phase 5 remaining — file-watch hot
-reload (R5.3), machine-readable agent docs (R5.5).
+ProcessManager, Autoscaling). Phase 5 Wave 1 complete (Metrics,
+Health, Hot reload). Remaining — machine-readable agent docs (R5.5,
+deferred until a concrete consumer arrives).
 Workflow primitives (`chain` / `group` / `chord`) and bulk-throughput
 optimisation deferred — see
 `docs/brainstorms/implementation-order-requirements.md`.
