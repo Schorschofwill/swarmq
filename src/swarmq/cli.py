@@ -319,8 +319,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "R5.3: watch task modules for changes and trigger the "
             "existing SIGHUP reload pipeline (ProcessManager execvp). "
-            "Developer-only — do not use in production. Requires "
-            "'pip install swarmq[reload]'."
+            "Implies --processes (activates the supervisor when no "
+            "--processes/--autoscale is passed). Developer-only — do "
+            "not use in production. Requires "
+            "'pip install \"swarmq[reload]\"'. "
+            "Missing dep exits with code 1; invalid --watch-dir exits 2."
         ),
     )
     worker.add_argument(
@@ -1358,9 +1361,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         # R4.6/R4.7: when the user opted into multi-process mode,
         # dispatch to the synchronous supervisor. The supervisor
         # itself runs no asyncio loop — subprocesses do.
+        # R5.3 ce-review #1: --reload requires the ProcessManager
+        # supervisor — single-process path has no SIGHUP handler and
+        # no execvpe pipeline. Activating multi-process implicitly
+        # keeps the default invocation (`swarmq worker --reload`)
+        # working.
         use_multi = (
             getattr(args, "processes", 1) > 1
             or getattr(args, "autoscale", None) is not None
+            or getattr(args, "reload", False)
         )
         if use_multi:
             from swarmq.process_manager import run_multi_process_worker

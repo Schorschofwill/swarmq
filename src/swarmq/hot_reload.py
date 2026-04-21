@@ -5,7 +5,8 @@ fires a caller-supplied ``trigger`` (in production:
 ``os.kill(os.getpid(), SIGHUP)``) unless a caller-supplied
 ``is_busy`` callable reports a reload is already in flight — the
 existing SIGHUP handler in :class:`swarmq.process_manager.ProcessManager`
-is not idempotent, so re-entrancy is suppressed at the watcher layer.
+is idempotent at the flag level but emits duplicate log events on
+double-entry, so re-entrancy is suppressed at the watcher layer.
 
 The watcher is decoupled from :class:`ProcessManager` on purpose:
 it only knows about paths, a trigger, and a busy-check. That makes
@@ -21,14 +22,26 @@ hint rather than crashing inside the daemon thread.
 
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
 import threading
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from swarmq.exceptions import ConfigurationError
+
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from watchfiles import BaseFilter
+
+__all__ = [
+    "FileWatcher",
+    "check_watchfiles_available",
+    "resolve_watch_dirs",
+]
 
 logger = structlog.get_logger()
 
@@ -44,10 +57,8 @@ def check_watchfiles_available() -> None:
     try:
         import watchfiles  # noqa: F401
     except ImportError as exc:
-        from swarmq.exceptions import ConfigurationError
-
         raise ConfigurationError(
-            "--reload requires the optional 'watchfiles' dependency. "
+            "--reload: watchfiles is not installed. "
             "Install with:  pip install 'swarmq[reload]'"
         ) from exc
 
@@ -58,20 +69,21 @@ def resolve_watch_dirs(
     """Return the directories to watch for ``--reload``.
 
     If ``explicit_dirs`` is non-empty, it wins verbatim — the operator
-    opted into a specific scope. Otherwise the module is resolved via
+    opted into a specific scope. Duplicates are collapsed in-order
+    (``dict.fromkeys``) so repeated ``--watch-dir`` entries for the
+    same absolute path do not register the same inotify watch twice.
+
+    Otherwise the module is resolved via
     :func:`importlib.util.find_spec` and its ``origin`` parent is
     returned. Namespace packages (``spec.origin is None``) raise
-    :class:`ConfigurationError` because there is no single directory
-    that unambiguously covers them.
+    :class:`ConfigurationError`. When the auto-resolved path lives
+    inside ``sys.prefix`` (site-packages / stdlib), a WARNING is
+    logged — watching the framework itself is almost always a
+    footgun (reload storms on ``pip install -e .``).
     """
-    explicit = tuple(explicit_dirs)
+    explicit = tuple(dict.fromkeys(explicit_dirs))
     if explicit:
         return explicit
-
-    import importlib.util
-    from pathlib import Path
-
-    from swarmq.exceptions import ConfigurationError
 
     try:
         spec = importlib.util.find_spec(module)
@@ -86,36 +98,62 @@ def resolve_watch_dirs(
             f"{module!r} (namespace package or missing origin). "
             f"Pass --watch-dir explicitly."
         )
-    # Frozen ("frozen") and built-in ("built-in") modules have no
-    # on-disk source to watch. Bail out loudly rather than returning
-    # ``Path("frozen").parent == Path(".")``.
     if spec.origin in {"frozen", "built-in"}:
         raise ConfigurationError(
             f"--reload: module {module!r} is a {spec.origin} module — "
             "no source file to watch. Pass --watch-dir explicitly."
         )
-    return (str(Path(spec.origin).parent),)
+
+    resolved = str(Path(spec.origin).parent)
+    # ce-review #17: Reload-storm guard — warn when the auto-resolved
+    # dir lives under sys.prefix (installed package) or sys.exec_prefix
+    # (stdlib). Operator still gets what they asked for; this is a
+    # loud hint that they probably want --watch-dir instead.
+    for root in {sys.prefix, sys.exec_prefix}:
+        try:
+            Path(resolved).relative_to(root)
+        except ValueError:
+            continue
+        logger.warning(
+            "watch_dir_inside_venv_or_stdlib",
+            module=module,
+            resolved_dir=resolved,
+            sys_root=root,
+            hint="reload-storms possible on pip install; use --watch-dir",
+        )
+        break
+    return (resolved,)
+
+
+class SwarmQFilter:
+    """PythonFilter subclass ignoring editor-noise we saw in the wild.
+
+    ``PythonFilter`` is imported lazily inside ``__init__`` because
+    ``watchfiles`` is an optional dependency — importing this class
+    without the dep raises ImportError at construction, never at
+    module-load.
+    """
+
+    _IGNORED_BASENAMES = frozenset({"4913"})  # Vim probe-file
+    _IGNORED_SUFFIXES = (".tmp", ".bak")
+
+    def __init__(self) -> None:
+        from watchfiles import PythonFilter
+
+        self._python_filter = PythonFilter()
+
+    def __call__(self, change: Any, path: str) -> bool:
+        basename = path.rsplit("/", 1)[-1]
+        if basename in self._IGNORED_BASENAMES:
+            return False
+        if path.endswith(self._IGNORED_SUFFIXES):
+            return False
+        return self._python_filter(change, path)
 
 
 def _default_filter() -> BaseFilter:
     """Construct the SwarmQ file filter (lazy — watchfiles is optional)."""
-    from watchfiles import PythonFilter
-
-    class SwarmQFilter(PythonFilter):
-        """PythonFilter + extras for editor-noise we saw in the wild."""
-
-        _IGNORED_BASENAMES = frozenset({"4913"})  # Vim probe-file
-        _IGNORED_SUFFIXES = (".tmp", ".bak")
-
-        def __call__(self, change: Any, path: str) -> bool:
-            basename = path.rsplit("/", 1)[-1]
-            if basename in self._IGNORED_BASENAMES:
-                return False
-            if path.endswith(self._IGNORED_SUFFIXES):
-                return False
-            return super().__call__(change, path)
-
-    return SwarmQFilter()
+    return SwarmQFilter()  # type: ignore[return-value]
 
 
 class FileWatcher:
@@ -164,6 +202,16 @@ class FileWatcher:
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=timeout)
+            # ce-review #6: surface the silent-abandonment case. daemon=True
+            # guarantees the process can still exit, but the operator
+            # deserves to know the watcher did not stop cleanly (inotify
+            # stuck in kernel wait, Rust runtime poll > budget).
+            if self._thread.is_alive():
+                logger.warning(
+                    "watch_thread_stop_timeout",
+                    timeout_s=timeout,
+                    hint="daemon thread will be killed by process exit",
+                )
         logger.info("watch_stopped")
 
     def _run(self) -> None:
@@ -171,6 +219,21 @@ class FileWatcher:
             from watchfiles import watch
         except ImportError:  # pragma: no cover — pre-flight guards this
             logger.error("watchfiles_import_failed")
+            return
+
+        # ce-review #4: re-validate watch dirs just before arming.
+        # Parse-time validation in argparse cannot catch NFS unmount /
+        # bind-mount removal / tmpfs eviction that happens between
+        # argument parsing and supervisor start. Fail loud with the
+        # specific path rather than dying inside watchfiles with a
+        # generic OSError.
+        missing = [d for d in self._dirs if not os.path.isdir(d)]
+        if missing:
+            logger.error(
+                "watch_dir_missing",
+                missing=missing,
+                hint="path vanished between --watch-dir parse and watcher start",
+            )
             return
 
         file_filter = self._filter or _default_filter()
@@ -182,6 +245,12 @@ class FileWatcher:
                 debounce=self._debounce_ms,
                 step=self._step_ms,
                 rust_timeout=1000,
+                # ce-review #2: default True lets KeyboardInterrupt
+                # (BaseException) escape our `except Exception` — thread
+                # dies silently. We install our own SIGINT handler at
+                # the supervisor level; let the Rust layer forward them
+                # via stop_event instead of raising into Python.
+                raise_interrupt=False,
             ):
                 if self._stop_event.is_set():
                     return
@@ -201,4 +270,6 @@ class FileWatcher:
                 except Exception:
                     logger.exception("reload_trigger_failed")
         except Exception:
-            logger.warning("watch_thread_crashed", exc_info=True)
+            # ce-review #11: logger.exception is the codebase convention
+            # for top-level exception boundaries (see worker.py).
+            logger.exception("watch_thread_crashed")

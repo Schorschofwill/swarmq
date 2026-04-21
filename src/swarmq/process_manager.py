@@ -37,7 +37,10 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:  # pragma: no cover — import-time only
+    from swarmq.hot_reload import FileWatcher
 
 import structlog
 
@@ -283,7 +286,10 @@ class ProcessManager:
         # PID — the existing _on_reload_signal handler does the work.
         self._reload: bool = bool(reload)
         self._watch_dirs: tuple[str, ...] = tuple(watch_dirs)
-        self._file_watcher: Any | None = None  # FileWatcher, lazy-imported
+        # ce-review #5: TYPE_CHECKING import gives mypy/IDEs full
+        # coverage on .start()/.stop() call sites without forcing
+        # watchfiles onto the import path at runtime.
+        self._file_watcher: FileWatcher | None = None
 
     # ------------------------------------------------------------------
     # Public entry-point

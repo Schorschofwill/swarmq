@@ -146,7 +146,7 @@ class _FakeWatch:
         self._batches = list(batches)
         self._raise_on_iter = raise_on_iter
 
-    def __call__(self, *paths, stop_event, watch_filter, debounce, step, rust_timeout):
+    def __call__(self, *paths, stop_event, **_kwargs):
         if self._raise_on_iter:
             raise RuntimeError("fake watcher crashed")
 

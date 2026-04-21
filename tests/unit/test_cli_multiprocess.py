@@ -158,6 +158,22 @@ class TestMainRouting:
             assert ns.processes == 3
             assert rc == 0
 
+    def test_reload_alone_routes_to_supervisor(self):
+        """R5.3 ce-review #1: --reload (without --processes or --autoscale)
+        must activate the multi-process supervisor — otherwise the flag is
+        a silent no-op and R-1 is not met."""
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch(
+                 "swarmq.process_manager.run_multi_process_worker",
+                 return_value=0,
+             ) as rmp:
+            rc = main(["worker", "--module=ignore.me", "--reload"])
+            rmp.assert_called_once()
+            ns = rmp.call_args.args[0]
+            assert ns.reload is True
+            assert ns.processes == 1  # default stays 1; supervisor wraps it
+            assert rc == 0
+
     def test_autoscale_routes_to_supervisor(self):
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
