@@ -64,7 +64,10 @@ def check_watchfiles_available() -> None:
 
 
 def resolve_watch_dirs(
-    module: str, explicit_dirs: Iterable[str]
+    module: str,
+    explicit_dirs: Iterable[str],
+    *,
+    spec: importlib.util.ModuleSpec | None = None,
 ) -> tuple[str, ...]:
     """Return the directories to watch for ``--reload``.
 
@@ -80,18 +83,24 @@ def resolve_watch_dirs(
     inside ``sys.prefix`` (site-packages / stdlib), a WARNING is
     logged — watching the framework itself is almost always a
     footgun (reload storms on ``pip install -e .``).
+
+    Pass ``spec`` when the caller already resolved the module (e.g.
+    ``_validate_module_importable``) — ce-review #7 avoids a second
+    ``find_spec`` call that would re-execute ``pkg/__init__.py`` in
+    edge cases that invalidate their own ``sys.modules`` entry.
     """
     explicit = tuple(dict.fromkeys(explicit_dirs))
     if explicit:
         return explicit
 
-    try:
-        spec = importlib.util.find_spec(module)
-    except (ImportError, ValueError) as exc:
-        raise ConfigurationError(
-            f"--reload: cannot resolve watch directory for module "
-            f"{module!r} ({exc}). Pass --watch-dir explicitly."
-        ) from exc
+    if spec is None:
+        try:
+            spec = importlib.util.find_spec(module)
+        except (ImportError, ValueError) as exc:
+            raise ConfigurationError(
+                f"--reload: cannot resolve watch directory for module "
+                f"{module!r} ({exc}). Pass --watch-dir explicitly."
+            ) from exc
     if spec is None or spec.origin is None:
         raise ConfigurationError(
             f"--reload: cannot auto-detect watch directory for module "

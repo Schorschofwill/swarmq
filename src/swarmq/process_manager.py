@@ -835,7 +835,7 @@ def _make_queue_depth_sampler(
     return sample
 
 
-def _validate_module_importable(module: str) -> None:
+def _validate_module_importable(module: str) -> importlib.util.ModuleSpec:
     """Pre-flight check: raise ConfigurationError if ``module`` cannot
     be resolved (ce-review REL-07 / Unit 2).
 
@@ -882,6 +882,11 @@ def _validate_module_importable(module: str) -> None:
             f"--module {module!r} resolves to no loadable spec — "
             "check spelling, PYTHONPATH, and __init__.py presence",
         )
+    # R5.3 ce-review #7: return the spec so run_multi_process_worker
+    # can hand it to resolve_watch_dirs instead of calling find_spec
+    # a second time (which would re-execute pkg/__init__.py in the
+    # edge case where it invalidates its own sys.modules entry).
+    return spec
 
 
 def run_multi_process_worker(args) -> int:
@@ -901,7 +906,9 @@ def run_multi_process_worker(args) -> int:
     # ce-review Unit 2: fail fast on obviously-unimportable --module
     # instead of letting the 5-restart-per-hour cap burn through a
     # slot before the operator sees the error.
-    _validate_module_importable(args.module)
+    # R5.3 ce-review #7: keep the resolved spec to avoid a second
+    # find_spec() call inside resolve_watch_dirs.
+    module_spec = _validate_module_importable(args.module)
 
     queue_depth_fn: QueueDepthFn | None = None
     if args.autoscale is not None:
@@ -935,7 +942,9 @@ def run_multi_process_worker(args) -> int:
 
         # Fail-fast if the optional [reload] extra is missing.
         check_watchfiles_available()
-        resolved_watch_dirs = resolve_watch_dirs(args.module, watch_dirs_raw)
+        resolved_watch_dirs = resolve_watch_dirs(
+            args.module, watch_dirs_raw, spec=module_spec,
+        )
 
     worker_cfg = WorkerConfig(
         module=args.module,

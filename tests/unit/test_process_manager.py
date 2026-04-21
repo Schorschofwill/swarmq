@@ -824,6 +824,89 @@ class TestScaleDownMinAge:
         p_young.terminate.assert_not_called()
 
 
+@pytest.fixture
+def _restore_default_signals():
+    """R5.3 ce-review #10: tests that install real signal handlers
+    (`_setup_signals`) must reset them afterward so other suites
+    are not affected."""
+    import signal
+
+    saved_hup = signal.getsignal(signal.SIGHUP)
+    saved_int = signal.getsignal(signal.SIGINT)
+    saved_term = signal.getsignal(signal.SIGTERM)
+    saved_chld = signal.getsignal(signal.SIGCHLD)
+    yield
+    signal.signal(signal.SIGHUP, saved_hup if saved_hup else signal.SIG_DFL)
+    signal.signal(signal.SIGINT, saved_int if saved_int else signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, saved_term if saved_term else signal.SIG_DFL)
+    signal.signal(signal.SIGCHLD, saved_chld if saved_chld else signal.SIG_DFL)
+
+
+class TestReloadReentrancy:
+    """R5.3 ce-review #10: re-entrancy with real SIGHUP dispatch.
+
+    The existing static ``is_busy=lambda: True`` unit test covers
+    the watcher contract. These tests exercise the real binding
+    ``_on_reload_signal -> _reload_requested -> is_busy-closure``
+    using actual signal delivery, so a refactor that breaks the
+    closure semantics or removes the handler turns red here.
+    """
+
+    def test_real_sighup_sets_reload_requested_and_flips_closure(
+        self, _restore_default_signals,
+    ):
+        """Main-thread SIGHUP flips pm._reload_requested synchronously
+        (CPython delivers pending signals between bytecodes), and the
+        is_busy closure reflects the new value."""
+        import os as _os
+
+        pm = ProcessManager(
+            num_workers=0, worker_entry=_entry_stub,
+            reload=True, watch_dirs=("/tmp",),
+        )
+        pm._setup_signals()  # installs the real handler
+
+        # Mirror the closure that ProcessManager.run() builds.
+        is_busy = lambda: pm._reload_requested
+
+        assert is_busy() is False
+        _os.kill(_os.getpid(), signal.SIGHUP)
+        # On CPython, pending signals are processed before the next
+        # Python bytecode after os.kill returns.
+        assert pm._reload_requested is True
+        assert is_busy() is True
+
+    def test_second_sighup_while_busy_is_idempotent(
+        self, _restore_default_signals,
+    ):
+        """Double-fire must not change state beyond the first call:
+        _reload_requested stays True, _shutting_down stays True,
+        shutdown_event stays set. Log duplication is acceptable."""
+        import os as _os
+
+        pm = ProcessManager(
+            num_workers=0, worker_entry=_entry_stub,
+            reload=True, watch_dirs=("/tmp",),
+        )
+        pm._setup_signals()
+
+        _os.kill(_os.getpid(), signal.SIGHUP)
+        first_reload = pm._reload_requested
+        first_shutdown = pm._shutting_down
+        first_event = pm.shutdown_event.is_set()
+
+        _os.kill(_os.getpid(), signal.SIGHUP)
+
+        assert pm._reload_requested is True
+        assert pm._shutting_down is True
+        assert pm.shutdown_event.is_set() is True
+        # Values should match the first delivery (true idempotency at
+        # state level, even though two handler log events fired).
+        assert pm._reload_requested == first_reload
+        assert pm._shutting_down == first_shutdown
+        assert pm.shutdown_event.is_set() == first_event
+
+
 class TestFileWatcherIntegration:
     """R5.3 Unit 6: ProcessManager wiring of the optional FileWatcher."""
 
@@ -843,9 +926,23 @@ class TestFileWatcherIntegration:
     def test_run_starts_and_stops_watcher(self):
         """With --reload active, the supervisor must arm the watcher
         between _setup_signals and _monitor_loop, and stop it in
-        finally — regardless of _monitor_loop's return code."""
+        finally — regardless of _monitor_loop's return code.
+
+        R5.3 ce-review #8: also verifies that FileWatcher is constructed
+        with the correct kwargs — watch_dirs matches pm._watch_dirs, the
+        is_busy closure actually reads pm._reload_requested, and the
+        trigger callable fires SIGHUP at the current PID. A regression
+        wiring a static False is_busy or a wrong signal/PID would be
+        invisible to the original call-count-only assertions."""
+        import os as _os
+
         pm = self._pm(reload=True, watch_dirs=("/tmp",))
         fake_watcher = MagicMock()
+
+        # R5.3 ce-review #8: patch os.kill BEFORE pm.run() so the
+        # trigger closure (built inside run()) captures the mock.
+        # Patching only around trigger() call-time misses the lambda
+        # binding and would fire a real SIGHUP at the test process.
         with patch.object(pm, "_start_all_workers"), \
              patch.object(pm, "_setup_signals"), \
              patch.object(pm, "_monitor_loop", return_value=0), \
@@ -854,10 +951,34 @@ class TestFileWatcherIntegration:
              patch(
                  "swarmq.hot_reload.FileWatcher",
                  return_value=fake_watcher,
-             ):
+             ) as fw_cls, \
+             patch("swarmq.process_manager.os.kill") as mock_kill:
             pm.run()
-        fake_watcher.start.assert_called_once()
-        fake_watcher.stop.assert_called_once()
+
+            fake_watcher.start.assert_called_once()
+            fake_watcher.stop.assert_called_once()
+
+            # Kwarg identity — not just call counts (ce-review #8).
+            kwargs = fw_cls.call_args.kwargs
+            assert kwargs["watch_dirs"] == ("/tmp",)
+            is_busy = kwargs["is_busy"]
+            trigger = kwargs["trigger"]
+            assert callable(is_busy) and callable(trigger)
+
+            # is_busy reads pm._reload_requested live — static-False
+            # closure would fail this.
+            pm._reload_requested = False
+            assert is_busy() is False
+            pm._reload_requested = True
+            assert is_busy() is True
+
+            # trigger fires SIGHUP at own PID — wrong signal or wrong
+            # PID would fail this.
+            trigger()
+            mock_kill.assert_called_once()
+            call_args, _ = mock_kill.call_args
+            assert call_args[0] == _os.getpid()
+            assert call_args[1] == signal.SIGHUP
 
     def test_run_without_reload_never_imports_watcher(self):
         """Smoke-test: with reload=False, FileWatcher must never be
@@ -943,8 +1064,14 @@ class TestReloadRoutingThroughCLI:
         assert kwargs["watch_dirs"] == ()
 
     def test_reload_true_resolves_dirs_and_passes_through(self):
+        """R5.3 ce-review #7: _validate_module_importable returns the
+        spec, which is handed to resolve_watch_dirs — find_spec is NOT
+        called a second time."""
+        import importlib.util
+
         from swarmq.process_manager import run_multi_process_worker
 
+        json_spec = importlib.util.find_spec("json")
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
         with patch.dict(os.environ, self._env(), clear=False), \
@@ -953,23 +1080,34 @@ class TestReloadRoutingThroughCLI:
                  return_value=pm_mock,
              ) as PM, \
              patch(
-                 "swarmq.process_manager._validate_module_importable"
-             ):
+                 "swarmq.process_manager._validate_module_importable",
+                 return_value=json_spec,
+             ), \
+             patch(
+                 "swarmq.hot_reload.importlib.util.find_spec"
+             ) as hot_reload_find_spec:
             rc = run_multi_process_worker(self._args(reload=True))
         assert rc == 0
         kwargs = PM.call_args.kwargs
         assert kwargs["reload"] is True
-        # json is a real stdlib package — resolved parent must be non-empty.
+        # json is a real stdlib package — resolved parent must end in 'json'.
         assert len(kwargs["watch_dirs"]) == 1
         assert kwargs["watch_dirs"][0].endswith("json")
+        # Single find_spec call — the one inside _validate_module_importable.
+        # resolve_watch_dirs must NOT call find_spec again because spec is passed.
+        hot_reload_find_spec.assert_not_called()
 
     def test_reload_true_without_watchfiles_raises(self):
+        import importlib.util
+
         from swarmq.exceptions import ConfigurationError
         from swarmq.process_manager import run_multi_process_worker
 
+        json_spec = importlib.util.find_spec("json")
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
-                 "swarmq.process_manager._validate_module_importable"
+                 "swarmq.process_manager._validate_module_importable",
+                 return_value=json_spec,
              ), \
              patch.dict("sys.modules", {"watchfiles": None}):
             with pytest.raises(ConfigurationError, match=r"swarmq\[reload\]"):

@@ -98,6 +98,31 @@ class TestResolveWatchDirs:
         with pytest.raises(ConfigurationError, match="cannot auto-detect|cannot resolve"):
             resolve_watch_dirs("definitely_not_a_real_module_xyz", ())
 
+    def test_explicit_spec_skips_find_spec(self):
+        """R5.3 ce-review #7: caller-supplied spec must bypass
+        importlib.util.find_spec entirely so the module's __init__.py
+        is not re-executed in the supervisor."""
+        import importlib.util
+        import json as _json
+        from pathlib import Path
+
+        prebuilt = importlib.util.find_spec("json")
+        assert prebuilt is not None
+
+        with patch("swarmq.hot_reload.importlib.util.find_spec") as mock_find:
+            out = resolve_watch_dirs("json", (), spec=prebuilt)
+            mock_find.assert_not_called()
+
+        assert out == (str(Path(_json.__file__).parent),)
+
+    def test_missing_spec_falls_back_to_find_spec(self):
+        """Regression: programmatic callers without spec=kwarg still work."""
+        import json as _json
+        from pathlib import Path
+
+        out = resolve_watch_dirs("json", ())  # no spec= — legacy path
+        assert out == (str(Path(_json.__file__).parent),)
+
     def test_namespace_package_hint(self, tmp_path, monkeypatch):
         # Create a namespace-package root (no __init__.py) on sys.path.
         ns_root = tmp_path / "ns_root"
