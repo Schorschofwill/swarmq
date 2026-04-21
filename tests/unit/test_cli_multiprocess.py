@@ -192,8 +192,98 @@ class TestMainRouting:
         assert payload["ok"] is False
         assert "nope.xyz.unresolvable" in payload["error"]
 
+    def test_check_reports_missing_watchfiles(self, capsys):
+        """R5.3 ce-review pass 2 TG-05: --check --reload without the
+        [reload] extra emits JSON with error + exit 1, not a raw
+        traceback."""
+        import json
+
+        with patch.dict("sys.modules", {"watchfiles": None}):
+            rc = main(["worker", "--module=json", "--reload", "--check"])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ConfigurationError"
+        assert "swarmq[reload]" in payload["error"]
+        # Stable field-set even on error path.
+        assert payload["watch_dirs"] is None
+        assert payload["module_origin"] is None
+
+    def test_check_reports_unexpected_exception(self, capsys):
+        """R5.3 ce-review pass 2 #3 / P1: non-ConfigurationError
+        exceptions must render as JSON on stdout, not escape as a
+        Python traceback."""
+        import json
+
+        with patch(
+            "swarmq.process_manager._validate_module_importable",
+            side_effect=PermissionError("simulated .pth lockout"),
+        ):
+            rc = main(["worker", "--module=json", "--check"])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error_type"] == "PermissionError"
+        assert "simulated .pth lockout" in payload["error"]
+
+    def test_check_argparse_error_emits_json(self, capsys):
+        """R5.3 ce-review pass 2 #2 / AC-06 / CLI-02: when --check is
+        requested but argparse itself rejects the invocation, the JSON
+        contract must still hold — agents cannot branch on a missing
+        stdout payload."""
+        import json
+
+        rc = main([
+            "worker", "--module=json",
+            "--watch-dir", "/definitely/not/existing/path/xyz",
+            "--check",
+        ])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ArgparseError"
+        assert "watch-dir" in payload["error"].lower() or \
+               "not an existing directory" in payload["error"]
+
+    def test_check_warns_on_reload_burst_combo(self, capsys):
+        """R5.3 ce-review pass 2 #25: --reload + --burst emits a
+        structured warning in the JSON payload."""
+        import json
+
+        rc = main([
+            "worker", "--module=json", "--reload", "--burst", "--check",
+        ])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is True
+        assert any(
+            "reload_burst_conflict" in w for w in payload["warnings"]
+        )
+
+    def test_check_rejects_proc_watch_dir(self, capsys):
+        """R5.3 ce-review pass 2 #22 / ADV-01: pseudo-filesystem paths
+        are rejected at argparse time, surfacing through the --check
+        JSON error contract."""
+        import json
+
+        rc = main([
+            "worker", "--module=json", "--reload",
+            "--watch-dir", "/proc",
+            "--check",
+        ])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ArgparseError"
+        assert "/proc" in payload["error"]
+
     def test_check_without_reload_validates_module_only(self, capsys):
-        """--check alone (no --reload) still validates --module."""
+        """--check alone (no --reload) still validates --module.
+
+        R5.3 ce-review P2-P3 pass #1: payload has stable field-set —
+        every key is always present; ``watch_dirs`` is ``None`` when
+        ``--reload`` is not set.
+        """
         import json
 
         rc = main(["worker", "--module=json", "--check"])
@@ -202,7 +292,11 @@ class TestMainRouting:
         payload = json.loads(out)
         assert payload["ok"] is True
         assert payload["reload"] is False
-        assert "watch_dirs" not in payload  # only populated when --reload
+        # Stable field-set: watch_dirs is always present, None when unused.
+        assert "watch_dirs" in payload
+        assert payload["watch_dirs"] is None
+        assert payload["error"] is None
+        assert payload["warnings"] == []
 
     def test_reload_alone_routes_to_supervisor(self):
         """R5.3 ce-review #1: --reload (without --processes or --autoscale)

@@ -23,17 +23,37 @@ import pytest
 from swarmq.hot_reload import FileWatcher
 
 
+# ce-review #21: probe write-to-trigger timeout. Small enough to keep
+# the helper tight, large enough to absorb the 200ms debounce + step
+# jitter in the integration FileWatcher config.
+_ARM_POLL_TIMEOUT_S = 0.3
+
+
 def _wait_for_armed_watcher(
     watch_dir: Path, triggered: threading.Event, timeout: float = 5.0
 ) -> None:
-    """Prove the watcher is armed by repeatedly touching a probe .py
-    file until ``triggered`` fires.
+    """Prove the watcher is armed by repeatedly touching a probe file
+    until ``triggered`` fires.
 
-    ce-review #20: replaces a fixed ``time.sleep(0.3)`` whose margin
-    is not portable across CI runners. Touching in a loop costs nothing
-    if the watcher is already armed (first touch fires the trigger) but
-    keeps probing across debounce windows if the Rust layer is slow
-    to install its inotify watch.
+    ce-review pass 1 #20: replaces a fixed ``time.sleep(0.3)`` whose
+    margin is not portable across CI runners. Touching in a loop costs
+    nothing if the watcher is already armed (first touch fires the
+    trigger) but keeps probing across debounce windows if the Rust
+    layer is slow to install its inotify watch.
+
+    ce-review pass 2 #6 / T-02 / ADV-02: the probe extension is
+    ``.swarmq-arm`` — NOT ``.py`` — so ``SwarmQFilter`` filters both
+    write and delete events. No drain phase is needed; the watcher
+    does not see the probe at all, it only inotify-notifies the Rust
+    layer that the directory is live. The probe write therefore fires
+    no trigger — we instead wait for the watcher to arm by observing
+    that a subsequent real ``.py`` write DOES fire. To get that proof
+    we keep the .py-based probe but drop the drain: we rename the
+    probe cleanup to avoid the caller-side false positive.
+
+    The final compromise: probe is ``.py`` (so write fires trigger,
+    proving armed), but we make cleanup robust by waiting then
+    clearing again, with a real timeout bound.
     """
     probe = watch_dir / ".swarmq-arm-probe.py"
     deadline = time.monotonic() + timeout
@@ -41,15 +61,14 @@ def _wait_for_armed_watcher(
     while time.monotonic() < deadline:
         attempt += 1
         probe.write_text(f"# arm probe {attempt}\n")
-        if triggered.wait(timeout=0.3):
-            # Drain the arm-fire, then unlink the probe and drain
-            # the delete-event (also a .py change) so the event is
-            # quiescent when we return. Otherwise the caller's
-            # negative assertion ("trigger did NOT fire") would see
-            # the probe-delete as a false positive.
+        if triggered.wait(timeout=_ARM_POLL_TIMEOUT_S):
+            # Drain the arm-fire. Then unlink + wait a full debounce
+            # cycle so the delete-event has actually landed and been
+            # seen. Finally clear again — the caller inherits a
+            # quiescent event, independently of drain-event timing.
             triggered.clear()
             probe.unlink(missing_ok=True)
-            triggered.wait(timeout=1.0)
+            time.sleep(_ARM_POLL_TIMEOUT_S)
             triggered.clear()
             return
     raise AssertionError(
@@ -132,16 +151,42 @@ def test_vim_probe_4913_is_ignored(tmp_path: Path) -> None:
 
 @pytest.fixture
 def _restore_sighup():
-    """Put SIGHUP back to SIG_DFL after the test so later suites are
-    not affected by the handler pm._setup_signals() installs."""
+    """Restore all handlers ``pm._setup_signals()`` installs.
+
+    ce-review pass 2 #9: SIGHUP is not the only handler the supervisor
+    installs — SIGINT, SIGTERM and SIGCHLD also get wired. Restoring
+    only SIGHUP leaked three handlers into the rest of the pytest
+    session. Also: ``signal.SIG_DFL`` equals ``0`` (falsy), so the
+    pass-1 ``saved if saved else SIG_DFL`` idiom worked by coincidence;
+    the correct guard is ``is not None``.
+    """
     import signal
 
-    saved = signal.getsignal(signal.SIGHUP)
+    saved_hup = signal.getsignal(signal.SIGHUP)
+    saved_int = signal.getsignal(signal.SIGINT)
+    saved_term = signal.getsignal(signal.SIGTERM)
+    saved_chld = signal.getsignal(signal.SIGCHLD)
     yield
-    signal.signal(signal.SIGHUP, saved if saved is not None else signal.SIG_DFL)
+    signal.signal(
+        signal.SIGHUP,
+        saved_hup if saved_hup is not None else signal.SIG_DFL,
+    )
+    signal.signal(
+        signal.SIGINT,
+        saved_int if saved_int is not None else signal.SIG_DFL,
+    )
+    signal.signal(
+        signal.SIGTERM,
+        saved_term if saved_term is not None else signal.SIG_DFL,
+    )
+    signal.signal(
+        signal.SIGCHLD,
+        saved_chld if saved_chld is not None else signal.SIG_DFL,
+    )
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(20)
 def test_full_pipeline_file_write_triggers_execvpe(
     tmp_path: Path, _restore_sighup,
 ) -> None:
@@ -186,18 +231,39 @@ def test_full_pipeline_file_write_triggers_execvpe(
 
     execvpe_called = threading.Event()
 
+    class _ExecvpeReached(SystemExit):
+        """Sentinel — matches real execvpe's 'never returns' semantics.
+
+        Raising ``SystemExit`` from ``_fake_execvpe`` means any code
+        the supervisor might add after the real ``os.execvpe()`` call
+        stays unreachable in the test too, mirroring production
+        (ce-review pass 2 #24 / T-04 / ADV-03).
+        """
+
     def _fake_execvpe(*_args, **_kwargs):
         execvpe_called.set()
-        # Do NOT call the real execvpe — it would replace pytest.
+        raise _ExecvpeReached(0)
 
-    def _write_after_delay() -> None:
-        # Let the supervisor install its SIGHUP handler + arm the
-        # Rust watcher before we drop the trigger file.
-        time.sleep(0.6)
-        (tmp_path / "my_tasks.py").write_text("# reload trigger\n")
+    def _write_retrying() -> None:
+        """Retry the trigger write until the watcher reports armed.
+
+        ce-review pass 2 #5 + KP-04 + REL-02/03 + T-03: replaces the
+        pass-1 ``time.sleep(0.6)`` that was racy on slow CI. We cannot
+        use ``_wait_for_armed_watcher`` here because the trigger goes
+        through a real SIGHUP to the supervisor (not a test-local
+        ``threading.Event``). Instead we loop-write until either
+        ``_reload_requested`` flips (handler ran) or the global
+        ``@pytest.mark.timeout(20)`` trips.
+        """
+        target = tmp_path / "my_tasks.py"
+        for attempt in range(1, 100):  # bounded; real guard is the marker
+            if pm._reload_requested:
+                return
+            target.write_text(f"# reload trigger {attempt}\n")
+            time.sleep(0.25)
 
     writer = threading.Thread(
-        target=_write_after_delay, name="e2e-file-writer", daemon=True,
+        target=_write_retrying, name="e2e-file-writer", daemon=True,
     )
 
     with patch("swarmq.process_manager.os.execvpe", side_effect=_fake_execvpe), \
@@ -209,7 +275,11 @@ def test_full_pipeline_file_write_triggers_execvpe(
         # we're parked in _short_monitor. Signal handler installed by
         # pm._setup_signals() on the main thread catches SIGHUP and
         # sets _reload_requested — the monitor loop then returns.
-        rc = pm.run()
+        # _fake_execvpe then raises SystemExit to mimic the real
+        # execvpe never returning.
+        with pytest.raises(_ExecvpeReached) as exc_info:
+            pm.run()
+        assert exc_info.value.code == 0
 
     writer.join(timeout=2.0)
 
@@ -220,4 +290,3 @@ def test_full_pipeline_file_write_triggers_execvpe(
     assert execvpe_called.is_set(), (
         "execvpe was not reached — reload pipeline broke before execvpe"
     )
-    assert rc == 0

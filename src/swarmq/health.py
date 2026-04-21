@@ -12,9 +12,11 @@ Two endpoints, both stdlib-only (same asyncio HTTP server pattern as
   by load balancers and rolling-deploy automation to decide when a
   fresh worker is ready to accept traffic.
 
-The ``swarmq worker --check`` CLI flag runs a one-shot probe against
-both endpoints (broker + backend) and exits 0 / 1 — useful for
-container HEALTHCHECK directives without exposing the HTTP server.
+``swarmq worker --check`` is a separate concern — it performs
+offline config validation (module importable, watchfiles available,
+watch-dirs resolvable) and does NOT touch broker or backend. For a
+liveness/readiness probe at runtime, call the HTTP endpoints above
+directly or use ``--health-port`` to expose them.
 """
 
 from __future__ import annotations

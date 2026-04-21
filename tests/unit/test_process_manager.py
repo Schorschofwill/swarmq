@@ -866,10 +866,25 @@ def _restore_default_signals():
     saved_term = signal.getsignal(signal.SIGTERM)
     saved_chld = signal.getsignal(signal.SIGCHLD)
     yield
-    signal.signal(signal.SIGHUP, saved_hup if saved_hup else signal.SIG_DFL)
-    signal.signal(signal.SIGINT, saved_int if saved_int else signal.SIG_DFL)
-    signal.signal(signal.SIGTERM, saved_term if saved_term else signal.SIG_DFL)
-    signal.signal(signal.SIGCHLD, saved_chld if saved_chld else signal.SIG_DFL)
+    # ce-review pass 2 #8: SIG_DFL == 0 is falsy, so `saved if saved
+    # else SIG_DFL` worked by accident. Use `is not None` for the
+    # intended semantics (the only non-handler value getsignal returns).
+    signal.signal(
+        signal.SIGHUP,
+        saved_hup if saved_hup is not None else signal.SIG_DFL,
+    )
+    signal.signal(
+        signal.SIGINT,
+        saved_int if saved_int is not None else signal.SIG_DFL,
+    )
+    signal.signal(
+        signal.SIGTERM,
+        saved_term if saved_term is not None else signal.SIG_DFL,
+    )
+    signal.signal(
+        signal.SIGCHLD,
+        saved_chld if saved_chld is not None else signal.SIG_DFL,
+    )
 
 
 class TestReloadReentrancy:
@@ -909,9 +924,16 @@ class TestReloadReentrancy:
     def test_second_sighup_while_busy_is_idempotent(
         self, _restore_default_signals,
     ):
-        """Double-fire must not change state beyond the first call:
-        _reload_requested stays True, _shutting_down stays True,
-        shutdown_event stays set. Log duplication is acceptable."""
+        """Double-fire raises no exception; state remains in the
+        reload-requested / shutting-down terminal state.
+
+        ce-review pass 2 #12 / T-01: the prior snapshot-vs-second-read
+        comparisons were trivially ``True == True`` because the handler
+        only sets flags, never clears them. The meaningful contract is
+        that the second delivery does not crash and preserves the set
+        flags — not that "second read equals first read", which is
+        tautological for set-only booleans.
+        """
         import os as _os
 
         pm = ProcessManager(
@@ -921,20 +943,19 @@ class TestReloadReentrancy:
         pm._setup_signals()
 
         _os.kill(_os.getpid(), signal.SIGHUP)
-        first_reload = pm._reload_requested
-        first_shutdown = pm._shutting_down
-        first_event = pm.shutdown_event.is_set()
-
-        _os.kill(_os.getpid(), signal.SIGHUP)
-
+        # Must-be-set invariant before the second delivery.
         assert pm._reload_requested is True
         assert pm._shutting_down is True
         assert pm.shutdown_event.is_set() is True
-        # Values should match the first delivery (true idempotency at
-        # state level, even though two handler log events fired).
-        assert pm._reload_requested == first_reload
-        assert pm._shutting_down == first_shutdown
-        assert pm.shutdown_event.is_set() == first_event
+
+        # Second delivery must not raise.
+        _os.kill(_os.getpid(), signal.SIGHUP)
+
+        # Same invariants still hold — handler is idempotent at the
+        # flag level.
+        assert pm._reload_requested is True
+        assert pm._shutting_down is True
+        assert pm.shutdown_event.is_set() is True
 
 
 class TestFileWatcherIntegration:

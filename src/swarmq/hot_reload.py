@@ -27,6 +27,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable, Iterable
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,7 +69,7 @@ def resolve_watch_dirs(
     module: str,
     explicit_dirs: Iterable[str],
     *,
-    spec: importlib.util.ModuleSpec | None = None,
+    spec: ModuleSpec | None = None,
 ) -> tuple[str, ...]:
     """Return the directories to watch for ``--reload``.
 
@@ -89,6 +90,12 @@ def resolve_watch_dirs(
     ``_validate_module_importable``) — ce-review #7 avoids a second
     ``find_spec`` call that would re-execute ``pkg/__init__.py`` in
     edge cases that invalidate their own ``sys.modules`` entry.
+
+    .. warning::
+        The caller is responsible for ensuring ``spec`` corresponds
+        to ``module``. No cross-validation is performed; a mismatched
+        spec silently resolves the wrong watch directory (ce-review
+        #17 advisory).
     """
     explicit = tuple(dict.fromkeys(explicit_dirs))
     if explicit:
@@ -136,12 +143,13 @@ def resolve_watch_dirs(
 
 
 class SwarmQFilter:
-    """PythonFilter subclass ignoring editor-noise we saw in the wild.
+    """Watchfiles filter wrapping ``PythonFilter`` plus SwarmQ-specific
+    editor-noise exclusions.
 
-    ``PythonFilter`` is imported lazily inside ``__init__`` because
-    ``watchfiles`` is an optional dependency — importing this class
-    without the dep raises ImportError at construction, never at
-    module-load.
+    Uses composition (not inheritance) over ``watchfiles.PythonFilter``
+    so the lazy import stays inside ``__init__``. ``watchfiles`` is
+    an optional dependency; constructing ``SwarmQFilter`` without the
+    ``[reload]`` extra raises ``ImportError``.
 
     ``_IGNORED_SUFFIXES`` only matches at path-end, so ``tasks.py.bak``
     is rejected but ``tasks.bak.py`` passes through — the latter is a
@@ -154,6 +162,11 @@ class SwarmQFilter:
     _IGNORED_SUFFIXES = (".tmp", ".bak")
 
     def __init__(self) -> None:
+        """Instantiate the filter.
+
+        :raises ImportError: when ``watchfiles`` is not installed —
+            install the optional extra via ``pip install 'swarmq[reload]'``.
+        """
         from watchfiles import PythonFilter
 
         self._python_filter = PythonFilter()
@@ -165,11 +178,6 @@ class SwarmQFilter:
         if path.endswith(self._IGNORED_SUFFIXES):
             return False
         return self._python_filter(change, path)
-
-
-def _default_filter() -> BaseFilter:
-    """Construct the SwarmQ file filter (lazy — watchfiles is optional)."""
-    return SwarmQFilter()  # type: ignore[return-value]
 
 
 class FileWatcher:
@@ -206,12 +214,18 @@ class FileWatcher:
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("FileWatcher already started")
-        self._thread = threading.Thread(
+        # ce-review #7: assign self._thread only AFTER .start() returns
+        # so is_running() never reports True while the thread has not
+        # actually been scheduled yet. If .start() raises (rare — OS
+        # thread-limit), _thread stays None and the watcher is cleanly
+        # re-armable.
+        thread = threading.Thread(
             target=self._run,
             name="swarmq-file-watcher",
             daemon=True,
         )
-        self._thread.start()
+        thread.start()
+        self._thread = thread
         logger.info(
             "watch_started",
             watch_dirs=list(self._dirs),
@@ -249,76 +263,79 @@ class FileWatcher:
         ``False`` on timeout. Safe to call before :meth:`start` —
         returns ``True`` immediately in that case because the
         watcher is definitionally not running.
+
+        Passing ``timeout=None`` (the default) blocks indefinitely,
+        matching the :meth:`threading.Event.wait` convention.
         """
         if self._thread is None:
             return True
         return self._exit_event.wait(timeout=timeout)
 
     def _run(self) -> None:
+        # ce-review #15: single method — try/finally sets _exit_event so
+        # callers observing is_running() / wait_until_stopped() see the
+        # transition without racing against the thread handle.
         try:
-            self._run_loop()
+            try:
+                from watchfiles import watch
+            except ImportError:  # pragma: no cover — pre-flight guards this
+                logger.error("watchfiles_import_failed")
+                return
+
+            # ce-review #4: re-validate watch dirs just before arming.
+            # Parse-time validation in argparse cannot catch NFS unmount /
+            # bind-mount removal / tmpfs eviction that happens between
+            # argument parsing and supervisor start. Fail loud with the
+            # specific path rather than dying inside watchfiles with a
+            # generic OSError.
+            missing = [d for d in self._dirs if not os.path.isdir(d)]
+            if missing:
+                logger.error(
+                    "watch_dir_missing",
+                    missing=missing,
+                    hint="path vanished between --watch-dir parse and watcher start",
+                )
+                return
+
+            file_filter = self._filter or SwarmQFilter()
+            try:
+                for changes in watch(
+                    *self._dirs,
+                    stop_event=self._stop_event,
+                    watch_filter=file_filter,
+                    debounce=self._debounce_ms,
+                    step=self._step_ms,
+                    rust_timeout=1000,
+                    # ce-review #2: default True lets KeyboardInterrupt
+                    # (BaseException) escape our `except Exception` — thread
+                    # dies silently. We install our own SIGINT handler at
+                    # the supervisor level; let the Rust layer forward them
+                    # via stop_event instead of raising into Python.
+                    raise_interrupt=False,
+                ):
+                    if self._stop_event.is_set():
+                        return
+                    if self._is_busy():
+                        logger.debug(
+                            "reload_skip_reentrant",
+                            changed_count=len(changes),
+                        )
+                        continue
+                    logger.info(
+                        "reload_triggered",
+                        changed_count=len(changes),
+                        changed_sample=[p for _, p in list(changes)[:5]],
+                    )
+                    try:
+                        self._trigger()
+                    except Exception:
+                        logger.exception("reload_trigger_failed")
+            except Exception:
+                # ce-review #11: logger.exception is the codebase convention
+                # for top-level exception boundaries (see worker.py).
+                logger.exception("watch_thread_crashed")
         finally:
             # ce-review #19: set the public exit event so callers
             # observing is_running() / wait_until_stopped() see the
             # transition without racing against the thread handle.
             self._exit_event.set()
-
-    def _run_loop(self) -> None:
-        try:
-            from watchfiles import watch
-        except ImportError:  # pragma: no cover — pre-flight guards this
-            logger.error("watchfiles_import_failed")
-            return
-
-        # ce-review #4: re-validate watch dirs just before arming.
-        # Parse-time validation in argparse cannot catch NFS unmount /
-        # bind-mount removal / tmpfs eviction that happens between
-        # argument parsing and supervisor start. Fail loud with the
-        # specific path rather than dying inside watchfiles with a
-        # generic OSError.
-        missing = [d for d in self._dirs if not os.path.isdir(d)]
-        if missing:
-            logger.error(
-                "watch_dir_missing",
-                missing=missing,
-                hint="path vanished between --watch-dir parse and watcher start",
-            )
-            return
-
-        file_filter = self._filter or _default_filter()
-        try:
-            for changes in watch(
-                *self._dirs,
-                stop_event=self._stop_event,
-                watch_filter=file_filter,
-                debounce=self._debounce_ms,
-                step=self._step_ms,
-                rust_timeout=1000,
-                # ce-review #2: default True lets KeyboardInterrupt
-                # (BaseException) escape our `except Exception` — thread
-                # dies silently. We install our own SIGINT handler at
-                # the supervisor level; let the Rust layer forward them
-                # via stop_event instead of raising into Python.
-                raise_interrupt=False,
-            ):
-                if self._stop_event.is_set():
-                    return
-                if self._is_busy():
-                    logger.debug(
-                        "reload_skip_reentrant",
-                        changed_count=len(changes),
-                    )
-                    continue
-                logger.info(
-                    "reload_triggered",
-                    changed_count=len(changes),
-                    changed_sample=[p for _, p in list(changes)[:5]],
-                )
-                try:
-                    self._trigger()
-                except Exception:
-                    logger.exception("reload_trigger_failed")
-        except Exception:
-            # ce-review #11: logger.exception is the codebase convention
-            # for top-level exception boundaries (see worker.py).
-            logger.exception("watch_thread_crashed")

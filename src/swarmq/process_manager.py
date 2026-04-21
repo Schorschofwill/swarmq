@@ -32,12 +32,13 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import multiprocessing
+from importlib.machinery import ModuleSpec
 import os
 import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, TypedDict
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
@@ -844,7 +845,7 @@ def _make_queue_depth_sampler(
     return sample
 
 
-def _validate_module_importable(module: str) -> importlib.util.ModuleSpec:
+def _validate_module_importable(module: str) -> ModuleSpec:
     """Pre-flight check: raise ConfigurationError if ``module`` cannot
     be resolved (ce-review REL-07 / Unit 2).
 
@@ -898,6 +899,104 @@ def _validate_module_importable(module: str) -> importlib.util.ModuleSpec:
     return spec
 
 
+class WorkerConfigCheckResult(TypedDict):
+    """Return shape for :func:`check_worker_config`.
+
+    ce-review pass 2 #20: TypedDict so mypy narrows field accesses
+    instead of treating values as ``object``. Mirrors the ``--check``
+    JSON payload keys but drops ``ok``/``error``/``error_type`` —
+    those are CLI-level framing (success implies ok=True; raise on
+    failure).
+    """
+
+    module: str
+    module_origin: str | None
+    reload: bool
+    watch_dirs: list[str] | None
+    warnings: list[str]
+
+
+def check_worker_config(
+    *,
+    module: str,
+    reload: bool,
+    watch_dir: list[str] | tuple[str, ...] | None,
+    burst: bool = False,
+) -> WorkerConfigCheckResult:
+    """Run the pre-flight validation for ``swarmq worker`` and return
+    a machine-readable summary dict.
+
+    Scope mirrors ``run_multi_process_worker``'s pre-supervisor checks
+    so a successful ``check_worker_config`` result implies the
+    supervisor would get past pre-flight (R5.3 ce-review #10 / #23):
+
+    - ``module`` is importable (``find_spec``-based).
+    - When ``reload=True``: ``watchfiles`` is installed and watch-dirs
+      resolve to a non-empty tuple (stdlib + ``[reload]`` extra).
+    - When ``reload=True`` and ``burst=True``: a non-fatal warning is
+      recorded; the combination is ambiguous in intent but not
+      rejected.
+
+    Does **not** connect to broker or backend. Raises
+    :class:`ConfigurationError` on any validation failure.
+
+    ``stdout`` is captured while importing the module to protect
+    machine-readable callers (``--check``) against ``print()`` calls
+    inside ``pkg/__init__.py`` (R5.3 ce-review #23 / adv ADV-04).
+
+    Returned dict has a fixed shape with every key always present —
+    callers can rely on ``dict["watch_dirs"]`` being accessible
+    regardless of ``reload`` flag. Unused fields are ``None``.
+    """
+    import contextlib
+    import io
+
+    from swarmq.hot_reload import (
+        check_watchfiles_available,
+        resolve_watch_dirs,
+    )
+
+    warnings: list[str] = []
+
+    # ce-review #23 / ADV-04: protect JSON-on-stdout callers against
+    # module-init print() contaminating the payload. Side-effects
+    # captured here are discarded on success; on failure the captured
+    # text is forwarded to stderr so an operator debugging a bad
+    # --module sees it.
+    capture = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(capture):
+            module_spec = _validate_module_importable(module)
+    except Exception:
+        # Forward whatever the module printed to stderr before re-raising
+        # so humans still get the context.
+        sys.stderr.write(capture.getvalue())
+        raise
+
+    watch_dirs_result: list[str] | None = None
+    if reload:
+        check_watchfiles_available()
+        resolved = resolve_watch_dirs(
+            module, tuple(watch_dir or ()), spec=module_spec,
+        )
+        watch_dirs_result = list(resolved)
+
+        if burst:
+            warnings.append(
+                "reload_burst_conflict: --reload and --burst are not "
+                "designed to be combined; burst drains-and-exits while "
+                "reload re-execs the supervisor. Pick one per invocation."
+            )
+
+    return {
+        "module": module,
+        "module_origin": module_spec.origin,
+        "reload": reload,
+        "watch_dirs": watch_dirs_result,
+        "warnings": warnings,
+    }
+
+
 def run_multi_process_worker(args) -> int:
     """CLI entry for ``swarmq worker --processes N`` / ``--autoscale``.
 
@@ -912,24 +1011,6 @@ def run_multi_process_worker(args) -> int:
             "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set",
         )
 
-    # ce-review Unit 2: fail fast on obviously-unimportable --module
-    # instead of letting the 5-restart-per-hour cap burn through a
-    # slot before the operator sees the error.
-    # R5.3 ce-review #7: keep the resolved spec to avoid a second
-    # find_spec() call inside resolve_watch_dirs.
-    module_spec = _validate_module_importable(args.module)
-
-    queue_depth_fn: QueueDepthFn | None = None
-    if args.autoscale is not None:
-        queue_depth_fn = _make_queue_depth_sampler(broker_url, list(args.queues))
-
-    # ce-review REL-01: resolve SwarmQConfig.shutdown_timeout once in
-    # the parent and pass it as the phase-1 grace so a subprocess's
-    # graceful-shutdown flow has the budget it was configured for.
-    from swarmq.config import SwarmQConfig
-    sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
-    shutdown_grace_s = float(sq_config.shutdown_timeout)
-
     reload_enabled = bool(getattr(args, "reload", False))
     watch_dirs_raw = getattr(args, "watch_dir", None) or ()
 
@@ -942,18 +1023,34 @@ def run_multi_process_worker(args) -> int:
             watch_dirs=list(watch_dirs_raw),
         )
 
-    resolved_watch_dirs: tuple[str, ...] = ()
-    if reload_enabled:
-        from swarmq.hot_reload import (
-            check_watchfiles_available,
-            resolve_watch_dirs,
-        )
+    # ce-review Unit 2 + #10: single pre-flight via the public
+    # validator; check_worker_config runs the same sequence (find_spec,
+    # watchfiles availability, watch-dir resolution) that
+    # `swarmq worker --check` uses. Fails fast on any misconfiguration
+    # before the supervisor starts spawning subprocesses.
+    check_result = check_worker_config(
+        module=args.module,
+        reload=reload_enabled,
+        watch_dir=list(watch_dirs_raw) or None,
+        burst=bool(getattr(args, "burst", False)),
+    )
+    for warning in check_result["warnings"] or []:
+        logger.warning("worker_config_warning", warning=warning)
 
-        # Fail-fast if the optional [reload] extra is missing.
-        check_watchfiles_available()
-        resolved_watch_dirs = resolve_watch_dirs(
-            args.module, watch_dirs_raw, spec=module_spec,
-        )
+    resolved_watch_dirs: tuple[str, ...] = tuple(
+        check_result["watch_dirs"] or (),
+    )
+
+    queue_depth_fn: QueueDepthFn | None = None
+    if args.autoscale is not None:
+        queue_depth_fn = _make_queue_depth_sampler(broker_url, list(args.queues))
+
+    # ce-review REL-01: resolve SwarmQConfig.shutdown_timeout once in
+    # the parent and pass it as the phase-1 grace so a subprocess's
+    # graceful-shutdown flow has the budget it was configured for.
+    from swarmq.config import SwarmQConfig
+    sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
+    shutdown_grace_s = float(sq_config.shutdown_timeout)
 
     worker_cfg = WorkerConfig(
         module=args.module,

@@ -129,19 +129,40 @@ def _autoscale_range(raw: str) -> tuple[int, int]:
     return low, high
 
 
+# ce-review pass 2 #22 / ADV-01: pseudo-filesystems generate inotify
+# events on every process / device / attribute read. Watching them
+# triggers reload-storms at kernel-event rate. Argparse rejects these
+# up-front so --check exit 0 cannot mislead an operator into a
+# deployment that would reload-loop the moment it starts.
+_FORBIDDEN_WATCH_PREFIXES = ("/proc", "/sys", "/dev")
+
+
 def _watch_dir_path(raw: str) -> str:
     """argparse type-function for ``--watch-dir PATH``.
 
     R5.3: accepts only existing directories and returns an absolute
     path so duplicate-dir-with-different-relative-spelling collapses
     cleanly at parse-time instead of watchfiles discovering it later.
+
+    Rejects pseudo-filesystem prefixes (``/proc``, ``/sys``, ``/dev``)
+    that would cause reload-storms on Linux: every process spawn
+    generates ``/proc/*`` inotify events, every device attribute read
+    generates ``/sys/*`` events. ce-review pass 2 #22 advisory.
     """
     p = Path(raw)
     if not p.is_dir():
         raise argparse.ArgumentTypeError(
             f"--watch-dir {raw!r} is not an existing directory"
         )
-    return str(p.resolve())
+    resolved = str(p.resolve())
+    for forbidden in _FORBIDDEN_WATCH_PREFIXES:
+        if resolved == forbidden or resolved.startswith(forbidden + "/"):
+            raise argparse.ArgumentTypeError(
+                f"--watch-dir {raw!r} points into {forbidden} (pseudo-"
+                f"filesystem). Watching pseudo-FS generates kernel-rate "
+                f"inotify events and causes reload-storms."
+            )
+    return resolved
 
 
 def _queue_list(raw: str) -> list[str]:
@@ -343,11 +364,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help=(
-            "R5.3 ce-review #23: dry-run mode. Validate config without "
-            "starting the supervisor: --module importable, and with "
-            "--reload also watchfiles available + watch-dirs resolvable. "
-            "Prints a JSON summary to stdout, exits 0 on success, "
-            "1 on ConfigurationError. Does NOT connect to broker/backend."
+            "Dry-run validation mode. Verify --module is importable and "
+            "(with --reload) that 'watchfiles' is installed + watch-dirs "
+            "resolve. Prints a JSON summary to stdout, exits 0 on "
+            "success or 1 on any validation error. Does NOT connect to "
+            "broker or backend."
         ),
     )
     worker.add_argument(
@@ -1357,55 +1378,133 @@ async def _run_schedule_async(args: argparse.Namespace) -> None:
         )
 
 
-def _run_worker_check(args: argparse.Namespace) -> int:
-    """R5.3 ce-review #23: ``swarmq worker --check`` dry-run.
+#: Keys that ``--check`` always emits on its JSON payload, regardless of
+#: which validation step fails. Callers may rely on ``dict.get(key)`` +
+#: None for uniform handling across success + failure paths
+#: (ce-review #1 / P1: stable field-set contract).
+_WORKER_CHECK_PAYLOAD_KEYS = (
+    "ok",
+    "module",
+    "module_origin",
+    "reload",
+    "watch_dirs",
+    "warnings",
+    "error",
+    "error_type",
+)
 
-    Validates that the invocation would pass pre-flight without
-    starting any subprocess. Scope:
 
-    - ``--module`` is importable (find_spec-based, same check the
-      supervisor runs).
-    - When ``--reload`` is set: ``watchfiles`` is installed, and
-      ``resolve_watch_dirs`` returns a non-empty tuple.
+def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
+    """Return a payload dict with every ce-review #1 key present.
 
-    Does NOT connect to broker/backend — that is a separate
-    liveness concern and can be probed via ``--health-port`` once
-    the supervisor is running.
-
-    Emits a one-line JSON summary on stdout and exits 0 on success,
-    1 on ConfigurationError.
+    Fields are set to ``None`` until the validator fills them in;
+    the JSON contract stays shape-stable regardless of where the
+    validation terminates.
     """
-    payload: dict[str, Any] = {
+    return {
         "ok": False,
-        "module": args.module,
+        "module": getattr(args, "module", None),
+        "module_origin": None,
         "reload": bool(getattr(args, "reload", False)),
+        "watch_dirs": None,
+        "warnings": [],
+        "error": None,
+        "error_type": None,
     }
+
+
+def _run_worker_check(args: argparse.Namespace) -> int:
+    """``swarmq worker --check`` dry-run entry-point.
+
+    Delegates the validation to
+    :func:`swarmq.process_manager.check_worker_config` and renders the
+    result as a one-line JSON payload on stdout. The payload shape
+    is stable across success and failure — every key defined in
+    :data:`_WORKER_CHECK_PAYLOAD_KEYS` is always present (``None``
+    when unused).
+
+    Exit codes:
+
+    - ``0`` — all validations passed.
+    - ``1`` — any validation error (module unresolvable, missing
+      ``watchfiles`` dep, invalid watch-dir, unexpected exception).
+
+    Unexpected exceptions are caught too (R5.3 ce-review #3 /
+    P1): a :exc:`PermissionError` from ``importlib.util.find_spec``
+    or a ``.pth``-related ``OSError`` must not escape as a raw
+    traceback or the stdout-JSON contract is violated for agents
+    that parse the output.
+    """
+    from swarmq.process_manager import check_worker_config
+
+    payload = _seed_check_payload(args)
     try:
-        from swarmq.process_manager import _validate_module_importable
-
-        module_spec = _validate_module_importable(args.module)
-        payload["module_origin"] = module_spec.origin
-
-        if payload["reload"]:
-            from swarmq.hot_reload import (
-                check_watchfiles_available,
-                resolve_watch_dirs,
-            )
-
-            check_watchfiles_available()
-            watch_dirs_raw = getattr(args, "watch_dir", None) or ()
-            resolved = resolve_watch_dirs(
-                args.module, watch_dirs_raw, spec=module_spec,
-            )
-            payload["watch_dirs"] = list(resolved)
-
-        payload["ok"] = True
+        result = check_worker_config(
+            module=args.module,
+            reload=payload["reload"],
+            watch_dir=getattr(args, "watch_dir", None),
+            burst=bool(getattr(args, "burst", False)),
+        )
+        payload.update(
+            ok=True,
+            module_origin=result["module_origin"],
+            watch_dirs=result["watch_dirs"],
+            warnings=result["warnings"],
+        )
         sys.stdout.write(json.dumps(payload) + "\n")
         return 0
     except ConfigurationError as exc:
         payload["error"] = str(exc)
+        payload["error_type"] = "ConfigurationError"
         sys.stdout.write(json.dumps(payload) + "\n")
         return 1
+    except Exception as exc:  # noqa: BLE001 — protect stdout JSON contract
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+        payload["error_type"] = type(exc).__name__
+        sys.stdout.write(json.dumps(payload) + "\n")
+        return 1
+
+
+def _is_check_invocation(argv: Sequence[str] | None) -> bool:
+    """Detect ``swarmq worker --check`` from the raw argv.
+
+    ce-review pass 2 #2 / AC-06: when ``--check`` is on the command
+    line, the caller (agent, CI script) expects JSON on stdout even
+    for argparse-shape errors (bad ``--watch-dir`` path, missing
+    ``--module``). Looking at the raw argv lets us catch argparse's
+    ``SystemExit(2)`` and emit JSON instead of the default unhelpful
+    exit.
+
+    Returns True when the argv has both ``worker`` and ``--check`` as
+    separate tokens. Does not parse exhaustively — a false positive
+    (``--check`` mentioned in a quoted string) would at worst emit
+    JSON twice; the impact is bounded.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    tokens = list(argv)
+    return "worker" in tokens and "--check" in tokens
+
+
+def _emit_argparse_check_error(message: str) -> int:
+    """Render an argparse failure as a ``--check`` JSON payload.
+
+    Keeps the stable field-set (ok, module, module_origin, reload,
+    watch_dirs, warnings, error, error_type) so agents consuming
+    ``--check`` can parse any failure uniformly.
+    """
+    payload = {
+        "ok": False,
+        "module": None,
+        "module_origin": None,
+        "reload": None,
+        "watch_dirs": None,
+        "warnings": [],
+        "error": message.strip() or "argparse rejected the invocation",
+        "error_type": "ArgparseError",
+    }
+    sys.stdout.write(json.dumps(payload) + "\n")
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1415,9 +1514,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     1 on any other startup or runtime error. Errors render as a single
     stderr line at INFO+ log levels; ``--log-level DEBUG`` adds the
     full traceback so users can debug their own task modules.
+
+    Exception: when ``swarmq worker --check`` is the invocation, an
+    argparse failure is rendered as a JSON payload on stdout and
+    returns ``1`` (matching the documented ``--check`` exit codes)
+    rather than letting argparse's ``SystemExit(2)`` escape. This
+    keeps the stdout-JSON contract of ``--check`` stable for every
+    failure mode.
     """
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    check_mode = _is_check_invocation(argv)
+    if check_mode:
+        # Redirect argparse's stderr-rendered error into our JSON
+        # payload so a machine-readable caller gets a single,
+        # parseable output stream.
+        import io
+
+        argparse_err = io.StringIO()
+        try:
+            import contextlib as _ctxlib
+
+            with _ctxlib.redirect_stderr(argparse_err):
+                args = parser.parse_args(argv)
+        except SystemExit as exc:
+            # argparse exits on parse error (code 2) or on --help/--version
+            # (code 0). Only wrap the error path.
+            if exc.code == 0:
+                raise
+            return _emit_argparse_check_error(argparse_err.getvalue())
+    else:
+        args = parser.parse_args(argv)
 
     if args.command == "worker":
         # R5.3 ce-review #23: dry-run validation. Never starts the
