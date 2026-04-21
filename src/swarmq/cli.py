@@ -340,6 +340,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     worker.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "R5.3 ce-review #23: dry-run mode. Validate config without "
+            "starting the supervisor: --module importable, and with "
+            "--reload also watchfiles available + watch-dirs resolvable. "
+            "Prints a JSON summary to stdout, exits 0 on success, "
+            "1 on ConfigurationError. Does NOT connect to broker/backend."
+        ),
+    )
+    worker.add_argument(
         "--burst-idle-timeout",
         type=_positive_float,
         default=5.0,
@@ -1346,6 +1357,57 @@ async def _run_schedule_async(args: argparse.Namespace) -> None:
         )
 
 
+def _run_worker_check(args: argparse.Namespace) -> int:
+    """R5.3 ce-review #23: ``swarmq worker --check`` dry-run.
+
+    Validates that the invocation would pass pre-flight without
+    starting any subprocess. Scope:
+
+    - ``--module`` is importable (find_spec-based, same check the
+      supervisor runs).
+    - When ``--reload`` is set: ``watchfiles`` is installed, and
+      ``resolve_watch_dirs`` returns a non-empty tuple.
+
+    Does NOT connect to broker/backend — that is a separate
+    liveness concern and can be probed via ``--health-port`` once
+    the supervisor is running.
+
+    Emits a one-line JSON summary on stdout and exits 0 on success,
+    1 on ConfigurationError.
+    """
+    payload: dict[str, Any] = {
+        "ok": False,
+        "module": args.module,
+        "reload": bool(getattr(args, "reload", False)),
+    }
+    try:
+        from swarmq.process_manager import _validate_module_importable
+
+        module_spec = _validate_module_importable(args.module)
+        payload["module_origin"] = module_spec.origin
+
+        if payload["reload"]:
+            from swarmq.hot_reload import (
+                check_watchfiles_available,
+                resolve_watch_dirs,
+            )
+
+            check_watchfiles_available()
+            watch_dirs_raw = getattr(args, "watch_dir", None) or ()
+            resolved = resolve_watch_dirs(
+                args.module, watch_dirs_raw, spec=module_spec,
+            )
+            payload["watch_dirs"] = list(resolved)
+
+        payload["ok"] = True
+        sys.stdout.write(json.dumps(payload) + "\n")
+        return 0
+    except ConfigurationError as exc:
+        payload["error"] = str(exc)
+        sys.stdout.write(json.dumps(payload) + "\n")
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Console-script entry point. Returns the process exit code.
 
@@ -1358,6 +1420,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "worker":
+        # R5.3 ce-review #23: dry-run validation. Never starts the
+        # supervisor or touches the broker — just checks whether the
+        # invocation would get past pre-flight.
+        if getattr(args, "check", False):
+            return _run_worker_check(args)
+
         # R4.6/R4.7: when the user opted into multi-process mode,
         # dispatch to the synchronous supervisor. The supervisor
         # itself runs no asyncio loop — subprocesses do.

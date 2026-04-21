@@ -23,7 +23,42 @@ import pytest
 from swarmq.hot_reload import FileWatcher
 
 
+def _wait_for_armed_watcher(
+    watch_dir: Path, triggered: threading.Event, timeout: float = 5.0
+) -> None:
+    """Prove the watcher is armed by repeatedly touching a probe .py
+    file until ``triggered`` fires.
+
+    ce-review #20: replaces a fixed ``time.sleep(0.3)`` whose margin
+    is not portable across CI runners. Touching in a loop costs nothing
+    if the watcher is already armed (first touch fires the trigger) but
+    keeps probing across debounce windows if the Rust layer is slow
+    to install its inotify watch.
+    """
+    probe = watch_dir / ".swarmq-arm-probe.py"
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        probe.write_text(f"# arm probe {attempt}\n")
+        if triggered.wait(timeout=0.3):
+            # Drain the arm-fire, then unlink the probe and drain
+            # the delete-event (also a .py change) so the event is
+            # quiescent when we return. Otherwise the caller's
+            # negative assertion ("trigger did NOT fire") would see
+            # the probe-delete as a false positive.
+            triggered.clear()
+            probe.unlink(missing_ok=True)
+            triggered.wait(timeout=1.0)
+            triggered.clear()
+            return
+    raise AssertionError(
+        f"watcher never armed after {attempt} probe writes in {timeout}s"
+    )
+
+
 @pytest.mark.integration
+@pytest.mark.timeout(15)
 def test_py_file_write_triggers_callback(tmp_path: Path) -> None:
     triggered = threading.Event()
     watcher = FileWatcher(
@@ -35,8 +70,7 @@ def test_py_file_write_triggers_callback(tmp_path: Path) -> None:
     )
     watcher.start()
     try:
-        # Let the Rust watcher arm before the first write.
-        time.sleep(0.3)
+        _wait_for_armed_watcher(tmp_path, triggered)
         (tmp_path / "my_task.py").write_text("# reload me\n")
         assert triggered.wait(timeout=3.0), (
             "trigger did not fire within 3s of .py write"
@@ -46,8 +80,13 @@ def test_py_file_write_triggers_callback(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(15)
 def test_pyc_write_is_ignored(tmp_path: Path) -> None:
-    """PythonFilter drops *.pyc — the trigger must stay quiet."""
+    """PythonFilter drops *.pyc — the trigger must stay quiet.
+
+    Proves the watcher is armed first (so a silent arm-miss cannot
+    fake a green result), then verifies the .pyc event is filtered.
+    """
     triggered = threading.Event()
     watcher = FileWatcher(
         watch_dirs=(str(tmp_path),),
@@ -58,9 +97,9 @@ def test_pyc_write_is_ignored(tmp_path: Path) -> None:
     )
     watcher.start()
     try:
-        time.sleep(0.3)
+        _wait_for_armed_watcher(tmp_path, triggered)
         (tmp_path / "cached.pyc").write_bytes(b"\x00" * 16)
-        # Wait longer than debounce — trigger still should not fire.
+        # Debounce + margin — trigger must NOT fire.
         assert not triggered.wait(timeout=1.0), (
             "trigger fired on .pyc write — PythonFilter failed"
         )
@@ -69,6 +108,7 @@ def test_pyc_write_is_ignored(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(15)
 def test_vim_probe_4913_is_ignored(tmp_path: Path) -> None:
     """Vim writes /path/4913 before each save — must not trigger."""
     triggered = threading.Event()
@@ -81,7 +121,7 @@ def test_vim_probe_4913_is_ignored(tmp_path: Path) -> None:
     )
     watcher.start()
     try:
-        time.sleep(0.3)
+        _wait_for_armed_watcher(tmp_path, triggered)
         (tmp_path / "4913").write_text("")
         assert not triggered.wait(timeout=1.0), (
             "trigger fired on 4913 probe-file — SwarmQFilter failed"

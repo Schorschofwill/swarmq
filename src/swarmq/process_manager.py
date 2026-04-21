@@ -761,6 +761,15 @@ def worker_subprocess_entry(
     # Namespace callers expect list-typed queues so we re-wrap explicitly.
     kwargs = dataclasses.asdict(cfg)
     kwargs["queues"] = list(kwargs["queues"])
+    # R5.3 ce-review #18: reload/watch_dirs are supervisor-only state.
+    # They ride along on WorkerConfig for pipeline-uniformity (R4.6-H
+    # Unit 1), but the worker subprocess must not construct a watcher
+    # — that would spawn N reload pipelines, one per worker, each
+    # firing SIGHUP at its own PID (default action: terminate). Drop
+    # them explicitly so a future developer adding `if ns.reload: ...`
+    # inside run_worker_async cannot silently regress.
+    kwargs.pop("reload", None)
+    kwargs.pop("watch_dirs", None)
     ns = _argparse.Namespace(**kwargs)
 
     async def _run() -> None:

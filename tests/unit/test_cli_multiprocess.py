@@ -158,6 +158,52 @@ class TestMainRouting:
             assert ns.processes == 3
             assert rc == 0
 
+    def test_check_reload_validates_without_supervisor(self, capsys):
+        """R5.3 ce-review #23: --check --reload validates watchfiles +
+        watch-dirs and exits 0, without starting the supervisor."""
+        import json
+
+        with patch(
+            "swarmq.process_manager.run_multi_process_worker",
+        ) as rmp:
+            rc = main([
+                "worker", "--module=json",
+                "--reload", "--check",
+            ])
+        assert rc == 0
+        rmp.assert_not_called()  # supervisor NOT started
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["reload"] is True
+        assert len(payload["watch_dirs"]) == 1
+
+    def test_check_reports_missing_module(self, capsys):
+        """--check returns 1 with JSON error when --module unresolvable."""
+        import json
+
+        rc = main([
+            "worker", "--module=nope.xyz.unresolvable",
+            "--check",
+        ])
+        assert rc == 1
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "nope.xyz.unresolvable" in payload["error"]
+
+    def test_check_without_reload_validates_module_only(self, capsys):
+        """--check alone (no --reload) still validates --module."""
+        import json
+
+        rc = main(["worker", "--module=json", "--check"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["reload"] is False
+        assert "watch_dirs" not in payload  # only populated when --reload
+
     def test_reload_alone_routes_to_supervisor(self):
         """R5.3 ce-review #1: --reload (without --processes or --autoscale)
         must activate the multi-process supervisor — otherwise the flag is

@@ -39,6 +39,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 __all__ = [
     "FileWatcher",
+    "SwarmQFilter",
     "check_watchfiles_available",
     "resolve_watch_dirs",
 ]
@@ -141,6 +142,12 @@ class SwarmQFilter:
     ``watchfiles`` is an optional dependency — importing this class
     without the dep raises ImportError at construction, never at
     module-load.
+
+    ``_IGNORED_SUFFIXES`` only matches at path-end, so ``tasks.py.bak``
+    is rejected but ``tasks.bak.py`` passes through — the latter is a
+    legitimate Python file name (``PythonFilter`` accepts ``.py``), and
+    filtering on infix substrings would reject every file under a
+    directory literally named ``bak``. ce-review #21 advisory.
     """
 
     _IGNORED_BASENAMES = frozenset({"4913"})  # Vim probe-file
@@ -190,6 +197,10 @@ class FileWatcher:
         self._debounce_ms = debounce_ms
         self._step_ms = step_ms
         self._stop_event = threading.Event()
+        # ce-review #19: public-observable completion signal so tests
+        # (and operators) can wait for watcher exit without reaching
+        # into the private thread handle.
+        self._exit_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -223,7 +234,36 @@ class FileWatcher:
                 )
         logger.info("watch_stopped")
 
+    def is_running(self) -> bool:
+        """Return True while the watcher thread is still alive.
+
+        Useful for tests and for operators who want to detect a
+        crashed watcher without consulting the stdlib logging output.
+        """
+        return self._thread is not None and not self._exit_event.is_set()
+
+    def wait_until_stopped(self, timeout: float | None = None) -> bool:
+        """Block until the watcher thread exits (or ``timeout`` lapses).
+
+        Returns ``True`` if the thread exited within the timeout,
+        ``False`` on timeout. Safe to call before :meth:`start` —
+        returns ``True`` immediately in that case because the
+        watcher is definitionally not running.
+        """
+        if self._thread is None:
+            return True
+        return self._exit_event.wait(timeout=timeout)
+
     def _run(self) -> None:
+        try:
+            self._run_loop()
+        finally:
+            # ce-review #19: set the public exit event so callers
+            # observing is_running() / wait_until_stopped() see the
+            # transition without racing against the thread handle.
+            self._exit_event.set()
+
+    def _run_loop(self) -> None:
         try:
             from watchfiles import watch
         except ImportError:  # pragma: no cover — pre-flight guards this

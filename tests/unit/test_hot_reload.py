@@ -12,7 +12,7 @@ import pytest
 from swarmq.exceptions import ConfigurationError
 from swarmq.hot_reload import (
     FileWatcher,
-    _default_filter,
+    SwarmQFilter,
     check_watchfiles_available,
     resolve_watch_dirs,
 )
@@ -24,10 +24,10 @@ from swarmq.hot_reload import (
 
 
 class TestSwarmQFilter:
-    """Filter subclass — PythonFilter plus the editor-noise we saw in the wild."""
+    """Public filter class — PythonFilter plus the editor-noise we saw in the wild."""
 
     def _f(self):
-        return _default_filter()
+        return SwarmQFilter()
 
     def _change(self):
         from watchfiles import Change
@@ -64,6 +64,12 @@ class TestSwarmQFilter:
 
     def test_git_head_rejected(self):
         assert self._f()(self._change(), "/x/.git/HEAD") is False
+
+    def test_bak_py_passes_through(self):
+        """R5.3 ce-review #21: ``tasks.bak.py`` ends in ``.py`` — the
+        SwarmQFilter only rejects ``*.bak`` at path-end, not infix.
+        This is a legitimate Python filename and must trigger a reload."""
+        assert self._f()(self._change(), "/x/tasks.bak.py") is True
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +210,8 @@ class TestFileWatcherLifecycle:
         )
         with patch("watchfiles.watch", fake):
             w.start()
-            # Give the fake iterator a moment to run through.
-            w._thread.join(timeout=2.0)
+            # Wait for watcher exit via the public readiness signal.
+            assert w.wait_until_stopped(timeout=2.0)
         assert trigger.call_count == 1
         w.stop()
 
@@ -220,7 +226,7 @@ class TestFileWatcherLifecycle:
         )
         with patch("watchfiles.watch", fake):
             w.start()
-            w._thread.join(timeout=2.0)
+            assert w.wait_until_stopped(timeout=2.0)
         assert trigger.call_count == 0
         w.stop()
 
@@ -235,7 +241,7 @@ class TestFileWatcherLifecycle:
         )
         with patch("watchfiles.watch", fake):
             w.start()
-            w._thread.join(timeout=2.0)
+            assert w.wait_until_stopped(timeout=2.0)
         # Both batches must have fired the trigger — the first failure
         # must not have prevented the second call.
         assert trigger.call_count == 2
@@ -254,10 +260,10 @@ class TestFileWatcherLifecycle:
         )
         with patch("watchfiles.watch", fake):
             w.start()
-            w._thread.join(timeout=2.0)
+            assert w.wait_until_stopped(timeout=2.0)
         # Supervisor must still be alive — crash contained.
         assert trigger.call_count == 0
-        assert not w._thread.is_alive()
+        assert w.is_running() is False
         w.stop()
 
     def test_double_start_rejected(self):
@@ -271,7 +277,7 @@ class TestFileWatcherLifecycle:
             w.start()
             with pytest.raises(RuntimeError, match="already started"):
                 w.start()
-            w._thread.join(timeout=1.0)
+            assert w.wait_until_stopped(timeout=1.0)
         w.stop()
 
     def test_stop_sets_event_and_joins(self):
@@ -291,8 +297,23 @@ class TestFileWatcherLifecycle:
         )
         with patch("watchfiles.watch", _long_watch):
             w.start()
-            # Let the thread enter the loop.
-            time.sleep(0.1)
+            # Wait until the watcher actually entered the loop before
+            # stopping — otherwise stop_event may be set before the
+            # Rust layer arms, and event_seen would never be set.
+            for _ in range(40):
+                if w.is_running():
+                    break
+                time.sleep(0.01)
             w.stop(timeout=2.0)
         assert event_seen.is_set()
-        assert not w._thread.is_alive()
+        assert w.is_running() is False
+
+    def test_wait_until_stopped_before_start_returns_true(self):
+        """Public-API edge case: wait on an un-started watcher is a no-op."""
+        w = FileWatcher(
+            watch_dirs=("/tmp",),
+            trigger=lambda: None,
+            is_busy=lambda: False,
+        )
+        assert w.wait_until_stopped(timeout=0.1) is True
+        assert w.is_running() is False

@@ -518,6 +518,36 @@ class TestWorkerSubprocessEntry:
             cfg=_make_test_cfg(),
         )
 
+    def test_reload_and_watch_dirs_stripped_from_namespace(self, monkeypatch):
+        """R5.3 ce-review #18: reload/watch_dirs are supervisor-only.
+        The subprocess must never see them on its Namespace — otherwise
+        a future `if ns.reload: ...` inside run_worker_async would
+        spawn N watchers, one per worker, each killing its own PID."""
+        import threading
+
+        captured: dict = {}
+
+        async def capture_ns(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
+
+        cfg = _make_test_cfg(reload=True, watch_dirs=("/tmp",))
+        worker_subprocess_entry(
+            worker_id=0,
+            shutdown_event=threading.Event(),
+            cfg=cfg,
+        )
+
+        ns = captured["ns"]
+        assert not hasattr(ns, "reload"), (
+            "reload leaked to worker Namespace — "
+            "kwargs.pop('reload') missing in worker_subprocess_entry"
+        )
+        assert not hasattr(ns, "watch_dirs"), (
+            "watch_dirs leaked to worker Namespace"
+        )
+
 
 class TestQueueDepthSampler:
     """ce-review T-05 + REL-05: sampler success path + timeout bound."""
