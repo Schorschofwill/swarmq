@@ -222,6 +222,7 @@ class TestSubprocessImport:
     reachable after a warm-cache ``reload``.
     """
 
+    @pytest.mark.timeout(45)
     def test_fresh_interpreter_can_import_all_surface(self) -> None:
         names = sorted(_CLI_PUBLIC_SURFACE)
         script = (
@@ -230,14 +231,45 @@ class TestSubprocessImport:
             "missing = [n for n in names if not hasattr(swarmq.cli, n)]; "
             "assert not missing, missing"
         )
+        # Pass the current env through so the subprocess uses the same
+        # editable install resolution as the test interpreter. Without
+        # this, PYTHONPATH / VIRTUAL_ENV inheritance is fine today, but
+        # an adversarial reviewer flagged the risk of a CI environment
+        # where a globally-installed release shadows the editable
+        # checkout — keeping env= explicit makes the contract visible.
+        import os
         result = subprocess.run(
             [sys.executable, "-c", script],
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
+            env=os.environ.copy(),
         )
         assert result.returncode == 0, (
             f"Fresh-interpreter import failed.\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
+
+    @pytest.mark.timeout(45)
+    def test_python_m_swarmq_cli_version_works(self) -> None:
+        """`python -m swarmq.cli --version` is the entry point tests
+        and chaos harnesses rely on; verify __main__.py wiring survives
+        the package split. Without this, regressing to a missing or
+        broken __main__.py would only surface in integration/e2e.
+        """
+        import os
+        result = subprocess.run(
+            [sys.executable, "-m", "swarmq.cli", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=os.environ.copy(),
+        )
+        assert result.returncode == 0, (
+            f"`python -m swarmq.cli --version` failed with "
+            f"rc={result.returncode}.\nstdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "swarmq" in result.stdout.lower()

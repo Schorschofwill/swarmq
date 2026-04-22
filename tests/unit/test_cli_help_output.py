@@ -6,15 +6,18 @@ users see. Guards against byte-level drift introduced by the
 argparse parser is moved into ``cli/parser.py``.
 
 Fixtures live in ``tests/unit/fixtures/cli_help/*.txt``. Regenerate
-(after a deliberate UX change) with::
+(after a deliberate UX change) via the same code path the test
+exercises (``_build_parser().parse_args([..., '--help'])``) so the
+fixture and the assertion cannot drift::
 
-    for sub in "" "worker" "dlq" "dlq list" "dlq inspect" "dlq retry" \
-               "dlq purge" "schedule" "schedule list" "schedule add" \
-               "schedule remove" "schedule status" "inspect"; do
-        fname=$(echo "$sub" | tr ' ' '_')
-        [ -z "$sub" ] && fname=root
-        uv run swarmq $sub --help > tests/unit/fixtures/cli_help/${fname}.txt 2>&1
-    done
+    uv run python - <<'PY'
+    from pathlib import Path
+    from tests.unit.test_cli_help_output import _HELP_CASES, _capture_help
+    out = Path("tests/unit/fixtures/cli_help")
+    out.mkdir(parents=True, exist_ok=True)
+    for argv_prefix, fname in _HELP_CASES:
+        (out / fname).write_text(_capture_help(argv_prefix))
+    PY
 """
 
 from __future__ import annotations

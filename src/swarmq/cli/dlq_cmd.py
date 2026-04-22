@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable, Coroutine
 from typing import Any
 
+from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
 
@@ -23,7 +25,7 @@ from swarmq.exceptions import ConfigurationError
 # name into this module's namespace and silently bypass the patch.
 
 
-def _get_broker_factory():
+def _get_broker_factory() -> Callable[[], Coroutine[Any, Any, RabbitMQBroker]]:
     """Lazy import of ``_broker_from_env`` through the facade."""
     from swarmq.cli import _broker_from_env
     return _broker_from_env

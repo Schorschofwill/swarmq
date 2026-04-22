@@ -33,9 +33,9 @@ Configuration precedence: explicit CLI flag > environment variable
 
 from __future__ import annotations
 
-# argparse is also part of the frozen surface (used by tests that
-# construct Namespace objects and dispatch through main()).
-import argparse  # noqa: F401 — keep after swarmq.cli.* imports
+# argparse is part of the frozen surface (tests construct
+# argparse.Namespace directly and dispatch through main()).
+import argparse  # noqa: F401 — frozen surface: used by tests via Namespace
 
 # tests/unit/test_cli_multiprocess.py:144 does
 # patch("swarmq.cli.asyncio.run", ...). Removing this import breaks
@@ -136,12 +136,12 @@ from swarmq.task import Task  # noqa: F401
 # minus the ambient tier.
 __all__ = (
     "_DLQ_NOT_FOUND_EXIT_CODE",
-    "_DLQNotFound",
     "_DOTTED_IDENTIFIER_RE",
     "_FORBIDDEN_WATCH_PREFIXES",
     "_VALID_LOG_FORMATS",
     "_VALID_LOG_LEVELS",
     "_WORKER_CHECK_PAYLOAD_KEYS",
+    "_DLQNotFound",
     "_autoscale_range",
     "_backend_from_env",
     "_broker_from_env",
@@ -285,7 +285,3 @@ def main(argv: Sequence[str] | None = None) -> int:
             traceback.print_exc(file=sys.stderr)
         return 1
     return 0
-
-
-if __name__ == "__main__":  # pragma: no cover — exercised via console_script
-    raise SystemExit(main())

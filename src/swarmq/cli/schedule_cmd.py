@@ -9,17 +9,34 @@ does not leak the connection.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
+from typing import Any
 
 import msgspec
 
-from swarmq.cli._shared import _backend_from_env, _render_table
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
 from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
 from swarmq.serialization import compute_dedup_hash
+
+# ``_backend_from_env`` is resolved LAZILY via ``swarmq.cli`` so that
+# a future ``monkeypatch.setattr(cli, "_backend_from_env", fake)`` in
+# schedule tests intercepts the call. Direct
+# ``from swarmq.cli._shared import _backend_from_env`` would bind the
+# name into this module's namespace and silently bypass the patch —
+# the same trap ``dlq_cmd._get_broker_factory`` avoids.
+
+
+def _get_backend_factory() -> Callable[[], Coroutine[Any, Any, ValkeyBackend]]:
+    """Lazy import of ``_backend_from_env`` through the facade."""
+    from swarmq.cli import _backend_from_env
+    return _backend_from_env
 
 
 def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
@@ -56,7 +73,7 @@ def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
 
 
 async def _run_schedule_list(args: argparse.Namespace) -> None:
-    backend = await _backend_from_env()
+    backend = await _get_backend_factory()()
     try:
         store = ScheduleStore(backend)
         schedules = await store.list_schedules()
@@ -116,7 +133,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
     unique_for: int | None = getattr(args, "unique_for", None)
     unique_until: str = getattr(args, "unique_until", "completion")
 
-    backend = await _backend_from_env()
+    backend = await _get_backend_factory()()
     dedup_hash: str | None = None
     existing_owner: str | None = None
     try:
@@ -159,10 +176,8 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
             except BaseException:
                 # Rollback the dedup claim on store failure (P1 #1).
                 if dedup_hash is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         await backend.release_unique(dedup_hash, args.name)
-                    except Exception:
-                        pass
                 raise
 
         if getattr(args, "format", "table") == "json":
@@ -195,7 +210,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
 
 
 async def _run_schedule_remove(args: argparse.Namespace) -> None:
-    backend = await _backend_from_env()
+    backend = await _get_backend_factory()()
     try:
         store = ScheduleStore(backend)
         if args.permanent:
@@ -225,7 +240,7 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
 
 
 async def _run_schedule_status(args: argparse.Namespace) -> None:
-    backend = await _backend_from_env()
+    backend = await _get_backend_factory()()
     try:
         # Read the leader lock directly.
         owner_raw = await backend._client.get(SCHEDULER_LOCK_KEY)
