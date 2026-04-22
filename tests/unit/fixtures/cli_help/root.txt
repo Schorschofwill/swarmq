@@ -1,0 +1,15 @@
+usage: swarmq [-h] [--version] COMMAND ...
+
+SwarmQ — Python task queue on RabbitMQ + Valkey. Run a worker against tasks
+defined in a Python module.
+
+positional arguments:
+  COMMAND
+    worker    Start a worker that consumes tasks from one or more queues.
+    schedule  Inspect or manage schedules without restarting workers.
+    dlq       Inspect and recover messages from dead-letter queues.
+    inspect   List registered tasks and their TaskInfo metadata.
+
+options:
+  -h, --help  show this help message and exit
+  --version   show program's version number and exit

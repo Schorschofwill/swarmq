@@ -1,0 +1,214 @@
+"""Shared helpers for the ``swarmq`` CLI subcommands.
+
+Holds argparse type-functions, connection factories and the generic
+table renderer that more than one subcommand consumes. Command-
+specific helpers (e.g. ``_format_schedule_table``) live beside their
+command handler, not here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+from pathlib import Path
+
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.exceptions import ConfigurationError
+
+_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_VALID_LOG_FORMATS = ("human", "json")
+
+
+def _positive_int(raw: str) -> int:
+    """argparse type-function — rejects values < 1 with a clear message."""
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"must be >= 1 (got {value})"
+        )
+    return value
+
+
+def _positive_float(raw: str) -> float:
+    """argparse type-function — rejects values <= 0 with a clear message."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {raw!r}") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"must be > 0 (got {value})"
+        )
+    return value
+
+
+#: Dotted Python-3 identifier grammar (PEP 3131-compliant). ``\w`` under
+#: ``re.UNICODE`` matches ASCII alphanumerics + underscore plus every
+#: Python-valid Unicode letter/digit (café, 日本 etc.). ``[^\W\d]`` =
+#: word-char but not digit = a valid identifier start. We block
+#: shell-injection-shaped inputs (/, -, whitespace), **not** valid
+#: Python names in non-ASCII languages. Security scope: this is a
+#: reliability/UX guard, NOT a code-execution sandbox — importlib still
+#: imports any regex-compliant name, so the argv trust boundary (Unit 6
+#: startup-snapshot + Unit 8 docs) is the real threat gate.
+_DOTTED_IDENTIFIER_RE = re.compile(
+    r"^[^\W\d]\w*(\.[^\W\d]\w*)*$",
+    re.UNICODE,
+)
+
+
+def _dotted_module_name(raw: str) -> str:
+    """argparse type-function: accept dotted Python identifiers.
+
+    Rejects obvious non-imports (paths, hyphens, leading digits, empty
+    segments) with a clear error. PEP 3131 Unicode identifiers are
+    accepted because Python itself accepts them as module names and
+    SwarmQ does not target an ASCII-only operator base.
+    """
+    if not _DOTTED_IDENTIFIER_RE.match(raw):
+        raise argparse.ArgumentTypeError(
+            f"--module {raw!r} is not a dotted Python identifier "
+            "(expected: package.module.submodule)"
+        )
+    return raw
+
+
+def _autoscale_range(raw: str) -> tuple[int, int]:
+    """argparse type-function for ``--autoscale=MIN,MAX``.
+
+    R4.7: accepts two positive integers separated by a comma. MIN
+    must be >= 1 and MAX must be >= MIN. Values outside that grammar
+    raise :class:`argparse.ArgumentTypeError` so the parser surfaces
+    a single clean error line instead of a Python traceback.
+    """
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"--autoscale must be MIN,MAX (got {raw!r})"
+        )
+    try:
+        low, high = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--autoscale values must be integers (got {raw!r})"
+        ) from exc
+    if low < 1 or high < low:
+        raise argparse.ArgumentTypeError(
+            f"--autoscale requires 1 <= MIN <= MAX (got MIN={low} MAX={high})"
+        )
+    return low, high
+
+
+# ce-review pass 2 #22 / ADV-01: pseudo-filesystems generate inotify
+# events on every process / device / attribute read. Watching them
+# triggers reload-storms at kernel-event rate. Argparse rejects these
+# up-front so --check exit 0 cannot mislead an operator into a
+# deployment that would reload-loop the moment it starts.
+_FORBIDDEN_WATCH_PREFIXES = ("/proc", "/sys", "/dev")
+
+
+def _watch_dir_path(raw: str) -> str:
+    """argparse type-function for ``--watch-dir PATH``.
+
+    R5.3: accepts only existing directories and returns an absolute
+    path so duplicate-dir-with-different-relative-spelling collapses
+    cleanly at parse-time instead of watchfiles discovering it later.
+
+    Rejects pseudo-filesystem prefixes (``/proc``, ``/sys``, ``/dev``)
+    that would cause reload-storms on Linux: every process spawn
+    generates ``/proc/*`` inotify events, every device attribute read
+    generates ``/sys/*`` events. ce-review pass 2 #22 advisory.
+    """
+    p = Path(raw)
+    if not p.is_dir():
+        raise argparse.ArgumentTypeError(
+            f"--watch-dir {raw!r} is not an existing directory"
+        )
+    resolved = str(p.resolve())
+    for forbidden in _FORBIDDEN_WATCH_PREFIXES:
+        if resolved == forbidden or resolved.startswith(forbidden + "/"):
+            raise argparse.ArgumentTypeError(
+                f"--watch-dir {raw!r} points into {forbidden} (pseudo-"
+                f"filesystem). Watching pseudo-FS generates kernel-rate "
+                f"inotify events and causes reload-storms."
+            )
+    return resolved
+
+
+def _queue_list(raw: str) -> list[str]:
+    """Comma-separated queue names with whitespace stripped.
+
+    Mirrors :class:`SwarmQConfig`'s ``SWARMQ_QUEUES`` env-var parsing:
+    splits on commas, strips whitespace per item, drops empties. An
+    all-empty result is rejected with a clear message rather than
+    silently giving the worker no queues to consume.
+    """
+    queues = [q.strip() for q in raw.split(",") if q.strip()]
+    if not queues:
+        raise argparse.ArgumentTypeError(
+            f"--queues must list at least one non-empty name (got {raw!r})"
+        )
+    return queues
+
+
+async def _backend_from_env() -> ValkeyBackend:
+    """Construct + connect a ValkeyBackend from SWARMQ_BACKEND_URL.
+
+    Shared helper for the schedule subcommands which only need the
+    backend (no broker). Raises :class:`ConfigurationError` when the
+    env var is missing so the CLI can surface a helpful message.
+    """
+    backend_url = os.environ.get("SWARMQ_BACKEND_URL", "")
+    if not backend_url:
+        raise ConfigurationError(
+            "SWARMQ_BACKEND_URL is not set; export it or pass it via env, "
+            "e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0"
+        )
+    backend = ValkeyBackend(backend_url)
+    await backend.connect()
+    return backend
+
+
+async def _broker_from_env() -> RabbitMQBroker:
+    """Construct + connect a RabbitMQBroker from SWARMQ_BROKER_URL.
+
+    Shared helper for the dlq subcommands which only need the broker
+    (no backend). Mirrors :func:`_backend_from_env` in shape and error
+    semantics — raises :class:`ConfigurationError` with a concrete
+    example URL when the env var is missing.
+    """
+    broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
+    if not broker_url:
+        raise ConfigurationError(
+            "SWARMQ_BROKER_URL is not set; export it or pass it via env, "
+            "e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/"
+        )
+    broker = RabbitMQBroker(broker_url)
+    await broker.connect()
+    return broker
+
+
+def _render_table(rows: list[tuple[str, ...]], empty_label: str) -> str:
+    """Render a list of tuples as a two-space-separated, left-aligned table.
+
+    The first row is the header; every subsequent row is data. Column
+    widths are computed across the full set so header + data align.
+    Returns *empty_label* when only the header row would be rendered.
+
+    Shared helper for all CLI table formatters (schedule, inspect,
+    dlq list) — R3.10 review P3 #14 / M-3 / KP-5 deduplicated three
+    identical copies.
+    """
+    if len(rows) <= 1:
+        return empty_label
+    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
+    lines = [
+        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    ]
+    return "\n".join(lines)

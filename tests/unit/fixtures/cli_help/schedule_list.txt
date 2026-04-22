@@ -1,0 +1,6 @@
+usage: swarmq schedule list [-h] [--format {table,json}]
+
+options:
+  -h, --help            show this help message and exit
+  --format {table,json}
+                        Output format (default: table).

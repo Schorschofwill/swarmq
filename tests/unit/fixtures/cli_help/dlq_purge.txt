@@ -1,0 +1,10 @@
+usage: swarmq dlq purge [-h] [--queue QUEUE] [--format {table,json}]
+
+Native AMQP queue.purge() on {queue}.XQ. Irreversible; messages are lost. Use
+with care.
+
+options:
+  -h, --help            show this help message and exit
+  --queue QUEUE         Main queue name (default: default).
+  --format {table,json}
+                        Output format (default: table).

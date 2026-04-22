@@ -1,0 +1,21 @@
+usage: swarmq dlq retry [-h] [--all] [--queue QUEUE] [--limit LIMIT]
+                        [--scan-limit SCAN_LIMIT] [--format {table,json}]
+                        [task_id]
+
+Republish either a single DLQ message by task_id or every message (--all). The
+x-swarmq-retry-count header is reset so the task gets the full retry budget on
+redelivery; all other headers (traceback, R3.5 dedup hash, etc.) survive.
+
+positional arguments:
+  task_id               Task ID to retry (omit when using --all).
+
+options:
+  -h, --help            show this help message and exit
+  --all                 Retry every message in the DLQ.
+  --queue QUEUE         Main queue name (default: default).
+  --limit LIMIT         Safety cap for --all (default: 10000).
+  --scan-limit SCAN_LIMIT
+                        Max DLQ messages to scan when looking up task_id
+                        (default: 1000).
+  --format {table,json}
+                        Output format (default: table).

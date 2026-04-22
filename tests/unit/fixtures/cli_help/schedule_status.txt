@@ -1,0 +1,7 @@
+usage: swarmq schedule status [-h] [--limit LIMIT] [--format {table,json}]
+
+options:
+  -h, --help            show this help message and exit
+  --limit LIMIT         How many upcoming schedules to list (default: 10).
+  --format {table,json}
+                        Output format (default: table).

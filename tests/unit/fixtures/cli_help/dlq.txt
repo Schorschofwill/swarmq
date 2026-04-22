@@ -1,0 +1,16 @@
+usage: swarmq dlq [-h] SUBCOMMAND ...
+
+Operate on {queue}.XQ — the broker-level dead-letter queue that receives tasks
+which exhausted their retries, hit NoRetry, or were routed via DLX by a
+permanent-failure stage (lock render-fail, conflict-cap). Requires
+SWARMQ_BROKER_URL (broker-only; no backend needed).
+
+positional arguments:
+  SUBCOMMAND
+    list      Non-destructively enumerate DLQ messages.
+    inspect   Show full payload + headers of one DLQ message.
+    retry     Republish DLQ message(s) into the main queue.
+    purge     Delete every message from the DLQ.
+
+options:
+  -h, --help  show this help message and exit

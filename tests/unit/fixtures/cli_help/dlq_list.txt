@@ -1,0 +1,14 @@
+usage: swarmq dlq list [-h] [--queue QUEUE] [--limit LIMIT]
+                       [--format {table,json}]
+
+Drain-and-republish scan of {queue}.XQ. Shows task_id, task_name, retry-count
+header, traceback preview, and body size. Repeated calls are safe; messages
+stay in the DLQ.
+
+options:
+  -h, --help            show this help message and exit
+  --queue QUEUE         Main queue name (DLQ resolved as {queue}.XQ). Default:
+                        default.
+  --limit LIMIT         Max messages to list (default: 100).
+  --format {table,json}
+                        Output format (default: table).

@@ -1,0 +1,81 @@
+usage: swarmq worker [-h] --module DOTTED.PATH [--queues A,B,C]
+                     [--concurrency N]
+                     [--log-level {DEBUG,INFO,WARNING,ERROR}]
+                     [--log-format {human,json}] [--burst]
+                     [--metrics-port PORT] [--health-port PORT] [--priorities]
+                     [--processes N] [--autoscale MIN,MAX] [--reload]
+                     [--watch-dir PATH] [--check]
+                     [--burst-idle-timeout SECONDS]
+
+Import a Python module so its Task subclasses register, then connect to broker
++ backend and consume. Broker and backend URLs come from SWARMQ_BROKER_URL and
+SWARMQ_BACKEND_URL environment variables. Note: importing the module runs its
+top-level code — this is the standard Python convention.
+
+options:
+  -h, --help            show this help message and exit
+  --module DOTTED.PATH  Python module containing Task subclasses to register,
+                        e.g. 'myapp.tasks'. Must be importable from the
+                        current Python path.
+  --queues A,B,C        Comma-separated queue names to consume from (default:
+                        default).
+  --concurrency N       Maximum tasks executed in parallel (default: 10).
+  --log-level {DEBUG,INFO,WARNING,ERROR}
+                        Log verbosity (default: INFO). DEBUG also surfaces
+                        full tracebacks on CLI errors.
+  --log-format {human,json}
+                        Log output format (default: human). 'json' for
+                        agent/log-aggregator consumption.
+  --burst               Burst mode (R4.5): exit cleanly once all configured
+                        queues have been idle for --burst-idle-timeout
+                        seconds. Useful for batch / cron-style deployments
+                        where a worker should drain and exit rather than long-
+                        poll forever.
+  --metrics-port PORT   R5.1: serve Prometheus /metrics on the given port.
+                        Auto-wires the signal-based collectors (task_total,
+                        retries_total, etc.). Requires 'pip install
+                        swarmq[metrics]'. Default bind: 127.0.0.1.
+  --health-port PORT    R5.2: serve /health + /ready on the given port. /ready
+                        pings broker + backend (2s timeout) and returns
+                        structured JSON. Default bind: 127.0.0.1.
+  --priorities          R4.3: auto-declare + consume the high/normal/low
+                        triplet for every --queues base queue, so tasks with
+                        TaskInfo(priority='high'|'low') route correctly.
+                        Without this flag, priority-tagged tasks publish to
+                        {queue}.high/.low which are never consumed.
+  --processes, -p N     R4.6: run N worker subprocesses under a supervisor
+                        (ProcessManager). Default 1 keeps the legacy in-
+                        process behaviour. Subprocesses use multiprocessing
+                        spawn — fresh broker/backend connections per worker.
+                        The supervisor auto-restarts crashed workers (max 5
+                        restarts per hour), and reloads on SIGHUP via
+                        os.execvp().
+  --autoscale MIN,MAX   R4.7: enable autoscaling between MIN..MAX workers
+                        based on queue depth. Scale-up when pending tasks
+                        exceed 50 * active workers; scale-down after 60s of
+                        sustained idle. 30s cooldown between decisions.
+                        Implies --processes (the initial count is clamped into
+                        [MIN,MAX]).
+  --reload              R5.3: watch task modules for changes and trigger the
+                        existing SIGHUP reload pipeline (ProcessManager
+                        execvp). Implies --processes (activates the supervisor
+                        when no --processes/--autoscale is passed). Developer-
+                        only — do not use in production. Requires 'pip install
+                        "swarmq[reload]"'. Missing dep exits with code 1;
+                        invalid --watch-dir exits 2.
+  --watch-dir PATH      R5.3: directory to watch (repeatable). Without this
+                        flag, the parent directory of --module's resolved
+                        source file is used. Ignored without --reload (a
+                        WARNING is logged).
+  --check               Dry-run validation mode. Verify --module is importable
+                        and (with --reload) that 'watchfiles' is installed +
+                        watch-dirs resolve. Prints a JSON summary to stdout,
+                        exits 0 on success or 1 on any validation error. Does
+                        NOT connect to broker or backend.
+  --burst-idle-timeout SECONDS
+                        Seconds of queue silence required before --burst exits
+                        (default: 5.0). The idle clock starts at worker-ready
+                        and resets on every delivered message. Ignored without
+                        --burst. Exit code 0 on clean drain (indistinguishable
+                        from SIGTERM; grep logs for 'burst_idle_exit' to
+                        distinguish).

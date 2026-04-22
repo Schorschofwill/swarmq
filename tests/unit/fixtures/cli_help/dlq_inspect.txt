@@ -1,0 +1,17 @@
+usage: swarmq dlq inspect [-h] [--queue QUEUE] [--scan-limit SCAN_LIMIT]
+                          [--format {table,json}]
+                          task_id
+
+Locate a DLQ message by task_id (from payload.task.id) and print its full
+headers + decoded body. Non-destructive.
+
+positional arguments:
+  task_id               Task ID to locate.
+
+options:
+  -h, --help            show this help message and exit
+  --queue QUEUE         Main queue name (default: default).
+  --scan-limit SCAN_LIMIT
+                        Max DLQ messages to scan (default: 1000).
+  --format {table,json}
+                        Output format (default: table).

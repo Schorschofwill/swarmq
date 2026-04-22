@@ -1,0 +1,13 @@
+usage: swarmq schedule remove [-h] [--permanent] [--format {table,json}] name
+
+positional arguments:
+  name                  Schedule name to remove.
+
+options:
+  -h, --help            show this help message and exit
+  --permanent           Hard-delete (ZREM + HDEL). Without this flag the
+                        schedule is only disabled — useful when you want
+                        insert-if-absent to keep blocking re-syncs from code.
+  --format {table,json}
+                        Output format (default: table). Use 'json' for agent-
+                        parseable output with an explicit 'removed' boolean.

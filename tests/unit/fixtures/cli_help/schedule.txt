@@ -1,0 +1,15 @@
+usage: swarmq schedule [-h] SUBCOMMAND ...
+
+Manage the embedded scheduler's schedule definitions in Valkey. Requires
+SWARMQ_BACKEND_URL (broker is not used by these subcommands). The 'prune'
+subcommand is not in v1 — use 'remove --permanent' instead.
+
+positional arguments:
+  SUBCOMMAND
+    list      List all schedules in sq:sched:defs.
+    add       Create a new schedule (insert-if-absent).
+    remove    Disable or permanently delete a schedule.
+    status    Show current leader + next-N due schedules.
+
+options:
+  -h, --help  show this help message and exit

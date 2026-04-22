@@ -1,0 +1,33 @@
+usage: swarmq schedule add [-h] (--cron EXPR | --at ISO_DATETIME) --task NAME
+                           [--args JSON_ARRAY] [--kwargs JSON_OBJECT]
+                           [--queue QUEUE] [--unique-for SECONDS]
+                           [--unique-until {start,completion}]
+                           [--format {table,json}]
+                           name
+
+positional arguments:
+  name                  Schedule name (unique key).
+
+options:
+  -h, --help            show this help message and exit
+  --cron EXPR           5-field cron expression, e.g. '*/5 * * * *'.
+  --at ISO_DATETIME     One-shot fire time, ISO 8601 (e.g.
+                        '2026-05-01T03:00:00Z').
+  --task NAME           Registered task name to invoke.
+  --args JSON_ARRAY     Positional args as JSON array (default: []).
+  --kwargs JSON_OBJECT  Keyword args as JSON object (default: {}).
+  --queue QUEUE         Target queue (default: default).
+  --unique-for SECONDS  R3.5 dedup TTL in seconds. When set, the CLI claims
+                        the dedup flag at enqueue time (source=cli_unique). A
+                        second 'schedule add --unique-for=...' with the same
+                        task + args + kwargs within the TTL window is rejected
+                        as a duplicate.
+  --unique-until {start,completion}
+                        R3.5 dedup release mode (default: completion). 'start'
+                        releases the flag at worker pickup so a re-schedule
+                        can enqueue before the task finishes; 'completion'
+                        keeps the flag until the task reaches a terminal
+                        state. Ignored when --unique-for is not set.
+  --format {table,json}
+                        Output format (default: table). Use 'json' for agent-
+                        parseable output with an explicit 'inserted' boolean.
