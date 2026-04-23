@@ -118,3 +118,100 @@ class TestLazyImports:
 
         with pytest.raises(AttributeError, match="ThisDoesNotExist"):
             _ = cli.ThisDoesNotExist  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Unit 2 — CLI-02: robust --check detection (R-2)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDetectionRobustness:
+    """R-2: ``_is_check_invocation`` must recognise ``swarmq worker --check``
+    and ONLY that, rejecting patterns where ``--check`` appears as an
+    argument value (``--task --check``) or inside a different subcommand
+    (``dlq retry worker --check``).
+
+    The detection still happens pre-parse because the downstream
+    JSON-on-argparse-error contract (AC-06, test_cli_multiprocess.py
+    line 229) requires knowing the caller's intent before argparse can
+    fail on a bad flag value like ``--watch-dir /nonexistent``.
+
+    Implementation strategy: a minimal argparse detector with
+    ``exit_on_error=False`` and ``parse_known_args``, aware of
+    worker's argument-consuming flags so ``--check`` can't be
+    misread as the value of ``--task`` et al.
+    """
+
+    def test_worker_with_check_flag_detects_as_check(self) -> None:
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(["worker", "--check"]) is True
+
+    def test_worker_with_module_and_check_detects_as_check(self) -> None:
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(
+            ["worker", "--module", "mypkg.tasks", "--check"]
+        ) is True
+
+    def test_worker_task_value_followed_by_check_detects_as_check(self) -> None:
+        """``--task foo --check`` — ``--task`` takes ``foo``, ``--check`` is a flag."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(
+            ["worker", "--task", "foo", "--check"]
+        ) is True
+
+    def test_dlq_retry_worker_check_is_not_check_invocation(self) -> None:
+        """BUG #1: ``swarmq dlq retry worker --check`` — ``worker`` is a
+        task-name positional under ``dlq retry``, not the worker
+        subcommand; ``--check`` doesn't exist there. Must NOT enter the
+        JSON-contract path."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(
+            ["dlq", "retry", "worker", "--check"]
+        ) is False
+
+    def test_worker_task_dash_check_is_not_check_invocation(self) -> None:
+        """BUG #2: ``swarmq worker --task --check`` — ``--check`` is the
+        VALUE of ``--task``, not a flag. The detector must consume
+        ``--task``'s value correctly and therefore see no ``--check``
+        flag active."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(
+            ["worker", "--task", "--check"]
+        ) is False
+
+    def test_no_check_flag_is_not_check(self) -> None:
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(["worker", "--module", "mypkg.tasks"]) is False
+
+    def test_schedule_list_is_not_check(self) -> None:
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(["schedule", "list"]) is False
+
+    def test_inspect_command_is_not_check(self) -> None:
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(["inspect", "some-task-id"]) is False
+
+    def test_global_flag_before_worker_preserves_detection(self) -> None:
+        """Global options before the subcommand must not fool the detector."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(
+            ["--log-level", "DEBUG", "worker", "--check"]
+        ) is True
+
+    def test_none_argv_uses_sys_argv(self) -> None:
+        """Passing ``None`` reads from ``sys.argv[1:]`` — behaviour must
+        be preserved (backwards compat for callers relying on it)."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        # Can't mutate sys.argv safely here — just verify None is accepted.
+        result = _is_check_invocation(None)
+        assert isinstance(result, bool)
