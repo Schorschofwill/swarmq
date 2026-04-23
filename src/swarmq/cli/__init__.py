@@ -44,7 +44,7 @@ import argparse  # noqa: F401 — frozen surface: used by tests via Namespace
 # object, patching via any dotted path resolving to it works — but the
 # dotted-path lookup still needs this name bound at the facade level.
 import asyncio
-import importlib  # noqa: F401 — part of frozen public surface
+import importlib
 import json  # noqa: F401
 import os  # noqa: F401
 import re  # noqa: F401
@@ -60,8 +60,6 @@ import msgspec  # noqa: F401
 
 # Submodule imports — the symbols they define become swarmq.cli.* attributes.
 from swarmq.app import SwarmQ  # noqa: F401
-from swarmq.backend.valkey import ValkeyBackend  # noqa: F401
-from swarmq.broker.rabbitmq import RabbitMQBroker  # noqa: F401
 from swarmq.cli._shared import (
     _DOTTED_IDENTIFIER_RE,
     _FORBIDDEN_WATCH_PREFIXES,
@@ -118,6 +116,48 @@ from swarmq.scheduler import (  # noqa: F401
 )
 from swarmq.serialization import compute_dedup_hash  # noqa: F401
 from swarmq.task import Task  # noqa: F401
+
+# ---------------------------------------------------------------------------
+# Lazy surface — heavy re-exports that must not trigger at import time.
+#
+# ``ValkeyBackend`` (~88 ms) and ``RabbitMQBroker`` (~21 ms) used to be
+# re-exported as ambient top-level attributes. They are part of the
+# frozen surface whitelist (``test_cli_module_surface.py``) for identity
+# continuity, but loading them on every ``swarmq --help`` is wasteful.
+#
+# PEP-562 ``__getattr__`` resolves them on first access; the canonical
+# class object is returned, so the identity check
+# ``swarmq.cli.ValkeyBackend is swarmq.backend.valkey.ValkeyBackend``
+# stays true. See plan 2026-04-23-001 Unit 1 (R-1a).
+# ---------------------------------------------------------------------------
+
+_LAZY_SURFACE: dict[str, tuple[str, str]] = {
+    "ValkeyBackend": ("swarmq.backend.valkey", "ValkeyBackend"),
+    "RabbitMQBroker": ("swarmq.broker.rabbitmq", "RabbitMQBroker"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """PEP-562 module attribute hook for lazy-loaded surface symbols."""
+    target = _LAZY_SURFACE.get(name)
+    if target is not None:
+        module_name, attr_name = target
+        module = importlib.import_module(module_name)
+        return getattr(module, attr_name)
+    raise AttributeError(f"module 'swarmq.cli' has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """PEP-562 ``dir()`` hook — advertise lazy-surface names.
+
+    Without this override, ``dir(swarmq.cli)`` would not include
+    ``ValkeyBackend`` / ``RabbitMQBroker`` (they live only in
+    ``_LAZY_SURFACE``, not in ``globals()``). The surface-whitelist
+    equality check in ``test_cli_module_surface.py`` relies on
+    ``dir()``; keeping the lazy names visible preserves R-8 without
+    re-eagerifying the imports.
+    """
+    return [*globals(), *_LAZY_SURFACE]
 
 # ``__all__`` controls two contracts at once:
 #

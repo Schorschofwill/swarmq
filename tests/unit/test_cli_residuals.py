@@ -12,7 +12,6 @@ import pathlib
 
 import pytest
 
-
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CLI_SHARED = _REPO_ROOT / "src" / "swarmq" / "cli" / "_shared.py"
 _CLI_INIT = _REPO_ROOT / "src" / "swarmq" / "cli" / "__init__.py"

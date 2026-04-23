@@ -59,6 +59,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_DLQ_NOT_FOUND_EXIT_CODE",     # internal
         "_DOTTED_IDENTIFIER_RE",        # internal
         "_FORBIDDEN_WATCH_PREFIXES",    # internal
+        "_LAZY_SURFACE",                # internal — PEP-562 lazy-surface registry (R-1a, plan 2026-04-23-001)
         "_VALID_LOG_FORMATS",           # internal
         "_VALID_LOG_LEVELS",            # internal
         "_WORKER_CHECK_PAYLOAD_KEYS",   # internal

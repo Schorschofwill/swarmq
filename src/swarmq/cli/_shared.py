@@ -12,10 +12,13 @@ import argparse
 import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ConfigurationError
+
+if TYPE_CHECKING:
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 _VALID_LOG_FORMATS = ("human", "json")
@@ -163,6 +166,10 @@ async def _backend_from_env() -> ValkeyBackend:
     backend (no broker). Raises :class:`ConfigurationError` when the
     env var is missing so the CLI can surface a helpful message.
     """
+    # Lazy import — keeps `import swarmq.cli._shared` (and therefore
+    # `swarmq --help`) off the valkey import path. R-1a.
+    from swarmq.backend.valkey import ValkeyBackend
+
     backend_url = os.environ.get("SWARMQ_BACKEND_URL", "")
     if not backend_url:
         raise ConfigurationError(
@@ -182,6 +189,10 @@ async def _broker_from_env() -> RabbitMQBroker:
     semantics — raises :class:`ConfigurationError` with a concrete
     example URL when the env var is missing.
     """
+    # Lazy import — keeps `import swarmq.cli._shared` off the aio_pika
+    # path for help/version/parse-only invocations. R-1a.
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+
     broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
     if not broker_url:
         raise ConfigurationError(
