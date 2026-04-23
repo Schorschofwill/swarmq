@@ -438,3 +438,148 @@ class TestScheduleStatusUsesPublicAPI:
         fake_backend.get_scheduler_leader.assert_awaited_once()
         # Private client must not have been asked for the lock key.
         fake_backend._client.get.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Unit 5 — CLI-04: TTY-aware --format default + env-var escape (R-5)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatResolution:
+    """R-5 + Decision E2: ``--format`` default resolution follows the
+    precedence: explicit CLI flag > ``SWARMQ_DEFAULT_FORMAT`` env var
+    > TTY-aware default.
+
+    The helper ``swarmq.cli._shared.resolve_format`` lives outside any
+    handler so each subcommand can call it uniformly. Invalid env-var
+    values are silently ignored (fall back to TTY default) — callers
+    shouldn't crash on a typo in an environment variable.
+    """
+
+    def test_default_format_is_json_when_stdout_piped(self, monkeypatch) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.delenv("SWARMQ_DEFAULT_FORMAT", raising=False)
+        assert resolve_format(None) == "json"
+
+    def test_default_format_is_table_when_stdout_tty(self, monkeypatch) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.delenv("SWARMQ_DEFAULT_FORMAT", raising=False)
+        assert resolve_format(None) == "table"
+
+    def test_explicit_format_table_wins_over_pipe(self, monkeypatch) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
+        assert resolve_format("table") == "table"
+
+    def test_explicit_format_json_wins_over_tty(self, monkeypatch) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: True, raising=False)
+        assert resolve_format("json") == "json"
+
+    def test_env_var_override_forces_table_on_pipe(self, monkeypatch) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "table")
+        assert resolve_format(None) == "table"
+
+    def test_env_var_override_forces_json_on_tty(self, monkeypatch) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "json")
+        assert resolve_format(None) == "json"
+
+    def test_env_var_invalid_value_falls_back_to_tty_default_on_pipe(
+        self, monkeypatch
+    ) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "yaml-pls")
+        # Typo should be ignored silently; pipe → json.
+        assert resolve_format(None) == "json"
+
+    def test_env_var_invalid_value_falls_back_to_tty_default_on_tty(
+        self, monkeypatch
+    ) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "yaml-pls")
+        assert resolve_format(None) == "table"
+
+    def test_env_var_empty_string_falls_back_to_tty_default(
+        self, monkeypatch
+    ) -> None:
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "")
+        assert resolve_format(None) == "json"
+
+
+class TestParserFormatDefault:
+    """All ``--format`` parser sites must default to ``None`` so
+    ``resolve_format`` can tell "caller did not pass --format" apart
+    from "caller passed --format=table".
+    """
+
+    def test_schedule_list_format_defaults_to_none(self) -> None:
+        from swarmq.cli.parser import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["schedule", "list"])
+        assert args.format is None, f"expected None, got {args.format!r}"
+
+    def test_schedule_status_format_defaults_to_none(self) -> None:
+        from swarmq.cli.parser import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["schedule", "status"])
+        assert args.format is None
+
+    def test_dlq_list_format_defaults_to_none(self) -> None:
+        from swarmq.cli.parser import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["dlq", "list"])
+        assert args.format is None
+
+    def test_dlq_inspect_format_defaults_to_none(self) -> None:
+        from swarmq.cli.parser import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["dlq", "inspect", "task-123"])
+        assert args.format is None
+
+    def test_explicit_flag_still_sets_value(self) -> None:
+        from swarmq.cli.parser import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["dlq", "list", "--format", "json"])
+        assert args.format == "json"
