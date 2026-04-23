@@ -345,3 +345,96 @@ class TestConsoleRendererTTY:
             )
         finally:
             listener.stop()
+
+
+# ---------------------------------------------------------------------------
+# Unit 4 — KP-5: schedule_cmd uses public get_scheduler_leader API (R-4)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleStatusUsesPublicAPI:
+    """R-4 (Unit 4b): ``schedule_cmd._run_schedule_status`` must consume
+    the public ``ValkeyBackend.get_scheduler_leader`` API instead of
+    reaching into ``backend._client.get(SCHEDULER_LOCK_KEY)``.
+
+    Unit 4a lands the backend method; this class verifies the CLI
+    actually migrates to it. AST-based tests + a mock-based
+    interaction test cover both "private access gone" and "public
+    method invoked".
+    """
+
+    def test_schedule_cmd_source_no_private_client_access_for_lock(self) -> None:
+        """AST-level check: no ``backend._client.get(SCHEDULER_LOCK_KEY)``
+        call remains in ``schedule_cmd.py``.
+
+        A grep-style string scan is sufficient here; the invariant is
+        that the CLI does not know the backend's private attribute
+        shape for this specific key.
+        """
+        schedule_cmd = _REPO_ROOT / "src" / "swarmq" / "cli" / "schedule_cmd.py"
+        source = schedule_cmd.read_text(encoding="utf-8")
+        assert "_client.get(SCHEDULER_LOCK_KEY)" not in source, (
+            "schedule_cmd.py still reads the leader via backend._client — "
+            "use the public get_scheduler_leader() instead."
+        )
+
+    def test_schedule_cmd_source_calls_get_scheduler_leader(self) -> None:
+        """Positive check: ``schedule_cmd.py`` mentions the new public
+        method. Matches the substring ``get_scheduler_leader`` to be
+        tolerant of ``backend.get_scheduler_leader()`` vs. a
+        refactored indirection.
+        """
+        schedule_cmd = _REPO_ROOT / "src" / "swarmq" / "cli" / "schedule_cmd.py"
+        source = schedule_cmd.read_text(encoding="utf-8")
+        assert "get_scheduler_leader" in source, (
+            "schedule_cmd.py does not call get_scheduler_leader — the CLI "
+            "migration from the private path is incomplete."
+        )
+
+    async def test_run_schedule_status_invokes_public_api(
+        self, monkeypatch
+    ) -> None:
+        """Mock-based: calling ``_run_schedule_status`` exercises the
+        public method on the backend, not the private client.
+
+        Builds an args Namespace minimal enough for the status handler
+        and asserts the interaction shape.
+        """
+        import argparse
+        from unittest.mock import AsyncMock
+
+        from swarmq.cli import schedule_cmd as sched
+
+        fake_backend = AsyncMock()
+        fake_backend.get_scheduler_leader = AsyncMock(return_value="leader-xyz")
+        fake_backend.close = AsyncMock()
+        fake_backend._client = AsyncMock()  # present but must not be used for the lock
+
+        async def _factory() -> object:
+            return fake_backend
+
+        def _factory_wrapper():
+            return _factory
+
+        # Bypass the _backend_from_env indirection.
+        monkeypatch.setattr(sched, "_get_backend_factory", _factory_wrapper)
+
+        # Empty schedule store — poll_due returns an empty list.
+        from swarmq.scheduler import ScheduleStore
+
+        async def _empty_poll(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(ScheduleStore, "poll_due", _empty_poll)
+
+        args = argparse.Namespace(
+            command="schedule",
+            schedule="status",
+            format="json",
+            limit=5,
+        )
+        await sched._run_schedule_status(args)
+
+        fake_backend.get_scheduler_leader.assert_awaited_once()
+        # Private client must not have been asked for the lock key.
+        fake_backend._client.get.assert_not_called()

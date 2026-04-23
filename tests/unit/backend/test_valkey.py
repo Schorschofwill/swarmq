@@ -761,3 +761,68 @@ class TestValkeyBackendIsSchedfireCompleted:
 
         with pytest.raises(BackendConnectionError):
             await backend.is_schedfire_completed("cron_a:1")
+
+
+class TestSchedulerLeader:
+    """Plan 2026-04-23-001 CLI-02 / KP-5 — Unit 4a.
+
+    ``get_scheduler_leader`` is a thin, read-only wrapper around
+    ``_client.get(SCHEDULER_LOCK_KEY)`` that the CLI can consume
+    without poking at backend private state. Per Decision E4,
+    connection errors propagate so callers can distinguish
+    "no leader" (``None``) from "backend unreachable" (exception).
+    """
+
+    async def test_get_scheduler_leader_returns_holder_when_locked(self):
+        from swarmq.scheduler import SCHEDULER_LOCK_KEY
+
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.get.return_value = b"worker-42"
+        backend._client = mock_client
+
+        result = await backend.get_scheduler_leader()
+
+        mock_client.get.assert_awaited_once_with(SCHEDULER_LOCK_KEY)
+        assert result == "worker-42"
+
+    async def test_get_scheduler_leader_decodes_bytes_to_str(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.get.return_value = b"node-7.region-us-east-1"
+        backend._client = mock_client
+
+        result = await backend.get_scheduler_leader()
+
+        assert isinstance(result, str)
+        assert result == "node-7.region-us-east-1"
+
+    async def test_get_scheduler_leader_returns_none_when_unlocked(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.get.return_value = None
+        backend._client = mock_client
+
+        result = await backend.get_scheduler_leader()
+
+        assert result is None
+
+    async def test_get_scheduler_leader_propagates_connection_error(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = ValkeyConnectionError("backend down")
+        backend._client = mock_client
+
+        with pytest.raises(ValkeyConnectionError, match="backend down"):
+            await backend.get_scheduler_leader()
+
+    async def test_get_scheduler_leader_propagates_timeout_error(self):
+        from valkey.exceptions import TimeoutError as ValkeyTimeoutError
+
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = ValkeyTimeoutError("took too long")
+        backend._client = mock_client
+
+        with pytest.raises(ValkeyTimeoutError, match="took too long"):
+            await backend.get_scheduler_leader()
