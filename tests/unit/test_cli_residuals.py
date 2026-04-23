@@ -219,3 +219,129 @@ class TestCheckDetectionRobustness:
         # Can't mutate sys.argv safely here — just verify None is accepted.
         result = _is_check_invocation(None)
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# Unit 3 — CLI-03: TTY-guarded ConsoleRenderer colors (R-3)
+# ---------------------------------------------------------------------------
+
+
+class TestConsoleRendererTTY:
+    """R-3: ``ConsoleRenderer`` must be instantiated with
+    ``colors=sys.stderr.isatty()`` so ANSI escape sequences do not
+    leak into piped stderr (log aggregators, CI captured output, test
+    fixtures). The decision is made once per ``setup_logging`` call
+    (see Decision E5): if a caller redirects stderr AFTER
+    ``setup_logging`` has run, they must re-invoke it.
+    """
+
+    def _capture_console_renderer_kwargs(self, monkeypatch) -> list[dict]:
+        """Patch ``structlog.dev.ConsoleRenderer`` to record its kwargs."""
+        import structlog
+
+        captured: list[dict] = []
+        real = structlog.dev.ConsoleRenderer
+
+        def _tap(*args, **kwargs):
+            captured.append(dict(kwargs))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(structlog.dev, "ConsoleRenderer", _tap)
+        return captured
+
+    def test_console_renderer_gets_colors_false_when_stderr_piped(
+        self, monkeypatch
+    ) -> None:
+        """When stderr is not a TTY, ``colors`` must be ``False``."""
+        import sys as _sys
+
+        from swarmq.logging import setup_logging
+
+        monkeypatch.setattr(_sys.stderr, "isatty", lambda: False, raising=False)
+        captured = self._capture_console_renderer_kwargs(monkeypatch)
+
+        listener = setup_logging(log_level="INFO", log_json=False)
+        try:
+            assert captured, "ConsoleRenderer was not instantiated"
+            assert captured[0].get("colors") is False, captured[0]
+        finally:
+            listener.stop()
+
+    def test_console_renderer_gets_colors_true_when_stderr_is_tty(
+        self, monkeypatch
+    ) -> None:
+        """When stderr IS a TTY, ``colors`` must be ``True``."""
+        import sys as _sys
+
+        from swarmq.logging import setup_logging
+
+        monkeypatch.setattr(_sys.stderr, "isatty", lambda: True, raising=False)
+        captured = self._capture_console_renderer_kwargs(monkeypatch)
+
+        listener = setup_logging(log_level="INFO", log_json=False)
+        try:
+            assert captured, "ConsoleRenderer was not instantiated"
+            assert captured[0].get("colors") is True, captured[0]
+        finally:
+            listener.stop()
+
+    def test_no_ansi_escape_in_piped_stderr_subprocess(self) -> None:
+        """End-to-end: a subprocess with piped stderr sees no ANSI escapes.
+
+        ``subprocess.run(..., capture_output=True)`` hands the child a
+        non-TTY stderr by default. After Unit 3 lands, the
+        ``ConsoleRenderer`` must pick that up via ``isatty()`` and
+        disable colors, so the captured stderr contains no ``\\x1b[``.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent(
+                    """
+                    import logging
+                    import structlog
+                    from swarmq.logging import setup_logging
+
+                    listener = setup_logging(log_level="INFO", log_json=False)
+                    try:
+                        log = structlog.get_logger("unit3")
+                        log.info("tty_guard_test", marker=True)
+                    finally:
+                        listener.stop()
+                    """
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        )
+        assert "\x1b[" not in result.stderr, (
+            f"ANSI escape leaked to piped stderr:\n{result.stderr!r}"
+        )
+
+    def test_json_mode_does_not_instantiate_console_renderer(
+        self, monkeypatch
+    ) -> None:
+        """Regression guard: when ``log_json=True``, ``ConsoleRenderer``
+        is never touched — the TTY guard is irrelevant there.
+        """
+        from swarmq.logging import setup_logging
+
+        captured = self._capture_console_renderer_kwargs(monkeypatch)
+
+        listener = setup_logging(log_level="INFO", log_json=True)
+        try:
+            assert not captured, (
+                f"ConsoleRenderer should not be used in JSON mode: {captured}"
+            )
+        finally:
+            listener.stop()
