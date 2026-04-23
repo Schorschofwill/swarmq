@@ -213,6 +213,76 @@ class TestLivePatchThrough:
         )
         assert rc == 0
 
+    # ------------------------------------------------------------------
+    # Plan 2026-04-23-001 Unit 6 / RR-2: the same live-patch guarantee
+    # for the other three dispatched async runners. A future refactor
+    # that rebinds these names via a submodule-local ``from ... import``
+    # inside ``main()`` would silently defeat ``patch('swarmq.cli.X')``
+    # — these tests break first.
+    # ------------------------------------------------------------------
+
+    def test_patch_swarmq_cli_run_schedule_async_is_called_by_main(self) -> None:
+        async def _noop(_args):
+            return None
+
+        with patch(
+            "swarmq.cli._run_schedule_async", side_effect=_noop
+        ) as mock:
+            rc = swarmq.cli.main(["schedule", "list"])
+        assert mock.call_count == 1, (
+            "patch('swarmq.cli._run_schedule_async') did not intercept the "
+            "call from main(). See plan 2026-04-23-001 Unit 6 — main()'s "
+            "schedule dispatch must resolve _run_schedule_async via the "
+            "swarmq.cli namespace."
+        )
+        assert rc == 0
+
+    def test_patch_swarmq_cli_run_dlq_async_is_called_by_main(self) -> None:
+        async def _noop(_args):
+            return None
+
+        with patch("swarmq.cli._run_dlq_async", side_effect=_noop) as mock:
+            rc = swarmq.cli.main(["dlq", "list"])
+        assert mock.call_count == 1, (
+            "patch('swarmq.cli._run_dlq_async') did not intercept the "
+            "call from main(). Plan 2026-04-23-001 Unit 6 — dlq dispatch "
+            "must resolve via the facade namespace."
+        )
+        assert rc == 0
+
+    def test_patch_swarmq_cli_run_inspect_async_is_called_by_main(self) -> None:
+        async def _noop(_args):
+            return None
+
+        with patch(
+            "swarmq.cli._run_inspect_async", side_effect=_noop
+        ) as mock:
+            rc = swarmq.cli.main(["inspect", "--module", "swarmq"])
+        assert mock.call_count == 1, (
+            "patch('swarmq.cli._run_inspect_async') did not intercept the "
+            "call from main(). Plan 2026-04-23-001 Unit 6 — inspect dispatch "
+            "must resolve via the facade namespace."
+        )
+        assert rc == 0
+
+    @pytest.mark.skip(
+        reason=(
+            "Demonstration-only, plan 2026-04-23-001 Unit 6: shows what "
+            "refactor anti-pattern would break the live-patch guarantees "
+            "above. Unskip locally to verify the assertion flips RED — "
+            "replace, say, the schedule dispatch line in cli/__init__.py::"
+            "main() with a submodule-local ``from swarmq.cli.schedule_cmd "
+            "import _run_schedule_async`` (inside the elif body) and "
+            "re-run. The live-patch test for schedule will turn RED while "
+            "the other live-patch tests stay GREEN — exactly the "
+            "regression signature this skipped-demo documents. Do NOT "
+            "unskip in CI."
+        )
+    )
+    def test_demonstration_submodule_import_defeats_facade_patch(self) -> None:
+        # Intentionally empty — the docstring above IS the test.
+        pass
+
 
 class TestSubprocessImport:
     """Fresh-interpreter import cannot hide circular-init bugs.
