@@ -1,34 +1,15 @@
-"""Command-line interface for SwarmQ.
+"""CLI facade — entry point for the ``swarmq`` console script.
 
-This package is the target of the ``swarmq`` console script declared
-in ``pyproject.toml`` (entry: ``swarmq = "swarmq.cli:main"``).
+``main()`` lives here (not in a submodule) on purpose: tests patch
+``swarmq.cli.run_worker_async`` / ``swarmq.cli._run_*_async`` via
+string paths, and ``main()`` must resolve those names against THIS
+module's namespace. Moving ``main()`` into a submodule would rebind
+those symbols in that submodule's globals and silently defeat the
+facade patches (see ``tests/unit/test_cli_module_surface.py``).
 
-Package layout:
-
-- :mod:`swarmq.cli._shared` — argparse type-functions, connection
-  factories, generic table renderer.
-- :mod:`swarmq.cli.parser` — :func:`_build_parser` + ``--version``
-  helper. Holds the full argparse tree.
-- :mod:`swarmq.cli.worker_cmd` — :func:`run_worker_async`. Also
-  imported by :mod:`swarmq.process_manager` via
-  ``from swarmq.cli import run_worker_async``.
-- :mod:`swarmq.cli.schedule_cmd`, :mod:`swarmq.cli.dlq_cmd`,
-  :mod:`swarmq.cli.inspect_cmd` — one module per command family.
-- :mod:`swarmq.cli.check_cmd` — ``swarmq worker --check`` JSON-
-  contract validator. Separate module to keep the contract perimeter
-  visible.
-
-``main()`` itself lives in THIS module, not in a submodule. The
-public-API contract (tests patch ``swarmq.cli.run_worker_async`` via
-string paths; see ``tests/unit/test_cli_module_surface.py``) requires
-that ``main()`` resolve symbols via the ``swarmq.cli`` namespace, not
-via a private ``from … import …`` in a submodule. Extracting ``main``
-into ``cli/main.py`` would bind ``run_worker_async`` in that
-submodule's globals and ``patch('swarmq.cli.run_worker_async')`` would
-silently stop intercepting the real call.
-
-Configuration precedence: explicit CLI flag > environment variable
-(``SWARMQ_*``) > built-in default in :class:`SwarmQConfig`.
+Package layout, configuration precedence, and the background for
+keeping ``main()`` at the facade level are documented in
+``docs/plans/2026-04-22-001-refactor-cli-split-plan.md``.
 """
 
 from __future__ import annotations
