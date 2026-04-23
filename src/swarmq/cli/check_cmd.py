@@ -113,15 +113,57 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     ``SystemExit(2)`` and emit JSON instead of the default unhelpful
     exit.
 
-    Returns True when the argv has both ``worker`` and ``--check`` as
-    separate tokens. Does not parse exhaustively — a false positive
-    (``--check`` mentioned in a quoted string) would at worst emit
-    JSON twice; the impact is bounded.
+    The detection uses a *minimal* argparse parser — not the full
+    ``_build_parser`` tree — to avoid argparse's type-validators
+    aborting on, e.g., ``--watch-dir /nonexistent`` (that abort is
+    exactly what AC-06 wants the outer ``main()`` to convert into a
+    JSON payload; if the detector aborted first, ``check_mode`` would
+    be ``False`` and the JSON path would never engage).
+
+    Plan 2026-04-23-001 CLI-02: the old token-membership heuristic
+    mistakenly flagged ``swarmq dlq retry worker --check`` as a check
+    invocation (because ``worker`` + ``--check`` are both tokens) and
+    likewise ``swarmq worker --task --check`` (where ``--check`` is
+    the value of ``--task``, not a flag). The minimal parser knows
+    the subcommand names and the argument-consuming worker flags, so
+    ``parse_known_args`` produces the correct answer for both cases
+    without requiring the heavyweight full parser.
     """
     if argv is None:
         argv = sys.argv[1:]
-    tokens = list(argv)
-    return "worker" in tokens and "--check" in tokens
+
+    detector = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    subs = detector.add_subparsers(dest="command")
+    worker_sub = subs.add_parser("worker", add_help=False, exit_on_error=False)
+    # Mirror the argument-consuming worker flags so their values can't
+    # be misread as the ``--check`` token. Only flags that take a
+    # string (no type validators) are needed — validators run in the
+    # real parser, not here.
+    worker_sub.add_argument("--task", default=None)
+    worker_sub.add_argument("--module", default=None)
+    worker_sub.add_argument("--queue", default=None)
+    worker_sub.add_argument("--watch-dir", action="append", default=None)
+    worker_sub.add_argument("--log-level", default=None)
+    worker_sub.add_argument("--log-format", default=None)
+    worker_sub.add_argument("--check", action="store_true", default=False)
+    # Siblings — recognised only so ``parse_known_args`` on their
+    # argv prefix does not misclassify them as ``worker``.
+    for name in ("schedule", "dlq", "inspect"):
+        subs.add_parser(name, add_help=False, exit_on_error=False)
+
+    try:
+        parsed, _ = detector.parse_known_args(list(argv))
+    except (argparse.ArgumentError, SystemExit, ValueError):
+        # Detector could not decide — defer to the outer parser.
+        # ``False`` means ``main()`` takes the non-check branch; if
+        # the user really meant ``--check``, they will get argparse's
+        # default error. This is the conservative fallback.
+        return False
+
+    return (
+        getattr(parsed, "command", None) == "worker"
+        and getattr(parsed, "check", False)
+    )
 
 
 def _emit_argparse_check_error(message: str) -> int:

@@ -199,12 +199,16 @@ class TestCheckDetectionRobustness:
 
         assert _is_check_invocation(["inspect", "some-task-id"]) is False
 
-    def test_global_flag_before_worker_preserves_detection(self) -> None:
-        """Global options before the subcommand must not fool the detector."""
+    def test_worker_log_level_flag_preserves_detection(self) -> None:
+        """worker-level options before ``--check`` must not fool the detector.
+
+        Note: ``--log-level`` lives on the ``worker`` subparser, not on
+        the root — this test exercises the worker-scoped flag path.
+        """
         from swarmq.cli.check_cmd import _is_check_invocation
 
         assert _is_check_invocation(
-            ["--log-level", "DEBUG", "worker", "--check"]
+            ["worker", "--log-level", "DEBUG", "--check"]
         ) is True
 
     def test_none_argv_uses_sys_argv(self) -> None:
