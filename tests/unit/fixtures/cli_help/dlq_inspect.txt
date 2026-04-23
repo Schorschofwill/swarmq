@@ -14,4 +14,6 @@ options:
   --scan-limit SCAN_LIMIT
                         Max DLQ messages to scan (default: 1000).
   --format {table,json}
-                        Output format (default: table).
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override the default with
+                        SWARMQ_DEFAULT_FORMAT=table|json.

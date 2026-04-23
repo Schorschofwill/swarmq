@@ -3,4 +3,6 @@ usage: swarmq schedule list [-h] [--format {table,json}]
 options:
   -h, --help            show this help message and exit
   --format {table,json}
-                        Output format (default: table).
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override the default with
+                        SWARMQ_DEFAULT_FORMAT=table|json.

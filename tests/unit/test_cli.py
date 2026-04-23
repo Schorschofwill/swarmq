@@ -358,7 +358,9 @@ class TestScheduleParser:
         ns = parser.parse_args(["schedule", "list"])
         assert ns.command == "schedule"
         assert ns.schedule_command == "list"
-        assert ns.format == "table"
+        # Plan 2026-04-23-001 Unit 5: parser default is None;
+        # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
+        assert ns.format is None
 
     def test_list_json_format(self):
         parser = cli._build_parser()
@@ -433,7 +435,9 @@ class TestScheduleParser:
         ns = parser.parse_args([
             "schedule", "add", "x", "--cron", "* * * * *", "--task", "t",
         ])
-        assert ns.format == "table"
+        # Plan 2026-04-23-001 Unit 5: parser default is None;
+        # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
+        assert ns.format is None
 
     def test_remove_format_json(self):
         parser = cli._build_parser()
@@ -444,7 +448,9 @@ class TestScheduleParser:
         parser = cli._build_parser()
         ns = parser.parse_args(["schedule", "status"])
         assert ns.limit == 10
-        assert ns.format == "table"
+        # Plan 2026-04-23-001 Unit 5: parser default is None;
+        # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
+        assert ns.format is None
 
     def test_status_with_limit_and_json(self):
         parser = cli._build_parser()
@@ -554,7 +560,9 @@ class TestInspectCommand:
             "inspect", "--module", "some.module",
         ])
         assert ns.module == "some.module"
-        assert ns.format == "table"
+        # Plan 2026-04-23-001 Unit 5: parser default is None;
+        # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
+        assert ns.format is None
 
     def test_inspect_json_format(self):
         parser = cli._build_parser()
@@ -588,7 +596,9 @@ class TestDlqParser:
         assert ns.dlq_command == "list"
         assert ns.queue == "default"
         assert ns.limit == 100
-        assert ns.format == "table"
+        # Plan 2026-04-23-001 Unit 5: parser default is None;
+        # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
+        assert ns.format is None
 
     def test_dlq_list_overrides(self):
         parser = cli._build_parser()

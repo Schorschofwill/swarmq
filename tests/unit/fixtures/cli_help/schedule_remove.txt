@@ -9,5 +9,7 @@ options:
                         schedule is only disabled — useful when you want
                         insert-if-absent to keep blocking re-syncs from code.
   --format {table,json}
-                        Output format (default: table). Use 'json' for agent-
-                        parseable output with an explicit 'removed' boolean.
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override with SWARMQ_DEFAULT_FORMAT=table|json.
+                        Use 'json' for agent-parseable output with an explicit
+                        'removed' boolean.

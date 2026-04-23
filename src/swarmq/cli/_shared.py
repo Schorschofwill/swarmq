@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,32 @@ from swarmq.exceptions import ConfigurationError
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+
+_VALID_OUTPUT_FORMATS = frozenset({"table", "json"})
+
+
+def resolve_format(explicit: str | None) -> str:
+    """Decide the effective ``--format`` value for output-shaped commands.
+
+    Precedence (plan 2026-04-23-001 Unit 5 / CLI-04):
+
+    1. Explicit ``--format`` on the command line (``explicit`` non-None).
+    2. ``SWARMQ_DEFAULT_FORMAT`` environment variable, if it names a
+       valid format (``table`` or ``json``).
+    3. TTY-aware fallback: ``"table"`` when ``sys.stdout.isatty()`` is
+       true, else ``"json"`` — machine-readable by default for
+       pipe/file/log redirects.
+
+    Invalid env-var values (typo, unknown format, empty string) are
+    silently ignored so a misconfigured shell environment does not
+    crash the CLI. Decision E2.
+    """
+    if explicit is not None:
+        return explicit
+    override = os.environ.get("SWARMQ_DEFAULT_FORMAT")
+    if override in _VALID_OUTPUT_FORMATS:
+        return override
+    return "table" if sys.stdout.isatty() else "json"
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 _VALID_LOG_FORMATS = ("human", "json")

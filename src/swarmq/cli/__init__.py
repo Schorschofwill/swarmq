@@ -255,6 +255,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         args = parser.parse_args(argv)
 
+    # Plan 2026-04-23-001 CLI-04 / Unit 5: resolve the TTY-aware
+    # ``--format`` default (+ SWARMQ_DEFAULT_FORMAT escape) centrally
+    # so each subcommand handler reads a concrete value. Absent
+    # ``--format`` flags stay untouched (``hasattr`` guard).
+    if hasattr(args, "format"):
+        from swarmq.cli._shared import resolve_format
+        args.format = resolve_format(args.format)
+
     if args.command == "worker":
         # R5.3 ce-review #23: dry-run validation. Never starts the
         # supervisor or touches the broker — just checks whether the

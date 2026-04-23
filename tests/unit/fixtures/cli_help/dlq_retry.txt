@@ -18,4 +18,6 @@ options:
                         Max DLQ messages to scan when looking up task_id
                         (default: 1000).
   --format {table,json}
-                        Output format (default: table).
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override the default with
+                        SWARMQ_DEFAULT_FORMAT=table|json.

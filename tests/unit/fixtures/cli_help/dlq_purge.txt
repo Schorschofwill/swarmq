@@ -7,4 +7,6 @@ options:
   -h, --help            show this help message and exit
   --queue QUEUE         Main queue name (default: default).
   --format {table,json}
-                        Output format (default: table).
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override the default with
+                        SWARMQ_DEFAULT_FORMAT=table|json.

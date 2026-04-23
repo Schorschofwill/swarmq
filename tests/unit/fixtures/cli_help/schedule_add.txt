@@ -29,5 +29,7 @@ options:
                         keeps the flag until the task reaches a terminal
                         state. Ignored when --unique-for is not set.
   --format {table,json}
-                        Output format (default: table). Use 'json' for agent-
-                        parseable output with an explicit 'inserted' boolean.
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override with SWARMQ_DEFAULT_FORMAT=table|json.
+                        Use 'json' for agent-parseable output with an explicit
+                        'inserted' boolean.
