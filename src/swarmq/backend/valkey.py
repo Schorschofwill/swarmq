@@ -651,3 +651,23 @@ class ValkeyBackend:
                 await pubsub.aclose()
             except Exception:
                 pass
+
+    async def get_scheduler_leader(self) -> str | None:
+        """Return the current scheduler-lock holder, or ``None`` if unlocked.
+
+        Thin, read-only accessor to ``SCHEDULER_LOCK_KEY`` that the CLI
+        (``swarmq schedule status``) consumes instead of reaching into
+        ``backend._client``. Plan 2026-04-23-001 Unit 4 / KP-5.
+
+        Does NOT swallow connection errors (Decision E4): callers can
+        distinguish "no leader elected" (``None`` return) from
+        "backend unreachable" (``ValkeyConnectionError`` /
+        ``ValkeyTimeoutError`` propagates). Ops visibility for
+        ``schedule status`` remains intact.
+        """
+        from swarmq.scheduler import SCHEDULER_LOCK_KEY
+
+        raw = await self._client.get(SCHEDULER_LOCK_KEY)
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, bytes) else str(raw)

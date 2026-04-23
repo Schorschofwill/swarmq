@@ -22,7 +22,7 @@ import msgspec
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
-from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
+from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import compute_dedup_hash
 
 # ``_backend_from_env`` is resolved LAZILY via ``swarmq.cli`` so that
@@ -242,9 +242,12 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
 async def _run_schedule_status(args: argparse.Namespace) -> None:
     backend = await _get_backend_factory()()
     try:
-        # Read the leader lock directly.
-        owner_raw = await backend._client.get(SCHEDULER_LOCK_KEY)
-        leader = owner_raw.decode() if owner_raw else None
+        # Public API call — plan 2026-04-23-001 Unit 4 / KP-5. The
+        # CLI no longer pokes at ``backend._client`` for the scheduler
+        # lock; ``get_scheduler_leader`` is the contract. Connection
+        # errors propagate so ``schedule status`` surfaces an outage
+        # via exit code rather than silently printing "no leader".
+        leader = await backend.get_scheduler_leader()
 
         store = ScheduleStore(backend)
         now_ms = int(time.time() * 1000)
