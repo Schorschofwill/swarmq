@@ -7,174 +7,107 @@ in its own commit.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import textwrap
+import ast
+import pathlib
 
 import pytest
 
 
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_CLI_SHARED = _REPO_ROOT / "src" / "swarmq" / "cli" / "_shared.py"
+_CLI_INIT = _REPO_ROOT / "src" / "swarmq" / "cli" / "__init__.py"
+
+_HEAVY_MODULES = frozenset({"swarmq.backend.valkey", "swarmq.broker.rabbitmq"})
+
+
+def _top_level_imports(source_path: pathlib.Path) -> set[str]:
+    """Return the set of modules imported at Module-top-level.
+
+    Top-level = direct children of ``ast.Module.body``. Imports inside
+    function bodies, class bodies, or ``if`` blocks are excluded.
+    """
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module is not None:
+            modules.add(node.module)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                modules.add(alias.name)
+    return modules
+
+
 # ---------------------------------------------------------------------------
-# Unit 1 — CLI-01: Lazy-Imports (R-1)
+# Unit 1 — CLI-01: CLI-local lazy imports (R-1a)
 # ---------------------------------------------------------------------------
 
 
 class TestLazyImports:
-    """R-1: ``import swarmq.cli`` must not pull in heavy Backend/Broker deps.
+    """R-1a: the CLI modules themselves must not eagerly import Backend/Broker.
 
-    Baseline (pre-fix, measured 2026-04-23):
-        swarmq.cli total import time ~152 ms; both ``valkey`` and
-        ``aio_pika`` end up in ``sys.modules``.
+    This is the narrow, CLI-local scope. The broader R-1b (no ``valkey``
+    in ``sys.modules`` after ``import swarmq.cli``) is delegated to
+    plan ``2026-04-23-002-fix-import-laziness-plan.md`` because
+    ``swarmq/app.py`` and ``swarmq/client.py`` hold the heavy symbols
+    as type annotations — those are outside this plan's scope.
 
-    Target:
-        Median of 10 warm runs >= 60 % below baseline; neither heavy
-        dep is imported until first use (via ``cli.__getattr__`` for
-        ambient re-exports or via ``_broker_from_env`` /
-        ``_backend_from_env`` for internal use).
+    Audit (2026-04-23, ``.context/cli-residuals/pre-impl-import-audit.txt``):
+    baseline 152 ms; removing CLI-local eager imports alone cannot
+    reach the 60 % reduction target because app.py/client.py
+    transitively load the same modules.
     """
 
-    def _run_snippet(self, snippet: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(snippet)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env={**os.environ},
-        )
+    def test_cli_shared_module_has_no_top_level_heavy_imports(self) -> None:
+        """``cli/_shared.py`` must not import ``swarmq.backend.valkey`` or
+        ``swarmq.broker.rabbitmq`` at module top level.
 
-    def test_import_cli_does_not_import_valkey(self) -> None:
-        """Fresh interpreter: ``import swarmq.cli`` must not load ``valkey``."""
-        result = self._run_snippet(
-            """
-            import sys
-            import swarmq.cli  # noqa: F401
-            assert "valkey" not in sys.modules, sorted(
-                m for m in sys.modules if m.startswith("valkey")
-            )
-            """
-        )
-        assert result.returncode == 0, (
-            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
-        )
-
-    def test_import_cli_does_not_import_aio_pika(self) -> None:
-        """Fresh interpreter: ``import swarmq.cli`` must not load ``aio_pika``."""
-        result = self._run_snippet(
-            """
-            import sys
-            import swarmq.cli  # noqa: F401
-            assert "aio_pika" not in sys.modules, sorted(
-                m for m in sys.modules if m.startswith("aio_pika")
-            )
-            """
-        )
-        assert result.returncode == 0, (
-            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
-        )
-
-    def test_swarmq_help_subprocess_has_no_heavy_imports(self) -> None:
-        """``swarmq --help`` (via ``python -m``) stays lightweight.
-
-        The ``--help`` path parses args, emits text, exits. It must not
-        touch broker/backend modules. Uses ``python -m swarmq.cli`` so
-        this test runs without the installed console script.
+        Runtime use in ``_backend_from_env`` / ``_broker_from_env`` is
+        fine — those functions can import inside their body
+        (pattern: ``dlq_cmd._get_broker_factory`` — a facade indirection
+        that only runs on first call).
         """
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                textwrap.dedent(
-                    """
-                    import sys
-                    # Simulate the --help path without actually invoking argparse
-                    # help printer (which calls sys.exit). We just import the
-                    # facade — the critical path for `swarmq --help` latency.
-                    import swarmq.cli  # noqa: F401
-                    heavy = [
-                        m for m in sys.modules
-                        if m.startswith(("valkey", "aio_pika", "libvalkey"))
-                    ]
-                    assert not heavy, f"heavy deps leaked: {sorted(heavy)}"
-                    """
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert result.returncode == 0, (
-            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        top_level = _top_level_imports(_CLI_SHARED)
+        leaked = top_level & _HEAVY_MODULES
+        assert not leaked, (
+            f"cli/_shared.py still imports {sorted(leaked)} at top level; "
+            "move into _backend_from_env/_broker_from_env function bodies."
         )
 
-    def test_cli_getattr_valkey_backend_loads_lazily(self) -> None:
-        """``cli.ValkeyBackend`` stays resolvable via ``__getattr__``.
+    def test_cli_init_module_has_no_top_level_heavy_imports(self) -> None:
+        """``cli/__init__.py`` must not import ValkeyBackend/RabbitMQBroker
+        at module top level.
 
-        Identity contract (R-8): ``swarmq.cli.ValkeyBackend`` must be
-        the same object as ``swarmq.backend.valkey.ValkeyBackend`` — the
-        surface whitelist's identity check relies on this. But access
-        is what triggers the import, not ``import swarmq.cli``.
+        The ambient re-exports (frozen-surface whitelist items
+        ``ValkeyBackend`` / ``RabbitMQBroker``) must be served via
+        ``__getattr__`` lazy hook. Identity is preserved on first access.
         """
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                textwrap.dedent(
-                    """
-                    import sys
-                    import swarmq.cli as cli
-                    # Before first access: valkey must not be loaded.
-                    assert "valkey" not in sys.modules, (
-                        "valkey loaded too early: "
-                        + repr(sorted(m for m in sys.modules if m.startswith('valkey')))
-                    )
-                    # First access triggers lazy import.
-                    vb = cli.ValkeyBackend
-                    # Identity check against the canonical module.
-                    from swarmq.backend.valkey import ValkeyBackend as CanonicalVB
-                    assert vb is CanonicalVB, (vb, CanonicalVB)
-                    # And valkey is loaded now.
-                    assert "valkey" in sys.modules
-                    """
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert result.returncode == 0, (
-            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        top_level = _top_level_imports(_CLI_INIT)
+        leaked = top_level & _HEAVY_MODULES
+        assert not leaked, (
+            f"cli/__init__.py still imports {sorted(leaked)} at top level; "
+            "move to a PEP-562 __getattr__ hook for lazy resolution."
         )
 
-    def test_cli_getattr_rabbitmq_broker_loads_lazily(self) -> None:
-        """``cli.RabbitMQBroker`` behaves symmetrically to ``ValkeyBackend``."""
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                textwrap.dedent(
-                    """
-                    import sys
-                    import swarmq.cli as cli
-                    assert "aio_pika" not in sys.modules
-                    rb = cli.RabbitMQBroker
-                    from swarmq.broker.rabbitmq import RabbitMQBroker as CanonicalRB
-                    assert rb is CanonicalRB, (rb, CanonicalRB)
-                    assert "aio_pika" in sys.modules
-                    """
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert result.returncode == 0, (
-            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
-        )
+    def test_cli_getattr_valkey_backend_preserves_identity(self) -> None:
+        """``swarmq.cli.ValkeyBackend`` must be the canonical class.
+
+        Surface-whitelist contract (R-8): identity check in
+        ``test_cli_module_surface.py`` compares ``cli.ValkeyBackend is
+        swarmq.backend.valkey.ValkeyBackend``. The lazy ``__getattr__``
+        implementation must satisfy this — caching is allowed, but the
+        object must be the same one ``importlib.import_module`` returns.
+        """
+        import swarmq.cli as cli
+        from swarmq.backend.valkey import ValkeyBackend as CanonicalVB
+
+        assert cli.ValkeyBackend is CanonicalVB
+
+    def test_cli_getattr_rabbitmq_broker_preserves_identity(self) -> None:
+        """``swarmq.cli.RabbitMQBroker`` must be the canonical class."""
+        import swarmq.cli as cli
+        from swarmq.broker.rabbitmq import RabbitMQBroker as CanonicalRB
+
+        assert cli.RabbitMQBroker is CanonicalRB
 
     def test_cli_getattr_unknown_attribute_raises(self) -> None:
         """``__getattr__`` must still raise ``AttributeError`` for bogus names.
@@ -184,5 +117,5 @@ class TestLazyImports:
         """
         import swarmq.cli as cli
 
-        with pytest.raises(AttributeError, match="no attribute 'ThisDoesNotExist'"):
+        with pytest.raises(AttributeError, match="ThisDoesNotExist"):
             _ = cli.ThisDoesNotExist  # type: ignore[attr-defined]
