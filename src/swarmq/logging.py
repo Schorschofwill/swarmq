@@ -31,10 +31,15 @@ def setup_logging(
 
     Returns the QueueListener so it can be stopped on shutdown.
     """
+    # Plan 2026-04-23-001 CLI-03: bind ``colors`` to the TTY state of
+    # stderr at configure time. Keeps ANSI escapes out of piped /
+    # captured stderr (log aggregators, CI output, pytest fixtures).
+    # The decision is static — callers that redirect stderr AFTER
+    # ``setup_logging`` must re-invoke it.
     renderer = (
         structlog.processors.JSONRenderer()
         if log_json
-        else structlog.dev.ConsoleRenderer()
+        else structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
     )
 
     shared_processors: list = [
