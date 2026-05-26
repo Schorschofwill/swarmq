@@ -391,6 +391,7 @@ class TestScheduleStatusUsesPublicAPI:
             "migration from the private path is incomplete."
         )
 
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
     async def test_run_schedule_status_invokes_public_api(
         self, monkeypatch
     ) -> None:
@@ -399,16 +400,23 @@ class TestScheduleStatusUsesPublicAPI:
 
         Builds an args Namespace minimal enough for the status handler
         and asserts the interaction shape.
+
+        Plan 2026-05-26-001 Unit 1: ``_client`` is a ``MagicMock``
+        (synchronous), not ``AsyncMock`` — ``ScheduleStore.__init__``
+        calls ``backend._client.register_script(...)`` three times, and
+        an ``AsyncMock`` would return un-awaited coroutines that surface
+        as ``RuntimeWarning``. The ``filterwarnings`` decorator catches
+        regressions if a future refactor reintroduces this mismatch.
         """
         import argparse
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from swarmq.cli import schedule_cmd as sched
 
         fake_backend = AsyncMock()
         fake_backend.get_scheduler_leader = AsyncMock(return_value="leader-xyz")
         fake_backend.close = AsyncMock()
-        fake_backend._client = AsyncMock()  # present but must not be used for the lock
+        fake_backend._client = MagicMock()  # sync surface; lock-key get must not be called
 
         async def _factory() -> object:
             return fake_backend
