@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 
 _VALID_OUTPUT_FORMATS = frozenset({"table", "json"})
 
+#: Canonical ``choices=`` tuple for every ``--format`` add_argument site in
+#: :mod:`swarmq.cli.parser`. Keep alignment with ``_VALID_OUTPUT_FORMATS``
+#: — argparse needs a sequence with stable iteration order for help text.
+_FORMAT_CHOICES: tuple[str, ...] = ("table", "json")
+
 
 def resolve_format(explicit: str | None) -> str:
     """Decide the effective ``--format`` value for output-shaped commands.
@@ -42,7 +47,11 @@ def resolve_format(explicit: str | None) -> str:
     """
     if explicit is not None:
         return explicit
-    override = os.environ.get("SWARMQ_DEFAULT_FORMAT")
+    # Tolerate surrounding whitespace and case variation — shells often
+    # carry trailing newlines from ``export VAR=$(...)`` patterns and
+    # operators reasonably expect ``TABLE`` to mean ``table``. Unknown
+    # values still fall through to the TTY default (Decision E2).
+    override = os.environ.get("SWARMQ_DEFAULT_FORMAT", "").strip().lower()
     if override in _VALID_OUTPUT_FORMATS:
         return override
     return "table" if sys.stdout.isatty() else "json"

@@ -58,6 +58,12 @@ The CLI prints a descriptive error if either is missing; see the
 All ports are validated at config-time: a bad value raises
 `ConfigurationError` before the worker tries to bind.
 
+### CLI output
+
+| Variable | Default | Description |
+|---|---|---|
+| `SWARMQ_DEFAULT_FORMAT` | *TTY-detect* | Overrides the default `--format` for output-shaped CLI subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Accepts `table` or `json`; any other value (typo, empty string) is ignored silently and the TTY-aware default applies (`table` on a terminal, `json` on a pipe). An explicit `--format` on the command line always wins. |
+
 ## `SwarmQConfig` kwargs
 
 Programmatic equivalent of the env vars — pass any of these as

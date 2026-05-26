@@ -55,6 +55,7 @@ from swarmq.cli._shared import (
     _queue_list,
     _render_table,
     _watch_dir_path,
+    resolve_format,
 )
 from swarmq.cli.check_cmd import (
     _WORKER_CHECK_PAYLOAD_KEYS,
@@ -194,6 +195,7 @@ __all__ = (
     "_swarmq_version",
     "_watch_dir_path",
     "main",
+    "resolve_format",
     "run_worker_async",
 )
 
@@ -241,7 +243,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     # so each subcommand handler reads a concrete value. Absent
     # ``--format`` flags stay untouched (``hasattr`` guard).
     if hasattr(args, "format"):
-        from swarmq.cli._shared import resolve_format
         args.format = resolve_format(args.format)
 
     if args.command == "worker":
@@ -291,6 +292,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:  # pragma: no cover — argparse required=True guards this
         parser.error(f"unknown command: {args.command!r}")
 
+    # ``ValkeyBackend.get_scheduler_leader`` (KP-5) deliberately
+    # propagates raw ``valkey.exceptions.ConnectionError`` /
+    # ``TimeoutError`` so callers can distinguish "no leader elected"
+    # from "backend unreachable". Resolve those classes lazily here so
+    # the import doesn't pull ``valkey.asyncio`` into ``swarmq --help``
+    # (R-1a). Falls back to ``()`` when the optional dep is absent so
+    # the except tuple stays valid.
+    try:
+        from valkey.exceptions import ConnectionError as _ValkeyConnError
+        from valkey.exceptions import TimeoutError as _ValkeyTimeoutError
+        _valkey_errs: tuple[type[BaseException], ...] = (
+            _ValkeyConnError, _ValkeyTimeoutError,
+        )
+    except ImportError:  # pragma: no cover — valkey is a hard dep, defensive only
+        _valkey_errs = ()
+
     try:
         asyncio.run(runner)
     except KeyboardInterrupt:
@@ -308,6 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ConfigurationError,
         BrokerConnectionError,
         BackendConnectionError,
+        *_valkey_errs,
     ) as exc:
         sys.stderr.write(f"{error_prefix}: {exc}\n")
         if getattr(args, "log_level", "INFO") == "DEBUG":

@@ -13,6 +13,7 @@ import importlib
 import importlib.metadata
 
 from swarmq.cli._shared import (
+    _FORMAT_CHOICES,
     _VALID_LOG_FORMATS,
     _VALID_LOG_LEVELS,
     _autoscale_range,
@@ -252,7 +253,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sched_list.add_argument(
         "--format",
-        choices=("table", "json"),
+        choices=_FORMAT_CHOICES,
         default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
@@ -326,7 +327,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sched_add.add_argument(
         "--format",
-        choices=("table", "json"),
+        choices=_FORMAT_CHOICES,
         default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a "
@@ -353,7 +354,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sched_remove.add_argument(
         "--format",
-        choices=("table", "json"),
+        choices=_FORMAT_CHOICES,
         default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a "
@@ -399,7 +400,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max messages to list (default: 100).",
     )
     dlq_list.add_argument(
-        "--format", choices=("table", "json"), default=None,
+        "--format", choices=_FORMAT_CHOICES, default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
             "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
@@ -426,7 +427,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max DLQ messages to scan (default: 1000).",
     )
     dlq_inspect.add_argument(
-        "--format", choices=("table", "json"), default=None,
+        "--format", choices=_FORMAT_CHOICES, default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
             "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
@@ -467,7 +468,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max DLQ messages to scan when looking up task_id (default: 1000).",
     )
     dlq_retry.add_argument(
-        "--format", choices=("table", "json"), default=None,
+        "--format", choices=_FORMAT_CHOICES, default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
             "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
@@ -488,7 +489,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Main queue name (default: default).",
     )
     dlq_purge.add_argument(
-        "--format", choices=("table", "json"), default=None,
+        "--format", choices=_FORMAT_CHOICES, default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
             "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
@@ -515,7 +516,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inspect_parser.add_argument(
         "--format",
-        choices=("table", "json"),
+        choices=_FORMAT_CHOICES,
         default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
@@ -536,7 +537,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sched_status.add_argument(
         "--format",
-        choices=("table", "json"),
+        choices=_FORMAT_CHOICES,
         default=None,
         help=(
             "Output format. Default: 'table' on a TTY, 'json' on a pipe. "

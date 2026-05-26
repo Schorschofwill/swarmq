@@ -2,6 +2,9 @@
 title: "Sunset reminder: CLI surface whitelist + _DLQNotFound rename (KP-2 / M-02 / M-03)"
 date: 2026-05-26
 sunset_date: 2026-12-31
+# ``trigger_date`` mirrors ``sunset_date`` for compatibility with the
+# plan-specified frontmatter field name; tooling may consume either.
+trigger_date: 2026-12-31
 category: patterns
 module: cli
 problem_type: deferred_decision

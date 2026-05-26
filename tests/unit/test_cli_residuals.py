@@ -220,6 +220,43 @@ class TestCheckDetectionRobustness:
         result = _is_check_invocation(None)
         assert isinstance(result, bool)
 
+    def test_worker_check_equals_value_detects_as_check(self) -> None:
+        """``worker --check=true`` must enter the JSON-contract path.
+
+        argparse rejects ``=``-bound values on ``store_true`` actions,
+        so the minimal detector raises and (without the fallback)
+        would return False — silently dropping the JSON-on-error
+        contract for any caller using ``--check=…`` syntax.
+        """
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(["worker", "--check=true"]) is True
+        assert _is_check_invocation(["worker", "--check=1"]) is True
+
+    def test_dlq_retry_worker_check_equals_is_not_check(self) -> None:
+        """``dlq retry worker --check=true`` — ``worker`` is positional,
+        the fallback must NOT misclassify this as a check invocation."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(
+            ["dlq", "retry", "worker", "--check=true"]
+        ) is False
+
+    def test_check_detector_accepts_iterator_argv(self) -> None:
+        """A generator/iterator argv must not be exhausted by the detector.
+
+        Internally ``_is_check_invocation`` materialises argv once so a
+        single-shot iterable still produces the correct decision; if the
+        detector held on to the raw iterator and called ``list(argv)``
+        late, the result would still be correct here, but the broader
+        contract (caller may re-use argv afterwards) only holds when the
+        detector materialises up-front.
+        """
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(iter(["worker", "--check"])) is True
+        assert _is_check_invocation(iter(["schedule", "list"])) is False
+
 
 # ---------------------------------------------------------------------------
 # Unit 3 — CLI-03: TTY-guarded ConsoleRenderer colors (R-3)
@@ -548,6 +585,26 @@ class TestFormatResolution:
 
         monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
         monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "")
+        assert resolve_format(None) == "json"
+
+    def test_env_var_normalises_whitespace_and_case(self, monkeypatch) -> None:
+        """``  TABLE\\n`` and the like must resolve to ``table``.
+
+        Shells frequently leak trailing newlines from
+        ``export VAR=$(cmd)`` patterns and operators reasonably expect
+        case-insensitive matching for an enum-shaped env-var. Only the
+        normalised forms are accepted; truly invalid values still fall
+        back to the TTY default per Decision E2.
+        """
+        import sys as _sys
+
+        from swarmq.cli._shared import resolve_format
+
+        monkeypatch.setattr(_sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "  TABLE\n")
+        assert resolve_format(None) == "table"
+
+        monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "Json")
         assert resolve_format(None) == "json"
 
 

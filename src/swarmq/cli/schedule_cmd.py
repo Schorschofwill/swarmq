@@ -180,7 +180,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
                         await backend.release_unique(dedup_hash, args.name)
                 raise
 
-        if getattr(args, "format", "table") == "json":
+        if args.format == "json":
             payload = {
                 "inserted": inserted,
                 "name": args.name,
@@ -220,7 +220,7 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
             changed = await store.disable_schedule(args.name)
             action = "disabled"
 
-        if getattr(args, "format", "table") == "json":
+        if args.format == "json":
             sys.stdout.write(json.dumps({
                 "removed": changed,
                 "permanent": bool(args.permanent),

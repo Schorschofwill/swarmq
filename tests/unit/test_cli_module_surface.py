@@ -93,6 +93,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_seed_check_payload",          # internal
         "_swarmq_version",              # internal
         "_watch_dir_path",              # internal — test_cli_multiprocess.py
+        "resolve_format",               # internal — TTY+env --format resolver (R-5, CLI-04)
         # --- ambient imports (R-1 compat: frozen to avoid silent breakage) --
         "Any",                          # ambient
         "BackendConnectionError",       # ambient
@@ -264,6 +265,44 @@ class TestLivePatchThrough:
             "must resolve via the facade namespace."
         )
         assert rc == 0
+
+    def test_patch_swarmq_cli__DLQNotFound_is_caught_by_main(self) -> None:
+        """The ``_DLQNotFound`` class on the facade IS the class raised
+        deep in ``dlq_cmd``.
+
+        ``main()``'s ``except _DLQNotFound`` clause resolves the name
+        against the ``swarmq.cli`` facade namespace, while the raise
+        sites in ``dlq_cmd._run_dlq_inspect`` / ``_run_dlq_retry`` use
+        their own module-local binding. The whole exit-code-3 contract
+        (R3.10 P3 #19) only holds when those two bindings are the same
+        class object. If a future refactor created a separate
+        ``_DLQNotFound`` in the facade (e.g. a re-aliased subclass),
+        the ``except`` would silently miss the raise.
+        """
+        import swarmq.cli
+        from swarmq.cli import dlq_cmd
+
+        # Identity check — the facade name and the raise-site name
+        # must point at the same class. This is what makes
+        # ``except _DLQNotFound`` in main() catch the raise.
+        assert swarmq.cli._DLQNotFound is dlq_cmd._DLQNotFound
+
+        # Functional check — patch the dispatcher to raise the facade's
+        # _DLQNotFound directly. main()'s except clause must convert
+        # that into the documented exit code.
+        async def _raise_facade_dlq_not_found(_args):
+            raise swarmq.cli._DLQNotFound
+
+        with patch(
+            "swarmq.cli._run_dlq_async",
+            side_effect=_raise_facade_dlq_not_found,
+        ):
+            rc = swarmq.cli.main(["dlq", "list"])
+        assert rc == swarmq.cli._DLQ_NOT_FOUND_EXIT_CODE, (
+            "main() did not convert _DLQNotFound (raised through the "
+            "facade) into the documented exit code. Plan 2026-04-23-001 "
+            "Unit 6 / R3.10 P3 #19."
+        )
 
     @pytest.mark.skip(
         reason=(

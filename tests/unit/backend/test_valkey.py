@@ -826,3 +826,39 @@ class TestSchedulerLeader:
 
         with pytest.raises(ValkeyTimeoutError, match="took too long"):
             await backend.get_scheduler_leader()
+
+    async def test_get_scheduler_leader_handles_non_utf8_bytes(self):
+        """A rogue writer storing non-UTF8 bytes must not crash the CLI.
+
+        The contract surfaces a (possibly mojibake) string via the
+        ``errors='replace'`` decode rather than a ``UnicodeDecodeError``
+        traceback — ``schedule status`` would otherwise refuse to render.
+        """
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        # 0xff is invalid UTF-8 start byte
+        mock_client.get.return_value = b"node-\xff-bad"
+        backend._client = mock_client
+
+        result = await backend.get_scheduler_leader()
+
+        assert isinstance(result, str)
+        # No exception; placeholder char present.
+        assert "node-" in result
+
+    async def test_get_scheduler_leader_treats_empty_bytes_as_none(self):
+        """Empty bytes (``b''``) must surface as ``None``, not ``""``.
+
+        The lock contract only ever writes the holder ID; an empty
+        value is malformed state. Treating it as "no leader" keeps the
+        ``leader is None`` callers from spuriously branching into the
+        "leader elected" path on garbage state.
+        """
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        mock_client.get.return_value = b""
+        backend._client = mock_client
+
+        result = await backend.get_scheduler_leader()
+
+        assert result is None

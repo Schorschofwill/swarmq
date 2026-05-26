@@ -670,4 +670,12 @@ class ValkeyBackend:
         raw = await self._client.get(SCHEDULER_LOCK_KEY)
         if raw is None:
             return None
-        return raw.decode() if isinstance(raw, bytes) else str(raw)
+        # ``errors='replace'`` keeps ``schedule status`` working even if a
+        # rogue writer stored non-UTF8 bytes under SCHEDULER_LOCK_KEY —
+        # the operator gets a (possibly mojibake) leader string rather
+        # than a raw ``UnicodeDecodeError`` traceback.
+        result = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+        # Treat empty string the same as "no leader" — defensive against
+        # an upstream writer that SET an empty value (the lock contract
+        # only ever stores the holder ID).
+        return result if result else None

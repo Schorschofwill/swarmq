@@ -129,8 +129,11 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     ``parse_known_args`` produces the correct answer for both cases
     without requiring the heavyweight full parser.
     """
-    if argv is None:
-        argv = sys.argv[1:]
+    # Materialise the argv into a list up-front so a caller passing a
+    # single-shot iterator (generator, ``iter(...)``) is not exhausted
+    # by the detector — the outer ``main()`` still needs to feed the
+    # same tokens to the real parser.
+    argv_list = list(argv) if argv is not None else sys.argv[1:]
 
     detector = argparse.ArgumentParser(add_help=False, exit_on_error=False)
     subs = detector.add_subparsers(dest="command")
@@ -152,18 +155,38 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
         subs.add_parser(name, add_help=False, exit_on_error=False)
 
     try:
-        parsed, _ = detector.parse_known_args(list(argv))
+        parsed, _ = detector.parse_known_args(argv_list)
     except (argparse.ArgumentError, SystemExit, ValueError):
         # Detector could not decide — defer to the outer parser.
         # ``False`` means ``main()`` takes the non-check branch; if
         # the user really meant ``--check``, they will get argparse's
         # default error. This is the conservative fallback.
-        return False
+        parsed = None  # type: ignore[assignment]
 
-    return (
-        getattr(parsed, "command", None) == "worker"
+    if (
+        parsed is not None
+        and getattr(parsed, "command", None) == "worker"
         and getattr(parsed, "check", False)
-    )
+    ):
+        return True
+
+    # Fallback heuristic for the ``--check=VALUE`` form (CLI-04
+    # followup, finding #13). argparse rejects ``=``-bound values on
+    # ``store_true`` actions, so ``--check=true`` makes the detector
+    # raise and the JSON-on-error contract would silently disengage.
+    # Restrict to the ``worker`` subcommand position so ``dlq retry
+    # worker --check=...`` (where ``worker`` is a positional task-name)
+    # does NOT trip the fallback.
+    #
+    # NOTE: the *bare* ``--check`` token is intentionally NOT a fallback
+    # trigger — ``worker --task --check`` deliberately reads ``--check``
+    # as the value of ``--task`` (existing R-2 contract). Finding #14
+    # would invert that contract; out of fixer scope.
+    if argv_list and argv_list[0] == "worker":
+        for tok in argv_list[1:]:
+            if tok.startswith("--check="):
+                return True
+    return False
 
 
 def _emit_argparse_check_error(message: str) -> int:

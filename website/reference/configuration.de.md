@@ -58,6 +58,12 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 Alle Ports werden zur Config-Zeit validiert: ein Bad Value raist
 `ConfigurationError`, bevor der Worker versucht zu binden.
 
+### CLI-Output
+
+| Variable | Default | Beschreibung |
+|---|---|---|
+| `SWARMQ_DEFAULT_FORMAT` | *TTY-Detect* | Überschreibt den Default für `--format` bei Output-orientierten CLI-Subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Akzeptiert `table` oder `json`; jeder andere Wert (Tippfehler, Leerstring) wird still ignoriert und der TTY-abhängige Default greift (`table` am Terminal, `json` in einer Pipe). Ein explizites `--format` auf der Kommandozeile gewinnt immer. |
+
 ## `SwarmQConfig`-kwargs
 
 Programmatisches Äquivalent der Env-Vars — übergib sie als
