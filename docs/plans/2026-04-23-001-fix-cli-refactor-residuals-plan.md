@@ -624,13 +624,15 @@ Audit-Spur.
 ## Definition of Done
 
 - [x] Pre-Implementation-Audit (`python -X importtime -c 'import swarmq.cli'`) ausgeführt 2026-04-23; ergab Scope-Korrektur (R-1b delegiert an Follow-up-Plan).
-- [ ] Alle 7 Units gelandet (Unit 6 + Unit 7 mit Test-Commit-Ausnahme — siehe Commit-Plan).
-- [ ] `pytest tests/unit` grün, Zählung gewachsen um mindestens ~18 Tests.
-- [ ] `git grep "_client.get(SCHEDULER_LOCK_KEY)" src/swarmq/cli/` leer.
-- [ ] `grep "^from swarmq\\.(backend\\|broker)" src/swarmq/cli/_shared.py src/swarmq/cli/__init__.py` leer (R-1a).
-- [ ] Follow-up-Plan `2026-04-23-002-fix-import-laziness-plan.md` als Stub angelegt und mit diesem Plan verlinkt.
-- [ ] Changelog-Eintrag für CLI-04 ergänzt (Behaviour-Change **mit** Env-Var-Escape-Hinweis).
-- [ ] `SWARMQ_DEFAULT_FORMAT`-Env-Var in `--format`-Help-Texten und Reference-Docs dokumentiert.
-- [ ] Sunset-Datum KP-2 / Rest-Whitelist (2026-12-31) in diesem Plan dokumentiert; Follow-up-Reminder in Projekt-Tracker oder `docs/solutions/` notiert.
-- [ ] Won't-Fix-Register als Referenz im Commit-Body des letzten Commits verlinkt.
-- [ ] Optional: neuer ce-review-Run bestätigt, dass keines der 7 gefixten Findings mehr flaggt (die 6 Won't-Fix-Findings bleiben flagged — erwartet).
+- [x] Alle 7 Units gelandet (Unit 6 + Unit 7 mit Test-Commit-Ausnahme — siehe Commit-Plan). Letzter Unit-Commit: `f385ab0`.
+- [x] `pytest tests/unit` grün, Zählung gewachsen um mindestens ~18 Tests. **Tatsächlich: 1249 passed / 2 skipped vs. Baseline 1204/1 → +45 Tests** (Audit 2026-05-26).
+- [x] `git grep "_client.get(SCHEDULER_LOCK_KEY)" src/swarmq/cli/` leer (verifiziert 2026-05-26).
+- [x] `grep "^from swarmq\\.(backend\\|broker)" src/swarmq/cli/_shared.py src/swarmq/cli/__init__.py` leer (R-1a — verifiziert 2026-05-26).
+- [x] Follow-up-Plan `2026-04-23-002-fix-import-laziness-plan.md` als Stub angelegt und mit diesem Plan verlinkt.
+- [x] Changelog-Eintrag für CLI-04 ergänzt (Behaviour-Change **mit** Env-Var-Escape-Hinweis). Inhaltlich vorhanden in `website/reference/changelog.md` (en) + `.de.md` (de); **versioniert via Folge-Plan** `docs/plans/2026-05-26-001-fix-cli-residuals-dod-followups-plan.md` Unit 4 (`website/` war in `.gitignore:43` versteckt).
+- [x] `SWARMQ_DEFAULT_FORMAT`-Env-Var in `--format`-Help-Texten dokumentiert (9 Vorkommen in `src/swarmq/cli/parser.py`); Reference-Docs via Changelog-Versionierung im Folge-Plan.
+- [x] Sunset-Datum KP-2 / Rest-Whitelist (2026-12-31) in diesem Plan dokumentiert; **Follow-up-Reminder via Folge-Plan** `docs/plans/2026-05-26-001-...` Unit 2 in `docs/solutions/patterns/sunset-cli-surface-whitelist-kp2-2026-12-31.md` mit `sunset_date`-Frontmatter abgelegt.
+- [x] Won't-Fix-Register als Referenz im Commit-Body des Plan-DoD-Markup-Commits (Folge-Plan Unit 3) verlinkt — siehe Abschnitt [Won't-Fix Register (mit Begründung)](#wont-fix-register-mit-begründung) für die kanonische Antwort auf erneutes Flagging von PS-01, PS-02, KP-2, KP-7, CLI-05, M-02, M-03.
+- [ ] Optional: neuer ce-review-Run bestätigt, dass keines der 7 gefixten Findings mehr flaggt (die 6 Won't-Fix-Findings bleiben flagged — erwartet). **Status: nicht ausgeführt, bewusst out-of-scope für Merge.**
+
+**DoD-Verifikations-Audit:** 2026-05-26 (siehe `docs/plans/2026-05-26-001-fix-cli-residuals-dod-followups-plan.md`).
