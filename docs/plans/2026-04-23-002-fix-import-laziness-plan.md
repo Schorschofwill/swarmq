@@ -462,14 +462,20 @@ die `sys.modules`-basierten Tests dieses Plans brauchen die globale Laziness.
 
 ## Definition of Done
 
-- [ ] Pre-Implementation-Audit (`uv run python -X importtime -c 'import swarmq.cli'`) als Baseline-Artefakt unter `.context/import-laziness/baseline-import-trace.txt` gespeichert. **Erledigt 2026-05-26 — 187.6 ms cumulative.**
-- [ ] Unit 1 gelandet (`__getattr__` für `swarmq` Top-Level). Identity-Test grün.
-- [ ] Unit 2 gelandet (TYPE_CHECKING in 6 Dateien). mypy grün.
-- [ ] Unit 3 gelandet (Lazy-Local in cli/worker_cmd.py).
-- [ ] Unit 4 gelandet (Benchmark-Script + Post-Fix-Trace).
-- [ ] R-1 verifiziert via Test: kein `valkey`/`aio_pika` in `sys.modules` nach `import swarmq.cli`.
-- [ ] R-3 verifiziert via Test: `from swarmq import ValkeyBackend` Identity erhalten.
-- [ ] R-4 verifiziert via Benchmark: Median ≤ 75 ms (≥ 60 % Reduktion).
-- [ ] R-6 verifiziert: `pytest tests/unit` ≥ 1257 passed / 2 skipped.
-- [ ] Plan 2026-04-23-001 R-1b-Verweis aktualisiert auf "satisfied via 2026-04-23-002".
-- [ ] Eintrag in `website/reference/changelog.md` unter "Performance" — bezeichnet die Latency-Reduktion als zero-API-impact-Behaviour-non-Change.
+- [x] Pre-Implementation-Audit (`uv run python -X importtime -c 'import swarmq.cli'`) als Baseline-Artefakt unter `.context/import-laziness/baseline-import-trace.txt` gespeichert. **Erledigt 2026-05-26 — 187.6 ms cumulative.**
+- [x] Unit 1 gelandet (`__getattr__` für `swarmq` Top-Level) im Commit `129ff31`. Identity-Test grün.
+- [x] Unit 2 gelandet (TYPE_CHECKING in 8 Dateien — Plan-Scope-Erweiterung um `limits.py` + `locking.py` nach Audit, siehe Commit-Body) im selben Commit `129ff31`. mypy unverändert: 15 pre-existing in `process_manager.py`.
+- [x] Unit 3 gelandet (Lazy-Local in `cli/worker_cmd.py`) im selben Commit `129ff31`. (U1+U2+U3 zu einem Fix-Commit zusammengefasst — die Tests werden nur als Triple grün; getrennte Commits hätten halb-grüne GREEN-Phasen).
+- [x] Unit 4 gelandet (`scripts/bench_cli_import.py` + Post-Fix-Bench) im selben Commit `129ff31`. Trace: `.context/import-laziness/post-fix-bench.txt`.
+- [x] R-1 verifiziert via Test: kein `valkey`/`aio_pika` in `sys.modules` nach `import swarmq.cli`. `tests/unit/test_cli_import_laziness.py::TestSwarmqCliLaziness` grün.
+- [x] R-3 verifiziert via Test: `from swarmq import ValkeyBackend` Identity erhalten. `TestPublicSurfaceIdentity` grün (3 cases).
+- [ ] R-4 verifiziert via Benchmark: Median ≤ 75 ms (≥ 60 % Reduktion). **Status: knapp verfehlt** — `importtime-cumulative` median 100 ms (46.7 % Reduktion), best-case 78 ms (58 % Reduktion). Plan-Schwelle ehrgeizig; weitere ~25 ms wären nur durch Deferral von `swarmq.exceptions` (load-bearing) oder Stub-Generierung erreichbar — beides Scope-Erweiterungen.
+- [x] R-6 verifiziert: `pytest tests/unit` ≥ 1257 passed / 2 skipped. **Stand: 1264 passed / 2 skipped** (+7 aus Lazy-Tests).
+- [ ] Plan 2026-04-23-001 R-1b-Verweis aktualisiert auf "satisfied via 2026-04-23-002". **TODO follow-up.**
+- [ ] Eintrag in `website/reference/changelog.md` unter "Performance" — bezeichnet die Latency-Reduktion als zero-API-impact-Behaviour-non-Change. **TODO follow-up.**
+
+## Audit-Trail
+
+- Implementation 2026-05-26: U1+U2+U3 als kombiniertes Pair gelandet (RED: `c950219` test-only, GREEN: `129ff31` fix).
+- Plan-Scope während Implementation erweitert um `limits.py`, `locking.py` (transitiver Eager-Loader via `task.py`) und um `worker.py`'s `import aio_pika` (type-only). 10 Public-Surfaces statt geplanten 3 in `_LAZY_SURFACE` aufgenommen, weil `health`/`metrics`/`middleware`/`signals`/`task` transitiv heavy laden.
+- R-4-Ziel `≤ 75 ms` median knapp verfehlt: 100 ms median erreicht (47 % Reduktion), 78 ms best-case (58 %). Substanzielle Verbesserung, aber das 60 %-Ziel war ehrgeizig; weitere Optimierung würde grössere Scope-Änderungen verlangen.
