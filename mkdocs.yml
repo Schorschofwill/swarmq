@@ -117,20 +117,56 @@ markdown_extensions:
 plugins:
   - search:
       separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
-  - llmstxt:
-      full_output: llms-full.txt
-      sections:
-        Introduction:
-          - index.md
-          - getting-started.md
-        Tutorials:
-          - tutorials/*.md
-        How-to guides:
-          - guides/*.md
-        Reference:
-          - reference/*.md
-        Explanation:
-          - explanation/*.md
+  # mkdocs-llmstxt ist aktuell inkompatibel mit mkdocs-static-i18n
+  # (findet i18n-transformierte Dateien nicht). Deaktiviert, solange
+  # zweisprachig gebaut wird. Alternative: post-build Script.
+  # - llmstxt:
+  #     full_output: llms-full.txt
+  #     sections:
+  #       Introduction:
+  #         - index.md
+  #         - getting-started.md
+  - i18n:
+      docs_structure: suffix
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: de
+          name: Deutsch
+          build: true
+          nav_translations:
+            Overview: Überblick
+            Getting Started: Schnellstart
+            Tutorials: Tutorials
+            First email worker: Erster E-Mail-Worker
+            How-to guides: How-to-Guides
+            Defining tasks: Tasks definieren
+            Scheduling and retries: Scheduling und Retries
+            Middleware: Middleware
+            Signals: Signals
+            Rate limiting: Rate-Limiting
+            Locking and deduplication: Locking und Deduplizierung
+            Dead letter queues: Dead-Letter-Queues
+            Hot reload (dev-only): Hot Reload (nur Dev)
+            Testing tasks: Tasks testen
+            Reference: Referenz
+            API: API
+            CLI: CLI
+            Configuration: Konfiguration
+            Error catalog: Fehlerkatalog
+            Changelog: Changelog
+            Agent reference: Agent-Referenz
+            Message formats: Nachrichtenformate
+            Decision trees: Entscheidungsbäume
+            Error catalog (machine): Fehlerkatalog (maschinenlesbar)
+            Explanation: Erläuterungen
+            Architecture: Architektur
+            Delivery semantics: Zustellungssemantik
+            Design decisions: Designentscheidungen
 
 nav:
   - Overview: index.md
@@ -156,6 +192,11 @@ nav:
       - Configuration: reference/configuration.md
       - Error catalog: reference/errors.md
       - Changelog: reference/changelog.md
+      - Agent reference:
+          - reference/agent/index.md
+          - Message formats: reference/agent/message-formats.md
+          - Decision trees: reference/agent/decision-trees.md
+          - Error catalog (machine): reference/agent/error-catalog-machine.md
   - Explanation:
       - explanation/index.md
       - Architecture: explanation/architecture.md
