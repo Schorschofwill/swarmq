@@ -1,6 +1,6 @@
 ---
 title: "feat: E2E Feature-Combinations Test Suite — 31 Combos, Tier-3 Failure-Injection"
-status: ready
+status: implemented
 execution_mode: incremental
 created: 2026-05-26
 origin: docs/brainstorms/2026-05-26-e2e-feature-combinations-requirements.md

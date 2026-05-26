@@ -1,6 +1,6 @@
 # E2E-Tests für Feature-Kombinationen auf einer Task
 
-**Status:** Requirements — bereit für Planung
+**Status:** Implemented via plan 2026-05-26-002 — committed to branch `feat/e2e-feature-combinations` (133 tests across 4 risk-category files + helpers + infrastructure)
 **Datum:** 2026-05-26
 **Owner:** Georg Stricker
 **Scope:** swarmq_v2 — Erweiterung der `tests/e2e/`-Suite
