@@ -12,9 +12,10 @@ sibling classes using the same ``load_script`` + ``register_script`` path.
 from __future__ import annotations
 
 import re
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-import valkey.asyncio as valkey_asyncio
+if TYPE_CHECKING:
+    import valkey.asyncio as valkey_asyncio
 
 from swarmq.lua import load_script
 

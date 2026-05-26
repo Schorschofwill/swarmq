@@ -14,16 +14,16 @@ from collections.abc import Callable
 
 from typing import TYPE_CHECKING
 
-import aio_pika
 import structlog
 
 if TYPE_CHECKING:
+    import aio_pika
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
 
-from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backoff import calculate_backoff
-from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.cancellation import (
     CANCEL_REASON_CANCEL,

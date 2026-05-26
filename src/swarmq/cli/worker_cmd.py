@@ -12,9 +12,6 @@ import argparse
 import importlib
 import os
 
-from swarmq.app import SwarmQ
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ConfigurationError
 from swarmq.task import Task
 
@@ -50,6 +47,13 @@ async def run_worker_async(args: argparse.Namespace) -> None:
             "SWARMQ_BACKEND_URL is not set; export it or pass it via env, "
             "e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0"
         )
+
+    # Lazy-local imports: keep `import swarmq.cli` from pulling the heavy
+    # valkey + aio_pika + swarmq.app chains via this module. Pattern
+    # mirrors ``cli/_shared.py::_backend_from_env``.
+    from swarmq.app import SwarmQ
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
 
     broker = RabbitMQBroker(broker_url)
     backend = ValkeyBackend(backend_url)

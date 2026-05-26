@@ -12,9 +12,11 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from swarmq.broker.rabbitmq import RabbitMQBroker
+if TYPE_CHECKING:
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
 

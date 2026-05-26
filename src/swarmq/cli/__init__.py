@@ -40,7 +40,10 @@ from typing import Any  # noqa: F401
 import msgspec  # noqa: F401
 
 # Submodule imports — the symbols they define become swarmq.cli.* attributes.
-from swarmq.app import SwarmQ  # noqa: F401
+# ``SwarmQ`` is served via the lazy ``__getattr__`` below to avoid pulling
+# in ``swarmq.app`` (and transitively ``swarmq.client`` / ``swarmq.worker``
+# / structlog / asyncio.base_events) on every ``swarmq --help``. The
+# subcommand handlers that actually need ``SwarmQ`` import it locally.
 from swarmq.cli._shared import (
     _DOTTED_IDENTIFIER_RE,
     _FORBIDDEN_WATCH_PREFIXES,
@@ -116,6 +119,7 @@ from swarmq.task import Task  # noqa: F401
 _LAZY_SURFACE: dict[str, tuple[str, str]] = {
     "ValkeyBackend": ("swarmq.backend.valkey", "ValkeyBackend"),
     "RabbitMQBroker": ("swarmq.broker.rabbitmq", "RabbitMQBroker"),
+    "SwarmQ": ("swarmq.app", "SwarmQ"),
 }
 
 

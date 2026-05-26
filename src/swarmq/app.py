@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import _MISSING, Client, _MissingType
+
+if TYPE_CHECKING:
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.worker import Worker
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
@@ -15,7 +18,21 @@ from swarmq.progress import ProgressInfo
 from swarmq.registry import TaskRegistry
 from swarmq.signals import AsyncHandler, Signal, SignalDispatcher
 from swarmq.task import Task
-from swarmq.worker import Worker
+
+
+def __getattr__(name: str) -> object:
+    """PEP-562 lazy resolver — keeps ``Worker`` patchable as
+    ``swarmq.app.Worker`` without eagerly importing it (and the heavy
+    ``aio_pika`` chain it pulls in). Tests that patch
+    ``swarmq.app.Worker`` continue to work; the first access from
+    ``start_worker`` resolves the canonical class.
+    """
+    if name == "Worker":
+        import importlib
+
+        return getattr(importlib.import_module("swarmq.worker"), "Worker")
+    raise AttributeError(f"module 'swarmq.app' has no attribute {name!r}")
+
 
 
 class SwarmQ:
@@ -161,7 +178,13 @@ class SwarmQ:
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
 
     async def start_worker(self) -> None:
-        worker = Worker(
+        # Resolve Worker through the module-level __getattr__ so test
+        # patches like ``mock.patch("swarmq.app.Worker")`` continue to
+        # intercept the construction. A direct lazy-local import would
+        # bind to swarmq.worker.Worker and bypass the facade patch.
+        from swarmq import app as _app_module
+
+        worker = _app_module.Worker(
             self.broker,
             self.backend,
             self.registry,

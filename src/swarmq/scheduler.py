@@ -28,15 +28,18 @@ import socket
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
 import structlog
-import valkey.asyncio as valkey_asyncio
 from croniter import croniter
 
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
+if TYPE_CHECKING:
+    import valkey.asyncio as valkey_asyncio
+
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import LockManager, lock_key

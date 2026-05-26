@@ -8,12 +8,14 @@ import uuid
 import json as _json
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
+if TYPE_CHECKING:
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+
 from swarmq.exceptions import (
     ResultNotReadyError,
     TaskCancelledError,

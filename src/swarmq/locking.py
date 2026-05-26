@@ -13,9 +13,10 @@ handles cache eviction.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import valkey.asyncio as valkey_asyncio
+if TYPE_CHECKING:
+    import valkey.asyncio as valkey_asyncio
 
 from swarmq.exceptions import BackendConnectionError
 from swarmq.lua import load_script

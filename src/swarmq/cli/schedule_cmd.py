@@ -15,11 +15,13 @@ import sys
 import time
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgspec
 
-from swarmq.backend.valkey import ValkeyBackend
+if TYPE_CHECKING:
+    from swarmq.backend.valkey import ValkeyBackend
+
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
