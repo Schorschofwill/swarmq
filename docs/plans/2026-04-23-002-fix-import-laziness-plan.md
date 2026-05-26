@@ -471,8 +471,8 @@ die `sys.modules`-basierten Tests dieses Plans brauchen die globale Laziness.
 - [x] R-3 verifiziert via Test: `from swarmq import ValkeyBackend` Identity erhalten. `TestPublicSurfaceIdentity` grün (3 cases).
 - [ ] R-4 verifiziert via Benchmark: Median ≤ 75 ms (≥ 60 % Reduktion). **Status: knapp verfehlt** — `importtime-cumulative` median 100 ms (46.7 % Reduktion), best-case 78 ms (58 % Reduktion). Plan-Schwelle ehrgeizig; weitere ~25 ms wären nur durch Deferral von `swarmq.exceptions` (load-bearing) oder Stub-Generierung erreichbar — beides Scope-Erweiterungen.
 - [x] R-6 verifiziert: `pytest tests/unit` ≥ 1257 passed / 2 skipped. **Stand: 1264 passed / 2 skipped** (+7 aus Lazy-Tests).
-- [ ] Plan 2026-04-23-001 R-1b-Verweis aktualisiert auf "satisfied via 2026-04-23-002". **TODO follow-up.**
-- [ ] Eintrag in `website/reference/changelog.md` unter "Performance" — bezeichnet die Latency-Reduktion als zero-API-impact-Behaviour-non-Change. **TODO follow-up.**
+- [x] Plan 2026-04-23-001 R-1b-Verweis aktualisiert auf "Satisfied via 2026-04-23-002" (Requirements-Trace-Zeile R-1b in Plan 001 trägt jetzt beide Commit-SHAs und das Reduktions-Ergebnis).
+- [x] Eintrag in `website/reference/changelog.{md,de.md}` unter neuem Abschnitt "Performance" / "Performance" ergänzt — beschreibt die Latency-Reduktion als zero-API-impact-Verbesserung; PEP-562-Pattern und Identity-Erhalt erwähnt.
 
 ## Audit-Trail
 

@@ -6,6 +6,21 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Performance
+
+- **`import swarmq.cli` lädt `valkey` und `aio_pika` nicht mehr eager.**
+  Der Package-Init in `swarmq/__init__.py` und die CLI-Fassade
+  auflösen Public-Surfaces (`SwarmQ`, `ValkeyBackend`,
+  `RabbitMQBroker`, `Metrics`, `HealthChecker`, `Middleware`,
+  `Signal`, `Task` u.a.) jetzt lazy via PEP-562 `__getattr__`. Die
+  Identität bleibt beim ersten Zugriff erhalten — `from swarmq
+  import ValkeyBackend` liefert weiterhin das kanonische Klassen-
+  Objekt, keine API-Änderung für Konsumenten. Median-`importtime`-
+  Cumulative-Latency für `import swarmq.cli` sinkt von ~188 ms auf
+  ~100 ms (Best Case ~78 ms). Betrifft `swarmq --help`,
+  `swarmq worker --check` und jede Agent-Introspektion, die den
+  CLI-Namespace ohne die schweren Backends importiert.
+
 ### Verhaltensänderungen
 
 - **`--format`-Default ist jetzt TTY-bewusst (CLI-04).** Für
