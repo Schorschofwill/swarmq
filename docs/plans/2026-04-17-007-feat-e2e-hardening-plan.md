@@ -1,7 +1,7 @@
 ---
 title: "feat: E2E-Hardening — Full-Spectrum Test-Suite"
 type: feat
-status: planned
+status: implemented
 date: 2026-04-17
 origin: docs/brainstorms/2026-04-17-e2e-hardening-full-spectrum-requirements.md
 ---

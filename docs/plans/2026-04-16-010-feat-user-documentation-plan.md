@@ -1,7 +1,7 @@
 ---
 title: "feat: User Documentation — Content Production"
 type: feat
-status: active
+status: implemented
 date: 2026-04-16
 origin: docs/brainstorms/2026-04-16-user-documentation-requirements.md
 ---

@@ -1,6 +1,6 @@
 ---
 title: "Refactor cli.py — split 1621-LoC monolith into cli/ package"
-status: in_progress
+status: implemented-and-reviewed
 execution_mode: big-bang
 quantification:
   cli_py_touches_last_6mo: 18
