@@ -1,7 +1,7 @@
 ---
 title: "feat: Build benchmark comparison suite — SwarmQ vs. Celery, TaskIQ, Dramatiq"
 type: feat
-status: active
+status: implemented
 date: 2026-04-15
 origin: docs/brainstorms/benchmark-suite-requirements.md
 ---
@@ -523,3 +523,22 @@ sequenceDiagram
 - Related code: `src/swarmq/broker/rabbitmq.py` (queue-type hardcoded)
 - Related code: `tests/e2e/test_roundtrip.py` (Worker-Lifecycle-Pattern)
 - Related learning: `docs/solutions/logic-errors/swarmq-async-semaphore-deadlock-and-error-wrapping-2026-04-15.md`
+
+## Implementation Audit (2026-05-26)
+
+Phase 1 (SwarmQ vs. TaskIQ) vollständig gelandet via Cherry-Pick aus
+`feat/benchmark-comparison-suite` in `main`:
+
+  - `e1642db` infra + queue_type-Param
+  - `730b360` Phase 1 SwarmQ vs TaskIQ
+  - `62db648` import path + TaskIQ-Compat fixes
+  - `452639c` TaskIQ-RabbitMQ-Adapter
+  - `455e59b` --repeat N aggregation (separater Pfad)
+
+`benchmarks/comparison/{runner.py, report.py, scenarios/, systems/, workers/}`
+existieren alle in `main`.
+
+**Phase 2 (Dramatiq/Celery) bewusst nicht angegangen** — kein
+ce-review-Pass für diese Suite, daher `implemented` statt
+`implemented-and-reviewed`. Falls Phase 2 später relevant wird:
+Folge-Plan öffnen.

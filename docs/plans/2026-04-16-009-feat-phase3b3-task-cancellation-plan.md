@@ -1,7 +1,7 @@
 ---
 title: "feat: Phase 3b.3 — Task Cancellation (R3.6)"
 type: feat
-status: active
+status: implemented-and-reviewed
 date: 2026-04-16
 origin: docs/brainstorms/2026-04-16-phase-3b3-task-cancellation-requirements.md
 ---
@@ -1046,3 +1046,17 @@ Broker+Backend). Keine doppelte Abdeckung derselben Flow-Assertion.
 - **Solution — Semaphore/Error-Wrapping:** [docs/solutions/logic-errors/swarmq-async-semaphore-deadlock-and-error-wrapping-2026-04-15.md](../solutions/logic-errors/swarmq-async-semaphore-deadlock-and-error-wrapping-2026-04-15.md)
 - **Recherche — Cancellation-Muster:** [docs/recherche-workflows-cancel-progress.md](../recherche-workflows-cancel-progress.md) §8-9
 - **Roadmap:** [docs/brainstorms/implementation-order-requirements.md](../brainstorms/implementation-order-requirements.md) R3.6
+
+## Implementation Audit (2026-05-26)
+
+Komplette Cancel-API in `main` gelandet, plus dedizierte ce-review-Wave:
+
+  - `src/swarmq/exceptions.py:28` — `TaskCancelledError`
+  - `src/swarmq/signals.py:82` — `Signal.TASK_CANCELLED`
+  - `src/swarmq/config.py:43` — `cancel_poll_interval`
+  - `src/swarmq/backend/valkey.py:244,275` — Backend-Methods
+  - `src/swarmq/cancellation.py` — neues Modul
+  - `src/swarmq/worker.py:1170/1279/1702` — Pre-Start + Monitor
+
+Follow-up Commits aus ce-review-Pass: `52ebbc2`, `2a13e67`, `7893839`,
+`1692907`.

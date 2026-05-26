@@ -1,7 +1,7 @@
 ---
 title: "feat: Phase 3.5 — Unique Tasks / Deduplication (R3.5)"
 type: feat
-status: active
+status: implemented-and-reviewed
 date: 2026-04-17
 origin: docs/brainstorms/2026-04-17-phase3-5-unique-tasks-requirements.md
 ---
@@ -1281,3 +1281,15 @@ grün gegen Dev-Stack (Ports 5673/6380).
   - `src/swarmq/signals.py` (Signal enum, SignalDispatcher)
   - `src/swarmq/task.py` (TaskInfo, _RESERVED_RUN_PARAM_NAMES)
   - `src/swarmq/lua/lock_release.lua` (Lua-Release-Vorlage)
+
+## Implementation Audit (2026-05-26)
+
+Phase 3.5 gemerged in `main` (Merge-Commit `93f576f`), Code-Belege:
+
+  - `src/swarmq/lua/unique_release.lua` vorhanden
+  - `src/swarmq/signals.py:42` — `Signal.TASK_DUPLICATE_DETECTED`
+  - `src/swarmq/backend/valkey.py:34,81` — `_unique_release_script`
+  - `tests/e2e/test_unique_tasks.py` existiert
+
+Unit-Commits: `9fd2717` (U4+U5), `55f967a` (U10+U11). Ce-review-Sweeps:
+`5dcb10f` (batches 1-4), `43debd7` (5-6), `a296808` (safe_auto).
