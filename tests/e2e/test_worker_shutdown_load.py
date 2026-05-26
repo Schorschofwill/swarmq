@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -36,6 +35,13 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
+from tests.e2e.combinations._subprocess import (
+    ensure_fixture_registered as _ensure_fixture_registered_base,
+    kill_subprocess as _kill_subprocess,
+    port_open as _port_open,
+    spawn_worker as _spawn_worker_base,
+    wait_for_worker_started as _wait_for_worker_started,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,14 +52,6 @@ _VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
 
 _BROKER_URL = f"amqp://guest:guest@{_RABBITMQ_HOST}:{_RABBITMQ_PORT}/"
 _BACKEND_URL = f"valkey://{_VALKEY_HOST}:{_VALKEY_PORT}/0"
-
-
-def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
 
 
 pytestmark = [
@@ -81,23 +79,18 @@ def _cleanup_tasks():
     Task._clear_registered_tasks()
 
 
-def _ensure_fixture_registered(queue: str) -> None:
-    """Register the fixture tasks in *this* process so ``schedule()``
-    sees them. ``Task._registered_tasks`` is cleared between tests, so
-    re-import via ``importlib.reload`` is needed — a plain ``import``
-    hits the module cache and skips ``__init_subclass__``."""
-    import importlib
+_FIXTURE_MODULE = "tests.e2e._shutdown_fixture_tasks"
 
-    os.environ["CLI_TEST_QUEUE"] = queue
-    mod_name = "tests.e2e._shutdown_fixture_tasks"
-    if mod_name in sys.modules:
-        importlib.reload(sys.modules[mod_name])
-    else:
-        importlib.import_module(mod_name)
+
+def _ensure_fixture_registered(queue: str) -> None:
+    """Thin wrapper preserving the original positional signature; delegates to
+    ``tests.e2e.combinations._subprocess.ensure_fixture_registered`` with the
+    shutdown-suite fixture module bound."""
+    _ensure_fixture_registered_base(_FIXTURE_MODULE, queue=queue)
 
 
 # ---------------------------------------------------------------------------
-# Subprocess worker helpers
+# Subprocess worker helpers — thin wrappers around shared combinations._subprocess
 # ---------------------------------------------------------------------------
 
 
@@ -107,61 +100,16 @@ def _spawn_worker(
     concurrency: int = 4,
     env_extra: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
-    """Launch ``swarmq.cli worker`` as a subprocess against the real
-    broker/backend. Returns the Popen object with stdout as text."""
-    env = dict(os.environ)
-    env["SWARMQ_BROKER_URL"] = _BROKER_URL
-    env["SWARMQ_BACKEND_URL"] = _BACKEND_URL
-    env["CLI_TEST_QUEUE"] = queue_name
-    env["PYTHONUNBUFFERED"] = "1"
-    if env_extra:
-        env.update(env_extra)
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m", "swarmq.cli",
-            "worker",
-            "--module", "tests.e2e._shutdown_fixture_tasks",
-            "--queues", queue_name,
-            "--concurrency", str(concurrency),
-            "--log-format", "json",
-        ],
-        cwd=str(REPO_ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    """Launch the shutdown-suite worker. Backward-compat shim: matches the
+    original signature, hard-codes broker/backend URLs and fixture module."""
+    return _spawn_worker_base(
+        queue_name,
+        fixture_module=_FIXTURE_MODULE,
+        broker_url=_BROKER_URL,
+        backend_url=_BACKEND_URL,
+        concurrency=concurrency,
+        env_extra=env_extra,
     )
-
-
-def _wait_for_worker_started(proc: subprocess.Popen[str], timeout: float = 30.0) -> None:
-    """Block until the worker emits ``worker_started`` on stdout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        line = proc.stdout.readline() if proc.stdout else ""
-        if not line:
-            if proc.poll() is not None:
-                raise RuntimeError(
-                    f"worker exited before starting; rc={proc.returncode}"
-                )
-            continue
-        if "worker_started" in line:
-            return
-    raise TimeoutError("worker did not emit worker_started in time")
-
-
-def _kill_subprocess(proc: subprocess.Popen[str]) -> None:
-    """Defensive teardown — caller already signaled the worker, this
-    ensures no orphan on assertion failure."""
-    if proc.poll() is None:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
 
 
 # ---------------------------------------------------------------------------
