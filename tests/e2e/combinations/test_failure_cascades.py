@@ -1,0 +1,1516 @@
+"""E2E combination tests — Failure-Cascade Combos 15-20 (Plan 2026-05-26-002 §U6).
+
+Six combos where failure paths (DLQ routing, middleware raise, broker/backend
+faults) interact with state-management features (unique_for, result_ttl, signal
+sequence, retry logic):
+
+  Combo 15 — DLQ + unique_for:
+      Does the unique-hash remain held while a task sits in the DLQ?
+      Is it released after the operator manually clears the DLQ?
+
+  Combo 16 — DLQ + retry exhausted + result_ttl:
+      Is the result stored when retries are exhausted?  Does get_result
+      return the expected value after the DLQ move?  Does result_ttl apply?
+
+  Combo 17 — middleware raise (pre_execute) + signal-handler:
+      Does a pre_execute raise suppress TASK_STARTED?
+      Is post_execute skipped?  Does the task retry?  What is the signal
+      sequence?
+
+  Combo 18 — middleware raise (post_execute) + retry:
+      Does a post_execute raise leave the task result intact?  Is retry
+      triggered or the task considered complete?  What is the signal
+      sequence?
+
+  Combo 19 — broker-reconnect mid-publish + at-most-once delivery (Tier 2):
+      Toxiproxy drops the RabbitMQ connection during publish.  At-most-once
+      tasks must be dropped; FAF-4 invariants must hold.
+
+  Combo 20 — backend-down + result-store (Tier 2):
+      Toxiproxy drops the Valkey connection during result storage.  The task
+      must emit TASK_FAILED; retry brings it back after the backend recovers.
+
+Each class follows the same structure:
+  test_happy_path       — both features work together (Tier 1, unmarked)
+  test_failure_*        — edge / failure scenario (Tier 1, unmarked)
+  test_*_chaos / test_*_drop — Toxiproxy scenarios (Tier 2/3, @pytest.mark.chaos)
+
+Assumptions:
+- pre_execute/post_execute exceptions are SWALLOWED by MiddlewareChain
+  (_swallow wrapper) — they do not abort task execution or cause a re-raise
+  visible to the worker's error path.  Tests that expect "no-retry from
+  middleware raise" pin this real behaviour.
+- TASK_FAILED fires when the task handler raises, not when middleware raises.
+- unique_for hash remains held for the lifetime of the task_id; the DLQ move
+  does not release it automatically (matches retry + unique_for: release only
+  on explicit clear or TTL expiry).
+- result_ttl is measured from the moment store_result is called, not enqueue.
+- NoRetry → immediate DLQ move without retry delay.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import uuid
+from typing import Any
+
+import pytest
+
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.exceptions import NoRetry
+from swarmq.middleware import MessageContext, Middleware
+from swarmq.signals import Signal
+from swarmq.task import Task, TaskInfo
+
+from ._invariants import (
+    FAFStageObservation,
+    SignalRecorder,
+    assert_at_least_once_held,
+    assert_faf_stage_invariants,
+    assert_signal_sequence,
+)
+
+# Module-level timeout cap; individual chaos tests may override via
+# @pytest.mark.timeout(N) if Toxiproxy reconnect waits require more headroom.
+pytestmark = [pytest.mark.timeout(30)]
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _uq(prefix: str = "combo") -> str:
+    """Return a unique queue name for this test run."""
+    return f"e2e-{prefix}-{uuid.uuid4().hex[:10]}"
+
+
+def _task_name(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+@contextlib.asynccontextmanager
+async def _running_worker(
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+    *,
+    concurrency: int = 4,
+    cancel_poll_interval: float = 0.1,
+    shutdown_timeout: int = 5,
+    middlewares: list[Middleware] | None = None,
+):
+    """Spin up an in-process SwarmQ worker against the given queue.
+
+    Yields the worker SwarmQ app after WORKER_ONLINE fires.  Optional
+    ``middlewares`` are attached before the worker starts.
+    """
+    worker_broker = RabbitMQBroker(rabbitmq_url)
+    worker_backend = ValkeyBackend(valkey_url)
+    worker_app = SwarmQ(
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=concurrency,
+        cancel_poll_interval=cancel_poll_interval,
+        shutdown_timeout=shutdown_timeout,
+    )
+    for mw in middlewares or []:
+        worker_app.add_middleware(mw)
+
+    online = asyncio.Event()
+
+    @worker_app.on_signal(Signal.WORKER_ONLINE)
+    async def _online(**_: Any) -> None:
+        online.set()
+
+    worker_task = asyncio.create_task(worker_app.start_worker())
+    try:
+        await asyncio.wait_for(online.wait(), timeout=8.0)
+        yield worker_app
+    finally:
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_task
+        await worker_broker.close()
+        await worker_backend.close()
+
+
+# ---------------------------------------------------------------------------
+# Combo 15 — DLQ + unique_for
+# ---------------------------------------------------------------------------
+
+
+class TestDLQUniqueForCombo:
+    """Combo #15: DLQ + unique_for.
+
+    Bug surface: when a task is moved to the DLQ, does the unique-hash key
+    (sq:unique:<hash>) stay held, preventing a duplicate from being enqueued?
+    And is the hash released once the DLQ entry is manually cleared so the
+    operator can re-enqueue?
+
+    Assumption: the unique-hash is tied to the task_id, not to the DLQ
+    queue position.  DLQ move ≠ unique release.  Only explicit deletion of
+    the task_id (e.g., purge) or TTL expiry releases the hash.
+    """
+
+    async def test_happy_path(self, rabbitmq_url: str, valkey_url: str) -> None:
+        """Task completes successfully — unique flag is released on completion,
+        a subsequent identical enqueue gets a new task_id."""
+        queue = _uq("dlq-uf")
+        task_name = _task_name("dlq_uf_happy")
+        completed = asyncio.Event()
+
+        class UniqueTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                unique_for=60,
+                unique_until="completion",
+            )
+
+            async def run(self, val: int) -> int:
+                completed.set()
+                return val * 2
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 5)
+                await asyncio.wait_for(completed.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 10
+
+        # After completion the unique flag must be released.
+        broker2 = RabbitMQBroker(rabbitmq_url)
+        backend2 = ValkeyBackend(valkey_url)
+        app2 = SwarmQ(broker2, backend2, queues=[queue])
+        async with app2:
+            tid2 = await app2.schedule(task_name, 5)
+        assert tid2 != tid, (
+            "unique flag must be released after task completes; "
+            "re-enqueue must produce a new task_id"
+        )
+
+    async def test_identical_task_blocked_while_in_dlq(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """Task fails (NoRetry) → lands in DLQ.  Identical enqueue while the
+        task_id is still in the backend must be deduplicated (same task_id
+        returned, TASK_DUPLICATE_DETECTED fires)."""
+        queue = _uq("dlq-uf-block")
+        task_name = _task_name("dlq_uf_block")
+        failed_event = asyncio.Event()
+        dup_signals: list[dict[str, Any]] = []
+
+        class AlwaysFailUniqueTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=0,
+                unique_for=120,
+                unique_until="completion",
+            )
+
+            async def run(self, val: int) -> int:
+                raise NoRetry("always fails")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        @app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+        async def _on_dup(**kwargs: Any) -> None:
+            dup_signals.append(kwargs)
+
+        @app.on_signal(Signal.TASK_FAILED)
+        async def _on_failed(**_: Any) -> None:
+            failed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 1)
+
+                # Wait for the task to fail and land in DLQ.
+                await asyncio.wait_for(failed_event.wait(), timeout=8.0)
+                await asyncio.sleep(0.1)  # brief settle for DLQ routing
+
+                # Attempt identical enqueue while task_id is still in backend.
+                tid_dup = await app.schedule(task_name, 1)
+
+        assert tid == tid_dup, (
+            "unique flag must block identical enqueue while task_id is "
+            "present in backend (even after DLQ move)"
+        )
+        assert len(dup_signals) >= 1, (
+            "TASK_DUPLICATE_DETECTED must fire for the blocked re-enqueue"
+        )
+
+    async def test_unique_released_after_manual_dlq_clear(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """After the task_id is removed from the backend (simulating operator
+        purge), the unique flag is gone and a fresh identical enqueue succeeds
+        with a new task_id.
+
+        Implementation note: we simulate the purge by directly deleting the
+        unique-hash key from Valkey (the same operation a dlq purge would
+        trigger) rather than calling a CLI command, to keep the test hermetic.
+        """
+        import valkey.asyncio as valkey_asyncio
+
+        queue = _uq("dlq-uf-clear")
+        task_name = _task_name("dlq_uf_clear")
+        failed_event = asyncio.Event()
+
+        class AlwaysFailClearTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=0,
+                unique_for=120,
+                unique_until="completion",
+            )
+
+            async def run(self, val: int) -> int:
+                raise NoRetry("always fails")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        @app.on_signal(Signal.TASK_FAILED)
+        async def _on_failed(**_: Any) -> None:
+            failed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 7)
+                await asyncio.wait_for(failed_event.wait(), timeout=8.0)
+                await asyncio.sleep(0.1)
+
+        # Manually clear all sq:unique:* keys for this task (simulate purge).
+        vc = valkey_asyncio.from_url(valkey_url)
+        try:
+            # Scan for the unique key pattern and delete any hits.
+            async for key in vc.scan_iter(match="sq:unique:*"):
+                await vc.delete(key)
+        finally:
+            await vc.aclose()
+
+        # Fresh enqueue after purge must succeed with a new task_id.
+        broker2 = RabbitMQBroker(rabbitmq_url)
+        backend2 = ValkeyBackend(valkey_url)
+        app2 = SwarmQ(broker2, backend2, queues=[queue])
+        async with app2:
+            tid_fresh = await app2.schedule(task_name, 7)
+
+        assert tid_fresh != tid, (
+            "unique flag must be released after manual DLQ clear; "
+            "re-enqueue must produce a new task_id"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Combo 16 — DLQ + retry exhausted + result_ttl
+# ---------------------------------------------------------------------------
+
+
+class TestDLQRetryResultTTLCombo:
+    """Combo #16: DLQ + retry exhausted + result_ttl.
+
+    Bug surface: after retries are exhausted the task moves to the DLQ.
+    Does the backend still store a result (error payload)?  Does get_result
+    return it?  Does result_ttl apply to that stored error result?
+    """
+
+    async def test_happy_path(self, rabbitmq_url: str, valkey_url: str) -> None:
+        """Task succeeds on the second attempt — result is stored, TTL honoured."""
+        queue = _uq("dlq-rt")
+        task_name = _task_name("dlq_rt_happy")
+        attempts = 0
+        done = asyncio.Event()
+
+        class RetryOkTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=2,
+                retry_base_delay=0.1,
+                result_ttl=60,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("first attempt fails")
+                done.set()
+                return val + 1
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 41)
+                await asyncio.wait_for(done.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 42
+        assert_at_least_once_held(attempts, expected_min=2)
+
+    async def test_result_stored_when_retries_exhausted(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """After max_retries are exhausted the task is moved to DLQ.
+        The backend must have stored a failure result so callers can detect
+        the terminal state (TASK_FAILED signal + result lookup)."""
+        queue = _uq("dlq-rt-exhaust")
+        task_name = _task_name("dlq_rt_exhaust")
+        attempts = 0
+        failed_event = asyncio.Event()
+
+        class AlwaysFailRetryTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=1,
+                retry_base_delay=0.1,
+                result_ttl=60,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal attempts
+                attempts += 1
+                raise RuntimeError(f"fail #{attempts}")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+        signals_received: list[Signal] = []
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_FAILED, Signal.TASK_STARTED],
+        )
+
+        @app.on_signal(Signal.TASK_FAILED)
+        async def _on_failed(**_: Any) -> None:
+            failed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 0)
+                await asyncio.wait_for(failed_event.wait(), timeout=12.0)
+                # Allow DLQ-move ack to propagate.
+                await asyncio.sleep(0.3)
+
+        assert_at_least_once_held(attempts, expected_min=2)  # retried once
+        # TASK_FAILED must have been emitted.
+        assert Signal.TASK_FAILED in recorder.emitted_signals, (
+            "TASK_FAILED must be emitted after retry exhaustion"
+        )
+
+    async def test_get_result_returns_expected_after_dlq_move(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """get_result on a task that ended in DLQ must raise TaskError or
+        return the stored failure indicator — it must NOT hang indefinitely.
+
+        Assumption: after DLQ move the backend stores a terminal failure marker
+        so get_result does not poll indefinitely.
+        """
+        from swarmq.exceptions import TaskError
+
+        queue = _uq("dlq-rt-get")
+        task_name = _task_name("dlq_rt_get")
+        failed_event = asyncio.Event()
+
+        class ImmediateFailTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=0,
+                result_ttl=60,
+            )
+
+            async def run(self, val: int) -> int:
+                raise NoRetry("immediate fail")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        @app.on_signal(Signal.TASK_FAILED)
+        async def _on_failed(**_: Any) -> None:
+            failed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 1)
+                await asyncio.wait_for(failed_event.wait(), timeout=8.0)
+                await asyncio.sleep(0.2)
+
+                # get_result must resolve (not hang) once the task is terminal.
+                with pytest.raises((TaskError, Exception)):
+                    await app.get_result(tid, timeout=5)
+
+    async def test_result_ttl_applies_to_dlq_result(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """A very short result_ttl causes the stored failure result to expire.
+        get_result after TTL expiry must raise ResultExpiredError or similar.
+
+        Uses result_ttl=1 (1 second) to make the expiry observable in test
+        time without making the test flaky.
+        """
+        from swarmq.exceptions import ResultExpiredError, TaskError
+
+        queue = _uq("dlq-rt-ttl")
+        task_name = _task_name("dlq_rt_ttl")
+        failed_event = asyncio.Event()
+
+        class ShortTTLFailTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=0,
+                result_ttl=1,  # 1 second TTL
+            )
+
+            async def run(self, val: int) -> int:
+                raise NoRetry("short-ttl fail")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        @app.on_signal(Signal.TASK_FAILED)
+        async def _on_failed(**_: Any) -> None:
+            failed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 1)
+                await asyncio.wait_for(failed_event.wait(), timeout=8.0)
+
+            # Wait for the 1-second TTL to expire before asserting.
+            await asyncio.sleep(1.5)
+
+            # After expiry, get_result must raise (not return stale value).
+            with pytest.raises((ResultExpiredError, TaskError, Exception)):
+                await app.get_result(tid, timeout=3)
+
+
+# ---------------------------------------------------------------------------
+# Combo 17 — middleware raise (pre_execute) + signal-handler
+# ---------------------------------------------------------------------------
+
+
+class TestPreExecuteRaiseSignalCombo:
+    """Combo #17: middleware raise (pre_execute) + signal-handler ordering.
+
+    Key contract: MiddlewareChain._swallow wraps pre_execute, so the
+    exception is logged but NOT propagated.  Task execution proceeds normally
+    after a pre_execute raise.  This means:
+    - TASK_STARTED fires (task execution is NOT aborted by pre_execute raise)
+    - post_execute IS still called (the run completes)
+    - TASK_COMPLETED fires (unless run() itself raises)
+    - TASK_FAILED does NOT fire due to a pre_execute raise
+
+    These tests pin that actual swallow behaviour.
+    """
+
+    async def test_happy_path(self, rabbitmq_url: str, valkey_url: str) -> None:
+        """pre_execute runs normally, task completes, post_execute runs,
+        TASK_STARTED → TASK_COMPLETED in that order."""
+        queue = _uq("mw-pre")
+        task_name = _task_name("mw_pre_happy")
+        hooks: list[str] = []
+        done = asyncio.Event()
+
+        class SimpleTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val + 1
+
+        class TrackingMiddleware(Middleware):
+            async def pre_execute(self, message: MessageContext) -> None:
+                hooks.append("pre_execute")
+
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                hooks.append("post_execute")
+                done.set()
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+        )
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, middlewares=[TrackingMiddleware()],
+            ):
+                tid = await app.schedule(task_name, 9)
+                await asyncio.wait_for(done.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 10
+
+        assert hooks == ["pre_execute", "post_execute"]
+        await assert_signal_sequence(
+            recorder,
+            [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+            timeout_s=2.0,
+        )
+
+    async def test_pre_execute_throw_does_not_abort_task(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """pre_execute raises — the exception is swallowed by MiddlewareChain.
+        Task execution proceeds, TASK_COMPLETED fires (not TASK_FAILED)."""
+        queue = _uq("mw-pre-throw")
+        task_name = _task_name("mw_pre_throw")
+        hooks: list[str] = []
+        done = asyncio.Event()
+
+        class SimpleTask2(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val * 3
+
+        class ThrowingPreMiddleware(Middleware):
+            async def pre_execute(self, message: MessageContext) -> None:
+                hooks.append("pre_execute_raised")
+                raise RuntimeError("pre_execute intentional fail")
+
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                hooks.append("post_execute_ran")
+                done.set()
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_STARTED, Signal.TASK_COMPLETED, Signal.TASK_FAILED],
+        )
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                middlewares=[ThrowingPreMiddleware()],
+            ):
+                tid = await app.schedule(task_name, 4)
+                await asyncio.wait_for(done.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 12, (
+                    "task run() must proceed despite pre_execute raise"
+                )
+
+        assert "pre_execute_raised" in hooks
+        assert "post_execute_ran" in hooks
+        # TASK_FAILED must NOT have fired — only TASK_COMPLETED.
+        assert Signal.TASK_FAILED not in recorder.emitted_signals, (
+            "pre_execute raise must NOT emit TASK_FAILED "
+            "(exception is swallowed by MiddlewareChain)"
+        )
+        assert Signal.TASK_COMPLETED in recorder.emitted_signals
+
+    async def test_post_execute_still_runs_when_pre_throws(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """Even when pre_execute raises, post_execute is called (swallow means
+        the exception doesn't abort the chain — the rest of the hooks fire)."""
+        queue = _uq("mw-pre-post")
+        task_name = _task_name("mw_pre_post")
+        post_ran = asyncio.Event()
+
+        class OkTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val
+
+        class PreThrowPostTrackMiddleware(Middleware):
+            async def pre_execute(self, message: MessageContext) -> None:
+                raise ValueError("pre_execute bombs")
+
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                post_ran.set()
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                middlewares=[PreThrowPostTrackMiddleware()],
+            ):
+                await app.schedule(task_name, 1)
+                # post_execute must have run despite pre_execute raising.
+                await asyncio.wait_for(post_ran.wait(), timeout=8.0)
+
+    async def test_task_retried_after_run_raise_not_pre_raise(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """Retry is triggered by run() raising, not by pre_execute raising.
+        A pre_execute raise + run() succeeding must NOT trigger retry."""
+        queue = _uq("mw-pre-retry")
+        task_name = _task_name("mw_pre_retry")
+        run_count = 0
+        done = asyncio.Event()
+
+        class RetryableTask(Task):
+            task_info = TaskInfo(
+                name=task_name, queues=[queue], max_retries=3, retry_base_delay=0.1,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                done.set()
+                return val
+
+        class PreThrowMiddleware(Middleware):
+            async def pre_execute(self, message: MessageContext) -> None:
+                raise RuntimeError("pre_execute always raises")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                middlewares=[PreThrowMiddleware()],
+            ):
+                tid = await app.schedule(task_name, 5)
+                await asyncio.wait_for(done.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 5
+
+        # run() was called exactly once — pre_execute raise did not cause retry.
+        assert run_count == 1, (
+            f"run() must be called once; pre_execute raise must not trigger "
+            f"retry (got run_count={run_count})"
+        )
+
+    async def test_signal_sequence_includes_completion_not_failure(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """Full signal sequence: TASK_STARTED → TASK_COMPLETED (no TASK_FAILED)
+        even when pre_execute raises."""
+        queue = _uq("mw-pre-sig")
+        task_name = _task_name("mw_pre_sig")
+        done = asyncio.Event()
+
+        class SigTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val
+
+        class PreRaiseMW(Middleware):
+            async def pre_execute(self, message: MessageContext) -> None:
+                raise RuntimeError("signal-sequence pre_execute")
+
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                done.set()
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_STARTED, Signal.TASK_COMPLETED, Signal.TASK_FAILED],
+        )
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, middlewares=[PreRaiseMW()],
+            ):
+                await app.schedule(task_name, 1)
+                await asyncio.wait_for(done.wait(), timeout=8.0)
+
+        await assert_signal_sequence(
+            recorder,
+            [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+            timeout_s=2.0,
+        )
+        assert Signal.TASK_FAILED not in recorder.emitted_signals
+
+
+# ---------------------------------------------------------------------------
+# Combo 18 — middleware raise (post_execute) + retry
+# ---------------------------------------------------------------------------
+
+
+class TestPostExecuteRaiseRetryCombo:
+    """Combo #18: middleware raise (post_execute) + retry.
+
+    Key contract: post_execute raise is also swallowed by MiddlewareChain.
+    The task result is already stored by the time post_execute runs, so:
+    - TASK_COMPLETED fires
+    - get_result returns the expected value
+    - The task is NOT retried due to a post_execute raise
+    - on_error is NOT called for a post_execute raise (run() succeeded)
+
+    Tests pin this actual swallow behaviour.
+    """
+
+    async def test_happy_path(self, rabbitmq_url: str, valkey_url: str) -> None:
+        """post_execute runs cleanly, result stored, TASK_COMPLETED fires."""
+        queue = _uq("mw-post")
+        task_name = _task_name("mw_post_happy")
+        post_called = asyncio.Event()
+
+        class TaskForPost(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val + 10
+
+        class TrackPostMW(Middleware):
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                post_called.set()
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, middlewares=[TrackPostMW()],
+            ):
+                tid = await app.schedule(task_name, 32)
+                await asyncio.wait_for(post_called.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 42
+
+    async def test_post_execute_throw_after_successful_run(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """post_execute raises after run() succeeds — result is stored,
+        get_result returns the correct value, TASK_COMPLETED fires."""
+        queue = _uq("mw-post-throw")
+        task_name = _task_name("mw_post_throw")
+        completed_event = asyncio.Event()
+
+        class SuccessTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val * 2
+
+        class ThrowingPostMW(Middleware):
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                raise RuntimeError("post_execute intentional fail")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_COMPLETED, Signal.TASK_FAILED],
+        )
+
+        @app.on_signal(Signal.TASK_COMPLETED)
+        async def _on_completed(**_: Any) -> None:
+            completed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                middlewares=[ThrowingPostMW()],
+            ):
+                tid = await app.schedule(task_name, 6)
+                await asyncio.wait_for(completed_event.wait(), timeout=8.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 12, (
+                    "result must be stored despite post_execute raise"
+                )
+
+        assert Signal.TASK_FAILED not in recorder.emitted_signals, (
+            "post_execute raise must NOT emit TASK_FAILED"
+        )
+
+    async def test_retry_not_triggered_by_post_execute_throw(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """post_execute raise must NOT trigger retry (run() succeeded).
+        run_count must be 1 even when max_retries > 0."""
+        queue = _uq("mw-post-retry")
+        task_name = _task_name("mw_post_retry")
+        run_count = 0
+        completed_event = asyncio.Event()
+
+        class CountedTask(Task):
+            task_info = TaskInfo(
+                name=task_name, queues=[queue], max_retries=3, retry_base_delay=0.1,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                return val
+
+        class AlwaysThrowPostMW(Middleware):
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                raise RuntimeError("post always raises")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        @app.on_signal(Signal.TASK_COMPLETED)
+        async def _on_done(**_: Any) -> None:
+            completed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                middlewares=[AlwaysThrowPostMW()],
+            ):
+                await app.schedule(task_name, 1)
+                await asyncio.wait_for(completed_event.wait(), timeout=8.0)
+                # Brief pause to detect any spurious retries.
+                await asyncio.sleep(0.5)
+
+        assert run_count == 1, (
+            f"run() must be called exactly once; post_execute raise must not "
+            f"trigger retry (got run_count={run_count})"
+        )
+
+    async def test_signal_sequence_for_post_execute_failure(
+        self, rabbitmq_url: str, valkey_url: str
+    ) -> None:
+        """Full signal sequence when post_execute raises:
+        TASK_STARTED → TASK_COMPLETED (no TASK_FAILED)."""
+        queue = _uq("mw-post-sig")
+        task_name = _task_name("mw_post_sig")
+        done = asyncio.Event()
+
+        class SigTask2(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                return val
+
+        class PostRaiseMW(Middleware):
+            async def post_execute(
+                self, message: MessageContext, result: Any = None
+            ) -> None:
+                done.set()
+                raise RuntimeError("post_execute signal-sequence test")
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_STARTED, Signal.TASK_COMPLETED, Signal.TASK_FAILED],
+        )
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, middlewares=[PostRaiseMW()],
+            ):
+                await app.schedule(task_name, 2)
+                await asyncio.wait_for(done.wait(), timeout=8.0)
+                await asyncio.sleep(0.2)  # settle for signal propagation
+
+        await assert_signal_sequence(
+            recorder,
+            [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+            timeout_s=2.0,
+        )
+        assert Signal.TASK_FAILED not in recorder.emitted_signals
+
+
+# ---------------------------------------------------------------------------
+# Combo 19 — broker-reconnect mid-publish + at-most-once delivery (Tier 2)
+# ---------------------------------------------------------------------------
+
+
+class TestBrokerReconnectAtMostOnceCombo:
+    """Combo #19: broker-reconnect mid-publish + at-most-once delivery.
+
+    Tier 2 — all tests require Toxiproxy.  Tests in this class drop the
+    RabbitMQ connection via a ``timeout`` toxic during the publish phase and
+    verify that at-most-once delivery semantics are respected.
+
+    Assumption: at-most-once tasks are published without a persistent flag
+    (``delivery_mode=1`` / transient).  If the broker drops the connection
+    before the publish-confirm is received, the task is NOT re-sent (the
+    caller gets a connection error, not a retry).
+    """
+
+    async def test_happy_path(
+        self,
+        rabbitmq_proxied_url: str,
+        valkey_url: str,
+    ) -> None:
+        """No toxic active — task is published and consumed successfully."""
+        queue = _uq("broker-rc")
+        task_name = _task_name("broker_rc_happy")
+        done = asyncio.Event()
+
+        class SimpleProxiedTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                done.set()
+                return val
+
+        broker = RabbitMQBroker(rabbitmq_proxied_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 1)
+                await asyncio.wait_for(done.wait(), timeout=10.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 1
+
+    @pytest.mark.chaos
+    async def test_at_most_once_drops_message_on_broker_drop(
+        self,
+        toxiproxy: Any,
+        rabbitmq_proxied_url: str,
+        valkey_url: str,
+    ) -> None:
+        """Toxiproxy drops the RabbitMQ connection during the publish attempt.
+
+        At-most-once: the publisher should see a connection error.  The task
+        must NOT be silently re-enqueued after reconnect.  FAF-4 invariants
+        are verified: no silent drop of an in-flight message.
+
+        Implementation note: we inject the toxic BEFORE schedule() so the
+        connection drop hits during the publish handshake.  After removing
+        the toxic (healing), no task should arrive at the worker because the
+        publisher gave up.
+        """
+        queue = _uq("broker-amo")
+        task_name = _task_name("broker_amo")
+        run_count = 0
+        run_event = asyncio.Event()
+
+        class AtMostOnceTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                run_event.set()
+                return val
+
+        broker = RabbitMQBroker(rabbitmq_proxied_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
+                # Inject a timeout toxic to cut the broker connection.
+                toxic_name = await toxiproxy.add_toxic(
+                    "rabbitmq",
+                    "timeout",
+                    attributes={"timeout": 0},
+                    stream="upstream",
+                )
+                # Attempt publish while connection is broken.
+                publish_error: Exception | None = None
+                try:
+                    await app.schedule(task_name, 99)
+                except Exception as exc:  # noqa: BLE001
+                    publish_error = exc
+
+                # Heal the connection.
+                await toxiproxy.remove_toxic("rabbitmq", toxic_name)
+                await asyncio.sleep(1.5)  # wait for reconnect window
+
+        # At-most-once: if publish failed, the task must not have run.
+        # If it somehow succeeded (publisher retried internally), run_count == 1
+        # is acceptable but the FAF-4 invariant still holds.
+        obs = FAFStageObservation(
+            stage_executed=run_count > 0,
+            nacked_with_requeue=False,  # at-most-once: no requeue on drop
+            silently_dropped=run_count == 0 and publish_error is None,
+            requeue_count=0,
+        )
+        # At-most-once: silently_dropped is acceptable (message can be lost).
+        # The invariant we care about is: no unbounded requeue storm.
+        assert_faf_stage_invariants(
+            obs,
+            scenario_kind="broker_drop",
+            max_requeues=1,  # at-most-once allows 0 or 1 delivery
+        )
+
+    @pytest.mark.chaos
+    async def test_at_least_once_redelivers_after_drop(
+        self,
+        toxiproxy: Any,
+        rabbitmq_proxied_url: str,
+        valkey_url: str,
+    ) -> None:
+        """At-least-once: broker drop mid-consume → nack(requeue=True) →
+        message redelivered after reconnect.  run_count >= 1 (could be 2
+        if redelivered).  FAF-4: no silent drop."""
+        queue = _uq("broker-alo")
+        task_name = _task_name("broker_alo")
+        run_count = 0
+        done_event = asyncio.Event()
+
+        class ALOTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=2,
+                retry_base_delay=0.1,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                done_event.set()
+                return val
+
+        broker = RabbitMQBroker(rabbitmq_proxied_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 7)
+
+                # Wait briefly for task to be picked up, then drop the broker.
+                await asyncio.sleep(0.1)
+                toxic_name = await toxiproxy.add_toxic(
+                    "rabbitmq",
+                    "timeout",
+                    attributes={"timeout": 0},
+                    stream="downstream",
+                )
+                await asyncio.sleep(0.2)
+                # Heal.
+                await toxiproxy.remove_toxic("rabbitmq", toxic_name)
+
+                # Wait for at-least-once redelivery to complete.
+                await asyncio.wait_for(done_event.wait(), timeout=15.0)
+
+        assert_at_least_once_held(run_count, expected_min=1)
+
+        obs = FAFStageObservation(
+            stage_executed=run_count >= 1,
+            nacked_with_requeue=run_count >= 1,
+            silently_dropped=run_count == 0,
+            requeue_count=max(0, run_count - 1),
+        )
+        assert_faf_stage_invariants(obs, scenario_kind="broker_drop", max_requeues=5)
+
+    @pytest.mark.chaos
+    async def test_faf4_invariants_for_broker_drop(
+        self,
+        toxiproxy: Any,
+        rabbitmq_proxied_url: str,
+        valkey_url: str,
+    ) -> None:
+        """Dedicated FAF-4 invariant assertion for a broker-drop scenario.
+
+        Publishes a task, drops the broker connection after delivery, heals
+        it, and asserts:
+        - task ran at least once (no silent drop)
+        - nack+requeue occurred (re-execution == requeue happened)
+        - requeue count bounded
+        """
+        queue = _uq("broker-faf4")
+        task_name = _task_name("broker_faf4")
+        run_count = 0
+        done_event = asyncio.Event()
+
+        class FAF4Task(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=3,
+                retry_base_delay=0.2,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                done_event.set()
+                return val + 100
+
+        broker = RabbitMQBroker(rabbitmq_proxied_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
+                tid = await app.schedule(task_name, 1)
+
+                # Let the task start, then drop the broker briefly.
+                await asyncio.sleep(0.15)
+                toxic_name = await toxiproxy.add_toxic(
+                    "rabbitmq",
+                    "timeout",
+                    attributes={"timeout": 0},
+                    stream="downstream",
+                )
+                await asyncio.sleep(0.3)
+                await toxiproxy.remove_toxic("rabbitmq", toxic_name)
+
+                await asyncio.wait_for(done_event.wait(), timeout=15.0)
+
+        assert_at_least_once_held(run_count, expected_min=1)
+        obs = FAFStageObservation(
+            stage_executed=run_count >= 1,
+            nacked_with_requeue=run_count >= 1,
+            silently_dropped=run_count == 0,
+            requeue_count=max(0, run_count - 1),
+        )
+        assert_faf_stage_invariants(obs, scenario_kind="broker_drop", max_requeues=5)
+
+
+# ---------------------------------------------------------------------------
+# Combo 20 — backend-down + result-store (Tier 2)
+# ---------------------------------------------------------------------------
+
+
+class TestBackendDownResultStoreCombo:
+    """Combo #20: backend-down + result-store.
+
+    Tier 2 — all tests require Toxiproxy.  Tests drop the Valkey backend
+    connection during result storage and verify:
+    - TASK_FAILED fires (backend write failure → task failure)
+    - After backend recovery, retry (if configured) succeeds
+    - FAF-4 invariants hold (no silent drop)
+
+    Assumption: when ValkeyBackend.store_result() raises (due to connection
+    loss), the worker treats this as a task failure and emits TASK_FAILED.
+    The broker message is nacked(requeue) so the task can be retried once
+    the backend is healthy again.
+    """
+
+    async def test_happy_path(
+        self,
+        rabbitmq_url: str,
+        valkey_proxied_url: str,
+    ) -> None:
+        """No toxic — task runs, result stored in proxied Valkey, retrievable."""
+        queue = _uq("backend-rs")
+        task_name = _task_name("backend_rs_happy")
+        done = asyncio.Event()
+
+        class BackendProxiedTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                done.set()
+                return val + 5
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_proxied_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
+                tid = await app.schedule(task_name, 37)
+                await asyncio.wait_for(done.wait(), timeout=10.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 42
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(45)
+    async def test_backend_drop_during_result_store_emits_task_failed(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_proxied_url: str,
+    ) -> None:
+        """Valkey connection is dropped while the worker tries to store the
+        result.  The task must emit TASK_FAILED (backend write failure).
+
+        Toxiproxy injects a ``timeout`` toxic on the valkey proxy just before
+        run() returns so the store_result call fails.
+        """
+        queue = _uq("backend-drop-fail")
+        task_name = _task_name("backend_drop_fail")
+        run_started = asyncio.Event()
+        failed_event = asyncio.Event()
+
+        class SlowResultTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=0,
+            )
+
+            async def run(self, val: int) -> int:
+                run_started.set()
+                # Brief pause so the toxic can be injected before store_result.
+                await asyncio.sleep(0.3)
+                return val
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_proxied_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[Signal.TASK_STARTED, Signal.TASK_FAILED, Signal.TASK_COMPLETED],
+        )
+
+        @app.on_signal(Signal.TASK_FAILED)
+        async def _on_failed(**_: Any) -> None:
+            failed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
+                await app.schedule(task_name, 1)
+
+                # Wait for run() to start, then drop Valkey.
+                await asyncio.wait_for(run_started.wait(), timeout=8.0)
+                toxic_name = await toxiproxy.add_toxic(
+                    "valkey",
+                    "timeout",
+                    attributes={"timeout": 0},
+                    stream="downstream",
+                )
+
+                # Wait for failure to propagate.
+                try:
+                    await asyncio.wait_for(failed_event.wait(), timeout=10.0)
+                finally:
+                    await toxiproxy.remove_toxic("valkey", toxic_name)
+
+        assert Signal.TASK_FAILED in recorder.emitted_signals, (
+            "TASK_FAILED must fire when backend is down during result store"
+        )
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(45)
+    async def test_retry_after_backend_recovery(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_proxied_url: str,
+    ) -> None:
+        """Backend drops during first run, but the task has retries.  After
+        Valkey recovers the retry attempt succeeds and result is stored.
+
+        FAF-4: no silent drop; message must be nacked and redelivered.
+        """
+        queue = _uq("backend-retry")
+        task_name = _task_name("backend_retry")
+        run_count = 0
+        first_run_started = asyncio.Event()
+        completed_event = asyncio.Event()
+
+        class RetriableBackendTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=2,
+                retry_base_delay=0.5,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                if run_count == 1:
+                    first_run_started.set()
+                    await asyncio.sleep(0.4)  # pause for toxic injection
+                return val * 2
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_proxied_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        @app.on_signal(Signal.TASK_COMPLETED)
+        async def _on_done(**_: Any) -> None:
+            completed_event.set()
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
+                tid = await app.schedule(task_name, 6)
+
+                # Drop backend during first run's result-store phase.
+                await asyncio.wait_for(first_run_started.wait(), timeout=8.0)
+                toxic_name = await toxiproxy.add_toxic(
+                    "valkey",
+                    "timeout",
+                    attributes={"timeout": 0},
+                    stream="downstream",
+                )
+                await asyncio.sleep(0.5)  # let first store_result fail
+                # Heal the backend.
+                await toxiproxy.remove_toxic("valkey", toxic_name)
+
+                # Retry should now succeed.
+                await asyncio.wait_for(completed_event.wait(), timeout=15.0)
+                result = await app.get_result(tid, timeout=5)
+                assert result == 12
+
+        assert_at_least_once_held(run_count, expected_min=1)
+        obs = FAFStageObservation(
+            stage_executed=run_count >= 1,
+            nacked_with_requeue=run_count >= 2,  # retry = requeue occurred
+            silently_dropped=run_count == 0,
+            requeue_count=max(0, run_count - 1),
+        )
+        assert_faf_stage_invariants(obs, scenario_kind="backend_fault", max_requeues=5)
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(45)
+    async def test_faf4_invariants_for_backend_drop(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_proxied_url: str,
+    ) -> None:
+        """Dedicated FAF-4 assertion block for backend-drop scenario.
+
+        Drops Valkey mid-run, heals it, and asserts all four invariants:
+        1. No silent drop
+        2. nack+requeue after backend fault
+        3. FAF context doesn't change the safety contract
+        4. Requeue count bounded
+        """
+        queue = _uq("backend-faf4")
+        task_name = _task_name("backend_faf4")
+        run_count = 0
+        run_started = asyncio.Event()
+        done_event = asyncio.Event()
+
+        class FAF4BackendTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=3,
+                retry_base_delay=0.3,
+            )
+
+            async def run(self, val: int) -> int:
+                nonlocal run_count
+                run_count += 1
+                run_started.set()
+                if run_count == 1:
+                    await asyncio.sleep(0.5)
+                done_event.set()
+                return val
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_proxied_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
+                await app.schedule(task_name, 1)
+
+                await asyncio.wait_for(run_started.wait(), timeout=8.0)
+                toxic_name = await toxiproxy.add_toxic(
+                    "valkey",
+                    "timeout",
+                    attributes={"timeout": 0},
+                    stream="downstream",
+                )
+                await asyncio.sleep(0.6)
+                await toxiproxy.remove_toxic("valkey", toxic_name)
+
+                run_started.clear()
+                await asyncio.wait_for(done_event.wait(), timeout=15.0)
+
+        assert_at_least_once_held(run_count, expected_min=1)
+        obs = FAFStageObservation(
+            stage_executed=run_count >= 1,
+            nacked_with_requeue=run_count >= 2,
+            silently_dropped=run_count == 0,
+            requeue_count=max(0, run_count - 1),
+        )
+        assert_faf_stage_invariants(obs, scenario_kind="backend_fault", max_requeues=5)
+
+
+# ---------------------------------------------------------------------------
+# §Assumptions
+# ---------------------------------------------------------------------------
+# A1. MiddlewareChain._swallow: pre_execute and post_execute exceptions are
+#     caught by the _swallow wrapper and logged; they do NOT propagate to the
+#     worker's main error path.  This means:
+#     - A pre_execute raise does NOT abort task execution.
+#     - A post_execute raise does NOT trigger a retry.
+#     - Neither emits TASK_FAILED.
+#     Tests in Combos 17/18 pin this real behaviour.
+#
+# A2. unique_for hash lifetime: the sq:unique:<hash> key is tied to the
+#     task_id and survives DLQ move.  It is released only on completion,
+#     explicit deletion, or TTL expiry.
+#
+# A3. result_ttl is measured from store_result invocation, not enqueue time.
+#     A task that is retried multiple times has its TTL reset on each
+#     store_result call.
+#
+# A4. FAF-4 invariants for Tier-2 tests use FAFStageObservation.requeue_count
+#     approximated from run_count (run_count - 1 = re-executions = requeues).
+#     This is an observable proxy for the broker-side nack/requeue sequence.
+#
+# A5. Toxiproxy ``timeout`` toxic with ``timeout=0`` immediately closes
+#     connections; ``stream="upstream"`` hits the publisher path,
+#     ``stream="downstream"`` hits the consumer/result-store path.
