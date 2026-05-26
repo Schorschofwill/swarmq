@@ -1,0 +1,159 @@
+# Rate-Limiting
+
+Du hast einen Task, der nicht öfter als N-mal pro Zeiteinheit
+laufen darf — ein Webhook-Kontingent, ein Third-Party-API-Plan,
+eine Crawler-Höflichkeitsregel. SwarmQs Rate-Limiter ist
+deklarativ: Setze einen String auf `TaskInfo`, der Worker setzt
+ihn global über jeden Worker durch, der dasselbe Valkey-Backend
+teilt.
+
+## Voraussetzungen
+
+- Ein laufendes Valkey-Backend (geteilt über jeden Worker).
+- Ein Task, den du limitieren willst.
+
+## Das Limit deklarieren
+
+```python
+from swarmq import Task, TaskInfo
+
+
+class SendSMS(Task):
+    task_info = TaskInfo(
+        name="send_sms",
+        queues=["sms"],
+        rate_limit="100/m",
+    )
+
+    async def run(self, to: str, body: str) -> None:
+        await sms_provider.send(to, body)
+```
+
+Das Format ist `"N/unit"` — eine Integer-Anzahl gefolgt von einem
+Schrägstrich und einer Zeiteinheit:
+
+| Einheit | Aliase |
+|---|---|
+| Pro Sekunde | `s` |
+| Pro Minute | `m`, `min` |
+| Pro Stunde | `h`, `hour` |
+
+Beispiele: `"5/s"`, `"100/m"`, `"1000/h"`. Ein Bad String (falsche
+Einheit, fehlende Zahl, negative Anzahl) raist `ValueError` bei
+der Klassendefinition.
+
+## Wie das Limit durchgesetzt wird
+
+Das Limit ist ein **2-Perioden-Sliding-Window**, implementiert als
+einzelnes Lua-Skript auf Valkey. Jeder Worker, der eine Nachricht
+aufnimmt, prüft den Counter atomar:
+
+- **Unter dem Limit** — der Counter wird erhöht, `run()` läuft.
+- **Über dem Limit** — der Worker nackt die Nachricht in eine
+  Delay-Queue und feuert `TASK_RATE_LIMITED`. Nach der berechneten
+  Wartezeit redelivert der Broker, und der Check läuft erneut.
+
+Das Sliding-Window bedeutet, dass ein Burst von 100 bei `T` plus
+weiteren 50 bei `T + 30s` unter einem `100/m`-Limit die ersten 100
+durchlässt, die restlichen 50 für eine Teil-Fenster-Wartezeit
+einreiht und sie freigibt, wenn genug Headroom wieder auftaucht.
+Es gibt keine harte Kante bei der Minutenmarke.
+
+## Was du als Konsument siehst
+
+Eine rate-limited Nachricht scheitert nicht. Sie wartet. Der
+`TaskInfo.max_age`-Guard ist das Einzige, was eine lange Wartezeit
+in eine DLQ-Route verwandelt — ohne ihn werden rate-limited
+Nachrichten unbegrenzt retry't.
+
+```python
+task_info = TaskInfo(
+    name="send_sms",
+    queues=["sms"],
+    rate_limit="100/m",
+    max_age=300,   # Nach 5 min Wartezeit aufgeben
+)
+```
+
+## Global vs Per-Worker
+
+Jeder Worker-Prozess trifft denselben Valkey-Counter, also ist das
+Limit **global**, unabhängig von `--processes`, `--concurrency`
+oder Anzahl deployter Worker-Pods. Es gibt keinen Per-Worker-Modus.
+
+Brauchst du einen Per-Worker-Cap, nutze `--concurrency` — ein
+einzelner Worker-Prozess überschreitet für einen einzelnen Task
+nicht seine konfigurierte Concurrency.
+
+## Observability
+
+Hake `Signal.TASK_RATE_LIMITED`, um aufzuzeichnen, wann Limits
+greifen:
+
+```python
+from swarmq import Signal
+
+@app.on_signal(Signal.TASK_RATE_LIMITED)
+async def on_rate_limit(
+    task_id, task_name, retry_after_ms, remaining, rate_limit_count,
+):
+    log.info(
+        "rate_limited",
+        task_id=task_id, task_name=task_name,
+        retry_after_ms=retry_after_ms,
+        remaining=remaining,
+        bounce_count=rate_limit_count,
+    )
+```
+
+Payload-Felder:
+
+- `retry_after_ms` — wie lange die Nachricht in der Delay-Queue
+  wartet.
+- `remaining` — geschätzte verbleibende Budget im aktuellen Fenster.
+- `rate_limit_count` — wie oft genau diese Nachricht vom
+  Rate-Limiter requeued wurde (ein Bounce-Counter für Operator-
+  Alerts).
+
+Wenn `swarmq[metrics]` installiert ist und `--metrics-port`
+gesetzt, werden Rate-Limit-Events zusätzlich als Prometheus-Counter
+exportiert.
+
+## Das Limit wählen
+
+Starte leicht unter der Upstream-Quota, nicht darauf. Beispiel:
+Erlaubt SendGrid 100 req/s, setze `rate_limit="90/s"`. 10 %
+Headroom toleriert Clock-Drift und Burst-Smoothing.
+
+Für Limits, die sich mit deinem Plan-Tier ändern, lies das Limit
+aus deiner Config und setze es bei `TaskInfo`-Konstruktion — keine
+Laufzeit-Mutation, aber ein Restart nimmt den neuen Wert auf.
+
+## Kombination mit Retries und Locks
+
+Rate-Limiting komponiert natürlich mit Retries und Locks:
+
+- **Mit Retries.** Retry-Versuche zählen auch gegen das Limit —
+  ein Retry ist ein zweiter `run()` derselben Arbeit.
+- **Mit einem Lock.** Der Lock wird *nach* dem Rate-Limit-Check
+  erworben. Eine rate-limited Nachricht versucht den Lock nie.
+
+## Verifizieren
+
+```bash
+swarmq inspect --module myapp.tasks
+```
+
+Die `RATE_LIMIT`-Spalte listet den deklarierten String für jeden
+Task. Dann plane einen Burst größer als das Limit und beobachte
+die Worker-Logs: einige Tasks beenden sofort, andere zeigen
+`TASK_RATE_LIMITED`-Einträge mit `retry_after_ms` und erscheinen
+nach der Verzögerung wieder.
+
+## Siehe auch
+
+- [Signals](signals.md) — Registrierung des
+  `TASK_RATE_LIMITED`-Handlers
+- [`TaskInfo.rate_limit`-Referenz](../reference/configuration.md#rate-limiting)
+- [Locking und Deduplizierung](locking-and-dedup.md) — das
+  Kompagnon-Primitiv zum Serialisieren von Ausführung

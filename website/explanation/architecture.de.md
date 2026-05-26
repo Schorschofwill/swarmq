@@ -1,0 +1,177 @@
+# Architektur
+
+SwarmQ besteht aus drei Prozessen, verbunden durch zwei
+Infrastruktur-Komponenten. Ein **Client** plant Arbeit ein. Ein
+**Broker** (RabbitMQ) reicht diese Arbeit an einen **Worker**.
+Ein **Backend** (Valkey) hält Ergebnisse, Locks, Rate-Counter und
+Cancel-Flags. Alles Weitere — Middleware, Signals, Retries, der
+Scheduler — baut auf diesen vier Beteiligten auf.
+
+## Die Rollen
+
+```mermaid
+flowchart LR
+    Client["Client<br/>(deine App)"]
+    Broker[("RabbitMQ<br/>(Queues, DLQ)")]
+    Worker["Worker<br/>(swarmq worker)"]
+    Backend[("Valkey<br/>(Ergebnisse, Locks,<br/>Rate-Limits)")]
+
+    Client -- schedule(name, args) --> Broker
+    Broker -- AMQP deliver --> Worker
+    Worker -- ack --> Broker
+    Worker -- store_result --> Backend
+    Client -- get_result(task_id) --> Backend
+    Worker -- lock / rate / dedup --> Backend
+```
+
+- **Client.** Jeder Prozess, der `SwarmQ.schedule()`, `.run()`,
+  `.cancel()` oder `.get_result()` aufruft. Üblicherweise deine
+  Web-App, ein Cron-Job oder ein anderer Worker.
+- **Broker.** RabbitMQ, von SwarmQ per Default als
+  [Quorum-Queue](https://www.rabbitmq.com/quorum-queues.html)
+  deklariert. Trägt Task-Nachrichten, erzwingt Redelivery bei
+  Worker-Crash und routet fehlgeschlagene Nachrichten automatisch
+  in eine DLQ pro Queue (`{queue}.XQ`).
+- **Worker.** Ein oder mehrere `swarmq worker`-Prozesse. Jeder
+  importiert dein Task-Modul, registriert die gefundenen
+  `Task`-Subklassen und konsumiert aus den angegebenen Queues.
+  Die Concurrency ist semaphor-beschränkt innerhalb einer
+  Event-Loop; der Multi-Process-Modus (`--processes N`) ergänzt
+  einen Supervisor, der N solcher Worker nebeneinander ausführt.
+- **Backend.** Valkey (Redis-kompatibel) für alles, was geteilten,
+  schnellen, hinreichend dauerhaften State braucht: Task-Ergebnisse,
+  [Lua](https://www.lua.org/)-gesteuerte Rate-Limiter, Locks,
+  Cancel-Flags, Dedup-Keys, Scheduler-State und Leader-Election.
+
+Ein SwarmQ-Deployment sind nur diese vier Kästen. Kein Celery
+Flower, kein kombu, keine Django-Integration, keine
+Datenbank-Migrationen.
+
+## Nachrichten-Lifecycle
+
+Ein einzelner Task durchläuft einen von zwei Pfaden: **immediate**
+oder **deferred**. Beide enden im selben Terminalzustand.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant B as RabbitMQ
+    participant W as Worker
+    participant V as Valkey
+
+    C->>C: schedule("send_email", to=..., subject=...)
+    Note over C: pre_enqueue-Middleware,<br/>TASK_ENQUEUED-Signal
+    C->>B: basic.publish(queue, body)
+    B->>W: basic.deliver (prefetch=concurrency)
+    W->>W: decode + Task-Klasse auflösen
+    W->>V: Rate-/Lock-/Cancel-Pre-Flight
+    W->>W: await Task.run(*args, **kwargs)
+    Note over W: post_execute, TASK_COMPLETED
+    W->>V: Ergebnis speichern (ttl = result_ttl)
+    W->>B: basic.ack
+    C->>V: get_result(task_id)
+```
+
+Der Deferred-Pfad (`schedule(delay=..., eta=...)`) schreibt den
+Task stattdessen in den Scheduler-Store in Valkey. Ein Leader-
+Worker pollt diesen Store und publisht die Nachricht zum Fire-Zeitpunkt
+genau einmal an RabbitMQ. Von da an ist der Pfad identisch mit dem
+Immediate-Fall.
+
+## Wo State lebt
+
+Die kurze Antwort: **nirgendwo in SwarmQ selbst**. Die Library ist
+zustandslos — starte einen Worker neu, kille einen Client, und
+nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
+
+| State | Lebt in | Lebensdauer |
+|---|---|---|
+| Task-Nachrichten | RabbitMQ-Queue | Bis zum Ack oder DLQ-Route |
+| Ergebnisse | Valkey-Key `sq:result:{task_id}` | `result_ttl` Sekunden (Default 24h) |
+| Progress-Updates | Valkey HASH `sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
+| Rate-Limit-Counter | Valkey Sorted Set | Sliding Window |
+| Locks | Valkey-Key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
+| Cancel-Flags | Valkey-Key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
+| Dedup-Marker | Valkey-Key `sq:unique:{hash}` | `unique_for` Sekunden |
+| Scheduler-Einträge | Valkey ZSET `sq:sched:*` | Bis gefeuert oder entfernt |
+| Leader-Election | Valkey-Key `sq:sched:leader` | Per Heartbeat erneuert |
+
+In-Process-State — die Task-Registry, der Middleware-Stack, der
+Signal-Dispatcher — wird bei jedem Worker-Start aus deinem
+Task-Modul neu aufgebaut. Das ist der Grund, warum `--module
+myapp.tasks` zwingend ist: es ist der deklarative Input, der ein
+Worker-Binary zu *deinem* Worker macht.
+
+## Warum diese Wahlen
+
+### Warum RabbitMQ?
+
+RabbitMQ mit Quorum-Queues gibt SwarmQ die Zustellungssemantik, die
+eine Task-Queue tatsächlich braucht:
+
+- **Publisher-Confirms.** `publish()` kehrt erst zurück, wenn der
+  Broker die Nachricht quorum-weit auf Platte committet hat. SwarmQ
+  schaltet sie unbedingt ein.
+- **Quorum-Queue-Redelivery-Limits.** `x-delivery-limit=20` kappt
+  den Schaden einer pathologischen Redelivery-Schleife, ohne die
+  Nachricht zu verlieren — der 21. Versuch landet in der DLQ.
+- **Natives DLQ-Routing.** Wenn ein Worker ohne Requeue nackt
+  (Retry-Erschöpfung, `NoRetry`, Lock-Render-Fehler), routet
+  RabbitMQ die Nachricht automatisch nach `{queue}.XQ`. Keine
+  Application-Level-Kopie.
+- **Per-Consumer-Prefetch.** Concurrency ist eine client-seitige
+  AMQP-Einstellung, kein Server-Feature. Ein Flag ändert die
+  In-Flight-Tiefe, ohne die Queue-Topologie zu berühren.
+
+Geprüfte Alternativen: Redis Streams (kein Delivery-Limit-Konzept,
+DLQ muss client-seitig gefaked werden), Kafka (Log-Semantik, nicht
+Task-Semantik), SQS (Round-Trip-Latenz + 15-Minuten-
+Visibility-Timeout-Deckel), Postgres-Queues (fein bei kleinem
+Scale, brüchig bei größeren Prefetch-Tiefen).
+
+### Warum Valkey?
+
+Valkey ist das, was Rate-Limiter, Lock-Manager, Scheduler und
+Result-Backend gleichzeitig brauchen:
+
+- **Atomare Lua-Skripte.** Sliding-Window-Rate-Limiting,
+  owner-checked Lock-Release und Dedup-SETNX sind jeweils ein
+  einzelner `EVALSHA`-Roundtrip.
+- **Sorted Sets mit O(log n)-Reads.** Der Scheduler pollt
+  `ZRANGEBYSCORE sq:sched:fire 0 <now>` einmal pro Sekunde, ohne
+  alle Einträge zu scannen.
+- **Pub/Sub auf derselben Verbindung.** `get_result(timeout=...)`
+  abonniert `sq:notify:{task_id}` und wacht sofort auf, sobald der
+  Worker den Completion-Marker publisht — kein Polling bei
+  niedriger Latenz, Polling-Fallback bei höherer.
+- **Drop-in-Redis-Protokoll.** Stattdessen Redis laufen zu lassen
+  ist ein URL-Wechsel. SwarmQ ruft nichts Valkey-Spezifisches auf.
+
+Geprüfte Alternativen: ein vollständiger Redis-Cluster (dieselbe
+API, schwererer Ops-Footprint), Postgres nur für Ergebnisse
+(`LISTEN/NOTIFY` fügt Latenz hinzu und bietet keine Lua-Atomizität
+für Rate-Limiting).
+
+## Fehlerdomänen
+
+| Fehler | Radius | Recovery |
+|---|---|---|
+| Worker-Prozess-Crash | In-Flight-Tasks werden nach Visibility von RabbitMQ redelivered | Supervisor startet Worker neu (`--processes N` Default) |
+| Worker verliert Broker-Verbindung | Dieser Worker konsumiert nicht mehr; andere laufen weiter | `connect_robust()` reconnected; unacknowledgte Tasks redelivern |
+| Worker verliert Backend-Verbindung | Task-Ausführung läuft weiter; Result-Writes buffern und retry | `valkey-py` reconnected automatisch |
+| RabbitMQ-Restart | Alle Worker reconnecten; unacknowledgte Nachrichten redelivern | Quorum-Queues überleben einzelnen Node-Verlust nativ |
+| Valkey-Restart | Aktive Locks, Rate-Counter und Leader-Lock laufen ab | Clients und Worker erwerben sie bei nächster Operation neu |
+| Client crasht nach Publish | Task läuft trotzdem; Ergebnis liegt `result_ttl` in Valkey | Wer die `task_id` hat, kann weiterhin `get_result()` aufrufen |
+
+Die tragende Annahme ist: **RabbitMQ und Valkey überleben jeden
+einzelnen SwarmQ-Prozess.** Beide werden als externe, operable
+Services deployt — nicht eingebettet, nicht In-Memory.
+
+## Siehe auch
+
+- [Zustellungssemantik](delivery-semantics.md) — was at-least-once
+  für Task-Autoren bedeutet
+- [Designentscheidungen](design-decisions.md) — die weiteren
+  Trade-offs hinter der Architektur
+- [Schnellstart](../getting-started.md) — die Drei-Kästen-Architektur
+  in unter fünf Minuten auf deiner Maschine

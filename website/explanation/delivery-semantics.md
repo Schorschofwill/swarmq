@@ -1,0 +1,208 @@
+# Delivery semantics
+
+SwarmQ is **at-least-once** by default. Every task you schedule runs
+at least one time; under adverse conditions it may run more than once.
+There is no exactly-once mode in the library — that contract is not
+offered, because no queue-plus-worker system can honour it without
+application-level help.
+
+This page describes what that means for the code you write, where
+duplicates come from, and how SwarmQ bounds the damage when they
+happen.
+
+## The contract
+
+When `await app.schedule("send_email", to="a@example.com")` returns a
+task_id, SwarmQ promises:
+
+1. The message was accepted by RabbitMQ with a publisher confirm.
+2. A worker will run `SendEmail.run(to="a@example.com")` at least once.
+3. The task's result — success, exception, or cancellation — will be
+   written to Valkey at `sq:result:{task_id}` with the configured TTL.
+
+It does **not** promise:
+
+- That the task runs exactly once.
+- That the task runs inside the process that scheduled it.
+- That the task runs before your `get_result(timeout=...)` returns,
+  if the timeout is too short.
+
+Everything on the "does not promise" list is a consequence of how
+at-least-once delivery works at the broker level.
+
+## When a message is considered delivered
+
+RabbitMQ routes the message into the queue the moment `basic.publish`
+returns a confirm. The worker does not see the message until:
+
+1. Its consumer is subscribed to the queue (`basic.consume`).
+2. It has free prefetch capacity — `--concurrency N` minus in-flight.
+3. The broker sends a `basic.deliver` frame to that consumer.
+
+From that point the message is **in-flight**: held by RabbitMQ as
+unacknowledged, committed to only that consumer. The broker will not
+hand it to another worker unless the current consumer disappears.
+
+## When acks happen
+
+SwarmQ acks after the task's terminal state is durably stored, not
+before:
+
+```mermaid
+flowchart TD
+    Deliver["broker → worker<br/>basic.deliver"]
+    Run["await Task.run(*args, **kwargs)"]
+    Store["store result in Valkey<br/>(sq:result:{task_id})"]
+    Ack["basic.ack"]
+    Nack["basic.nack(requeue=False)"]
+    DLQ["RabbitMQ routes to {queue}.XQ"]
+
+    Deliver --> Run
+    Run -->|success or handled error| Store
+    Store --> Ack
+    Run -->|retry_exhausted / NoRetry / expired| Nack
+    Nack --> DLQ
+```
+
+The ack-after-store sequence is the reason for the delivery
+guarantee: if the worker crashes between `Run` and `Store`, RabbitMQ
+still holds the message and will redeliver it. If the worker crashes
+between `Store` and `Ack`, the result is already durable — the
+redelivery will see the finished state and skip the rerun.
+
+## What aborts the ack
+
+Any of these aborts the ack and either retries the message or routes
+it to the DLQ:
+
+| Abort source | Where it goes |
+|---|---|
+| Worker process killed (`SIGKILL`, OOM, node crash) | Redelivered by RabbitMQ after visibility timeout |
+| Worker restarted mid-task (graceful `SIGTERM`) | Drained in-flight tasks finish; pending messages redeliver to a new worker |
+| `Task.run()` raises a retryable exception, retries remaining | Nack + delayed redelivery via the retry exchange |
+| `Task.run()` raises after `max_retries` reached | Nack + DLX → `{queue}.XQ` |
+| `raise NoRetry("reason")` | Nack + DLX → `{queue}.XQ` immediately |
+| RabbitMQ's `x-delivery-limit=20` reached | Broker-native DLQ route |
+| Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
+| Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-error` header |
+
+The worker never calls `basic.nack(requeue=True)` with the primary
+retry path. Requeue-in-place would bypass the retry backoff and hot-
+loop the broker. All retries go through the delay queue.
+
+## Redelivery scenarios
+
+Duplicates appear in three situations, in descending order of
+frequency.
+
+### 1. Worker crash between Store and Ack
+
+The task ran, the result is in Valkey, but RabbitMQ never got the ack.
+When the worker is replaced, the message redelivers. The new worker
+runs the task **again** — there is no per-message "already ran" marker
+on the consumer side for this case in v1.
+
+**What your task sees.** A second call to `run()` with the same args.
+
+**Why it is accepted.** Adding a claim-check key to gate every
+execution would be a Valkey round-trip on the hot path for a rare
+event. In practice, worker crashes during the Store-to-Ack window are
+rare and usually benign — the second execution writes the same result
+to the same key.
+
+**Mitigation.** Write idempotent task bodies (see below).
+
+### 2. Redelivery after network partition
+
+A worker running in a broken-network pod finishes the task but cannot
+reach the broker to ack. RabbitMQ's delivery timeout fires, it nacks
+on the dead consumer's behalf, and the message goes to another
+worker. Both workers run the task.
+
+**What your task sees.** Two concurrent `run()` calls, possibly on
+different worker hosts.
+
+**Mitigation.** Idempotent task body + `TaskInfo(lock="name")` for
+serialization when the business logic cannot tolerate concurrent
+execution.
+
+### 3. Deliberate redelivery during graceful shutdown
+
+On `SIGTERM`, the worker stops fetching new messages, finishes its
+in-flight tasks, then closes the channel. Any messages the broker
+delivered but the worker had not started yet get requeued — they
+redeliver to a sibling worker. This is intentional: it is how you
+roll a deploy without losing work.
+
+**What your task sees.** A fresh `run()` call on a different worker
+with the same message body.
+
+**Mitigation.** Nothing required. This is the design.
+
+## Idempotency expectations
+
+Treat every `run()` call as if it might be the second, third, or
+thirtieth execution of the same message. Concretely:
+
+- **Before the external side effect, check if it already happened.**
+  Look up "did I send this email", "does this invoice exist", "did I
+  already debit this account".
+- **Prefer upserts over inserts.** `INSERT ... ON CONFLICT DO NOTHING`
+  in SQL, `SET NX` in Valkey, idempotency keys on third-party APIs
+  (Stripe, SendGrid, PayPal all accept them).
+- **Avoid non-idempotent operations without a wrapper.** Sending a
+  webhook, charging a card, posting to Slack — all need an
+  idempotency key keyed on the task_id or on a business identifier
+  you pass as an argument.
+- **Use `lock="user-{user_id}"`** when two concurrent executions of
+  the same logical task would corrupt state. The lock is mutex by
+  default; `max_concurrency=N` turns it into a semaphore.
+
+SwarmQ's own unique-task feature (`unique_for=...`) is about dedup
+*on the schedule call*, not dedup on the run call. Two `schedule()`
+calls within the TTL return the same task_id; one run. That is not
+the same as preventing re-execution after a broker redelivery — for
+that, write idempotent task bodies.
+
+## How DLQ routing interacts with retries
+
+Retries are a first-class path. The DLQ is the terminal path. A task
+reaches the DLQ by one of four routes:
+
+1. **Retry exhaustion.** The last retry raised. The worker nacks with
+   `requeue=False`, the broker routes via DLX to `{queue}.XQ`.
+2. **`NoRetry`.** The task body raised `NoRetry("reason")`. This
+   skips the retry decision entirely — straight to DLQ.
+3. **Broker-native delivery-limit.** RabbitMQ has redelivered the
+   message 20 times without an ack landing. This is the pathological-
+   loop guard; it protects the broker from a buggy worker.
+4. **Expiry / lock-render / conflict-cap.** `max_age` exceeded,
+   lock key cannot be rendered (e.g. missing kwarg), or lock
+   conflict budget hit. DLQ carries the message with diagnostic
+   headers.
+
+DLQ'd messages are recoverable via `swarmq dlq list | inspect |
+retry`. The retry count header is reset on `dlq retry`, so the task
+gets its full retry budget back. The original traceback stays in the
+headers for post-mortem.
+
+## What SwarmQ will not do
+
+- **Block `schedule()` until the task completes.** Use `app.run()` or
+  `schedule()` + `get_result()` explicitly.
+- **Guarantee ordering.** RabbitMQ guarantees FIFO per queue per
+  consumer, but with `--concurrency > 1` that becomes partial order.
+- **Run exactly-once.** Write your task body as if it can run twice.
+- **Move results through the broker.** Results go to Valkey; the
+  broker only carries the task message.
+
+## See also
+
+- [Architecture](architecture.md) — the three-role topology that
+  makes these semantics possible
+- [Scheduling and retries](../guides/scheduling-and-retries.md) —
+  the retry backoff policies and how to disable them per task
+- [Locking and deduplication](../guides/locking-and-dedup.md) —
+  the two flavours of dedup (schedule-side and execution-side)
+- [Dead letter queues](../guides/dead-letter-queues.md) — operator
+  recovery workflow for DLQ'd tasks
