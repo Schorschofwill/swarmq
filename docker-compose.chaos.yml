@@ -1,0 +1,44 @@
+# Toxiproxy-Stack für Chaos-Tests (`tests/e2e/combinations/` Tier 2+3).
+#
+# Additives Compose-File — wird zusammen mit dem Haupt-Stack verwendet:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.chaos.yml up -d
+#
+# Toxiproxy proxied die existing rabbitmq + valkey Services und stellt sie auf
+# alternative Ports bereit:
+#
+#   - Toxiproxy Admin API : localhost:8474   (REST-Steuerung der Proxies)
+#   - RabbitMQ via Proxy  : localhost:5673   (vs. raw rabbitmq auf 5672)
+#   - Valkey via Proxy    : localhost:6380   (vs. raw valkey auf 6379)
+#
+# Tests, die Fault-Injection brauchen, verbinden sich gegen 5673/6380 statt
+# 5672/6379. Tests ohne Fault-Injection nutzen weiterhin die raw-Ports.
+#
+# Spike-Validierung: `docs/solutions/spikes/2026-04-17-toxiproxy-reconnect-spike.md`.
+
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474"   # Admin REST API
+      - "5673:5673"   # RabbitMQ proxy listener
+      - "6380:6380"   # Valkey proxy listener
+    command:
+      # -host 0.0.0.0 makes the Admin API reachable from outside the container.
+      # Proxies themselves are created at runtime by the test harness via the
+      # Admin REST API — keeps proxy config in test code rather than YAML.
+      - "-host"
+      - "0.0.0.0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      # Admin API returns {} (or a JSON object of registered proxies) when
+      # ready. wget is in the toxiproxy image; curl is not.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8474/proxies"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
