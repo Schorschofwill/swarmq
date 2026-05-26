@@ -308,15 +308,40 @@ beim Eltern-Plan — alles fließt zusammen in den Merge).
 
 ## Definition of Done
 
-- [ ] Unit 1 gelandet: `test_run_schedule_status_invokes_public_api`
-      ohne `RuntimeWarning`; Test-spezifisches `error::RuntimeWarning`
-      Filter aktiv.
-- [ ] Unit 2 gelandet: Sunset-Reminder-Datei in `docs/solutions/`
-      angelegt, mit Frontmatter und Trigger-Datum `2026-12-31`.
-- [ ] Unit 3 gelandet: DoD-Checkboxen im Eltern-Plan `2026-04-23-001`
-      aktualisiert; Won't-Fix-Register im Commit-Body verlinkt.
-- [ ] Unit 4 gelandet: CLI-04-Changelog-Eintrag ist `git ls-files`-sichtbar;
-      gewählte Option (A/B/C) im Commit-Body begründet.
-- [ ] Volle Unit-Suite grün; ruff/mypy ohne neue Findings.
-- [ ] Eltern-Plan-DoD damit faktisch geschlossen (bis auf optionalen
-      ce-review-Re-Run).
+- [x] Unit 1 gelandet (Commit `1b2443e`): `test_run_schedule_status_invokes_public_api`
+      ohne `RuntimeWarning`; `@pytest.mark.filterwarnings("error::RuntimeWarning")`
+      auf den Test als Barrikade aktiv. Root-Cause: `ScheduleStore.__init__`
+      ruft `_client.register_script(...)` 3× synchron — `AsyncMock` lieferte
+      un-awaited Coroutines. Fix: `_client = MagicMock()`.
+- [x] Unit 2 gelandet (Commit `fceedab`): Sunset-Reminder-Datei
+      `docs/solutions/patterns/sunset-cli-surface-whitelist-kp2-2026-12-31.md`
+      angelegt, mit `sunset_date: 2026-12-31` + (via ce-review-Followup) `trigger_date: 2026-12-31` Frontmatter
+      (beide Felder für Tool-Kompatibilität).
+- [x] Unit 3 gelandet (Commit `9c2c9cf`): 10/11 DoD-Checkboxen im Eltern-Plan
+      `2026-04-23-001` aktualisiert (nur optionaler ce-review-Re-Run bleibt offen
+      bis zur Ausführung); Won't-Fix-Register als kanonischer Pointer im Commit-Body
+      verlinkt.
+- [x] Unit 4 gelandet (Commit `4fab1d8`, Option A): `.gitignore:43` Tippfehler
+      korrigiert (`website/` war fälschlich neben `site/` als Build-Output ignoriert);
+      59 mkdocs-Source-Files re-getrackt. `git ls-files website/reference/changelog.md`
+      bestätigt. `mkdocs build --strict` erfolgreich in 1.15s.
+- [x] Volle Unit-Suite grün; ruff/mypy ohne neue Findings.
+      **Stand 2026-05-26 (nach ce-review-Re-Run + Fixer):** 1257 passed / 2 skipped
+      (vs. Plan-Start 1249/2 → +8 Tests aus Review-Followups).
+- [x] Eltern-Plan-DoD damit faktisch geschlossen (bis auf optionalen
+      ce-review-Re-Run). **Update 2026-05-26:** Optionaler ce-review-Re-Run
+      ausgeführt — Run-ID `20260526-090918-e0cb3bf1`, Artefakt unter
+      `/tmp/compound-engineering/ce-code-review/20260526-090918-e0cb3bf1/`.
+      Ergebnis: 9 Reviewer, 17 surviving Findings → 11 applied (Commit `2e6e601`),
+      5 als residual surfaced (alle dokumentiert: #4 Release-Decision,
+      #14 mutually-exclusive mit R-2, #15 by-design Monkeypatch-Contract,
+      #16 kein Tracker konfiguriert), 6 testing-Findings zu testing_gaps demotiert.
+      Verdict: **Ready to merge**.
+
+## Audit-Trail
+
+- Pre-existing-Won't-Fix-Findings PS-01, PS-02, KP-2, KP-7, CLI-05, M-02/M-03
+  re-bestätigt durch ce-review-Re-Run (Sunset 2026-12-31 für KP-2/M-02/M-03 weiter aktiv).
+- Neue Erkenntnis aus dem Re-Run: 4 von 5 ursprünglich "failed" residual sind
+  nicht Code-Defekte sondern Release- oder Design-Entscheidungen — die Klassifikation
+  als residual ist korrekt.

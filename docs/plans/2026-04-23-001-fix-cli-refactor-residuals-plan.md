@@ -633,6 +633,7 @@ Audit-Spur.
 - [x] `SWARMQ_DEFAULT_FORMAT`-Env-Var in `--format`-Help-Texten dokumentiert (9 Vorkommen in `src/swarmq/cli/parser.py`); Reference-Docs via Changelog-Versionierung im Folge-Plan.
 - [x] Sunset-Datum KP-2 / Rest-Whitelist (2026-12-31) in diesem Plan dokumentiert; **Follow-up-Reminder via Folge-Plan** `docs/plans/2026-05-26-001-...` Unit 2 in `docs/solutions/patterns/sunset-cli-surface-whitelist-kp2-2026-12-31.md` mit `sunset_date`-Frontmatter abgelegt.
 - [x] Won't-Fix-Register als Referenz im Commit-Body des Plan-DoD-Markup-Commits (Folge-Plan Unit 3) verlinkt — siehe Abschnitt [Won't-Fix Register (mit Begründung)](#wont-fix-register-mit-begründung) für die kanonische Antwort auf erneutes Flagging von PS-01, PS-02, KP-2, KP-7, CLI-05, M-02, M-03.
-- [ ] Optional: neuer ce-review-Run bestätigt, dass keines der 7 gefixten Findings mehr flaggt (die 6 Won't-Fix-Findings bleiben flagged — erwartet). **Status: nicht ausgeführt, bewusst out-of-scope für Merge.**
+- [x] Optional: neuer ce-review-Run bestätigt, dass keines der 7 gefixten Findings mehr flaggt (die 6 Won't-Fix-Findings bleiben flagged — erwartet). **Ausgeführt 2026-05-26**, Run-ID `20260526-090918-e0cb3bf1`. Ergebnis: 0 der 7 gefixten Findings erneut geflaggt; 6 Won't-Fix wie erwartet pre-existing. 17 neue Findings entdeckt (P2+P3), davon 11 applied (Commit `2e6e601`), 5 residual (alle dokumentiert), 6 testing zu testing_gaps demotiert. Verdict: Ready to merge.
 
 **DoD-Verifikations-Audit:** 2026-05-26 (siehe `docs/plans/2026-05-26-001-fix-cli-residuals-dod-followups-plan.md`).
+**ce-code-review Re-Run:** 2026-05-26, Run-ID `20260526-090918-e0cb3bf1`, Closing-Commit `2e6e601`.
