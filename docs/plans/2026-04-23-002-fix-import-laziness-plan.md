@@ -1,6 +1,6 @@
 ---
 title: "Import-Laziness: valkey/aio_pika raus aus `import swarmq.cli`"
-status: ready
+status: implemented
 execution_mode: incremental
 quantification:
   baseline_import_swarmq_cli_ms: 187.6

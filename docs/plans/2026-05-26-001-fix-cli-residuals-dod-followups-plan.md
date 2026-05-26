@@ -1,6 +1,6 @@
 ---
 title: "Fix cli-residuals DoD followups — Test-Bug, Changelog-Tracking, Sunset-Reminder, Plan-Markup"
-status: ready
+status: implemented
 execution_mode: incremental
 created: 2026-05-26
 depends_on:

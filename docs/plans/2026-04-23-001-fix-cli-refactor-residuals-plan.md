@@ -1,6 +1,6 @@
 ---
 title: "Fix cli-refactor residuals — ce-review Findings aus b961f75 / 52e96c8"
-status: ready
+status: implemented-and-reviewed
 execution_mode: incremental
 quantification:
   baseline_unit_tests: 1204 passed / 1 skipped (post 52e96c8)
