@@ -33,6 +33,49 @@ jobs:
           # Disk-pressure tests are explicitly opt-in even in nightly.
           SWARMQ_RUN_DISK_TESTS: "0"
 
+  combinations-chaos:
+    # E2E feature-combinations Tier-2/3 tests (@pytest.mark.chaos under
+    # tests/e2e/combinations/). Uses the docker-compose.chaos.yml stack
+    # because tests need Toxiproxy alongside the rabbitmq + valkey
+    # services — service-block setup doesn't carry depends_on health
+    # gating cleanly. See plan 2026-05-26-002 Unit 8.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra test
+      - name: Start chaos stack (rabbitmq + valkey + toxiproxy)
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.chaos.yml up -d
+          # Poll until Toxiproxy admin API responds — readiness gate.
+          for i in {1..30}; do
+            if curl -sf http://localhost:8474/proxies > /dev/null; then
+              echo "Toxiproxy ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+      - name: Combinations chaos tests
+        env:
+          SWARMQ_TEST_RABBITMQ_HOST: "localhost"
+          SWARMQ_TEST_RABBITMQ_PORT: "5672"
+          SWARMQ_TEST_VALKEY_HOST: "localhost"
+          SWARMQ_TEST_VALKEY_PORT: "6379"
+          SWARMQ_TEST_TOXIPROXY_HOST: "localhost"
+          SWARMQ_TEST_TOXIPROXY_PORT: "8474"
+          # Toxiproxy talks to upstream services via the compose
+          # network's internal DNS.
+          SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM: "rabbitmq:5672"
+          SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM: "valkey:6379"
+        run: uv run --extra test pytest tests/e2e/combinations -v --tb=short -m chaos --reruns 2 --reruns-delay 5
+      - name: Stop chaos stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.chaos.yml down -v
+
   stress:
     runs-on: ubuntu-latest
     timeout-minutes: 20

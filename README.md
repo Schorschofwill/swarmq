@@ -200,6 +200,12 @@ SWARMQ_TEST_RABBITMQ_PORT=5673 SWARMQ_TEST_VALKEY_PORT=6380 \
 # Chaos suite (starts its own toxiproxy stack per test class)
 uv run --extra test pytest tests/chaos -q -m chaos
 
+# E2E feature-combinations suite (31 combos × 3 failure tiers)
+# Tier-1 only — no Toxiproxy needed, runs as part of the regular e2e
+# suite above. Tier-2/3 (chaos-marked) needs the Toxiproxy stack:
+docker compose -f docker-compose.yml -f docker-compose.chaos.yml up -d
+uv run --extra test pytest tests/e2e/combinations -v -m chaos
+
 # Property + fuzz
 uv run --extra test pytest tests/property tests/fuzz -q -m "property or fuzz"
 ```

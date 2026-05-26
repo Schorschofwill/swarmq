@@ -73,8 +73,10 @@ jobs:
       - run: uv sync --extra test
       - name: Integration tests
         run: uv run --extra test pytest tests/integration -q --tb=short
-      - name: E2E tests
-        run: uv run --extra test pytest tests/e2e -q --tb=short
+      - name: E2E tests (excluding chaos — chaos runs nightly)
+        # Combinations Tier-2/3 tests carry @pytest.mark.chaos and run in
+        # nightly.yml::combinations-chaos with the Toxiproxy stack.
+        run: uv run --extra test pytest tests/e2e -q --tb=short -m "not chaos"
 
   static:
     runs-on: ubuntu-latest
