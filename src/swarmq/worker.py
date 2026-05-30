@@ -11,20 +11,19 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-
 from typing import TYPE_CHECKING
 
 import structlog
 
 if TYPE_CHECKING:
     import aio_pika
+
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
 
 from swarmq.backoff import calculate_backoff
-from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.cancellation import (
     CANCEL_REASON_CANCEL,
     CANCEL_REASON_TIMEOUT,
@@ -34,6 +33,13 @@ from swarmq.cancellation import (
     build_result_dict,
 )
 from swarmq.config import SwarmQConfig
+from swarmq.headers import (
+    HEADER_ENQUEUED_AT,
+    HEADER_UNIQUE_HASH,
+    HEADER_UNIQUE_UNTIL,
+    HEADER_WORKFLOW_ID,
+    HEADER_WORKFLOW_STEP,
+)
 from swarmq.limits import RateLimiter, parse_rate_limit
 from swarmq.locking import LockManager, compute_lock_ttl_ms
 
@@ -72,10 +78,11 @@ from swarmq.middleware import (
     coerce_middleware_chain_factory,
 )
 from swarmq.registry import TaskRegistry
-from swarmq.scheduler import ScheduleStore, SchedulerLoop
-from swarmq.serialization import decode_json, encode_result
+from swarmq.scheduler import SchedulerLoop, ScheduleStore
+from swarmq.serialization import decode_json, decode_result, encode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
+from swarmq.workflow_orchestration import ChordManager, WorkflowAdvancer
 
 logger = structlog.get_logger()
 
@@ -125,6 +132,10 @@ class Worker:
         # LockManager has the same lifecycle as RateLimiter — instantiated
         # in start() once the Valkey client is live. See plan 008 Unit 4.
         self._lock_manager: LockManager | None = None
+        # R4.1 workflow advancement (U5). Same lifecycle constraint — its
+        # ChordManager registers a Lua script needing a live client. None
+        # means workflow-step messages are not advanced (no live client yet).
+        self._workflow_advancer: WorkflowAdvancer | None = None
         # Embedded scheduler (Phase 3c). Lazy-constructed in start() after
         # the backend is connected — ScheduleStore's registered Lua
         # scripts need a live client. None means "this worker is not
@@ -173,7 +184,7 @@ class Worker:
 
     async def _check_max_age_expired(
         self,
-        message: "aio_pika.abc.AbstractIncomingMessage",
+        message: aio_pika.abc.AbstractIncomingMessage,
         task_info: TaskInfo,
         queue: str,
         task_id: str,
@@ -729,6 +740,18 @@ class Worker:
         # AsyncScripts need a live client. See plan 008 Unit 4.
         self._lock_manager = LockManager(self._backend._client)
 
+        # R4.1 workflow advancer (U5) — ChordManager registers chord_complete.lua
+        # against the live client, same as RateLimiter/LockManager above.
+        self._workflow_advancer = WorkflowAdvancer(
+            self._backend,
+            ChordManager(self._backend._client),
+            publish=self._publish_workflow_step,
+            resolve_queue=self._resolve_workflow_queue,
+            make_task_id=lambda: str(uuid.uuid7()),
+            unpack=lambda raw: decode_result(raw)["result"],
+            ttl_ms=self._config.result_ttl * 1000,
+        )
+
         # Embedded scheduler (Phase 3c). Also lazy-constructed here for
         # the same reason — ScheduleStore's registered sched_poll /
         # sched_commit scripts need the connected client. Starts both
@@ -794,17 +817,17 @@ class Worker:
             if self._metrics_server is not None:
                 try:
                     await self._metrics_server.stop()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("rollback_metrics_stop_failed")
             if self._health_server is not None:
                 try:
                     await self._health_server.stop()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("rollback_health_stop_failed")
             if self._scheduler is not None:
                 try:
                     await self._scheduler.stop()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("rollback_scheduler_stop_failed")
             raise
 
@@ -818,7 +841,7 @@ class Worker:
             for task_name in self._registry.get_all():
                 try:
                     ti = self._registry.get(task_name).task_info
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
                 if getattr(ti, "priority", "normal") != "normal":
                     priority_tasks.append(f"{task_name}({ti.priority})")
@@ -945,12 +968,12 @@ class Worker:
         if self._metrics_server is not None:
             try:
                 await self._metrics_server.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("metrics_server_stop_failed")
         if self._health_server is not None:
             try:
                 await self._health_server.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("health_server_stop_failed")
 
         # 1. DRAINING: stop accepting new messages
@@ -1349,6 +1372,24 @@ class Worker:
             op_timeout=self._config.backend_op_timeout,
         )
 
+    async def _publish_workflow_step(
+        self, queue: str, body: bytes, headers: dict
+    ) -> None:
+        """Publish a next workflow step. Thin adapter so the advancer stays
+        broker-agnostic; broker.publish runs on aio_pika's publisher-confirms
+        channel, so the awaited call returns only after the broker confirms
+        the enqueue (the publish-then-mark safety invariant)."""
+        await self._broker.publish(queue, body, headers=headers)
+
+    def _resolve_workflow_queue(self, task_name: str) -> str:
+        """Resolve the target queue for a workflow step from the registry,
+        applying the priority suffix the same way Client does."""
+        entry = self._registry.get_entry(task_name)
+        queue = entry.task_info.queues[0]
+        if entry.task_info.priority != "normal":
+            queue = f"{queue}.{entry.task_info.priority}"
+        return queue
+
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
         # 1-2. Deserialize message body
@@ -1617,7 +1658,7 @@ class Worker:
 
                     try:
                         result_value = await run_task
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         soft_err = SoftTimeoutError(
                             f"soft timeout after {task_info.soft_timeout}s"
                         )
@@ -1840,6 +1881,26 @@ class Worker:
                 result_ttl = 86400
 
             if result_ttl == 0:
+                # R4.1 FAF runtime guard (U5): a FIRE_AND_FORGET task used as
+                # a workflow step acks before producing a stored result and
+                # never reaches the advancement seam below — the workflow
+                # would stall forever. Construction-time rejection (U1) covers
+                # Task.s(); sig()-by-name can only be caught here. Mark the
+                # workflow failed so handle.get() raises instead of hanging.
+                wf_id_faf = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+                if wf_id_faf is not None and self._workflow_advancer is not None:
+                    try:
+                        await self._workflow_advancer.fail(
+                            wf_id_faf,
+                            "WorkflowValidationError",
+                            f"task {task_name!r} is FIRE_AND_FORGET and cannot "
+                            "advance a workflow",
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "workflow_faf_fail_mark_error",
+                            workflow_id=wf_id_faf, error=str(exc),
+                        )
                 if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                     await self._broker.ack(message)
                 # Even with result_ttl=0 we must clear the cancel flag
@@ -1878,6 +1939,48 @@ class Worker:
             # re-triggers the cancel branch.
             if is_cancelled:
                 await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
+
+            # R4.1 workflow advancement (U5): if this message is a workflow
+            # step that succeeded, drive the workflow forward (next chain
+            # step / chord fan-in / completion) AFTER the result is stored and
+            # BEFORE the ack — so a crash before ack redelivers and the
+            # idempotent advance (next-enqueued markers + chord set) re-runs
+            # without losing or double-enqueueing.
+            wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+            if (
+                wf_id is not None
+                and self._workflow_advancer is not None
+                and not is_error
+                and not is_cancelled
+            ):
+                step_path = (message.headers or {}).get(HEADER_WORKFLOW_STEP, "")
+                try:
+                    await self._workflow_advancer.advance(
+                        wf_id, step_path, task_id, result_value
+                    )
+                except BackendConnectionError:
+                    logger.error("workflow_advance_backend_error", workflow_id=wf_id)
+                    if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                        # Transient — redelivery retries the idempotent advance.
+                        _unique_release_pending = False
+                        await self._broker.nack(message, requeue=True)
+                    return
+                except Exception as exc:
+                    # Unexpected advance bug: fail the workflow so get() raises
+                    # instead of hanging, then ack (no infinite redelivery loop).
+                    logger.error(
+                        "workflow_advance_failed",
+                        workflow_id=wf_id, error=str(exc),
+                    )
+                    try:
+                        await self._workflow_advancer.fail(
+                            wf_id, type(exc).__name__, str(exc)
+                        )
+                    except Exception as fail_exc:
+                        logger.error(
+                            "workflow_fail_mark_error",
+                            workflow_id=wf_id, error=str(fail_exc),
+                        )
 
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 await self._broker.ack(message)
