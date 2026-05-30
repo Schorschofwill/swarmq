@@ -96,6 +96,8 @@ module = [
     "swarmq.exceptions",
     "swarmq.backoff",
     "swarmq.signals",
+    "swarmq.workflow",
+    "swarmq.workflow_orchestration",
 ]
 strict = true
 
