@@ -1950,9 +1950,24 @@ class Worker:
             if (
                 wf_id is not None
                 and self._workflow_advancer is not None
-                and not is_error
-                and not is_cancelled
+                and (is_error or is_cancelled)
             ):
+                # R4.1 fail-fast + liveness (U6): a workflow step that
+                # terminally errored here (max_retries=0 / non-retryable, which
+                # never reaches _send_to_dlq) or was cancelled cannot advance —
+                # mark the whole workflow failed synchronously and wake any
+                # handle.get() waiter, so it raises within bounded time instead
+                # of hanging, and no successor / chord body is enqueued.
+                reason = "task was cancelled" if is_cancelled else (
+                    error_message or "workflow step failed"
+                )
+                try:
+                    await self._workflow_advancer.fail(wf_id, "TaskError", reason)
+                except Exception as exc:
+                    logger.warning(
+                        "workflow_fail_mark_failed", workflow_id=wf_id, error=str(exc)
+                    )
+            elif wf_id is not None and self._workflow_advancer is not None:
                 step_path = (message.headers or {}).get(HEADER_WORKFLOW_STEP, "")
                 try:
                     await self._workflow_advancer.advance(
@@ -2244,6 +2259,21 @@ class Worker:
                 )
         except Exception as store_exc:
             logger.warning("dlq_result_store_failed", error=str(store_exc))
+
+        # R4.1 fail-fast + liveness (U6): if this terminally-failed message is
+        # a workflow step, mark the whole workflow failed synchronously and
+        # wake any handle.get() waiter — so get() raises the error within
+        # bounded time instead of hanging to its timeout, and no subsequent
+        # step / chord body is enqueued. Same hook that wrote the error result
+        # above, so the two cannot diverge.
+        wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+        if wf_id is not None and self._workflow_advancer is not None:
+            try:
+                await self._workflow_advancer.fail(wf_id, "TaskError", error_message)
+            except Exception as wf_exc:
+                logger.warning(
+                    "workflow_fail_mark_failed", workflow_id=wf_id, error=str(wf_exc)
+                )
 
         # R3.5 Unit 11: preserve all inbound headers so a message that
         # reached DLQ via retry-exhaustion still carries its original

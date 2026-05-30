@@ -16,7 +16,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import TaskCancelledError
+from swarmq.exceptions import TaskCancelledError, TaskError
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain, chord, group
 
@@ -135,3 +135,35 @@ async def test_workflow_cancel_stops_chain(rabbitmq_url, valkey_url):
             # The workflow ends cancelled; get() raises rather than returning.
             with pytest.raises(TaskCancelledError):
                 await handle.get(timeout=20)
+
+
+async def test_chain_step_failure_fails_workflow_with_liveness(rabbitmq_url, valkey_url):
+    queue = _q()
+    step2_ran = asyncio.Event()
+
+    class Boom(Task):
+        task_info = TaskInfo(name=f"boom_{queue}", queues=[queue], max_retries=0)
+
+        async def run(self) -> str:
+            raise ValueError("boom")
+
+    class Never(Task):
+        task_info = TaskInfo(name=f"never_{queue}", queues=[queue])
+
+        async def run(self, prev: str) -> str:
+            step2_ran.set()
+            return "never"
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        async with _worker(rabbitmq_url, valkey_url, queue):
+            handle = await app.apply(chain(Boom.s(), Never.s()))
+            # Fail-fast + liveness: get() raises within bounded time (the
+            # worker marks the workflow failed at the DLQ seam and wakes us) —
+            # it does NOT hang to the timeout.
+            with pytest.raises(TaskError):
+                await handle.get(timeout=20)
+            assert not step2_ran.is_set()  # successor never enqueued
