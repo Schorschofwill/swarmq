@@ -296,6 +296,116 @@ class ValkeyBackend:
         return result == 1
 
     # -----------------------------------------------------------------------
+    # R4.1 Workflow primitives — state, cancel flag, notification (U2)
+    # -----------------------------------------------------------------------
+
+    def _workflow_key(self, wf_id: str) -> str:
+        return f"sq:wf:{wf_id}"
+
+    def _workflow_cancel_key(self, wf_id: str) -> str:
+        return f"sq:wf:cancel:{wf_id}"
+
+    def workflow_notify_channel(self, wf_id: str) -> str:
+        """Pub/Sub channel a workflow's ``get()`` waiter subscribes to and
+        the worker advancement/failure path publishes to (U4/U6). Distinct
+        from the per-task ``sq:notify:{task_id}`` channel — workflow liveness
+        is keyed by workflow id, which is stable from ``apply()`` time."""
+        return f"sq:wf:notify:{wf_id}"
+
+    async def store_workflow_state(
+        self, wf_id: str, state_data: bytes, ttl_ms: int,
+        op_timeout: float | None = None,
+    ) -> None:
+        """Persist the workflow topology+status blob under its wf-id key
+        with TTL. Overwrites on each call (the worker rewrites status as the
+        workflow advances)."""
+        try:
+            coro = self._client.set(self._workflow_key(wf_id), state_data, px=ttl_ms)
+            if op_timeout is not None:
+                await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"store_workflow_state timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def get_workflow_state(
+        self, wf_id: str, op_timeout: float | None = None,
+    ) -> bytes | None:
+        """Return the workflow state blob, or None when absent/expired
+        (the latter maps to ``WorkflowNotFound`` at the client layer, R14)."""
+        try:
+            coro = self._client.get(self._workflow_key(wf_id))
+            if op_timeout is not None:
+                return await asyncio.wait_for(coro, timeout=op_timeout)
+            return await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"get_workflow_state timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
+    async def set_workflow_cancel_flag(
+        self, wf_id: str, ttl_ms: int, op_timeout: float | None = None,
+    ) -> bool:
+        """Set the workflow-level cancel flag atomically with TTL (R17).
+
+        Returns True when newly set, False when it already existed. The
+        worker checks this flag in the same operation that decides the next
+        enqueue, so 'not yet enqueued' is well-defined under the advancement
+        race. Mirrors ``set_cancel_flag`` (SET NX PX)."""
+        try:
+            coro = self._client.set(
+                self._workflow_cancel_key(wf_id), "1", nx=True, px=ttl_ms
+            )
+            if op_timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                result = await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"set_workflow_cancel_flag timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return bool(result)
+
+    async def is_workflow_cancelled(
+        self, wf_id: str, op_timeout: float | None = None,
+    ) -> bool:
+        """Return True when a workflow-level cancel flag exists (R17)."""
+        try:
+            coro = self._client.exists(self._workflow_cancel_key(wf_id))
+            if op_timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=op_timeout)
+            else:
+                result = await coro
+        except TimeoutError as exc:
+            raise BackendConnectionError(
+                f"is_workflow_cancelled timed out after {op_timeout}s"
+            ) from exc
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+        return result == 1
+
+    async def publish_workflow_notification(self, wf_id: str) -> None:
+        """Wake any ``handle.get()`` waiting on this workflow (R16 liveness).
+
+        Best-effort: a dropped notification falls back to the get() state
+        poll, so transient publish failures are logged and swallowed —
+        consistent with the per-task ``publish_notification``."""
+        try:
+            await self._client.publish(self.workflow_notify_channel(wf_id), "done")
+        except (ValkeyError, OSError):
+            logger.warning(
+                "publish_workflow_notification failed", wf_id=wf_id, exc_info=True
+            )
+
+    # -----------------------------------------------------------------------
     # R3.5 Unique Tasks — dedup flag operations
     # -----------------------------------------------------------------------
 
