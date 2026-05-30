@@ -29,8 +29,12 @@ from swarmq.exceptions import (
     TaskCancelledError,
     TaskError,
     TaskNotFoundError,
+    WorkflowNotFound,
+    WorkflowResultExpired,
+    WorkflowValidationError,
 )
 from swarmq.progress import ProgressInfo
+from swarmq.workflow import Signature, chain, chord, group, sig
 
 if TYPE_CHECKING:
     # Type-checker only — at runtime these resolve through __getattr__.
@@ -96,8 +100,8 @@ def __dir__() -> list[str]:
 
 __all__ = [
     # Heavy lazy surface (resolved via __getattr__)
-    "ValkeyBackend",
     "RabbitMQBroker",
+    "ValkeyBackend",
     # Core API
     "SwarmQ",
     # Exceptions
@@ -113,6 +117,15 @@ __all__ = [
     "TaskCancelledError",
     "TaskError",
     "TaskNotFoundError",
+    "WorkflowNotFound",
+    "WorkflowResultExpired",
+    "WorkflowValidationError",
+    # Workflow primitives
+    "Signature",
+    "chain",
+    "chord",
+    "group",
+    "sig",
     # Health
     "HealthChecker",
     "HealthServer",

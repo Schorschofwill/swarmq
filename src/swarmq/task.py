@@ -20,6 +20,7 @@ from swarmq.locking import compute_lock_ttl_ms
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.workflow import Signature
 
 _progress_logger = structlog.get_logger()
 
@@ -275,7 +276,7 @@ class Task:
     # lookup falls back to the class dict. All defaults are immutable
     # scalars so there is no shared-state hazard.
     _task_id: str | None = None
-    _backend: "ValkeyBackend | None" = None
+    _backend: ValkeyBackend | None = None
     _task_start_time: float | None = None
     _result_ttl_ms: int = 86_400_000  # 24h fallback
     _last_progress_update: float = 0.0  # instance write shadows on first update
@@ -284,7 +285,7 @@ class Task:
     # Lazy-initialised on first update_progress call (asyncio.Lock cannot
     # be created at module-load time when no event loop is running, and a
     # class-level instance would be shared across all Task instances).
-    _progress_lock: "asyncio.Lock | None" = None
+    _progress_lock: asyncio.Lock | None = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -295,6 +296,39 @@ class Task:
     @classmethod
     def _clear_registered_tasks(cls) -> None:
         cls._registered_tasks.clear()
+
+    @classmethod
+    def s(cls, *args: object, **kwargs: object) -> Signature:
+        """Build a mutable workflow Signature for this task (R2). The
+        predecessor's result is injected as the first arg in a chain
+        unless the signature is immutable (see :meth:`si`)."""
+        from swarmq.workflow import Signature
+
+        return Signature(
+            cls.task_info.name,
+            args,
+            kwargs,
+            immutable=False,
+            _is_fire_and_forget=(
+                cls.task_info.delivery is DeliveryMode.FIRE_AND_FORGET
+            ),
+        )
+
+    @classmethod
+    def si(cls, *args: object, **kwargs: object) -> Signature:
+        """Build an immutable workflow Signature (R3): the predecessor's
+        result is NOT injected — the bound args are kept verbatim."""
+        from swarmq.workflow import Signature
+
+        return Signature(
+            cls.task_info.name,
+            args,
+            kwargs,
+            immutable=True,
+            _is_fire_and_forget=(
+                cls.task_info.delivery is DeliveryMode.FIRE_AND_FORGET
+            ),
+        )
 
     async def pre_execution(self) -> None:
         pass
@@ -397,7 +431,7 @@ class Task:
             await self._backend.set_progress(
                 self._task_id, fields, ttl_ms=self._result_ttl_ms,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _progress_logger.warning(
                 "update_progress_hset_failed",
                 task_id=self._task_id, error=str(exc),
@@ -409,7 +443,7 @@ class Task:
                 self._task_id,
                 json.dumps(fields).encode("utf-8"),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _progress_logger.warning(
                 "update_progress_publish_failed",
                 task_id=self._task_id, error=str(exc),

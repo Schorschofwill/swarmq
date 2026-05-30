@@ -36,6 +36,23 @@ class ResultNotReadyError(SwarmQError):
     pass
 
 
+class WorkflowValidationError(SwarmQError):
+    """Raised at workflow construction when a topology violates the
+    flat-DAG depth limit, the group-size limit, or embeds a
+    FIRE_AND_FORGET task as a step (R8, R9)."""
+
+
+class WorkflowNotFound(SwarmQError):
+    """Raised by ``client.workflow(workflow_id)`` when no workflow state
+    exists for the id (never started, or expired) — R14."""
+
+
+class WorkflowResultExpired(SwarmQError):
+    """Raised when a member/step result needed for fan-in or final
+    retrieval has expired before the workflow completed — R6. Distinct
+    from 'never written' so callers never see silent ``None`` holes."""
+
+
 class ResultExpiredError(SwarmQError):
     pass
 
