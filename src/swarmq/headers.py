@@ -20,3 +20,13 @@ HEADER_UNIQUE_UNTIL = "x-swarmq-unique-until"
 # on consume. Expired messages route to DLQ with TASK_EXPIRED signal
 # instead of running.
 HEADER_ENQUEUED_AT = "x-swarmq-enqueued-at"
+
+# R4.1 Workflow primitives — set on every workflow-step message so the
+# worker advancement seam (U5) recognises a step and can advance the
+# workflow. WORKFLOW_ID is stable from apply() time (also the get()
+# notification channel key); WORKFLOW_STEP is the node's path within the
+# persisted topology (e.g. "/0", "/1/h/g2") used to navigate to the next
+# step / chord. Absence of WORKFLOW_ID means a normal non-workflow task —
+# the advancement seam is a no-op for it.
+HEADER_WORKFLOW_ID = "x-swarmq-workflow-id"
+HEADER_WORKFLOW_STEP = "x-swarmq-workflow-step"

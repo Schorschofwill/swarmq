@@ -10,7 +10,6 @@ from swarmq.client import _MISSING, Client, _MissingType
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
-    from swarmq.worker import Worker
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
@@ -30,7 +29,7 @@ def __getattr__(name: str) -> object:
     if name == "Worker":
         import importlib
 
-        return getattr(importlib.import_module("swarmq.worker"), "Worker")
+        return importlib.import_module("swarmq.worker").Worker
     raise AttributeError(f"module 'swarmq.app' has no attribute {name!r}")
 
 
@@ -176,6 +175,19 @@ class SwarmQ:
         """
         ttl_ms = self.config.result_ttl * 1000
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
+
+    async def apply(self, workflow: Any) -> Any:
+        """Start a workflow (chain/group/chord) fire-and-forget; return a
+        reattachable :class:`WorkflowHandle` (R10). Workflow state TTL is
+        derived from ``config.result_ttl`` so it outlives the retry horizon."""
+        return await self.client.apply(
+            workflow, state_ttl_ms=self.config.result_ttl * 1000
+        )
+
+    async def workflow(self, workflow_id: str) -> Any:
+        """Reattach to a workflow by id (R14); raises WorkflowNotFound when
+        absent."""
+        return await self.client.workflow(workflow_id)
 
     async def start_worker(self) -> None:
         # Resolve Worker through the module-level __getattr__ so test

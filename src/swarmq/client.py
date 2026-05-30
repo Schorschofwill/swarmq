@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import time
 import uuid
-import json as _json
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
@@ -22,22 +22,33 @@ from swarmq.exceptions import (
     TaskError,
     TaskNotFoundError,
 )
+from swarmq.headers import (
+    HEADER_ENQUEUED_AT,
+    HEADER_UNIQUE_HASH,
+    HEADER_UNIQUE_UNTIL,
+    HEADER_WORKFLOW_ID,
+    HEADER_WORKFLOW_STEP,
+)
 from swarmq.middleware import (
     MessageContext,
     MiddlewareChain,
     coerce_middleware_chain_factory,
 )
-from swarmq.registry import TaskRegistry
-from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.progress import ProgressInfo
+from swarmq.registry import TaskRegistry
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import (
-    canonical_encode,
     compute_dedup_hash,
     decode_result,
     encode_json,
 )
 from swarmq.signals import Signal, SignalDispatcher
+from swarmq.workflow import Chain, Chord, Group, Signature
+from swarmq.workflow_orchestration import (
+    WorkflowHandle,
+    build_initial_workflow_state,
+    initial_frontier,
+)
 
 logger = structlog.get_logger()
 
@@ -48,6 +59,12 @@ logger = structlog.get_logger()
 # tighter window (e.g. deterministic task_id systems vulnerable to
 # stale-flag-zombie, see Client.cancel docstring) can override.
 _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
+
+# R4.1 Workflow state TTL. Workflow topology/status must outlive the
+# longest step + retry horizon so reattach (R14) and fan-in (R6) stay
+# resolvable. 24h matches the result-TTL default; app.apply() passes
+# config.result_ttl * 1000 through.
+_DEFAULT_WORKFLOW_TTL_MS = 86_400_000  # 24h
 
 
 # R3.5 Unique Tasks: module-private sentinel that distinguishes
@@ -63,14 +80,14 @@ _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
 class _MissingType:
     """Private singleton for the `_MISSING` sentinel. See module docstring."""
     __slots__ = ()
-    _instance: "_MissingType | None" = None
+    _instance: _MissingType | None = None
 
-    def __new__(cls) -> "_MissingType":
+    def __new__(cls) -> _MissingType:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __repr__(self) -> str:  # noqa: D401
+    def __repr__(self) -> str:
         return "<_MISSING>"
 
     def __bool__(self) -> bool:
@@ -229,7 +246,7 @@ class Client:
                 dedup_hash, task_id,
                 op_timeout=self._backend_op_timeout,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "swarmq.dedup.rollback_failed",
                 dedup_hash=dedup_hash,
@@ -1083,6 +1100,98 @@ class Client:
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         return task_id
+
+    # ------------------------------------------------------------------
+    # R4.1 Workflow primitives — apply / reattach
+    # ------------------------------------------------------------------
+
+    async def apply(
+        self,
+        workflow: Signature | Chain | Group | Chord,
+        *,
+        state_ttl_ms: int = _DEFAULT_WORKFLOW_TTL_MS,
+    ) -> WorkflowHandle:
+        """Start a workflow fire-and-forget; return a reattachable handle (R10).
+
+        Persists the topology + initial state to Valkey, then enqueues the
+        initial frontier (first chain step / all group members / chord
+        header) as ``AT_LEAST_ONCE`` workflow-step messages. The worker
+        advancement seam drives the rest. Returns immediately — the workflow
+        runs independently of this client process.
+
+        State is written BEFORE the frontier is published so a fast-completing
+        first step always finds the topology in Valkey when it advances.
+        """
+        workflow_id = str(uuid.uuid7())
+        frontier = initial_frontier(workflow)  # list[(step_path, Signature)]
+
+        # Generate task ids up front so the persisted state records the
+        # initial step->task_id mapping the worker reads when advancing.
+        enqueue_plan: list[tuple[str, str, Signature, str]] = []
+        step_tasks: dict[str, str] = {}
+        for step_path, signature in frontier:
+            task_id = str(uuid.uuid7())
+            resolved_queue, _delivery = self._resolve_queue_and_delivery_mode(
+                signature.task_name, None
+            )
+            enqueue_plan.append((step_path, task_id, signature, resolved_queue))
+            step_tasks[step_path] = task_id
+
+        state = build_initial_workflow_state(workflow_id, workflow.to_dict())
+        state["step_tasks"] = step_tasks
+        await self._backend.store_workflow_state(
+            workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
+            op_timeout=self._backend_op_timeout,
+        )
+
+        enqueued_at = int(time.time())
+        for step_path, task_id, signature, resolved_queue in enqueue_plan:
+            message = {
+                "task": {
+                    "id": task_id,
+                    "queue": resolved_queue,
+                    "name": signature.task_name,
+                },
+                "args": list(signature.args),
+                "kwargs": signature.kwargs,
+            }
+            headers = {
+                HEADER_WORKFLOW_ID: workflow_id,
+                HEADER_WORKFLOW_STEP: step_path,
+                HEADER_ENQUEUED_AT: enqueued_at,
+            }
+            await self._broker.publish(
+                resolved_queue, encode_json(message), headers=headers
+            )
+
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_ENQUEUED,
+            task_id=workflow_id,
+            task_name="<workflow>",
+            queue="<workflow>",
+        )
+        return WorkflowHandle(
+            self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms
+        )
+
+    async def workflow(self, workflow_id: str) -> WorkflowHandle:
+        """Reattach to a running/finished workflow by id (R14).
+
+        Raises :class:`WorkflowNotFound` when no state exists for the id
+        (never started, or expired) — never returns a handle over empty
+        state.
+        """
+        raw = await self._backend.get_workflow_state(
+            workflow_id, op_timeout=self._backend_op_timeout
+        )
+        if raw is None:
+            from swarmq.exceptions import WorkflowNotFound
+
+            raise WorkflowNotFound(workflow_id)
+        return WorkflowHandle(
+            self._backend, workflow_id, self._unpack,
+            cancel_ttl_ms=_DEFAULT_WORKFLOW_TTL_MS,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
