@@ -89,6 +89,27 @@ asyncio.run(main())
 - **CLI** — `swarmq worker`, `swarmq schedule`, `swarmq dlq *`,
   `swarmq inspect`.
 
+### Workflow primitives
+
+- **`chain` / `group` / `chord`** with `Signature` building blocks
+  (`Task.s()`, `sig("name")`, immutable `Task.si()`) and operator
+  syntax (`A.s() | B.s()`, `group(...) | merge.s()`). Flat-DAG
+  composition with construction-time limits (`max_workflow_depth=10`,
+  `max_group_size=1000`).
+- **Fire-and-forget `apply()`** returns a reattachable handle:
+  `await app.apply(chain(...))` → `handle.get(timeout=...)`, `cancel()`,
+  `children`, stable `workflow_id` reattach via `app.workflow(id)`.
+- **Worker-driven orchestration** — workers advance the workflow on each
+  task completion (chain result-injection, atomic+idempotent chord
+  fan-in via Lua). Fail-fast with liveness: a failed step marks the
+  workflow failed and wakes `get()` instead of hanging.
+
+```python
+result = await (await app.apply(
+    chord(group(Download.s(u) for u in urls), Merge.s())
+)).get(timeout=30)
+```
+
 ### Operations (Phase 4 + Phase 5)
 
 - **Multi-process workers** (`--processes N`) — supervisor starts N
@@ -144,10 +165,11 @@ list in `src/swarmq/config.py`.
 
 Phase 4 operator features complete (Priorities, Expiry, Burst,
 ProcessManager, Autoscaling). Phase 5 Wave 1 complete (Metrics,
-Health, Hot reload). Remaining — machine-readable agent docs (R5.5,
-deferred until a concrete consumer arrives).
-Workflow primitives (`chain` / `group` / `chord`) and bulk-throughput
-optimisation deferred — see
+Health, Hot reload). Workflow primitives (`chain` / `group` / `chord`
++ Signatures) implemented — see "Workflow primitives" above.
+Remaining — machine-readable agent docs (R5.5, deferred until a
+concrete consumer arrives) and bulk-throughput optimisation
+(`schedule_many` fast path) — see
 `docs/brainstorms/implementation-order-requirements.md`.
 
 ## Project layout

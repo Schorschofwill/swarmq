@@ -1,7 +1,7 @@
 ---
 title: "feat: Workflow-Primitive (chain / group / chord + Signatures)"
 type: feat
-status: active
+status: completed
 date: 2026-05-30
 origin: docs/brainstorms/2026-05-30-workflow-primitives-requirements.md
 ---
