@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain, chord, group
@@ -78,6 +80,10 @@ class FakeChord:
 def _unpack(raw: bytes):
     data = decode_result(raw)
     return data["result"]
+
+
+async def _noop() -> None:
+    return None
 
 
 class Driver:
@@ -230,6 +236,41 @@ async def test_standalone_group_completes_with_aggregate():
     assert st["status"] == STATUS_COMPLETED
     final = await d.final_value()
     assert final == [["x"], ["y"]]
+
+
+async def test_expired_member_result_raises_workflow_result_expired():
+    # R6: a chord fan-in where one (completed) member's result has expired
+    # must raise WorkflowResultExpired, not silently pass None to the body.
+    from swarmq.exceptions import WorkflowResultExpired
+
+    be = FakeBackend()
+    ch = FakeChord()
+    adv = WorkflowAdvancer(
+        be,
+        ch,
+        publish=lambda *a: _noop(),
+        resolve_queue=lambda name: "default",
+        make_task_id=lambda: "t-x",
+        unpack=_unpack,
+        ttl_ms=60_000,
+    )
+    wf = chord(group(Echo.s("a"), Echo.s("b")), Echo.s())
+    state = build_initial_workflow_state("wf", wf.to_dict())
+    state["step_tasks"] = {"/h/g0": "m0", "/h/g1": "m1"}
+    be.wf_state["wf"] = encode_json(state)
+    # Only m1's result exists; m0 expired before fan-in.
+    be.results["m1"] = encode_result(
+        {
+            "task": {"id": "m1", "queue": "default", "name": "echo"},
+            "is_error": False,
+            "is_cancelled": False,
+            "error_message": "",
+            "result": ["b"],
+        }
+    )
+    await adv.advance("wf", "/h/g0", "m0", ["a"])  # 1/2 — no gather yet
+    with pytest.raises(WorkflowResultExpired):
+        await adv.advance("wf", "/h/g1", "m1", ["b"])  # 2/2 — gathers, m0 gone
 
 
 async def test_chain_with_embedded_chord():

@@ -159,6 +159,21 @@ async def test_get_raises_on_cancelled():
         await h.get(timeout=1.0)
 
 
+async def test_get_raises_when_final_result_expired():
+    # R6: completed workflow whose final result expired must raise
+    # WorkflowResultExpired, not return a misleading None.
+    from swarmq.exceptions import WorkflowResultExpired
+
+    state = build_initial_workflow_state("wf-1", {})
+    state["status"] = STATUS_COMPLETED
+    state["final_result_task_id"] = "task-final"
+    be = _backend_with_state(state)
+    be.get_result = AsyncMock(return_value=None)  # expired
+    h = _handle(be)
+    with pytest.raises(WorkflowResultExpired):
+        await h.get(timeout=1.0)
+
+
 async def test_get_times_out_while_running():
     # No pubsub (create_pubsub raises) → poll path → timeout on running state.
     be = _backend_with_state(build_initial_workflow_state("wf-1", {}))

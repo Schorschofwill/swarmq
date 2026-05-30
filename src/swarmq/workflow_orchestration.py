@@ -19,6 +19,7 @@ from swarmq.exceptions import (
     TaskCancelledError,
     TaskError,
     WorkflowNotFound,
+    WorkflowResultExpired,
     WorkflowValidationError,
 )
 from swarmq.lua import load_script
@@ -182,7 +183,12 @@ class WorkflowHandle:
             return None
         raw = await self._backend.get_result(final_id)
         if raw is None:
-            return None
+            # State says completed but the final result is gone → it expired
+            # (R6): surface it rather than returning a misleading None.
+            raise WorkflowResultExpired(
+                f"workflow {self.workflow_id} completed but its final result "
+                "expired before retrieval; raise the result/workflow TTL"
+            )
         return self._unpack(raw)
 
 
@@ -545,9 +551,18 @@ class WorkflowAdvancer:
         return values
 
     async def _result_value(self, task_id: str) -> Any:
+        # Called only for steps the workflow already observed as complete, so
+        # a missing key means the result EXPIRED before fan-in/propagation —
+        # not "never written" and not "the task returned None" (a None return
+        # is stored as a result dict, so get_result yields bytes, not None).
+        # Surface it as WorkflowResultExpired (R6) instead of a silent None
+        # hole; the worker advance path turns this into a failed workflow.
         raw = await self._backend.get_result(task_id)
         if raw is None:
-            return None
+            raise WorkflowResultExpired(
+                f"result for completed step {task_id} expired before the "
+                "workflow could consume it; raise the result/workflow TTL"
+            )
         return self._unpack(raw)
 
     async def _materialise(
