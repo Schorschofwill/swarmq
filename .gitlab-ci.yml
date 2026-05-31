@@ -18,6 +18,15 @@
 #     ships abi3 wheels so it installs without a Rust toolchain. `fast`
 #     (orjson) is intentionally NOT installed — it has no cp314/abi3 wheel and
 #     would require Rust; no test hard-depends on it.
+# Run exactly one pipeline per push: a branch (or tag) pipeline. Merge-request
+# pipelines are suppressed because the test jobs carry no MR `rules` and would
+# be skipped there — which is what produced the confusing "skipped" MR pipeline
+# alongside the real branch pipeline. The MR shows the branch pipeline's status.
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+
 stages:
   - test
   - secret-detection
