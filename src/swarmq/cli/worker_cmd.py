@@ -24,13 +24,36 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     registered`` check, which surfaces a config error rather than
     starting an idle worker that will silently never execute anything.
     """
-    importlib.import_module(args.module)
+    try:
+        importlib.import_module(args.module)
+    except ImportError as exc:
+        # R3a: a task module that uses FromDishka triggers `from dishka import
+        # FromDishka` at import; without the extra installed that raises a raw
+        # ImportError here, before any SwarmQ validation. Re-raise with an
+        # actionable hint instead of a bare traceback.
+        from swarmq.dishka import _HAVE_DISHKA
+
+        if not _HAVE_DISHKA and "dishka" in str(exc).lower():
+            raise ConfigurationError(
+                f"importing {args.module!r} failed because the 'dishka' extra "
+                f"is not installed but a task uses FromDishka: {exc}. "
+                f"Install it with: pip install 'swarmq[dishka]'"
+            ) from exc
+        raise
+
     if not Task._registered_tasks:
         raise ConfigurationError(
             f"no tasks registered after importing {args.module!r}; "
             "ensure your tasks subclass swarmq.Task and the module's "
             "top-level imports execute the class definitions"
         )
+
+    # R3b: fail fast at worker start if a task uses FromDishka but the
+    # container is missing or cannot resolve an injected type — instead of a
+    # NoFactoryError mid-task on first execution.
+    from swarmq.dishka import validate_registered_tasks
+
+    validate_registered_tasks(Task._registered_tasks)
 
     # Pre-check the env vars before SwarmQConfig so we can give a CLI-aware
     # error message that names the variable, instead of SwarmQConfig's

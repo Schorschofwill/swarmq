@@ -108,6 +108,71 @@ def _reset_container() -> None:
 _LIFECYCLE_METHODS: Final = ("run", "pre_execution", "post_execution")
 
 
+def _key_resolvable(container: object, key: object) -> bool:
+    """Best-effort check: does ``container``'s provider graph carry a factory
+    for ``key``? Walks the APP registry and its child (SESSION/REQUEST/…)
+    registries via the (private) introspection surface verified on the pinned
+    dishka version. Returns True if the introspection API is not shaped as
+    expected, degrading R3b to container-presence-only rather than blocking a
+    valid worker on an upstream API change."""
+    try:
+        reg = container.registry  # type: ignore[attr-defined]
+        while reg is not None:
+            if reg.get_factory(key) is not None:
+                return True
+            reg = reg.child_registry
+        return False
+    except AttributeError:
+        # Introspection surface changed across dishka versions — degrade to
+        # presence-only (the container-registered check already passed).
+        return True
+
+
+def validate_registered_tasks(registered_tasks: list[type]) -> None:
+    """Worker-start validation for DI tasks (plan R3b).
+
+    For every registered task that declares ``FromDishka`` parameters, ensure a
+    container is registered and each injected type resolves against the
+    container graph. Catches Dishka's otherwise runtime-deferred
+    ``NoFactoryError`` at startup instead of mid-task. No-op when dishka is
+    absent or no task uses injection.
+    """
+    if not _HAVE_DISHKA:
+        return
+
+    di_tasks = [
+        t for t in registered_tasks if getattr(t, "_dishka_injected_keys", None)
+    ]
+    if not di_tasks:
+        return
+
+    from swarmq.exceptions import ConfigurationError
+
+    container = get_registered_container()
+    if container is _MISSING:
+        names = ", ".join(t.task_info.name for t in di_tasks)  # type: ignore[attr-defined]
+        raise ConfigurationError(
+            f"task(s) [{names}] use FromDishka but no Dishka container was "
+            f"registered; call swarmq.setup_dishka(container) at module level "
+            f"(see 'swarmq[dishka]')"
+        )
+
+    missing: list[str] = []
+    for task in di_tasks:
+        for key in task._dishka_injected_keys:  # type: ignore[attr-defined]
+            if not _key_resolvable(container, key):
+                type_hint = getattr(key, "type_hint", key)
+                name = getattr(type_hint, "__name__", repr(type_hint))
+                missing.append(f"{task.task_info.name} -> {name}")  # type: ignore[attr-defined]
+    if missing:
+        detail = "; ".join(missing)
+        raise ConfigurationError(
+            f"Dishka container has no provider for injected type(s): {detail}. "
+            f"Register the missing provider(s) (and SwarmQProvider for "
+            f"TaskContext) before starting the worker."
+        )
+
+
 def _get_request_container(args: object, kwargs: object) -> object:
     """container_getter for wrap_injection: returns the per-task REQUEST
     container set by the worker. Raises a clear error if called outside an

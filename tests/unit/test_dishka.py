@@ -218,6 +218,85 @@ def test_wrapped_run_preserves_return_annotation_for_registry():
     assert ann.get("return") is str
 
 
+def test_validate_no_di_tasks_is_noop():
+    """R3b: validation is a no-op when no registered task uses FromDishka."""
+    from swarmq.dishka import validate_registered_tasks
+
+    validate_registered_tasks([])  # must not raise
+
+
+def test_validate_di_task_without_container_raises():
+    """AE3/R3b: a FromDishka task with no registered container fails at
+    validation time with an actionable message."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.dishka import validate_registered_tasks
+    from swarmq.exceptions import ConfigurationError
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class VT1(Task):
+        task_info = TaskInfo(name="vt1", queues=["q"])
+
+        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            pass
+
+    di._reset_container()
+    with pytest.raises(ConfigurationError, match="setup_dishka"):
+        validate_registered_tasks([VT1])
+
+
+def test_validate_di_task_missing_provider_raises():
+    """R3b: a registered container lacking a provider for an injected type
+    fails at validation, not at first execution (no deferred NoFactoryError)."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka, make_async_container
+
+    from swarmq.dishka import validate_registered_tasks
+    from swarmq.exceptions import ConfigurationError
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class VT2(Task):
+        task_info = TaskInfo(name="vt2", queues=["q"])
+
+        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            pass
+
+    di.setup_dishka(make_async_container())  # no provider for Dep
+    with pytest.raises(ConfigurationError, match="no provider"):
+        validate_registered_tasks([VT2])
+
+
+def test_validate_di_task_resolvable_passes():
+    """R3b: when every injected type resolves, validation passes silently."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka, Provider, Scope, make_async_container, provide
+
+    from swarmq.dishka import validate_registered_tasks
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class DepProvider(Provider):
+        dep = provide(Dep, scope=Scope.APP)
+
+    class VT3(Task):
+        task_info = TaskInfo(name="vt3", queues=["q"])
+
+        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            pass
+
+    di.setup_dishka(make_async_container(DepProvider()))
+    validate_registered_tasks([VT3])  # must not raise
+
+
 def test_module_imports_without_dishka_and_core_symbols_usable():
     """R2/AE6: swarmq.dishka imports with dishka absent; core symbols work,
     SwarmQProvider access raises a clear error."""
