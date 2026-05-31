@@ -1,9 +1,11 @@
 """Unit tests for the optional Dishka DI foundation (plan U1).
 
 Covers the dishka-free core (TaskContext, container slot, sentinel) and the
-guarded SwarmQProvider surface. The dishka-absent path is simulated with
-``patch.dict(sys.modules, {"dishka": None})`` + module reimport, mirroring
-tests/unit/test_hot_reload.py.
+guarded SwarmQProvider surface. The dishka-absent path is exercised by loading
+a fresh throwaway copy of the module from source with ``dishka`` blocked via
+``patch.dict(sys.modules, {"dishka": None})`` — never reloading the live
+module, which would rebind _MISSING/TaskContext and break identity checks in
+importers like worker.py.
 
 Note: this module intentionally does NOT use ``from __future__ import
 annotations``. The DI tests define Task subclasses inside test functions, and
@@ -14,7 +16,6 @@ the future import is fine there.
 """
 
 import dataclasses
-import importlib
 import sys
 from unittest.mock import patch
 
@@ -299,22 +300,36 @@ def test_validate_di_task_resolvable_passes():
 
 def test_module_imports_without_dishka_and_core_symbols_usable():
     """R2/AE6: swarmq.dishka imports with dishka absent; core symbols work,
-    SwarmQProvider access raises a clear error."""
-    with patch.dict(sys.modules, {"dishka": None}):
-        reloaded = importlib.reload(di)
-        try:
-            assert reloaded._HAVE_DISHKA is False
-            # Core symbols stay usable without dishka.
-            ctx = reloaded.TaskContext(
-                task_id="x", task_name="y", queue="q", retry_count=0
-            )
-            assert ctx.task_id == "x"
-            sentinel = object()
-            reloaded.setup_dishka(sentinel)  # type: ignore[arg-type]
-            assert reloaded.get_registered_container() is sentinel
-            # SwarmQProvider access raises a clear, actionable error.
-            with pytest.raises(ImportError, match=r"swarmq\[dishka\]"):
-                _ = reloaded.SwarmQProvider
-        finally:
-            # Restore the real module for subsequent tests.
-            importlib.reload(importlib.import_module("swarmq.dishka"))
+    SwarmQProvider access raises a clear error.
+
+    Loads a FRESH, throwaway copy of the module from its source file with
+    dishka blocked — never reloads the live swarmq.dishka, which would rebind
+    _MISSING/TaskContext and break the identity checks in modules (e.g.
+    worker.py) that imported those objects by reference.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "swarmq._dishka_noimport_probe", Path(di.__file__)
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    # Block dishka AND register the probe module under its own name so the
+    # frozen+slots dataclass can resolve cls.__module__ during creation
+    # (CPython dataclasses does sys.modules[cls.__module__].__dict__).
+    with patch.dict(
+        sys.modules, {"dishka": None, "swarmq._dishka_noimport_probe": mod}
+    ):
+        spec.loader.exec_module(mod)
+
+    assert mod._HAVE_DISHKA is False
+    # Core symbols stay usable without dishka.
+    ctx = mod.TaskContext(task_id="x", task_name="y", queue="q", retry_count=0)
+    assert ctx.task_id == "x"
+    sentinel = object()
+    mod.setup_dishka(sentinel)
+    assert mod.get_registered_container() is sentinel
+    # SwarmQProvider access raises a clear, actionable error.
+    with pytest.raises(ImportError, match=r"swarmq\[dishka\]"):
+        _ = mod.SwarmQProvider

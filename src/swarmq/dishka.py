@@ -77,7 +77,7 @@ _container: AsyncContainer | _Missing = _MISSING
 # run task's context) and resets it afterwards. The ``@inject``-wrapped task
 # methods read it via their ``container_getter`` — this keeps the call site
 # ``task_instance.run(*args, **kwargs)`` unchanged.
-request_container: contextvars.ContextVar = contextvars.ContextVar(
+request_container: contextvars.ContextVar[AsyncContainer] = contextvars.ContextVar(
     "swarmq_request_container"
 )
 
@@ -173,7 +173,9 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
         )
 
 
-def _get_request_container(args: object, kwargs: object) -> object:
+def _get_request_container(
+    args: tuple[object, ...], kwargs: dict[str, object]
+) -> AsyncContainer:
     """container_getter for wrap_injection: returns the per-task REQUEST
     container set by the worker. Raises a clear error if called outside an
     active request scope (e.g. a FromDishka task invoked directly in a test
