@@ -10,7 +10,10 @@
 #   secret-detection stage — GitLab Secret Detection (unchanged).
 #
 # All Python steps run through uv against the committed uv.lock (UV_FROZEN),
-# on the project's pinned Python 3.14.
+# on the project's pinned Python 3.14. The valkey[libvalkey] dependency has a
+# C extension with no cp314 wheel yet, so it is compiled from source — every
+# uv-running job installs build-essential first (the slim uv image ships no
+# compiler).
 stages:
   - test
   - secret-detection
@@ -20,7 +23,8 @@ variables:
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
   UV_FROZEN: "1"
 
-# Shared uv setup: pinned-Python image + lockfile-keyed dependency cache.
+# Shared uv setup: pinned-Python image, build toolchain for the libvalkey C
+# extension, and a lockfile-keyed dependency cache.
 .uv:
   image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
   cache:
@@ -29,14 +33,16 @@ variables:
         - uv.lock
     paths:
       - .uv-cache
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential
 
 # Real RabbitMQ + Valkey services + a readiness gate. Reused by the
-# integration and e2e jobs.
+# integration and e2e jobs. (rabbitmq gets the alias `rabbitmq` automatically
+# from its image name; only valkey/valkey:8 needs an explicit `valkey` alias.)
 .with-services:
   extends: .uv
   services:
     - name: rabbitmq:4-management
-      alias: rabbitmq
     - name: valkey/valkey:8
       alias: valkey
   variables:
@@ -45,6 +51,7 @@ variables:
     SWARMQ_TEST_VALKEY_HOST: valkey
     SWARMQ_TEST_VALKEY_PORT: "6379"
   before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential
     # Block until both services accept connections. check_docker SKIPS (not
     # fails) when a service is unreachable, so without this gate a slow broker
     # start would let the whole suite go green with zero tests run.
@@ -111,7 +118,7 @@ chaos-tests:
       allow_failure: true
   allow_failure: true
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends docker.io docker-compose-v2
+    - apt-get update && apt-get install -y --no-install-recommends build-essential docker.io docker-compose-v2
   script:
     - uv run --extra test pytest -m chaos tests/chaos/test_workflow_chord_idempotency.py -q
 
