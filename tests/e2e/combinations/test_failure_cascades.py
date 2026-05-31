@@ -102,11 +102,18 @@ async def _running_worker(
     cancel_poll_interval: float = 0.1,
     shutdown_timeout: int = 5,
     middlewares: list[Middleware] | None = None,
+    mirror_to: Any = None,
 ):
     """Spin up an in-process SwarmQ worker against the given queue.
 
     Yields the worker SwarmQ app after WORKER_ONLINE fires.  Optional
     ``middlewares`` are attached before the worker starts.
+
+    ``mirror_to`` (a SignalDispatcher, typically the producer ``app``'s) makes
+    the worker re-dispatch every signal it emits onto that dispatcher, so
+    SignalRecorder / @on_signal observers attached to the producer app see the
+    worker's task-lifecycle signals (the worker runs in a separate SwarmQ
+    instance with its own dispatcher).
     """
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
@@ -126,6 +133,14 @@ async def _running_worker(
     @worker_app.on_signal(Signal.WORKER_ONLINE)
     async def _online(**_: Any) -> None:
         online.set()
+
+    if mirror_to is not None:
+        def _make_forwarder(sig: Signal):
+            async def _forward(**payload: Any) -> None:
+                await mirror_to.dispatch(sig, **payload)
+            return _forward
+        for _sig in Signal:
+            worker_app._signal_dispatcher.connect(_sig, _make_forwarder(_sig))
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
@@ -182,7 +197,10 @@ class TestDLQUniqueForCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(completed.wait(), timeout=8.0)
                 result = await app.get_result(tid, timeout=5)
@@ -236,7 +254,10 @@ class TestDLQUniqueForCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 1)
 
                 # Wait for the task to fail and land in DLQ.
@@ -293,7 +314,10 @@ class TestDLQUniqueForCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 7)
                 await asyncio.wait_for(failed_event.wait(), timeout=8.0)
                 await asyncio.sleep(0.1)
@@ -363,7 +387,10 @@ class TestDLQRetryResultTTLCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 41)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
                 result = await app.get_result(tid, timeout=5)
@@ -411,7 +438,10 @@ class TestDLQRetryResultTTLCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 0)
                 await asyncio.wait_for(failed_event.wait(), timeout=12.0)
                 # Allow DLQ-move ack to propagate.
@@ -459,7 +489,10 @@ class TestDLQRetryResultTTLCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 1)
                 await asyncio.wait_for(failed_event.wait(), timeout=8.0)
                 await asyncio.sleep(0.2)
@@ -504,7 +537,10 @@ class TestDLQRetryResultTTLCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 1)
                 await asyncio.wait_for(failed_event.wait(), timeout=8.0)
 
@@ -572,6 +608,7 @@ class TestPreExecuteRaiseSignalCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue, middlewares=[TrackingMiddleware()],
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 9)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
@@ -626,6 +663,7 @@ class TestPreExecuteRaiseSignalCombo:
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue,
                 middlewares=[ThrowingPreMiddleware()],
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 4)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
@@ -676,6 +714,7 @@ class TestPreExecuteRaiseSignalCombo:
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue,
                 middlewares=[PreThrowPostTrackMiddleware()],
+                mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 1)
                 # post_execute must have run despite pre_execute raising.
@@ -715,6 +754,7 @@ class TestPreExecuteRaiseSignalCombo:
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue,
                 middlewares=[PreThrowMiddleware()],
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
@@ -764,6 +804,7 @@ class TestPreExecuteRaiseSignalCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue, middlewares=[PreRaiseMW()],
+                mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 1)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
@@ -820,6 +861,7 @@ class TestPostExecuteRaiseRetryCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue, middlewares=[TrackPostMW()],
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 32)
                 await asyncio.wait_for(post_called.wait(), timeout=8.0)
@@ -865,6 +907,7 @@ class TestPostExecuteRaiseRetryCombo:
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue,
                 middlewares=[ThrowingPostMW()],
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 6)
                 await asyncio.wait_for(completed_event.wait(), timeout=8.0)
@@ -916,6 +959,7 @@ class TestPostExecuteRaiseRetryCombo:
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue,
                 middlewares=[AlwaysThrowPostMW()],
+                mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 1)
                 await asyncio.wait_for(completed_event.wait(), timeout=8.0)
@@ -962,6 +1006,7 @@ class TestPostExecuteRaiseRetryCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue, middlewares=[PostRaiseMW()],
+                mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 2)
                 await asyncio.wait_for(done.wait(), timeout=8.0)

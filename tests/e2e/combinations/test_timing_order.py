@@ -92,10 +92,18 @@ async def _running_worker(
     scheduler_poll_interval: float = 0.1,
     scheduler_heartbeat_interval: float = 0.2,
     scheduler_lock_ttl: float = 1.0,
+    mirror_to: Any = None,
 ):
     """Spin up an in-process SwarmQ worker against the given queue.
 
     Yields the worker app after WORKER_ONLINE fires.
+
+    ``mirror_to`` (a SignalDispatcher, typically the producer ``app``'s) makes
+    the worker re-dispatch every signal it emits onto that dispatcher, so
+    SignalRecorder / @on_signal observers attached to the producer app see the
+    worker's task-lifecycle signals. Without it the worker's separate
+    dispatcher means those observers record nothing (emitted=[] / wait
+    timeouts).
     """
     all_queues = [queue] + (extra_queues or [])
     worker_broker = RabbitMQBroker(rabbitmq_url)
@@ -117,6 +125,14 @@ async def _running_worker(
     @worker_app.on_signal(Signal.WORKER_ONLINE)
     async def _online(**_: Any) -> None:
         online.set()
+
+    if mirror_to is not None:
+        def _make_forwarder(sig: Signal):
+            async def _forward(**payload: Any) -> None:
+                await mirror_to.dispatch(sig, **payload)
+            return _forward
+        for _sig in Signal:
+            worker_app._signal_dispatcher.connect(_sig, _make_forwarder(_sig))
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
@@ -291,7 +307,10 @@ class TestCronCatchupUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 # Enqueue N fires; first succeeds, rest are deduplicated.
                 task_ids: list[str] = []
                 for _ in range(n_fires):
@@ -349,7 +368,10 @@ class TestCronCatchupUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 for i in range(n_fires):
                     await app.schedule(task_name, i)
 
@@ -398,7 +420,10 @@ class TestCronCatchupUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 # Fire-1: schedule with arg=1.
                 tid1 = await app.schedule(task_name, 1)
                 # Wait for completion so unique flag is released.
@@ -461,7 +486,10 @@ class TestCronCatchupRateLimitCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 0)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
                 result = await app.get_result(tid, timeout=5)
@@ -596,7 +624,10 @@ class TestCronCatchupRateLimitCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 for i in range(n_fires):
                     await app.schedule(task_name, i)
 
@@ -648,7 +679,10 @@ class TestCronCatchupRateLimitCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 for i in range(n_fires):
                     await app.schedule(task_name, i)
 
@@ -714,7 +748,10 @@ class TestSoftTimeoutCancelRace:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 7)
                 result = await app.get_result(tid, timeout=8.0)
 
@@ -766,7 +803,8 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05
+                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
                 await asyncio.wait_for(started.wait(), timeout=5.0)
@@ -827,7 +865,8 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05
+                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
                 await asyncio.wait_for(started.wait(), timeout=5.0)
@@ -891,7 +930,8 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.01
+                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.01,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
                 await asyncio.wait_for(started.wait(), timeout=5.0)
@@ -962,7 +1002,10 @@ class TestHardTimeoutRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(done.wait(), timeout=15.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1009,7 +1052,10 @@ class TestHardTimeoutRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "x")
                 await asyncio.wait_for(done.wait(), timeout=15.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1059,7 +1105,10 @@ class TestHardTimeoutRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "state-check")
                 # Wait for retry to start — lock must have been released.
                 await asyncio.wait_for(retry_started.wait(), timeout=10.0)
@@ -1109,7 +1158,10 @@ class TestHardTimeoutRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name)
 
                 # Wait for TASK_FAILED signal (fires after all retries exhausted).
@@ -1228,7 +1280,10 @@ class TestMaxAgeSchedulerCombo:
             # Let the message age past max_age=1s before the worker starts.
             await asyncio.sleep(1.5)
 
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 # Worker picks up the already-expired message.
                 await asyncio.wait_for(expired_signal.wait(), timeout=8.0)
 
@@ -1277,7 +1332,10 @@ class TestMaxAgeSchedulerCombo:
             await app.schedule(task_name, "stale")
             await asyncio.sleep(1.5)
 
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 # Stale task gets TASK_EXPIRED.
                 await asyncio.wait_for(expired_event.wait(), timeout=8.0)
 
@@ -1343,7 +1401,10 @@ class TestRateLimitRetryBackoffCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(done.wait(), timeout=10.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1391,7 +1452,10 @@ class TestRateLimitRetryBackoffCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 10)
                 await asyncio.wait_for(done.wait(), timeout=15.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1447,7 +1511,10 @@ class TestRateLimitRetryBackoffCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name)
                 await asyncio.wait_for(failed_event.wait(), timeout=10.0)
                 with pytest.raises(TaskError):
@@ -1496,7 +1563,10 @@ class TestRateLimitRetryBackoffCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 for i in range(n_tasks):
                     await app.schedule(task_name, i)
                 await asyncio.wait_for(all_done.wait(), timeout=20.0)
@@ -1577,7 +1647,8 @@ class TestPriorityLockCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, priorities=True
+                rabbitmq_url, valkey_url, queue, priorities=True,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid_h = await app.schedule(task_name_high, "a")
                 tid_n = await app.schedule(task_name_norm, "b")
@@ -1643,7 +1714,8 @@ class TestPriorityLockCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, priorities=True, concurrency=2
+                rabbitmq_url, valkey_url, queue, priorities=True, concurrency=2,
+                mirror_to=app._signal_dispatcher,
             ):
                 # Schedule high and low simultaneously.
                 tid_h = await app.schedule(task_name_high)
@@ -1710,7 +1782,8 @@ class TestPriorityLockCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, priorities=True, concurrency=3
+                rabbitmq_url, valkey_url, queue, priorities=True, concurrency=3,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid_h1 = await app.schedule(task_name_high, 1)
                 tid_h2 = await app.schedule(task_name_high, 2)
@@ -1778,7 +1851,10 @@ class TestUniqueUntilStartRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "x")
                 result = await app.get_result(tid, timeout=8.0)
 
@@ -1826,7 +1902,10 @@ class TestUniqueUntilStartRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 # Enqueue first task.
                 tid1 = await app.schedule(task_name, 5)
 
@@ -1889,7 +1968,10 @@ class TestUniqueUntilStartRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid1 = await app.schedule(task_name, "orig")
 
                 # Wait for first attempt to start (unique is now released).
@@ -1963,7 +2045,10 @@ class TestUniqueUntilStartRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue, concurrency=4):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, concurrency=4,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid1 = await app.schedule(task_name, 10)
                 # Wait for task-1 to start and release unique.
                 await asyncio.wait_for(t1_started.wait(), timeout=8.0)

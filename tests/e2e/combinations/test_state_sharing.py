@@ -85,12 +85,19 @@ async def _running_worker(
     concurrency: int = 4,
     cancel_poll_interval: float = 0.1,
     shutdown_timeout: int = 5,
+    mirror_to: Any = None,
 ):
     """Spin up an in-process SwarmQ worker against the given queue.
 
     Yields ``(worker_app, online_event)`` — the caller can attach signal
     handlers on ``worker_app`` BEFORE the worker comes online.  The online
     event is already set by the time control is handed back.
+
+    ``mirror_to`` (a SignalDispatcher, typically the producer ``app``'s) makes
+    the worker re-dispatch every signal it emits onto that dispatcher, so
+    SignalRecorder / @on_signal observers attached to the producer app see the
+    worker's task-lifecycle signals (the worker runs in a separate SwarmQ
+    instance with its own dispatcher).
     """
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
@@ -107,6 +114,14 @@ async def _running_worker(
     @worker_app.on_signal(Signal.WORKER_ONLINE)
     async def _online(**_: Any) -> None:
         online.set()
+
+    if mirror_to is not None:
+        def _make_forwarder(sig: Signal):
+            async def _forward(**payload: Any) -> None:
+                await mirror_to.dispatch(sig, **payload)
+            return _forward
+        for _sig in Signal:
+            worker_app._signal_dispatcher.connect(_sig, _make_forwarder(_sig))
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
@@ -175,7 +190,10 @@ class TestRetryUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "hello")
 
                 # Attempt a duplicate while task is in retry-delay window.
@@ -229,7 +247,10 @@ class TestRetryUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 1)
 
                 # Wait until retries exhausted (2 attempts × 0.1s delay + headroom).
@@ -289,7 +310,10 @@ class TestRetryUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "x")
                 # Wait until the first attempt is running.
                 await asyncio.wait_for(running.wait(), timeout=5.0)
@@ -421,7 +445,10 @@ class TestLockCancelCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid1 = await app.schedule(task_name, "first")
                 tid2 = await app.schedule(task_name, "second")
                 await asyncio.wait_for(all_done.wait(), timeout=12.0)
@@ -466,7 +493,8 @@ class TestLockCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.1
+                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.1,
+                mirror_to=app._signal_dispatcher,
             ):
                 # Schedule slow first so it holds the lock; cancel it
                 # before it acquires.
@@ -524,7 +552,8 @@ class TestLockCancelCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_url, queue,
-                concurrency=2, cancel_poll_interval=0.1
+                concurrency=2, cancel_poll_interval=0.1,
+                mirror_to=app._signal_dispatcher,
             ):
                 long_id = await app.schedule(long_name)
                 await asyncio.wait_for(long_started.wait(), timeout=5.0)
@@ -666,7 +695,10 @@ class TestLockRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(done.wait(), timeout=10.0)
                 result = await app.get_result(tid, timeout=5)
@@ -726,7 +758,10 @@ class TestLockRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue, concurrency=2):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, concurrency=2,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid_a = await app.schedule(task_a_name, 42)
 
                 # Wait for task A to fail and enter retry-delay.
@@ -787,7 +822,10 @@ class TestLockRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "ttl-test")
                 await asyncio.wait_for(done.wait(), timeout=10.0)
                 result = await app.get_result(tid, timeout=5)
@@ -838,7 +876,10 @@ class TestLockHardTimeoutCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue, concurrency=2):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, concurrency=2,
+                mirror_to=app._signal_dispatcher,
+            ):
                 await app.schedule(task_name, "a")
                 await app.schedule(task_name, "b")
                 await asyncio.wait_for(second_done.wait(), timeout=12.0)
@@ -894,7 +935,10 @@ class TestLockHardTimeoutCombo:
         async with app:
             await broker.declare_queue(queue)
             # Use concurrency=2 so fast task can be picked up concurrently.
-            async with _running_worker(rabbitmq_url, valkey_url, queue, concurrency=2):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue, concurrency=2,
+                mirror_to=app._signal_dispatcher,
+            ):
                 await app.schedule(slow_name)
                 # Give slow task time to start and acquire lock.
                 await asyncio.sleep(0.5)
@@ -998,7 +1042,10 @@ class TestProgressCancelCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(done.wait(), timeout=10.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1041,7 +1088,8 @@ class TestProgressCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.1
+                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.1,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 20)
 
@@ -1104,7 +1152,8 @@ class TestProgressCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05
+                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 100)
                 await asyncio.wait_for(started.wait(), timeout=5.0)
@@ -1185,7 +1234,10 @@ class TestResultTtlRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, 7)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
                 result = await app.get_result(tid, timeout=3)
@@ -1233,7 +1285,10 @@ class TestResultTtlRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "ttl-check")
                 await asyncio.wait_for(done.wait(), timeout=8.0)
 
@@ -1295,7 +1350,10 @@ class TestResultTtlRetryCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(
+                rabbitmq_url, valkey_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
                 tid = await app.schedule(task_name, "short-ttl")
                 await asyncio.wait_for(done.wait(), timeout=12.0)
 
