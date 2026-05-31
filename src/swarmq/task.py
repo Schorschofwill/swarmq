@@ -291,6 +291,13 @@ class Task:
         super().__init_subclass__(**kwargs)
         if hasattr(cls, "task_info"):
             _check_run_signature_reserved_params(cls)
+            # Auto-wrap lifecycle methods for optional Dishka injection. No-op
+            # when dishka is absent or no FromDishka params are declared. Runs
+            # AFTER the reserved-param check so a reserved name still fails on
+            # the raw signature. swarmq.dishka imports without dishka.
+            from swarmq.dishka import maybe_wrap_task
+
+            maybe_wrap_task(cls)
             Task._registered_tasks.append(cls)
 
     @classmethod

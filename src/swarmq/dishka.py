@@ -105,6 +105,108 @@ def _reset_container() -> None:
     _container = _MISSING
 
 
+_LIFECYCLE_METHODS: Final = ("run", "pre_execution", "post_execution")
+
+
+def _get_request_container(args: object, kwargs: object) -> object:
+    """container_getter for wrap_injection: returns the per-task REQUEST
+    container set by the worker. Raises a clear error if called outside an
+    active request scope (e.g. a FromDishka task invoked directly in a test
+    without a worker)."""
+    try:
+        return request_container.get()
+    except LookupError:
+        raise RuntimeError(
+            "No active SwarmQ request scope; FromDishka injection only works "
+            "when the task runs through a worker."
+        ) from None
+
+
+def maybe_wrap_task(cls: type) -> None:
+    """Auto-wrap a Task subclass's lifecycle methods for FromDishka injection.
+
+    Called from ``Task.__init_subclass__`` *after* the reserved-param check.
+    No-op when dishka is not installed, or when no lifecycle method declares a
+    ``FromDishka`` parameter (``wrap_injection`` would return the function
+    unchanged anyway). Records the injected dependency keys on
+    ``cls._dishka_injected_keys`` so the worker-start validation (U5) can check
+    resolvability against the container.
+    """
+    if not _HAVE_DISHKA:
+        return
+
+    import inspect
+    from typing import get_type_hints
+
+    from dishka.integrations.base import (
+        default_parse_dependency,
+        is_dishka_injected,
+        wrap_injection,
+    )
+
+    def _raw_mentions_fromdishka(param: inspect.Parameter, raw: object) -> bool:
+        # Cheap, get_type_hints-free pre-check covering both annotation forms:
+        # string annotations (PEP 563 / from __future__ import annotations) and
+        # already-evaluated Annotated objects. Lets non-DI tasks skip the
+        # resolution below entirely, so existing tasks with forward-reference
+        # or TYPE_CHECKING-only annotations are never broken — only genuine DI
+        # users pay the cost and get the strict error.
+        if isinstance(raw, str):
+            return "FromDishka" in raw
+        return default_parse_dependency(param, raw) is not None
+
+    collected: list[object] = []
+    for name in _LIFECYCLE_METHODS:
+        func = cls.__dict__.get(name)
+        if func is None or is_dishka_injected(func):
+            continue
+
+        sig = inspect.signature(func)
+        raw_annotations = getattr(func, "__annotations__", {})
+        if not any(
+            _raw_mentions_fromdishka(param, raw_annotations.get(pname))
+            for pname, param in sig.parameters.items()
+        ):
+            continue
+
+        # This method declares FromDishka params. Resolve hints (strictly) and
+        # derive the injected DependencyKeys — wrap_injection does not expose
+        # them on its result.
+        try:
+            hints = get_type_hints(func, include_extras=True)
+        except NameError as exc:
+            raise NameError(
+                f"Cannot resolve type hints on {cls.__name__}.{name} for "
+                f"dishka injection: {exc}. Annotations on FromDishka "
+                f"parameters must be importable at class-definition time "
+                f"(no TYPE_CHECKING-only or forward-reference types)."
+            ) from exc
+
+        method_keys = [
+            dep
+            for pname, param in sig.parameters.items()
+            if (hint := hints.get(pname)) is not None
+            and (dep := default_parse_dependency(param, hint)) is not None
+        ]
+        if not method_keys:
+            continue
+
+        collected.extend(method_keys)
+        setattr(
+            cls,
+            name,
+            wrap_injection(
+                func=func,
+                is_async=True,
+                manage_scope=False,
+                container_getter=_get_request_container,
+            ),
+        )
+
+    if collected:
+        cls._dishka_injected_keys = collected  # type: ignore[attr-defined]
+
+
 if _HAVE_DISHKA:
     from dishka import Provider, Scope, from_context
 

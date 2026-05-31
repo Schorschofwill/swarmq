@@ -4,9 +4,14 @@ Covers the dishka-free core (TaskContext, container slot, sentinel) and the
 guarded SwarmQProvider surface. The dishka-absent path is simulated with
 ``patch.dict(sys.modules, {"dishka": None})`` + module reimport, mirroring
 tests/unit/test_hot_reload.py.
-"""
 
-from __future__ import annotations
+Note: this module intentionally does NOT use ``from __future__ import
+annotations``. The DI tests define Task subclasses inside test functions, and
+``get_type_hints`` must resolve their ``FromDishka`` parameter annotations —
+eager (non-string) annotations resolve against the local scope, string
+annotations would not. Real user task modules define tasks at module level, so
+the future import is fine there.
+"""
 
 import dataclasses
 import importlib
@@ -72,6 +77,145 @@ def test_request_container_contextvar_exists():
     import contextvars
 
     assert isinstance(di.request_container, contextvars.ContextVar)
+
+
+def _make_container_with_svc():
+    """Build a container whose REQUEST scope provides a Svc bound to TaskContext."""
+    from collections.abc import AsyncIterable
+
+    from dishka import Provider, Scope, make_async_container, provide
+
+    class Svc:
+        def __init__(self, ctx: di.TaskContext) -> None:
+            self.tid = ctx.task_id
+
+    class Prov(Provider):
+        from dishka import from_context
+
+        tc = from_context(di.TaskContext, scope=Scope.REQUEST)
+
+        @provide(scope=Scope.REQUEST)
+        async def svc(self, ctx: di.TaskContext) -> AsyncIterable[Svc]:
+            yield Svc(ctx)
+
+    return make_async_container(Prov()), Svc
+
+
+@pytest.mark.timeout(5)
+async def test_lifecycle_injection_through_task_subclass():
+    """AE1/R4/R5: a Task subclass's run gets FromDishka params filled from the
+    per-task REQUEST container; plain args still come from the call."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.task import Task, TaskInfo
+
+    container, Svc = _make_container_with_svc()  # noqa: N806 — Svc is a class
+
+    class InjectTask(Task):
+        task_info = TaskInfo(name="inject_task", queues=["q"])
+
+        async def run(self, x: int, svc: FromDishka[Svc]) -> str:  # type: ignore[valid-type]
+            return f"{x}:{svc.tid}"
+
+    # run was wrapped (FromDishka present).
+    from dishka.integrations.base import is_dishka_injected
+
+    assert is_dishka_injected(InjectTask.run)
+
+    ctx = di.TaskContext(
+        task_id="abc", task_name="inject_task", queue="q", retry_count=0
+    )
+    req = await container(context={di.TaskContext: ctx}).__aenter__()
+    token = di.request_container.set(req)
+    try:
+        result = await InjectTask().run(5)  # svc injected, x positional
+    finally:
+        await req.__aexit__(None, None, None)
+        di.request_container.reset(token)
+        await container.close()
+
+    assert result == "5:abc"
+
+
+def test_no_fromdishka_means_no_wrapping():
+    """R6/AE2: a task without FromDishka params is left untouched."""
+    pytest.importorskip("dishka")
+    from dishka.integrations.base import is_dishka_injected
+
+    from swarmq.task import Task, TaskInfo
+
+    class PlainTask(Task):
+        task_info = TaskInfo(name="plain_task", queues=["q"])
+
+        async def run(self, x: int) -> int:
+            return x * 2
+
+    assert not is_dishka_injected(PlainTask.run)
+    assert not hasattr(PlainTask, "_dishka_injected_keys")
+
+
+def test_injected_keys_recorded_for_resolvability_check():
+    """U2->U5 contract: injected DependencyKeys are recorded on the class."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class KeyTask(Task):
+        task_info = TaskInfo(name="key_task", queues=["q"])
+
+        async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            pass
+
+    keys = KeyTask._dishka_injected_keys  # type: ignore[attr-defined]
+    assert any(getattr(k, "type_hint", None) is Dep for k in keys)
+
+
+def test_reserved_param_still_fails_with_fromdishka_annotation():
+    """R7/AE9: a reserved param name fails the class-def check even when
+    annotated with FromDishka — the reserved check runs on the raw signature
+    before wrapping."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    with pytest.raises(ValueError, match="reserved"):
+
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad_task", queues=["q"])
+
+            async def run(self, delay: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+                pass
+
+
+def test_wrapped_run_preserves_return_annotation_for_registry():
+    """Registry return-type detection survives wrapping."""
+    pytest.importorskip("dishka")
+    import inspect
+
+    from dishka import FromDishka
+
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class RetTask(Task):
+        task_info = TaskInfo(name="ret_task", queues=["q"])
+
+        async def run(self, dep: FromDishka[Dep]) -> str:  # type: ignore[valid-type]
+            return "ok"
+
+    ann = inspect.get_annotations(RetTask.run, eval_str=True)
+    assert ann.get("return") is str
 
 
 def test_module_imports_without_dishka_and_core_symbols_usable():
