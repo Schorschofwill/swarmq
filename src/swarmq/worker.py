@@ -33,6 +33,12 @@ from swarmq.cancellation import (
     build_result_dict,
 )
 from swarmq.config import SwarmQConfig
+from swarmq.dishka import (
+    _MISSING,
+    TaskContext,
+    get_registered_container,
+    request_container,
+)
 from swarmq.headers import (
     HEADER_ENQUEUED_AT,
     HEADER_UNIQUE_HASH,
@@ -1486,6 +1492,11 @@ class Worker:
         # under-releases; over-release is owner-check-safe).
         task_info: TaskInfo | None = None
         _unique_release_pending = True
+        # Optional Dishka REQUEST scope. Entered just before the task
+        # lifecycle (below) and torn down in the finally via the same
+        # detached-shield pattern as lock release. None when DI is inactive.
+        _di_scope: object | None = None
+        _di_token: object | None = None
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():
@@ -1640,6 +1651,31 @@ class Worker:
             is_cancelled = False
             error_message = ""
             task_exception = None
+
+            # Optional Dishka DI: open a REQUEST scope spanning the whole
+            # task lifecycle and expose the per-task TaskContext to providers.
+            # Set the ContextVar here — BEFORE the run coroutine's
+            # asyncio.create_task below — so the run task copies it into its
+            # context (the injected lifecycle methods read it via their
+            # container_getter). Inactive (no perf/behaviour change) when no
+            # container was registered via setup_dishka. The scope is torn
+            # down in the finally with the captured exception (so yield
+            # finalizers can commit/rollback) using the detached-shield
+            # pattern that protects against the shutdown-cancel path.
+            _di_container = get_registered_container()
+            if _di_container is not _MISSING:
+                _di_scope = _di_container(
+                    context={
+                        TaskContext: TaskContext(
+                            task_id=task_id,
+                            task_name=task_name,
+                            queue=queue,
+                            retry_count=retry_count,
+                        )
+                    }
+                )
+                _di_request = await _di_scope.__aenter__()
+                _di_token = request_container.set(_di_request)
 
             try:
                 await task_instance.pre_execution()
@@ -2080,6 +2116,37 @@ class Worker:
                 await self._maybe_release_unique(
                     message, task_id, task_info,
                 )
+
+            # 12-pre. Close the Dishka REQUEST scope (if opened), driving
+            # __aexit__ with the captured task exception so yield-based
+            # finalizers can commit on success / roll back on failure. On a
+            # user-cancel (no task_exception), a CancelledError is passed so
+            # finalizers treat it as an abort. Uses the same detached-shield
+            # pattern as lock release: schedule the exit as its own tracked
+            # Task so an outer (shutdown) cancel into this finally does not
+            # abort the finalizer mid-await — _execute_shutdown drains
+            # _detached_releases before closing the backend.
+            if _di_scope is not None:
+                if _di_token is not None:
+                    request_container.reset(_di_token)
+                _di_exc = (
+                    asyncio.CancelledError() if is_cancelled else task_exception
+                )
+                _di_et = type(_di_exc) if _di_exc is not None else None
+                _di_tb = _di_exc.__traceback__ if _di_exc is not None else None
+                _di_exit = asyncio.create_task(
+                    _di_scope.__aexit__(_di_et, _di_exc, _di_tb)
+                )
+                self._detached_releases.add(_di_exit)
+                _di_exit.add_done_callback(self._detached_releases.discard)
+                try:
+                    await asyncio.shield(_di_exit)
+                except asyncio.CancelledError:
+                    # Outer-cancel reached us. ``_di_exit`` is unaffected
+                    # (shield protected it) and tracked in
+                    # _detached_releases, which _execute_shutdown awaits
+                    # before backend.close. Re-raise to observe the cancel.
+                    raise
 
             # 12a. Release any task-locks acquired by this handler.
             #
