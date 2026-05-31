@@ -10,10 +10,14 @@
 #   secret-detection stage — GitLab Secret Detection (unchanged).
 #
 # All Python steps run through uv against the committed uv.lock (UV_FROZEN),
-# on the project's pinned Python 3.14. The valkey[libvalkey] dependency has a
-# C extension with no cp314 wheel yet, so it is compiled from source — every
-# uv-running job installs build-essential first (the slim uv image ships no
-# compiler).
+# on the project's pinned Python 3.14. Notes:
+#   * valkey[libvalkey] is a C extension with no cp314 wheel yet → compiled
+#     from source, so every uv job installs build-essential first (the slim uv
+#     image ships no compiler).
+#   * The `reload` extra (watchfiles) is needed by the hot-reload tests; it
+#     ships abi3 wheels so it installs without a Rust toolchain. `fast`
+#     (orjson) is intentionally NOT installed — it has no cp314/abi3 wheel and
+#     would require Rust; no test hard-depends on it.
 stages:
   - test
   - secret-detection
@@ -22,6 +26,9 @@ variables:
   SECRET_DETECTION_ENABLED: 'true'
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
   UV_FROZEN: "1"
+  # Canonical uv invocation: test deps + the reload extra the hot-reload
+  # tests need. Keep every test job using this so the resolved env matches.
+  UV_RUN: "uv run --extra test --extra reload"
 
 # Shared uv setup: pinned-Python image, build toolchain for the libvalkey C
 # extension, and a lockfile-keyed dependency cache.
@@ -54,9 +61,10 @@ variables:
     - apt-get update && apt-get install -y --no-install-recommends build-essential
     # Block until both services accept connections. check_docker SKIPS (not
     # fails) when a service is unreachable, so without this gate a slow broker
-    # start would let the whole suite go green with zero tests run.
+    # start would let the whole suite go green with zero tests run. This also
+    # warms the uv venv (build + extras) once before the test step.
     - |
-      uv run python - <<'PY'
+      $UV_RUN python - <<'PY'
       import socket, sys, time
       targets = [("rabbitmq", 5672), ("valkey", 6379)]
       deadline = time.time() + 120
@@ -73,19 +81,21 @@ variables:
       PY
 
 # Tier 1 — unit + property. No external services; the fast regression gate.
+# --reruns 1 absorbs the rare timing flake on the small shared runner without
+# hiding deterministic failures (a real break fails both attempts).
 unit-tests:
   extends: .uv
   stage: test
   script:
-    - uv run --extra test pytest tests/unit -q
-    - uv run --extra test pytest tests/property -m property -q
+    - $UV_RUN pytest tests/unit -q --reruns 1 --reruns-delay 1
+    - $UV_RUN pytest tests/property -m property -q
 
 # Tier 2a — integration against real RabbitMQ + Valkey (deterministic).
 integration-tests:
   extends: .with-services
   stage: test
   script:
-    - uv run --extra test pytest tests/integration -q
+    - $UV_RUN pytest tests/integration -q
 
 # Tier 2b — full e2e. Non-blocking: absorbs pre-existing timing flakiness with
 # reruns; failures stay visible without gating the MR.
@@ -94,7 +104,7 @@ e2e-tests:
   stage: test
   allow_failure: true
   script:
-    - uv run --extra test pytest tests/e2e -q --reruns 2 --reruns-delay 3
+    - $UV_RUN pytest tests/e2e -q --reruns 2 --reruns-delay 3
 
 # Tier 3 — chaos (Toxiproxy + docker compose). Opt-in only: runs on scheduled
 # pipelines or manual trigger, never blocks an MR. Needs a Docker-in-Docker
@@ -112,6 +122,7 @@ chaos-tests:
     DOCKER_TLS_VERIFY: "1"
     UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
     UV_FROZEN: "1"
+    UV_RUN: "uv run --extra test --extra reload"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - when: manual
@@ -120,7 +131,7 @@ chaos-tests:
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends build-essential docker.io docker-compose-v2
   script:
-    - uv run --extra test pytest -m chaos tests/chaos/test_workflow_chord_idempotency.py -q
+    - $UV_RUN pytest -m chaos tests/chaos/test_workflow_chord_idempotency.py -q
 
 secret_detection:
   stage: secret-detection

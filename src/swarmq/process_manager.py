@@ -268,9 +268,15 @@ class ProcessManager:
         self._reload_requested = False
         self._next_worker_id = 0
 
-        # Autoscale state.
-        self._last_scale_decision = 0.0
-        self._last_autoscale_sample = 0.0
+        # Autoscale state. Initialised to -inf ("never sampled / never
+        # scaled") rather than 0.0 so the FIRST tick always samples and the
+        # first scale decision is never blocked by cooldown — independent of
+        # the absolute time.monotonic() magnitude. With 0.0, a process started
+        # within AUTOSCALE_SAMPLE_INTERVAL of system boot (small monotonic
+        # clock, e.g. a fresh container) would have its first sample wrongly
+        # gated by `now - 0.0 < interval`.
+        self._last_scale_decision = float("-inf")
+        self._last_autoscale_sample = float("-inf")
         self._idle_since: float | None = None
 
         # ce-review SEC-01 / Unit 6: freeze argv AND environment at
