@@ -1,16 +1,122 @@
-# You can override the included template(s) by including variable overrides
-# SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
-# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
-# Dependency Scanning customization: https://docs.gitlab.com/user/application_security/dependency_scanning/dependency_scanning_sbom/#customizing-analyzer-behavior
-# Container Scanning customization: https://docs.gitlab.com/user/application_security/container_scanning/#customizing-analyzer-behavior
-# Note that environment variables can be set in several places
-# See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
+# CI pipeline.
+#
+#   test stage — the regression gate:
+#     * unit-tests / integration-tests: deterministic, BLOCKING.
+#     * e2e-tests: runs the full e2e suite but is allow_failure — the e2e tier
+#       has pre-existing, environment-sensitive timing flakiness (scheduler /
+#       signal-sequence tests) unrelated to application logic, so it is kept
+#       visible-but-non-blocking with reruns until that is cleaned up.
+#     * chaos-tests: opt-in (schedule/manual), never blocks.
+#   secret-detection stage — GitLab Secret Detection (unchanged).
+#
+# All Python steps run through uv against the committed uv.lock (UV_FROZEN),
+# on the project's pinned Python 3.14.
 stages:
-- test
-- secret-detection
+  - test
+  - secret-detection
+
 variables:
   SECRET_DETECTION_ENABLED: 'true'
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  UV_FROZEN: "1"
+
+# Shared uv setup: pinned-Python image + lockfile-keyed dependency cache.
+.uv:
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .uv-cache
+
+# Real RabbitMQ + Valkey services + a readiness gate. Reused by the
+# integration and e2e jobs.
+.with-services:
+  extends: .uv
+  services:
+    - name: rabbitmq:4-management
+      alias: rabbitmq
+    - name: valkey/valkey:8
+      alias: valkey
+  variables:
+    SWARMQ_TEST_RABBITMQ_HOST: rabbitmq
+    SWARMQ_TEST_RABBITMQ_PORT: "5672"
+    SWARMQ_TEST_VALKEY_HOST: valkey
+    SWARMQ_TEST_VALKEY_PORT: "6379"
+  before_script:
+    # Block until both services accept connections. check_docker SKIPS (not
+    # fails) when a service is unreachable, so without this gate a slow broker
+    # start would let the whole suite go green with zero tests run.
+    - |
+      uv run python - <<'PY'
+      import socket, sys, time
+      targets = [("rabbitmq", 5672), ("valkey", 6379)]
+      deadline = time.time() + 120
+      for host, port in targets:
+          while True:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      break
+              except OSError:
+                  if time.time() > deadline:
+                      sys.exit(f"service {host}:{port} not ready in time")
+                  time.sleep(1)
+      print("all services ready")
+      PY
+
+# Tier 1 — unit + property. No external services; the fast regression gate.
+unit-tests:
+  extends: .uv
+  stage: test
+  script:
+    - uv run --extra test pytest tests/unit -q
+    - uv run --extra test pytest tests/property -m property -q
+
+# Tier 2a — integration against real RabbitMQ + Valkey (deterministic).
+integration-tests:
+  extends: .with-services
+  stage: test
+  script:
+    - uv run --extra test pytest tests/integration -q
+
+# Tier 2b — full e2e. Non-blocking: absorbs pre-existing timing flakiness with
+# reruns; failures stay visible without gating the MR.
+e2e-tests:
+  extends: .with-services
+  stage: test
+  allow_failure: true
+  script:
+    - uv run --extra test pytest tests/e2e -q --reruns 2 --reruns-delay 3
+
+# Tier 3 — chaos (Toxiproxy + docker compose). Opt-in only: runs on scheduled
+# pipelines or manual trigger, never blocks an MR. Needs a Docker-in-Docker
+# capable runner; left allow_failure until validated on the target runner.
+chaos-tests:
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+  stage: test
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_TLS_VERIFY: "1"
+    UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+    UV_FROZEN: "1"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - when: manual
+      allow_failure: true
+  allow_failure: true
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends docker.io docker-compose-v2
+  script:
+    - uv run --extra test pytest -m chaos tests/chaos/test_workflow_chord_idempotency.py -q
+
 secret_detection:
   stage: secret-detection
+
 include:
 - template: Security/Secret-Detection.gitlab-ci.yml
