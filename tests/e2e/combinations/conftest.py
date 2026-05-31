@@ -126,11 +126,27 @@ def unique_queue() -> str:
 
 
 @pytest.fixture(autouse=True)
-def _combinations_cleanup():
+async def _combinations_cleanup():
     """Autouse teardown for every combinations test:
 
     - Clear the global Task registry (`Task._registered_tasks`) so
       registration in one test doesn't leak to the next.
+    - Flush Valkey so scheduler state (``sq:sched:*``), unique-hash flags,
+      locks and results from one test do not bleed into the next. Without
+      this the scheduler-driven combos (cron catch-up) accumulate stale
+      schedule definitions and flake under the resulting load.
     """
     yield
     Task._clear_registered_tasks()
+
+    import valkey.asyncio as _aiovalkey
+
+    host = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
+    port = os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379")
+    client = _aiovalkey.Valkey.from_url(f"valkey://{host}:{port}/0")
+    try:
+        with contextlib.suppress(Exception):
+            await client.flushdb()
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()

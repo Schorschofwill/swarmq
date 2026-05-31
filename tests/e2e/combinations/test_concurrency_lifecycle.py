@@ -803,10 +803,13 @@ class TestHotReloadInflightLockCombo:
 
         assert result == 42
 
-        # Simulate reload: second worker can acquire same lock.
-        broker2 = RabbitMQBroker(rabbitmq_url)
-        backend2 = ValkeyBackend(valkey_url)
-        app2 = SwarmQ(broker2, backend2, queues=[queue])
+        # Simulate reload: a real reload re-imports task modules, giving a
+        # fresh task registry. Clear the global registry and re-define the
+        # task under the same name BEFORE building the second app, so the new
+        # app/worker registry picks up the reloaded task (and the duplicate
+        # registration does not raise ConfigurationError "already registered").
+        Task._clear_registered_tasks()
+
         done2 = asyncio.Event()
 
         class LockedTask2(Task):  # type: ignore[no-redef]
@@ -820,6 +823,11 @@ class TestHotReloadInflightLockCombo:
             async def run(self, val: int) -> int:
                 done2.set()
                 return val + 2
+
+        # Second worker can acquire the same lock.
+        broker2 = RabbitMQBroker(rabbitmq_url)
+        backend2 = ValkeyBackend(valkey_url)
+        app2 = SwarmQ(broker2, backend2, queues=[queue])
 
         async with app2:
             await broker2.declare_queue(queue)

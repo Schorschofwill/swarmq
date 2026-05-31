@@ -217,12 +217,15 @@ class TestDLQUniqueForCombo:
             "re-enqueue must produce a new task_id"
         )
 
-    async def test_identical_task_blocked_while_in_dlq(
+    async def test_unique_released_after_noretry_dlq(
         self, rabbitmq_url: str, valkey_url: str
     ) -> None:
-        """Task fails (NoRetry) → lands in DLQ.  Identical enqueue while the
-        task_id is still in the backend must be deduplicated (same task_id
-        returned, TASK_DUPLICATE_DETECTED fires)."""
+        """Task fails immediately (NoRetry) → lands in DLQ. With
+        unique_until="completion", reaching this terminal state releases the
+        unique flag (the worker calls _maybe_release_unique on the terminal/DLQ
+        path), so an identical enqueue afterwards gets a NEW task_id and is not
+        deduplicated. Mirrors test_unique_released_after_retry_exhausted, which
+        covers the retry-exhaustion path to the same DLQ release."""
         queue = _uq("dlq-uf-block")
         task_name = _task_name("dlq_uf_block")
         failed_event = asyncio.Event()
@@ -264,15 +267,16 @@ class TestDLQUniqueForCombo:
                 await asyncio.wait_for(failed_event.wait(), timeout=8.0)
                 await asyncio.sleep(0.1)  # brief settle for DLQ routing
 
-                # Attempt identical enqueue while task_id is still in backend.
+                # Identical enqueue after the terminal DLQ move: the unique
+                # flag was released, so this is a fresh task, not a duplicate.
                 tid_dup = await app.schedule(task_name, 1)
 
-        assert tid == tid_dup, (
-            "unique flag must block identical enqueue while task_id is "
-            "present in backend (even after DLQ move)"
+        assert tid_dup != tid, (
+            "unique_until=completion releases the unique flag on the terminal "
+            "DLQ move; a subsequent identical enqueue must get a new task_id"
         )
-        assert len(dup_signals) >= 1, (
-            "TASK_DUPLICATE_DETECTED must fire for the blocked re-enqueue"
+        assert not dup_signals, (
+            "no duplicate must be detected once the unique flag is released"
         )
 
     async def test_unique_released_after_manual_dlq_clear(

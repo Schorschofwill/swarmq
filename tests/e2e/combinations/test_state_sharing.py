@@ -1030,7 +1030,7 @@ class TestProgressCancelCombo:
                     await self.update_progress(
                         current=i + 1,
                         total=steps,
-                        label=f"step {i + 1}",
+                        message=f"step {i + 1}",
                     )
                     await asyncio.sleep(0.05)
                 done.set()
