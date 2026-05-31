@@ -79,6 +79,45 @@ class ChaosMemoryHogTask(Task):
         return f"alloc:{mb}"
 
 
+class ChordHeaderSleepTask(Task):
+    """Chord header member: sleep ``seconds`` then echo ``n``. The sleep
+    opens a window to SIGKILL the worker mid-fan-in so the member message is
+    redelivered to a successor — the exactly-once chord-body scenario."""
+
+    task_info = TaskInfo(
+        name="chord_header_sleep",
+        queues=[_QUEUE],
+        max_retries=0,
+    )
+
+    async def run(self, n: int, seconds: float = 0.0) -> int:
+        if seconds:
+            await asyncio.sleep(seconds)
+        return n
+
+
+class ChordBodyCountTask(Task):
+    """Chord body: increment a per-run Valkey counter and return the sum of
+    the header results. The counter is the exactly-once probe — across any
+    number of header-member redeliveries the body must be ENQUEUED (and thus
+    run, absent a body-worker crash) exactly once, so the counter must be 1."""
+
+    task_info = TaskInfo(
+        name="chord_body_count",
+        queues=[_QUEUE],
+        max_retries=0,
+    )
+
+    async def run(self, results: list, run_key: str = "") -> int:
+        if self._backend is not None:
+            try:
+                await self._backend._client.incr(f"chord_body:{run_key}")
+                await self._backend._client.expire(f"chord_body:{run_key}", 300)
+            except Exception:
+                pass
+        return sum(results)
+
+
 class ChaosSegvTask(Task):
     """Dereference a NULL pointer via ctypes to trigger SIGSEGV. The
     worker process dies hard; the broker redelivers the message. After
