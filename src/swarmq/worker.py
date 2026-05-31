@@ -1054,6 +1054,18 @@ class Worker:
                     "scheduler_stop_failed", error=str(exc)
                 )
 
+        # 3e. Close the Dishka APP container (if one was registered). Runs
+        # AFTER the in-flight drain + detached-release wait (so live REQUEST
+        # scopes have finalized) and only when DI is active — no-op otherwise.
+        # APP-scoped resources (connection pools etc.) are torn down here; a
+        # close() failure is logged, not raised, so it cannot abort shutdown.
+        _di_container = get_registered_container()
+        if _di_container is not _MISSING:
+            try:
+                await _di_container.close()
+            except Exception:  # noqa: BLE001
+                logger.exception("dishka_container_close_failed")
+
         # 4. Close connections
         self._state = WorkerState.SHUTTING_DOWN
         await self._broker.close()

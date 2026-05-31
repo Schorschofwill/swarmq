@@ -204,3 +204,45 @@ async def test_no_container_registered_skips_di_path(broker, backend, config):
     await worker._handle_message(_make_message(_payload("p-1", "plain_w", [4])))
     assert FINALIZED == []  # no scope opened
     broker.ack.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_shutdown_closes_registered_container(broker, backend, config):
+    """AE11/R11: shutdown closes the registered APP container after the drain,
+    before broker/backend close."""
+    container = MagicMock()
+    container.close = AsyncMock()
+    di.setup_dishka(container)
+
+    worker = _worker(broker, backend, config, DiTask)
+    await worker._execute_shutdown()
+
+    container.close.assert_awaited_once()
+    broker.close.assert_awaited_once()
+    backend.close.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_shutdown_without_container_does_not_error(broker, backend, config):
+    """R2/R6: no registered container -> shutdown proceeds unchanged."""
+    di._reset_container()
+    worker = _worker(broker, backend, config, DiTask)
+    await worker._execute_shutdown()
+    broker.close.assert_awaited_once()
+    backend.close.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_container_close_failure_does_not_abort_shutdown(broker, backend, config):
+    """A failing container.close() is logged, not raised — shutdown still
+    closes broker and backend."""
+    container = MagicMock()
+    container.close = AsyncMock(side_effect=RuntimeError("close boom"))
+    di.setup_dishka(container)
+
+    worker = _worker(broker, backend, config, DiTask)
+    await worker._execute_shutdown()  # must not raise
+
+    container.close.assert_awaited_once()
+    broker.close.assert_awaited_once()
+    backend.close.assert_awaited_once()
