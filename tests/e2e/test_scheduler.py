@@ -448,6 +448,10 @@ class TestCliRoundtrip:
             cron=None, at=soon.isoformat(),
             task=task_name,
             args="[]", kwargs="{}", queue=queue,
+            # The real CLI sets --format (resolved in cli.__init__); this test
+            # calls the handler directly, so supply it explicitly to mirror the
+            # parsed namespace the handler expects.
+            format="table",
         )
         await cli._run_schedule_add(ns)
 
