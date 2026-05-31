@@ -22,6 +22,11 @@ metrics = ["prometheus_client"]
 # R5.3: file-watch hot-reload trigger. Rust-backed, ~1 MB wheel —
 # kept optional so non-reload deployments skip the footprint.
 reload = ["watchfiles>=0.21"]
+# Optional dependency-injection for tasks. Core SwarmQ runs without it;
+# only tasks using FromDishka require the extra. 1.10.1 is the first
+# release verified to carry wrap_injection(manage_scope=...), from_context,
+# and the registry-introspection surface the integration relies on.
+dishka = ["dishka>=1.10.1"]
 test = [
     "pytest",
     "pytest-asyncio",
@@ -41,6 +46,8 @@ test = [
     # R5.1: tests/unit/test_metrics.py asserts the real registry shape,
     # not just the no-op fallback. Same package as the [metrics] extra.
     "prometheus_client",
+    # Dishka DI integration tests exercise the with-installed path.
+    "dishka>=1.10.1",
 ]
 docs = [
     "mkdocs-material>=9.5",

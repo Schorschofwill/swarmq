@@ -76,6 +76,11 @@ _LAZY_SURFACE: dict[str, tuple[str, str]] = {
     "Task": ("swarmq.task", "Task"),
     "TaskInfo": ("swarmq.task", "TaskInfo"),
     "WorkflowHandle": ("swarmq.workflow_orchestration", "WorkflowHandle"),
+    # Optional Dishka DI surface. swarmq.dishka imports without dishka
+    # installed; SwarmQProvider access raises a clear error when it is absent.
+    "setup_dishka": ("swarmq.dishka", "setup_dishka"),
+    "TaskContext": ("swarmq.dishka", "TaskContext"),
+    "SwarmQProvider": ("swarmq.dishka", "SwarmQProvider"),
 }
 
 
@@ -150,4 +155,8 @@ __all__ = [
     "DeliveryMode",
     "Task",
     "TaskInfo",
+    # Optional Dishka DI
+    "setup_dishka",
+    "TaskContext",
+    "SwarmQProvider",
 ]

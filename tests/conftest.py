@@ -8,7 +8,6 @@ import pytest
 
 from swarmq.task import Task
 
-
 # ---------------------------------------------------------------------------
 # Task registry isolation — prevents __init_subclass__ pollution across tests
 # ---------------------------------------------------------------------------
@@ -19,6 +18,21 @@ def _reset_task_registry():
     snapshot = Task._registered_tasks.copy()
     yield
     Task._registered_tasks = snapshot
+
+
+@pytest.fixture(autouse=True)
+def _reset_dishka_container():
+    """Save and restore the global Dishka container slot between every test.
+
+    Same hazard as Task._registered_tasks: a setup_dishka() call in one test
+    would otherwise leak into the next. swarmq.dishka imports without dishka
+    installed, so this fixture is always safe to load.
+    """
+    from swarmq import dishka as _di
+
+    snapshot = _di.get_registered_container()
+    yield
+    _di._container = snapshot
 
 # ---------------------------------------------------------------------------
 # Auto-marker: tag every test with unit / integration / e2e based on its path
