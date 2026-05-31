@@ -11,6 +11,7 @@ from aio_pika.exceptions import (
     ChannelInvalidStateError,
     ChannelNotFoundEntity,
     ConnectionClosed,
+    DeliveryError,
 )
 
 from swarmq.exceptions import BrokerConnectionError
@@ -118,6 +119,18 @@ class RabbitMQBroker:
             try:
                 await pub.default_exchange.publish(msg, routing_key=routing_key)
                 return
+            except DeliveryError as exc:
+                # A publisher-confirm Nack/Reject (e.g. a quorum queue briefly
+                # without disk quorum) is a NEGATIVE confirm, not a channel
+                # fault — the channel stays healthy, so retry WITHOUT tearing
+                # it down. Persisting past the retry budget surfaces as a
+                # neutral BrokerConnectionError (below), which callers — incl.
+                # the workflow advance seam — treat as transient, so a
+                # redelivery retries the idempotent publish rather than the
+                # whole unit being marked permanently failed.
+                last_exc = exc
+                if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
+                    await asyncio.sleep(0.05 * (2**attempt))
             except _CHANNEL_TRANSIENT_ERRORS as exc:
                 # Distinguish task-level cancellation from aio_pika's
                 # internal drain cancellation. If our own task is being

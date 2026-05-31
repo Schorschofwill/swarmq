@@ -167,3 +167,46 @@ async def test_chain_step_failure_fails_workflow_with_liveness(rabbitmq_url, val
             with pytest.raises(TaskError):
                 await handle.get(timeout=20)
             assert not step2_ran.is_set()  # successor never enqueued
+
+
+async def test_chord_header_failure_does_not_fire_body(rabbitmq_url, valkey_url):
+    # AE5 / R16: a chord header member that fails terminally must fail the
+    # whole workflow with bounded liveness, and the body must NEVER run.
+    queue = _q()
+    body_ran = asyncio.Event()
+
+    class Ok(Task):
+        task_info = TaskInfo(name=f"ok_{queue}", queues=[queue])
+
+        async def run(self, n: int) -> int:
+            return n
+
+    class HeaderBoom(Task):
+        task_info = TaskInfo(name=f"hboom_{queue}", queues=[queue], max_retries=0)
+
+        async def run(self, n: int) -> int:
+            raise ValueError("header member failed")
+
+    class Body(Task):
+        task_info = TaskInfo(name=f"body_{queue}", queues=[queue])
+
+        async def run(self, results: list) -> int:
+            body_ran.set()
+            return sum(results)
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        async with _worker(rabbitmq_url, valkey_url, queue):
+            handle = await app.apply(
+                chord(group(Ok.s(1), HeaderBoom.s(2), Ok.s(3)), Body.s())
+            )
+            with pytest.raises(TaskError):
+                await handle.get(timeout=20)
+            # Once get() raises, the workflow is terminal. The failed header
+            # member never enters the chord completion set, so the set can
+            # never reach N=3 and the body is never enqueued — assertable
+            # immediately, no wait needed.
+            assert not body_ran.is_set()

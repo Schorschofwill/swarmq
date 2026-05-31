@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 import time
 import uuid
@@ -45,9 +46,11 @@ from swarmq.serialization import (
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.workflow import Chain, Chord, Group, Signature
 from swarmq.workflow_orchestration import (
+    STATUS_FAILED,
     WorkflowHandle,
     build_initial_workflow_state,
     initial_frontier,
+    workflow_step_task_id,
 )
 
 logger = structlog.get_logger()
@@ -1130,7 +1133,10 @@ class Client:
         enqueue_plan: list[tuple[str, str, Signature, str]] = []
         step_tasks: dict[str, str] = {}
         for step_path, signature in frontier:
-            task_id = str(uuid.uuid7())
+            # Deterministic step id (shared scheme with the worker advancer)
+            # so a redelivered step stays idempotent — same id in the chord
+            # SADD set, same result key. See workflow_step_task_id.
+            task_id = workflow_step_task_id(workflow_id, step_path)
             resolved_queue, _delivery = self._resolve_queue_and_delivery_mode(
                 signature.task_name, None
             )
@@ -1145,24 +1151,44 @@ class Client:
         )
 
         enqueued_at = int(time.time())
-        for step_path, task_id, signature, resolved_queue in enqueue_plan:
-            message = {
-                "task": {
-                    "id": task_id,
-                    "queue": resolved_queue,
-                    "name": signature.task_name,
-                },
-                "args": list(signature.args),
-                "kwargs": signature.kwargs,
-            }
-            headers = {
-                HEADER_WORKFLOW_ID: workflow_id,
-                HEADER_WORKFLOW_STEP: step_path,
-                HEADER_ENQUEUED_AT: enqueued_at,
-            }
-            await self._broker.publish(
-                resolved_queue, encode_json(message), headers=headers
-            )
+        try:
+            for step_path, task_id, signature, resolved_queue in enqueue_plan:
+                message = {
+                    "task": {
+                        "id": task_id,
+                        "queue": resolved_queue,
+                        "name": signature.task_name,
+                    },
+                    "args": list(signature.args),
+                    "kwargs": signature.kwargs,
+                }
+                headers = {
+                    HEADER_WORKFLOW_ID: workflow_id,
+                    HEADER_WORKFLOW_STEP: step_path,
+                    HEADER_ENQUEUED_AT: enqueued_at,
+                }
+                await self._broker.publish(
+                    resolved_queue, encode_json(message), headers=headers
+                )
+        except Exception as exc:
+            # Partial-frontier publish failure: members 1..k-1 are enqueued
+            # and the state is already persisted as "running", but the
+            # frontier is incomplete so a group/chord can never reach N and
+            # the workflow would hang until TTL. Best-effort mark it failed so
+            # a reattach sees the failure instead of an orphaned running state.
+            # The already-enqueued members run harmlessly (their advance finds
+            # a terminal workflow and no-ops).
+            with contextlib.suppress(Exception):
+                state["status"] = STATUS_FAILED
+                state["error"] = {
+                    "type": type(exc).__name__,
+                    "message": f"apply() failed to enqueue the initial frontier: {exc}",
+                }
+                await self._backend.store_workflow_state(
+                    workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
+                    op_timeout=self._backend_op_timeout,
+                )
+            raise
 
         await self._signal_dispatcher.dispatch(
             Signal.TASK_ENQUEUED,

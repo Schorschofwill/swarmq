@@ -1,8 +1,12 @@
 """U3: atomic + idempotent chord-completion Lua against real Valkey (R12).
 
-Exactly one of N member completions returns True (fires the body), and
-redelivery of an already-counted member is a no-op — even under
-concurrent 'last completer' calls.
+The script reports whether the chord is complete (all N distinct members
+done). A redelivered member already in the set does not advance the count.
+Once complete, the script returns True on EVERY call (including a
+post-completion redelivery) — the one-shot body enqueue is enforced
+DOWNSTREAM by the advancer's publish-then-mark step_tasks["/b"] marker, not
+by a flag inside the script. That ordering guarantees the body is never lost
+under a crash in the completion->publish window.
 """
 
 from __future__ import annotations
@@ -60,7 +64,12 @@ async def test_redelivered_member_is_noop(manager):
     ) is True
 
 
-async def test_redelivery_of_last_member_does_not_double_fire(manager):
+async def test_redelivery_of_last_member_still_reports_complete(manager):
+    # Post-fix contract: the script no longer holds a one-shot flag, so a
+    # redelivered last member reports "complete" again. The downstream
+    # step_tasks["/b"] marker — not this script — prevents a double body
+    # enqueue. This is the safe direction: the body can never be LOST in the
+    # completion->publish crash window.
     wf_id, chord_id = _ids()
     await manager.record_and_check_complete(
         wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000
@@ -68,10 +77,11 @@ async def test_redelivery_of_last_member_does_not_double_fire(manager):
     assert await manager.record_and_check_complete(
         wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000
     ) is True
-    # m1 redelivered after the body already fired → must NOT fire again.
+    # m1 redelivered after completion → still reports complete (idempotent
+    # SADD keeps the count at N); the one-shot lives in the advancer.
     assert await manager.record_and_check_complete(
         wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000
-    ) is False
+    ) is True
 
 
 async def test_concurrent_last_completers_fire_once(manager):

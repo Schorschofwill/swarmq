@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from swarmq.middleware import MessageContext, Middleware
     from swarmq.signals import Signal, SignalDispatcher
     from swarmq.task import DeliveryMode, Task, TaskInfo
+    from swarmq.workflow_orchestration import WorkflowHandle
 
 
 _LAZY_SURFACE: dict[str, tuple[str, str]] = {
@@ -74,6 +75,7 @@ _LAZY_SURFACE: dict[str, tuple[str, str]] = {
     "DeliveryMode": ("swarmq.task", "DeliveryMode"),
     "Task": ("swarmq.task", "Task"),
     "TaskInfo": ("swarmq.task", "TaskInfo"),
+    "WorkflowHandle": ("swarmq.workflow_orchestration", "WorkflowHandle"),
 }
 
 
@@ -126,6 +128,7 @@ __all__ = [
     "chord",
     "group",
     "sig",
+    "WorkflowHandle",
     # Health
     "HealthChecker",
     "HealthServer",

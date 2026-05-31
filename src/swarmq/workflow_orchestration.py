@@ -3,14 +3,15 @@
 This module holds the worker-side machinery that advances workflows —
 distinct from the infrastructure-free topology layer in ``workflow.py``
 (client/producer side). The :class:`ChordManager` wraps the atomic
-``chord_complete.lua`` script; the advancement and depth-guard helpers
-added in later units live here too.
+``chord_complete.lua`` script; the :class:`WorkflowAdvancer` and its
+enqueue/fan-in helpers live here too.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -22,9 +23,21 @@ from swarmq.exceptions import (
     WorkflowResultExpired,
     WorkflowValidationError,
 )
+from swarmq.headers import (
+    HEADER_ENQUEUED_AT,
+    HEADER_WORKFLOW_ID,
+    HEADER_WORKFLOW_STEP,
+)
 from swarmq.lua import load_script
 from swarmq.serialization import decode_json, encode_json, encode_result
-from swarmq.workflow import Chain, Chord, Group, Signature, WorkflowNode
+from swarmq.workflow import (
+    Chain,
+    Chord,
+    Group,
+    Signature,
+    WorkflowNode,
+    _node_from_dict,
+)
 
 if TYPE_CHECKING:
     import valkey.asyncio
@@ -59,9 +72,10 @@ def build_initial_workflow_state(
       * ``final_result_task_id`` — set by the worker (U5) when the terminal
         step's result is stored; ``handle.get()`` resolves the value from it.
       * ``error`` — ``{"type", "message"}`` set by the fail path (U6).
-      * ``members`` — chord-path -> ``{"task_ids": [...ordered...],
-        "expected_n": N}``; the worker records ordered member task ids so
-        fan-in collects results in definition order (R5).
+
+    Per-member introspection (R15, ``handle.children()``) is reconstructed at
+    read time from ``step_tasks`` + result existence — there is no separate
+    ``members`` field to keep transactionally in sync.
     """
     return {
         "v": WORKFLOW_STATE_VERSION,
@@ -73,7 +87,6 @@ def build_initial_workflow_state(
         # step path -> task_id for every enqueued step. apply() seeds the
         # initial frontier; the worker (U5) appends as it advances.
         "step_tasks": {},
-        "members": {},
     }
 
 
@@ -109,11 +122,38 @@ class WorkflowHandle:
         return str(state["status"])
 
     async def children(self) -> dict[str, Any]:
-        """Per-member status/result reconciliation (R15). Returns the
-        ``members`` map from state (chord-path -> ordered member task ids +
-        expected count); empty for a plain chain."""
+        """Per-member status/result introspection (R15), reconstructed at
+        read time. Returns a map of every enqueued step's topology path ->
+        ``{"task_id", "status", "result"?}``, where ``status`` is
+        ``"running"`` (no result stored yet), ``"completed"`` (result
+        present), or ``"failed"`` (result present but errored/cancelled).
+        Empty before any step is enqueued.
+
+        Read-time reconstruction (topology + ``step_tasks`` + result
+        existence) avoids holding a separate per-member status field
+        transactionally in sync with the chord set."""
         state = await self._load_state()
-        return dict(state.get("members", {}))
+        step_tasks: dict[str, str] = state.get("step_tasks", {})
+        if not step_tasks:
+            return {}
+        paths = list(step_tasks)
+        task_ids = [step_tasks[p] for p in paths]
+        raws = await self._backend.get_results_batch(task_ids)
+        out: dict[str, Any] = {}
+        for path, tid, raw in zip(paths, task_ids, raws, strict=True):
+            if raw is None:
+                out[path] = {"task_id": tid, "status": "running"}
+                continue
+            entry: dict[str, Any] = {"task_id": tid, "status": "completed"}
+            try:
+                entry["result"] = self._unpack(raw)
+            except Exception:
+                # Stored result is an error/cancel — report failed status
+                # rather than propagating the exception from an introspection
+                # call; get() is the surface that raises.
+                entry["status"] = "failed"
+            out[path] = entry
+        return out
 
     async def cancel(self) -> bool:
         """Set the workflow-level cancel flag and wake any waiter (R17)."""
@@ -149,6 +189,14 @@ class WorkflowHandle:
                 state = await self._load_state()
                 if state["status"] in _TERMINAL_STATUSES:
                     return await self._resolve_terminal(state)
+                # Cancel liveness (R17): a cancel() between steps (or while a
+                # step is slow) sets the flag but no advance() has run yet to
+                # write STATUS_CANCELLED. Surface it here so get() returns
+                # promptly instead of hanging until timeout. Checking the flag
+                # (not writing state) avoids a write race with a concurrent
+                # advance() that may be completing the workflow.
+                if await self._backend.is_workflow_cancelled(self.workflow_id):
+                    raise TaskCancelledError(self.workflow_id)
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     raise ResultNotReadyError(
@@ -261,9 +309,21 @@ def chord_set_key(wf_id: str, chord_id: str) -> str:
     return f"sq:wf:chord:{wf_id}:{chord_id}"
 
 
-def chord_flag_key(wf_id: str, chord_id: str) -> str:
-    """Key for the one-shot 'body enqueued' flag."""
-    return f"sq:wf:chordflag:{wf_id}:{chord_id}"
+def workflow_step_task_id(wf_id: str, step_path: str) -> str:
+    """Deterministic task id for a workflow step, derived from
+    ``(workflow_id, step_path)``.
+
+    Determinism is load-bearing for idempotency: if a step is published but
+    its ``step_tasks`` marker is lost before persist (crash in the
+    publish→mark window), a redelivery re-enqueues the SAME id rather than a
+    fresh one. The successor's result key is shared (a double-enqueue is
+    absorbed), and crucially a re-enqueued chord/group MEMBER lands the same
+    id in the ``chord_complete.lua`` SADD set, so the distinct-member count
+    cannot be inflated past N (which would fire the chord body early on
+    incomplete results). ``apply()`` and the worker advancer MUST mint step
+    ids through this one function so the schemes never diverge.
+    """
+    return f"{wf_id}#{step_path}"
 
 
 def split_path(path: str) -> tuple[str, str]:
@@ -297,8 +357,10 @@ class WorkflowAdvancer:
 
     Collaborators are injected so the DAG logic is unit-testable with fakes.
     ``publish`` is the broker publish coroutine, ``resolve_queue`` maps a
-    task name to its queue, ``make_task_id`` mints a new task id, ``unpack``
-    decodes a stored result to its value.
+    task name to its queue, ``make_task_id`` mints a DETERMINISTIC task id
+    from ``(workflow_id, step_path)`` (see :func:`workflow_step_task_id` —
+    determinism keeps redelivered steps idempotent), ``unpack`` decodes a
+    stored result to its value.
     """
 
     def __init__(
@@ -308,7 +370,7 @@ class WorkflowAdvancer:
         *,
         publish: Callable[[str, bytes, dict[str, Any]], Any],
         resolve_queue: Callable[[str], str],
-        make_task_id: Callable[[], str],
+        make_task_id: Callable[[str, str], str],
         unpack: Callable[[bytes], Any],
         ttl_ms: int,
     ) -> None:
@@ -327,8 +389,6 @@ class WorkflowAdvancer:
         *result*. Decide and enqueue what runs next, or mark the workflow
         complete. Idempotent against redelivery via the chord set + the
         per-step ``next-enqueued`` markers."""
-        from swarmq.workflow import _node_from_dict  # local: avoid cycle at import
-
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
             return  # state gone (expired/cancelled-cleaned) — nothing to advance
@@ -417,7 +477,11 @@ class WorkflowAdvancer:
         gp_parent, gp_last = split_path(group_path)
         if gp_last == "h":
             chord_node = node_at_path(topology, gp_parent)
-            assert isinstance(chord_node, Chord)
+            if not isinstance(chord_node, Chord):
+                raise WorkflowValidationError(
+                    f"expected Chord at {gp_parent!r}, "
+                    f"got {type(chord_node).__name__}"
+                )
             await self._enqueue_node(
                 wf_id, state, chord_node.body, f"{gp_parent}/b",
                 inject=ordered_results,
@@ -506,18 +570,13 @@ class WorkflowAdvancer:
         publish-then-mark: each step is published (on a publisher-confirms
         channel) before its step-task id is recorded, so a crash never loses
         the step (at worst a rare idempotent double-enqueue)."""
-        from swarmq.headers import (
-            HEADER_ENQUEUED_AT,
-            HEADER_WORKFLOW_ID,
-            HEADER_WORKFLOW_STEP,
-        )
-
+        enqueued_at = int(time.time())
         for step_path, signature in _frontier(node, node_path):
             # next-enqueued marker (publish-then-mark): skip if already done.
             if step_path in state["step_tasks"]:
                 continue
             injected = inject_result(signature, inject)
-            task_id = self._make_task_id()
+            task_id = self._make_task_id(wf_id, step_path)
             queue = self._resolve_queue(injected.task_name)
             message = {
                 "task": {"id": task_id, "queue": queue, "name": injected.task_name},
@@ -527,7 +586,7 @@ class WorkflowAdvancer:
             headers = {
                 HEADER_WORKFLOW_ID: wf_id,
                 HEADER_WORKFLOW_STEP: step_path,
-                HEADER_ENQUEUED_AT: 0,
+                HEADER_ENQUEUED_AT: enqueued_at,
             }
             await self._publish(queue, encode_json(message), headers)
             state["step_tasks"][step_path] = task_id
@@ -545,9 +604,20 @@ class WorkflowAdvancer:
         return out
 
     async def _gather_results(self, task_ids: list[str]) -> list[Any]:
+        # Single batched fetch preserving definition order; a missing/None
+        # entry means the result EXPIRED before fan-in (same contract as
+        # _result_value): surface WorkflowResultExpired rather than a None
+        # hole (R6). A stored None return is a non-None result dict, so None
+        # here unambiguously means "key gone".
+        raws = await self._backend.get_results_batch(task_ids)
         values: list[Any] = []
-        for tid in task_ids:
-            values.append(await self._result_value(tid))
+        for tid, raw in zip(task_ids, raws, strict=True):
+            if raw is None:
+                raise WorkflowResultExpired(
+                    f"result for completed step {tid} expired before the "
+                    "workflow could consume it; raise the result/workflow TTL"
+                )
+            values.append(self._unpack(raw))
         return values
 
     async def _result_value(self, task_id: str) -> Any:
@@ -643,16 +713,20 @@ class ChordManager:
         expected_n: int,
         ttl_ms: int,
     ) -> bool:
-        """Record one header-member completion; return True iff this call
-        is the one that should enqueue the chord body (R12).
+        """Record one header-member completion; return True iff the chord is
+        now complete (all ``expected_n`` distinct members done) (R12).
 
         Idempotent under redelivery: a member already in the completed set
-        does not advance the count, and the body-enqueue decision is guarded
-        by a one-shot flag set inside the same script. Exactly one call over
-        the chord's lifetime returns True.
+        does not advance the count. This returns True on EVERY call once the
+        set has reached N — including post-completion redeliveries — so the
+        true one-shot is the downstream publish-then-mark ``step_tasks["/b"]``
+        marker in :meth:`WorkflowAdvancer._enqueue_node`, not a flag consumed
+        here. That ordering guarantees the body is never lost under a crash
+        in the completion→publish window (at worst a rare idempotent
+        double-enqueue, absorbed by step idempotency).
         """
         result = await self._script(
-            keys=[chord_set_key(wf_id, chord_id), chord_flag_key(wf_id, chord_id)],
+            keys=[chord_set_key(wf_id, chord_id)],
             args=[member_id, expected_n, ttl_ms],
         )
         return bool(result == 1)

@@ -82,7 +82,11 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_json, decode_result, encode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
-from swarmq.workflow_orchestration import ChordManager, WorkflowAdvancer
+from swarmq.workflow_orchestration import (
+    ChordManager,
+    WorkflowAdvancer,
+    workflow_step_task_id,
+)
 
 logger = structlog.get_logger()
 
@@ -747,7 +751,7 @@ class Worker:
             ChordManager(self._backend._client),
             publish=self._publish_workflow_step,
             resolve_queue=self._resolve_workflow_queue,
-            make_task_id=lambda: str(uuid.uuid7()),
+            make_task_id=workflow_step_task_id,
             unpack=lambda raw: decode_result(raw)["result"],
             ttl_ms=self._config.result_ttl * 1000,
         )
@@ -1330,6 +1334,29 @@ class Worker:
             return None
         return unique_hash
 
+    @staticmethod
+    def _extract_valid_workflow_id(message) -> str | None:
+        """Read and validate the workflow-id header from an incoming message.
+
+        Workflow ids are minted as ``str(uuid.uuid7())`` (client/worker side)
+        — a canonical UUID string: 36 chars, lowercase hex with dashes at the
+        8-4-4-4-12 positions. Any header that deviates — missing, wrong type,
+        wrong length, non-hex, misplaced dashes — is treated as "no workflow":
+        the caller skips advancement rather than forwarding unvalidated bytes
+        to Valkey as a workflow-state key. Mirrors ``_extract_valid_unique_hash``
+        (ADV-005): never mark a workflow failed on a malformed id.
+        """
+        wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+        if not isinstance(wf_id, str) or len(wf_id) != 36:
+            return None
+        for i, c in enumerate(wf_id):
+            if i in (8, 13, 18, 23):
+                if c != "-":
+                    return None
+            elif c not in "0123456789abcdef":
+                return None
+        return wf_id
+
     async def _maybe_release_unique(
         self, message, task_id: str, task_info: TaskInfo | None = None,
     ) -> None:
@@ -1887,7 +1914,14 @@ class Worker:
                 # would stall forever. Construction-time rejection (U1) covers
                 # Task.s(); sig()-by-name can only be caught here. Mark the
                 # workflow failed so handle.get() raises instead of hanging.
-                wf_id_faf = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+                wf_id_faf = self._extract_valid_workflow_id(message)
+                if wf_id_faf is None and (message.headers or {}).get(
+                    HEADER_WORKFLOW_ID
+                ) is not None:
+                    logger.warning(
+                        "workflow_id_header_invalid",
+                        task_id=task_id, task_name=task_name,
+                    )
                 if wf_id_faf is not None and self._workflow_advancer is not None:
                     try:
                         await self._workflow_advancer.fail(
@@ -1946,7 +1980,14 @@ class Worker:
             # BEFORE the ack — so a crash before ack redelivers and the
             # idempotent advance (next-enqueued markers + chord set) re-runs
             # without losing or double-enqueueing.
-            wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+            wf_id = self._extract_valid_workflow_id(message)
+            if wf_id is None and (message.headers or {}).get(
+                HEADER_WORKFLOW_ID
+            ) is not None:
+                logger.warning(
+                    "workflow_id_header_invalid",
+                    task_id=task_id, task_name=task_name,
+                )
             if (
                 wf_id is not None
                 and self._workflow_advancer is not None
@@ -1969,6 +2010,8 @@ class Worker:
                     )
             elif wf_id is not None and self._workflow_advancer is not None:
                 step_path = (message.headers or {}).get(HEADER_WORKFLOW_STEP, "")
+                if not isinstance(step_path, str):
+                    step_path = ""
                 try:
                     await self._workflow_advancer.advance(
                         wf_id, step_path, task_id, result_value
@@ -1977,6 +2020,18 @@ class Worker:
                     logger.error("workflow_advance_backend_error", workflow_id=wf_id)
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         # Transient — redelivery retries the idempotent advance.
+                        _unique_release_pending = False
+                        await self._broker.nack(message, requeue=True)
+                    return
+                except BrokerConnectionError:
+                    # A workflow-step publish failed transiently (e.g. a
+                    # publisher-confirm Nack that persisted past the broker's
+                    # retry budget). Do NOT mark the workflow failed — a Nack
+                    # means the message was not committed, so redelivery
+                    # re-runs the idempotent advance and re-publishes safely
+                    # (deterministic step ids + step_tasks markers).
+                    logger.error("workflow_advance_broker_error", workflow_id=wf_id)
+                    if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         _unique_release_pending = False
                         await self._broker.nack(message, requeue=True)
                     return
@@ -2266,7 +2321,13 @@ class Worker:
         # bounded time instead of hanging to its timeout, and no subsequent
         # step / chord body is enqueued. Same hook that wrote the error result
         # above, so the two cannot diverge.
-        wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+        wf_id = self._extract_valid_workflow_id(message)
+        if wf_id is None and (message.headers or {}).get(
+            HEADER_WORKFLOW_ID
+        ) is not None:
+            logger.warning(
+                "workflow_id_header_invalid", task_id=task_id, task_name=task_name,
+            )
         if wf_id is not None and self._workflow_advancer is not None:
             try:
                 await self._workflow_advancer.fail(wf_id, "TaskError", error_message)

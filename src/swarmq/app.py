@@ -10,6 +10,8 @@ from swarmq.client import _MISSING, Client, _MissingType
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.workflow import Chain, Chord, Group, Signature
+    from swarmq.workflow_orchestration import WorkflowHandle
 from swarmq.config import SwarmQConfig
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
@@ -176,7 +178,9 @@ class SwarmQ:
         ttl_ms = self.config.result_ttl * 1000
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
 
-    async def apply(self, workflow: Any) -> Any:
+    async def apply(
+        self, workflow: Signature | Chain | Group | Chord
+    ) -> WorkflowHandle:
         """Start a workflow (chain/group/chord) fire-and-forget; return a
         reattachable :class:`WorkflowHandle` (R10). Workflow state TTL is
         derived from ``config.result_ttl`` so it outlives the retry horizon."""
@@ -184,7 +188,7 @@ class SwarmQ:
             workflow, state_ttl_ms=self.config.result_ttl * 1000
         )
 
-    async def workflow(self, workflow_id: str) -> Any:
+    async def workflow(self, workflow_id: str) -> WorkflowHandle:
         """Reattach to a workflow by id (R14); raises WorkflowNotFound when
         absent."""
         return await self.client.workflow(workflow_id)

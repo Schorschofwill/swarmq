@@ -17,12 +17,9 @@ execution and would never reach the worker advancement seam (U5).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union
+from typing import Any, Union
 
 from swarmq.exceptions import WorkflowValidationError
-
-if TYPE_CHECKING:
-    pass
 
 DEFAULT_MAX_WORKFLOW_DEPTH = 10
 DEFAULT_MAX_GROUP_SIZE = 1000

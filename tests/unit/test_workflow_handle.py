@@ -26,6 +26,8 @@ from swarmq.workflow_orchestration import (
     node_at_path,
 )
 
+pytestmark = [pytest.mark.timeout(5)]
+
 
 class A(Task):
     task_info = TaskInfo(name="a", queues=["default"])
@@ -96,6 +98,8 @@ def _backend_with_state(state: dict | None) -> MagicMock:
     be.publish_workflow_notification = AsyncMock()
     be.workflow_notify_channel = MagicMock(return_value="sq:wf:notify:wf-1")
     be.get_result = AsyncMock(return_value=None)
+    be.is_workflow_cancelled = AsyncMock(return_value=False)
+    be.get_results_batch = AsyncMock(return_value=[])
     return be
 
 
@@ -181,3 +185,66 @@ async def test_get_times_out_while_running():
     h = _handle(be)
     with pytest.raises(ResultNotReadyError):
         await h.get(timeout=0.1)
+
+
+async def test_get_raises_cancelled_when_flag_set_while_running(monkeypatch):
+    # R17 liveness: cancel() between steps sets the flag but no advance() has
+    # run to write STATUS_CANCELLED. get() must surface it promptly via the
+    # cancel-flag check rather than hanging until timeout.
+    be = _backend_with_state(build_initial_workflow_state("wf-1", {}))
+    be.create_pubsub = MagicMock(side_effect=Exception("no pubsub"))
+    be.is_workflow_cancelled = AsyncMock(return_value=True)
+    h = _handle(be)
+    with pytest.raises(TaskCancelledError):
+        await h.get(timeout=5.0)
+
+
+# --------------------------------------------------------------------------
+# children() — R15 read-time per-member introspection
+# --------------------------------------------------------------------------
+
+
+async def test_children_empty_before_any_step():
+    h = _handle(_backend_with_state(build_initial_workflow_state("wf-1", {})))
+    assert await h.children() == {}
+
+
+async def test_children_reports_running_and_completed_members():
+    state = build_initial_workflow_state("wf-1", {})
+    state["step_tasks"] = {"/h/g0": "m0", "/h/g1": "m1"}
+    be = _backend_with_state(state)
+    # m0 completed (result stored), m1 still running (no result).
+    done = encode_result(
+        {
+            "task": {"id": "m0", "queue": "default", "name": "a"},
+            "is_error": False,
+            "is_cancelled": False,
+            "error_message": "",
+            "result": "r0",
+        }
+    )
+    be.get_results_batch = AsyncMock(return_value=[done, None])
+    h = _handle(be)
+    children = await h.children()
+    assert children["/h/g0"] == {"task_id": "m0", "status": "completed", "result": "r0"}
+    assert children["/h/g1"] == {"task_id": "m1", "status": "running"}
+
+
+async def test_children_reports_failed_member():
+    state = build_initial_workflow_state("wf-1", {})
+    state["step_tasks"] = {"/g0": "m0"}
+    be = _backend_with_state(state)
+    errored = encode_result(
+        {
+            "task": {"id": "m0", "queue": "default", "name": "a"},
+            "is_error": True,
+            "is_cancelled": False,
+            "error_message": "boom",
+            "result": None,
+        }
+    )
+    be.get_results_batch = AsyncMock(return_value=[errored])
+    h = _handle(be)
+    children = await h.children()
+    assert children["/g0"]["status"] == "failed"
+    assert children["/g0"]["task_id"] == "m0"

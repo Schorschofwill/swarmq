@@ -10,8 +10,6 @@ stores the result, and calls advance() with the step's path.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
@@ -23,7 +21,10 @@ from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
     build_initial_workflow_state,
     initial_frontier,
+    workflow_step_task_id,
 )
+
+pytestmark = [pytest.mark.timeout(5)]
 
 
 class Echo(Task):
@@ -49,6 +50,9 @@ class FakeBackend:
     async def get_result(self, task_id):
         return self.results.get(task_id)
 
+    async def get_results_batch(self, task_ids):
+        return [self.results.get(tid) for tid in task_ids]
+
     async def store_result(self, task_id, data, ttl_ms, op_timeout=None):
         self.results[task_id] = data
 
@@ -60,21 +64,20 @@ class FakeBackend:
 
 
 class FakeChord:
-    """In-memory equivalent of chord_complete.lua: distinct-member set +
-    one-shot fire flag, keyed by (wf_id, chord_id)."""
+    """In-memory equivalent of chord_complete.lua: a distinct-member set
+    keyed by (wf_id, chord_id). Mirrors the post-fix Lua contract — returns
+    True on EVERY call once the set has reached N (no internal one-shot
+    flag); the real one-shot is the advancer's publish-then-mark
+    step_tasks["/b"] marker."""
 
     def __init__(self) -> None:
         self._sets: dict[tuple[str, str], set[str]] = {}
-        self._fired: set[tuple[str, str]] = set()
 
     async def record_and_check_complete(self, wf_id, chord_id, member_id, n, ttl):
         key = (wf_id, chord_id)
         s = self._sets.setdefault(key, set())
         s.add(member_id)
-        if len(s) == n and key not in self._fired:
-            self._fired.add(key)
-            return True
-        return False
+        return len(s) == n
 
 
 def _unpack(raw: bytes):
@@ -101,7 +104,7 @@ class Driver:
             self.chord,
             publish=self._publish,
             resolve_queue=lambda name: "default",
-            make_task_id=lambda: f"t-{uuid.uuid4().hex[:10]}",
+            make_task_id=workflow_step_task_id,
             unpack=_unpack,
             ttl_ms=60_000,
         )
@@ -250,7 +253,7 @@ async def test_expired_member_result_raises_workflow_result_expired():
         ch,
         publish=lambda *a: _noop(),
         resolve_queue=lambda name: "default",
-        make_task_id=lambda: "t-x",
+        make_task_id=lambda wf_id, sp: "t-x",
         unpack=_unpack,
         ttl_ms=60_000,
     )
@@ -285,3 +288,45 @@ async def test_chain_with_embedded_chord():
     await d.drain()
     st = await d.state()
     assert st["status"] == STATUS_COMPLETED
+
+
+# --------------------------------------------------------------------------
+# Redelivery idempotency — the publish-then-mark step_tasks marker is the
+# real one-shot (chord_complete.lua no longer holds a one-shot flag).
+# --------------------------------------------------------------------------
+
+
+async def test_chain_redelivery_does_not_double_enqueue():
+    # AT_LEAST_ONCE: a redelivered chain step must not enqueue its successor
+    # twice — the persisted next-enqueued marker (step_tasks) suppresses it.
+    d = Driver(chain(Echo.s("a"), Echo.s()))
+    await d.seed()  # advancing /0 enqueues /1
+    assert len(d.published) == 1
+    seed_tid = (await d.state())["step_tasks"]["/0"]
+    await d.advancer.advance(d.wf_id, "/0", seed_tid, ["a"])  # redelivery
+    assert len(d.published) == 1  # successor still enqueued exactly once
+
+
+async def test_chord_member_redelivery_enqueues_body_once():
+    # The chord Lua now reports "complete" on every post-completion call;
+    # the body must still be enqueued exactly once, guarded by step_tasks["/b"].
+    d = Driver(chord(group(Echo.s("a"), Echo.s("b")), Echo.s()))
+    await d.seed()  # both header members advanced → body enqueued once
+
+    def _body_msgs():
+        return [p for p in d.published if p[2]["x-swarmq-workflow-step"] == "/b"]
+
+    assert len(_body_msgs()) == 1
+    last_tid = (await d.state())["step_tasks"]["/h/g1"]
+    # Redeliver the last header member: FakeChord reports complete=True again.
+    await d.advancer.advance(d.wf_id, "/h/g1", last_tid, ["b"])
+    assert len(_body_msgs()) == 1  # marker prevents a second body enqueue
+
+
+async def test_workflow_step_task_id_is_deterministic():
+    # Determinism is the property that keeps a re-enqueued member's id stable
+    # so the chord SADD set cannot be inflated past N under a lost-persist crash.
+    assert workflow_step_task_id("wf-1", "/h/g0") == workflow_step_task_id(
+        "wf-1", "/h/g0"
+    )
+    assert workflow_step_task_id("wf-1", "/0") != workflow_step_task_id("wf-1", "/1")

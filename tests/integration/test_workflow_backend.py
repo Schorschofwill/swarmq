@@ -8,6 +8,7 @@ when Valkey is unreachable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 
 import pytest
@@ -95,9 +96,29 @@ async def test_is_workflow_cancelled_false_when_unset(backend):
 async def test_publish_workflow_notification_reaches_subscriber(backend):
     wf_id = _wf_id()
     channel = backend.workflow_notify_channel(wf_id)
-    waiter = asyncio.create_task(backend.subscribe_and_wait(channel, timeout=3.0))
-    # Give the subscriber a moment to establish before publishing.
-    await asyncio.sleep(0.1)
+    subscribed = asyncio.Event()
+
+    async def _subscribe_and_wait() -> bool:
+        pubsub = backend.create_pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            subscribed.set()  # signal readiness instead of a sleep
+            deadline = asyncio.get_running_loop().time() + 3.0
+            while asyncio.get_running_loop().time() < deadline:
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=0.05,
+                )
+                if msg is not None:
+                    return True
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+
+    waiter = asyncio.create_task(_subscribe_and_wait())
+    # Wait for the subscriber to be fully established before publishing.
+    await subscribed.wait()
     await backend.publish_workflow_notification(wf_id)
     assert await waiter is True
 
