@@ -33,7 +33,12 @@ async def run_worker_async(args: argparse.Namespace) -> None:
         # actionable hint instead of a bare traceback.
         from swarmq.dishka import _HAVE_DISHKA
 
-        if not _HAVE_DISHKA and "dishka" in str(exc).lower():
+        # Only rephrase when the failure is specifically the missing dishka
+        # package (ModuleNotFoundError.name == "dishka" or a "dishka.*"
+        # submodule) — a substring match on the message would misclassify an
+        # unrelated ImportError that merely mentions "dishka".
+        missing = getattr(exc, "name", None) or ""
+        if not _HAVE_DISHKA and (missing == "dishka" or missing.startswith("dishka.")):
             raise ConfigurationError(
                 f"importing {args.module!r} failed because the 'dishka' extra "
                 f"is not installed but a task uses FromDishka: {exc}. "

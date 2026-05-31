@@ -124,7 +124,17 @@ def _key_resolvable(container: object, key: object) -> bool:
         return False
     except AttributeError:
         # Introspection surface changed across dishka versions — degrade to
-        # presence-only (the container-registered check already passed).
+        # presence-only (the container-registered check already passed). Log
+        # the degradation rather than silently skipping resolvability.
+        import structlog
+
+        structlog.get_logger().warning(
+            "dishka_resolvability_introspection_unavailable",
+            detail=(
+                "dishka registry introspection API not as expected; "
+                "R3b validation degraded to container-presence-only"
+            ),
+        )
         return True
 
 
