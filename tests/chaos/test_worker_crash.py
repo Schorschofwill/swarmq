@@ -111,19 +111,33 @@ def _spawn_worker(
 
 
 def _wait_for_worker_started(proc: subprocess.Popen[str], timeout: float = 30.0) -> None:
-    """Block until the worker emits ``worker_started`` on stdout."""
+    """Block until the worker emits ``worker_started`` on stdout.
+
+    stdout/stderr are merged into one PIPE by ``_spawn_worker``; we accumulate
+    everything read so a startup crash surfaces the worker's own output in the
+    failure message instead of a bare return code (essential for diagnosing
+    environment-specific failures like CI).
+    """
     deadline = time.monotonic() + timeout
+    seen: list[str] = []
     while time.monotonic() < deadline:
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
             if proc.poll() is not None:
+                tail = proc.stdout.read() if proc.stdout else ""
+                output = "".join(seen) + (tail or "")
                 raise RuntimeError(
-                    f"worker exited before starting; rc={proc.returncode}"
+                    f"worker exited before starting; rc={proc.returncode}\n"
+                    f"--- worker output ---\n{output or '(no output)'}"
                 )
             continue
+        seen.append(line)
         if "worker_started" in line:
             return
-    raise TimeoutError("worker did not emit worker_started in time")
+    raise TimeoutError(
+        "worker did not emit worker_started in time\n"
+        f"--- worker output ---\n{''.join(seen) or '(no output)'}"
+    )
 
 
 def _kill_subprocess(proc: subprocess.Popen[str]) -> None:
