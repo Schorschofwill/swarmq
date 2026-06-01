@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "_TaskMessage": {
+      "additionalProperties": false,
+      "description": "RabbitMQ task message body (``Client.schedule`` producer contract).",
+      "properties": {
+        "args": {
+          "type": "array"
+        },
+        "kwargs": {
+          "type": "object"
+        },
+        "task": {
+          "$ref": "#/$defs/_TaskRef"
+        }
+      },
+      "required": [
+        "task",
+        "args",
+        "kwargs"
+      ],
+      "title": "_TaskMessage",
+      "type": "object"
+    },
+    "_TaskRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "queue": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "queue",
+        "name"
+      ],
+      "title": "_TaskRef",
+      "type": "object"
+    }
+  },
+  "$ref": "#/$defs/_TaskMessage"
+}

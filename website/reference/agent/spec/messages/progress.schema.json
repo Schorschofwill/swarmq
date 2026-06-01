@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "ProgressInfo": {
+      "description": "Client-side view of one task's progress HASH.\n\nFields mirror the Valkey HASH layout but are typed for convenient\nPython consumption. ``percent`` is always computed from current +\ntotal at write time — storing it in the HASH lets operators run a\none-field HGET without decoding the whole struct.\n\n``started_at`` is an ISO-8601 string set when the worker begins\nexecution; ``updated_at`` is refreshed on every surfaced update.\n``eta_seconds`` is ``None`` when no meaningful estimate is\npossible: current == 0, total <= 0, or the final update\n(``current == total``). Gate completion on ``percent == 100.0``\nrather than ``eta_seconds is not None``.\n\n``percent`` is stored as a 2-decimal-place rounded value. Callers\nre-deriving from current/total may see a difference of up to 0.005.",
+      "properties": {
+        "current": {
+          "type": "integer"
+        },
+        "eta_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "type": "string"
+        },
+        "percent": {
+          "type": "number"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "total": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "current",
+        "total",
+        "percent",
+        "message",
+        "updated_at"
+      ],
+      "title": "ProgressInfo",
+      "type": "object"
+    }
+  },
+  "$ref": "#/$defs/ProgressInfo"
+}

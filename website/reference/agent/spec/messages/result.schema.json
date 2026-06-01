@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "_TaskRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "queue": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "queue",
+        "name"
+      ],
+      "title": "_TaskRef",
+      "type": "object"
+    },
+    "_TaskResult": {
+      "additionalProperties": false,
+      "description": "Valkey task-result envelope (``cancellation.build_result_dict``).",
+      "properties": {
+        "error_message": {
+          "type": "string"
+        },
+        "is_cancelled": {
+          "type": "boolean"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "result": {},
+        "task": {
+          "$ref": "#/$defs/_TaskRef"
+        }
+      },
+      "required": [
+        "task",
+        "is_error",
+        "is_cancelled",
+        "error_message",
+        "result"
+      ],
+      "title": "_TaskResult",
+      "type": "object"
+    }
+  },
+  "$ref": "#/$defs/_TaskResult"
+}

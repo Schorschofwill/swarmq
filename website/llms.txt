@@ -1,0 +1,26 @@
+# SwarmQ
+
+> Python task queue on RabbitMQ + Valkey — at-least-once delivery, retries, scheduling, workflows, and a machine-readable agent spec.
+
+The spec files under `reference/agent/spec/` are generated from the code and kept in sync by tests, so an agent can consume them without reading the source.
+
+## Documentation
+
+- [Agent reference](reference/agent/index.md): rules + entry point for automation
+- [Message formats](reference/agent/message-formats.md): wire schemas (prose form of messages/*.schema.json)
+- [Decision trees](reference/agent/decision-trees.md): which feature to use when
+- [Error catalog](reference/agent/error-catalog-machine.md): exceptions, retriable, dlq_on_uncaught (prose form of errors.json)
+- [CLI reference](reference/cli.md): commands and flags
+- [Configuration](reference/configuration.md): options, defaults, env vars
+- [API reference](reference/api.md): public classes and methods
+
+## Machine-readable spec (generated)
+
+- [Spec index](reference/agent/spec/index.json): version + manifest
+- [cli.json](reference/agent/spec/cli.json)
+- [config.json](reference/agent/spec/config.json)
+- [errors.json](reference/agent/spec/errors.json)
+- [messages/progress.schema.json](reference/agent/spec/messages/progress.schema.json)
+- [messages/result.schema.json](reference/agent/spec/messages/result.schema.json)
+- [messages/schedule-definition.schema.json](reference/agent/spec/messages/schedule-definition.schema.json)
+- [messages/task-message.schema.json](reference/agent/spec/messages/task-message.schema.json)
