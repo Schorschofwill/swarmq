@@ -6,10 +6,16 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # `ping` only proves the Erlang VM is up — it goes green BEFORE the
+      # AMQP listener (5672) actually accepts connections. `compose --wait`
+      # would then release while a connecting worker still hits
+      # "Server connection unexpectedly closed / Read 0 bytes" and exits.
+      # `check_port_connectivity` gates on the listener ports accepting.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 3s
       timeout: 10s
       retries: 20
+      start_period: 15s
 
   valkey:
     image: valkey/valkey:8-alpine
