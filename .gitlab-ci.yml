@@ -2,10 +2,13 @@
 #
 #   test stage — the regression gate:
 #     * unit-tests / integration-tests: deterministic, BLOCKING.
-#     * e2e-tests: runs the full e2e suite but is allow_failure — the e2e tier
-#       has pre-existing, environment-sensitive timing flakiness (scheduler /
-#       signal-sequence tests) unrelated to application logic, so it is kept
-#       visible-but-non-blocking with reruns until that is cleaned up.
+#     * e2e-tests: runs the full e2e suite, BLOCKING, no reruns. The former
+#       "environment-sensitive flakiness" was a single root cause: a worker
+#       from a prior e2e file left the scheduler leader lock held (default 30s
+#       TTL) because cancel-based teardown skips the graceful release, starving
+#       the next scheduler test's leader election. Fixed by flushing Valkey on
+#       scheduler/signal test setup (not just teardown). Liveness waits were
+#       also widened off their tight 6s ceilings as defense-in-depth.
 #     * chaos-tests: opt-in (schedule/manual), never blocks.
 #   secret-detection stage — GitLab Secret Detection (unchanged).
 #
@@ -106,14 +109,14 @@ integration-tests:
   script:
     - $UV_RUN pytest tests/integration -q
 
-# Tier 2b — full e2e. Non-blocking: absorbs pre-existing timing flakiness with
-# reruns; failures stay visible without gating the MR.
+# Tier 2b — full e2e. BLOCKING, no reruns: the scheduler-leader-lock leak that
+# caused the old flakiness is fixed (Valkey flush on scheduler/signal setup),
+# so the gate is honest — a red e2e job is a real regression, not noise.
 e2e-tests:
   extends: .with-services
   stage: test
-  allow_failure: true
   script:
-    - $UV_RUN pytest tests/e2e -q --reruns 2 --reruns-delay 3
+    - $UV_RUN pytest tests/e2e -q
 
 # Tier 3 — chaos (Toxiproxy + docker compose). Opt-in only: runs on scheduled
 # pipelines or manual trigger, never blocks an MR. Needs a Docker-in-Docker

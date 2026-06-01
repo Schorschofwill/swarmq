@@ -31,7 +31,15 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
-pytestmark = [pytest.mark.timeout(20)]
+# Liveness safety-net for "wait for an async signal/event" below — generous so
+# a loaded/cold CI runner never turns a slow signal round-trip into a false
+# failure (the e2e flakiness source). NOT a behavioural deadline: wait_for
+# returns the instant the event fires. Genuine timing (retry delays etc.) uses
+# explicit ``asyncio.sleep`` and is left untouched.
+_EVENT_TIMEOUT = 20.0
+
+# Per-test backstop, generous above the worst-case sum of inner waits + sleeps.
+pytestmark = [pytest.mark.timeout(75)]
 
 
 def _unique_queue() -> str:
@@ -50,14 +58,25 @@ def _cleanup_tasks():
 
 @pytest.fixture(autouse=True)
 async def _flush_valkey(valkey_url):
-    """Flush Valkey between tests so dedup / lock / scheduler keys
-    from a prior test can't leak into the next one."""
+    """Flush Valkey BEFORE and after each test.
+
+    Before is load-bearing: a worker from any prior e2e test (in a file
+    without this fixture) becomes scheduler leader, and a cancel-based
+    teardown never runs the graceful lock release — so the leader lock
+    lingers for its TTL (default 30s) and starves this test's leader
+    election (``SCHEDULER_LEADER`` never fires → timeout, green only on a
+    later rerun). Flushing on setup gives a clean slate regardless of order;
+    teardown keeps our dedup / lock / scheduler keys from leaking forward."""
+    async def _flush() -> None:
+        client = valkey_asyncio.Valkey.from_url(valkey_url)
+        try:
+            await client.flushdb()
+        finally:
+            await client.aclose()
+
+    await _flush()
     yield
-    client = valkey_asyncio.Valkey.from_url(valkey_url)
-    try:
-        await client.flushdb()
-    finally:
-        await client.aclose()
+    await _flush()
 
 
 @contextlib.asynccontextmanager
@@ -91,7 +110,7 @@ async def _running_worker(
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(online.wait(), timeout=6)
+        await asyncio.wait_for(online.wait(), timeout=_EVENT_TIMEOUT)
         yield worker_app, worker_task
     finally:
         worker_task.cancel()
@@ -128,7 +147,7 @@ async def test_signal_worker_online(
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(online_event.wait(), timeout=6)
+        await asyncio.wait_for(online_event.wait(), timeout=_EVENT_TIMEOUT)
     finally:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -175,8 +194,8 @@ async def test_signal_worker_shutdown(
         try:
             await asyncio.sleep(0.5)
             worker._request_shutdown()
-            await asyncio.wait_for(shutdown_event.wait(), timeout=8)
-            await asyncio.wait_for(task, timeout=10)
+            await asyncio.wait_for(shutdown_event.wait(), timeout=_EVENT_TIMEOUT)
+            await asyncio.wait_for(task, timeout=_EVENT_TIMEOUT)
         finally:
             if not task.done():
                 task.cancel()
@@ -273,7 +292,7 @@ async def test_signal_task_started(
             register_signals={Signal.TASK_STARTED: _handler},
         ):
             tid = await client_app.schedule(task_name)
-            await asyncio.wait_for(started.wait(), timeout=6)
+            await asyncio.wait_for(started.wait(), timeout=_EVENT_TIMEOUT)
 
     assert len(captured) == 1
     assert captured[0]["task_id"] == tid
@@ -311,7 +330,7 @@ async def test_signal_task_completed(
             register_signals={Signal.TASK_COMPLETED: _handler},
         ):
             tid = await client_app.schedule(task_name)
-            await asyncio.wait_for(done.wait(), timeout=6)
+            await asyncio.wait_for(done.wait(), timeout=_EVENT_TIMEOUT)
 
     assert len(captured) == 1
     assert captured[0]["task_id"] == tid
@@ -361,7 +380,7 @@ async def test_signal_task_failed(
             # Wait until the *final* failure lands (captured >=2 total).
             # Handler is set on FIRST failure too, so we drain both.
             try:
-                await asyncio.wait_for(failed.wait(), timeout=8)
+                await asyncio.wait_for(failed.wait(), timeout=_EVENT_TIMEOUT)
             except TimeoutError:
                 pass
 
@@ -376,7 +395,7 @@ async def test_signal_task_failed(
     assert "boom-failed" in str(last["exception"])
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(75)
 async def test_signal_task_retrying(
     rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
 ):
@@ -418,9 +437,9 @@ async def test_signal_task_retrying(
             register_signals={Signal.TASK_RETRYING: _handler},
         ):
             tid = await client_app.schedule(task_name)
-            await asyncio.wait_for(retry_event.wait(), timeout=6)
+            await asyncio.wait_for(retry_event.wait(), timeout=_EVENT_TIMEOUT)
             # Task eventually succeeds.
-            result = await client_app.get_result(tid, timeout=8)
+            result = await client_app.get_result(tid, timeout=_EVENT_TIMEOUT)
             assert result == "ok"
 
     assert len(captured) >= 1
@@ -466,7 +485,7 @@ async def test_signal_task_cancelled(
             rabbitmq_url, valkey_url, queue,
             register_signals={Signal.TASK_CANCELLED: _handler},
         ):
-            await asyncio.wait_for(cancelled.wait(), timeout=6)
+            await asyncio.wait_for(cancelled.wait(), timeout=_EVENT_TIMEOUT)
 
     assert len(captured) == 1
     assert captured[0]["task_id"] == tid
@@ -552,7 +571,7 @@ async def test_signal_task_rate_limited(
             # First consumes the 1/h budget; second must be rate-limited.
             await client_app.schedule(task_name)
             await client_app.schedule(task_name)
-            await asyncio.wait_for(rl_event.wait(), timeout=8)
+            await asyncio.wait_for(rl_event.wait(), timeout=_EVENT_TIMEOUT)
 
     assert len(captured) >= 1
     payload = captured[0]
@@ -615,7 +634,7 @@ async def test_signal_task_locked(
             # Brief delay so the long task acquires the lock first.
             await asyncio.sleep(0.5)
             await client_app.schedule(short_name)
-            await asyncio.wait_for(locked_event.wait(), timeout=8)
+            await asyncio.wait_for(locked_event.wait(), timeout=_EVENT_TIMEOUT)
 
     assert len(captured) >= 1
     payload = captured[0]
@@ -694,7 +713,7 @@ async def test_signal_task_expired(
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(expired_event.wait(), timeout=10)
+        await asyncio.wait_for(expired_event.wait(), timeout=_EVENT_TIMEOUT)
     finally:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -740,7 +759,7 @@ async def test_signal_scheduler_leader(
         app.on_signal(Signal.SCHEDULER_LEADER)(_handler)
         worker_task = asyncio.create_task(app.start_worker())
         try:
-            await asyncio.wait_for(leader_event.wait(), timeout=6)
+            await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
         finally:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -813,14 +832,14 @@ async def test_signal_scheduler_leader_handover(
         )
         task = asyncio.create_task(worker.start())
         try:
-            await asyncio.wait_for(leader_event.wait(), timeout=6)
-            await asyncio.wait_for(online_event.wait(), timeout=6)
+            await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
+            await asyncio.wait_for(online_event.wait(), timeout=_EVENT_TIMEOUT)
             # Now worker is in RUNNING state — _request_shutdown is not
             # a no-op and the graceful path calls scheduler.stop(), which
             # emits HANDOVER while still leader.
             worker._request_shutdown()
-            await asyncio.wait_for(handover_event.wait(), timeout=8)
-            await asyncio.wait_for(task, timeout=10)
+            await asyncio.wait_for(handover_event.wait(), timeout=_EVENT_TIMEOUT)
+            await asyncio.wait_for(task, timeout=_EVENT_TIMEOUT)
         finally:
             if not task.done():
                 task.cancel()
@@ -861,8 +880,8 @@ async def test_signal_scheduler_heartbeat(
         app.on_signal(Signal.SCHEDULER_HEARTBEAT)(_on_heartbeat)
         worker_task = asyncio.create_task(app.start_worker())
         try:
-            await asyncio.wait_for(leader_event.wait(), timeout=6)
-            await asyncio.wait_for(heartbeat_event.wait(), timeout=6)
+            await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
+            await asyncio.wait_for(heartbeat_event.wait(), timeout=_EVENT_TIMEOUT)
         finally:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -23,14 +23,22 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
-# E2E tests spin up real brokers + scheduler + worker, wait for
-# leader election, publish a schedule, and wait for it to fire.
-# 20s covers: leader election (6s inner wait), fire round-trip
-# (5s inner wait), plus broker/Valkey connection latency that can
-# spike on the first E2E test after a long integration run. Still
-# fails fast on genuine deadlocks (inner waits never resolve → 11s
-# sum; 20s gives connection setup 9s of headroom).
-pytestmark = [pytest.mark.timeout(20)]
+# Liveness safety-net for every "wait for an async event" below. It is NOT a
+# behavioural deadline — wait_for returns the instant the event fires, so a
+# generous ceiling never slows the happy path; it only stops a loaded/cold CI
+# runner from turning a slow leader election or fire round-trip into a false
+# failure. (The original 6s leader wait was observed tipping over ~6.04s under
+# full-suite load on the CI runner — the sole source of the e2e "1 rerun"
+# flakiness.) Genuine timing semantics in these tests use explicit
+# ``asyncio.sleep`` (absence assertions, TTL/throttle windows) and are left
+# untouched.
+_EVENT_TIMEOUT = 20.0
+
+# Per-test backstop. Must exceed the worst-case SUM of sequential inner waits
+# (a few tests chain leader + first-fire + second-fire across a failover, plus
+# their own sleeps) with headroom for first-test connection setup. Still fails
+# a genuinely deadlocked test in bounded time.
+pytestmark = [pytest.mark.timeout(75)]
 
 
 def _leader_event(app: SwarmQ) -> asyncio.Event:
@@ -65,14 +73,29 @@ def _cleanup_tasks():
 
 @pytest.fixture(autouse=True)
 async def _flush_valkey(valkey_url):
-    """Flush Valkey keys between E2E tests so schedules from a prior
-    test don't leak into the next scheduler loop."""
+    """Flush Valkey BEFORE and after each scheduler test.
+
+    Before is the load-bearing one: a worker started by any prior e2e test
+    (in a file without this fixture) becomes scheduler leader and, when that
+    test tears down by cancelling its worker task, the graceful
+    ``Scheduler.stop()`` lock-release never runs — so the leader lock lingers
+    in Valkey for its full TTL (default 30s). The next scheduler test then
+    can't win the election, ``SCHEDULER_LEADER`` never fires, and its
+    ``leader_event`` wait times out — passing only on a later rerun once the
+    stale lock expired. (This was the entire source of the e2e "1 rerun"
+    flakiness.) Flushing on setup gives every scheduler test a clean
+    leader-lock slate regardless of what ran before; the teardown flush keeps
+    our own schedules/locks from leaking forward."""
+    async def _flush() -> None:
+        client = valkey_asyncio.Valkey.from_url(valkey_url)
+        try:
+            await client.flushdb()
+        finally:
+            await client.aclose()
+
+    await _flush()
     yield
-    client = valkey_asyncio.Valkey.from_url(valkey_url)
-    try:
-        await client.flushdb()
-    finally:
-        await client.aclose()
+    await _flush()
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +138,7 @@ class TestDelayAndEta:
             leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                await asyncio.wait_for(leader_event.wait(), timeout=6)
+                await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
 
                 # Client schedules a short-delay task; scheduler publishes,
                 # worker consumes, set event.
@@ -124,7 +147,7 @@ class TestDelayAndEta:
                 )
                 assert tid  # returned task_id
 
-                await asyncio.wait_for(done.wait(), timeout=5)
+                await asyncio.wait_for(done.wait(), timeout=_EVENT_TIMEOUT)
                 assert call_count == 1
             finally:
                 worker_task.cancel()
@@ -159,10 +182,10 @@ class TestDelayAndEta:
             leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                await asyncio.wait_for(leader_event.wait(), timeout=6)
+                await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
                 eta = datetime.now(UTC) + timedelta(milliseconds=300)
                 await app.client.schedule(task_name, queue=queue, eta=eta)
-                await asyncio.wait_for(done.wait(), timeout=5)
+                await asyncio.wait_for(done.wait(), timeout=_EVENT_TIMEOUT)
             finally:
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -209,7 +232,7 @@ class TestCronSchedule:
             try:
                 # Wait for leader election (SCHEDULER_LEADER fires *after*
                 # sync_taskinfo_crons runs — see SchedulerLoop._election_tick).
-                await asyncio.wait_for(leader_event.wait(), timeout=6)
+                await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
 
                 # The sync loaded the cron with its natural-next fire (in
                 # up to 60s). Re-score it to "now + 300ms" so the poll
@@ -224,7 +247,7 @@ class TestCronSchedule:
                 finally:
                     await client.aclose()
 
-                await asyncio.wait_for(done.wait(), timeout=5)
+                await asyncio.wait_for(done.wait(), timeout=_EVENT_TIMEOUT)
             finally:
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -284,7 +307,7 @@ class TestConsumerDedup:
 
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                await asyncio.wait_for(first_done.wait(), timeout=5)
+                await asyncio.wait_for(first_done.wait(), timeout=_EVENT_TIMEOUT)
                 # Legitimate timer wait, not synchronization:
                 # we are asserting the ABSENCE of a second execution.
                 # The dedup path (ack + log + return True) emits no
@@ -352,7 +375,7 @@ class TestGracefulHandover:
 
             # Start A first so it wins the election.
             a_task = asyncio.create_task(app_a.start_worker())
-            await asyncio.wait_for(a_leader_event.wait(), timeout=3)
+            await asyncio.wait_for(a_leader_event.wait(), timeout=_EVENT_TIMEOUT)
             b_task = asyncio.create_task(app_b.start_worker())
             # Let B's election_loop run at least once so it sees the
             # lock held and sets prev_leader_seen=True. The minimum
@@ -401,7 +424,9 @@ class TestGracefulHandover:
                     b_leader_event.set()
 
                 try:
-                    await asyncio.wait_for(b_leader_event.wait(), timeout=3)
+                    await asyncio.wait_for(
+                        b_leader_event.wait(), timeout=_EVENT_TIMEOUT,
+                    )
                 except TimeoutError:
                     pass  # assertion below surfaces the failure
 
@@ -468,7 +493,7 @@ class TestCliRoundtrip:
             await app.broker.declare_queue(queue)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                await asyncio.wait_for(done.wait(), timeout=5)
+                await asyncio.wait_for(done.wait(), timeout=_EVENT_TIMEOUT)
             finally:
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -532,7 +557,7 @@ class TestRecurringAcrossLeaderChange:
             a_task = asyncio.create_task(app_a.start_worker())
             b_task = asyncio.create_task(app_b.start_worker())
             try:
-                await asyncio.wait_for(a_leader.wait(), timeout=6)
+                await asyncio.wait_for(a_leader.wait(), timeout=_EVENT_TIMEOUT)
 
                 # Force fire #1 via zset — A is leader, picks it up.
                 import time
@@ -540,7 +565,7 @@ class TestRecurringAcrossLeaderChange:
                 try:
                     soon_ms = int(time.time() * 1000) + 300
                     await client.zadd("sq:sched:zset", {task_name: soon_ms})
-                    await asyncio.wait_for(first_fired.wait(), timeout=4)
+                    await asyncio.wait_for(first_fired.wait(), timeout=_EVENT_TIMEOUT)
 
                     # Simulate crash — drop A's worker task and the lock.
                     a_task.cancel()
@@ -554,7 +579,7 @@ class TestRecurringAcrossLeaderChange:
                     # Force fire #2 — must land on B.
                     soon_ms = int(time.time() * 1000) + 300
                     await client.zadd("sq:sched:zset", {task_name: soon_ms})
-                    await asyncio.wait_for(second_fired.wait(), timeout=5)
+                    await asyncio.wait_for(second_fired.wait(), timeout=_EVENT_TIMEOUT)
                 finally:
                     await client.aclose()
 
@@ -609,7 +634,7 @@ class TestCrashFailover:
                 b_leader_observed.append("leader")
 
             a_task = asyncio.create_task(app_a.start_worker())
-            await asyncio.wait_for(a_leader.wait(), timeout=6)
+            await asyncio.wait_for(a_leader.wait(), timeout=_EVENT_TIMEOUT)
             b_task = asyncio.create_task(app_b.start_worker())
             # Let B see the lock held once so its prev_leader_seen is True.
             await asyncio.sleep(0.4)
@@ -628,7 +653,7 @@ class TestCrashFailover:
                     await client.aclose()
 
                 # B must emit FAILOVER (not LEADER) since no marker.
-                await asyncio.wait_for(b_failover.wait(), timeout=4)
+                await asyncio.wait_for(b_failover.wait(), timeout=_EVENT_TIMEOUT)
                 assert not b_leader_observed, (
                     "B emitted SCHEDULER_LEADER instead of FAILOVER — "
                     "the 'graceful' path fired even though A crashed"
@@ -676,7 +701,7 @@ class TestCronWithRateLimit:
             leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                await asyncio.wait_for(leader_event.wait(), timeout=6)
+                await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
 
                 # Force 3 fires in quick succession via zset re-score.
                 import time
