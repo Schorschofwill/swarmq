@@ -921,3 +921,48 @@ class TestSchedulerUniqueDedup:
 
         assert len(captured) == 2
         assert captured[0] == captured[1]
+
+
+# ---------------------------------------------------------------------------
+# abort() — crash-style teardown (cancel path; no graceful release)
+# ---------------------------------------------------------------------------
+
+
+class TestAbort:
+    """abort() cancels the sub-coroutines WITHOUT the graceful
+    handover/lock-release that stop() performs — for the cancel path
+    (process crash / task cancellation) where a successor takes over via
+    TTL-based failover. Mirrors the cleanup tail of stop() minus the
+    leader-release block."""
+
+    async def test_abort_cancels_tasks_without_graceful_release(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        lock_manager.acquire.return_value = True  # would-be leader
+        await loop.start()
+        assert loop._election_task is not None
+        assert loop._poll_task is not None
+        await asyncio.sleep(0.05)  # let a tick run so it is "leader"
+
+        await loop.abort()
+
+        assert loop._election_task is None
+        assert loop._poll_task is None
+        assert loop.state == "stopped"
+        # Crash-style abort must NOT perform the graceful lock release.
+        lock_manager.release.assert_not_awaited()
+
+    async def test_abort_is_idempotent(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        await loop.start()
+        await loop.abort()
+        await loop.abort()  # second call must not raise
+        assert loop._election_task is None
+        assert loop._poll_task is None

@@ -573,6 +573,32 @@ class SchedulerLoop:
         self._poll_task = None
         self._state = "stopped"
 
+    async def abort(self) -> None:
+        """Crash-style teardown: cancel the election + poll sub-coroutines
+        WITHOUT the graceful handover/lock-release that :meth:`stop` performs.
+
+        For the cancel path — process crash, ``start_worker()`` task
+        cancellation, ProcessManager reload — where a graceful release is
+        neither possible nor desirable: a real crash leaves no chance to emit
+        HANDOVER, and the leader lock simply expires by TTL so a successor
+        takes over via failover. Idempotent; safe to call after ``stop`` or a
+        prior ``abort`` (tasks already None/done). This is the sub-task cleanup
+        tail of ``stop`` minus the leader-release block.
+        """
+        self._stop_event.set()
+        self._state = "stopped"
+        for task in (self._election_task, self._poll_task):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (self._election_task, self._poll_task):
+            if task is not None:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._election_task = None
+        self._poll_task = None
+
     # ---- election loop --------------------------------------------------
 
     async def _election_loop(self) -> None:
