@@ -256,19 +256,20 @@ class TestCronSchedule:
             leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                # Wait for leader election (SCHEDULER_LEADER fires *after*
-                # sync_taskinfo_crons runs — see SchedulerLoop._election_tick).
+                # SCHEDULER_LEADER is emitted *before* sync_taskinfo_crons in
+                # the same election tick (see SchedulerLoop._election_tick), so
+                # observing leadership does NOT mean the cron entry is written
+                # yet. Wait for the scheduler to write it, then re-score it to a
+                # due (past) timestamp as the LAST writer — otherwise the
+                # lagging sync add_schedule clobbers our score with the next
+                # cron minute and the fire never comes due (see _wait_zscore_present).
                 await asyncio.wait_for(leader_event.wait(), timeout=_EVENT_TIMEOUT)
 
-                # The sync loaded the cron with its natural-next fire (in
-                # up to 60s). Re-score it to "now + 300ms" so the poll
-                # picks it up quickly.
                 client = valkey_asyncio.Valkey.from_url(valkey_url)
                 try:
-                    import time
-                    soon_ms = int(time.time() * 1000) + 300
+                    await _wait_zscore_present(client, task_name)
                     await client.zadd(
-                        "sq:sched:zset", {task_name: soon_ms}
+                        "sq:sched:zset", {task_name: _due_now_ms()}
                     )
                 finally:
                     await client.aclose()
@@ -754,6 +755,10 @@ class TestCronWithRateLimit:
                 import time
                 client = valkey_asyncio.Valkey.from_url(valkey_url)
                 try:
+                    # Be the last writer vs the scheduler's initial cron-sync
+                    # (which runs after the leader signal); otherwise the first
+                    # forced fire can be clobbered to the next cron minute.
+                    await _wait_zscore_present(client, task_name)
                     for offset_ms in (200, 400, 600):
                         ts = int(time.time() * 1000) + offset_ms
                         await client.zadd(

@@ -165,18 +165,27 @@ async def _inject_cron_fires(
     now_ms as due and publishes them.  Multiple entries with the same task_name
     but different scores represent distinct "catchup" fires.
     """
-    now_ms = int(time.time() * 1000)
     client = valkey_asyncio.Valkey.from_url(valkey_url)
     try:
+        # Be the LAST writer. The scheduler's initial sync_taskinfo_crons runs
+        # in the election tick AFTER the SCHEDULER_LEADER signal and
+        # add_schedule()s this cron entry with the *next cron-minute* score.
+        # Under load that ZADD can land after ours, clobbering our due score so
+        # the fire never comes due within the test timeout (the environment-
+        # sensitive flake — proven: on failure the zset score sits exactly on a
+        # minute boundary). Wait until the scheduler has written the entry, then
+        # overwrite it with our due score so nothing clobbers it afterwards.
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if await client.zscore("sq:sched:zset", task_name) is not None:
+                break
+            await asyncio.sleep(0.05)
+        now_ms = int(time.time() * 1000)
         mapping: dict[str, float] = {}
         for i in range(count):
-            # Use unique keys by appending an index — the scheduler key is
-            # the task_name; overwriting it means only the last fire survives.
-            # We model "N queued fires" as N rapid successive publishes, not
-            # N distinct zset entries (each zadd would overwrite the score).
-            # Instead we publish directly via the client for combos 7/8;
-            # the zadd injection here seeds a single near-past timestamp so
-            # the scheduler fires once, and we separately schedule N messages.
+            # Single member key → only the last score survives; "N queued
+            # fires" is modelled by separate scheduling elsewhere. The score is
+            # in the near-past so the scheduler fires it on the next poll.
             fire_ms = now_ms - start_offset_ms + i * spacing_ms
             mapping[task_name] = float(fire_ms)
         await client.zadd("sq:sched:zset", mapping)  # type: ignore[arg-type]
