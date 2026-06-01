@@ -1,7 +1,7 @@
 ---
 title: "fix: cancel-safe Worker-Teardown + cron-sync-clobber → e2e ohne Reruns"
 type: fix
-status: active
+status: completed
 date: 2026-06-01
 origin: Sitzungs-Audit 2026-06-01 (e2e-Flakiness-Wurzel, empirisch verifiziert)
 ---
