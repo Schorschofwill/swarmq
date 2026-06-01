@@ -97,6 +97,23 @@ variables:
       PY
 
 # Tier 1 — unit + property. No external services; the fast regression gate.
+# Guards against uv.lock drifting from pyproject.toml — including optional
+# extras that no other job installs. UV_FROZEN cannot catch that drift: it only
+# fails an install that re-resolves against the missing piece, and an
+# un-installed extra is never resolved. Must override UV_FROZEN to 0 here —
+# under UV_FROZEN=1, `uv lock --check` validates only lock *validity*, not
+# up-to-dateness (it warns and exits 0 even with drift). No build toolchain
+# needed, so before_script is emptied. See
+# docs/solutions/tooling-decisions/uv-lock-drift-from-pyproject-optional-extras.md
+lock-check:
+  extends: .uv
+  stage: test
+  variables:
+    UV_FROZEN: "0"
+  before_script: []
+  script:
+    - uv lock --check
+
 # --reruns 1 absorbs the rare timing flake on the small shared runner without
 # hiding deterministic failures (a real break fails both attempts).
 unit-tests:
