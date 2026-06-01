@@ -53,10 +53,15 @@ uv lock --check    # exit 0 ⇒ lock is consistent with pyproject (CI-equivalent
 git diff uv.lock   # confirm the diff is only what you intended
 ```
 
-For projects that want this enforced rather than remembered, add a non-blocking
-or blocking CI step that runs `uv lock --check` (it validates the *whole*
-pyproject↔lock consistency regardless of which extras a job installs) — that is
-the missing guard here.
+For projects that want this enforced rather than remembered, add a CI step that
+runs `uv lock --check` (it validates the *whole* pyproject↔lock consistency
+regardless of which extras a job installs). **Critical gotcha: that check is a
+no-op under `UV_FROZEN=1`** — with frozen set, `uv lock --check` validates only
+lock *validity*, not up-to-dateness, prints a warning, and exits 0 even when the
+lock is stale. The CI guard must run with `UV_FROZEN=0` (or `--no-frozen`) or it
+silently catches nothing — the very trap that hid this drift. This repo now has
+a blocking `lock-check` job (`.gitlab-ci.yml`) that overrides `UV_FROZEN: "0"`
+and needs no dependency install (`before_script: []`).
 
 ## Why This Matters
 
