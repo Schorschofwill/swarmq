@@ -138,7 +138,20 @@ chaos-tests:
       allow_failure: true
   allow_failure: true
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential docker.io docker-compose-v2
+    # build-essential: libvalkey C extension (the `reload` extra).
+    # docker CLI + compose v2 plugin: NOT in Debian's repos
+    # (`docker-compose-v2` does not exist there) — pull them from Docker's
+    # official apt repo so `docker compose` is the v2 subcommand the chaos
+    # fixture shells out to.
+    - apt-get update
+    - apt-get install -y --no-install-recommends build-essential ca-certificates curl
+    - install -m 0755 -d /etc/apt/keyrings
+    - curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+    - chmod a+r /etc/apt/keyrings/docker.asc
+    - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
+    - apt-get update
+    - apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin
+    - docker compose version
   script:
     - $UV_RUN pytest -m chaos tests/chaos/test_workflow_chord_idempotency.py -q
 

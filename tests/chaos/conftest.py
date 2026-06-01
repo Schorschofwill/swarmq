@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import socket
 import subprocess
 import time
@@ -29,6 +30,22 @@ import httpx
 import pytest
 
 _COMPOSE_FILE = Path(__file__).parent / "compose.yml"
+
+
+def _service_host() -> str:
+    """Host where the compose-published ports are reachable.
+
+    Locally the stack publishes onto the loopback interface, so 127.0.0.1
+    is correct. Under GitLab docker-in-docker the compose containers run on
+    the dind daemon's container, not the job container — their published
+    ports are reachable via the ``DOCKER_HOST`` hostname (e.g. ``docker``),
+    NOT the job container's loopback. Derive it from ``DOCKER_HOST`` so the
+    same fixture works in both environments.
+    """
+    match = re.match(r"^[a-z0-9+.-]+://([^:/]+)", os.environ.get("DOCKER_HOST", ""))
+    if match and match.group(1) not in ("127.0.0.1", "localhost"):
+        return match.group(1)
+    return "127.0.0.1"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -108,11 +125,12 @@ def chaos_stack() -> Iterator[ChaosStack]:
             f"{up.stderr[-500:] if up.stderr else 'no stderr'}"
         )
 
+    host = _service_host()
     deadline = time.monotonic() + 30
-    _wait_port("127.0.0.1", admin_port, deadline)
+    _wait_port(host, admin_port, deadline)
 
     # Register the two proxies so tests can manipulate them.
-    with httpx.Client(base_url=f"http://127.0.0.1:{admin_port}") as c:
+    with httpx.Client(base_url=f"http://{host}:{admin_port}") as c:
         for name, listen, upstream in (
             ("rmq", "0.0.0.0:5672", "rabbitmq:5672"),
             ("vkey", "0.0.0.0:6379", "valkey:6379"),
@@ -127,9 +145,9 @@ def chaos_stack() -> Iterator[ChaosStack]:
 
     stack = ChaosStack(
         project=project,
-        rabbitmq_url=f"amqp://guest:guest@127.0.0.1:{rmq_port}/",
-        valkey_url=f"valkey://127.0.0.1:{vkey_port}/0",
-        toxi_admin_url=f"http://127.0.0.1:{admin_port}",
+        rabbitmq_url=f"amqp://guest:guest@{host}:{rmq_port}/",
+        valkey_url=f"valkey://{host}:{vkey_port}/0",
+        toxi_admin_url=f"http://{host}:{admin_port}",
     )
     try:
         yield stack
