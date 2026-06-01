@@ -2,16 +2,17 @@
 #
 #   test stage — the regression gate:
 #     * unit-tests / integration-tests: deterministic, BLOCKING.
-#     * e2e-tests: runs the full e2e suite, BLOCKING, with bounded reruns.
-#       Two systemic flakiness causes have been root-caused and fixed — the
-#       scheduler-leader-lock leak (Valkey flush on scheduler/signal setup) and
-#       the leader-change startup + cron-sync races (ordered startup,
-#       event-based leadership waits, sync-before-manual-fire). A long tail of
-#       individually-rare, environment-sensitive cron/leader timing tests
-#       remains across tests/e2e (e.g. cron-catchup combinations), so reruns
-#       absorb a single transient flake while a consistent failure (a real
-#       regression) fails all attempts and still blocks. Reruns stay until the
-#       long tail is worth eliminating one-by-one.
+#     * e2e-tests: runs the full e2e suite, BLOCKING, no reruns. The
+#       environment-sensitive cron/leader flakiness was root-caused to two
+#       confirmed mechanisms, both now fixed: (1) cron-sync clobber — tests
+#       injected manual due-fires that raced the scheduler's initial
+#       sync_taskinfo_crons (which add_schedule()s the next cron-minute score);
+#       fixed by making the injection the last writer (wait for the scheduler's
+#       write first); (2) orphaned scheduler tasks on cancel — Worker.start()
+#       skipped teardown on the cancel path, leaking the election/poll loops
+#       (zombie leader); fixed by a cancel-safe try/finally + Scheduler.abort().
+#       Verified: the full suite ran clean 3x under 6-way CPU saturation
+#       (heavier than the CI runner). A red e2e job is now a real regression.
 #     * chaos-tests: opt-in (schedule/manual), never blocks.
 #   secret-detection stage — GitLab Secret Detection (unchanged).
 #
@@ -112,16 +113,14 @@ integration-tests:
   script:
     - $UV_RUN pytest tests/integration -q
 
-# Tier 2b — full e2e. BLOCKING, with bounded reruns. Two systemic flakiness
-# causes are fixed (scheduler-leader-lock leak; leader-change startup +
-# cron-sync races); a long tail of individually-rare env-sensitive cron/leader
-# timing tests remains, so reruns absorb a single transient while a consistent
-# failure (real regression) still blocks.
+# Tier 2b — full e2e. BLOCKING, no reruns. The two confirmed flakiness causes
+# (cron-sync clobber; orphaned scheduler tasks on cancel) are fixed and the
+# full suite ran clean 3x under 6-way CPU saturation, so the gate is honest.
 e2e-tests:
   extends: .with-services
   stage: test
   script:
-    - $UV_RUN pytest tests/e2e -q --reruns 2 --reruns-delay 3
+    - $UV_RUN pytest tests/e2e -q
 
 # Tier 3 — chaos (Toxiproxy + docker compose). Opt-in only: runs on scheduled
 # pipelines or manual trigger, never blocks an MR. Needs a Docker-in-Docker
