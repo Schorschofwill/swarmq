@@ -48,17 +48,29 @@ paraphrases nothing it cannot back with a wire format.
 
 ## How to consume the docs programmatically
 
-The site exposes two generated files at the domain root:
+Two machine-readable surfaces ship at the site root and under
+`reference/agent/spec/`:
 
-- `/llms.txt` — single-file TOC of every page, Diátaxis-grouped,
-  with relative links. Sections match the navigation groups:
-  Introduction, Tutorials, How-to guides, Reference, Explanation.
-  The Agent reference pages appear under Reference.
-- `/llms-full.txt` — the entire site concatenated into one
-  newline-separated Markdown document. Large; suitable for a
-  one-shot grounding pass.
+- `/llms.txt` — an [llmstxt.org](https://llmstxt.org/) index: a
+  one-line summary, links to the key documentation pages, and links
+  to every generated spec file below.
+- **Generated spec (JSON)** — structured, source-of-truth data an
+  agent can parse without reading prose or source:
+    - [`spec/index.json`](spec/index.json) — version + manifest.
+    - [`spec/errors.json`](spec/errors.json) — every `SwarmQError`
+      subclass with `retriable` / `dlq_on_uncaught` / exit code
+      (the strict form of [the error catalog](error-catalog-machine.md)).
+    - [`spec/config.json`](spec/config.json) — every config option
+      with type, default, and environment variable.
+    - [`spec/cli.json`](spec/cli.json) — every CLI command, flag,
+      and exit code.
+    - [`spec/messages/result.schema.json`](spec/messages/result.schema.json)
+      and its siblings — JSON Schema (Draft 2020-12) per wire format.
 
-Both files are regenerated on every docs build.
+The spec JSON is generated from the code by `python -m swarmq.agent_spec`
+and pinned to it by tests, so it cannot silently drift from reality
+between releases. Regenerate it for any installed version with that
+same command.
 
 ## Versioning
 
@@ -81,8 +93,8 @@ authoritative source.
 
 ## See also
 
-- [`/llms.txt`](/llms.txt) — TOC for agents
-- [`/llms-full.txt`](/llms-full.txt) — full-text dump for grounding
+- [`/llms.txt`](/llms.txt) — agent index (docs + generated spec)
+- [Generated spec index](spec/index.json) — machine-readable JSON
 - [API reference](../api.md) — Python signatures
 - [Error catalog (human)](../errors.md) — prose-first version of
   the error table

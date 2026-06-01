@@ -52,18 +52,29 @@ kann.
 
 ## Wie du die Docs programmatisch konsumierst
 
-Die Site exponiert zwei generierte Dateien im Domain-Root:
+Zwei maschinenlesbare Flächen liegen im Site-Root und unter
+`reference/agent/spec/`:
 
-- `/llms.txt` — Single-File-TOC jeder Seite, Diátaxis-gruppiert,
-  mit relativen Links. Sektionen entsprechen den Navigations-
-  gruppen: Introduction, Tutorials, How-to-Guides, Reference,
-  Explanation. Die Agent-Reference-Seiten erscheinen unter
-  Reference.
-- `/llms-full.txt` — die gesamte Site in einem newline-getrennten
-  Markdown-Dokument zusammengeführt. Groß; geeignet für einen
-  Einmalige-Verankerungs-Pass.
+- `/llms.txt` — ein [llmstxt.org](https://llmstxt.org/)-Index: eine
+  Einzeiler-Zusammenfassung, Links auf die wichtigsten Doku-Seiten
+  und Links auf jede der unten generierten Spec-Dateien.
+- **Generierte Spec (JSON)** — strukturierte Source-of-Truth-Daten,
+  die ein Agent ohne Prosa- oder Quellcode-Lesen parsen kann:
+    - [`spec/index.json`](spec/index.json) — Version + Manifest.
+    - [`spec/errors.json`](spec/errors.json) — jede `SwarmQError`-
+      Subklasse mit `retriable` / `dlq_on_uncaught` / Exit-Code
+      (die strikte Form des [Fehlerkatalogs](error-catalog-machine.md)).
+    - [`spec/config.json`](spec/config.json) — jede Config-Option
+      mit Typ, Default und Umgebungsvariable.
+    - [`spec/cli.json`](spec/cli.json) — jeder CLI-Befehl, jedes
+      Flag und jeder Exit-Code.
+    - [`spec/messages/result.schema.json`](spec/messages/result.schema.json)
+      und Geschwister — JSON-Schema (Draft 2020-12) je Wire-Format.
 
-Beide Dateien werden bei jedem Docs-Build neu generiert.
+Die Spec-JSON wird per `python -m swarmq.agent_spec` aus dem Code
+generiert und per Tests daran verankert, kann also zwischen Releases
+nicht stillschweigend von der Realität abweichen. Mit demselben Befehl
+für jede installierte Version neu erzeugbar.
 
 ## Versionierung
 
@@ -86,9 +97,8 @@ ist die autoritative Quelle.
 
 ## Siehe auch
 
-- [`/llms.txt`](/llms.txt) — TOC für Agenten
-- [`/llms-full.txt`](/llms-full.txt) — Full-Text-Dump für
-  Grundlagenverankerung
+- [`/llms.txt`](/llms.txt) — Agent-Index (Docs + generierte Spec)
+- [Generierter Spec-Index](spec/index.json) — maschinenlesbares JSON
 - [API-Referenz](../api.md) — Python-Signaturen
 - [Fehlerkatalog (menschlich)](../errors.md) — prosa-erste Version
   der Fehlertabelle

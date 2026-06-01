@@ -167,10 +167,12 @@ Phase 4 operator features complete (Priorities, Expiry, Burst,
 ProcessManager, Autoscaling). Phase 5 Wave 1 complete (Metrics,
 Health, Hot reload). Workflow primitives (`chain` / `group` / `chord`
 + Signatures) implemented — see "Workflow primitives" above.
-Remaining — machine-readable agent docs (R5.5, deferred until a
-concrete consumer arrives) and bulk-throughput optimisation
-(`schedule_many` fast path) — see
-`docs/brainstorms/implementation-order-requirements.md`.
+Machine-readable agent spec (R5.5) implemented — generated JSON for
+errors, config, CLI, and message schemas plus an `llms.txt` index
+under `reference/agent/spec/`, kept in sync with the code by tests
+(`python -m swarmq.agent_spec`).
+Remaining — bulk-throughput optimisation (`schedule_many` fast path)
+— see `docs/brainstorms/implementation-order-requirements.md`.
 
 ## Project layout
 
