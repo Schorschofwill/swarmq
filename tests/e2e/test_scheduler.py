@@ -57,6 +57,32 @@ def _leader_event(app: SwarmQ) -> asyncio.Event:
     return event
 
 
+def _due_now_ms() -> int:
+    """A zset score 1s in the past → due on the scheduler's next poll."""
+    import time
+    return int(time.time() * 1000) - 1000
+
+
+async def _wait_zscore_present(
+    client: object, member: str, timeout: float = _EVENT_TIMEOUT,
+) -> None:
+    """Block until the scheduler has written ``member`` into its due-zset.
+
+    The leadership cron-sync (``sync_taskinfo_crons``) runs AFTER the leader
+    signal is emitted, so a manual zadd issued the instant leadership is
+    observed can be overwritten by that lagging sync with a future cron score —
+    the fire then never comes due (an environment-sensitive timeout). Waiting
+    for the entry to appear first makes the manual due-score the last writer.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await client.zscore("sq:sched:zset", member) is not None:  # type: ignore[attr-defined]
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"scheduler never wrote {member!r} into its zset")
+
+
 def _unique_queue() -> str:
     return f"e2e-sched-{uuid.uuid4().hex[:10]}"
 
@@ -549,46 +575,67 @@ class TestRecurringAcrossLeaderChange:
                    SwarmQ(broker_b, backend_b, **cfg) as app_b:
             await app_a.broker.declare_queue(queue)
             a_leader = asyncio.Event()
+            b_active = asyncio.Event()  # B reached leader (LEADER or FAILOVER)
 
             @app_a.on_signal(Signal.SCHEDULER_LEADER)
             async def _al(**kw) -> None:  # noqa: ARG001
                 a_leader.set()
 
+            @app_b.on_signal(Signal.SCHEDULER_LEADER)
+            async def _bl(**kw) -> None:  # noqa: ARG001
+                b_active.set()
+
+            @app_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
+            async def _bfo(**kw) -> None:  # noqa: ARG001
+                b_active.set()
+
+            # Start A and let it WIN the election before B joins. Starting
+            # both at once is a race — B can grab leadership first, leaving A
+            # in standby so a_leader never fires (the flaky a_leader timeout).
+            # Mirrors TestCrashFailover's ordering.
             a_task = asyncio.create_task(app_a.start_worker())
-            b_task = asyncio.create_task(app_b.start_worker())
+            b_task: asyncio.Task[None] | None = None
+            client = valkey_asyncio.Valkey.from_url(valkey_url)
             try:
                 await asyncio.wait_for(a_leader.wait(), timeout=_EVENT_TIMEOUT)
+                b_task = asyncio.create_task(app_b.start_worker())
 
-                # Force fire #1 via zset — A is leader, picks it up.
-                import time
-                client = valkey_asyncio.Valkey.from_url(valkey_url)
-                try:
-                    soon_ms = int(time.time() * 1000) + 300
-                    await client.zadd("sq:sched:zset", {task_name: soon_ms})
-                    await asyncio.wait_for(first_fired.wait(), timeout=_EVENT_TIMEOUT)
+                # Fire #1 — A is leader. Wait until A's leadership cron-sync
+                # has written the entry FIRST, so our manual due-score is the
+                # last writer; otherwise a lagging sync_taskinfo_crons (it runs
+                # after the LEADER signal) overwrites our score with the next
+                # cron minute and the fire never comes due (the flaky timeout).
+                # A past score is immediately due.
+                await _wait_zscore_present(client, task_name)
+                await client.zadd("sq:sched:zset", {task_name: _due_now_ms()})
+                await asyncio.wait_for(first_fired.wait(), timeout=_EVENT_TIMEOUT)
 
-                    # Simulate crash — drop A's worker task and the lock.
-                    a_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await a_task
-                    await client.delete(SCHEDULER_LOCK_KEY)
+                # Simulate crash — drop A's worker task and the lock.
+                a_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await a_task
+                await client.delete(SCHEDULER_LOCK_KEY)
 
-                    # Wait for B to acquire (TTL-based, ~1s).
-                    await asyncio.sleep(1.8)
+                # Wait for B to actually take leadership (deterministic —
+                # replaces a blind sleep that raced B's lock acquisition),
+                # then let B's own cron-sync settle before our manual fire so
+                # it isn't clobbered (same reason as fire #1).
+                await asyncio.wait_for(b_active.wait(), timeout=_EVENT_TIMEOUT)
+                await asyncio.sleep(0.5)
 
-                    # Force fire #2 — must land on B.
-                    soon_ms = int(time.time() * 1000) + 300
-                    await client.zadd("sq:sched:zset", {task_name: soon_ms})
-                    await asyncio.wait_for(second_fired.wait(), timeout=_EVENT_TIMEOUT)
-                finally:
-                    await client.aclose()
+                # Fire #2 — must land on B.
+                await client.zadd("sq:sched:zset", {task_name: _due_now_ms()})
+                await asyncio.wait_for(second_fired.wait(), timeout=_EVENT_TIMEOUT)
 
                 assert call_count == 2, (
                     f"expected exactly 2 fires across leader change, "
                     f"got {call_count}"
                 )
             finally:
+                await client.aclose()
                 for t in (a_task, b_task):
+                    if t is None:
+                        continue
                     t.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await t

@@ -3,16 +3,15 @@
 #   test stage — the regression gate:
 #     * unit-tests / integration-tests: deterministic, BLOCKING.
 #     * e2e-tests: runs the full e2e suite, BLOCKING, with bounded reruns.
-#       The DOMINANT flakiness — a worker from a prior e2e file leaving the
-#       scheduler leader lock held (default 30s TTL) because cancel-based
-#       teardown skips the graceful release, starving the next scheduler test's
-#       leader election — is fixed by flushing Valkey on scheduler/signal test
-#       setup (not just teardown), and liveness waits were widened off their
-#       tight 6s ceilings. A rarer race remains in the leader-change/failover
-#       tests (a cancelled leader can re-acquire the lock before its successor),
-#       so reruns absorb a single transient flake; a real regression fails all
-#       attempts and still blocks. Removing reruns entirely is gated on
-#       root-causing that failover race.
+#       Two systemic flakiness causes have been root-caused and fixed — the
+#       scheduler-leader-lock leak (Valkey flush on scheduler/signal setup) and
+#       the leader-change startup + cron-sync races (ordered startup,
+#       event-based leadership waits, sync-before-manual-fire). A long tail of
+#       individually-rare, environment-sensitive cron/leader timing tests
+#       remains across tests/e2e (e.g. cron-catchup combinations), so reruns
+#       absorb a single transient flake while a consistent failure (a real
+#       regression) fails all attempts and still blocks. Reruns stay until the
+#       long tail is worth eliminating one-by-one.
 #     * chaos-tests: opt-in (schedule/manual), never blocks.
 #   secret-detection stage — GitLab Secret Detection (unchanged).
 #
@@ -113,10 +112,11 @@ integration-tests:
   script:
     - $UV_RUN pytest tests/integration -q
 
-# Tier 2b — full e2e. BLOCKING, with bounded reruns. The dominant
-# scheduler-leader-lock leak is fixed (Valkey flush on scheduler/signal setup);
-# a rarer leader-change/failover timing race remains, so reruns absorb a single
-# transient flake while a consistent failure (real regression) still blocks.
+# Tier 2b — full e2e. BLOCKING, with bounded reruns. Two systemic flakiness
+# causes are fixed (scheduler-leader-lock leak; leader-change startup +
+# cron-sync races); a long tail of individually-rare env-sensitive cron/leader
+# timing tests remains, so reruns absorb a single transient while a consistent
+# failure (real regression) still blocks.
 e2e-tests:
   extends: .with-services
   stage: test
