@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import inspect
 import os
@@ -179,6 +180,9 @@ class Worker:
         # clock jumps don't trigger a false-idle exit.
         self._last_message_received_at: float = 0.0
         self._burst_monitor_task: asyncio.Task | None = None
+        # Guards the cancel-path teardown (see start()'s finally /
+        # _teardown_on_exit) so it is a no-op once _execute_shutdown has run.
+        self._torn_down = False
         # R5.1/R5.2 auto-wire state (ce-review REL-06). Populated in
         # start() when config.metrics_port / config.health_port are set.
         # Proper Optional typing (kieran KP-001 / M-04) — TYPE_CHECKING
@@ -930,9 +934,15 @@ class Worker:
                 self._burst_monitor()
             )
 
-        # Block until shutdown is requested
-        await self._shutdown_event.wait()
-        await self._execute_shutdown()
+        # Block until shutdown is requested. The try/finally makes the cancel
+        # path safe: a plain cancel of this coroutine (tests, ProcessManager
+        # reload, embedded use) would otherwise skip _execute_shutdown and
+        # leak the scheduler election/poll tasks + broker connection tasks.
+        try:
+            await self._shutdown_event.wait()
+            await self._execute_shutdown()
+        finally:
+            await self._teardown_on_exit()
 
     async def _burst_monitor(self) -> None:
         """Poll the idle clock; trigger shutdown when burst-timeout elapses.
@@ -1073,6 +1083,63 @@ class Worker:
 
         # 5. STOPPED
         self._state = WorkerState.STOPPED
+        # Graceful teardown done — start()'s finally _teardown_on_exit is now
+        # a no-op (it only covers the cancel/exception path).
+        self._torn_down = True
+
+    async def _teardown_on_exit(self) -> None:
+        """Crash-path teardown, run from start()'s finally on every exit.
+
+        No-op once _execute_shutdown has completed (graceful path). On the
+        cancel/exception path it tears down what start() spun up so nothing
+        orphans: the burst monitor, the scheduler's election/poll sub-tasks
+        (the root of the leak), the SIGTERM/SIGINT handlers, and the broker +
+        backend connections.
+
+        Runs the work as a shielded child task so it completes even while
+        start() is itself being cancelled — the established detached-shield
+        pattern (cf. _detached_releases / the DI scope-exit in
+        _handle_message): the first CancelledError is absorbed and the child
+        is awaited to completion (retrieving its result, so no "Future
+        exception was never retrieved"), then the cancellation is re-raised.
+        """
+        if self._torn_down:
+            return
+        self._torn_down = True
+        teardown = asyncio.create_task(self._abort_teardown())
+        try:
+            await asyncio.shield(teardown)
+        except asyncio.CancelledError:
+            await teardown
+            raise
+
+    async def _abort_teardown(self) -> None:
+        """Best-effort, non-graceful cleanup of the resources start() itself
+        spun up. Each step is independently guarded so one failure cannot leave
+        a later resource leaked. NOT the graceful path: the scheduler is aborted
+        (no HANDOVER / lock-release — a crashed leader's lock expires by TTL).
+
+        Deliberately does NOT close the broker/backend: those connections are
+        owned by the caller / the SwarmQ context manager (``__aexit__`` closes
+        them), and a caller that cancels start_worker() may keep using them
+        (e.g. to read a cancel flag). Closing them here would pull the client
+        out from under such code. The aio_pika connection tasks are therefore
+        reaped at context-exit, not here."""
+        if self._burst_monitor_task is not None and not self._burst_monitor_task.done():
+            self._burst_monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._burst_monitor_task
+
+        # The leak root: cancel + await the scheduler election/poll sub-tasks.
+        if self._scheduler is not None:
+            with contextlib.suppress(Exception):
+                await self._scheduler.abort()
+
+        # Drop the process-wide signal handlers this worker installed.
+        with contextlib.suppress(Exception):
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.remove_signal_handler(sig)
 
     def _request_shutdown(self) -> None:
         """Request a graceful shutdown. Idempotent — safe to call multiple times."""
