@@ -72,6 +72,7 @@ LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
 _LockEntry = tuple[str, str, int]
 from swarmq.exceptions import (
     BackendConnectionError,
+    BrokerConnectionError,
     NoRetry,
     ResultSerializationError,
     Retry,
@@ -180,6 +181,12 @@ class Worker:
         # clock jumps don't trigger a false-idle exit.
         self._last_message_received_at: float = 0.0
         self._burst_monitor_task: asyncio.Task | None = None
+        # 2026-06-02 audit P1-3: periodic metrics sampler. Populates the
+        # queue_depth / dlq_messages / worker_uptime_seconds gauges (which
+        # were declared but never .set()) and emits WORKER_HEARTBEAT.
+        # Started in start() only when metrics are enabled.
+        self._metrics_sampler_task: asyncio.Task | None = None
+        self._worker_started_at: float = 0.0
         # Guards the cancel-path teardown (see start()'s finally /
         # _teardown_on_exit) so it is a no-op once _execute_shutdown has run.
         self._torn_down = False
@@ -934,6 +941,15 @@ class Worker:
                 self._burst_monitor()
             )
 
+        # 2026-06-02 audit P1-3: start the metrics sampler when metrics are
+        # enabled so the queue_depth / dlq_messages / uptime gauges are
+        # actually populated and WORKER_HEARTBEAT is emitted.
+        if self._metrics is not None and self._metrics.enabled:
+            self._worker_started_at = time.monotonic()
+            self._metrics_sampler_task = asyncio.create_task(
+                self._metrics_sampler()
+            )
+
         # Block until shutdown is requested. The try/finally makes the cancel
         # path safe: a plain cancel of this coroutine (tests, ProcessManager
         # reload, embedded use) would otherwise skip _execute_shutdown and
@@ -970,6 +986,60 @@ class Worker:
         except asyncio.CancelledError:
             # Normal during _execute_shutdown teardown.
             pass
+
+    async def _metrics_sampler(self) -> None:
+        """Periodically populate the gauges that the signal-driven
+        collectors cannot, and emit the periodic worker heartbeat.
+
+        2026-06-02 audit P1-3: queue_depth, dlq_messages and
+        worker_uptime_seconds are declared in Metrics but were never
+        ``.set()``, so backlog growth, DLQ filling and crash-looping
+        workers were invisible to Prometheus. This sampler closes the
+        "looks instrumented but isn't" trap. Per-queue broker errors are
+        logged and skipped (a transient passive-declare failure must not
+        kill the sampler). Cancellation-safe. Only started when metrics
+        are enabled.
+        """
+        interval = self._config.metrics_sample_interval
+        try:
+            while not self._shutdown_event.is_set():
+                await self._sample_metrics_once()
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            # Normal during _execute_shutdown teardown.
+            pass
+
+    async def _sample_metrics_once(self) -> None:
+        """One metrics-sampler iteration (extracted for testability):
+        set the uptime / queue-depth / dlq gauges and emit the heartbeat.
+        Per-queue broker errors are logged and skipped."""
+        worker_id = str(id(self))
+        now = time.monotonic()
+        uptime = now - self._worker_started_at
+        self._metrics.worker_uptime_seconds.labels(
+            worker_id=worker_id,
+        ).set(uptime)
+        for queue in self._config.queues:
+            try:
+                depth = await self._broker.get_queue_depth(queue)
+                self._metrics.queue_depth.labels(
+                    queue=queue, kind="pending",
+                ).set(depth)
+                dlq = await self._broker.get_dlq_depth(queue)
+                self._metrics.dlq_messages.labels(queue=queue).set(dlq)
+            except BrokerConnectionError as exc:
+                logger.warning(
+                    "metrics_sample_failed",
+                    queue=queue,
+                    error=str(exc),
+                )
+        # Revive WORKER_HEARTBEAT (declared but never dispatched): a
+        # per-worker liveness tick complementing the shallow /health probe.
+        await self._signal_dispatcher.dispatch(
+            Signal.WORKER_HEARTBEAT,
+            worker_id=worker_id,
+            uptime_seconds=uptime,
+        )
 
     async def stop(self) -> None:
         """Close broker and backend connections."""
@@ -1136,6 +1206,14 @@ class Worker:
             self._burst_monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._burst_monitor_task
+
+        if (
+            self._metrics_sampler_task is not None
+            and not self._metrics_sampler_task.done()
+        ):
+            self._metrics_sampler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._metrics_sampler_task
 
         # The leak root: cancel + await the scheduler election/poll sub-tasks.
         if self._scheduler is not None:
@@ -2554,6 +2632,18 @@ class Worker:
             # dedup window.
             await self._maybe_release_unique(
                 message, task_id, task_info_for_release
+            )
+            # 2026-06-02 audit P1-4: emit the terminal dead-letter signal
+            # AFTER a successful publish+ack so operators get a metric
+            # (outcome="dlq") and any custom handler fires exactly once
+            # per dead-lettered message. The nack(requeue=True) branch
+            # below is non-terminal, so it intentionally emits nothing.
+            await self._signal_dispatcher.dispatch(
+                Signal.TASK_DLQ,
+                task_id=task_id,
+                task_name=task_name,
+                queue=queue,
+                error=error_message,
             )
         except Exception as broker_exc:
             logger.error("dlq_publish_failed", error=str(broker_exc))

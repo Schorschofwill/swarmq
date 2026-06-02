@@ -157,6 +157,12 @@
       "env_var": "SWARMQ_HEALTH_HOST",
       "name": "health_host",
       "type": "str"
+    },
+    {
+      "default": 10.0,
+      "env_var": "SWARMQ_METRICS_SAMPLE_INTERVAL",
+      "name": "metrics_sample_interval",
+      "type": "float"
     }
   ]
 }

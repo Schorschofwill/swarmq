@@ -634,6 +634,11 @@ class SchedulerLoop:
                 logger.warning("scheduler_lock_lost")
                 self._state = "standby"
                 self._prev_leader_seen = True
+                # Revive SCHEDULER_STANDBY (declared but never emitted):
+                # a genuine leader->standby transition, the natural point
+                # for it. Emitted once per transition, not per tick, so it
+                # carries signal without noise (2026-06-02 audit).
+                await self._emit(Signal.SCHEDULER_STANDBY)
             return
 
         # state == "standby"

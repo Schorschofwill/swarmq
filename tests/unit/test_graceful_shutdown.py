@@ -426,3 +426,64 @@ class TestShutdownLockDrain:
 
         backend.close.assert_awaited_once()
         assert worker._state is WorkerState.STOPPED
+
+
+class TestMetricsSampler:
+    """2026-06-02 audit P1-3: the sampler populates the previously-dead
+    gauges (queue_depth / dlq_messages / worker_uptime_seconds) and emits
+    WORKER_HEARTBEAT."""
+
+    async def test_sample_metrics_once_sets_gauges_and_emits_heartbeat(
+        self, worker, broker
+    ):
+        import time as _time
+
+        from swarmq.metrics import Metrics
+        from swarmq.signals import Signal
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        worker._worker_started_at = _time.monotonic() - 5
+        broker.get_queue_depth = AsyncMock(return_value=12)
+        broker.get_dlq_depth = AsyncMock(return_value=3)
+
+        captured: list[dict] = []
+
+        async def _on_heartbeat(**kw):
+            captured.append(kw)
+
+        worker._signal_dispatcher.connect(Signal.WORKER_HEARTBEAT, _on_heartbeat)
+
+        await worker._sample_metrics_once()
+
+        assert (
+            m.queue_depth.labels(queue="default", kind="pending")._value.get()
+            == 12
+        )
+        assert m.dlq_messages.labels(queue="default")._value.get() == 3
+        assert (
+            m.worker_uptime_seconds.labels(
+                worker_id=str(id(worker))
+            )._value.get()
+            >= 5
+        )
+        assert len(captured) == 1
+        assert captured[0]["uptime_seconds"] >= 5
+
+    async def test_sample_metrics_once_survives_broker_error(self, worker, broker):
+        from swarmq.exceptions import BrokerConnectionError
+        from swarmq.metrics import Metrics
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        broker.get_queue_depth = AsyncMock(
+            side_effect=BrokerConnectionError("broker down")
+        )
+        broker.get_dlq_depth = AsyncMock(return_value=0)
+
+        # Per-queue error is logged and skipped; the call must not raise.
+        await worker._sample_metrics_once()

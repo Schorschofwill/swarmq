@@ -865,3 +865,39 @@ class RabbitMQBroker:
                     except Exception:  # noqa: BLE001
                         pass
         return total
+
+    async def _passive_message_count(self, name: str) -> int:
+        """Return the message_count of a single queue via passive declare.
+
+        Throwaway channel per call (a failed passive-declare closes the
+        channel). A non-existent queue counts as 0. Shared helper for the
+        metrics sampler (2026-06-02 audit). Mirrors get_queue_depth's
+        per-queue logic for one exact queue name.
+        """
+        if self._connection is None or self._connection.is_closed:
+            raise BrokerConnectionError("broker is not connected")
+        channel = None
+        try:
+            channel = await self._connection.channel()
+            q = await channel.declare_queue(name, passive=True)
+            result = getattr(q, "declaration_result", None)
+            if result is not None:
+                return int(getattr(result, "message_count", 0))
+            return 0
+        except ChannelNotFoundEntity:
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            raise BrokerConnectionError(str(exc)) from exc
+        finally:
+            if channel is not None and not channel.is_closed:
+                try:
+                    await channel.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    async def get_dlq_depth(self, queue_name: str) -> int:
+        """Return the live message count of ``{queue_name}.XQ`` (the
+        dead-letter queue). Unlike get_queue_depth (which excludes the
+        DLQ), this is exactly the "work that failed" backlog operators
+        alert on (2026-06-02 audit, P1-3)."""
+        return await self._passive_message_count(f"{queue_name}.XQ")

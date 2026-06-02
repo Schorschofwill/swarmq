@@ -56,7 +56,16 @@ class Signal(enum.Enum):
           list at which the duplicate was detected. Handlers MUST use
           kwargs.get("batch_index") (not kwargs["batch_index"]) to avoid
           KeyError on non-batch sources.
+      * TASK_DLQ:          task_id, task_name, queue, error
+        - Emitted when a message is terminally dead-lettered (retry
+          exhaustion / non-retryable error). Distinct from TASK_FAILED,
+          which fires on every failing attempt; TASK_DLQ fires once, at
+          the terminal hand-off to the .XQ queue, so operators can alert
+          specifically on "work is being dead-lettered".
       * WORKER_ONLINE / WORKER_SHUTDOWN: worker_id
+      * WORKER_HEARTBEAT:          worker_id, uptime_seconds (periodic
+                                   liveness tick emitted by the worker's
+                                   metrics sampler)
       * SCHEDULER_LEADER:          worker_id (this worker just became leader,
                                    either first-time or via clean handover)
       * SCHEDULER_STANDBY:         worker_id (this worker did not acquire
@@ -84,6 +93,7 @@ class Signal(enum.Enum):
     TASK_LOCKED = "task_locked"
     TASK_RATE_LIMITED = "task_rate_limited"
     TASK_DUPLICATE_DETECTED = "task_duplicate_detected"
+    TASK_DLQ = "task_dlq"
 
     # Worker lifecycle
     WORKER_ONLINE = "worker_online"
