@@ -14,6 +14,7 @@ from aio_pika.exceptions import (
     DeliveryError,
 )
 
+from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 
 # How long to wait for the connection/channel to become ready again
@@ -36,13 +37,6 @@ _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     asyncio.CancelledError,
 )
 _PUBLISH_MAX_ATTEMPTS = 5
-
-# Credential-free placeholder for ``_url`` when a connection/pool is
-# injected. A fixed literal (never None, never derived from the borrowed
-# connection object whose repr can embed the AMQP URL with credentials)
-# keeps every _url reader — SwarmQConfig validation, log formatting —
-# safe without a None-guard. Mirrors ValkeyBackend._INJECTED_URL.
-_INJECTED_URL = "<injected>"
 
 
 class RabbitMQBroker:
@@ -115,11 +109,11 @@ class RabbitMQBroker:
         if connection is not None:
             # Credential-free placeholder so every _url reader (config,
             # sanitize_url log sites) stays safe without a None-guard.
-            self._url: str = _INJECTED_URL
+            self._url: str = INJECTED_URL
             self._connection: "aio_pika.abc.AbstractConnection | None" = connection
             self._owns_connection = False
         elif connection_pool is not None:
-            self._url = _INJECTED_URL
+            self._url = INJECTED_URL
             self._connection = None
             self._owns_connection = False
         else:

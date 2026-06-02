@@ -10,6 +10,7 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 from valkey.exceptions import ValkeyError
 
+from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BackendConnectionError, ConfigurationError
 from swarmq.lua import load_script
 
@@ -23,13 +24,6 @@ _TRANSIENT_ERRORS: list[type[Exception]] = [
     ValkeyTimeoutError,
     OSError,
 ]
-
-# Credential-free placeholder for ``_url`` when a client/pool is injected.
-# Using a fixed literal (never ``None``, never derived from the borrowed
-# object) keeps every downstream reader — SwarmQConfig validation, log
-# formatting, sanitize_url — working without a None-guard and without ever
-# leaking the caller's connection credentials.
-_INJECTED_URL = "<injected>"
 
 
 class ValkeyBackend:
@@ -83,11 +77,11 @@ class ValkeyBackend:
         # caller (see docs/solutions worker-cancel-safe-teardown): closing
         # it would pull the connection out from under the caller's app.
         if client is not None:
-            self._url: str = _INJECTED_URL
+            self._url: str = INJECTED_URL
             self._client: valkey.asyncio.Valkey | None = client
             self._owns_client = False
         elif pool is not None:
-            self._url = _INJECTED_URL
+            self._url = INJECTED_URL
             # valkey-py sets auto_close_connection_pool=False automatically
             # when a pool is passed in, so the borrowed pool survives even
             # an accidental aclose() — _owns_client=False is the contract.

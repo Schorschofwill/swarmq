@@ -7,6 +7,15 @@ from dataclasses import dataclass, field
 
 from swarmq.exceptions import ConfigurationError
 
+# Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
+# connection object is injected (RabbitMQBroker(connection=...) /
+# ValkeyBackend(client=...)). A fixed literal — never None, never derived
+# from the borrowed object whose repr can embed credentials — keeps every
+# _url reader (this validator, sanitize_url log sites) working without a
+# None-guard. Single source of truth for the broker, the backend, and the
+# config field it lands in. See docs/brainstorms/inject-existing-pools.
+INJECTED_URL = "<injected>"
+
 
 def _parse_port(raw: str, env_var: str) -> int:
     """Parse an env-var port value with range validation.
