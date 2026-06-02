@@ -487,3 +487,21 @@ class TestMetricsSampler:
 
         # Per-queue error is logged and skipped; the call must not raise.
         await worker._sample_metrics_once()
+
+
+class TestPayloadShapeValidation:
+    """2026-06-02 audit P2-6: a wrong-typed args/kwargs payload must be
+    routed to the DLQ (nack requeue=False), not executed with garbage."""
+
+    async def test_string_args_not_executed(self, worker, broker):
+        # args="hello" would otherwise unpack character-by-character.
+        msg = _make_message(_default_payload(args="hello"))
+        await worker._handle_message(msg)
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        # Task never ran (no result stored).
+        assert len(worker._active_tasks) == 0
+
+    async def test_non_dict_kwargs_not_executed(self, worker, broker):
+        msg = _make_message(_default_payload(kwargs=["not", "a", "dict"]))
+        await worker._handle_message(msg)
+        broker.nack.assert_awaited_once_with(msg, requeue=False)

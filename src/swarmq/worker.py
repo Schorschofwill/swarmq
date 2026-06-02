@@ -1612,6 +1612,20 @@ class Worker:
             task_name = task_meta["name"]
             args = payload["args"]
             kwargs = payload["kwargs"]
+            # 2026-06-02 audit P2-6: validate shapes before run(*args,
+            # **kwargs). A wrong-typed payload from a misbehaving producer
+            # (e.g. args="hello") would otherwise unpack a string
+            # character-by-character into positional args and run the task
+            # with garbage instead of failing. Treat as a malformed
+            # message: route to DLQ (nack requeue=False), don't redeliver.
+            if not isinstance(args, list):
+                raise TypeError(
+                    f"task 'args' must be a list, got {type(args).__name__}"
+                )
+            if not isinstance(kwargs, dict):
+                raise TypeError(
+                    f"task 'kwargs' must be a dict, got {type(kwargs).__name__}"
+                )
         except Exception as exc:
             logger.error("deserialize_failed", error=str(exc))
             # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
@@ -2034,6 +2048,17 @@ class Worker:
                 return
 
             # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
+            #
+            # 2026-06-02 audit P2-2 (deliberate, documented): a task with
+            # max_retries=0 that errors does NOT route through the DLQ —
+            # it stores an error result (so get_result() returns a clean
+            # TaskError) and acks. Only retry EXHAUSTION and non-retryable
+            # errors on a task that opted into retries land in the DLQ.
+            # Rationale: max_retries=0 is an explicit "no recovery" choice;
+            # routing such errors to the DLQ would fill it with terminal
+            # results that are already observable via get_result(). Revisit
+            # if operators want uniform DLQ inspection for all terminal
+            # failures (would change observable behaviour).
             if (
                 is_error
                 and task_exception is not None
