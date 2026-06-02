@@ -1,7 +1,7 @@
 ---
 date: 2026-06-02
 type: feat
-status: active
+status: completed
 origin: docs/brainstorms/inject-existing-pools-requirements.md
 ---
 
