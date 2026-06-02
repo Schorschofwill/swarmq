@@ -58,6 +58,52 @@ class TestSwarmQInstantiation:
         assert app.config.log_level == "DEBUG"
 
 
+class TestSwarmQInjectedBackends:
+    """URL becomes optional per backend once a connection object is
+    injected. Uses real broker/backend instances (not mocks) to exercise
+    the actual SwarmQ.__init__ -> SwarmQConfig path."""
+
+    def test_injected_backend_client_makes_backend_url_optional(self):
+        """AE4: broker by URL + backend by injected client -> config valid,
+        backend_url carries the credential-free placeholder (not None)."""
+        real_broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        real_backend = ValkeyBackend(client=AsyncMock())
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert app.config.broker_url == "amqp://guest:guest@localhost/"
+        assert app.config.backend_url == "<injected>"
+
+    def test_both_injected_constructs_without_any_url(self):
+        real_broker = RabbitMQBroker(connection=AsyncMock())
+        real_backend = ValkeyBackend(client=AsyncMock())
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert app.config.broker_url == "<injected>"
+        assert app.config.backend_url == "<injected>"
+
+    def test_injected_broker_makes_broker_url_optional(self):
+        real_broker = RabbitMQBroker(connection=AsyncMock())
+        real_backend = ValkeyBackend("valkey://localhost:6379/0")
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert app.config.broker_url == "<injected>"
+        assert app.config.backend_url == "valkey://localhost:6379/0"
+
+    def test_config_placeholder_carries_no_credentials(self):
+        """The placeholder must never be derived from the borrowed object,
+        so no AMQP/Valkey credentials can leak into a config dump."""
+        real_broker = RabbitMQBroker(connection=AsyncMock())
+        real_backend = ValkeyBackend(client=AsyncMock())
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert "@" not in app.config.broker_url
+        assert "@" not in app.config.backend_url
+
+
 class TestSwarmQContextManager:
     @pytest.mark.anyio()
     async def test_aenter_connects_broker_and_backend(self, broker, backend):
