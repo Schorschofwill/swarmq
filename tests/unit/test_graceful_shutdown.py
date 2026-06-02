@@ -172,6 +172,36 @@ class TestBrokerCancelConsume:
         mock_queue_1.cancel.assert_awaited_once_with("tag-1")
         mock_queue_2.cancel.assert_awaited_once_with("tag-2")
 
+    async def test_cancel_consume_isolates_per_consumer_failure(self):
+        """A consumer whose cancel() raises must not prevent the remaining
+        consumers from being cancelled, and _consumer_tags must be cleared
+        regardless (2026-06-02 audit, P1-2). The error is surfaced only
+        after every consumer has been attempted."""
+        from swarmq.exceptions import BrokerConnectionError
+
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._consume_channel = AsyncMock(is_closed=False)
+        broker._connection = AsyncMock()
+
+        mock_queue_1 = AsyncMock()
+        mock_queue_1.consume.return_value = "tag-1"
+        mock_queue_1.cancel.side_effect = RuntimeError("channel gone")
+        mock_queue_2 = AsyncMock()
+        mock_queue_2.consume.return_value = "tag-2"
+        broker._consume_channel.get_queue.side_effect = [mock_queue_1, mock_queue_2]
+
+        callback = AsyncMock()
+        await broker.consume("q1", callback, prefetch_count=10)
+        await broker.consume("q2", callback, prefetch_count=10)
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.cancel_consume()
+
+        # The second consumer was still cancelled despite the first raising.
+        mock_queue_2.cancel.assert_awaited_once_with("tag-2")
+        # Registry cleared so a redelivery window cannot reuse stale tags.
+        assert broker._consumer_tags == []
+
 
 class TestRequestShutdown:
     def test_request_shutdown_sets_draining_and_event(self, worker):

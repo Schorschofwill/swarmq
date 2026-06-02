@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 import aio_pika
+import structlog
 from aio_pika.exceptions import (
     AMQPChannelError,
     ChannelClosed,
@@ -16,6 +17,9 @@ from aio_pika.exceptions import (
 
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
+from swarmq.logging import sanitize_url
+
+logger = structlog.get_logger()
 
 # How long to wait for the connection/channel to become ready again
 # during a reconnect before surfacing BrokerConnectionError. U1.1
@@ -298,14 +302,14 @@ class RabbitMQBroker:
             except TimeoutError as exc:
                 raise BrokerConnectionError(
                     f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
-                    f"(reopening {attr!r} on {self._url!r})"
+                    f"(reopening {attr!r} on {sanitize_url(self._url)!r})"
                 ) from exc
             try:
                 channel = await self._connection.channel()
             except Exception as exc:  # noqa: BLE001
                 raise BrokerConnectionError(
                     f"channel reopen failed for {attr!r} on "
-                    f"{self._url!r}: {exc}"
+                    f"{sanitize_url(self._url)!r}: {exc}"
                 ) from exc
             setattr(self, attr, channel)
             return channel, True
@@ -420,10 +424,35 @@ class RabbitMQBroker:
         self._consumer_tags.append((queue, consumer_tag))
 
     async def cancel_consume(self) -> None:
-        """Cancel all active consumers to stop receiving new messages."""
+        """Cancel all active consumers to stop receiving new messages.
+
+        Per-consumer error isolation (2026-06-02 audit): with multiple
+        queues/priority-bands a single ``queue.cancel`` that raises (e.g.
+        channel transition, AMQP error) must not abort cancellation of the
+        remaining consumers, nor leave ``_consumer_tags`` populated. A leak
+        here would let the worker keep pulling messages during the DRAINING
+        window and could abort the graceful-shutdown sequence
+        (in-flight drain, lock release, scheduler stop) in _execute_shutdown.
+        """
+        errors: list[Exception] = []
         for queue, consumer_tag in self._consumer_tags:
-            await queue.cancel(consumer_tag)
+            try:
+                await queue.cancel(consumer_tag)
+            except Exception as exc:  # noqa: BLE001 — best-effort per consumer
+                errors.append(exc)
+                logger.warning(
+                    "consumer_cancel_failed",
+                    consumer_tag=consumer_tag,
+                    error=str(exc),
+                )
         self._consumer_tags.clear()
+        if errors:
+            # Surface that cancellation was imperfect, but only after every
+            # consumer has been attempted and the registry cleared.
+            raise BrokerConnectionError(
+                f"cancel_consume: {len(errors)} consumer(s) failed to cancel; "
+                f"first error: {errors[0]}"
+            ) from errors[0]
 
     async def ack(self, message) -> None:
         await message.ack()

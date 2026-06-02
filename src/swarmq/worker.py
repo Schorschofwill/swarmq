@@ -996,8 +996,15 @@ class Worker:
             except Exception:
                 logger.exception("health_server_stop_failed")
 
-        # 1. DRAINING: stop accepting new messages
-        await self._broker.cancel_consume()
+        # 1. DRAINING: stop accepting new messages. cancel_consume now
+        # isolates per-consumer failures and raises only after attempting
+        # every consumer + clearing its registry; guard it so a partial
+        # cancel cannot abort the rest of the graceful-shutdown sequence
+        # (in-flight drain, lock release, scheduler stop). 2026-06-02 audit.
+        try:
+            await self._broker.cancel_consume()
+        except Exception:
+            logger.warning("cancel_consume_partial_failure")
 
         # 2. Wait for in-flight tasks to complete
         tasks_snapshot = set(self._active_tasks)
@@ -2092,7 +2099,8 @@ class Worker:
             # 9-11. Store result + ack/nack
             try:
                 await self._backend.store_result(
-                    task_id, result_bytes, result_ttl * 1000
+                    task_id, result_bytes, result_ttl * 1000,
+                    op_timeout=self._config.backend_op_timeout,
                 )
             except BackendConnectionError:
                 logger.error("backend_connection_error")
@@ -2485,7 +2493,8 @@ class Worker:
             result_bytes = encode_result(result_data)
             result_ttl = self._config.result_ttl or 86400
             await self._backend.store_result(
-                task_id, result_bytes, result_ttl * 1000
+                task_id, result_bytes, result_ttl * 1000,
+                op_timeout=self._config.backend_op_timeout,
             )
             try:
                 await self._backend.publish_notification(task_id)

@@ -455,6 +455,42 @@ class TestRabbitMQBrokerConnectError:
                 await broker.connect()
 
 
+class TestRabbitMQBrokerErrorSanitization:
+    """The broker URL carries a password; channel-reopen errors must not
+    leak it into BrokerConnectionError messages / logs (2026-06-02 audit,
+    P1-6). The project already sanitizes URLs elsewhere via sanitize_url."""
+
+    async def test_channel_reopen_error_redacts_password(self):
+        broker = RabbitMQBroker("amqp://user:supersecret@rabbit.host:5672/vh")
+        broker._publish_channel = None
+        conn = AsyncMock()
+        conn.ready = AsyncMock(return_value=None)
+        conn.channel = AsyncMock(side_effect=RuntimeError("channel boom"))
+        broker._connection = conn
+
+        with pytest.raises(BrokerConnectionError) as exc_info:
+            await broker._ensure_channel("_publish_channel")
+
+        message = str(exc_info.value)
+        assert "supersecret" not in message
+        assert "***" in message
+
+    async def test_connection_not_ready_error_redacts_password(self):
+        broker = RabbitMQBroker("amqp://user:supersecret@rabbit.host:5672/vh")
+        broker._publish_channel = None
+        conn = AsyncMock()
+        # ready() never resolves → wait_for raises TimeoutError.
+        conn.ready = AsyncMock(side_effect=TimeoutError())
+        broker._connection = conn
+
+        with pytest.raises(BrokerConnectionError) as exc_info:
+            await broker._ensure_channel("_publish_channel")
+
+        message = str(exc_info.value)
+        assert "supersecret" not in message
+        assert "***" in message
+
+
 class TestRabbitMQBrokerClose:
     async def test_close_closes_connection(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
