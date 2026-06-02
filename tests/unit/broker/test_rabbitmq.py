@@ -1,12 +1,12 @@
 """Unit tests for RabbitMQBroker."""
 
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import aio_pika
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 
 
 class TestRabbitMQBrokerInit:
@@ -44,6 +44,117 @@ class TestRabbitMQBrokerConnect:
         assert mock_connection.channel.await_count == 2
         assert broker._publish_channel is mock_publish_channel
         assert broker._consume_channel is mock_consume_channel
+
+
+class TestRabbitMQBrokerInjection:
+    """Producer-path injection: borrow an existing connection or pool.
+    swarmq opens its own publish channel but never closes the borrowed
+    connection — only the channels it created itself."""
+
+    def test_url_path_owns_connection(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        assert broker._owns_connection is True
+
+    def test_injected_connection_stored_and_not_owned(self):
+        mock_conn = AsyncMock()
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        assert broker._connection is mock_conn
+        assert broker._owns_connection is False
+        # Credential-free placeholder, never None and never the AMQP URL.
+        assert broker._url == "<injected>"
+
+    def test_injected_pool_not_owned(self):
+        mock_pool = Mock()
+        broker = RabbitMQBroker(connection_pool=mock_pool)
+
+        assert broker._connection_pool is mock_pool
+        assert broker._owns_connection is False
+        assert broker._connection is None
+        assert broker._url == "<injected>"
+
+    def test_no_source_raises_configuration_error(self):
+        with pytest.raises(ConfigurationError, match="exactly one"):
+            RabbitMQBroker()
+
+    def test_url_and_connection_together_raises(self):
+        with pytest.raises(ConfigurationError, match="exactly one"):
+            RabbitMQBroker("amqp://localhost/", connection=AsyncMock())
+
+    def test_queue_type_preserved_with_injection(self):
+        broker = RabbitMQBroker(connection=AsyncMock(), queue_type="classic")
+        assert broker._queue_type == "classic"
+
+    async def test_connect_opens_only_publish_channel_on_injected_connection(self):
+        """Producer path needs no consume channel (AE2)."""
+        mock_conn = AsyncMock()
+        mock_channel = AsyncMock()
+        mock_conn.channel.return_value = mock_channel
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        await broker.connect()
+
+        mock_conn.channel.assert_awaited_once()
+        assert broker._publish_channel is mock_channel
+        assert broker._consume_channel is None
+
+    async def test_connect_is_idempotent_on_injected_connection(self):
+        mock_conn = AsyncMock()
+        mock_conn.channel.return_value = AsyncMock()
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        await broker.connect()
+        await broker.connect()
+
+        mock_conn.channel.assert_awaited_once()
+
+    async def test_close_does_not_close_injected_connection(self):
+        """AE2: borrowed connection survives teardown; own channel closes."""
+        mock_conn = AsyncMock()
+        mock_channel = AsyncMock(is_closed=False)
+        broker = RabbitMQBroker(connection=mock_conn)
+        broker._publish_channel = mock_channel
+
+        await broker.close()
+
+        mock_channel.close.assert_awaited_once()
+        mock_conn.close.assert_not_awaited()
+
+    async def test_url_path_still_closes_owned_connection(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_conn = AsyncMock()
+        broker._connection = mock_conn
+
+        await broker.close()
+
+        mock_conn.close.assert_awaited_once()
+        assert broker._connection is None
+
+    async def test_pool_connect_acquires_and_close_releases(self):
+        """A borrowed pool: connect() acquires-and-holds, close() releases
+        back to the pool (never closes the connection)."""
+        mock_conn = AsyncMock()
+        mock_channel = AsyncMock(is_closed=False)
+        mock_conn.channel.return_value = mock_channel
+        acquire_cm = AsyncMock()
+        acquire_cm.__aenter__.return_value = mock_conn
+        mock_pool = Mock()
+        mock_pool.acquire = Mock(return_value=acquire_cm)
+        broker = RabbitMQBroker(connection_pool=mock_pool)
+
+        await broker.connect()
+
+        mock_pool.acquire.assert_called_once()
+        acquire_cm.__aenter__.assert_awaited_once()
+        assert broker._connection is mock_conn
+        assert broker._publish_channel is mock_channel
+
+        await broker.close()
+
+        # Released back to the pool, connection not closed.
+        acquire_cm.__aexit__.assert_awaited_once()
+        mock_conn.close.assert_not_awaited()
+        mock_channel.close.assert_awaited_once()
 
 
 class TestRabbitMQBrokerDeclareQueue:
