@@ -10,12 +10,13 @@ Four chaos scenarios for a crashing worker:
    stands in for the OOM-killer (portable across environments; a
    true ``docker run --memory=20m`` doesn't compose through the
    toxiproxy-wrapped chaos stack).
-4. SIGSEGV via ``ctypes.string_at(0)`` — documented chaos
-   limitation: quorum queues in the default broker config have no
-   ``x-delivery-limit``, so a deterministically-crashing task is
-   redelivered indefinitely and never lands in the DLQ. Test is
-   ``@pytest.mark.skip`` with a pointer to the underlying
-   limitation.
+4. SIGSEGV via ``ctypes.string_at(0)`` — skipped because exercising
+   it is expensive (each of the up-to-20 redeliveries crashes a
+   worker), NOT because the DLQ path is missing. Quorum queues DO set
+   ``x-delivery-limit=20`` (see ``RabbitMQBroker._declare_queue_triplet``),
+   so a deterministically-crashing task is terminally dead-lettered
+   after the limit rather than redelivered forever. (Corrected
+   2026-06-02: the previous "no x-delivery-limit" rationale was stale.)
 
 Notes on semantics:
   * SIGKILL redelivery means ``exec_count`` tends to be >= 1, not

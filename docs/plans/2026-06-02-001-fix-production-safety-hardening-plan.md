@@ -1,7 +1,7 @@
 ---
 title: "fix: Produktionssicherheits-Härtung — 2 P0 + 6 P1 + P2"
 type: fix
-status: in-progress
+status: completed
 date: 2026-06-02
 origin: 4-Dimensionen-Produktionssicherheits-Audit 2026-06-02 (Reliability/Data-Integrity/Security/Operational), alle Findings am Code verifiziert
 ---
