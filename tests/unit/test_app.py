@@ -104,6 +104,52 @@ class TestSwarmQInjectedBackends:
         assert "@" not in app.config.backend_url
 
 
+class TestSwarmQStartWorkerInjectionGuard:
+    """start_worker() rejects an injected broker/backend before spawning,
+    because injected connection objects cannot cross the spawn boundary
+    (AE3)."""
+
+    @pytest.mark.anyio()
+    async def test_start_worker_rejects_injected_broker(self):
+        broker = RabbitMQBroker(connection=AsyncMock())
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="injected broker"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_rejects_injected_backend(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        backend = ValkeyBackend(client=AsyncMock())
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="injected backend"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_error_names_spawn_boundary_reason(self):
+        broker = RabbitMQBroker(connection=AsyncMock())
+        backend = ValkeyBackend(client=AsyncMock())
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="SWARMQ_BROKER_URL"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_proceeds_for_url_constructed_backends(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as mock_worker_cls:
+            mock_worker_cls.return_value.start = AsyncMock()
+            await app.start_worker()
+
+        # Guard did not fire — the worker was constructed and started.
+        mock_worker_cls.return_value.start.assert_awaited_once()
+
+
 class TestSwarmQContextManager:
     @pytest.mark.anyio()
     async def test_aenter_connects_broker_and_backend(self, broker, backend):

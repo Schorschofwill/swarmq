@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from swarmq.workflow import Chain, Chord, Group, Signature
     from swarmq.workflow_orchestration import WorkflowHandle
 from swarmq.config import SwarmQConfig
+from swarmq.exceptions import ConfigurationError
 from swarmq.logging import setup_logging
 from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.progress import ProgressInfo
@@ -194,6 +195,28 @@ class SwarmQ:
         return await self.client.workflow(workflow_id)
 
     async def start_worker(self) -> None:
+        # Injected connection objects are producer-only. Worker subprocesses
+        # are spawned (process_manager) and reconstruct the broker/backend
+        # from SWARMQ_BROKER_URL / SWARMQ_BACKEND_URL — a borrowed connection
+        # cannot cross the spawn boundary (it is not picklable). Reject it
+        # loudly here, before any subprocess is created. getattr defaults to
+        # True so URL-constructed brokers/backends (and spec'd test mocks
+        # without the flag) are unaffected.
+        injected = []
+        if not getattr(self.broker, "_owns_connection", True):
+            injected.append("broker")
+        if not getattr(self.backend, "_owns_client", True):
+            injected.append("backend")
+        if injected:
+            raise ConfigurationError(
+                f"start_worker() cannot use an injected {' and '.join(injected)}: "
+                "injected connection objects are for the producer/client path "
+                "only. Worker subprocesses are spawned and reconstruct the "
+                "broker/backend from SWARMQ_BROKER_URL / SWARMQ_BACKEND_URL, so "
+                "a borrowed connection cannot cross the spawn boundary. "
+                "Construct the worker's broker/backend from a URL instead."
+            )
+
         # Resolve Worker through the module-level __getattr__ so test
         # patches like ``mock.patch("swarmq.app.Worker")`` continue to
         # intercept the construction. A direct lazy-local import would
