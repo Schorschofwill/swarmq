@@ -10,7 +10,7 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 from valkey.exceptions import ValkeyError
 
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, ConfigurationError
 from swarmq.lua import load_script
 
 logger = structlog.get_logger()
@@ -24,16 +24,80 @@ _TRANSIENT_ERRORS: list[type[Exception]] = [
     OSError,
 ]
 
+# Credential-free placeholder for ``_url`` when a client/pool is injected.
+# Using a fixed literal (never ``None``, never derived from the borrowed
+# object) keeps every downstream reader — SwarmQConfig validation, log
+# formatting, sanitize_url — working without a None-guard and without ever
+# leaking the caller's connection credentials.
+_INJECTED_URL = "<injected>"
+
 
 class ValkeyBackend:
-    def __init__(self, url: str) -> None:
-        self._url = url
-        self._client: valkey.asyncio.Valkey | None = None
+    def __init__(
+        self,
+        url: str | None = None,
+        *,
+        client: valkey.asyncio.Valkey | None = None,
+        pool: valkey.asyncio.ConnectionPool | None = None,
+    ) -> None:
+        """Construct a backend from a URL, an existing client, or a pool.
+
+        Exactly one source must be given:
+
+        * ``url`` — swarmq builds and owns the client (default path).
+        * ``client`` — an already-constructed ``valkey.asyncio.Valkey``;
+          swarmq borrows it and never closes it (see :meth:`close`).
+        * ``pool`` — a ``valkey.asyncio.ConnectionPool``; swarmq wraps a
+          client around it but leaves the pool's lifecycle to the caller.
+
+        Passing more than one (e.g. ``url`` *and* ``client``) is a
+        :class:`ConfigurationError` rather than a silent precedence rule.
+
+        Injected client/pool objects are intended for the producer
+        (task-sending) path only — see ``SwarmQ.start_worker``.
+        """
+        sources = [
+            ("url", url is not None),
+            ("client", client is not None),
+            ("pool", pool is not None),
+        ]
+        given = [name for name, present in sources if present]
+        if not given:
+            raise ConfigurationError(
+                "ValkeyBackend requires exactly one of: url, client, or pool"
+            )
+        if len(given) > 1:
+            raise ConfigurationError(
+                "ValkeyBackend accepts exactly one of url, client, or pool — "
+                f"got {', '.join(given)}"
+            )
+
+        # _owns_client is the single source of truth for whether close()
+        # may tear the client down. A borrowed client/pool belongs to the
+        # caller (see docs/solutions worker-cancel-safe-teardown): closing
+        # it would pull the connection out from under the caller's app.
+        if client is not None:
+            self._url: str = _INJECTED_URL
+            self._client: valkey.asyncio.Valkey | None = client
+            self._owns_client = False
+        elif pool is not None:
+            self._url = _INJECTED_URL
+            # valkey-py sets auto_close_connection_pool=False automatically
+            # when a pool is passed in, so the borrowed pool survives even
+            # an accidental aclose() — _owns_client=False is the contract.
+            self._client = valkey.asyncio.Valkey(connection_pool=pool)
+            self._owns_client = False
+        else:
+            self._url = url
+            self._client = None
+            self._owns_client = True
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
         self._unique_release_script: valkey.asyncio.client.Script | None = None
 
     async def connect(self) -> None:
+        # Idempotent, and a no-op when a client was injected: the borrowed
+        # client/pool already exists, so swarmq builds nothing here.
         if self._client is not None:
             return
         try:
@@ -53,7 +117,11 @@ class ValkeyBackend:
 
     async def close(self) -> None:
         if self._client is not None:
-            await self._client.aclose()
+            # Only tear down a client swarmq built itself. A borrowed
+            # client/pool (injected at construction) is left open for the
+            # caller — closing it here would break the caller's own app.
+            if self._owns_client:
+                await self._client.aclose()
             self._client = None
 
     def _key(self, task_id: str) -> str:

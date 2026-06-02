@@ -8,7 +8,7 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, ConfigurationError
 
 
 class TestValkeyBackendInit:
@@ -16,6 +16,106 @@ class TestValkeyBackendInit:
         url = "valkey://localhost:6379/0"
         backend = ValkeyBackend(url)
         assert backend._url == url
+
+    def test_url_path_owns_client(self):
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        assert backend._owns_client is True
+
+
+class TestValkeyBackendInjection:
+    """Producer-path injection: borrow an existing client or pool instead
+    of building (and owning) a new one. Ownership truth table — a borrowed
+    resource is never closed by swarmq."""
+
+    def test_injected_client_is_stored_and_not_owned(self):
+        mock_client = AsyncMock()
+        backend = ValkeyBackend(client=mock_client)
+
+        assert backend._client is mock_client
+        assert backend._owns_client is False
+        # Credential-free placeholder, never None and never the caller's URL.
+        assert backend._url == "<injected>"
+
+    def test_injected_pool_builds_client_and_not_owned(self):
+        mock_pool = Mock()
+        mock_client = AsyncMock()
+        with patch(
+            "swarmq.backend.valkey.valkey.asyncio.Valkey", return_value=mock_client
+        ) as mock_valkey:
+            backend = ValkeyBackend(pool=mock_pool)
+
+        mock_valkey.assert_called_once_with(connection_pool=mock_pool)
+        assert backend._client is mock_client
+        assert backend._owns_client is False
+        assert backend._url == "<injected>"
+
+    def test_no_source_raises_configuration_error(self):
+        with pytest.raises(ConfigurationError, match="exactly one"):
+            ValkeyBackend()
+
+    def test_url_and_client_together_raises_configuration_error(self):
+        with pytest.raises(ConfigurationError, match="exactly one"):
+            ValkeyBackend("valkey://localhost:6379/0", client=AsyncMock())
+
+    def test_url_and_pool_together_raises_configuration_error(self):
+        with pytest.raises(ConfigurationError, match="exactly one"):
+            ValkeyBackend("valkey://localhost:6379/0", pool=Mock())
+
+    async def test_connect_is_noop_for_injected_client(self):
+        """connect() must not build a second client when one was injected."""
+        mock_client = AsyncMock()
+        backend = ValkeyBackend(client=mock_client)
+
+        with patch(
+            "swarmq.backend.valkey.valkey.asyncio.Valkey.from_url"
+        ) as mock_from_url:
+            await backend.connect()
+
+        mock_from_url.assert_not_called()
+        assert backend._client is mock_client
+
+    async def test_close_does_not_close_injected_client(self):
+        """AE1: a borrowed client survives the swarmq teardown."""
+        mock_client = AsyncMock()
+        backend = ValkeyBackend(client=mock_client)
+
+        await backend.close()
+
+        mock_client.aclose.assert_not_awaited()
+
+    async def test_close_does_not_close_injected_pool_client(self):
+        mock_pool = Mock()
+        mock_client = AsyncMock()
+        with patch(
+            "swarmq.backend.valkey.valkey.asyncio.Valkey", return_value=mock_client
+        ):
+            backend = ValkeyBackend(pool=mock_pool)
+
+        await backend.close()
+
+        mock_client.aclose.assert_not_awaited()
+
+    async def test_url_path_still_closes_owned_client(self):
+        """The default (URL) path keeps closing its self-built client."""
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+        backend._client = mock_client  # simulate post-connect state
+
+        await backend.close()
+
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
+
+    async def test_injected_client_used_for_operations(self):
+        """Borrowed client serves backend operations normally (AE1)."""
+        mock_client = AsyncMock()
+        mock_client.get.return_value = b'{"result": 1}'
+        backend = ValkeyBackend(client=mock_client)
+
+        result = await backend.get_result("abc-123")
+
+        mock_client.get.assert_awaited_once_with("sq:result:abc-123")
+        assert result == b'{"result": 1}'
 
 
 class TestValkeyBackendConnect:
