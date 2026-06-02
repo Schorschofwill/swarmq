@@ -95,3 +95,75 @@ class TestSchedfireDedupIntegration:
             assert call_count == 1, (
                 f"expected exactly one execution, got {call_count}"
             )
+
+    @pytest.mark.timeout(20)
+    async def test_scheduled_task_retry_is_not_dropped(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        """A scheduled-fire task that fails on its first attempt must be
+        retried, not silently dropped (P0-B, 2026-06-02 audit).
+
+        Before the fix the retry republish preserved the
+        ``x-swarmq-schedfire`` header and the ``finally`` block wrote the
+        long-TTL completed marker for the fire, so the redelivered retry
+        copy hit the dedup ``is_schedfire_completed`` check and was
+        ack+skipped — the configured ``max_retries`` never ran.
+        """
+        queue = _unique_queue()
+        call_count = 0
+        succeeded = asyncio.Event()
+
+        class FlakyScheduledTask(Task):
+            task_info = TaskInfo(
+                name="sf_flaky",
+                queues=[queue],
+                max_retries=1,
+                retry_backoff="fixed",
+                retry_base_delay=0.5,
+            )
+
+            async def run(self) -> str:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise ValueError("first attempt fails on purpose")
+                succeeded.set()
+                return "ok"
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+
+        async with SwarmQ(
+            broker, backend, queues=[queue], concurrency=1,
+        ) as app:
+            await app.broker.declare_queue(queue)
+
+            schedfire_key = f"{queue}-sched:1700000000000"
+            task_id = uuid.uuid4().hex
+            payload = encode_json({
+                "task": {"id": task_id, "queue": queue, "name": "sf_flaky"},
+                "args": [],
+                "kwargs": {},
+            })
+            await app.broker.publish(
+                queue,
+                payload,
+                headers={"x-swarmq-schedfire": schedfire_key},
+            )
+
+            worker_task = asyncio.create_task(app.start_worker())
+            try:
+                # First attempt fails → retry is published to the delay
+                # queue → second attempt must run and set the event. With
+                # the bug the retry is dropped and this times out.
+                await asyncio.wait_for(succeeded.wait(), timeout=15)
+            finally:
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except asyncio.CancelledError:
+                    pass
+
+            assert call_count == 2, (
+                f"expected the retry to run (2 executions), got {call_count}"
+            )

@@ -156,7 +156,7 @@ class Worker:
         # Schedfire in-flight claims. Keyed by id(message) because
         # aio_pika's IncomingMessage forbids dynamic attribute
         # assignment. Populated when _pre_start_schedfire_dedup wins
-        # the inflight SETNX, read + popped by _mark_schedfire_completed
+        # the inflight SETNX, read + popped by _finalize_schedfire
         # in the finally block (Unit 1 / H-2).
         self._schedfire_inflight_claims: dict[int, str] = {}
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
@@ -1241,14 +1241,24 @@ class Worker:
         structlog.contextvars.clear_contextvars()
         return True
 
-    async def _mark_schedfire_completed(self, message) -> None:
-        """Write the long-TTL completed marker after a schedfire task
-        finished (success OR failure — both count as "this fire was
-        processed"). Called from the ``_handle_message`` finally block.
+    async def _finalize_schedfire(self, message, *, terminal: bool) -> None:
+        """Finalize the in-flight schedfire claim for this message.
 
-        No-ops when the message was not a schedfire delivery or when
-        this worker did not win the in-flight claim (the key attribute
-        is only set on the happy path in ``_pre_start_schedfire_dedup``).
+        Called from the ``_handle_message`` finally block (and the
+        pre-start-cancel terminal path). No-ops when the message was not
+        a schedfire delivery we claimed (the claim is only stashed on the
+        happy path in ``_pre_start_schedfire_dedup``).
+
+        * ``terminal=True`` (success, error→DLQ, pre-start cancel): write
+          the long-TTL ``sq:sched:fired:<key>`` completed marker so any
+          redelivery of this fire is ack+skipped.
+        * ``terminal=False`` (retry republish, rate-limit / lock-conflict
+          / shutdown / result-write requeue): the fire is being
+          re-delivered, so DELETE the short-TTL in-flight key instead of
+          writing the completed marker (P0-B, 2026-06-02 audit). Writing
+          the completed marker here would make the redelivered/retry copy
+          fail ``is_schedfire_completed`` and get silently dropped.
+
         Failures are logged and swallowed — an orphan in-flight marker
         self-heals via its short TTL."""
         # Pop from the Worker-local claims dict (see __init__). No-op
@@ -1256,13 +1266,17 @@ class Worker:
         schedfire_key = self._schedfire_inflight_claims.pop(id(message), None)
         if not schedfire_key:
             return
-        ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
         try:
-            await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
+            if terminal:
+                ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
+                await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
+            else:
+                await self._backend.clear_schedfire_inflight(schedfire_key)
         except BackendConnectionError as exc:
             logger.warning(
-                "schedfire_completed_write_failed",
+                "schedfire_finalize_failed",
                 schedfire_key=schedfire_key,
+                terminal=terminal,
                 error=str(exc),
             )
 
@@ -1359,8 +1373,8 @@ class Worker:
             # If this was a schedfire delivery we claimed in-flight,
             # mark it completed so a redelivery after in-flight-TTL
             # expiry does not re-run the task (Unit 1 / H-2). User-
-            # initiated cancel counts as "this fire was processed."
-            await self._mark_schedfire_completed(message)
+            # initiated cancel is terminal — "this fire was processed."
+            await self._finalize_schedfire(message, terminal=True)
 
             # R3.5 Unit 11: pre-start cancel is a terminal path — the
             # task never ran; release the dedup flag so a future
@@ -1571,6 +1585,14 @@ class Worker:
         # under-releases; over-release is owner-check-safe).
         task_info: TaskInfo | None = None
         _unique_release_pending = True
+        # P0-B (2026-06-02 audit): mirrors _unique_release_pending for the
+        # schedfire completed-marker. Default TRUE = terminal until a
+        # non-terminal branch (nack(requeue=True), retry delay-queue
+        # republish) proves otherwise. A non-terminal branch MUST clear
+        # this to False so the finally clears the in-flight key instead of
+        # writing the completed marker — otherwise the redelivered/retry
+        # copy is skipped as "completed" and the task is silently dropped.
+        _schedfire_terminal = True
         # Optional Dishka REQUEST scope. Entered just before the task
         # lifecycle (below) and torn down in the finally via the same
         # detached-shield pattern as lock release. None when DI is inactive.
@@ -1582,6 +1604,7 @@ class Worker:
                 # nack(requeue=True): broker redelivers with headers
                 # intact → keep the flag so redelivery can release.
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 await self._broker.nack(message, requeue=True)
                 return
 
@@ -1607,6 +1630,7 @@ class Worker:
                 message, task_info, queue, task_id, task_name,
             ):
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 return
 
             # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
@@ -1622,6 +1646,7 @@ class Worker:
                 message, task_info, queue, task_id, task_name,
             ):
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 return
 
             # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
@@ -1639,6 +1664,7 @@ class Worker:
                 args, kwargs, handler_id, acquired_locks,
             ):
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 return
 
             # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
@@ -1985,7 +2011,11 @@ class Worker:
                         # Either way the finally must NOT release:
                         # non-terminal would strand the redelivered
                         # message, terminal already released inline.
+                        # Same for schedfire: clear the in-flight key so
+                        # the retry copy re-runs (P0-B); on the DLQ branch
+                        # over-clearing is harmless (no redelivery).
                         _unique_release_pending = False
+                        _schedfire_terminal = False
                         return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
@@ -2071,6 +2101,7 @@ class Worker:
                     # from scratch; keep the flag so next terminal
                     # path can release it.
                     _unique_release_pending = False
+                    _schedfire_terminal = False
                     await self._broker.nack(message, requeue=True)
                 return
 
@@ -2136,6 +2167,7 @@ class Worker:
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         # Transient — redelivery retries the idempotent advance.
                         _unique_release_pending = False
+                        _schedfire_terminal = False
                         await self._broker.nack(message, requeue=True)
                     return
                 except BrokerConnectionError:
@@ -2148,6 +2180,7 @@ class Worker:
                     logger.error("workflow_advance_broker_error", workflow_id=wf_id)
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         _unique_release_pending = False
+                        _schedfire_terminal = False
                         await self._broker.nack(message, requeue=True)
                     return
                 except Exception as exc:
@@ -2171,12 +2204,16 @@ class Worker:
                 await self._broker.ack(message)
 
         finally:
-            # 12-pre. Write the schedfire completed marker if this message
-            # was a schedfire delivery we claimed in-flight. Must run
-            # BEFORE broker-level ack is reconsidered downstream — a
-            # redelivery racing our in-flight key expiry must see the
-            # completed marker (Unit 1 / H-2).
-            await self._mark_schedfire_completed(message)
+            # 12-pre. Finalize the schedfire claim if this message was a
+            # schedfire delivery we claimed in-flight. On a terminal
+            # outcome this writes the completed marker (a redelivery
+            # racing our in-flight-key expiry must see it, Unit 1 / H-2);
+            # on a non-terminal outcome (retry/requeue) it instead clears
+            # the in-flight key so the redelivered copy can re-run rather
+            # than being skipped as "completed" (P0-B, 2026-06-02 audit).
+            await self._finalize_schedfire(
+                message, terminal=_schedfire_terminal,
+            )
 
             # 12-pre-b. R3.5 Unit 11: completion-mode dedup release.
             # No-op in start-mode (Unit 10 already released at pickup),
