@@ -60,6 +60,52 @@ async def main():
 asyncio.run(main())
 ```
 
+## Reusing an existing connection pool (producer)
+
+If your app already holds its own RabbitMQ connection and/or Valkey
+client, hand them to SwarmQ instead of a URL — SwarmQ reuses them rather
+than opening a second, parallel connection to the same server. You can
+pass either a high-level client/connection **or** a low-level pool, and
+mix sources per backend:
+
+```python
+import aio_pika
+import valkey.asyncio
+from swarmq import SwarmQ, RabbitMQBroker, ValkeyBackend
+
+# objects your app already owns
+connection = await aio_pika.connect_robust("amqp://guest:guest@localhost:5672/")
+valkey_client = valkey.asyncio.Valkey.from_url("valkey://localhost:6379/0")
+
+app = SwarmQ(
+    RabbitMQBroker(connection=connection),   # or connection_pool=<aio_pika.pool.Pool>
+    ValkeyBackend(client=valkey_client),     # or pool=<valkey ConnectionPool>
+    # no broker_url / backend_url needed when a connection object is injected
+)
+async with app:
+    await app.schedule("send_email", to="op@example.com", subject="hi")
+# closing `app` does NOT close `connection` or `valkey_client` — your app keeps them
+```
+
+Things to know:
+
+- **Ownership:** SwarmQ never closes a connection/client/pool you inject —
+  it belongs to your app. SwarmQ does close the publish channel it opens
+  on a borrowed RabbitMQ connection (that channel is SwarmQ's).
+- **Producer-only:** injection is for the task-*sending* path. Calling
+  `start_worker()` on an injected broker/backend raises
+  `ConfigurationError` — workers are spawned as subprocesses and
+  reconstruct their broker/backend from `SWARMQ_BROKER_URL` /
+  `SWARMQ_BACKEND_URL`, which a borrowed connection can't cross.
+- **Robustness is yours:** an injected Valkey client/pool does **not**
+  inherit SwarmQ's retry / health-check policy, and an injected aio-pika
+  connection should be a robust one (`connect_robust`) for SwarmQ's
+  channel-reconnect handling to behave as designed.
+- **Same namespace assumed:** the injected object must point at the same
+  server and logical namespace (RabbitMQ vhost, Valkey DB) the rest of
+  your config expects — SwarmQ does not validate this, and a mismatch
+  silently sends/reads tasks in the wrong namespace.
+
 ## What's in the box
 
 ### Core (Phase 1+2+3)

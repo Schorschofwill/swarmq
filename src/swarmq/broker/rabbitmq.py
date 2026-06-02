@@ -69,7 +69,13 @@ class RabbitMQBroker:
         rather than a silent precedence rule.
 
         Injected objects are for the producer (task-sending) path only —
-        ``SwarmQ.start_worker`` rejects an injected broker (see U4).
+        ``SwarmQ.start_worker`` rejects an injected broker.
+
+        Caveats for the injected path: prefer a robust connection
+        (``aio_pika.connect_robust``) so swarmq's channel-reconnect
+        handling behaves as designed, and the connection must target the
+        same vhost the rest of the swarmq config expects — swarmq does not
+        validate this, and a mismatch silently publishes to the wrong vhost.
         """
         sources = [
             ("url", url is not None),

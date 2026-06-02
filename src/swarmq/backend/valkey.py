@@ -55,6 +55,12 @@ class ValkeyBackend:
 
         Injected client/pool objects are intended for the producer
         (task-sending) path only — see ``SwarmQ.start_worker``.
+
+        Caveats for the injected path: the borrowed client/pool keeps the
+        caller's own retry / health-check configuration (it does NOT
+        inherit swarmq's), and it must target the same Valkey database the
+        rest of the swarmq config expects — swarmq does not validate this,
+        and a mismatch silently reads/writes results in the wrong namespace.
         """
         sources = [
             ("url", url is not None),
