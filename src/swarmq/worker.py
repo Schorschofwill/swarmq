@@ -52,7 +52,7 @@ from swarmq.locking import LockManager, compute_lock_ttl_ms
 
 # Lock-conflict policy. Module-level so they sit alongside other constants
 # and can be referenced from tests without a class qualifier. Mirrors the
-# locking.py module-level _MIN_LOCK_TTL_SECONDS pattern.
+# locking.py module-level _LOCK_TTL_BUFFER_SECONDS pattern.
 #
 # DLQ_CAP: when conflict_count reaches this value (inclusive), the message
 # routes to DLQ instead of being requeued. Operator inspects the

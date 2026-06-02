@@ -330,5 +330,6 @@ async def test_lock_released_after_task_exception(
             await app.schedule(task_name, True)
             await app.schedule(task_name, False)
             # Without finally-release this would block on the first task's
-            # held lock until TTL (30s+); we expect immediate progression.
+            # held lock until TTL (90s for hard_timeout=60); we expect
+            # immediate progression via the cooperative release.
             await asyncio.wait_for(second_completed.wait(), timeout=10.0)
