@@ -137,6 +137,15 @@ class TestSwarmQStartWorkerInjectionGuard:
             await app.start_worker()
 
     @pytest.mark.anyio()
+    async def test_start_worker_both_injected_names_both_in_message(self):
+        broker = RabbitMQBroker(connection=AsyncMock())
+        backend = ValkeyBackend(client=AsyncMock())
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="broker and backend"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
     async def test_start_worker_proceeds_for_url_constructed_backends(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         backend = ValkeyBackend("valkey://localhost:6379/0")

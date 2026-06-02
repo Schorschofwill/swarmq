@@ -156,6 +156,79 @@ class TestRabbitMQBrokerInjection:
         mock_conn.close.assert_not_awaited()
         mock_channel.close.assert_awaited_once()
 
+    async def test_pool_connect_failure_releases_checkout(self):
+        """If channel() fails after the pool acquire, the borrowed connection
+        must be released — connect() runs outside SwarmQ.__aenter__'s
+        try/except, so a leak here is never cleaned up by close()."""
+        mock_conn = AsyncMock()
+        mock_conn.channel.side_effect = RuntimeError("boom")
+        acquire_cm = AsyncMock()
+        acquire_cm.__aenter__.return_value = mock_conn
+        mock_pool = Mock()
+        mock_pool.acquire = Mock(return_value=acquire_cm)
+        broker = RabbitMQBroker(connection_pool=mock_pool)
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.connect()
+
+        acquire_cm.__aexit__.assert_awaited_once()
+        assert broker._pool_ctx is None
+        assert broker._connection is None
+
+    async def test_injected_connection_connect_failure_keeps_borrowed_ref(self):
+        """A bare injected connection is the caller's: on connect() failure
+        wrap the error but never release/close it."""
+        mock_conn = AsyncMock()
+        mock_conn.channel.side_effect = RuntimeError("boom")
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.connect()
+
+        assert broker._connection is mock_conn
+        mock_conn.close.assert_not_awaited()
+
+    async def test_injected_connection_reusable_after_close(self):
+        """connect() -> close() -> connect() works on a bare injected
+        connection: close() keeps the borrowed connection and reopens a
+        publish channel on the next connect() (mirrors the owned path)."""
+        mock_conn = AsyncMock()
+        ch1 = AsyncMock(is_closed=False)
+        ch2 = AsyncMock()
+        mock_conn.channel.side_effect = [ch1, ch2]
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        await broker.connect()
+        assert broker._publish_channel is ch1
+
+        await broker.close()
+        ch1.close.assert_awaited_once()
+        mock_conn.close.assert_not_awaited()
+        assert broker._connection is mock_conn
+
+        await broker.connect()
+        assert broker._publish_channel is ch2
+
+    async def test_pool_close_releases_even_if_channel_close_raises(self):
+        """A raised channel.close() during injected close() must still
+        release the borrowed pool connection (try/finally)."""
+        mock_conn = AsyncMock()
+        bad_channel = AsyncMock(is_closed=False)
+        bad_channel.close.side_effect = RuntimeError("channel boom")
+        mock_conn.channel.return_value = bad_channel
+        acquire_cm = AsyncMock()
+        acquire_cm.__aenter__.return_value = mock_conn
+        mock_pool = Mock()
+        mock_pool.acquire = Mock(return_value=acquire_cm)
+        broker = RabbitMQBroker(connection_pool=mock_pool)
+        await broker.connect()
+
+        with pytest.raises(RuntimeError, match="channel boom"):
+            await broker.close()
+
+        acquire_cm.__aexit__.assert_awaited_once()
+        assert broker._pool_ctx is None
+
 
 class TestRabbitMQBrokerDeclareQueue:
     @pytest.fixture()

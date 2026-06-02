@@ -159,6 +159,21 @@ class RabbitMQBroker:
                 self._connection = await self._pool_ctx.__aenter__()
             self._publish_channel = await self._connection.channel()
         except Exception as exc:
+            # If we acquired a connection from the pool but failed before a
+            # usable publish channel, release the checkout — SwarmQ.__aenter__
+            # calls connect() outside its try/except, so a failed connect()
+            # is never followed by close(), and the borrowed pool connection
+            # would otherwise leak. A directly-injected (bare) connection is
+            # left untouched: it is the caller's and is not ours to release.
+            if self._pool_ctx is not None:
+                try:
+                    await self._pool_ctx.__aexit__(
+                        type(exc), exc, exc.__traceback__
+                    )
+                except Exception:  # noqa: BLE001 — release is best-effort
+                    pass
+                self._pool_ctx = None
+                self._connection = None
             raise BrokerConnectionError(str(exc)) from exc
 
     async def _ensure_publish_channel(self) -> "aio_pika.abc.AbstractChannel":
@@ -429,19 +444,27 @@ class RabbitMQBroker:
         # they belong to swarmq regardless of who owns the connection. Do
         # NOT swallow channel.close() in a bare except: a swallowed close
         # corrupts later channel() calls (aiormq-reader-leak learning).
-        for attr in ("_publish_channel", "_consume_channel"):
-            chan = getattr(self, attr)
-            if chan is not None:
-                if not chan.is_closed:
-                    await chan.close()
-                setattr(self, attr, None)
-        if self._pool_ctx is not None:
-            # Borrowed from a pool: release the connection back to the pool
-            # (do not close it — the pool is the caller's).
-            await self._pool_ctx.__aexit__(None, None, None)
-            self._pool_ctx = None
-        # Drop our reference to the borrowed connection; leave it open.
-        self._connection = None
+        # The channel-close loop runs in try/finally so a raised
+        # channel.close() still propagates but never skips the pool release.
+        try:
+            for attr in ("_publish_channel", "_consume_channel"):
+                chan = getattr(self, attr)
+                if chan is not None:
+                    if not chan.is_closed:
+                        await chan.close()
+                    setattr(self, attr, None)
+        finally:
+            if self._pool_ctx is not None:
+                # Borrowed from a pool: release the connection back to the
+                # pool (do not close it — the pool is the caller's) and drop
+                # the reference so the next connect() re-acquires a fresh one.
+                await self._pool_ctx.__aexit__(None, None, None)
+                self._pool_ctx = None
+                self._connection = None
+            # A directly-injected (bare) connection is intentionally KEPT on
+            # self._connection: it stays the caller's open connection, and
+            # retaining it lets a subsequent connect() reopen a publish
+            # channel on it — mirroring the owned path's connect/close reuse.
 
     # ------------------------------------------------------------------
     # R3.10 DLQ inspection / recovery primitives
