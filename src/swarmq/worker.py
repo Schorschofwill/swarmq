@@ -1250,8 +1250,14 @@ class Worker:
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _pre_start_schedfire_dedup(self, message) -> bool:
+    async def _pre_start_schedfire_dedup(
+        self, message, task_name: str | None = None,
+    ) -> bool:
         """Two-marker schedfire dedup (Unit 1 / H-2 / reliability R-002).
+
+        ``task_name`` (when the caller already decoded the body) lets
+        the in-flight TTL grow to cover the task's ``hard_timeout``
+        (Härtung R2 P1-6) — see the claim block below.
 
         Three-state check:
 
@@ -1300,7 +1306,27 @@ class Worker:
             structlog.contextvars.clear_contextvars()
             return True
 
-        inflight_ttl_ms = int(self._config.scheduler_inflight_ttl * 1000)
+        # Härtung R2 P1-6: the fixed inflight TTL was the ONLY split-
+        # brain guard for the publish-before-commit window. If it
+        # expired DURING a long run (hard_timeout > inflight_ttl is
+        # legal), a stale-leader duplicate won the freed SETNX and the
+        # same fire executed twice. Couple the TTL to the task's
+        # maximum legal runtime — same pattern as compute_lock_ttl_ms
+        # (P0-A fix 2026-06-02). Tasks without hard_timeout keep the
+        # configured TTL (documented residual: unbounded tasks need an
+        # explicit hard_timeout for airtight schedfire dedup).
+        inflight_ttl_s = self._config.scheduler_inflight_ttl
+        hard_timeout: int | None = None
+        if task_name is not None:
+            try:
+                hard_timeout = self._registry.get(
+                    task_name
+                ).task_info.hard_timeout
+            except TaskNotFoundError:
+                pass  # unknown task fails later in the pipeline anyway
+        if hard_timeout is not None:
+            inflight_ttl_s = max(inflight_ttl_s, hard_timeout + 30)
+        inflight_ttl_ms = int(inflight_ttl_s * 1000)
         try:
             claimed = await self._backend.set_schedfire_inflight(
                 header_value, inflight_ttl_ms
@@ -1654,7 +1680,7 @@ class Worker:
         # duplicate scheduled fire never enters any of those stages and
         # costs no Valkey round-trips beyond the SETNX. Ack-safe
         # pre-pipeline stage, same discipline as cancel-check.
-        if await self._pre_start_schedfire_dedup(message):
+        if await self._pre_start_schedfire_dedup(message, task_name):
             return
 
         # 2b. Pre-start cancel check (Phase 3b.3). Runs BEFORE semaphore

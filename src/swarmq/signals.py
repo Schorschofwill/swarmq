@@ -78,6 +78,11 @@ class Signal(enum.Enum):
       * SCHEDULER_LEADER_FAILOVER: worker_id (this worker just acquired
                                    the leader lock after the previous
                                    leader's TTL expired, i.e. crash/GC)
+      * SCHEDULER_FIRE_SKIPPED:    worker_id, schedule_name, skipped_count
+                                   (catch-up after downtime skipped this
+                                   many cron occurrences — exactly one
+                                   catch-up fire runs, the rest never
+                                   will; alert on important crons)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -106,6 +111,7 @@ class Signal(enum.Enum):
     SCHEDULER_HEARTBEAT = "scheduler_heartbeat"
     SCHEDULER_LEADER_HANDOVER = "scheduler_leader_handover"
     SCHEDULER_LEADER_FAILOVER = "scheduler_leader_failover"
+    SCHEDULER_FIRE_SKIPPED = "scheduler_fire_skipped"
 
 
 class SignalDispatcher:

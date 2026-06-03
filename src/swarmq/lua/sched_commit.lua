@@ -11,9 +11,9 @@
 -- does not match the current holder. This makes split-brain commits
 -- impossible at the storage boundary.
 --
--- KEYS[1] sq:sched:zset
--- KEYS[2] sq:sched:defs
--- KEYS[3] sq:lock:scheduler:leader  (the leader lock key)
+-- KEYS[1] sq:{sched}:zset
+-- KEYS[2] sq:{sched}:defs
+-- KEYS[3] sq:lock:{sched}:leader  (the leader lock key)
 -- ARGV[1] schedule_name         (member to commit)
 -- ARGV[2] next_fire_ts_ms       (int; -1 means one-shot, skip ZADD)
 -- ARGV[3] updated_def_json      (bytes; "" means delete def via HDEL)

@@ -148,11 +148,20 @@ class ValkeyBackend:
         return f"sq:cancel:{task_id}"
 
     # ---- Scheduler key helpers (Unit 5) ------------------------------------
+    # Härtung R2 P1-7: the {sched} hash tag co-locates zset, defs and
+    # the leader lock (sq:lock:{sched}:leader) in ONE Valkey-Cluster
+    # hash slot — sched_poll.lua/sched_commit.lua touch them in a
+    # single EVAL and would otherwise die with CROSSSLOT on a sharded
+    # cluster. Single-key markers (fired/handover/unique) deliberately
+    # carry no tag: they never share an EVAL with another key, and
+    # spreading them across slots is preferable.
+    # BREAKING (pre-1.0): existing sq:sched:* keys are not migrated —
+    # re-create schedules after upgrading (or RENAME the keys).
     def _sched_zset_key(self) -> str:
-        return "sq:sched:zset"
+        return "sq:{sched}:zset"
 
     def _sched_defs_key(self) -> str:
-        return "sq:sched:defs"
+        return "sq:{sched}:defs"
 
     def _sched_fired_key(self, schedfire_key: str) -> str:
         return f"sq:sched:fired:{schedfire_key}"

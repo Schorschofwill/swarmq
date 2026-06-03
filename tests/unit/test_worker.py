@@ -3636,6 +3636,7 @@ class TestSchedfireDedup:
             "cron_a:1700000000000"
         )
         # Inflight TTL = scheduler_inflight_ttl * 1000 = 300 * 1000
+        # (no hard_timeout on NoopTask → config value applies).
         inflight_call = backend.set_schedfire_inflight.await_args
         assert inflight_call.args[0] == "cron_a:1700000000000"
         assert inflight_call.args[1] == 300_000
@@ -3646,6 +3647,43 @@ class TestSchedfireDedup:
         assert dedup_call.args[0] == "cron_a:1700000000000"
         # dedup_ttl * 1000 = 3900 * 1000
         assert dedup_call.args[1] == 3_900_000
+
+    async def test_inflight_ttl_covers_long_hard_timeout(
+        self, broker, backend, config,
+    ):
+        """Härtung R2 P1-6: die fixe 300s-inflight-TTL war der einzige
+        Split-Brain-Schutz — lief sie WÄHREND eines langen Laufs ab
+        (hard_timeout > 300s ist erlaubt), gewann eine Stale-Leader-
+        Kopie das frei gewordene SETNX → Doppelausführung desselben
+        Fires. Die TTL muss die maximal erlaubte Laufzeit überdecken:
+        max(scheduler_inflight_ttl, hard_timeout + 30s) — dasselbe
+        Muster wie compute_lock_ttl_ms (P0-A-Fix 2026-06-02)."""
+        from swarmq.task import Task, TaskInfo
+        from swarmq.registry import TaskRegistry
+
+        class LongTask(Task):
+            task_info = TaskInfo(
+                name="long", queues=["default"], hard_timeout=600,
+            )
+
+            async def run(self):
+                return "ok"
+
+        registry = TaskRegistry()
+        registry.register(LongTask)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        backend.is_schedfire_completed.return_value = False
+        backend.set_schedfire_inflight.return_value = True
+        msg = _make_message(
+            _default_payload(name="long", args=[], kwargs={}),
+            headers={"x-swarmq-schedfire": "long_cron:1700000000000"},
+        )
+        await w._handle_message(msg)
+
+        inflight_call = backend.set_schedfire_inflight.await_args
+        # (600 + 30) * 1000 — outlives the watchdog-bounded runtime.
+        assert inflight_call.args[1] == 630_000
 
     async def test_duplicate_when_completed_marker_set(
         self, broker, backend, config

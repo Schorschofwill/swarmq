@@ -168,11 +168,20 @@ R3.8 (Delay/ETA) + R3.9 (Embedded Scheduler mit Cron) + R3.10-Teil
    als Referenz-Timezone. Wenn derselbe Cron-String auf zwei Workern
    evaluiert wird, kommt dasselbe Ergebnis raus.
 
-4. **Lua-atomares Claim im Poll**: Der Poll-Schritt (Leader) nutzt
+4. ~~**Lua-atomares Claim im Poll**: Der Poll-Schritt (Leader) nutzt
    ZRANGEBYSCORE + ZREM in **einem** Lua-Script, damit auch bei
    kurzzeitigem Split-Brain-Szenario (zwei Leader) keine Task doppelt
    published wird — der erste ZREM-Gewinner bekommt sie, der zweite
-   bekommt einen leeren Ergebnis-Set.
+   bekommt einen leeren Ergebnis-Set.~~
+   **[KORRIGIERT 2026-06-03, Härtungs-Review R2]** So wurde es NICHT
+   gebaut — Punkt 10 unten (Publish-before-ZREM) hat diese Variante
+   bewusst ersetzt: `sched_poll.lua` ist read-only, der Claim erfolgt
+   erst im owner-checked `sched_commit.lua` NACH dem Publish. Der reale
+   Split-Brain-Schutz ist die Consumer-seitige Schedfire-Dedup
+   (inflight-SETNX + completed-Marker); deren inflight-TTL ist seit R2
+   an `hard_timeout + 30s` gekoppelt, damit sie nicht während eines
+   langen Laufs abläuft. Zusätzlich tritt ein Leader nach konsekutiven
+   Renew-Fehlern proaktiv zurück (P1-5), bevor ein Standby übernimmt.
 
 5. **Schedule-Persistence ist kanonisch in Valkey**: Code-`TaskInfo(cron=...)`
    wird beim Start in Valkey gesynct. Bei Widerspruch (CLI-removed
@@ -234,7 +243,7 @@ Engineering-internal (nice-to-have):
 
 | Risiko | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Split-Brain: zwei Worker halten den Leader-Lock gleichzeitig (TTL-Race) | gering | mittel | Lua-atomares ZRANGEBYSCORE+ZREM-Claim im Poll; Double-Publish wird vermieden auch bei kurzzeitigem Doppel-Leader |
+| Split-Brain: zwei Worker halten den Leader-Lock gleichzeitig (TTL-Race) | gering | mittel | ~~Lua-atomares ZRANGEBYSCORE+ZREM-Claim im Poll~~ [korrigiert 2026-06-03: real ist der Schutz die Consumer-seitige Schedfire-Dedup (inflight-SETNX, TTL ≥ hard_timeout+30s) + proaktiver Leader-Step-down nach Renew-Fehlern; Poll ist read-only, Claim erst im owner-checked Commit nach Publish] |
 | Leader-Heartbeat verpasst eine Iteration unter GC-Pause, Lock TTL verfällt | mittel | niedrig | TTL >> Heartbeat-Intervall (3×); kurzer Leaderless-Window ist akzeptiert |
 | Cron-Semantik-Drift: croniter-Ergebnisse unterscheiden sich von Celery-Beat-Erwartung | gering | niedrig | croniter ist exakt derselbe Parser wie Celery-Beat nutzt; Dokumentation des 5-Felder-Formats |
 | Sorted-Set wächst unbegrenzt bei fehlerhaften Task-Scheduling-Loops | gering | mittel | DEBUG-Log mit ZCARD im Scheduler-Poll. Kein hartes Limit in v1 — Valkey handled Sorted-Sets in Millionen-Bereich problemlos, und eine buggy-Schleife ist ein User-Code-Bug, kein Framework-Szenario. |

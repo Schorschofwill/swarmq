@@ -2,10 +2,10 @@
 
 The scheduler owns two Valkey datastructures:
 
-- ``sq:sched:defs`` — global hash keyed by schedule_name holding the
+- ``sq:{sched}:defs`` — global hash keyed by schedule_name holding the
   JSON-encoded :class:`ScheduleDefinition` (inline ``disabled`` flag,
   inline ``source``, etc. — see plan Persistence-Layout).
-- ``sq:sched:zset`` — sorted-set where score is the next fire-ts_ms and
+- ``sq:{sched}:zset`` — sorted-set where score is the next fire-ts_ms and
   member is the schedule_name. Poll reads a batch (sched_poll.lua),
   the leader publishes + commits (sched_commit.lua with owner-check).
 
@@ -51,9 +51,18 @@ from swarmq.task import Task, TaskInfo
 logger = structlog.get_logger()
 
 
-SCHEDULER_LOCK_NAME = "scheduler:leader"
+SCHEDULER_LOCK_NAME = "{sched}:leader"
 """Logical lock name — LockManager's automatic ``sq:lock:`` prefix
-yields the final Valkey key ``sq:lock:scheduler:leader``."""
+yields the final Valkey key ``sq:lock:{sched}:leader``.
+
+Härtung R2 P1-7: the ``{sched}`` hash tag co-locates the leader lock
+with ``sq:{sched}:zset`` / ``sq:{sched}:defs`` in one Valkey-Cluster
+hash slot — ``sched_commit.lua`` touches all three keys in one EVAL
+and would otherwise fail with CROSSSLOT on a sharded cluster.
+BREAKING (pre-1.0): deployments upgrading from the un-tagged
+``sq:lock:scheduler:leader`` / ``sq:sched:*`` keys must re-create
+their schedules (or RENAME the keys manually) — swarmq does not
+migrate them."""
 
 SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
 """Final Valkey key for the leader lock. Derived live from
@@ -494,6 +503,24 @@ class SchedulerLoop:
         self._poll_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
+        # Härtung R2 P1-5: consecutive renew-ERROR counter. A renew that
+        # returns False (lock observably gone) already steps down, but a
+        # renew that RAISES (Valkey unreachable) previously kept
+        # state=="leader" indefinitely — the poll loop fired through the
+        # entire outage while a standby took over after TTL expiry
+        # (split-brain for the outage duration). After `limit`
+        # consecutive failures the leader proactively steps down, one
+        # heartbeat BEFORE the lock TTL can have expired.
+        self._renew_failures = 0
+        self._renew_failure_limit = max(
+            1,
+            int(
+                config.scheduler_lock_ttl
+                / config.scheduler_heartbeat_interval
+            )
+            - 1,
+        )
+
     # ---- lifecycle ------------------------------------------------------
 
     @property
@@ -626,8 +653,30 @@ class SchedulerLoop:
                     int(self._config.scheduler_lock_ttl * 1000),
                 )
             except BackendConnectionError as exc:
-                logger.warning("scheduler_renew_error", error=str(exc))
+                # Härtung R2 P1-5: a renew ERROR must not keep the
+                # leader in office indefinitely. After `limit`
+                # consecutive failures (≈ one heartbeat before the lock
+                # TTL is provably expired) step down proactively so the
+                # old leader stops firing BEFORE a standby can take
+                # over — closing the unbounded split-brain window.
+                self._renew_failures += 1
+                logger.warning(
+                    "scheduler_renew_error",
+                    error=str(exc),
+                    consecutive_failures=self._renew_failures,
+                    step_down_at=self._renew_failure_limit,
+                )
+                if self._renew_failures >= self._renew_failure_limit:
+                    logger.warning(
+                        "scheduler_renew_failures_stepdown",
+                        consecutive_failures=self._renew_failures,
+                    )
+                    self._renew_failures = 0
+                    self._state = "standby"
+                    self._prev_leader_seen = True
+                    await self._emit(Signal.SCHEDULER_STANDBY)
                 return
+            self._renew_failures = 0
             if still_leader:
                 await self._emit(Signal.SCHEDULER_HEARTBEAT)
             else:
@@ -669,6 +718,7 @@ class SchedulerLoop:
             had_handover = False
 
         self._state = "leader"
+        self._renew_failures = 0  # fresh term, fresh renew budget (P1-5)
         if had_handover or not self._prev_leader_seen:
             await self._emit(Signal.SCHEDULER_LEADER)
         else:
@@ -769,6 +819,23 @@ class SchedulerLoop:
         else:
             # Static cron or plain CLI — resolve TaskInfo and SETNX here.
             task_info = self._resolve_task_info(definition.task_name)
+            if task_info is None:
+                # Härtung R2 P2: a schedule whose task was renamed or
+                # removed previously published into the void with no
+                # trace. Warn-only, deliberately NOT a skip: in multi-
+                # module deployments the task may live in ANOTHER
+                # worker's registry — a hard skip would break those.
+                logger.warning(
+                    "scheduler_task_not_in_local_registry",
+                    schedule_name=schedule_name,
+                    task_name=definition.task_name,
+                    hint=(
+                        "the leader's registry does not know this task; "
+                        "if no other worker fleet registers it, the "
+                        "message lands unconsumed — remove the schedule "
+                        "or fix the task name"
+                    ),
+                )
             if task_info is not None and task_info.unique_for is not None:
                 dedup_hash = compute_dedup_hash(
                     definition.task_name,
@@ -823,6 +890,12 @@ class SchedulerLoop:
         # skip: commit_fire MUST advance the zset (otherwise the same
         # schedule re-fires on every poll tick forever — see plan
         # Unit 9 Risks "Double-SETNX-Race" commit-on-fail rationale).
+        #
+        # Cron semantics: expressions are evaluated in UTC against the
+        # leader clock (croniter over datetime.now(UTC)) — there is no
+        # timezone/DST handling; `0 3 * * *` fires at 03:00 UTC.
+        # Catch-up after downtime is SKIP: get_next(now) yields exactly
+        # one catch-up fire, never a backlog storm.
         if definition.cron is None:
             next_fire_ts_ms = -1
             updated_def: ScheduleDefinition | None = None
@@ -835,6 +908,24 @@ class SchedulerLoop:
                 fire_ts_ms=next_fire_ts_ms,
                 last_fire_at=int(time.time() * 1000),
             )
+            # Härtung R2 P2: catch-up-skip was correct but invisible —
+            # a skipped daily report went unnoticed. Count the cron
+            # occurrences that fell between the due score and now (they
+            # will never fire) and surface them as a signal.
+            skipped_count = self._count_skipped_fires(
+                definition.cron, score_ms, now,
+            )
+            if skipped_count > 0:
+                logger.warning(
+                    "scheduler_fires_skipped",
+                    schedule_name=schedule_name,
+                    skipped_count=skipped_count,
+                )
+                await self._emit(
+                    Signal.SCHEDULER_FIRE_SKIPPED,
+                    schedule_name=schedule_name,
+                    skipped_count=skipped_count,
+                )
 
         try:
             committed = await self._store.commit_fire(
@@ -1049,10 +1140,10 @@ class SchedulerLoop:
         except TimeoutError:
             return
 
-    async def _emit(self, signal: Signal) -> None:
+    async def _emit(self, signal: Signal, **extra: Any) -> None:
         try:
             await self._signals.dispatch(
-                signal, worker_id=self._worker_id
+                signal, worker_id=self._worker_id, **extra
             )
         except Exception as exc:  # noqa: BLE001 — never abort on handler
             logger.warning(
@@ -1060,3 +1151,26 @@ class SchedulerLoop:
                 signal=signal.value,
                 error=str(exc),
             )
+
+    @staticmethod
+    def _count_skipped_fires(
+        cron: str, score_ms: int, now: datetime,
+    ) -> int:
+        """Count cron occurrences in ``(score_ms, now]`` — fires that
+        catch-up-skip will never run (Härtung R2 P2).
+
+        The due score itself is the fire we ARE running; everything
+        between it and ``now`` is lost to the skip semantics. Iteration
+        is capped at 1000 — a week-long outage on a minutely cron does
+        not need an exact count to alert on.
+        """
+        start = datetime.fromtimestamp(score_ms / 1000, tz=UTC)
+        it = croniter(cron, start)
+        skipped = 0
+        now_ts = now.timestamp()
+        while skipped < 1000:
+            nxt = it.get_next(datetime)
+            if nxt.timestamp() > now_ts:
+                break
+            skipped += 1
+        return skipped

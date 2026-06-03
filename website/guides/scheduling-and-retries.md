@@ -58,6 +58,19 @@ Standard 5-field cron only; extended syntax (`L`, `W`, `#`) is
 rejected at class definition. The worker's embedded scheduler picks
 up the declaration automatically — no separate cron daemon.
 
+!!! warning "Cron expressions are evaluated in UTC"
+    There is no timezone or DST handling: `0 3 * * *` fires at
+    03:00 **UTC**, year-round. Relative to local wall-clock time the
+    fire point shifts by an hour across DST transitions — convert
+    your intended local time to UTC when writing the expression.
+
+!!! info "Missed fires are skipped, not replayed"
+    After scheduler downtime each cron fires exactly **once** as
+    catch-up; occurrences missed during the outage never run. The
+    scheduler emits a `SCHEDULER_FIRE_SKIPPED` signal (with
+    `schedule_name` and `skipped_count`) so important crons can be
+    alerted on.
+
 ### CLI-defined schedules
 
 Add schedules without redeploying code:

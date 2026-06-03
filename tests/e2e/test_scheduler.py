@@ -77,7 +77,7 @@ async def _wait_zscore_present(
     import time
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if await client.zscore("sq:sched:zset", member) is not None:  # type: ignore[attr-defined]
+        if await client.zscore("sq:{sched}:zset", member) is not None:  # type: ignore[attr-defined]
             return
         await asyncio.sleep(0.05)
     raise TimeoutError(f"scheduler never wrote {member!r} into its zset")
@@ -269,7 +269,7 @@ class TestCronSchedule:
                 try:
                     await _wait_zscore_present(client, task_name)
                     await client.zadd(
-                        "sq:sched:zset", {task_name: _due_now_ms()}
+                        "sq:{sched}:zset", {task_name: _due_now_ms()}
                     )
                 finally:
                     await client.aclose()
@@ -608,7 +608,7 @@ class TestRecurringAcrossLeaderChange:
                 # cron minute and the fire never comes due (the flaky timeout).
                 # A past score is immediately due.
                 await _wait_zscore_present(client, task_name)
-                await client.zadd("sq:sched:zset", {task_name: _due_now_ms()})
+                await client.zadd("sq:{sched}:zset", {task_name: _due_now_ms()})
                 await asyncio.wait_for(first_fired.wait(), timeout=_EVENT_TIMEOUT)
 
                 # Simulate crash — drop A's worker task and the lock.
@@ -625,7 +625,7 @@ class TestRecurringAcrossLeaderChange:
                 await asyncio.sleep(0.5)
 
                 # Fire #2 — must land on B.
-                await client.zadd("sq:sched:zset", {task_name: _due_now_ms()})
+                await client.zadd("sq:{sched}:zset", {task_name: _due_now_ms()})
                 await asyncio.wait_for(second_fired.wait(), timeout=_EVENT_TIMEOUT)
 
                 assert call_count == 2, (
@@ -762,7 +762,7 @@ class TestCronWithRateLimit:
                     for offset_ms in (200, 400, 600):
                         ts = int(time.time() * 1000) + offset_ms
                         await client.zadd(
-                            "sq:sched:zset", {task_name: ts},
+                            "sq:{sched}:zset", {task_name: ts},
                         )
                         # Wait past the forced fire before re-scoring —
                         # otherwise zadd just overwrites without firing.

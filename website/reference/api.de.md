@@ -485,6 +485,7 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | `worker_id` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` |
+| `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` |
 
 Handler müssen `**kwargs` akzeptieren (oder jedes Feld explizit
 nennen). Nutze `kwargs.get("batch_index")` für das nur in

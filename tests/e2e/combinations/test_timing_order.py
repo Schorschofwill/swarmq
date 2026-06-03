@@ -15,7 +15,7 @@ create non-trivial interaction surface:
 Combos #7 and #8: ``catchup=True`` is reserved and not yet implemented
 (raises ``ValueError`` at TaskInfo construction).  These tests simulate
 the catchup scenario by injecting multiple near-future fire timestamps
-directly into the scheduler sorted-set (``sq:sched:zset``) via the same
+directly into the scheduler sorted-set (``sq:{sched}:zset``) via the same
 pattern used by ``tests/e2e/test_scheduler.py`` — the real effect being
 tested is what happens when N queued cron fires arrive simultaneously at
 the worker.
@@ -160,7 +160,7 @@ async def _inject_cron_fires(
     scheduler picks them all up on the next poll cycle.  Uses the same zadd
     approach as ``tests/e2e/test_scheduler.py::TestCronSchedule``.
 
-    Assumption: scheduler zset key is ``sq:sched:zset`` and scores are
+    Assumption: scheduler zset key is ``sq:{sched}:zset`` and scores are
     Unix-ms timestamps. The scheduler fire-loop treats entries with score <=
     now_ms as due and publishes them.  Multiple entries with the same task_name
     but different scores represent distinct "catchup" fires.
@@ -177,7 +177,7 @@ async def _inject_cron_fires(
         # overwrite it with our due score so nothing clobbers it afterwards.
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
-            if await client.zscore("sq:sched:zset", task_name) is not None:
+            if await client.zscore("sq:{sched}:zset", task_name) is not None:
                 break
             await asyncio.sleep(0.05)
         now_ms = int(time.time() * 1000)
@@ -188,7 +188,7 @@ async def _inject_cron_fires(
             # in the near-past so the scheduler fires it on the next poll.
             fire_ms = now_ms - start_offset_ms + i * spacing_ms
             mapping[task_name] = float(fire_ms)
-        await client.zadd("sq:sched:zset", mapping)  # type: ignore[arg-type]
+        await client.zadd("sq:{sched}:zset", mapping)  # type: ignore[arg-type]
     finally:
         await client.aclose()
 

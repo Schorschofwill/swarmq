@@ -16,8 +16,8 @@ from swarmq.scheduler import SCHEDULER_LOCK_KEY as LOCK_KEY
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
-ZSET_KEY = "sq:sched:zset"
-DEFS_KEY = "sq:sched:defs"
+ZSET_KEY = "sq:{sched}:zset"
+DEFS_KEY = "sq:{sched}:defs"
 
 
 @pytest.fixture

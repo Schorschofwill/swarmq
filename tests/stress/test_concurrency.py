@@ -384,7 +384,7 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
         for _ in range(total_fires):
             now_ms = int(time.time() * 1000)
             await valkey_client.zadd(
-                "sq:sched:zset", {task_name: now_ms - 100},
+                "sq:{sched}:zset", {task_name: now_ms - 100},
             )
             # Poll interval is 50ms; 80ms gives the leader room to
             # see this fire, publish, commit, and advance the zset

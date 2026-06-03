@@ -95,7 +95,7 @@ class TestAddWithAt:
 
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
-            raw = await client.hget("sq:sched:defs", name)
+            raw = await client.hget("sq:{sched}:defs", name)
             assert raw is not None
             import msgspec
             from swarmq.scheduler import ScheduleDefinition  # noqa: F401 (nested use)
@@ -116,7 +116,7 @@ class TestRemove:
 
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
-            raw = await client.hget("sq:sched:defs", name)
+            raw = await client.hget("sq:{sched}:defs", name)
             assert raw is not None
             import msgspec
             from swarmq.scheduler import ScheduleDefinition  # noqa: F401 (nested use)
@@ -134,8 +134,8 @@ class TestRemove:
 
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
-            assert await client.hget("sq:sched:defs", name) is None
-            assert await client.zscore("sq:sched:zset", name) is None
+            assert await client.hget("sq:{sched}:defs", name) is None
+            assert await client.zscore("sq:{sched}:zset", name) is None
         finally:
             await client.aclose()
 
