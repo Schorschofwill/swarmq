@@ -46,7 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import sanitize_url
+from swarmq.logging import sanitize_url, setup_logging
 
 logger = structlog.get_logger()
 
@@ -267,6 +267,15 @@ class ProcessManager:
         self._shutting_down = False
         self._reload_requested = False
         self._next_worker_id = 0
+        # Härtung R2 P0-1: count of slots whose crash-restart budget is
+        # exhausted. Each such slot permanently reduces the static
+        # backfill target — without this, the backfill loop respawned a
+        # fresh WorkerInfo (empty restart history) right after
+        # _maybe_restart declined, bypassing the 5-per-hour limit in an
+        # unbounded spawn storm. When ALL slots are exhausted the
+        # supervisor exits non-zero so systemd/k8s take over with their
+        # own backoff policy.
+        self._exhausted_slots = 0
 
         # Autoscale state. Initialised to -inf ("never sampled / never
         # scaled") rather than 0.0 so the FIRST tick always samples and the
@@ -400,11 +409,17 @@ class ProcessManager:
     # ------------------------------------------------------------------
 
     def _setup_signals(self) -> None:
+        # Härtung R2 P1-1: deliberately NO SIGCHLD handler. A previous
+        # `waitpid(-1, WNOHANG)` reaper raced multiprocessing's own
+        # per-pid waitpid: whoever reaped first won, and when the
+        # handler won, Popen.poll() got ECHILD and returned None →
+        # is_alive() stayed True forever for dead workers (no restart,
+        # shutdown always waited the full grace period). Reaping is
+        # owned exclusively by the multiprocessing API — _check_dead_
+        # workers/is_alive()/join() reap within one MONITOR_INTERVAL.
         signal.signal(signal.SIGINT, self._on_shutdown_signal)
         signal.signal(signal.SIGTERM, self._on_shutdown_signal)
         signal.signal(signal.SIGHUP, self._on_reload_signal)
-        # SIGCHLD reaps zombies between monitor ticks.
-        signal.signal(signal.SIGCHLD, self._on_sigchld)
 
     def _on_shutdown_signal(self, signum: int, _frame) -> None:
         sig_name = signal.Signals(signum).name
@@ -417,16 +432,6 @@ class ProcessManager:
         self._reload_requested = True
         self._shutting_down = True
         self.shutdown_event.set()
-
-    def _on_sigchld(self, _signum: int, _frame) -> None:
-        # Non-blocking reap; monitor_loop handles bookkeeping.
-        while True:
-            try:
-                pid, _ = os.waitpid(-1, os.WNOHANG)
-                if pid == 0:
-                    break
-            except ChildProcessError:
-                break
 
     # ------------------------------------------------------------------
     # Worker lifecycle
@@ -514,6 +519,29 @@ class ProcessManager:
         while not self._shutting_down:
             self._check_dead_workers()
 
+            # Härtung R2 P0-1: all restart budgets burned and no live
+            # worker left → exit non-zero instead of spinning (or, pre-
+            # fix, storming fresh spawns). systemd/k8s restart us with
+            # their own backoff; staying alive here would just hide the
+            # outage from the orchestrator.
+            if (
+                self._autoscale is None
+                and self._exhausted_slots >= self.initial_workers
+                and not self.workers
+            ):
+                logger.error(
+                    "all_worker_slots_exhausted",
+                    initial_workers=self.initial_workers,
+                    limit=self.MAX_RESTARTS,
+                    window_s=self.RESTART_WINDOW,
+                    hint=(
+                        "every worker slot hit the crash-restart limit; "
+                        "exiting so the service manager applies its own "
+                        "backoff/restart policy"
+                    ),
+                )
+                return 1
+
             # Backfill to the current target (initial count without
             # autoscale; between min..max with autoscale).
             target = self._current_target()
@@ -532,14 +560,17 @@ class ProcessManager:
     def _current_target(self) -> int:
         """Target worker count at this instant.
 
-        Without autoscale: ``initial_workers`` (static).
+        Without autoscale: ``initial_workers`` minus permanently
+        exhausted slots (Härtung R2 P0-1 — backfilling an exhausted
+        slot would reset its restart history and bypass the rate
+        limit).
         With autoscale: current ``len(self.workers)`` since
         ``_autoscale_tick`` adjusts independently; backfill only
         replaces crashed workers (not those we scaled down
         deliberately).
         """
         if self._autoscale is None:
-            return self.initial_workers
+            return max(0, self.initial_workers - self._exhausted_slots)
         return len(self.workers)
 
     def _check_dead_workers(self) -> None:
@@ -591,12 +622,18 @@ class ProcessManager:
         timestamps = [t for t in old.restart_timestamps if t >= cutoff]
 
         if len(timestamps) >= self.MAX_RESTARTS:
+            # Härtung R2 P0-1: mark the slot as permanently exhausted so
+            # _current_target shrinks and the backfill loop cannot
+            # respawn it with a fresh (empty) restart history.
+            self._exhausted_slots += 1
             logger.error(
                 "worker_restart_limit_exceeded",
                 worker_id=old.worker_id,
                 limit=self.MAX_RESTARTS,
                 window_s=self.RESTART_WINDOW,
                 recent_restarts=len(timestamps),
+                exhausted_slots=self._exhausted_slots,
+                initial_workers=self.initial_workers,
             )
             return
 
@@ -1016,6 +1053,28 @@ def run_multi_process_worker(args) -> int:
         raise ConfigurationError(
             "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set",
         )
+
+    # Härtung R2 P1-8: the supervisor parent never called
+    # setup_logging() — only the worker subprocesses did (via
+    # SwarmQ.__init__). Result: worker_died / restart_limit_exceeded /
+    # autoscale events rendered in structlog's unconfigured console
+    # default regardless of --log-format json, blinding any JSON-only
+    # log pipeline to the entire supervisor layer. Configure the same
+    # renderer as the workers and stop the listener on exit
+    # (flush-on-exit).
+    log_listener = setup_logging(
+        args.log_level, log_json=(args.log_format == "json"),
+    )
+    try:
+        return _run_multi_process_worker_configured(args)
+    finally:
+        log_listener.stop()
+
+
+def _run_multi_process_worker_configured(args) -> int:
+    """Body of :func:`run_multi_process_worker` after logging setup."""
+    broker_url = os.environ["SWARMQ_BROKER_URL"]
+    backend_url = os.environ["SWARMQ_BACKEND_URL"]
 
     reload_enabled = bool(getattr(args, "reload", False))
     watch_dirs_raw = getattr(args, "watch_dir", None) or ()

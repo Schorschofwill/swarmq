@@ -376,6 +376,86 @@ class TestRunMultiProcessWorker:
              pytest.raises(ConfigurationError, match="cannot be imported|no loadable"):
             run_multi_process_worker(ns)
 
+    def test_supervisor_configures_structured_logging(self):
+        """Härtung R2 P1-8: der Supervisor-Parent rief nie
+        ``setup_logging()`` — worker_died/restart_limit_exceeded/
+        Autoscale-Events landeten trotz ``--log-format json`` im
+        structlog-Default-Console-Format. Der Parent muss dieselbe
+        Renderer-Konfiguration nutzen wie die Worker und den
+        Listener beim Exit stoppen (flush-on-exit)."""
+        from swarmq.process_manager import (
+            ProcessManager,
+            run_multi_process_worker,
+        )
+
+        ns = argparse.Namespace(
+            processes=2, autoscale=None, module="swarmq.cli",
+            queues=["default"], concurrency=10,
+            log_level="WARNING", log_format="json",
+            burst=False, burst_idle_timeout=5.0, priorities=False,
+            metrics_port=None, health_port=None,
+        )
+        env = {
+            "SWARMQ_BROKER_URL": "amqp://x",
+            "SWARMQ_BACKEND_URL": "valkey://x",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.setup_logging") as sl, \
+             patch.object(ProcessManager, "run", return_value=0):
+            rc = run_multi_process_worker(ns)
+        assert rc == 0
+        sl.assert_called_once_with("WARNING", log_json=True)
+        sl.return_value.stop.assert_called_once()
+
+    def test_supervisor_logging_human_format(self):
+        from swarmq.process_manager import (
+            ProcessManager,
+            run_multi_process_worker,
+        )
+
+        ns = argparse.Namespace(
+            processes=2, autoscale=None, module="swarmq.cli",
+            queues=["default"], concurrency=10,
+            log_level="INFO", log_format="human",
+            burst=False, burst_idle_timeout=5.0, priorities=False,
+            metrics_port=None, health_port=None,
+        )
+        env = {
+            "SWARMQ_BROKER_URL": "amqp://x",
+            "SWARMQ_BACKEND_URL": "valkey://x",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.setup_logging") as sl, \
+             patch.object(ProcessManager, "run", return_value=0):
+            run_multi_process_worker(ns)
+        sl.assert_called_once_with("INFO", log_json=False)
+
+    def test_supervisor_stops_listener_when_run_raises(self):
+        from swarmq.process_manager import (
+            ProcessManager,
+            run_multi_process_worker,
+        )
+
+        ns = argparse.Namespace(
+            processes=2, autoscale=None, module="swarmq.cli",
+            queues=["default"], concurrency=10,
+            log_level="INFO", log_format="json",
+            burst=False, burst_idle_timeout=5.0, priorities=False,
+            metrics_port=None, health_port=None,
+        )
+        env = {
+            "SWARMQ_BROKER_URL": "amqp://x",
+            "SWARMQ_BACKEND_URL": "valkey://x",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.setup_logging") as sl, \
+             patch.object(
+                 ProcessManager, "run", side_effect=RuntimeError("boom"),
+             ), \
+             pytest.raises(RuntimeError):
+            run_multi_process_worker(ns)
+        sl.return_value.stop.assert_called_once()
+
     def test_constructs_process_manager_and_runs(self):
         from swarmq.process_manager import run_multi_process_worker
 
