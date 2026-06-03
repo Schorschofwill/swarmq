@@ -121,6 +121,12 @@ class SwarmQConfig:
     # emits WORKER_HEARTBEAT. Passive AMQP declares are cheap; 10s is a
     # sensible default for backlog/DLQ alerting without polling pressure.
     metrics_sample_interval: float = 10.0
+    # Härtung R2 P2: upper bound for an incoming task-message body. The
+    # worker rejects (DLQ-route, no decode) anything larger — msgspec
+    # guards recursion depth but not size, so a rogue producer could
+    # otherwise force arbitrarily large in-memory decodes. 16 MiB is far
+    # above any sane task payload; raise via env if legitimate.
+    max_message_body_bytes: int = 16 * 1024 * 1024
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -195,6 +201,12 @@ class SwarmQConfig:
         if env_sched_inflight_ttl:
             self.scheduler_inflight_ttl = _parse_float(env_sched_inflight_ttl, "SWARMQ_SCHEDULER_INFLIGHT_TTL")
 
+        env_max_body = os.environ.get("SWARMQ_MAX_MESSAGE_BODY_BYTES", "")
+        if env_max_body:
+            self.max_message_body_bytes = _parse_int(
+                env_max_body, "SWARMQ_MAX_MESSAGE_BODY_BYTES",
+            )
+
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
         # retry horizon and prevent retried schedule-fires from bypassing
         # consumer-side SETNX dedup (review-finding P1-1).
@@ -235,6 +247,13 @@ class SwarmQConfig:
         if self.backend_op_timeout <= 0:
             msg = (
                 f"backend_op_timeout must be > 0, got {self.backend_op_timeout}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.max_message_body_bytes <= 0:
+            msg = (
+                "max_message_body_bytes must be > 0, got "
+                f"{self.max_message_body_bytes}"
             )
             raise ConfigurationError(msg)
 

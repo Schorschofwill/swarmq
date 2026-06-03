@@ -13,6 +13,7 @@ from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from swarmq.signals import Signal
 from swarmq.worker import Worker, WorkerState
 
 
@@ -81,6 +82,7 @@ def backend():
     be.is_cancelled = AsyncMock(return_value=False)
     be.set_cancel_flag = AsyncMock(return_value=True)
     be.clear_cancel_flag = AsyncMock()
+    be.is_workflow_cancelled = AsyncMock(return_value=False)
     return be
 
 
@@ -488,6 +490,63 @@ class TestMetricsSampler:
         # Per-queue error is logged and skipped; the call must not raise.
         await worker._sample_metrics_once()
 
+    async def test_sample_metrics_once_survives_arbitrary_error(
+        self, worker, broker,
+    ):
+        """Härtung R2 P2: der per-Queue-Guard fing NUR
+        BrokerConnectionError — jeder andere Fehler (TimeoutError,
+        ChannelInvalidStateError, Decode-Fehler) propagierte in den
+        Sampler-Loop, der außer CancelledError nichts fängt -> Task tot,
+        Gauges frieren still auf dem letzten Wert ein."""
+        from swarmq.metrics import Metrics
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        broker.get_queue_depth = AsyncMock(
+            side_effect=RuntimeError("channel in weird state")
+        )
+        broker.get_dlq_depth = AsyncMock(return_value=0)
+
+        await worker._sample_metrics_once()  # must not raise
+
+    async def test_metrics_sampler_loop_survives_iteration_error(
+        self, worker, broker, monkeypatch,
+    ):
+        """Eine werfende Iteration darf den Sampler-Loop nicht beenden —
+        die nächste Iteration muss laufen."""
+        import contextlib
+
+        from swarmq.metrics import Metrics
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        worker._config.metrics_sample_interval = 0.01
+
+        calls: list[int] = []
+
+        async def _flaky_sample():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("transient sampler explosion")
+
+        monkeypatch.setattr(worker, "_sample_metrics_once", _flaky_sample)
+
+        task = asyncio.create_task(worker._metrics_sampler())
+        for _ in range(200):
+            if len(calls) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        worker._shutdown_event.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert len(calls) >= 2, "sampler loop died after one error"
+
 
 class TestPayloadShapeValidation:
     """2026-06-02 audit P2-6: a wrong-typed args/kwargs payload must be
@@ -505,3 +564,36 @@ class TestPayloadShapeValidation:
         msg = _make_message(_default_payload(kwargs=["not", "a", "dict"]))
         await worker._handle_message(msg)
         broker.nack.assert_awaited_once_with(msg, requeue=False)
+
+
+class TestLifecycleSignalTimeout:
+    """Härtung R2 P1-9: Lifecycle-Dispatches (WORKER_SHUTDOWN als
+    allererste Shutdown-Aktion, WORKER_ONLINE beim Start, Heartbeat)
+    liefen ohne Timeout — ein blockierender User-Handler (z.B. ein
+    hängender HTTP-POST an ein Alerting-System) blockierte den
+    gesamten Graceful Shutdown bis zum SIGKILL: In-Flight-Tasks
+    starben hart, Locks blieben bis TTL."""
+
+    async def test_shutdown_not_blocked_by_hanging_handler(
+        self, worker, broker, backend, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "swarmq.worker._LIFECYCLE_DISPATCH_TIMEOUT_S", 0.1,
+        )
+
+        @worker._signal_dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
+        async def hanging(**kwargs):
+            await asyncio.sleep(60)
+
+        worker._request_shutdown()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait_for(worker._execute_shutdown(), timeout=5)
+        elapsed = loop.time() - started
+
+        assert elapsed < 4, f"shutdown blocked {elapsed:.1f}s by handler"
+        # The full sequence still ran.
+        broker.cancel_consume.assert_awaited_once()
+        broker.close.assert_awaited_once()
+        backend.close.assert_awaited_once()
+        assert worker._state is WorkerState.STOPPED

@@ -471,10 +471,18 @@ class TestPollLoop:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
         loop._state = "leader"
-        # Due score only a few seconds in the past — normal poll jitter.
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        d = _def(name="minutely", cron="* * * * *", fire_ts_ms=now_ms - 2000)
-        store.poll_due.return_value = [("minutely", now_ms - 2000, d)]
+        # Due score = the most recent occurrence of a YEARLY cron —
+        # deterministic: the interval (score, now] contains no further
+        # occurrence for up to a year. (A naive "now - 2s" score on a
+        # minutely cron straddles the minute boundary whenever the test
+        # runs within 2s after it → flaky skipped==1.)
+        from croniter import croniter as _croniter
+
+        yearly = "0 0 1 1 *"
+        prev_dt = _croniter(yearly, datetime.now(UTC)).get_prev(datetime)
+        score = int(prev_dt.timestamp() * 1000)
+        d = _def(name="yearly", cron=yearly, fire_ts_ms=score)
+        store.poll_due.return_value = [("yearly", score, d)]
 
         await loop._poll_tick()
 

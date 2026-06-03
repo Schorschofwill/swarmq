@@ -185,6 +185,22 @@ def _msgpack_default(obj: Any) -> msgpack.ExtType:
     raise TypeError(f"Unknown type: {type(obj)}")
 
 
+# Härtung R2 P2: explicit unpack limits, defensive against a
+# compromised (or foreign-written) backend. msgpack's defaults derive
+# from len(data), which already blocks length-prefix bombs, but pinning
+# explicit ceilings makes the contract independent of msgpack-version
+# default drift and bounds the recursive set/frozenset ext hook with
+# the same numbers. Far above any sane task result; not configurable on
+# purpose — a result this large is a bug, not a tuning knob.
+_UNPACK_LIMITS: dict[str, int] = {
+    "max_array_len": 1_000_000,
+    "max_map_len": 1_000_000,
+    "max_str_len": 64 * 1024 * 1024,
+    "max_bin_len": 64 * 1024 * 1024,
+    "max_ext_len": 64 * 1024 * 1024,
+}
+
+
 def _msgpack_ext_hook(code: int, data: bytes) -> Any:
     """Decode msgpack Ext types back to Python objects."""
     if code == _EXT_DATETIME:
@@ -198,10 +214,16 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
     if code == _EXT_UUID:
         return UUID(data.decode())
     if code == _EXT_SET:
-        return set(msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook))
+        return set(
+            msgpack.unpackb(
+                data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
+            )
+        )
     if code == _EXT_FROZENSET:
         return frozenset(
-            msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook)
+            msgpack.unpackb(
+                data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
+            )
         )
     # 2026-06-02 audit P2-5: fail loud on an unknown ext code instead of
     # returning a raw, inert ExtType. An unknown code almost always means
@@ -227,9 +249,11 @@ def encode_result(obj: Any) -> bytes:
 
 
 def decode_result(data: bytes) -> Any:
-    """Deserialize msgpack bytes."""
+    """Deserialize msgpack bytes (bounded — see ``_UNPACK_LIMITS``)."""
     try:
-        return msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook)
+        return msgpack.unpackb(
+            data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
+        )
     except Exception as exc:
         raise ResultSerializationError(
             f"Failed to msgpack-decode data: {exc}"

@@ -98,6 +98,17 @@ from swarmq.workflow_orchestration import (
 
 logger = structlog.get_logger()
 
+# Härtung R2 P1-9: per-handler budget for LIFECYCLE signal dispatches
+# (WORKER_ONLINE / WORKER_SHUTDOWN / WORKER_HEARTBEAT). The shutdown
+# dispatch is the very first action in _execute_shutdown — a blocking
+# user handler (e.g. a hanging HTTP POST to an alerting system)
+# previously stalled the entire graceful-shutdown sequence until the
+# orchestrator's SIGKILL: in-flight tasks died hard, locks stayed held
+# until TTL. 10s leaves the default 30s shutdown_timeout enough drain
+# budget. Per-task signals (TASK_*) stay unbounded — they run inside
+# the per-message pipeline where the hard_timeout watchdog governs.
+_LIFECYCLE_DISPATCH_TIMEOUT_S = 10.0
+
 
 class WorkerState(enum.Enum):
     STARTING = "STARTING"
@@ -935,7 +946,9 @@ class Worker:
         )
 
         await self._signal_dispatcher.dispatch(
-            Signal.WORKER_ONLINE, worker_id=str(id(self))
+            Signal.WORKER_ONLINE,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+            worker_id=str(id(self)),
         )
 
         # R4.5 Burst-Mode: launch the idle monitor only when burst is
@@ -1010,7 +1023,17 @@ class Worker:
         interval = self._config.metrics_sample_interval
         try:
             while not self._shutdown_event.is_set():
-                await self._sample_metrics_once()
+                # Härtung R2 P2: one failing iteration must not kill the
+                # loop — an unobserved sampler death froze the gauges on
+                # their last value with zero operator signal (the exact
+                # "looks instrumented but isn't" trap P1-3 closed).
+                try:
+                    await self._sample_metrics_once()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "metrics_sampler_iteration_failed",
+                        error=repr(exc),
+                    )
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             # Normal during _execute_shutdown teardown.
@@ -1034,16 +1057,21 @@ class Worker:
                 ).set(depth)
                 dlq = await self._broker.get_dlq_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
-            except BrokerConnectionError as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Härtung R2 P2: broad on purpose. Catching only
+                # BrokerConnectionError let any other error (Timeout,
+                # ChannelInvalidStateError, decode glitch) propagate and
+                # kill the sampler task silently.
                 logger.warning(
                     "metrics_sample_failed",
                     queue=queue,
-                    error=str(exc),
+                    error=repr(exc),
                 )
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_HEARTBEAT,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
             worker_id=worker_id,
             uptime_seconds=uptime,
         )
@@ -1055,8 +1083,12 @@ class Worker:
 
     async def _execute_shutdown(self) -> None:
         """Execute the graceful shutdown sequence."""
+        # Härtung R2 P1-9: bounded — a hanging handler must not stall
+        # the drain/lock-release/close sequence below.
         await self._signal_dispatcher.dispatch(
-            Signal.WORKER_SHUTDOWN, worker_id=str(id(self))
+            Signal.WORKER_SHUTDOWN,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+            worker_id=str(id(self)),
         )
 
         # Stop auto-wired HTTP surfaces first so scrapers / probes
@@ -1442,7 +1474,40 @@ class Worker:
             return True
 
         if not is_cancelled:
-            return False
+            # Härtung R2 P1-10: the per-task flag is clear, but the step
+            # may belong to a cancelled WORKFLOW. handle.cancel() only
+            # sets the workflow flag; group/chord members are all
+            # enqueued at apply() time, so without this check every
+            # already-enqueued member ran to completion after a cancel
+            # ("best effort" where the docstring promised a stop).
+            wf_id = self._extract_valid_workflow_id(message)
+            if wf_id is None:
+                return False
+            try:
+                wf_cancelled = await self._backend.is_workflow_cancelled(
+                    wf_id, op_timeout=self._config.backend_op_timeout,
+                )
+            except BackendConnectionError:
+                logger.error(
+                    "workflow_cancel_check_backend_error",
+                    task_id=task_id,
+                    workflow_id=wf_id,
+                )
+                await self._broker.nack(message, requeue=True)
+                structlog.contextvars.clear_contextvars()
+                return True
+            if not wf_cancelled:
+                return False
+            logger.info(
+                "workflow_step_cancelled_pre_start",
+                task_id=task_id,
+                workflow_id=wf_id,
+            )
+            # Fall through to the shared cancelled-handling below:
+            # store an is_cancelled result for this step, finalize
+            # schedfire/unique bookkeeping, ack, dispatch
+            # TASK_CANCELLED. clear_cancel_flag(task_id) is an
+            # idempotent DEL on a key that does not exist — harmless.
 
         # Cancel flag is set. Resolve DeliveryMode + result_ttl from
         # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
@@ -1636,6 +1701,21 @@ class Worker:
 
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
+        # Härtung R2 P2: size cap BEFORE the decode. msgspec has a
+        # built-in recursion-depth guard but no size guard — a
+        # compromised/misconfigured producer could otherwise make the
+        # worker decode an arbitrarily large body fully into memory
+        # before any validation runs. Oversized → DLQ route, no decode.
+        if len(message.body) > self._config.max_message_body_bytes:
+            logger.error(
+                "message_body_too_large",
+                body_bytes=len(message.body),
+                cap_bytes=self._config.max_message_body_bytes,
+                hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
+            )
+            await self._broker.nack(message, requeue=False)
+            return
+
         # 1-2. Deserialize message body
         try:
             payload = decode_json(message.body)

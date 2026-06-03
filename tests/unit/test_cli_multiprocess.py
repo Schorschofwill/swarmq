@@ -372,7 +372,10 @@ class TestRunMultiProcessWorker:
             "SWARMQ_BROKER_URL": "amqp://x",
             "SWARMQ_BACKEND_URL": "valkey://x",
         }
+        # setup_logging gemockt: das echte würde structlog global
+        # rekonfigurieren und nachfolgende capture_logs-Tests verschmutzen.
         with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.setup_logging"), \
              pytest.raises(ConfigurationError, match="cannot be imported|no loadable"):
             run_multi_process_worker(ns)
 
@@ -474,6 +477,7 @@ class TestRunMultiProcessWorker:
             "SWARMQ_BACKEND_URL": "valkey://x",
         }
         with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.setup_logging"), \
              patch("swarmq.process_manager.ProcessManager") as PM:
             instance = PM.return_value
             instance.run.return_value = 0
