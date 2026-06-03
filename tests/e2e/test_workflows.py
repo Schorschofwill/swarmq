@@ -108,20 +108,25 @@ async def test_chord_roundtrip(rabbitmq_url, valkey_url):
 
 
 async def test_workflow_cancel_stops_chain(rabbitmq_url, valkey_url):
+    """Härtung R2 B6/P1-10: der Test prüfte nur, dass ``get()`` das
+    Cancel-Flag sieht — NICHT, dass Steps tatsächlich gestoppt werden
+    (das Versprechen im Testnamen). Jetzt: cancel VOR dem Worker-Start
+    → kein einziger Step darf laufen (Pickup-Check greift)."""
     queue = _q()
-    started = asyncio.Event()
+    ran: list[str] = []
 
     class Slow1(Task):
         task_info = TaskInfo(name=f"slow1_{queue}", queues=[queue])
 
         async def run(self) -> str:
-            started.set()
+            ran.append("slow1")
             return "1"
 
     class Slow2(Task):
         task_info = TaskInfo(name=f"slow2_{queue}", queues=[queue])
 
         async def run(self, prev: str) -> str:
+            ran.append("slow2")
             return "2"
 
     broker = RabbitMQBroker(rabbitmq_url)
@@ -129,12 +134,50 @@ async def test_workflow_cancel_stops_chain(rabbitmq_url, valkey_url):
     app = SwarmQ(broker, backend, queues=[queue])
     async with app:
         await broker.declare_queue(queue)
+        # Cancel BEFORE any worker exists: the first step is already
+        # enqueued; only the pickup-time workflow-flag check can stop it.
+        handle = await app.apply(chain(Slow1.s(), Slow2.s()))
+        await handle.cancel()
         async with _worker(rabbitmq_url, valkey_url, queue):
-            handle = await app.apply(chain(Slow1.s(), Slow2.s()))
-            await handle.cancel()
-            # The workflow ends cancelled; get() raises rather than returning.
             with pytest.raises(TaskCancelledError):
                 await handle.get(timeout=20)
+            # Give the worker a moment to (wrongly) run anything queued.
+            await asyncio.sleep(1.0)
+
+    assert ran == [], f"cancelled workflow still executed steps: {ran}"
+
+
+async def test_workflow_cancel_stops_enqueued_group_members(
+    rabbitmq_url, valkey_url,
+):
+    """Härtung R2 B6/P1-10: group/chord-Member werden alle bei apply()
+    eingereiht — cancel() musste sie am Pickup stoppen, vorher liefen
+    sie ungebremst durch."""
+    queue = _q()
+    ran: list[int] = []
+
+    class Member(Task):
+        task_info = TaskInfo(name=f"member_{queue}", queues=[queue])
+
+        async def run(self, n: int) -> int:
+            ran.append(n)
+            return n
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        # All three members are enqueued by apply(); cancel before any
+        # worker can pick them up.
+        handle = await app.apply(group(Member.s(1), Member.s(2), Member.s(3)))
+        await handle.cancel()
+        async with _worker(rabbitmq_url, valkey_url, queue):
+            with pytest.raises(TaskCancelledError):
+                await handle.get(timeout=20)
+            await asyncio.sleep(1.0)
+
+    assert ran == [], f"cancelled group still executed members: {ran}"
 
 
 async def test_chain_step_failure_fails_workflow_with_liveness(rabbitmq_url, valkey_url):

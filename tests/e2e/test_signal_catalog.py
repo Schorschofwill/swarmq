@@ -4,10 +4,10 @@ Pins each ``Signal`` member's trigger scenario and kwarg payload
 contract. A single handler per test captures the dispatched kwargs
 and asserts the shape documented in ``src/swarmq/signals.py``.
 
-Signals that are declared but never dispatched by production code
-(WORKER_HEARTBEAT, TASK_EXPIRED, SCHEDULER_STANDBY) keep a skip slot
-with a reason — the placeholder survives so U1.8 can be revisited
-when those emit paths land.
+Every declared signal now has live coverage: WORKER_HEARTBEAT,
+TASK_EXPIRED and SCHEDULER_STANDBY gained emit paths in the
+2026-06-02 audit; their former skip slots were reactivated as real
+tests in Härtung R2 (2026-06-03).
 
 SCHEDULER_LEADER_FAILOVER has full coverage in
 ``tests/e2e/test_scheduler.py::TestCrashFailover``; we add a thin
@@ -207,18 +207,60 @@ async def test_signal_worker_shutdown(
     assert isinstance(captured[0]["worker_id"], str)
 
 
-@pytest.mark.skip(
-    reason="WORKER_HEARTBEAT is declared in signals.py but never "
-           "dispatched by the Worker implementation. Slot reserved "
-           "for the future periodic-heartbeat emit path."
-)
 async def test_signal_worker_heartbeat(
     rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
 ):
-    """WORKER_HEARTBEAT — placeholder until Worker emits periodic beats."""
-    # Intentionally unimplemented: there is currently no
-    # worker_heartbeat_interval config and no dispatch call in worker.py.
-    pass  # pragma: no cover
+    """WORKER_HEARTBEAT — periodic liveness tick from the metrics sampler.
+
+    Reaktiviert (Härtung R2 B2): der Skip-Grund („never dispatched")
+    ist seit dem 2026-06-02-Audit (P1-3) faktisch falsch — der Sampler
+    emittiert den Heartbeat, sobald Metrics aktiv sind.
+    """
+    pytest.importorskip("prometheus_client")
+    import socket
+
+    from swarmq.worker import Worker
+
+    def _free_port() -> int:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    queue = _unique_queue()
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue], concurrency=1)
+
+    captured: list[dict[str, Any]] = []
+    beat = asyncio.Event()
+
+    @app.on_signal(Signal.WORKER_HEARTBEAT)
+    async def _on_heartbeat(**kwargs: Any) -> None:
+        captured.append(kwargs)
+        beat.set()
+
+    async with app:
+        app.config.metrics_port = _free_port()
+        app.config.metrics_sample_interval = 0.2
+        worker = Worker(
+            app.broker, app.backend, app.registry, app.config,
+            signal_dispatcher=app._signal_dispatcher,
+        )
+        task = asyncio.create_task(worker.start())
+        try:
+            await asyncio.wait_for(beat.wait(), timeout=_EVENT_TIMEOUT)
+        finally:
+            worker._request_shutdown()
+            try:
+                await asyncio.wait_for(task, timeout=_EVENT_TIMEOUT)
+            except TimeoutError:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    assert len(captured) >= 1
+    assert isinstance(captured[0]["worker_id"], str)
+    assert captured[0]["uptime_seconds"] >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -891,14 +933,74 @@ async def test_signal_scheduler_heartbeat(
     assert "worker_id" in captured[0]
 
 
-@pytest.mark.skip(
-    reason="SCHEDULER_STANDBY is declared in signals.py but never "
-           "dispatched by the SchedulerLoop. The election loop sets "
-           "prev_leader_seen=True without emitting STANDBY. Slot "
-           "reserved for the future standby-observation emit path."
-)
 async def test_signal_scheduler_standby(
     rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
 ):
-    """SCHEDULER_STANDBY — placeholder until standby emit path lands."""
-    pass  # pragma: no cover
+    """SCHEDULER_STANDBY — leader loses its lock and steps down.
+
+    Reaktiviert (Härtung R2 B2): der Skip-Grund („never dispatched")
+    ist seit dem 2026-06-02-Audit faktisch falsch — die Leader→Standby-
+    Transition emittiert das Signal. Szenario: der Leader-Lock wird
+    extern gelöscht (simulierter TTL-Verlust) → nächster Renew-Tick
+    schlägt fehl → STANDBY.
+    """
+    from swarmq.config import SwarmQConfig
+    from swarmq.locking import LockManager
+    from swarmq.scheduler import (
+        SCHEDULER_LOCK_KEY,
+        ScheduleStore,
+        SchedulerLoop,
+    )
+    from swarmq.signals import SignalDispatcher
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    await broker.connect()
+    backend = ValkeyBackend(valkey_url)
+    await backend.connect()
+    try:
+        dispatcher = SignalDispatcher()
+        leader = asyncio.Event()
+        standby_captured: list[dict[str, Any]] = []
+        standby = asyncio.Event()
+
+        @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
+        async def _on_leader(**kwargs: Any) -> None:
+            leader.set()
+
+        @dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
+        async def _on_standby(**kwargs: Any) -> None:
+            standby_captured.append(kwargs)
+            standby.set()
+
+        config = SwarmQConfig(
+            broker_url=rabbitmq_url,
+            backend_url=valkey_url,
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=2.0,
+        )
+        loop = SchedulerLoop(
+            backend=backend,
+            broker=broker,
+            config=config,
+            lock_manager=LockManager(backend._client),
+            store=ScheduleStore(backend),
+            signal_dispatcher=dispatcher,
+            owner_token=f"standby-test-{uuid.uuid4().hex[:6]}",
+        )
+        await loop.start()
+        try:
+            await asyncio.wait_for(leader.wait(), timeout=_EVENT_TIMEOUT)
+            # Simulate lock loss (TTL expiry / takeover): the next renew
+            # returns False → leader transitions to standby.
+            await backend._client.delete(SCHEDULER_LOCK_KEY)
+            await asyncio.wait_for(standby.wait(), timeout=_EVENT_TIMEOUT)
+        finally:
+            await loop.abort()
+
+        assert len(standby_captured) >= 1
+        assert "worker_id" in standby_captured[0]
+        assert loop.state == "stopped"
+    finally:
+        await broker.close()
+        await backend.close()
