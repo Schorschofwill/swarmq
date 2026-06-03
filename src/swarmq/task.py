@@ -69,9 +69,11 @@ class TaskInfo:
         task across all workers. With ``max_concurrency=1`` (default)
         it acts as a Mutex; with ``max_concurrency>1`` as a Semaphore.
         **Requires ``hard_timeout`` to be set** — the lock TTL is
-        derived from it via ``max(30s, 0.25 * hard_timeout)``. Setting
-        ``lock`` without ``hard_timeout`` raises ``ValueError`` at
-        TaskInfo construction (fail-fast at module import).
+        derived from it via ``hard_timeout + 30s`` (the TTL must outlive
+        the task's permitted runtime so the lock cannot expire while the
+        holder still runs; see ``compute_lock_ttl_ms``). Setting ``lock``
+        without ``hard_timeout`` raises ``ValueError`` at TaskInfo
+        construction (fail-fast at module import).
       * ``max_concurrency``: only meaningful when ``lock`` is set.
         Maximum number of concurrent task instances allowed across all
         workers for this lock name. Defaults to 1 (Mutex).

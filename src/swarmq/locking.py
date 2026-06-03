@@ -21,13 +21,20 @@ if TYPE_CHECKING:
 from swarmq.exceptions import BackendConnectionError
 from swarmq.lua import load_script
 
-# Minimum lock TTL in seconds. Caps the lower bound of ``compute_lock_ttl_ms``
-# so that a very small ``hard_timeout`` (e.g. 1s) still gives the lock enough
-# room to outlast scheduler jitter, GC pauses, and one round-trip to Valkey.
-# The 30s figure comes from the brief — wide enough to absorb realistic
-# stalls, narrow enough that worker-crash recovery isn't unreasonably long.
-_MIN_LOCK_TTL_SECONDS = 30
-_LOCK_TTL_HARD_TIMEOUT_FRACTION = 0.25
+# Buffer added on top of ``hard_timeout`` to derive the lock TTL.
+# (P0-A fix, 2026-06-02 production-safety audit.) The lock TTL is purely a
+# crash-recovery deadline: under normal operation the holder releases the
+# lock cooperatively (the watchdog cancels the task at ``hard_timeout``), so
+# the TTL never matters. It only fires when a holder dies hard (SIGKILL/OOM)
+# without releasing. Therefore the TTL must OUTLIVE the longest a holder can
+# legitimately run — ``hard_timeout`` — by enough to cover watchdog-fire
+# precision and the acquire→start / cancel→release latencies. A TTL shorter
+# than ``hard_timeout`` (the previous ``0.25 * hard_timeout`` formula) lets
+# the lock expire mid-execution, so a second worker can acquire the same
+# mutex while the first still runs → duplicate execution of serialized work.
+# Locks pull server-side Valkey TIME, so there is no inter-worker clock skew
+# to budget for; the buffer only covers single-worker timing slack.
+_LOCK_TTL_BUFFER_SECONDS = 30
 
 _LOCK_KEY_PREFIX = "sq:lock:"
 
@@ -39,15 +46,30 @@ def lock_key(lock_name: str) -> str:
 
 
 def compute_lock_ttl_ms(hard_timeout: int | None) -> int:
-    """Lock TTL in ms = max(30s, 0.25 * hard_timeout).
+    """Lock TTL in ms = ``hard_timeout + _LOCK_TTL_BUFFER_SECONDS``.
 
-    Couples the lock's automatic-recovery window to the task's own
-    runtime ceiling. A task that exceeds ``hard_timeout`` is cancelled
-    by the worker watchdog before the lock TTL expires, so the lock
-    always releases via cooperative ``LockManager.release`` under
-    normal operation. The TTL only matters when the worker dies hard
-    (SIGKILL, OOM) — then the next worker waits at most ``ttl_ms`` to
-    re-acquire.
+    The TTL is the crash-recovery window, and it MUST outlive the
+    longest a holder can legitimately run (``hard_timeout``). Under
+    normal operation the watchdog cancels the task at ``hard_timeout``
+    and the lock is released cooperatively via ``LockManager.release``,
+    so the TTL is never reached. It only fires when a holder dies hard
+    (SIGKILL/OOM) without releasing — then the next worker waits at most
+    ``ttl_ms`` to re-acquire.
+
+    The previous formula ``max(30s, 0.25 * hard_timeout)`` produced a
+    TTL *shorter* than ``hard_timeout`` for every ``hard_timeout > 30s``,
+    so the lock could expire while the holder was still legitimately
+    running and a second worker could acquire the same mutex — duplicate
+    execution of work that ``@task(lock=...)`` is meant to serialize.
+    (P0-A, 2026-06-02 production-safety audit.) The same TTL governs
+    semaphore-slot expiry, so this also stops a still-running semaphore
+    holder's slot from being swept and over-admitting concurrency.
+
+    Trade-off: for a long ``hard_timeout`` the recovery window is
+    correspondingly long (a 1h mutex task → ~1h recovery after a hard
+    crash). That is the correct cost of mutual exclusion without a
+    renewal heartbeat; choose a tighter ``hard_timeout`` for faster
+    recovery.
 
     Raises:
         ValueError: when ``hard_timeout`` is ``None``. Locks require a
@@ -62,7 +84,7 @@ def compute_lock_ttl_ms(hard_timeout: int | None) -> int:
             "see brief 'Brief-Decision-4' — locks need a finite "
             "ceiling for TTL-recovery to be sound"
         )
-    seconds = max(_MIN_LOCK_TTL_SECONDS, _LOCK_TTL_HARD_TIMEOUT_FRACTION * hard_timeout)
+    seconds = hard_timeout + _LOCK_TTL_BUFFER_SECONDS
     return int(seconds * 1000)
 
 

@@ -52,7 +52,7 @@ from swarmq.locking import LockManager, compute_lock_ttl_ms
 
 # Lock-conflict policy. Module-level so they sit alongside other constants
 # and can be referenced from tests without a class qualifier. Mirrors the
-# locking.py module-level _MIN_LOCK_TTL_SECONDS pattern.
+# locking.py module-level _LOCK_TTL_BUFFER_SECONDS pattern.
 #
 # DLQ_CAP: when conflict_count reaches this value (inclusive), the message
 # routes to DLQ instead of being requeued. Operator inspects the
@@ -72,6 +72,7 @@ LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
 _LockEntry = tuple[str, str, int]
 from swarmq.exceptions import (
     BackendConnectionError,
+    BrokerConnectionError,
     NoRetry,
     ResultSerializationError,
     Retry,
@@ -156,7 +157,7 @@ class Worker:
         # Schedfire in-flight claims. Keyed by id(message) because
         # aio_pika's IncomingMessage forbids dynamic attribute
         # assignment. Populated when _pre_start_schedfire_dedup wins
-        # the inflight SETNX, read + popped by _mark_schedfire_completed
+        # the inflight SETNX, read + popped by _finalize_schedfire
         # in the finally block (Unit 1 / H-2).
         self._schedfire_inflight_claims: dict[int, str] = {}
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
@@ -180,6 +181,12 @@ class Worker:
         # clock jumps don't trigger a false-idle exit.
         self._last_message_received_at: float = 0.0
         self._burst_monitor_task: asyncio.Task | None = None
+        # 2026-06-02 audit P1-3: periodic metrics sampler. Populates the
+        # queue_depth / dlq_messages / worker_uptime_seconds gauges (which
+        # were declared but never .set()) and emits WORKER_HEARTBEAT.
+        # Started in start() only when metrics are enabled.
+        self._metrics_sampler_task: asyncio.Task | None = None
+        self._worker_started_at: float = 0.0
         # Guards the cancel-path teardown (see start()'s finally /
         # _teardown_on_exit) so it is a no-op once _execute_shutdown has run.
         self._torn_down = False
@@ -934,6 +941,15 @@ class Worker:
                 self._burst_monitor()
             )
 
+        # 2026-06-02 audit P1-3: start the metrics sampler when metrics are
+        # enabled so the queue_depth / dlq_messages / uptime gauges are
+        # actually populated and WORKER_HEARTBEAT is emitted.
+        if self._metrics is not None and self._metrics.enabled:
+            self._worker_started_at = time.monotonic()
+            self._metrics_sampler_task = asyncio.create_task(
+                self._metrics_sampler()
+            )
+
         # Block until shutdown is requested. The try/finally makes the cancel
         # path safe: a plain cancel of this coroutine (tests, ProcessManager
         # reload, embedded use) would otherwise skip _execute_shutdown and
@@ -971,6 +987,60 @@ class Worker:
             # Normal during _execute_shutdown teardown.
             pass
 
+    async def _metrics_sampler(self) -> None:
+        """Periodically populate the gauges that the signal-driven
+        collectors cannot, and emit the periodic worker heartbeat.
+
+        2026-06-02 audit P1-3: queue_depth, dlq_messages and
+        worker_uptime_seconds are declared in Metrics but were never
+        ``.set()``, so backlog growth, DLQ filling and crash-looping
+        workers were invisible to Prometheus. This sampler closes the
+        "looks instrumented but isn't" trap. Per-queue broker errors are
+        logged and skipped (a transient passive-declare failure must not
+        kill the sampler). Cancellation-safe. Only started when metrics
+        are enabled.
+        """
+        interval = self._config.metrics_sample_interval
+        try:
+            while not self._shutdown_event.is_set():
+                await self._sample_metrics_once()
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            # Normal during _execute_shutdown teardown.
+            pass
+
+    async def _sample_metrics_once(self) -> None:
+        """One metrics-sampler iteration (extracted for testability):
+        set the uptime / queue-depth / dlq gauges and emit the heartbeat.
+        Per-queue broker errors are logged and skipped."""
+        worker_id = str(id(self))
+        now = time.monotonic()
+        uptime = now - self._worker_started_at
+        self._metrics.worker_uptime_seconds.labels(
+            worker_id=worker_id,
+        ).set(uptime)
+        for queue in self._config.queues:
+            try:
+                depth = await self._broker.get_queue_depth(queue)
+                self._metrics.queue_depth.labels(
+                    queue=queue, kind="pending",
+                ).set(depth)
+                dlq = await self._broker.get_dlq_depth(queue)
+                self._metrics.dlq_messages.labels(queue=queue).set(dlq)
+            except BrokerConnectionError as exc:
+                logger.warning(
+                    "metrics_sample_failed",
+                    queue=queue,
+                    error=str(exc),
+                )
+        # Revive WORKER_HEARTBEAT (declared but never dispatched): a
+        # per-worker liveness tick complementing the shallow /health probe.
+        await self._signal_dispatcher.dispatch(
+            Signal.WORKER_HEARTBEAT,
+            worker_id=worker_id,
+            uptime_seconds=uptime,
+        )
+
     async def stop(self) -> None:
         """Close broker and backend connections."""
         await self._broker.close()
@@ -996,8 +1066,15 @@ class Worker:
             except Exception:
                 logger.exception("health_server_stop_failed")
 
-        # 1. DRAINING: stop accepting new messages
-        await self._broker.cancel_consume()
+        # 1. DRAINING: stop accepting new messages. cancel_consume now
+        # isolates per-consumer failures and raises only after attempting
+        # every consumer + clearing its registry; guard it so a partial
+        # cancel cannot abort the rest of the graceful-shutdown sequence
+        # (in-flight drain, lock release, scheduler stop). 2026-06-02 audit.
+        try:
+            await self._broker.cancel_consume()
+        except Exception:
+            logger.warning("cancel_consume_partial_failure")
 
         # 2. Wait for in-flight tasks to complete
         tasks_snapshot = set(self._active_tasks)
@@ -1130,6 +1207,14 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._burst_monitor_task
 
+        if (
+            self._metrics_sampler_task is not None
+            and not self._metrics_sampler_task.done()
+        ):
+            self._metrics_sampler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._metrics_sampler_task
+
         # The leak root: cancel + await the scheduler election/poll sub-tasks.
         if self._scheduler is not None:
             with contextlib.suppress(Exception):
@@ -1241,14 +1326,24 @@ class Worker:
         structlog.contextvars.clear_contextvars()
         return True
 
-    async def _mark_schedfire_completed(self, message) -> None:
-        """Write the long-TTL completed marker after a schedfire task
-        finished (success OR failure — both count as "this fire was
-        processed"). Called from the ``_handle_message`` finally block.
+    async def _finalize_schedfire(self, message, *, terminal: bool) -> None:
+        """Finalize the in-flight schedfire claim for this message.
 
-        No-ops when the message was not a schedfire delivery or when
-        this worker did not win the in-flight claim (the key attribute
-        is only set on the happy path in ``_pre_start_schedfire_dedup``).
+        Called from the ``_handle_message`` finally block (and the
+        pre-start-cancel terminal path). No-ops when the message was not
+        a schedfire delivery we claimed (the claim is only stashed on the
+        happy path in ``_pre_start_schedfire_dedup``).
+
+        * ``terminal=True`` (success, error→DLQ, pre-start cancel): write
+          the long-TTL ``sq:sched:fired:<key>`` completed marker so any
+          redelivery of this fire is ack+skipped.
+        * ``terminal=False`` (retry republish, rate-limit / lock-conflict
+          / shutdown / result-write requeue): the fire is being
+          re-delivered, so DELETE the short-TTL in-flight key instead of
+          writing the completed marker (P0-B, 2026-06-02 audit). Writing
+          the completed marker here would make the redelivered/retry copy
+          fail ``is_schedfire_completed`` and get silently dropped.
+
         Failures are logged and swallowed — an orphan in-flight marker
         self-heals via its short TTL."""
         # Pop from the Worker-local claims dict (see __init__). No-op
@@ -1256,13 +1351,17 @@ class Worker:
         schedfire_key = self._schedfire_inflight_claims.pop(id(message), None)
         if not schedfire_key:
             return
-        ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
         try:
-            await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
+            if terminal:
+                ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
+                await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
+            else:
+                await self._backend.clear_schedfire_inflight(schedfire_key)
         except BackendConnectionError as exc:
             logger.warning(
-                "schedfire_completed_write_failed",
+                "schedfire_finalize_failed",
                 schedfire_key=schedfire_key,
+                terminal=terminal,
                 error=str(exc),
             )
 
@@ -1359,8 +1458,8 @@ class Worker:
             # If this was a schedfire delivery we claimed in-flight,
             # mark it completed so a redelivery after in-flight-TTL
             # expiry does not re-run the task (Unit 1 / H-2). User-
-            # initiated cancel counts as "this fire was processed."
-            await self._mark_schedfire_completed(message)
+            # initiated cancel is terminal — "this fire was processed."
+            await self._finalize_schedfire(message, terminal=True)
 
             # R3.5 Unit 11: pre-start cancel is a terminal path — the
             # task never ran; release the dedup flag so a future
@@ -1513,6 +1612,20 @@ class Worker:
             task_name = task_meta["name"]
             args = payload["args"]
             kwargs = payload["kwargs"]
+            # 2026-06-02 audit P2-6: validate shapes before run(*args,
+            # **kwargs). A wrong-typed payload from a misbehaving producer
+            # (e.g. args="hello") would otherwise unpack a string
+            # character-by-character into positional args and run the task
+            # with garbage instead of failing. Treat as a malformed
+            # message: route to DLQ (nack requeue=False), don't redeliver.
+            if not isinstance(args, list):
+                raise TypeError(
+                    f"task 'args' must be a list, got {type(args).__name__}"
+                )
+            if not isinstance(kwargs, dict):
+                raise TypeError(
+                    f"task 'kwargs' must be a dict, got {type(kwargs).__name__}"
+                )
         except Exception as exc:
             logger.error("deserialize_failed", error=str(exc))
             # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
@@ -1571,6 +1684,14 @@ class Worker:
         # under-releases; over-release is owner-check-safe).
         task_info: TaskInfo | None = None
         _unique_release_pending = True
+        # P0-B (2026-06-02 audit): mirrors _unique_release_pending for the
+        # schedfire completed-marker. Default TRUE = terminal until a
+        # non-terminal branch (nack(requeue=True), retry delay-queue
+        # republish) proves otherwise. A non-terminal branch MUST clear
+        # this to False so the finally clears the in-flight key instead of
+        # writing the completed marker — otherwise the redelivered/retry
+        # copy is skipped as "completed" and the task is silently dropped.
+        _schedfire_terminal = True
         # Optional Dishka REQUEST scope. Entered just before the task
         # lifecycle (below) and torn down in the finally via the same
         # detached-shield pattern as lock release. None when DI is inactive.
@@ -1582,6 +1703,7 @@ class Worker:
                 # nack(requeue=True): broker redelivers with headers
                 # intact → keep the flag so redelivery can release.
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 await self._broker.nack(message, requeue=True)
                 return
 
@@ -1607,6 +1729,7 @@ class Worker:
                 message, task_info, queue, task_id, task_name,
             ):
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 return
 
             # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
@@ -1622,6 +1745,7 @@ class Worker:
                 message, task_info, queue, task_id, task_name,
             ):
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 return
 
             # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
@@ -1639,6 +1763,7 @@ class Worker:
                 args, kwargs, handler_id, acquired_locks,
             ):
                 _unique_release_pending = False
+                _schedfire_terminal = False
                 return
 
             # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
@@ -1923,6 +2048,17 @@ class Worker:
                 return
 
             # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
+            #
+            # 2026-06-02 audit P2-2 (deliberate, documented): a task with
+            # max_retries=0 that errors does NOT route through the DLQ —
+            # it stores an error result (so get_result() returns a clean
+            # TaskError) and acks. Only retry EXHAUSTION and non-retryable
+            # errors on a task that opted into retries land in the DLQ.
+            # Rationale: max_retries=0 is an explicit "no recovery" choice;
+            # routing such errors to the DLQ would fill it with terminal
+            # results that are already observable via get_result(). Revisit
+            # if operators want uniform DLQ inspection for all terminal
+            # failures (would change observable behaviour).
             if (
                 is_error
                 and task_exception is not None
@@ -1985,7 +2121,11 @@ class Worker:
                         # Either way the finally must NOT release:
                         # non-terminal would strand the redelivered
                         # message, terminal already released inline.
+                        # Same for schedfire: clear the in-flight key so
+                        # the retry copy re-runs (P0-B); on the DLQ branch
+                        # over-clearing is harmless (no redelivery).
                         _unique_release_pending = False
+                        _schedfire_terminal = False
                         return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
@@ -2062,7 +2202,8 @@ class Worker:
             # 9-11. Store result + ack/nack
             try:
                 await self._backend.store_result(
-                    task_id, result_bytes, result_ttl * 1000
+                    task_id, result_bytes, result_ttl * 1000,
+                    op_timeout=self._config.backend_op_timeout,
                 )
             except BackendConnectionError:
                 logger.error("backend_connection_error")
@@ -2071,6 +2212,7 @@ class Worker:
                     # from scratch; keep the flag so next terminal
                     # path can release it.
                     _unique_release_pending = False
+                    _schedfire_terminal = False
                     await self._broker.nack(message, requeue=True)
                 return
 
@@ -2136,6 +2278,7 @@ class Worker:
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         # Transient — redelivery retries the idempotent advance.
                         _unique_release_pending = False
+                        _schedfire_terminal = False
                         await self._broker.nack(message, requeue=True)
                     return
                 except BrokerConnectionError:
@@ -2148,6 +2291,7 @@ class Worker:
                     logger.error("workflow_advance_broker_error", workflow_id=wf_id)
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         _unique_release_pending = False
+                        _schedfire_terminal = False
                         await self._broker.nack(message, requeue=True)
                     return
                 except Exception as exc:
@@ -2171,12 +2315,16 @@ class Worker:
                 await self._broker.ack(message)
 
         finally:
-            # 12-pre. Write the schedfire completed marker if this message
-            # was a schedfire delivery we claimed in-flight. Must run
-            # BEFORE broker-level ack is reconsidered downstream — a
-            # redelivery racing our in-flight key expiry must see the
-            # completed marker (Unit 1 / H-2).
-            await self._mark_schedfire_completed(message)
+            # 12-pre. Finalize the schedfire claim if this message was a
+            # schedfire delivery we claimed in-flight. On a terminal
+            # outcome this writes the completed marker (a redelivery
+            # racing our in-flight-key expiry must see it, Unit 1 / H-2);
+            # on a non-terminal outcome (retry/requeue) it instead clears
+            # the in-flight key so the redelivered copy can re-run rather
+            # than being skipped as "completed" (P0-B, 2026-06-02 audit).
+            await self._finalize_schedfire(
+                message, terminal=_schedfire_terminal,
+            )
 
             # 12-pre-b. R3.5 Unit 11: completion-mode dedup release.
             # No-op in start-mode (Unit 10 already released at pickup),
@@ -2448,7 +2596,8 @@ class Worker:
             result_bytes = encode_result(result_data)
             result_ttl = self._config.result_ttl or 86400
             await self._backend.store_result(
-                task_id, result_bytes, result_ttl * 1000
+                task_id, result_bytes, result_ttl * 1000,
+                op_timeout=self._config.backend_op_timeout,
             )
             try:
                 await self._backend.publish_notification(task_id)
@@ -2508,6 +2657,18 @@ class Worker:
             # dedup window.
             await self._maybe_release_unique(
                 message, task_id, task_info_for_release
+            )
+            # 2026-06-02 audit P1-4: emit the terminal dead-letter signal
+            # AFTER a successful publish+ack so operators get a metric
+            # (outcome="dlq") and any custom handler fires exactly once
+            # per dead-lettered message. The nack(requeue=True) branch
+            # below is non-terminal, so it intentionally emits nothing.
+            await self._signal_dispatcher.dispatch(
+                Signal.TASK_DLQ,
+                task_id=task_id,
+                task_name=task_name,
+                queue=queue,
+                error=error_message,
             )
         except Exception as broker_exc:
             logger.error("dlq_publish_failed", error=str(broker_exc))

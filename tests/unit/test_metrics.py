@@ -134,6 +134,44 @@ class TestInstallSignalCollectors:
         assert "swarmq_retries_total" in body
         assert 'outcome="rate_limited"' in body
 
+    async def test_task_dlq_increments_dlq_outcome(self):
+        # 2026-06-02 audit P1-4: dead-lettering must increment
+        # tasks_total{outcome="dlq"}.
+        m = Metrics()
+        disp = SignalDispatcher()
+        install_signal_collectors(disp, m)
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+
+        await disp.dispatch(
+            Signal.TASK_DLQ,
+            queue="q", task_name="t", task_id="x", error="boom",
+        )
+        body = m.render().decode()
+        assert 'outcome="dlq"' in body
+
+    async def test_scheduler_leader_gauge_tracks_election(self):
+        # 2026-06-02 audit P1-5: SCHEDULER_* signals drive a 0/1 gauge.
+        m = Metrics()
+        disp = SignalDispatcher()
+        install_signal_collectors(disp, m)
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+
+        await disp.dispatch(Signal.SCHEDULER_LEADER, worker_id="w1")
+        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 1
+
+        # Graceful handover / standby / shutdown all drop it to 0.
+        await disp.dispatch(Signal.SCHEDULER_LEADER_HANDOVER, worker_id="w1")
+        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 0
+
+        # Failover re-acquire sets it back to 1.
+        await disp.dispatch(Signal.SCHEDULER_LEADER_FAILOVER, worker_id="w1")
+        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 1
+
+        await disp.dispatch(Signal.WORKER_SHUTDOWN, worker_id="w1")
+        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 0
+
 
 # ---------------------------------------------------------------------------
 # MetricsServer (HTTP)

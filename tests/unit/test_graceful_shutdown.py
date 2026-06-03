@@ -172,6 +172,36 @@ class TestBrokerCancelConsume:
         mock_queue_1.cancel.assert_awaited_once_with("tag-1")
         mock_queue_2.cancel.assert_awaited_once_with("tag-2")
 
+    async def test_cancel_consume_isolates_per_consumer_failure(self):
+        """A consumer whose cancel() raises must not prevent the remaining
+        consumers from being cancelled, and _consumer_tags must be cleared
+        regardless (2026-06-02 audit, P1-2). The error is surfaced only
+        after every consumer has been attempted."""
+        from swarmq.exceptions import BrokerConnectionError
+
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._consume_channel = AsyncMock(is_closed=False)
+        broker._connection = AsyncMock()
+
+        mock_queue_1 = AsyncMock()
+        mock_queue_1.consume.return_value = "tag-1"
+        mock_queue_1.cancel.side_effect = RuntimeError("channel gone")
+        mock_queue_2 = AsyncMock()
+        mock_queue_2.consume.return_value = "tag-2"
+        broker._consume_channel.get_queue.side_effect = [mock_queue_1, mock_queue_2]
+
+        callback = AsyncMock()
+        await broker.consume("q1", callback, prefetch_count=10)
+        await broker.consume("q2", callback, prefetch_count=10)
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.cancel_consume()
+
+        # The second consumer was still cancelled despite the first raising.
+        mock_queue_2.cancel.assert_awaited_once_with("tag-2")
+        # Registry cleared so a redelivery window cannot reuse stale tags.
+        assert broker._consumer_tags == []
+
 
 class TestRequestShutdown:
     def test_request_shutdown_sets_draining_and_event(self, worker):
@@ -396,3 +426,82 @@ class TestShutdownLockDrain:
 
         backend.close.assert_awaited_once()
         assert worker._state is WorkerState.STOPPED
+
+
+class TestMetricsSampler:
+    """2026-06-02 audit P1-3: the sampler populates the previously-dead
+    gauges (queue_depth / dlq_messages / worker_uptime_seconds) and emits
+    WORKER_HEARTBEAT."""
+
+    async def test_sample_metrics_once_sets_gauges_and_emits_heartbeat(
+        self, worker, broker
+    ):
+        import time as _time
+
+        from swarmq.metrics import Metrics
+        from swarmq.signals import Signal
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        worker._worker_started_at = _time.monotonic() - 5
+        broker.get_queue_depth = AsyncMock(return_value=12)
+        broker.get_dlq_depth = AsyncMock(return_value=3)
+
+        captured: list[dict] = []
+
+        async def _on_heartbeat(**kw):
+            captured.append(kw)
+
+        worker._signal_dispatcher.connect(Signal.WORKER_HEARTBEAT, _on_heartbeat)
+
+        await worker._sample_metrics_once()
+
+        assert (
+            m.queue_depth.labels(queue="default", kind="pending")._value.get()
+            == 12
+        )
+        assert m.dlq_messages.labels(queue="default")._value.get() == 3
+        assert (
+            m.worker_uptime_seconds.labels(
+                worker_id=str(id(worker))
+            )._value.get()
+            >= 5
+        )
+        assert len(captured) == 1
+        assert captured[0]["uptime_seconds"] >= 5
+
+    async def test_sample_metrics_once_survives_broker_error(self, worker, broker):
+        from swarmq.exceptions import BrokerConnectionError
+        from swarmq.metrics import Metrics
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        broker.get_queue_depth = AsyncMock(
+            side_effect=BrokerConnectionError("broker down")
+        )
+        broker.get_dlq_depth = AsyncMock(return_value=0)
+
+        # Per-queue error is logged and skipped; the call must not raise.
+        await worker._sample_metrics_once()
+
+
+class TestPayloadShapeValidation:
+    """2026-06-02 audit P2-6: a wrong-typed args/kwargs payload must be
+    routed to the DLQ (nack requeue=False), not executed with garbage."""
+
+    async def test_string_args_not_executed(self, worker, broker):
+        # args="hello" would otherwise unpack character-by-character.
+        msg = _make_message(_default_payload(args="hello"))
+        await worker._handle_message(msg)
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        # Task never ran (no result stored).
+        assert len(worker._active_tasks) == 0
+
+    async def test_non_dict_kwargs_not_executed(self, worker, broker):
+        msg = _make_message(_default_payload(kwargs=["not", "a", "dict"]))
+        await worker._handle_message(msg)
+        broker.nack.assert_awaited_once_with(msg, requeue=False)

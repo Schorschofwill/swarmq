@@ -65,6 +65,6 @@ Spalten: Happy-Path-E2E (`H`) · Sad-Path-E2E (`S`) · Chaos (`C`) · Property/F
 
 ## Lücken / explizit deferred
 
-- `Signal.WORKER_HEARTBEAT` / `TASK_EXPIRED` / `SCHEDULER_STANDBY` — Enums existieren, werden in production aber nicht dispatcht. Tests sind als `@pytest.mark.skip` mit dokumentierter Begründung markiert. Maintainer-Entscheidung: emit-Pfade hinzufügen oder Enums entfernen.
+- ~~`Signal.WORKER_HEARTBEAT` / `TASK_EXPIRED` / `SCHEDULER_STANDBY` — nicht dispatcht~~ **(behoben 2026-06-02)** — alle drei werden jetzt dispatcht: `TASK_EXPIRED` schon länger (`worker.py`), `WORKER_HEARTBEAT` aus dem Metrics-Sampler und `SCHEDULER_STANDBY` beim leader→standby-Übergang (Produktionssicherheits-Härtung). Die zugehörigen Skip-Tests können reaktiviert werden.
 - `dlq retry --all --filter=task_name=X` — Plan-Annahme; CLI hat kein `--filter`-Flag. Test zeigt nur `--all` ohne Filter.
-- Hard-Panic (SIGSEGV) → DLQ — Quorum-Queue hat kein `x-delivery-limit`, daher endloses Redelivery. Test ist mit dokumentierter Begründung skipped.
+- ~~Hard-Panic (SIGSEGV) → DLQ — Quorum-Queue hat kein `x-delivery-limit`~~ **(veraltet)** — `x-delivery-limit=20` IST für Quorum-Queues gesetzt (`rabbitmq.py:_declare_queue_triplet`), ein deterministisch crashender Task erreicht also terminal die DLQ. Der SIGSEGV-Chaos-Test bleibt skipped (20 Worker-Crashes pro Lauf sind teuer), aber die Begründung „kein x-delivery-limit" ist falsch — der Schutz existiert.

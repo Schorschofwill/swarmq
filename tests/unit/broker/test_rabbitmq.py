@@ -370,6 +370,39 @@ class TestRabbitMQBrokerGetQueueDepth:
             await broker.get_queue_depth("tasks")
 
 
+class TestRabbitMQBrokerGetDlqDepth:
+    """2026-06-02 audit P1-3 — passive-declare of the .XQ dead-letter queue."""
+
+    async def test_returns_xq_message_count(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        chan = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(return_value=chan)
+        q_xq = AsyncMock()
+        q_xq.declaration_result = type("R", (), {"message_count": 7})()
+        chan.declare_queue = AsyncMock(return_value=q_xq)
+
+        depth = await broker.get_dlq_depth("tasks")
+        assert depth == 7
+        chan.declare_queue.assert_awaited_once_with("tasks.XQ", passive=True)
+        chan.close.assert_awaited()
+
+    async def test_missing_dlq_returns_zero(self):
+        import aio_pika.exceptions
+
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        chan = AsyncMock(is_closed=True)
+        conn.channel = AsyncMock(return_value=chan)
+        chan.declare_queue = AsyncMock(
+            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
+        )
+
+        assert await broker.get_dlq_depth("tasks") == 0
+
+
 class TestRabbitMQBrokerPublish:
     async def test_publish_sends_message_with_persistent_delivery(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
@@ -453,6 +486,42 @@ class TestRabbitMQBrokerConnectError:
         ):
             with pytest.raises(BrokerConnectionError):
                 await broker.connect()
+
+
+class TestRabbitMQBrokerErrorSanitization:
+    """The broker URL carries a password; channel-reopen errors must not
+    leak it into BrokerConnectionError messages / logs (2026-06-02 audit,
+    P1-6). The project already sanitizes URLs elsewhere via sanitize_url."""
+
+    async def test_channel_reopen_error_redacts_password(self):
+        broker = RabbitMQBroker("amqp://user:supersecret@rabbit.host:5672/vh")
+        broker._publish_channel = None
+        conn = AsyncMock()
+        conn.ready = AsyncMock(return_value=None)
+        conn.channel = AsyncMock(side_effect=RuntimeError("channel boom"))
+        broker._connection = conn
+
+        with pytest.raises(BrokerConnectionError) as exc_info:
+            await broker._ensure_channel("_publish_channel")
+
+        message = str(exc_info.value)
+        assert "supersecret" not in message
+        assert "***" in message
+
+    async def test_connection_not_ready_error_redacts_password(self):
+        broker = RabbitMQBroker("amqp://user:supersecret@rabbit.host:5672/vh")
+        broker._publish_channel = None
+        conn = AsyncMock()
+        # ready() never resolves → wait_for raises TimeoutError.
+        conn.ready = AsyncMock(side_effect=TimeoutError())
+        broker._connection = conn
+
+        with pytest.raises(BrokerConnectionError) as exc_info:
+            await broker._ensure_channel("_publish_channel")
+
+        message = str(exc_info.value)
+        assert "supersecret" not in message
+        assert "***" in message
 
 
 class TestRabbitMQBrokerClose:

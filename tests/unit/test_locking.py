@@ -18,29 +18,42 @@ from swarmq.locking import LockManager, compute_lock_ttl_ms, lock_key
 
 
 class TestComputeLockTtlMs:
-    def test_hard_timeout_300s_yields_75s_ttl(self):
-        # 0.25 * 300 = 75, max(30, 75) = 75 → 75_000 ms
-        assert compute_lock_ttl_ms(300) == 75_000
+    # P0-A fix (2026-06-02 production-safety audit): the lock TTL must
+    # OUTLIVE the task's permitted runtime, otherwise the lock expires
+    # mid-execution and a second worker can acquire the same mutex while
+    # the original holder is still running (duplicate execution). The TTL
+    # is the crash-recovery window: it only fires when a holder dies hard
+    # (SIGKILL/OOM) without a cooperative release, so it must be at least
+    # ``hard_timeout`` (the longest a holder can legitimately run) plus a
+    # small buffer for watchdog-fire precision and release latency.
+    # Locks use server-side Valkey TIME, so there is no inter-worker clock
+    # skew to budget for.
 
-    def test_hard_timeout_below_floor_clamped_to_30s(self):
-        # 0.25 * 60 = 15, max(30, 15) = 30 → 30_000 ms
-        assert compute_lock_ttl_ms(60) == 30_000
+    def test_ttl_exceeds_hard_timeout_for_short_task(self):
+        # ht=10s → 10s + 30s buffer = 40s
+        assert compute_lock_ttl_ms(10) == 40_000
 
-    def test_hard_timeout_one_second_clamped_to_30s(self):
-        # Edge: very short timeout still gets the 30s floor
-        assert compute_lock_ttl_ms(1) == 30_000
+    def test_ttl_exceeds_hard_timeout_at_old_floor_boundary(self):
+        # ht=30s → 60s. Under the old (buggy) formula this was 30s == ht.
+        assert compute_lock_ttl_ms(30) == 60_000
 
-    def test_hard_timeout_120s_yields_30s_ttl(self):
-        # Boundary: 0.25 * 120 = 30, max(30, 30) = 30 → 30_000 ms
-        assert compute_lock_ttl_ms(120) == 30_000
+    def test_ttl_for_one_second_task(self):
+        # Edge: even a 1s task gets a TTL well above its runtime.
+        assert compute_lock_ttl_ms(1) == 31_000
 
-    def test_hard_timeout_121s_yields_30250ms_ttl(self):
-        # Boundary+1: 0.25 * 121 = 30.25 wins over the floor
-        assert compute_lock_ttl_ms(121) == 30_250
+    def test_ttl_for_120s_task_no_longer_equals_hard_timeout(self):
+        # Regression: old formula gave 30s (< 120s ht) → mid-run expiry.
+        assert compute_lock_ttl_ms(120) == 150_000
 
-    def test_hard_timeout_3600s_yields_900s_ttl(self):
-        # Long task: 0.25 * 3600 = 900 seconds → 900_000 ms
-        assert compute_lock_ttl_ms(3600) == 900_000
+    def test_ttl_for_long_task(self):
+        # ht=3600s → 3630s. The recovery window is inherently ~1h for a
+        # 1h mutex task — correctness over fast recovery.
+        assert compute_lock_ttl_ms(3600) == 3_630_000
+
+    @pytest.mark.parametrize("hard_timeout", [1, 5, 30, 60, 120, 300, 600, 3600])
+    def test_ttl_always_strictly_greater_than_hard_timeout(self, hard_timeout):
+        # The core invariant the P0-A fix must uphold for every input.
+        assert compute_lock_ttl_ms(hard_timeout) > hard_timeout * 1000
 
     def test_none_raises_value_error_with_explanatory_message(self):
         with pytest.raises(ValueError, match="lock requires hard_timeout"):

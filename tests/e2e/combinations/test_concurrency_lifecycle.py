@@ -34,9 +34,12 @@ assert at-least-once + no reader leak.
 
 Assumptions documented in-line; §Assumptions section at the bottom.
 
-Lock TTL note: compute_lock_ttl_ms(hard_timeout) = max(30_000ms, 0.25 × hard_timeout_ms).
-Tier-3 tests that wait for TTL expiry use hard_timeout values and
-@pytest.mark.timeout(90) to stay within CI budget.
+Lock TTL note: compute_lock_ttl_ms(hard_timeout) = (hard_timeout + 30) × 1000 ms
+(P0-A fix, 2026-06-02 — the TTL must outlive the task's permitted runtime).
+None of the SIGKILL tests below actually wait for a lock TTL to expire — the
+shutdown_sleep fixture has no lock, and recovery happens via RabbitMQ
+redelivery, so @pytest.mark.timeout(90) covers subprocess startup + redelivery,
+not a TTL.
 """
 
 from __future__ import annotations
@@ -1170,8 +1173,9 @@ class TestSIGKILLLockAtLeastOnceCombo:
     the lock and process the redelivered task.  ``assert_no_reader_leak``
     verifies no aiormq reader task leak on the successor.
 
-    Assumption: Lock TTL = max(30s, 0.25 × hard_timeout).  We use
-    hard_timeout=120 → TTL=30s.  Tests use @pytest.mark.timeout(90).
+    Note: the shutdown_sleep fixture has NO lock, so this combo exercises
+    RabbitMQ redelivery after SIGKILL (not a lock-TTL re-acquire). Recovery is
+    bounded by redelivery + worker-B startup, well within @pytest.mark.timeout(90).
 
     Tests:
       sigkill_with_lock_held_redelivers_after_ttl  — lock TTL fires, successor runs
@@ -2194,7 +2198,7 @@ class TestHotReloadSchedulerLeaderCombo:
 #     The test verifies eventual task completion, not a strict exit-before-
 #     retry guarantee.
 #
-# A-7 (Combo 27): Lock TTL = max(30s, 0.25 × hard_timeout).  _FIXTURE_MODULE
+# A-7 (Combo 27): Lock TTL = (hard_timeout + 30)s (P0-A fix).  _FIXTURE_MODULE
 #     uses no lock, so the observable lock for Combo 27 is the scheduler lock.
 #     Task-level lock tests (assert_no_deadlock) use SCHEDULER_LOCK_KEY as a
 #     proxy because the fixture module doesn't expose per-task lock keys.

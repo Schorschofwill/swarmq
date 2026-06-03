@@ -165,6 +165,12 @@ class Metrics:
                 labelnames=("queue",),
                 registry=self.registry,
             )
+            self.scheduler_leader = Gauge(
+                f"{namespace}_scheduler_leader",
+                "1 when this worker holds the scheduler leader lock, else 0",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
         else:
             noop = _NoopMetric()
             self.registry = None
@@ -175,6 +181,7 @@ class Metrics:
             self.worker_uptime_seconds = noop
             self.retries_total = noop
             self.dlq_messages = noop
+            self.scheduler_leader = noop
 
     @property
     def enabled(self) -> bool:
@@ -335,3 +342,34 @@ def install_signal_collectors(
             queue=kw.get("queue", ""),
             outcome="expired",
         ).inc()
+
+    @dispatcher.on_signal(Signal.TASK_DLQ)
+    async def _task_dlq(**kw: Any) -> None:
+        # 2026-06-02 audit P1-4: terminal dead-lettering was invisible to
+        # Prometheus (outcome="dlq" never incremented). tasks_active is
+        # already decremented by the preceding TASK_FAILED handler, so
+        # this only bumps the terminal counter operators alert on.
+        metrics.tasks_total.labels(
+            task_name=kw.get("task_name", ""),
+            queue=kw.get("queue", ""),
+            outcome="dlq",
+        ).inc()
+
+    # 2026-06-02 audit P1-5: scheduler-leader status was unobservable
+    # despite the SCHEDULER_* signals firing correctly. Map them to a
+    # 0/1 gauge so a split-brain (two leaders) or zero-leader (cron
+    # silently stopped) condition can be alerted on.
+    @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
+    @dispatcher.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
+    async def _scheduler_became_leader(**kw: Any) -> None:
+        metrics.scheduler_leader.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(1)
+
+    @dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
+    @dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)
+    @dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
+    async def _scheduler_not_leader(**kw: Any) -> None:
+        metrics.scheduler_leader.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(0)

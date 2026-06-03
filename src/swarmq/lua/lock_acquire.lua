@@ -13,7 +13,7 @@
 --
 -- KEYS[1] lock key   ("sq:lock:{lock_name}")
 -- ARGV[1] owner_token       (string; uuid4().hex from caller)
--- ARGV[2] ttl_ms            (int, > 0; max(30, 0.25 * hard_timeout) seconds in ms)
+-- ARGV[2] ttl_ms            (int, > 0; (hard_timeout + 30) seconds in ms)
 -- ARGV[3] max_concurrency   (int, >= 1; 1 = mutex, >1 = semaphore)
 -- ARGV[4] now_ms            (int; server-side TIME from caller, mirrors
 --                            sliding_window_counter.lua's pattern so

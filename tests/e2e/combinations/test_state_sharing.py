@@ -585,18 +585,18 @@ class TestLockCancelCombo:
         valkey_url: str,
         unique_queue: str,
     ) -> None:
-        """Worker A holds lock + gets SIGKILL → lock-TTL fires → worker B
-        acquires lock and completes the task (at-least-once).
+        """Worker A gets SIGKILL → worker B comes online cleanly afterward.
 
-        Assumption: lock TTL = max(30s, 0.25 × hard_timeout); hard_timeout=12s
-        → TTL = max(30s, 3s) = 30s.  That's too long for a 30s pytest timeout.
-        We use hard_timeout=120s → TTL = max(30s, 30s) = 30s still.
-        OVERRIDE: set hard_timeout to a value where TTL drops low enough for
-        the test to complete within 60s.  We use hard_timeout=8 to get
-        TTL=max(30s,2s)=30s — still 30s.  Assumption: the test environment
-        accepts a 50s total wait.  Real CI runs with --timeout=120.
+        This test does NOT inject a real lock (see the inline note below) and
+        does NOT wait for a lock TTL to expire — it only verifies that a hard
+        kill of one worker leaves the broker/backend in a state where a fresh
+        worker starts normally with no reader leak. The 60s timeout is for the
+        two subprocess-startup waits, not for any TTL.
 
-        Note: TTL is 30s minimum — this test requires @pytest.mark.timeout(60).
+        (Lock-TTL semantics after P0-A fix, 2026-06-02: TTL =
+        ``hard_timeout + 30s`` and therefore always outlives the holder's
+        permitted runtime; the actual TTL-driven re-acquire path is covered by
+        the LockManager integration tests against a real Valkey.)
         """
         queue = unique_queue
         fixture_module = "tests.e2e._shutdown_fixture_tasks"
@@ -786,7 +786,7 @@ class TestLockRetryCombo:
         """If the lock TTL were to expire during the retry delay, the
         next attempt should still be able to re-acquire it cleanly.
 
-        Assumption: hard_timeout=5 → TTL=max(30s,1.25s)=30s.  We use
+        Assumption: hard_timeout=5 → TTL=(5+30)s=35s (P0-A fix).  We use
         a very short retry delay and verify the task retries and succeeds —
         we cannot make TTL expire in the retry window without using very
         large hard_timeout values, so this test verifies the retry
@@ -1467,6 +1467,6 @@ class TestResultTtlRetryCombo:
 #     tests verify this contract.  If the implementation changes, tests
 #     A-5 will fail and serve as regression detectors.
 #
-# A-6 (lock TTL): compute_lock_ttl_ms(hard_timeout) → max(30_000ms, 0.25×hard_timeout_ms).
+# A-6 (lock TTL): compute_lock_ttl_ms(hard_timeout) → (hard_timeout + 30) × 1000 ms (P0-A fix).
 #     For SIGKILL tests (Tier 3) with hard_timeout=120 → TTL=30s.  Tests
 #     that wait for TTL expiry use @pytest.mark.timeout(90) or higher.

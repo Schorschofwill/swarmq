@@ -203,7 +203,17 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
         return frozenset(
             msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook)
         )
-    return msgpack.ExtType(code, data)
+    # 2026-06-02 audit P2-5: fail loud on an unknown ext code instead of
+    # returning a raw, inert ExtType. An unknown code almost always means
+    # schema drift -- a result written by a newer SwarmQ version with an
+    # ext type this version does not understand. Silently handing back an
+    # ExtType produces a confusingly-wrong object far from the cause;
+    # raising here surfaces it as a clean ResultSerializationError
+    # (decode_result wraps it).
+    raise ValueError(
+        f"unknown msgpack ext code {code} ({len(data)} bytes) — "
+        f"likely a result encoded by a newer SwarmQ version (schema drift)"
+    )
 
 
 def encode_result(obj: Any) -> bytes:

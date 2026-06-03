@@ -91,6 +91,11 @@ class SwarmQConfig:
     metrics_host: str = "127.0.0.1"
     health_port: int | None = None
     health_host: str = "127.0.0.1"
+    # 2026-06-02 audit P1-3: cadence of the worker metrics sampler that
+    # populates queue_depth / dlq_messages / worker_uptime_seconds and
+    # emits WORKER_HEARTBEAT. Passive AMQP declares are cheap; 10s is a
+    # sensible default for backlog/DLQ alerting without polling pressure.
+    metrics_sample_interval: float = 10.0
 
     def __post_init__(self) -> None:
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
@@ -148,6 +153,10 @@ class SwarmQConfig:
         env_sched_heartbeat = os.environ.get("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "")
         if env_sched_heartbeat:
             self.scheduler_heartbeat_interval = float(env_sched_heartbeat)
+
+        env_metrics_sample = os.environ.get("SWARMQ_METRICS_SAMPLE_INTERVAL", "")
+        if env_metrics_sample:
+            self.metrics_sample_interval = float(env_metrics_sample)
 
         env_sched_lock_ttl = os.environ.get("SWARMQ_SCHEDULER_LOCK_TTL", "")
         if env_sched_lock_ttl:
@@ -215,6 +224,13 @@ class SwarmQConfig:
             msg = (
                 "scheduler_heartbeat_interval must be > 0, got "
                 f"{self.scheduler_heartbeat_interval}"
+            )
+            raise ConfigurationError(msg)
+
+        if self.metrics_sample_interval <= 0:
+            msg = (
+                "metrics_sample_interval must be > 0, got "
+                f"{self.metrics_sample_interval}"
             )
             raise ConfigurationError(msg)
 

@@ -747,6 +747,25 @@ class ValkeyBackend:
             raise BackendConnectionError(str(exc)) from exc
         return bool(result)
 
+    async def clear_schedfire_inflight(self, schedfire_key: str) -> None:
+        """Release the in-flight claim WITHOUT writing the completed
+        marker (P0-B, 2026-06-02 audit).
+
+        Called when a claimed scheduled-fire message did NOT reach a
+        terminal outcome — it was republished for retry or requeued
+        (rate-limit, lock-conflict, shutdown, result-write failure). In
+        those cases the fire is being re-delivered, so the long-TTL
+        ``sq:sched:fired:<key>`` completed marker must NOT be written
+        (it would make the redelivered copy fail the
+        ``is_schedfire_completed`` check and get ack+skipped — a silent
+        drop of the retry). Deleting the short-TTL in-flight key lets the
+        next delivery re-claim the slot and run.
+        """
+        try:
+            await self._client.delete(self._sched_inflight_key(schedfire_key))
+        except (ValkeyError, OSError) as exc:
+            raise BackendConnectionError(str(exc)) from exc
+
     async def is_schedfire_completed(self, schedfire_key: str) -> bool:
         """Fast check whether the long-TTL completed marker already
         exists for this key. Used BEFORE the in-flight SETNX so that

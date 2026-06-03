@@ -394,3 +394,18 @@ class TestCanonicalEncode:
         a = canonical_encode((), {"x": 1.5})
         b = canonical_encode((), {"x": 1.5})
         assert a == b
+
+
+class TestMsgpackUnknownExtCode:
+    """2026-06-02 audit P2-5: an unknown msgpack ext code must fail loud
+    (schema drift) rather than silently returning a raw ExtType."""
+
+    def test_unknown_ext_code_raises_result_serialization_error(self):
+        import msgpack
+
+        # Code 99 is not one of SwarmQ's registered ext types — simulates
+        # a result written by a newer version with an ext type this
+        # version does not understand.
+        blob = msgpack.packb(msgpack.ExtType(99, b"payload"))
+        with pytest.raises(ResultSerializationError, match="unknown msgpack ext code"):
+            decode_result(blob)
