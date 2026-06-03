@@ -58,6 +58,107 @@ class TestSwarmQInstantiation:
         assert app.config.log_level == "DEBUG"
 
 
+class TestSwarmQInjectedBackends:
+    """URL becomes optional per backend once a connection object is
+    injected. Uses real broker/backend instances (not mocks) to exercise
+    the actual SwarmQ.__init__ -> SwarmQConfig path."""
+
+    def test_injected_backend_client_makes_backend_url_optional(self):
+        """AE4: broker by URL + backend by injected client -> config valid,
+        backend_url carries the credential-free placeholder (not None)."""
+        real_broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        real_backend = ValkeyBackend(client=AsyncMock())
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert app.config.broker_url == "amqp://guest:guest@localhost/"
+        assert app.config.backend_url == "<injected>"
+
+    def test_both_injected_constructs_without_any_url(self):
+        real_broker = RabbitMQBroker(connection=AsyncMock())
+        real_backend = ValkeyBackend(client=AsyncMock())
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert app.config.broker_url == "<injected>"
+        assert app.config.backend_url == "<injected>"
+
+    def test_injected_broker_makes_broker_url_optional(self):
+        real_broker = RabbitMQBroker(connection=AsyncMock())
+        real_backend = ValkeyBackend("valkey://localhost:6379/0")
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert app.config.broker_url == "<injected>"
+        assert app.config.backend_url == "valkey://localhost:6379/0"
+
+    def test_config_placeholder_carries_no_credentials(self):
+        """The placeholder must never be derived from the borrowed object,
+        so no AMQP/Valkey credentials can leak into a config dump."""
+        real_broker = RabbitMQBroker(connection=AsyncMock())
+        real_backend = ValkeyBackend(client=AsyncMock())
+
+        app = SwarmQ(real_broker, real_backend)
+
+        assert "@" not in app.config.broker_url
+        assert "@" not in app.config.backend_url
+
+
+class TestSwarmQStartWorkerInjectionGuard:
+    """start_worker() rejects an injected broker/backend before spawning,
+    because injected connection objects cannot cross the spawn boundary
+    (AE3)."""
+
+    @pytest.mark.anyio()
+    async def test_start_worker_rejects_injected_broker(self):
+        broker = RabbitMQBroker(connection=AsyncMock())
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="injected broker"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_rejects_injected_backend(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        backend = ValkeyBackend(client=AsyncMock())
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="injected backend"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_error_names_spawn_boundary_reason(self):
+        broker = RabbitMQBroker(connection=AsyncMock())
+        backend = ValkeyBackend(client=AsyncMock())
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="SWARMQ_BROKER_URL"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_both_injected_names_both_in_message(self):
+        broker = RabbitMQBroker(connection=AsyncMock())
+        backend = ValkeyBackend(client=AsyncMock())
+        app = SwarmQ(broker, backend)
+
+        with pytest.raises(ConfigurationError, match="broker and backend"):
+            await app.start_worker()
+
+    @pytest.mark.anyio()
+    async def test_start_worker_proceeds_for_url_constructed_backends(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as mock_worker_cls:
+            mock_worker_cls.return_value.start = AsyncMock()
+            await app.start_worker()
+
+        # Guard did not fire — the worker was constructed and started.
+        mock_worker_cls.return_value.start.assert_awaited_once()
+
+
 class TestSwarmQContextManager:
     @pytest.mark.anyio()
     async def test_aenter_connects_broker_and_backend(self, broker, backend):
