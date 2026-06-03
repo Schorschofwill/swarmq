@@ -1473,6 +1473,7 @@ class Worker:
             structlog.contextvars.clear_contextvars()
             return True
 
+        _workflow_cancel = False
         if not is_cancelled:
             # Härtung R2 P1-10: the per-task flag is clear, but the step
             # may belong to a cancelled WORKFLOW. handle.cancel() only
@@ -1498,6 +1499,7 @@ class Worker:
                 return True
             if not wf_cancelled:
                 return False
+            _workflow_cancel = True
             logger.info(
                 "workflow_step_cancelled_pre_start",
                 task_id=task_id,
@@ -1530,7 +1532,17 @@ class Worker:
             result_ttl = self._config.result_ttl
 
         try:
-            if result_ttl > 0:
+            # Review R2: on the WORKFLOW-cancel path a redelivery of an
+            # already-completed step (success stored, ack lost) must not
+            # overwrite the original result with a cancel marker — a
+            # direct get_result(task_id) would then misreport a step
+            # that genuinely ran. The per-task cancel path keeps its
+            # unconditional write (the flag only exists pre-/mid-run).
+            store_cancel_result = result_ttl > 0
+            if store_cancel_result and _workflow_cancel:
+                existing = await self._backend.get_result(task_id)
+                store_cancel_result = existing is None
+            if store_cancel_result:
                 result_data = build_cancel_result_dict(
                     task_id=task_id, queue=queue, task_name=task_name,
                 )

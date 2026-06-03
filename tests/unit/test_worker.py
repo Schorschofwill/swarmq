@@ -4390,6 +4390,8 @@ class TestWorkflowCancelPickup:
     ):
         backend.is_cancelled = AsyncMock(return_value=False)
         backend.is_workflow_cancelled = AsyncMock(return_value=True)
+        # No prior result for this step → the cancel marker is written.
+        backend.get_result = AsyncMock(return_value=None)
 
         events: list[dict] = []
 
@@ -4495,3 +4497,42 @@ class TestBodySizeCap:
         monkeypatch.setenv("SWARMQ_MAX_MESSAGE_BODY_BYTES", "1024")
         cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
         assert cfg.max_message_body_bytes == 1024
+
+
+class TestWorkflowCancelDoesNotOverwriteResult:
+    """Review R2: Redelivery eines bereits ERFOLGREICH gelaufenen Steps
+    (Result gespeichert, Ack verloren) nach Workflow-Cancel darf das
+    Original-Result nicht mit einem Cancel-Marker überschreiben."""
+
+    WF_ID = "0190b6f2-1234-7abc-8def-0123456789ab"
+
+    async def test_existing_result_preserved(self, worker, broker, backend):
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(return_value=True)
+        # The step already completed once: a success result exists.
+        backend.get_result = AsyncMock(return_value=b"original-success")
+
+        msg = _make_message(
+            _default_payload(name="add", args=[1, 2], kwargs={}),
+            headers={"x-swarmq-workflow-id": self.WF_ID},
+        )
+        await worker._handle_message(msg)
+
+        # No overwrite — and the redelivery is still settled (acked).
+        backend.store_result.assert_not_awaited()
+        broker.ack.assert_awaited_once_with(msg)
+
+    async def test_per_task_cancel_keeps_unconditional_write(
+        self, worker, broker, backend,
+    ):
+        """Bestandssemantik des per-Task-Cancels unverändert: dort wird
+        ohne Existenz-Check geschrieben (Flag existiert nur pre-/mid-run)."""
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=b"should-not-be-read")
+
+        msg = _make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
+        await worker._handle_message(msg)
+
+        backend.store_result.assert_awaited_once()
+        backend.get_result.assert_not_awaited()
+        broker.ack.assert_awaited_once_with(msg)

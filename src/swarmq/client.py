@@ -522,14 +522,17 @@ class Client:
                             msg = await pubsub.get_message(
                                 ignore_subscribe_messages=True, timeout=0.05,
                             )
-                            if msg is not None:
-                                raw = await _get_within_deadline()
-                                if raw is not None:
-                                    return self._unpack(raw)
-                        except ResultNotReadyError:
-                            raise
                         except Exception:
                             break  # Pub/Sub error, fall through to polling
+                        # Outside the try: a deadline miss
+                        # (ResultNotReadyError) or a corrupt stored
+                        # result (ResultSerializationError) must
+                        # propagate with its real error class, not be
+                        # misfiled as a Pub/Sub glitch (review R2).
+                        if msg is not None:
+                            raw = await _get_within_deadline()
+                            if raw is not None:
+                                return self._unpack(raw)
 
             # --- Step 4: Polling fallback ---
             while loop.time() < deadline:

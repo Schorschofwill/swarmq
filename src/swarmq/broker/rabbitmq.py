@@ -174,6 +174,17 @@ class RabbitMQBroker:
                         timeout=_POOL_ACQUIRE_TIMEOUT_S,
                     )
                 except TimeoutError as exc:
+                    # Review R2: best-effort release. wait_for cancelled
+                    # __aenter__ mid-Queue.get(), so normally nothing was
+                    # checked out — but if cancellation landed in the
+                    # narrow window after get() returned, __aexit__
+                    # returns that item to the pool instead of leaking it
+                    # (aio-pika's PoolItemContextManager.__aexit__ is a
+                    # no-op when no item was assigned).
+                    try:
+                        await self._pool_ctx.__aexit__(None, None, None)
+                    except Exception:  # noqa: BLE001 — release best-effort
+                        pass
                     self._pool_ctx = None
                     self._connection = None
                     raise BrokerConnectionError(

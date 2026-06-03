@@ -107,8 +107,10 @@ class SwarmQ:
         # Härtung R2 P1-4: staged try/finally. broker.close() may raise
         # by design on the injected path (channel.close() errors are NOT
         # swallowed there); without the finally-chain that left the
-        # Valkey client open and the log-listener thread running. The
-        # first exception propagates; the remaining teardown still runs.
+        # Valkey client open and the log-listener thread running. Every
+        # teardown step always runs; when several raise, Python's
+        # finally semantics propagate the LAST one (earlier exceptions
+        # are visible via __context__).
         try:
             await self.broker.close()
         finally:

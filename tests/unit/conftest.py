@@ -23,19 +23,24 @@ def _uncache_structlog_module_loggers():
     import swarmq.backend.valkey
     import swarmq.broker.rabbitmq
     import swarmq.client
+    import swarmq.hot_reload
     import swarmq.middleware
     import swarmq.process_manager
     import swarmq.scheduler
     import swarmq.signals
+    import swarmq.task
     import swarmq.worker
 
     modules = (
         swarmq.signals, swarmq.middleware, swarmq.worker, swarmq.client,
-        swarmq.scheduler, swarmq.process_manager,
-        swarmq.backend.valkey, swarmq.broker.rabbitmq,
+        swarmq.scheduler, swarmq.process_manager, swarmq.hot_reload,
+        swarmq.backend.valkey, swarmq.broker.rabbitmq, swarmq.task,
     )
+    # swarmq.task names its proxy ``_progress_logger`` — cover both names
+    # (review R2 M1: missing modules made the fixture silently partial).
     for mod in modules:
-        logger = getattr(mod, "logger", None)
-        if logger is not None:
-            logger.__dict__.pop("bind", None)
+        for attr in ("logger", "_progress_logger"):
+            logger = getattr(mod, attr, None)
+            if logger is not None:
+                logger.__dict__.pop("bind", None)
     yield

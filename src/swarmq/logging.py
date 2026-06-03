@@ -41,6 +41,10 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         try:
             self.queue.put_nowait(record)
         except queue.Full:
+            # ``dropped += 1`` is deliberately lock-free: under
+            # multi-thread contention it may undercount — acceptable for
+            # an observability counter; a lock here would serialize the
+            # hot logging path exactly when it is saturated.
             self.dropped += 1
             now = time.monotonic()
             if now - self._last_drop_notice >= self._DROP_NOTICE_INTERVAL_S:
