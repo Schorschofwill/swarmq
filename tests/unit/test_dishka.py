@@ -333,3 +333,40 @@ def test_module_imports_without_dishka_and_core_symbols_usable():
     # SwarmQProvider access raises a clear, actionable error.
     with pytest.raises(ImportError, match=r"swarmq\[dishka\]"):
         _ = mod.SwarmQProvider
+
+
+class TestDoubleSetupWarning:
+    """Härtung R2 P2: zwei Module, die beide setup_dishka() aufrufen,
+    sind fast immer ein Versehen — stilles last-writer-wins ließ die
+    Provider des Verlierers spurlos verschwinden."""
+
+    def test_second_setup_warns(self):
+        from unittest.mock import MagicMock, patch
+
+        from swarmq.dishka import _reset_container, setup_dishka
+
+        _reset_container()
+        c1, c2 = MagicMock(), MagicMock()
+        try:
+            with patch("structlog.get_logger") as gl:
+                setup_dishka(c1)
+                gl.return_value.warning.assert_not_called()
+                setup_dishka(c2)
+                gl.return_value.warning.assert_called_once()
+        finally:
+            _reset_container()
+
+    def test_same_container_does_not_warn(self):
+        from unittest.mock import MagicMock, patch
+
+        from swarmq.dishka import _reset_container, setup_dishka
+
+        _reset_container()
+        c1 = MagicMock()
+        try:
+            with patch("structlog.get_logger") as gl:
+                setup_dishka(c1)
+                setup_dishka(c1)  # idempotent re-registration
+                gl.return_value.warning.assert_not_called()
+        finally:
+            _reset_container()

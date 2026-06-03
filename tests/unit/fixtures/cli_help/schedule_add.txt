@@ -13,7 +13,8 @@ options:
   --cron EXPR           5-field cron expression, e.g. '*/5 * * * *'.
   --at ISO_DATETIME     One-shot fire time, ISO 8601 (e.g.
                         '2026-05-01T03:00:00Z').
-  --task NAME           Registered task name to invoke.
+  --task NAME           Task name to invoke. NOT validated here — a typo only
+                        surfaces at fire time on the worker.
   --args JSON_ARRAY     Positional args as JSON array (default: []).
   --kwargs JSON_OBJECT  Keyword args as JSON object (default: {}).
   --queue QUEUE         Target queue (default: default).

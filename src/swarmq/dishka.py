@@ -88,8 +88,23 @@ def setup_dishka(container: AsyncContainer) -> None:
     Call at module level so each spawned worker subprocess rebuilds the
     container fresh on re-import (spawn-safe). The worker reads it after
     importing the task module.
+
+    Calling it twice replaces the previous container (Härtung R2 P2:
+    logged at WARNING — two modules both calling setup_dishka is almost
+    always an accident, and the silent last-writer-wins made the losing
+    module's providers vanish without a trace).
     """
     global _container
+    if _container is not _MISSING and _container is not container:
+        import structlog
+
+        structlog.get_logger().warning(
+            "dishka_container_replaced",
+            hint=(
+                "setup_dishka() was already called with a different "
+                "container; the previous registration is discarded"
+            ),
+        )
     _container = container
 
 

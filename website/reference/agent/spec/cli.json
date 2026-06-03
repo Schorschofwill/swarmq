@@ -313,7 +313,7 @@
           "flags": [
             "--task"
           ],
-          "help": "Registered task name to invoke.",
+          "help": "Task name to invoke. NOT validated here — a typo only surfaces at fire time on the worker.",
           "name": "--task",
           "positional": false,
           "required": true,

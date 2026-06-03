@@ -282,7 +282,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--task",
         required=True,
         metavar="NAME",
-        help="Registered task name to invoke.",
+        # Härtung R2 P2: schedule add is backend-only — the name is NOT
+        # validated against any registry here; a typo surfaces only at
+        # fire time as TaskNotFoundError on the worker (plus the
+        # scheduler_task_not_in_local_registry warning).
+        help=(
+            "Task name to invoke. NOT validated here — a typo only "
+            "surfaces at fire time on the worker."
+        ),
     )
     sched_add.add_argument(
         "--args",

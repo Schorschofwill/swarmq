@@ -7,13 +7,19 @@ name = "swarmq"
 version = "0.1.0"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
 requires-python = ">=3.14"
+# Härtung R2 P2: lower bounds protect downstream consumers installing
+# without our lockfile. msgpack>=1.0 pins the safe default-limit
+# semantics decode_result relies on; aio-pika>=9 the robust-connection
+# API; valkey>=6 the asyncio client surface; msgspec>=0.18 the
+# Struct/JSON APIs; structlog>=24 contextvars/testing surfaces;
+# croniter>=2 tz-aware get_next/get_prev.
 dependencies = [
-    "msgspec",
-    "msgpack",
-    "structlog",
-    "aio-pika",
-    "valkey[libvalkey]",
-    "croniter",
+    "msgspec>=0.18",
+    "msgpack>=1.0",
+    "structlog>=24",
+    "aio-pika>=9",
+    "valkey[libvalkey]>=6",
+    "croniter>=2",
 ]
 
 [project.optional-dependencies]

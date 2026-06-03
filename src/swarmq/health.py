@@ -151,6 +151,12 @@ class HealthServer:
     namespace as the pod by default, so loopback is sufficient. Bind
     to ``0.0.0.0`` only when the probe originates outside the pod /
     container.
+
+    **No built-in auth** (Härtung R2 P2, mirrors the /metrics note):
+    ``/ready`` reveals which dependency (broker/backend) is down plus a
+    sanitised error tag — an infrastructure fingerprint. When binding
+    to ``0.0.0.0``, front the endpoint with a reverse proxy / firewall
+    boundary.
     """
 
     def __init__(
