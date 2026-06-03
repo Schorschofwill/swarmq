@@ -257,27 +257,34 @@ class Worker:
         )
         # Store an error result so callers waiting on get_result() see
         # a clean TaskError("expired") instead of an indefinite timeout.
-        try:
-            await self._backend.store_result(
-                task_id,
-                build_result_dict(
-                    task_id=task_id,
-                    queue=queue,
-                    task_name=task_name,
-                    is_error=True,
-                    is_cancelled=False,
-                    error_message=(
-                        f"task expired: age {age}s exceeds "
-                        f"max_age {task_info.max_age}s"
+        # Härtung R2 P2: result_ttl=0 means fire-and-forget — skip the
+        # store entirely (mirrors the main-path semantics). Previously
+        # this produced `SET ... PX 0`, which Valkey rejects with
+        # 'invalid expire time', losing the error result as a spurious
+        # backend failure.
+        ttl_ms = (task_info.result_ttl or self._config.result_ttl) * 1000
+        if ttl_ms > 0:
+            try:
+                await self._backend.store_result(
+                    task_id,
+                    build_result_dict(
+                        task_id=task_id,
+                        queue=queue,
+                        task_name=task_name,
+                        is_error=True,
+                        is_cancelled=False,
+                        error_message=(
+                            f"task expired: age {age}s exceeds "
+                            f"max_age {task_info.max_age}s"
+                        ),
                     ),
-                ),
-                ttl_ms=(task_info.result_ttl or self._config.result_ttl) * 1000,
-                op_timeout=self._config.backend_op_timeout,
-            )
-        except BackendConnectionError:
-            # Best-effort: if the backend is down, the message still
-            # routes to the DLQ for operator inspection.
-            logger.warning("task_expired_result_store_failed")
+                    ttl_ms=ttl_ms,
+                    op_timeout=self._config.backend_op_timeout,
+                )
+            except BackendConnectionError:
+                # Best-effort: if the backend is down, the message still
+                # routes to the DLQ for operator inspection.
+                logger.warning("task_expired_result_store_failed")
 
         # Route to DLQ + ack. Same pattern as _send_to_dlq but inline
         # because the DLQ semantics of 'expired' differ from 'error'

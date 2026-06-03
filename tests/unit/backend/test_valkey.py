@@ -139,6 +139,30 @@ class TestValkeyBackendConnect:
         assert OSError in call.kwargs["retry_on_error"]
         mock_client.ping.assert_awaited_once()
 
+    async def test_connect_sets_socket_timeouts(self):
+        """Härtung R2 P1-2: ohne ``socket_timeout`` blockiert ein
+        bereits laufender ``recv`` auf einer half-open Connection
+        unbegrenzt — ``health_check_interval`` pingt nur VOR einem
+        Kommando nach Idle, es bricht keinen laufenden Read ab.
+        ``socket_connect_timeout`` begrenzt zusätzlich den
+        TCP-Handshake gegen einen blackholed Host."""
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+
+        with patch(
+            "swarmq.backend.valkey.valkey.asyncio.Valkey.from_url",
+            return_value=mock_client,
+        ) as mock_from_url:
+            await backend.connect()
+
+        kwargs = mock_from_url.call_args.kwargs
+        assert kwargs.get("socket_timeout"), "socket_timeout must be set"
+        assert kwargs["socket_timeout"] > 0
+        assert kwargs.get("socket_connect_timeout"), (
+            "socket_connect_timeout must be set"
+        )
+        assert kwargs["socket_connect_timeout"] > 0
+
 
 class TestValkeyBackendClose:
     async def test_close_closes_client(self):

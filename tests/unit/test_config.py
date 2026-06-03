@@ -515,3 +515,36 @@ def test_swarmq_health_host_env(monkeypatch):
     monkeypatch.setenv("SWARMQ_HEALTH_HOST", "0.0.0.0")
     cfg = SwarmQConfig(broker_url="x", backend_url="x")
     assert cfg.health_host == "0.0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Härtung R2 P2: numerische Env-Parses → ConfigurationError statt ValueError
+# ---------------------------------------------------------------------------
+
+_NUMERIC_ENV_VARS = [
+    "SWARMQ_RESULT_TTL",
+    "SWARMQ_CONCURRENCY",
+    "SWARMQ_RETRY_MAX_DELAY",
+    "SWARMQ_SHUTDOWN_TIMEOUT",
+    "SWARMQ_CANCEL_POLL_INTERVAL",
+    "SWARMQ_BACKEND_OP_TIMEOUT",
+    "SWARMQ_SCHEDULER_POLL_INTERVAL",
+    "SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL",
+    "SWARMQ_METRICS_SAMPLE_INTERVAL",
+    "SWARMQ_SCHEDULER_LOCK_TTL",
+    "SWARMQ_SCHEDULER_DEDUP_TTL",
+    "SWARMQ_SCHEDULER_INFLIGHT_TTL",
+    "SWARMQ_BURST_IDLE_TIMEOUT",
+]
+
+
+@pytest.mark.parametrize("env_var", _NUMERIC_ENV_VARS)
+def test_numeric_env_garbage_raises_configuration_error(monkeypatch, env_var):
+    """Härtung R2 P2: ``SWARMQ_CONCURRENCY=abc`` warf einen rohen
+    ``ValueError`` mit Traceback — inkonsistent zur RR-02-Härtung der
+    Port-Parses und für Operatoren undurchsichtig. Alle numerischen
+    Env-Parses müssen als ConfigurationError mit Variablennamen
+    surfacen."""
+    monkeypatch.setenv(env_var, "abc")
+    with pytest.raises(ConfigurationError, match=env_var):
+        SwarmQConfig(broker_url="x", backend_url="x")

@@ -175,6 +175,62 @@ class TestRabbitMQBrokerInjection:
         assert broker._pool_ctx is None
         assert broker._connection is None
 
+    async def test_pool_acquire_exhausted_raises_instead_of_hanging(
+        self, monkeypatch,
+    ):
+        """Härtung R2 P1-3: ``pool.acquire().__aenter__()`` blockiert
+        bei erschöpftem (nicht-overflow) Pool unbegrenzt auf
+        ``Queue.get()`` — ``async with SwarmQ(...)`` hing dann still.
+        connect() muss den Acquire mit Timeout binden und als
+        BrokerConnectionError surfacen."""
+        import asyncio
+
+        monkeypatch.setattr(
+            "swarmq.broker.rabbitmq._POOL_ACQUIRE_TIMEOUT_S", 0.1,
+        )
+
+        async def _never_returns():
+            await asyncio.sleep(60)
+
+        acquire_cm = AsyncMock()
+        acquire_cm.__aenter__ = Mock(side_effect=_never_returns)
+        mock_pool = Mock()
+        mock_pool.acquire = Mock(return_value=acquire_cm)
+        broker = RabbitMQBroker(connection_pool=mock_pool)
+
+        with pytest.raises(BrokerConnectionError, match="pool"):
+            await asyncio.wait_for(broker.connect(), timeout=5)
+
+        # Nothing was acquired — no checkout to leak, state reset.
+        assert broker._pool_ctx is None
+        assert broker._connection is None
+
+    async def test_injected_plain_connection_logs_warning(self):
+        """Härtung R2 P2: eine plain (nicht-robuste) injizierte
+        Connection hat kein Self-Healing — nach einem Drop läuft jeder
+        Publish in die volle 10s-``ready()``-Timeout-Wand. Der Docstring-
+        Caveat allein ist zu leise; connect() warnt explizit."""
+        mock_conn = AsyncMock(spec=aio_pika.abc.AbstractConnection)
+        mock_conn.channel = AsyncMock(return_value=AsyncMock())
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        with patch("swarmq.broker.rabbitmq.logger") as mock_logger:
+            await broker.connect()
+
+        assert mock_logger.warning.called
+        event = mock_logger.warning.call_args.args[0]
+        assert "robust" in event
+
+    async def test_injected_robust_connection_no_warning(self):
+        mock_conn = AsyncMock(spec=aio_pika.abc.AbstractRobustConnection)
+        mock_conn.channel = AsyncMock(return_value=AsyncMock())
+        broker = RabbitMQBroker(connection=mock_conn)
+
+        with patch("swarmq.broker.rabbitmq.logger") as mock_logger:
+            await broker.connect()
+
+        mock_logger.warning.assert_not_called()
+
     async def test_injected_connection_connect_failure_keeps_borrowed_ref(self):
         """A bare injected connection is the caller's: on connect() failure
         wrap the error but never release/close it."""

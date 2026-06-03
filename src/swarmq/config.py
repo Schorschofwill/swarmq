@@ -37,6 +37,31 @@ def _parse_port(raw: str, env_var: str) -> int:
     return port
 
 
+def _parse_int(raw: str, env_var: str) -> int:
+    """Parse an integer env var as ``ConfigurationError`` on garbage.
+
+    Härtung R2 P2: ``SWARMQ_CONCURRENCY=abc`` previously surfaced as a
+    raw ``ValueError`` traceback — inconsistent with the RR-02 port
+    hardening and opaque for operators.
+    """
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"{env_var} must be an integer, got {raw!r}"
+        ) from exc
+
+
+def _parse_float(raw: str, env_var: str) -> float:
+    """Parse a float env var as ``ConfigurationError`` on garbage."""
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"{env_var} must be a number, got {raw!r}"
+        ) from exc
+
+
 @dataclass
 class SwarmQConfig:
     broker_url: str = ""
@@ -108,7 +133,7 @@ class SwarmQConfig:
 
         env_ttl = os.environ.get("SWARMQ_RESULT_TTL", "")
         if env_ttl:
-            self.result_ttl = int(env_ttl)
+            self.result_ttl = _parse_int(env_ttl, "SWARMQ_RESULT_TTL")
 
         env_queues = os.environ.get("SWARMQ_QUEUES", "")
         if env_queues:
@@ -116,7 +141,7 @@ class SwarmQConfig:
 
         env_concurrency = os.environ.get("SWARMQ_CONCURRENCY", "")
         if env_concurrency:
-            self.concurrency = int(env_concurrency)
+            self.concurrency = _parse_int(env_concurrency, "SWARMQ_CONCURRENCY")
 
         env_log_level = os.environ.get("SWARMQ_LOG_LEVEL", "")
         if env_log_level:
@@ -128,11 +153,11 @@ class SwarmQConfig:
 
         env_retry_max_delay = os.environ.get("SWARMQ_RETRY_MAX_DELAY", "")
         if env_retry_max_delay:
-            self.retry_max_delay = float(env_retry_max_delay)
+            self.retry_max_delay = _parse_float(env_retry_max_delay, "SWARMQ_RETRY_MAX_DELAY")
 
         env_shutdown_timeout = os.environ.get("SWARMQ_SHUTDOWN_TIMEOUT", "")
         if env_shutdown_timeout:
-            self.shutdown_timeout = int(env_shutdown_timeout)
+            self.shutdown_timeout = _parse_int(env_shutdown_timeout, "SWARMQ_SHUTDOWN_TIMEOUT")
 
         env_queue_type = os.environ.get("SWARMQ_QUEUE_TYPE", "")
         if env_queue_type:
@@ -140,35 +165,35 @@ class SwarmQConfig:
 
         env_cancel_poll = os.environ.get("SWARMQ_CANCEL_POLL_INTERVAL", "")
         if env_cancel_poll:
-            self.cancel_poll_interval = float(env_cancel_poll)
+            self.cancel_poll_interval = _parse_float(env_cancel_poll, "SWARMQ_CANCEL_POLL_INTERVAL")
 
         env_backend_op_timeout = os.environ.get("SWARMQ_BACKEND_OP_TIMEOUT", "")
         if env_backend_op_timeout:
-            self.backend_op_timeout = float(env_backend_op_timeout)
+            self.backend_op_timeout = _parse_float(env_backend_op_timeout, "SWARMQ_BACKEND_OP_TIMEOUT")
 
         env_sched_poll = os.environ.get("SWARMQ_SCHEDULER_POLL_INTERVAL", "")
         if env_sched_poll:
-            self.scheduler_poll_interval = float(env_sched_poll)
+            self.scheduler_poll_interval = _parse_float(env_sched_poll, "SWARMQ_SCHEDULER_POLL_INTERVAL")
 
         env_sched_heartbeat = os.environ.get("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "")
         if env_sched_heartbeat:
-            self.scheduler_heartbeat_interval = float(env_sched_heartbeat)
+            self.scheduler_heartbeat_interval = _parse_float(env_sched_heartbeat, "SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL")
 
         env_metrics_sample = os.environ.get("SWARMQ_METRICS_SAMPLE_INTERVAL", "")
         if env_metrics_sample:
-            self.metrics_sample_interval = float(env_metrics_sample)
+            self.metrics_sample_interval = _parse_float(env_metrics_sample, "SWARMQ_METRICS_SAMPLE_INTERVAL")
 
         env_sched_lock_ttl = os.environ.get("SWARMQ_SCHEDULER_LOCK_TTL", "")
         if env_sched_lock_ttl:
-            self.scheduler_lock_ttl = float(env_sched_lock_ttl)
+            self.scheduler_lock_ttl = _parse_float(env_sched_lock_ttl, "SWARMQ_SCHEDULER_LOCK_TTL")
 
         env_sched_dedup_ttl = os.environ.get("SWARMQ_SCHEDULER_DEDUP_TTL", "")
         if env_sched_dedup_ttl:
-            self.scheduler_dedup_ttl = float(env_sched_dedup_ttl)
+            self.scheduler_dedup_ttl = _parse_float(env_sched_dedup_ttl, "SWARMQ_SCHEDULER_DEDUP_TTL")
 
         env_sched_inflight_ttl = os.environ.get("SWARMQ_SCHEDULER_INFLIGHT_TTL", "")
         if env_sched_inflight_ttl:
-            self.scheduler_inflight_ttl = float(env_sched_inflight_ttl)
+            self.scheduler_inflight_ttl = _parse_float(env_sched_inflight_ttl, "SWARMQ_SCHEDULER_INFLIGHT_TTL")
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
         # retry horizon and prevent retried schedule-fires from bypassing
@@ -280,7 +305,9 @@ class SwarmQConfig:
             self.burst_mode = env_burst.lower() in ("true", "1", "yes")
         env_burst_timeout = os.environ.get("SWARMQ_BURST_IDLE_TIMEOUT", "")
         if env_burst_timeout:
-            self.burst_idle_timeout = float(env_burst_timeout)
+            self.burst_idle_timeout = _parse_float(
+                env_burst_timeout, "SWARMQ_BURST_IDLE_TIMEOUT",
+            )
         if self.burst_idle_timeout <= 0:
             msg = (
                 "burst_idle_timeout must be > 0, got "

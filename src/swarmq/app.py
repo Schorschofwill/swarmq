@@ -104,9 +104,18 @@ class SwarmQ:
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        await self.broker.close()
-        await self.backend.close()
-        self._log_listener.stop()
+        # Härtung R2 P1-4: staged try/finally. broker.close() may raise
+        # by design on the injected path (channel.close() errors are NOT
+        # swallowed there); without the finally-chain that left the
+        # Valkey client open and the log-listener thread running. The
+        # first exception propagates; the remaining teardown still runs.
+        try:
+            await self.broker.close()
+        finally:
+            try:
+                await self.backend.close()
+            finally:
+                self._log_listener.stop()
 
     async def schedule_many(
         self,

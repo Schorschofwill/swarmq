@@ -25,6 +25,19 @@ _TRANSIENT_ERRORS: list[type[Exception]] = [
     OSError,
 ]
 
+# Härtung R2 P1-2: socket-level bounds for the owned client. Without
+# socket_timeout, an in-flight recv on a half-open connection (peer
+# silently gone, no RST) blocks forever — health_check_interval only
+# PINGs before a command after idle; it cannot interrupt a running
+# read. The socket timeout bounds EVERY operation (results, scheduler
+# reads, Lua) without per-call op_timeout plumbing; a timed-out op
+# surfaces as ValkeyTimeoutError → retried (transient) → wrapped to
+# BackendConnectionError. Safe for the Pub/Sub paths: all get_message
+# polls use 0.05s slices, far below this bound. Injected clients keep
+# the caller's own socket configuration (documented caveat).
+_SOCKET_TIMEOUT_S = 10.0
+_SOCKET_CONNECT_TIMEOUT_S = 5.0
+
 
 class ValkeyBackend:
     def __init__(
@@ -110,6 +123,10 @@ class ValkeyBackend:
                 retry=Retry(ExponentialBackoff(cap=2.0, base=0.05), retries=5),
                 retry_on_error=_TRANSIENT_ERRORS,
                 health_check_interval=30,
+                # Härtung R2 P1-2: bound every op at the socket so a
+                # half-open connection cannot wedge a read forever.
+                socket_timeout=_SOCKET_TIMEOUT_S,
+                socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_S,
             )
             await self._client.ping()
         except (ValkeyConnectionError, OSError) as exc:

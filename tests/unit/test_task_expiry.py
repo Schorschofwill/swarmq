@@ -130,6 +130,25 @@ class TestCheckMaxAgeExpired:
         assert result["is_error"] is True
         assert "expired" in result["error_message"].lower()
 
+    async def test_expired_skips_result_store_when_ttl_zero(self):
+        """Härtung R2 P2: ``result_ttl=0`` (fire-and-forget) auf dem
+        Expired-Pfad erzeugte ``SET ... PX 0`` — Valkey lehnt das mit
+        'invalid expire time' ab und das Error-Result ging als
+        scheinbarer Backend-Fehler verloren. FAF heißt: kein Result-
+        Store, wie auf dem Haupt-Pfad."""
+        w = _make_worker()
+        w._config.result_ttl = 0
+        ti = TaskInfo(name="t", queues=["q"], max_age=10)
+        msg = _make_message(int(time.time()) - 30)
+
+        handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
+
+        assert handled is True
+        w._backend.store_result.assert_not_awaited()
+        # DLQ + ack continue regardless.
+        w._broker.publish_to_dead_letter_queue.assert_awaited_once()
+        w._broker.ack.assert_awaited_once()
+
     async def test_expired_dlq_route_tolerates_backend_failure(self):
         w = _make_worker()
         from swarmq.exceptions import BackendConnectionError
