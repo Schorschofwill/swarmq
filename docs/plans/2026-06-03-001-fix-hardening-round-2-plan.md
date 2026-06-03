@@ -1,7 +1,7 @@
 ---
 title: "fix: Härtungs-Runde 2 — 1 P0 + 10 P1 + 13 P2 + 6 Test-/CI-Lücken"
 type: fix
-status: in-progress
+status: completed
 date: 2026-06-03
 origin: 6-Bereiche-Härtungs-Review 2026-06-03 (Worker-Lifecycle, Verbindungsschicht, Scheduler/Lua, Security, Operations, Client/Workflows/Tests), alle Findings am Kontrollfluss verifiziert
 ---
@@ -17,6 +17,17 @@ User-Scope: **alles** (P0 + P1 + P2 + Test-/CI-Lücken), TDD. Cluster-Befund
 Schedule-Keys → Migrationshinweis in Doku).
 
 Umsetzung in 6 Arbeitspaketen (U1–U6), je in logischen Commit-Gruppen.
+
+**Abschluss (2026-06-03):** Alle Units umgesetzt. Abschluss-Review per
+drei parallelen Reviewer-Personas (Correctness, Adversarial,
+Test-Qualität) über den gesamten Branch-Diff: 0 Blocker/Major; die
+Minor-Findings (Pub/Sub-Decode-Fehlerklasse, Workflow-Cancel-Result-
+Overwrite bei Redelivery, Pool-Timeout-Checkout-Fenster, Fixture-
+Modulliste) wurden gefixt. Abweichung vom Plan: verwaiste Schedules
+werden gewarnt, NICHT geskippt (Multi-Modul-Fleets registrieren den
+Task ggf. in einer anderen Worker-Registry — ein harter Skip wäre dort
+falsch). Verifikation: unit/property/fuzz/integration/e2e/stress grün
+gegen echte Services; chaos lokal gegen den Toxiproxy-Stack.
 
 ## U1 — ProcessManager-Lifecycle
 
