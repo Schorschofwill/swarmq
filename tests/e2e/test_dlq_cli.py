@@ -98,9 +98,9 @@ async def _poison_queue(
     count is the authoritative source for "message is in DLQ."
     """
     class PoisonTask(Task):
-        # max_retries must be >= 1 for DLQ routing — the retry branch
-        # is what eventually calls _send_to_dlq. max_retries=0 silently
-        # stores the error and acks (worker.py:1442 retry-gate).
+        # max_retries=1 keeps the retry-exhaustion DLQ path exercised
+        # (since Härtung R2, max_retries=0 also DLQ-routes — the old
+        # "silently stores and acks" gate is gone).
         task_info = TaskInfo(
             name=task_name, queues=[queue],
             max_retries=1,

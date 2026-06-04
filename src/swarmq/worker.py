@@ -2174,22 +2174,20 @@ class Worker:
 
             # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
             #
-            # 2026-06-02 audit P2-2 (deliberate, documented): a task with
-            # max_retries=0 that errors does NOT route through the DLQ —
-            # it stores an error result (so get_result() returns a clean
-            # TaskError) and acks. Only retry EXHAUSTION and non-retryable
-            # errors on a task that opted into retries land in the DLQ.
-            # Rationale: max_retries=0 is an explicit "no recovery" choice;
-            # routing such errors to the DLQ would fill it with terminal
-            # results that are already observable via get_result(). Revisit
-            # if operators want uniform DLQ inspection for all terminal
-            # failures (would change observable behaviour).
+            # Audit 2026-06-02 P2-2, umgesetzt in Härtungs-Runde 2
+            # (user-approved behaviour change): max_retries=0 errors now
+            # route through _evaluate_retry like every other failure —
+            # retry_count(0) >= max_retries(0) is immediately exhausted,
+            # so _send_to_dlq runs: error result stored (get_result()
+            # contract unchanged), message copied to {queue}.XQ, TASK_DLQ
+            # dispatched. Previously this branch was gated on
+            # max_retries > 0, which silently exempted the most common
+            # "no recovery" config from DLQ inspection and alerting.
             if (
                 is_error
                 and task_exception is not None
                 and not is_cancelled
                 and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
-                and task_info.max_retries > 0
             ):
                 # Post-execution cancel guard (REV-P2-6): a cancel that
                 # arrived WHILE post_execution was running or between
@@ -2376,11 +2374,14 @@ class Worker:
                 and (is_error or is_cancelled)
             ):
                 # R4.1 fail-fast + liveness (U6): a workflow step that
-                # terminally errored here (max_retries=0 / non-retryable, which
-                # never reaches _send_to_dlq) or was cancelled cannot advance —
-                # mark the whole workflow failed synchronously and wake any
+                # reached this point as error/cancelled cannot advance — mark
+                # the whole workflow failed synchronously and wake any
                 # handle.get() waiter, so it raises within bounded time instead
                 # of hanging, and no successor / chord body is enqueued.
+                # Since Härtung R2 (P2-2 follow-up) every AT_LEAST_ONCE error
+                # with an exception goes through _send_to_dlq (which fail-marks
+                # there); this inline branch now covers cancels and the rare
+                # error-without-exception shapes.
                 reason = "task was cancelled" if is_cancelled else (
                     error_message or "workflow step failed"
                 )

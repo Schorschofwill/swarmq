@@ -1115,8 +1115,18 @@ async def test_retry_exceptions_match_retries(broker, backend, config):
 
 
 @pytest.mark.asyncio
-async def test_max_retries_zero_no_retry_stores_error(broker, backend, config):
-    """max_retries=0 (default) -> no retry, error-result stored and acked."""
+async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
+    """max_retries=0 (default) -> no retry, but the terminal failure
+    routes through the DLQ pipeline like every other terminal failure.
+
+    Audit 2026-06-02 P2-2 (deliberate behaviour change, user-approved
+    in Härtungs-Runde 2 follow-up): previously a max_retries=0 error
+    stored the result + acked WITHOUT the DLQ copy — operators got
+    uniform DLQ inspection only for tasks that opted into retries, and
+    TASK_DLQ never fired for the most common "no recovery" config.
+    Now: error result stored (get_result contract unchanged), message
+    copied to {queue}.XQ, TASK_DLQ dispatched, original acked."""
+    from swarmq.signals import Signal as _Signal
 
     class NoRetryDefaultTask(Task):
         task_info = TaskInfo(name="no_retry_default", queues=["default"])
@@ -1129,20 +1139,28 @@ async def test_max_retries_zero_no_retry_stores_error(broker, backend, config):
     reg.register(NoRetryDefaultTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
+    dlq_signals: list[dict] = []
+
+    @w._signal_dispatcher.on_signal(_Signal.TASK_DLQ)
+    async def _on_dlq(**kw):
+        dlq_signals.append(kw)
+
     msg = _make_message(
         _default_payload(name="no_retry_default", args=[], kwargs={}),
         headers={},
     )
     await w._handle_message(msg)
 
-    # No retry, no DLQ — just store error result and ack
+    # No retry — straight to terminal DLQ handling.
     broker.publish_to_delay_queue.assert_not_awaited()
-    broker.publish_to_dead_letter_queue.assert_not_awaited()
+    broker.publish_to_dead_letter_queue.assert_awaited_once()
     backend.store_result.assert_awaited_once()
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
     assert "error without retry" in stored["error_message"]
     broker.ack.assert_awaited_once()
+    assert len(dlq_signals) == 1
+    assert dlq_signals[0]["task_name"] == "no_retry_default"
 
 
 @pytest.mark.asyncio
