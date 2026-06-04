@@ -123,7 +123,7 @@ class TestRemoveDisable:
         assert schedules[sched_name].disabled is True
 
         # zset entry must be gone — otherwise poll_due returns it forever.
-        zscore = await valkey_client.zscore("sq:sched:zset", sched_name)
+        zscore = await valkey_client.zscore("sq:{sched}:zset", sched_name)
         assert zscore is None
 
 

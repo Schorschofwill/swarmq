@@ -139,6 +139,30 @@ class TestValkeyBackendConnect:
         assert OSError in call.kwargs["retry_on_error"]
         mock_client.ping.assert_awaited_once()
 
+    async def test_connect_sets_socket_timeouts(self):
+        """Härtung R2 P1-2: ohne ``socket_timeout`` blockiert ein
+        bereits laufender ``recv`` auf einer half-open Connection
+        unbegrenzt — ``health_check_interval`` pingt nur VOR einem
+        Kommando nach Idle, es bricht keinen laufenden Read ab.
+        ``socket_connect_timeout`` begrenzt zusätzlich den
+        TCP-Handshake gegen einen blackholed Host."""
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        mock_client = AsyncMock()
+
+        with patch(
+            "swarmq.backend.valkey.valkey.asyncio.Valkey.from_url",
+            return_value=mock_client,
+        ) as mock_from_url:
+            await backend.connect()
+
+        kwargs = mock_from_url.call_args.kwargs
+        assert kwargs.get("socket_timeout"), "socket_timeout must be set"
+        assert kwargs["socket_timeout"] > 0
+        assert kwargs.get("socket_connect_timeout"), (
+            "socket_connect_timeout must be set"
+        )
+        assert kwargs["socket_connect_timeout"] > 0
+
 
 class TestValkeyBackendClose:
     async def test_close_closes_client(self):
@@ -557,11 +581,11 @@ class TestValkeyBackendScheduleKeys:
 
     def test_sched_zset_key(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert backend._sched_zset_key() == "sq:sched:zset"
+        assert backend._sched_zset_key() == "sq:{sched}:zset"
 
     def test_sched_defs_key(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert backend._sched_defs_key() == "sq:sched:defs"
+        assert backend._sched_defs_key() == "sq:{sched}:defs"
 
     def test_sched_fired_key(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
@@ -587,7 +611,7 @@ class TestValkeyBackendZAddSchedule:
         await backend.zadd_schedule("cron_a", 1_700_000_000_000)
 
         mock_client.zadd.assert_awaited_once_with(
-            "sq:sched:zset", {"cron_a": 1_700_000_000_000}
+            "sq:{sched}:zset", {"cron_a": 1_700_000_000_000}
         )
 
     async def test_zadd_schedule_wraps_error(self):
@@ -608,7 +632,7 @@ class TestValkeyBackendZRemSchedule:
 
         await backend.zrem_schedule("cron_a")
 
-        mock_client.zrem.assert_awaited_once_with("sq:sched:zset", "cron_a")
+        mock_client.zrem.assert_awaited_once_with("sq:{sched}:zset", "cron_a")
 
     async def test_zrem_schedule_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
@@ -630,7 +654,7 @@ class TestValkeyBackendZRangeByScore:
         result = await backend.zrangebyscore_schedules(1_700_000_000_000, 100)
 
         mock_client.zrangebyscore.assert_awaited_once_with(
-            "sq:sched:zset", "-inf", 1_700_000_000_000, start=0, num=100
+            "sq:{sched}:zset", "-inf", 1_700_000_000_000, start=0, num=100
         )
         assert result == [b"cron_a", b"cron_b"]
 
@@ -653,7 +677,7 @@ class TestValkeyBackendHashDefs:
         await backend.hset_schedule_def("cron_a", b'{"x":1}')
 
         mock_client.hset.assert_awaited_once_with(
-            "sq:sched:defs", "cron_a", b'{"x":1}'
+            "sq:{sched}:defs", "cron_a", b'{"x":1}'
         )
 
     async def test_hget_schedule_def_calls_hget(self):
@@ -664,7 +688,7 @@ class TestValkeyBackendHashDefs:
 
         result = await backend.hget_schedule_def("cron_a")
 
-        mock_client.hget.assert_awaited_once_with("sq:sched:defs", "cron_a")
+        mock_client.hget.assert_awaited_once_with("sq:{sched}:defs", "cron_a")
         assert result == b'{"x":1}'
 
     async def test_hdel_schedule_def_calls_hdel(self):
@@ -674,7 +698,7 @@ class TestValkeyBackendHashDefs:
 
         await backend.hdel_schedule_def("cron_a")
 
-        mock_client.hdel.assert_awaited_once_with("sq:sched:defs", "cron_a")
+        mock_client.hdel.assert_awaited_once_with("sq:{sched}:defs", "cron_a")
 
     async def test_hgetall_schedule_defs_calls_hgetall(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
@@ -684,7 +708,7 @@ class TestValkeyBackendHashDefs:
 
         result = await backend.hgetall_schedule_defs()
 
-        mock_client.hgetall.assert_awaited_once_with("sq:sched:defs")
+        mock_client.hgetall.assert_awaited_once_with("sq:{sched}:defs")
         assert result == {b"cron_a": b'{"x":1}'}
 
     async def test_hset_wraps_error(self):

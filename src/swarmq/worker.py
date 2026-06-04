@@ -98,6 +98,17 @@ from swarmq.workflow_orchestration import (
 
 logger = structlog.get_logger()
 
+# Härtung R2 P1-9: per-handler budget for LIFECYCLE signal dispatches
+# (WORKER_ONLINE / WORKER_SHUTDOWN / WORKER_HEARTBEAT). The shutdown
+# dispatch is the very first action in _execute_shutdown — a blocking
+# user handler (e.g. a hanging HTTP POST to an alerting system)
+# previously stalled the entire graceful-shutdown sequence until the
+# orchestrator's SIGKILL: in-flight tasks died hard, locks stayed held
+# until TTL. 10s leaves the default 30s shutdown_timeout enough drain
+# budget. Per-task signals (TASK_*) stay unbounded — they run inside
+# the per-message pipeline where the hard_timeout watchdog governs.
+_LIFECYCLE_DISPATCH_TIMEOUT_S = 10.0
+
 
 class WorkerState(enum.Enum):
     STARTING = "STARTING"
@@ -257,27 +268,34 @@ class Worker:
         )
         # Store an error result so callers waiting on get_result() see
         # a clean TaskError("expired") instead of an indefinite timeout.
-        try:
-            await self._backend.store_result(
-                task_id,
-                build_result_dict(
-                    task_id=task_id,
-                    queue=queue,
-                    task_name=task_name,
-                    is_error=True,
-                    is_cancelled=False,
-                    error_message=(
-                        f"task expired: age {age}s exceeds "
-                        f"max_age {task_info.max_age}s"
+        # Härtung R2 P2: result_ttl=0 means fire-and-forget — skip the
+        # store entirely (mirrors the main-path semantics). Previously
+        # this produced `SET ... PX 0`, which Valkey rejects with
+        # 'invalid expire time', losing the error result as a spurious
+        # backend failure.
+        ttl_ms = (task_info.result_ttl or self._config.result_ttl) * 1000
+        if ttl_ms > 0:
+            try:
+                await self._backend.store_result(
+                    task_id,
+                    build_result_dict(
+                        task_id=task_id,
+                        queue=queue,
+                        task_name=task_name,
+                        is_error=True,
+                        is_cancelled=False,
+                        error_message=(
+                            f"task expired: age {age}s exceeds "
+                            f"max_age {task_info.max_age}s"
+                        ),
                     ),
-                ),
-                ttl_ms=(task_info.result_ttl or self._config.result_ttl) * 1000,
-                op_timeout=self._config.backend_op_timeout,
-            )
-        except BackendConnectionError:
-            # Best-effort: if the backend is down, the message still
-            # routes to the DLQ for operator inspection.
-            logger.warning("task_expired_result_store_failed")
+                    ttl_ms=ttl_ms,
+                    op_timeout=self._config.backend_op_timeout,
+                )
+            except BackendConnectionError:
+                # Best-effort: if the backend is down, the message still
+                # routes to the DLQ for operator inspection.
+                logger.warning("task_expired_result_store_failed")
 
         # Route to DLQ + ack. Same pattern as _send_to_dlq but inline
         # because the DLQ semantics of 'expired' differ from 'error'
@@ -928,7 +946,9 @@ class Worker:
         )
 
         await self._signal_dispatcher.dispatch(
-            Signal.WORKER_ONLINE, worker_id=str(id(self))
+            Signal.WORKER_ONLINE,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+            worker_id=str(id(self)),
         )
 
         # R4.5 Burst-Mode: launch the idle monitor only when burst is
@@ -1003,7 +1023,17 @@ class Worker:
         interval = self._config.metrics_sample_interval
         try:
             while not self._shutdown_event.is_set():
-                await self._sample_metrics_once()
+                # Härtung R2 P2: one failing iteration must not kill the
+                # loop — an unobserved sampler death froze the gauges on
+                # their last value with zero operator signal (the exact
+                # "looks instrumented but isn't" trap P1-3 closed).
+                try:
+                    await self._sample_metrics_once()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "metrics_sampler_iteration_failed",
+                        error=repr(exc),
+                    )
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             # Normal during _execute_shutdown teardown.
@@ -1027,16 +1057,21 @@ class Worker:
                 ).set(depth)
                 dlq = await self._broker.get_dlq_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
-            except BrokerConnectionError as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Härtung R2 P2: broad on purpose. Catching only
+                # BrokerConnectionError let any other error (Timeout,
+                # ChannelInvalidStateError, decode glitch) propagate and
+                # kill the sampler task silently.
                 logger.warning(
                     "metrics_sample_failed",
                     queue=queue,
-                    error=str(exc),
+                    error=repr(exc),
                 )
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_HEARTBEAT,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
             worker_id=worker_id,
             uptime_seconds=uptime,
         )
@@ -1048,8 +1083,12 @@ class Worker:
 
     async def _execute_shutdown(self) -> None:
         """Execute the graceful shutdown sequence."""
+        # Härtung R2 P1-9: bounded — a hanging handler must not stall
+        # the drain/lock-release/close sequence below.
         await self._signal_dispatcher.dispatch(
-            Signal.WORKER_SHUTDOWN, worker_id=str(id(self))
+            Signal.WORKER_SHUTDOWN,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+            worker_id=str(id(self)),
         )
 
         # Stop auto-wired HTTP surfaces first so scrapers / probes
@@ -1243,8 +1282,14 @@ class Worker:
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _pre_start_schedfire_dedup(self, message) -> bool:
+    async def _pre_start_schedfire_dedup(
+        self, message, task_name: str | None = None,
+    ) -> bool:
         """Two-marker schedfire dedup (Unit 1 / H-2 / reliability R-002).
+
+        ``task_name`` (when the caller already decoded the body) lets
+        the in-flight TTL grow to cover the task's ``hard_timeout``
+        (Härtung R2 P1-6) — see the claim block below.
 
         Three-state check:
 
@@ -1293,7 +1338,27 @@ class Worker:
             structlog.contextvars.clear_contextvars()
             return True
 
-        inflight_ttl_ms = int(self._config.scheduler_inflight_ttl * 1000)
+        # Härtung R2 P1-6: the fixed inflight TTL was the ONLY split-
+        # brain guard for the publish-before-commit window. If it
+        # expired DURING a long run (hard_timeout > inflight_ttl is
+        # legal), a stale-leader duplicate won the freed SETNX and the
+        # same fire executed twice. Couple the TTL to the task's
+        # maximum legal runtime — same pattern as compute_lock_ttl_ms
+        # (P0-A fix 2026-06-02). Tasks without hard_timeout keep the
+        # configured TTL (documented residual: unbounded tasks need an
+        # explicit hard_timeout for airtight schedfire dedup).
+        inflight_ttl_s = self._config.scheduler_inflight_ttl
+        hard_timeout: int | None = None
+        if task_name is not None:
+            try:
+                hard_timeout = self._registry.get(
+                    task_name
+                ).task_info.hard_timeout
+            except TaskNotFoundError:
+                pass  # unknown task fails later in the pipeline anyway
+        if hard_timeout is not None:
+            inflight_ttl_s = max(inflight_ttl_s, hard_timeout + 30)
+        inflight_ttl_ms = int(inflight_ttl_s * 1000)
         try:
             claimed = await self._backend.set_schedfire_inflight(
                 header_value, inflight_ttl_ms
@@ -1408,8 +1473,43 @@ class Worker:
             structlog.contextvars.clear_contextvars()
             return True
 
+        _workflow_cancel = False
         if not is_cancelled:
-            return False
+            # Härtung R2 P1-10: the per-task flag is clear, but the step
+            # may belong to a cancelled WORKFLOW. handle.cancel() only
+            # sets the workflow flag; group/chord members are all
+            # enqueued at apply() time, so without this check every
+            # already-enqueued member ran to completion after a cancel
+            # ("best effort" where the docstring promised a stop).
+            wf_id = self._extract_valid_workflow_id(message)
+            if wf_id is None:
+                return False
+            try:
+                wf_cancelled = await self._backend.is_workflow_cancelled(
+                    wf_id, op_timeout=self._config.backend_op_timeout,
+                )
+            except BackendConnectionError:
+                logger.error(
+                    "workflow_cancel_check_backend_error",
+                    task_id=task_id,
+                    workflow_id=wf_id,
+                )
+                await self._broker.nack(message, requeue=True)
+                structlog.contextvars.clear_contextvars()
+                return True
+            if not wf_cancelled:
+                return False
+            _workflow_cancel = True
+            logger.info(
+                "workflow_step_cancelled_pre_start",
+                task_id=task_id,
+                workflow_id=wf_id,
+            )
+            # Fall through to the shared cancelled-handling below:
+            # store an is_cancelled result for this step, finalize
+            # schedfire/unique bookkeeping, ack, dispatch
+            # TASK_CANCELLED. clear_cancel_flag(task_id) is an
+            # idempotent DEL on a key that does not exist — harmless.
 
         # Cancel flag is set. Resolve DeliveryMode + result_ttl from
         # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
@@ -1432,7 +1532,17 @@ class Worker:
             result_ttl = self._config.result_ttl
 
         try:
-            if result_ttl > 0:
+            # Review R2: on the WORKFLOW-cancel path a redelivery of an
+            # already-completed step (success stored, ack lost) must not
+            # overwrite the original result with a cancel marker — a
+            # direct get_result(task_id) would then misreport a step
+            # that genuinely ran. The per-task cancel path keeps its
+            # unconditional write (the flag only exists pre-/mid-run).
+            store_cancel_result = result_ttl > 0
+            if store_cancel_result and _workflow_cancel:
+                existing = await self._backend.get_result(task_id)
+                store_cancel_result = existing is None
+            if store_cancel_result:
                 result_data = build_cancel_result_dict(
                     task_id=task_id, queue=queue, task_name=task_name,
                 )
@@ -1603,6 +1713,21 @@ class Worker:
 
     async def _handle_message(self, message) -> None:
         """Core message handler logic."""
+        # Härtung R2 P2: size cap BEFORE the decode. msgspec has a
+        # built-in recursion-depth guard but no size guard — a
+        # compromised/misconfigured producer could otherwise make the
+        # worker decode an arbitrarily large body fully into memory
+        # before any validation runs. Oversized → DLQ route, no decode.
+        if len(message.body) > self._config.max_message_body_bytes:
+            logger.error(
+                "message_body_too_large",
+                body_bytes=len(message.body),
+                cap_bytes=self._config.max_message_body_bytes,
+                hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
+            )
+            await self._broker.nack(message, requeue=False)
+            return
+
         # 1-2. Deserialize message body
         try:
             payload = decode_json(message.body)
@@ -1647,7 +1772,7 @@ class Worker:
         # duplicate scheduled fire never enters any of those stages and
         # costs no Valkey round-trips beyond the SETNX. Ack-safe
         # pre-pipeline stage, same discipline as cancel-check.
-        if await self._pre_start_schedfire_dedup(message):
+        if await self._pre_start_schedfire_dedup(message, task_name):
             return
 
         # 2b. Pre-start cancel check (Phase 3b.3). Runs BEFORE semaphore

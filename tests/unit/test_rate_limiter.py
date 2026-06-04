@@ -69,3 +69,30 @@ class TestErrors:
     def test_only_slash(self):
         with pytest.raises(ValueError, match="invalid rate limit format"):
             parse_rate_limit("/")
+
+
+class TestClusterHashTags:
+    """Härtung R2 P1-7: sliding_window_counter.lua liest current- und
+    previous-Window in EINEM EVAL — ohne gemeinsamen Hash-Tag bricht
+    das im Valkey-Cluster mit CROSSSLOT."""
+
+    @pytest.mark.asyncio
+    async def test_window_keys_share_hash_tag(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from swarmq.limits import RateLimiter
+
+        client = MagicMock()
+        script = AsyncMock(return_value=[1, 4, 0])
+        client.register_script = MagicMock(return_value=script)
+        client.time = AsyncMock(return_value=(1_700_000_000, 0))
+
+        rl = RateLimiter(client)
+        await rl.check(
+            "add", RateLimitConfig(max_requests=5, window_size_ms=60_000),
+        )
+
+        keys = script.call_args.kwargs["keys"]
+        assert len(keys) == 2
+        for key in keys:
+            assert key.startswith("sq:rl:{add}:"), key

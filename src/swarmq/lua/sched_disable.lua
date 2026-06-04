@@ -7,8 +7,8 @@
 -- concurrent remove/add operations against the same schedule_name
 -- (plan Unit 8 / M-14).
 --
--- KEYS[1] sq:sched:defs
--- KEYS[2] sq:sched:zset
+-- KEYS[1] sq:{sched}:defs
+-- KEYS[2] sq:{sched}:zset
 -- ARGV[1] schedule_name
 -- ARGV[2] updated_def_json (already has disabled=true set by caller)
 --

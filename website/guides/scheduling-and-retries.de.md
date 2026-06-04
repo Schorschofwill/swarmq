@@ -60,6 +60,20 @@ Klassendefinitionszeit abgelehnt. Der eingebettete Scheduler des
 Workers nimmt die Deklaration automatisch auf — kein separater
 Cron-Daemon.
 
+!!! warning "Cron-Ausdrücke werden in UTC ausgewertet"
+    Es gibt keine Zeitzonen- oder DST-Behandlung: `0 3 * * *` feuert
+    ganzjährig um 03:00 **UTC**. Relativ zur lokalen Wanduhr
+    verschiebt sich der Zeitpunkt über Sommerzeit-Wechsel um eine
+    Stunde — die gewünschte Lokalzeit beim Schreiben des Ausdrucks
+    nach UTC umrechnen.
+
+!!! info "Verpasste Fires werden übersprungen, nicht nachgeholt"
+    Nach Scheduler-Downtime feuert jeder Cron genau **einmal** als
+    Catch-up; während des Ausfalls verpasste Termine laufen nie. Der
+    Scheduler emittiert ein `SCHEDULER_FIRE_SKIPPED`-Signal (mit
+    `schedule_name` und `skipped_count`), damit wichtige Crons
+    alarmierbar sind.
+
 ### CLI-definierte Schedules
 
 Schedules hinzufügen ohne Code-Deploy:

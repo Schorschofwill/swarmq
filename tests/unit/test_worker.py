@@ -22,6 +22,7 @@ from swarmq.exceptions import (
 # SwarmQConfig is used in fixtures for the Unit 7 monitor tests.
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
+from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 
@@ -96,6 +97,8 @@ def backend():
     be.is_schedfire_completed = AsyncMock(return_value=False)
     be.set_schedfire_inflight = AsyncMock(return_value=True)
     be.set_schedfire_dedup = AsyncMock(return_value=True)
+    # Härtung R2 P1-10: workflow-level cancel flag, default unset.
+    be.is_workflow_cancelled = AsyncMock(return_value=False)
     # _client is needed by Worker.start() to construct RateLimiter. We
     # provide a MagicMock whose register_script returns another MagicMock
     # — concrete rate-limit behaviour is covered by the integration suite.
@@ -3636,6 +3639,7 @@ class TestSchedfireDedup:
             "cron_a:1700000000000"
         )
         # Inflight TTL = scheduler_inflight_ttl * 1000 = 300 * 1000
+        # (no hard_timeout on NoopTask → config value applies).
         inflight_call = backend.set_schedfire_inflight.await_args
         assert inflight_call.args[0] == "cron_a:1700000000000"
         assert inflight_call.args[1] == 300_000
@@ -3646,6 +3650,43 @@ class TestSchedfireDedup:
         assert dedup_call.args[0] == "cron_a:1700000000000"
         # dedup_ttl * 1000 = 3900 * 1000
         assert dedup_call.args[1] == 3_900_000
+
+    async def test_inflight_ttl_covers_long_hard_timeout(
+        self, broker, backend, config,
+    ):
+        """Härtung R2 P1-6: die fixe 300s-inflight-TTL war der einzige
+        Split-Brain-Schutz — lief sie WÄHREND eines langen Laufs ab
+        (hard_timeout > 300s ist erlaubt), gewann eine Stale-Leader-
+        Kopie das frei gewordene SETNX → Doppelausführung desselben
+        Fires. Die TTL muss die maximal erlaubte Laufzeit überdecken:
+        max(scheduler_inflight_ttl, hard_timeout + 30s) — dasselbe
+        Muster wie compute_lock_ttl_ms (P0-A-Fix 2026-06-02)."""
+        from swarmq.task import Task, TaskInfo
+        from swarmq.registry import TaskRegistry
+
+        class LongTask(Task):
+            task_info = TaskInfo(
+                name="long", queues=["default"], hard_timeout=600,
+            )
+
+            async def run(self):
+                return "ok"
+
+        registry = TaskRegistry()
+        registry.register(LongTask)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        backend.is_schedfire_completed.return_value = False
+        backend.set_schedfire_inflight.return_value = True
+        msg = _make_message(
+            _default_payload(name="long", args=[], kwargs={}),
+            headers={"x-swarmq-schedfire": "long_cron:1700000000000"},
+        )
+        await w._handle_message(msg)
+
+        inflight_call = backend.set_schedfire_inflight.await_args
+        # (600 + 30) * 1000 — outlives the watchdog-bounded runtime.
+        assert inflight_call.args[1] == 630_000
 
     async def test_duplicate_when_completed_marker_set(
         self, broker, backend, config
@@ -4322,3 +4363,176 @@ class TestWorkerUniqueRelease:
         headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
         assert headers["x-swarmq-unique-hash"] == "3" * 64
         assert headers["x-swarmq-unique-until"] == "start"
+
+
+# ---------------------------------------------------------------------------
+# Härtung R2 P1-10: Workflow-Cancel stoppt eingereihte Steps am Pickup
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowCancelPickup:
+    """``handle.cancel()`` setzte nur das Workflow-Flag; der Worker-
+    Pickup prüfte ausschließlich das per-Task-Flag. Bereits eingereihte
+    group-/chord-Member liefen nach dem Cancel ungebremst durch. Der
+    Pickup muss bei gesetztem Workflow-Header auch das Workflow-Flag
+    prüfen und den Step als cancelled abschließen."""
+
+    WF_ID = "0190b6f2-1234-7abc-8def-0123456789ab"
+
+    def _wf_message(self):
+        return _make_message(
+            _default_payload(name="add", args=[1, 2], kwargs={}),
+            headers={"x-swarmq-workflow-id": self.WF_ID},
+        )
+
+    async def test_cancelled_workflow_step_does_not_run(
+        self, worker, broker, backend,
+    ):
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(return_value=True)
+        # No prior result for this step → the cancel marker is written.
+        backend.get_result = AsyncMock(return_value=None)
+
+        events: list[dict] = []
+
+        @worker._signal_dispatcher.on_signal(Signal.TASK_CANCELLED)
+        async def _c(**kw):
+            events.append(kw)
+
+        msg = self._wf_message()
+        await worker._handle_message(msg)
+
+        backend.is_workflow_cancelled.assert_awaited_once()
+        assert backend.is_workflow_cancelled.await_args.args[0] == self.WF_ID
+        # The step never executed: no success result was stored — the
+        # only store is the cancelled-result marker.
+        stored = backend.store_result.await_args
+        from swarmq.serialization import decode_result
+        result = decode_result(stored.args[1])
+        assert result["is_cancelled"] is True
+        broker.ack.assert_awaited_once_with(msg)
+        assert len(events) == 1
+
+    async def test_live_workflow_step_runs_normally(
+        self, worker, broker, backend,
+    ):
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(return_value=False)
+
+        msg = self._wf_message()
+        await worker._handle_message(msg)
+
+        backend.is_workflow_cancelled.assert_awaited_once()
+        # Task ran: a success result was stored.
+        from swarmq.serialization import decode_result
+        result = decode_result(backend.store_result.await_args.args[1])
+        assert result.get("is_cancelled") is False
+        assert result.get("result") == 3
+
+    async def test_non_workflow_message_skips_workflow_check(
+        self, worker, broker, backend,
+    ):
+        """Kein Workflow-Header → kein zusätzlicher Valkey-Roundtrip."""
+        backend.is_workflow_cancelled = AsyncMock(return_value=False)
+        msg = _make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
+        await worker._handle_message(msg)
+        backend.is_workflow_cancelled.assert_not_awaited()
+
+    async def test_workflow_check_backend_error_nacks_requeue(
+        self, worker, broker, backend,
+    ):
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(
+            side_effect=BackendConnectionError("valkey down"),
+        )
+
+        msg = self._wf_message()
+        await worker._handle_message(msg)
+
+        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        backend.store_result.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Härtung R2 P2: Body-Size-Cap vor dem JSON-Decode
+# ---------------------------------------------------------------------------
+
+
+class TestBodySizeCap:
+    """Ein kompromittierter/fehlkonfigurierter Producer kann beliebig
+    große Bodies liefern; msgspec dekodiert sie vollständig in den
+    Speicher, BEVOR irgendeine Validierung greift (Tiefenschutz hat
+    msgspec eingebaut, Größenschutz nicht). Oversized → DLQ-Route
+    (nack requeue=False), kein Decode-Versuch."""
+
+    async def test_oversized_body_nacked_without_decode(
+        self, worker, broker, backend,
+    ):
+        cap = worker._config.max_message_body_bytes
+        msg = MagicMock()
+        msg.body = b"x" * (cap + 1)
+        msg.headers = {}
+
+        with patch("swarmq.worker.decode_json") as mock_decode:
+            await worker._handle_message(msg)
+
+        mock_decode.assert_not_called()
+        broker.nack.assert_awaited_once_with(msg, requeue=False)
+
+    async def test_body_at_cap_still_processed(self, worker, broker, backend):
+        """Genau am Cap: normal verarbeiten (Grenze ist exklusiv)."""
+        payload = _default_payload(name="add", args=[1, 2], kwargs={})
+        msg = _make_message(payload)
+        assert len(msg.body) <= worker._config.max_message_body_bytes
+        await worker._handle_message(msg)
+        broker.ack.assert_awaited()
+
+    def test_default_cap_is_16_mib(self):
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        assert cfg.max_message_body_bytes == 16 * 1024 * 1024
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_MAX_MESSAGE_BODY_BYTES", "1024")
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        assert cfg.max_message_body_bytes == 1024
+
+
+class TestWorkflowCancelDoesNotOverwriteResult:
+    """Review R2: Redelivery eines bereits ERFOLGREICH gelaufenen Steps
+    (Result gespeichert, Ack verloren) nach Workflow-Cancel darf das
+    Original-Result nicht mit einem Cancel-Marker überschreiben."""
+
+    WF_ID = "0190b6f2-1234-7abc-8def-0123456789ab"
+
+    async def test_existing_result_preserved(self, worker, broker, backend):
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(return_value=True)
+        # The step already completed once: a success result exists.
+        backend.get_result = AsyncMock(return_value=b"original-success")
+
+        msg = _make_message(
+            _default_payload(name="add", args=[1, 2], kwargs={}),
+            headers={"x-swarmq-workflow-id": self.WF_ID},
+        )
+        await worker._handle_message(msg)
+
+        # No overwrite — and the redelivery is still settled (acked).
+        backend.store_result.assert_not_awaited()
+        broker.ack.assert_awaited_once_with(msg)
+
+    async def test_per_task_cancel_keeps_unconditional_write(
+        self, worker, broker, backend,
+    ):
+        """Bestandssemantik des per-Task-Cancels unverändert: dort wird
+        ohne Existenz-Check geschrieben (Flag existiert nur pre-/mid-run)."""
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=b"should-not-be-read")
+
+        msg = _make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
+        await worker._handle_message(msg)
+
+        backend.store_result.assert_awaited_once()
+        backend.get_result.assert_not_awaited()
+        broker.ack.assert_awaited_once_with(msg)

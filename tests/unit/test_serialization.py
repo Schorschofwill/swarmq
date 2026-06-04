@@ -409,3 +409,36 @@ class TestMsgpackUnknownExtCode:
         blob = msgpack.packb(msgpack.ExtType(99, b"payload"))
         with pytest.raises(ResultSerializationError, match="unknown msgpack ext code"):
             decode_result(blob)
+
+
+class TestDecodeResultLimits:
+    """Härtung R2 P2: ``unpackb`` ohne explizite ``max_*_len``-Limits —
+    defensiv gegen ein kompromittiertes/fremdbeschriebenes Backend, das
+    Container jenseits jeder plausiblen Result-Größe liefert. Die
+    Limits gelten auch im rekursiven Set/Frozenset-ext-hook."""
+
+    def test_decode_result_rejects_oversized_array(self):
+        import msgpack
+
+        blob = msgpack.packb(list(range(1_000_001)))
+        with pytest.raises(ResultSerializationError):
+            decode_result(blob)
+
+    def test_decode_result_limits_apply_inside_ext_sets(self):
+        import msgpack
+
+        from swarmq.serialization import _EXT_SET
+
+        inner = msgpack.packb(list(range(1_000_001)))
+        blob = msgpack.packb(msgpack.ExtType(_EXT_SET, inner))
+        with pytest.raises(ResultSerializationError):
+            decode_result(blob)
+
+    def test_decode_result_normal_payloads_unaffected(self):
+        from swarmq.serialization import encode_result
+
+        payload = {
+            "result": list(range(1000)),
+            "nested": {"set": {1, 2, 3}, "text": "x" * 10_000},
+        }
+        assert decode_result(encode_result(payload)) == payload

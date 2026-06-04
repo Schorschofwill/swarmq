@@ -271,6 +271,30 @@ async def test_get_result_polls_multiple_times(client, backend):
     assert backend.get_result.await_count == 3
 
 
+@pytest.mark.asyncio
+async def test_get_result_timeout_honored_when_backend_hangs(client, backend):
+    """Härtung R2 P1-2: die Deadline wurde nur ZWISCHEN den
+    ``backend.get_result``-Aufrufen geprüft — ein einziger hängender
+    GET (half-open Valkey) ignorierte den ``timeout``-Parameter
+    komplett. Jeder Backend-Aufruf muss gegen die Rest-Deadline
+    gebunden sein."""
+    async def _hang(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    backend.get_result = AsyncMock(side_effect=_hang)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(ResultNotReadyError):
+        # Outer wait_for is the test's own safety net: pre-fix the call
+        # hung 60s and the outer TimeoutError (not ResultNotReadyError)
+        # failed the test.
+        await asyncio.wait_for(
+            client.get_result("task-id", timeout=0.2), timeout=5,
+        )
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 4, f"deadline not enforced (took {elapsed:.1f}s)"
+
+
 # ---------------------------------------------------------------------------
 # 11. schedule() with empty args/kwargs
 # ---------------------------------------------------------------------------

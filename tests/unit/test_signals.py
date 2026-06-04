@@ -332,3 +332,73 @@ async def test_task_duplicate_detected_dispatches_with_payload():
 def test_task_duplicate_detected_is_member_of_signal_enum():
     assert Signal.TASK_DUPLICATE_DETECTED.value == "task_duplicate_detected"
     assert Signal.TASK_DUPLICATE_DETECTED in Signal
+
+
+# ---------------------------------------------------------------------------
+# Härtung R2 P1-9/P2: handler_timeout + CancelledError-Durchreichung
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_handler_timeout_bounds_hanging_handler():
+    """Härtung R2 P1-9: ein blockierender (nicht werfender) Handler
+    hängte den Dispatch unbegrenzt — als allererste Aktion in
+    _execute_shutdown blockierte das den gesamten Graceful Shutdown
+    bis zum SIGKILL des Orchestrators. Mit handler_timeout wird der
+    Handler abgebrochen, geloggt und der nächste läuft."""
+    import asyncio
+
+    dispatcher = SignalDispatcher()
+    ran: list[str] = []
+
+    @dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
+    async def hanging(**kwargs):
+        await asyncio.sleep(60)
+
+    @dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
+    async def second(**kwargs):
+        ran.append("second")
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(
+        dispatcher.dispatch(
+            Signal.WORKER_SHUTDOWN, handler_timeout=0.1, worker_id="w",
+        ),
+        timeout=5,
+    )
+    elapsed = loop.time() - started
+
+    assert elapsed < 4, f"hanging handler not bounded ({elapsed:.1f}s)"
+    assert ran == ["second"], "subsequent handlers must still run"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_without_timeout_keeps_legacy_behaviour():
+    dispatcher = SignalDispatcher()
+    received: list[dict] = []
+
+    @dispatcher.on_signal(Signal.WORKER_ONLINE)
+    async def handler(**kwargs):
+        received.append(kwargs)
+
+    await dispatcher.dispatch(Signal.WORKER_ONLINE, worker_id="w")
+    assert received == [{"worker_id": "w"}]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reraises_cancelled_error():
+    """Härtung R2 P2: ``except Exception`` fängt CancelledError nicht —
+    das ist KORREKT (Shutdown-Cancellation muss propagieren), war aber
+    undokumentiert und ungetestet. Festgenagelt: ein im Handler
+    aufschlagendes CancelledError verlässt dispatch()."""
+    import asyncio
+
+    dispatcher = SignalDispatcher()
+
+    @dispatcher.on_signal(Signal.TASK_COMPLETED)
+    async def handler(**kwargs):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t")

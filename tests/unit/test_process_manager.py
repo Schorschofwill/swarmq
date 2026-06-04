@@ -142,21 +142,26 @@ class TestProcessManagerCore:
         p.terminate.assert_called_once()
         p.kill.assert_called_once()
 
-    def test_sigchld_handler_reaps_zombies(self):
+    def test_setup_signals_does_not_install_sigchld(self):
+        """Härtung R2 P1-1: ein eigener SIGCHLD-``waitpid(-1)``-Reaper
+        raced gegen multiprocessing's eigenes ``waitpid(pid)`` —
+        gewinnt der Handler, liefert ``Popen.poll()`` ECHILD →
+        ``is_alive()`` bleibt für tote Worker dauerhaft True.
+        Reaping gehört ausschließlich der multiprocessing-API."""
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
-        with patch("swarmq.process_manager.os.waitpid") as wp:
-            wp.side_effect = [(1234, 0), (0, 0)]  # one zombie, then done
-            pm._on_sigchld(signal.SIGCHLD, None)
-            assert wp.call_count == 2
-
-    def test_sigchld_handler_stops_on_child_error(self):
-        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
-        with patch(
-            "swarmq.process_manager.os.waitpid",
-            side_effect=ChildProcessError(),
-        ):
-            # Should not raise.
-            pm._on_sigchld(signal.SIGCHLD, None)
+        previous = {
+            s: signal.getsignal(s)
+            for s in (
+                signal.SIGINT, signal.SIGTERM,
+                signal.SIGHUP, signal.SIGCHLD,
+            )
+        }
+        try:
+            pm._setup_signals()
+            assert signal.getsignal(signal.SIGCHLD) is previous[signal.SIGCHLD]
+        finally:
+            for s, handler in previous.items():
+                signal.signal(s, handler)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +299,130 @@ class TestProcessManagerRestart:
              patch("swarmq.process_manager.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Härtung R2 P0-1: Backfill darf das Crash-Loop-Limit nicht umgehen
+# ---------------------------------------------------------------------------
+
+
+def _instant_crash_entry(worker_id, shutdown_event, *args):
+    """Real-subprocess entry that crashes immediately (exitcode 3)."""
+    os._exit(3)
+
+
+class TestCrashLoopExhaustion:
+    """P0-1: ``_monitor_loop``-Backfill spawnte nach erschöpftem
+    Restart-Limit frische Worker mit leerer ``restart_timestamps``-
+    Historie → endloser Spawn-Sturm. Erschöpfte Slots müssen das
+    Backfill-Ziel reduzieren; sind alle Slots erschöpft, beendet
+    sich der Supervisor mit Exit-Code ≠ 0 (systemd/k8s übernimmt
+    mit eigenem Backoff)."""
+
+    def _pm(self, n: int = 1) -> ProcessManager:
+        pm = ProcessManager(num_workers=n, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        return pm
+
+    def test_maybe_restart_limit_marks_slot_exhausted(self):
+        pm = self._pm()
+        now = time.monotonic()
+        old = WorkerInfo(
+            process=_fake_process(alive=False, pid=1), worker_id=0,
+            restart_timestamps=[now - 1.0] * pm.MAX_RESTARTS,
+        )
+        pm._maybe_restart(old)
+        assert pm._exhausted_slots == 1
+
+    def test_current_target_excludes_exhausted_slots(self):
+        pm = self._pm(n=3)
+        pm._exhausted_slots = 2
+        assert pm._current_target() == 1
+
+    def test_current_target_never_negative(self):
+        pm = self._pm(n=1)
+        pm._exhausted_slots = 5
+        assert pm._current_target() == 0
+
+    def test_autoscale_target_unaffected_by_exhausted_slots(self):
+        """Autoscale-Pfad: Ziel bleibt len(workers) — Scale-up ist
+        nachfragegetrieben mit Cooldown, kein Backfill-Bypass."""
+        pm = ProcessManager(
+            num_workers=2, worker_entry=_entry_stub,
+            autoscale=(1, 3), queue_depth_fn=lambda: 0,
+        )
+        pm._ctx = MagicMock()
+        pm._exhausted_slots = 1
+        pm.workers = {1: WorkerInfo(process=_fake_process(), worker_id=0)}
+        assert pm._current_target() == 1
+
+    def test_monitor_loop_exits_nonzero_when_all_slots_exhausted(self):
+        pm = self._pm(n=2)
+        pm.MONITOR_INTERVAL = 0.01
+        pm._exhausted_slots = 2
+        pm.workers = {}
+        rc = pm._monitor_loop()
+        assert rc != 0
+
+    def test_monitor_loop_keeps_running_degraded(self):
+        """Teilweise erschöpft (1 von 2) + 1 lebender Worker →
+        Loop läuft weiter (degraded), kein Exit, kein Backfill."""
+        pm = self._pm(n=2)
+        pm.MONITOR_INTERVAL = 0.01
+        pm._exhausted_slots = 1
+        pm.workers = {1: WorkerInfo(process=_fake_process(), worker_id=0)}
+
+        import threading
+
+        result: dict = {}
+        t = threading.Thread(
+            target=lambda: result.update(rc=pm._monitor_loop()),
+            daemon=True,
+        )
+        t.start()
+        time.sleep(0.1)
+        still_running = t.is_alive()
+        pm._shutting_down = True
+        t.join(timeout=2)
+        assert still_running, "loop must keep supervising the live worker"
+        # Kein Backfill über das reduzierte Ziel hinaus gespawnt.
+        pm._ctx.Process.assert_not_called()
+
+    def test_crash_storm_bounded_and_manager_exits_real_processes(self):
+        """Regression mit ECHTEN Subprozessen (kein gemockter
+        ``_monitor_loop``): instant-crashender Worker → genau
+        1 + MAX_RESTARTS Spawns, dann Exit ≠ 0. Vor dem Fix lief
+        das endlos (Backfill mit frischer Historie)."""
+        import threading
+
+        pm = ProcessManager(
+            num_workers=1, worker_entry=_instant_crash_entry,
+        )
+        pm.MAX_RESTARTS = 2
+        pm.MONITOR_INTERVAL = 0.05
+        pm._start_all_workers()
+
+        result: dict = {}
+        t = threading.Thread(
+            target=lambda: result.update(rc=pm._monitor_loop()),
+            daemon=True,
+        )
+        t.start()
+        t.join(timeout=60)
+        if t.is_alive():
+            pm._shutting_down = True
+            t.join(timeout=5)
+            pytest.fail(
+                "monitor loop did not exit after slot exhaustion "
+                f"(spawned {pm._next_worker_id} workers)",
+            )
+        try:
+            assert result["rc"] != 0
+            # initial (1) + MAX_RESTARTS Ersatz-Spawns — kein Sturm.
+            assert pm._next_worker_id <= 1 + pm.MAX_RESTARTS
+        finally:
+            pm._shutdown_all_workers()
+            pm._collect_zombies()
 
 
 # ---------------------------------------------------------------------------

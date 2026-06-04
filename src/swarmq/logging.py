@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import queue
 import sys
+import time
 from urllib.parse import urlparse, urlunparse
 
 import structlog
@@ -17,11 +18,44 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     The default QueueHandler.prepare() calls self.format(record) which
     stringifies record.msg. structlog's ProcessorFormatter needs
     record.msg to remain a dict (set by wrap_for_formatter).
+
+    Härtung R2 P2: drops are counted and surfaced. The stdlib path
+    (queue.Full → handleError) silently discarded records under burst —
+    a saturated log pipeline looked identical to a quiet one. ``dropped``
+    is the cumulative counter; a rate-limited stderr notice (at most one
+    per second) keeps the drop visible without amplifying the burst.
     """
+
+    _DROP_NOTICE_INTERVAL_S = 1.0
+
+    def __init__(self, queue_: queue.Queue) -> None:
+        super().__init__(queue_)
+        self.dropped = 0
+        self._last_drop_notice = 0.0
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """Pass the record through without formatting."""
         return record
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            # ``dropped += 1`` is deliberately lock-free: under
+            # multi-thread contention it may undercount — acceptable for
+            # an observability counter; a lock here would serialize the
+            # hot logging path exactly when it is saturated.
+            self.dropped += 1
+            now = time.monotonic()
+            if now - self._last_drop_notice >= self._DROP_NOTICE_INTERVAL_S:
+                self._last_drop_notice = now
+                # stderr directly — going through logging would feed the
+                # very queue that is full.
+                print(
+                    "swarmq: logging queue full — "
+                    f"{self.dropped} record(s) dropped so far",
+                    file=sys.stderr,
+                )
 
 
 def setup_logging(

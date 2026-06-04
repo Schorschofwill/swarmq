@@ -49,7 +49,7 @@ class TestSchedulerLockKey:
         """Snapshot of today's key format. Failure here means the
         prefix changed — update sched_commit.lua expectations and
         any operator docs at the same time."""
-        assert SCHEDULER_LOCK_KEY == "sq:lock:scheduler:leader"
+        assert SCHEDULER_LOCK_KEY == "sq:lock:{sched}:leader"
 
 
 # ---------------------------------------------------------------------------

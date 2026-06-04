@@ -482,6 +482,21 @@ class Client:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
+        # Härtung R2 P1-2: bind every backend GET to the remaining
+        # deadline. Previously the deadline was only checked BETWEEN
+        # calls — a single hanging GET (half-open Valkey) ignored the
+        # ``timeout`` parameter entirely and wedged the caller.
+        async def _get_within_deadline() -> bytes | None:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ResultNotReadyError(task_id)
+            try:
+                return await asyncio.wait_for(
+                    self._backend.get_result(task_id), timeout=remaining,
+                )
+            except TimeoutError:
+                raise ResultNotReadyError(task_id) from None
+
         # --- Step 1: Subscribe first (before initial check to close race window) ---
         channel = f"sq:notify:{task_id}"
         pubsub = self._backend.create_pubsub()
@@ -492,7 +507,7 @@ class Client:
 
         try:
             # --- Step 2: Initial check (result may already be in Valkey) ---
-            raw = await self._backend.get_result(task_id)
+            raw = await _get_within_deadline()
             if raw is not None:
                 return self._unpack(raw)
 
@@ -507,16 +522,21 @@ class Client:
                             msg = await pubsub.get_message(
                                 ignore_subscribe_messages=True, timeout=0.05,
                             )
-                            if msg is not None:
-                                raw = await self._backend.get_result(task_id)
-                                if raw is not None:
-                                    return self._unpack(raw)
                         except Exception:
                             break  # Pub/Sub error, fall through to polling
+                        # Outside the try: a deadline miss
+                        # (ResultNotReadyError) or a corrupt stored
+                        # result (ResultSerializationError) must
+                        # propagate with its real error class, not be
+                        # misfiled as a Pub/Sub glitch (review R2).
+                        if msg is not None:
+                            raw = await _get_within_deadline()
+                            if raw is not None:
+                                return self._unpack(raw)
 
             # --- Step 4: Polling fallback ---
             while loop.time() < deadline:
-                raw = await self._backend.get_result(task_id)
+                raw = await _get_within_deadline()
                 if raw is not None:
                     return self._unpack(raw)
                 await asyncio.sleep(_FALLBACK_POLL)

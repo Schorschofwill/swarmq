@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -179,6 +179,44 @@ class TestSwarmQContextManager:
 
         broker.close.assert_awaited_once()
         backend.close.assert_awaited_once()
+
+    @pytest.mark.anyio()
+    async def test_aexit_closes_backend_even_if_broker_close_raises(
+        self, broker, backend,
+    ):
+        """Härtung R2 P1-4: ``__aexit__`` lief sequenziell ohne
+        try/finally — ein werfendes ``broker.close()`` (im Inject-Pfad
+        bewusst möglich, siehe test_pool_close_releases_even_if_channel_
+        close_raises) ließ den Valkey-Client und den Log-Listener-Thread
+        offen. Backend-Close und Listener-Stop müssen garantiert laufen;
+        die erste Exception propagiert."""
+        app = SwarmQ(broker, backend)
+        await app.__aenter__()
+        broker.close.side_effect = RuntimeError("channel close boom")
+        listener = Mock()
+        app._log_listener = listener
+
+        with pytest.raises(RuntimeError, match="channel close boom"):
+            await app.__aexit__(None, None, None)
+
+        backend.close.assert_awaited_once()
+        listener.stop.assert_called_once()
+
+    @pytest.mark.anyio()
+    async def test_aexit_stops_listener_even_if_backend_close_raises(
+        self, broker, backend,
+    ):
+        app = SwarmQ(broker, backend)
+        await app.__aenter__()
+        backend.close.side_effect = RuntimeError("backend boom")
+        listener = Mock()
+        app._log_listener = listener
+
+        with pytest.raises(RuntimeError, match="backend boom"):
+            await app.__aexit__(None, None, None)
+
+        broker.close.assert_awaited_once()
+        listener.stop.assert_called_once()
 
     @pytest.mark.anyio()
     async def test_async_with_syntax(self, broker, backend):

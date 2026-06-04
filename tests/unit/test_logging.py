@@ -106,3 +106,48 @@ def test_contextvars_binding_appears_in_log_output():
         structlog.contextvars.clear_contextvars()
         if listener._thread is not None:
             listener.stop()
+
+
+class TestQueueDropVisibility:
+    """Härtung R2 P2: volle Log-Queue droppte Records still (stdlib
+    handleError-Pfad) — ein gesättigtes Log-Pipeline sah aus wie ein
+    ruhiges. Drops werden gezählt und rate-limitiert auf stderr
+    gemeldet."""
+
+    def test_full_queue_increments_drop_counter(self, capsys):
+        import logging as _logging
+        import queue as _queue
+
+        from swarmq.logging import _StructlogQueueHandler
+
+        q: _queue.Queue = _queue.Queue(maxsize=1)
+        handler = _StructlogQueueHandler(q)
+        rec = _logging.LogRecord(
+            "test", _logging.INFO, __file__, 1, "msg", None, None,
+        )
+
+        handler.enqueue(rec)          # fills the queue
+        assert handler.dropped == 0
+        handler.enqueue(rec)          # queue full → dropped
+        handler.enqueue(rec)          # dropped again
+        assert handler.dropped == 2
+
+        err = capsys.readouterr().err
+        assert "logging queue full" in err
+        # Rate limit: at most one notice for the burst.
+        assert err.count("logging queue full") == 1
+
+    def test_normal_enqueue_unaffected(self):
+        import logging as _logging
+        import queue as _queue
+
+        from swarmq.logging import _StructlogQueueHandler
+
+        q: _queue.Queue = _queue.Queue(maxsize=10)
+        handler = _StructlogQueueHandler(q)
+        rec = _logging.LogRecord(
+            "test", _logging.INFO, __file__, 1, "msg", None, None,
+        )
+        handler.enqueue(rec)
+        assert handler.dropped == 0
+        assert q.qsize() == 1

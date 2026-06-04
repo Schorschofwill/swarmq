@@ -10,9 +10,9 @@ Four chaos scenarios for a crashing worker:
    stands in for the OOM-killer (portable across environments; a
    true ``docker run --memory=20m`` doesn't compose through the
    toxiproxy-wrapped chaos stack).
-4. SIGSEGV via ``ctypes.string_at(0)`` — skipped because exercising
-   it is expensive (each of the up-to-20 redeliveries crashes a
-   worker), NOT because the DLQ path is missing. Quorum queues DO set
+4. SIGSEGV via ``ctypes.string_at(0)`` — expensive (every delivery
+   crashes a worker subprocess), rebuilt in Härtung R2 with supervisor
+   + orchestrator-restart semantics. Quorum queues DO set
    ``x-delivery-limit=20`` (see ``RabbitMQBroker._declare_queue_triplet``),
    so a deterministically-crashing task is terminally dead-lettered
    after the limit rather than redelivered forever. (Corrected
@@ -83,6 +83,7 @@ def _spawn_worker(
     *,
     concurrency: int = 4,
     env_extra: dict[str, str] | None = None,
+    extra_args: list[str] | None = None,
 ) -> subprocess.Popen[str]:
     """Launch ``swarmq.cli worker`` as a subprocess, pointed at the
     toxiproxy-wrapped URLs from the chaos stack."""
@@ -102,6 +103,7 @@ def _spawn_worker(
             "--queues", queue_name,
             "--concurrency", str(concurrency),
             "--log-format", "json",
+            *(extra_args or []),
         ],
         cwd=str(REPO_ROOT),
         env=env,
@@ -382,24 +384,51 @@ class TestWorkerCrash:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
+    @pytest.mark.timeout(300)
     async def test_segv_panic_redelivers_then_dlqs_after_max_retries(
         self, chaos_stack: ChaosStack, _cleanup_tasks
     ) -> None:
-        """SIGSEGV via ``ctypes.string_at(0)`` kills the worker; each
-        redelivery dies again. The quorum-queue x-delivery-limit=20
-        (added post-U2.1) provides the terminal DLQ path — the message
-        is redelivered up to 20 times then routed to {queue}.XQ by the
-        broker.
+        """SIGSEGV via ``ctypes.string_at(0)`` kills the worker on every
+        delivery; the quorum-queue ``x-delivery-limit=20`` terminally
+        dead-letters the message to ``{queue}.XQ``.
 
-        Uses a 90s deadline because each redelivery spawns a fresh
-        subprocess worker; the 20-delivery loop takes ~30-60s on the
-        chaos stack."""
+        Härtung R2: rebuilt with REALISTIC operator semantics. A
+        single-worker variant cannot drive this scenario — after the
+        first SIGSEGV no consumer remains, so the delivery count never
+        reaches 20 (the previous version was structurally broken and
+        never executed in CI; B1 gap). Now:
+
+        * a ``--processes 2`` supervisor respawns crashed workers up to
+          the crash-loop limit per slot, then exits NON-ZERO
+          (P0-1 contract — asserted here end-to-end);
+        * the test plays the orchestrator (systemd/k8s) and restarts
+          the exhausted supervisor until the broker dead-letters.
+        """
+        import threading
+
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
 
-        proc = _spawn_worker(chaos_stack, queue, concurrency=1)
+        def _spawn_supervised() -> subprocess.Popen[str]:
+            return _spawn_worker(
+                chaos_stack, queue, concurrency=1,
+                extra_args=["--processes", "2"],
+            )
+
+        def _drain_stdout(p: subprocess.Popen[str]) -> None:
+            # Keep the merged stdout PIPE drained — ~24 crash-looping
+            # spawns produce enough JSON logs to fill the pipe buffer
+            # and deadlock the supervisor mid-write otherwise.
+            threading.Thread(
+                target=lambda: p.stdout.read() if p.stdout else None,
+                daemon=True,
+            ).start()
+
+        proc = _spawn_supervised()
+        supervisor_runs = 1
         try:
             _wait_for_worker_started(proc)
+            _drain_stdout(proc)
 
             broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
             backend = ValkeyBackend(chaos_stack.valkey_url)
@@ -408,18 +437,35 @@ class TestWorkerCrash:
             async with app:
                 await app.schedule("chaos_segv", queue=queue)
 
-                # x-delivery-limit=20 provides the terminal DLQ path.
-                # Each redelivery respawns a subprocess worker that
-                # immediately SIGSEGVs — ~30-60s total on chaos stack.
-                deadline = time.monotonic() + 90.0
+                # Each supervisor run yields ~12 deliveries (2 initial
+                # workers + 2 slots x 5 crash-restarts), then exits 1.
+                # Two runs exceed the broker's delivery limit of 20.
+                deadline = time.monotonic() + 240.0
                 while time.monotonic() < deadline:
                     if await _dlq_count(chaos_stack, queue) >= 1:
                         break
+                    if proc.poll() is not None:
+                        # P0-1: crash-loop exhaustion must surface as a
+                        # NON-ZERO exit so the orchestrator's restart
+                        # policy takes over — exactly what we simulate.
+                        assert proc.returncode != 0, (
+                            "supervisor exited 0 while its workers were "
+                            "crash-looping — exhaustion must be non-zero"
+                        )
+                        assert supervisor_runs < 6, (
+                            "DLQ not reached after 5 supervisor runs "
+                            "(~60 deliveries) — delivery-limit routing "
+                            "is broken"
+                        )
+                        supervisor_runs += 1
+                        proc = _spawn_supervised()
+                        _drain_stdout(proc)
                     await asyncio.sleep(1.0)
 
                 assert await _dlq_count(chaos_stack, queue) >= 1, (
-                    "x-delivery-limit=20 did not route SIGSEGV loop "
-                    "to DLQ within 90s"
+                    "x-delivery-limit=20 did not route the SIGSEGV "
+                    f"loop to the DLQ within 240s "
+                    f"(supervisor_runs={supervisor_runs})"
                 )
         finally:
             _kill_subprocess(proc)

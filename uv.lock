@@ -1273,8 +1273,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aio-pika" },
-    { name = "croniter" },
+    { name = "aio-pika", specifier = ">=9" },
+    { name = "croniter", specifier = ">=2" },
     { name = "dishka", marker = "extra == 'dishka'", specifier = ">=1.10.1" },
     { name = "dishka", marker = "extra == 'test'", specifier = ">=1.10.1" },
     { name = "freezegun", marker = "extra == 'test'" },
@@ -1284,8 +1284,8 @@ requires-dist = [
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
     { name = "mkdocs-static-i18n", marker = "extra == 'docs'", specifier = ">=1.2" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.26" },
-    { name = "msgpack" },
-    { name = "msgspec" },
+    { name = "msgpack", specifier = ">=1.0" },
+    { name = "msgspec", specifier = ">=0.18" },
     { name = "mutmut", marker = "extra == 'test'" },
     { name = "mypy", marker = "extra == 'test'" },
     { name = "orjson", marker = "extra == 'fast'" },
@@ -1299,8 +1299,8 @@ requires-dist = [
     { name = "pytest-rerunfailures", marker = "extra == 'test'" },
     { name = "pytest-timeout", marker = "extra == 'test'" },
     { name = "ruff", marker = "extra == 'test'" },
-    { name = "structlog" },
-    { name = "valkey", extras = ["libvalkey"] },
+    { name = "structlog", specifier = ">=24" },
+    { name = "valkey", extras = ["libvalkey"], specifier = ">=6" },
     { name = "watchfiles", marker = "extra == 'reload'", specifier = ">=0.21" },
 ]
 provides-extras = ["fast", "metrics", "reload", "dishka", "test", "docs"]

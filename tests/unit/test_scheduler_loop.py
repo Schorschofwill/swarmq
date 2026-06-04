@@ -246,6 +246,82 @@ class TestElectionLoop:
         assert loop.state == "standby"
         assert loop._prev_leader_seen is True
 
+    async def test_renew_exception_steps_down_after_threshold(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        """Härtung R2 P1-5: ein Renew-NETZWERKFEHLER ließ den Leader im
+        Amt ('return', state bleibt leader) — bei einer Valkey-Störung
+        länger als die Lock-TTL feuerten alter UND neuer Leader parallel,
+        über die gesamte Störungsdauer. Nach konsekutiven Renew-Fehlern
+        muss der Leader proaktiv heruntertreten, BEVOR die TTL sicher
+        abgelaufen ist."""
+        standby_events: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
+        async def _s(**kw):
+            standby_events.append(kw)
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        lock_manager.renew.side_effect = BackendConnectionError("valkey down")
+
+        limit = loop._renew_failure_limit
+        assert limit >= 1
+        for _ in range(limit - 1):
+            await loop._election_tick()
+            assert loop.state == "leader", (
+                "must tolerate failures below the threshold"
+            )
+
+        await loop._election_tick()
+
+        assert loop.state == "standby"
+        assert len(standby_events) == 1
+
+    async def test_renew_error_counter_resets_on_success(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        """Ein einzelner Renew-Fehler gefolgt von Erfolg setzt den
+        Zähler zurück — kein schleichender Step-down über Stunden."""
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        limit = loop._renew_failure_limit
+
+        # One failure short of the limit, then a success, then again
+        # one failure short — never steps down.
+        seq: list = []
+        for _ in range(limit - 1):
+            seq.append(BackendConnectionError("blip"))
+        seq.append(True)
+        for _ in range(limit - 1):
+            seq.append(BackendConnectionError("blip"))
+        lock_manager.renew.side_effect = seq
+
+        for _ in range(len(seq)):
+            await loop._election_tick()
+
+        assert loop.state == "leader"
+
+    async def test_renew_failure_limit_derived_from_ttl_and_heartbeat(
+        self, backend, broker, lock_manager, store, signal_dispatcher
+    ):
+        """Limit = max(1, ttl//heartbeat - 1): Step-down passiert einen
+        Heartbeat VOR dem sicheren TTL-Ablauf."""
+        config = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            scheduler_heartbeat_interval=10.0,
+            scheduler_lock_ttl=30.0,
+        )
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        assert loop._renew_failure_limit == 2
+
 
 # ---------------------------------------------------------------------------
 # Poll loop
@@ -321,6 +397,96 @@ class TestPollLoop:
 
         headers = broker.publish.await_args.kwargs.get("headers") or {}
         assert headers["x-swarmq-schedfire"] == "drift:1000"
+
+    async def test_unregistered_task_fire_logs_warning(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        _cleanup_tasks,
+    ):
+        """Härtung R2 P2: ein Schedule, dessen Task umbenannt/entfernt
+        wurde, publiziert kommentarlos ins Leere. Warn-only (kein Skip):
+        in Multi-Modul-Deployments kann der Task in der Registry eines
+        ANDEREN Workers existieren — ein harter Skip wäre dort falsch.
+        Die Warnung gibt dem Operator das Signal, das vorher fehlte."""
+        from unittest.mock import patch
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _def(name="ghost", cron="*/5 * * * *", fire_ts_ms=1_000)
+        store.poll_due.return_value = [("ghost", 1_000, d)]
+
+        with patch("swarmq.scheduler.logger") as mock_logger:
+            await loop._poll_tick()
+
+        # Publish still happens (warn-only), but the operator sees it.
+        broker.publish.assert_awaited_once()
+        warned_events = [
+            c.args[0] for c in mock_logger.warning.call_args_list
+        ]
+        assert "scheduler_task_not_in_local_registry" in warned_events
+
+    async def test_fire_skipped_signal_on_missed_cron_fires(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        """Härtung R2 P2: Catch-up-skip ist korrekt (genau ein
+        Nachhol-Fire), aber bisher unsichtbar — ein übersprungener
+        täglicher Report fiel niemandem auf. Beim Catch-up muss
+        SCHEDULER_FIRE_SKIPPED mit skipped_count emittiert werden."""
+        skipped: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
+        async def _sk(**kw):
+            skipped.append(kw)
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        # Every-minute cron whose due score lies ~10 minutes in the
+        # past → ~9 fires were missed during the downtime.
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        stale_score = now_ms - 10 * 60 * 1000
+        d = _def(name="minutely", cron="* * * * *", fire_ts_ms=stale_score)
+        store.poll_due.return_value = [("minutely", stale_score, d)]
+
+        await loop._poll_tick()
+
+        assert len(skipped) == 1
+        assert skipped[0]["schedule_name"] == "minutely"
+        assert skipped[0]["skipped_count"] >= 8
+        # Exactly ONE catch-up publish — no backlog storm.
+        broker.publish.assert_awaited_once()
+
+    async def test_no_fire_skipped_signal_on_punctual_fire(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        skipped: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
+        async def _sk(**kw):
+            skipped.append(kw)
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        # Due score = the most recent occurrence of a YEARLY cron —
+        # deterministic: the interval (score, now] contains no further
+        # occurrence for up to a year. (A naive "now - 2s" score on a
+        # minutely cron straddles the minute boundary whenever the test
+        # runs within 2s after it → flaky skipped==1.)
+        from croniter import croniter as _croniter
+
+        yearly = "0 0 1 1 *"
+        prev_dt = _croniter(yearly, datetime.now(UTC)).get_prev(datetime)
+        score = int(prev_dt.timestamp() * 1000)
+        d = _def(name="yearly", cron=yearly, fire_ts_ms=score)
+        store.poll_due.return_value = [("yearly", score, d)]
+
+        await loop._poll_tick()
+
+        assert skipped == []
 
     async def test_oneshot_commit_uses_neg_one_and_no_def(
         self, backend, broker, config, lock_manager, store, signal_dispatcher

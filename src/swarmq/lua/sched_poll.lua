@@ -11,8 +11,8 @@
 -- either see a fresh def or the commit-script will be called with an
 -- empty def_json which cleans up the orphan zset entry.
 --
--- KEYS[1] sq:sched:zset
--- KEYS[2] sq:sched:defs
+-- KEYS[1] sq:{sched}:zset
+-- KEYS[2] sq:{sched}:defs
 -- ARGV[1] now_ms   (int)
 -- ARGV[2] limit    (int)
 --

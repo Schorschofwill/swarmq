@@ -11,6 +11,7 @@ handlers still run.
 
 from __future__ import annotations
 
+import asyncio
 import enum
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -78,6 +79,11 @@ class Signal(enum.Enum):
       * SCHEDULER_LEADER_FAILOVER: worker_id (this worker just acquired
                                    the leader lock after the previous
                                    leader's TTL expired, i.e. crash/GC)
+      * SCHEDULER_FIRE_SKIPPED:    worker_id, schedule_name, skipped_count
+                                   (catch-up after downtime skipped this
+                                   many cron occurrences — exactly one
+                                   catch-up fire runs, the rest never
+                                   will; alert on important crons)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -106,6 +112,7 @@ class Signal(enum.Enum):
     SCHEDULER_HEARTBEAT = "scheduler_heartbeat"
     SCHEDULER_LEADER_HANDOVER = "scheduler_leader_handover"
     SCHEDULER_LEADER_FAILOVER = "scheduler_leader_failover"
+    SCHEDULER_FIRE_SKIPPED = "scheduler_fire_skipped"
 
 
 class SignalDispatcher:
@@ -141,16 +148,48 @@ class SignalDispatcher:
 
         return decorator
 
-    async def dispatch(self, signal: Signal, **kwargs: Any) -> None:
+    async def dispatch(
+        self,
+        signal: Signal,
+        *,
+        handler_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Await every handler registered for ``signal``, passing ``kwargs``.
 
         Handlers run sequentially in registration order. Exceptions are
         caught per-handler, logged at WARNING, and do not abort the loop.
+
+        Isolation boundary is ``Exception``, deliberately NOT
+        ``BaseException``: an ``asyncio.CancelledError`` reaching a
+        handler propagates out of ``dispatch`` so shutdown cancellation
+        is never swallowed (Härtung R2 P2).
+
+        ``handler_timeout`` (Härtung R2 P1-9) bounds each handler
+        individually — a *blocking* (non-raising) handler otherwise
+        stalls the whole dispatch. The worker passes this for lifecycle
+        signals (WORKER_ONLINE / WORKER_SHUTDOWN / WORKER_HEARTBEAT),
+        where a hanging user handler previously wedged startup or the
+        entire graceful-shutdown sequence until the orchestrator's
+        SIGKILL. ``handler_timeout`` is reserved — it is consumed here
+        and never forwarded to handlers.
         """
         handlers = self._handlers.get(signal, ())
         for handler in handlers:
             try:
-                await handler(**kwargs)
+                if handler_timeout is not None:
+                    await asyncio.wait_for(
+                        handler(**kwargs), timeout=handler_timeout,
+                    )
+                else:
+                    await handler(**kwargs)
+            except TimeoutError:
+                logger.warning(
+                    "signal_handler_timeout",
+                    signal=signal.value,
+                    handler=getattr(handler, "__qualname__", repr(handler)),
+                    timeout_s=handler_timeout,
+                )
             except Exception as exc:
                 logger.warning(
                     "signal_handler_error",

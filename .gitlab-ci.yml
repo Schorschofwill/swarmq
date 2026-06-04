@@ -116,12 +116,16 @@ lock-check:
 
 # --reruns 1 absorbs the rare timing flake on the small shared runner without
 # hiding deterministic failures (a real break fails both attempts).
+# Härtung R2 B1: the pure parser-fuzz suite joins the blocking gate — it is
+# deterministic (seeded corpus), service-free and sub-second; previously NO
+# CI job ever executed tests/fuzz, so the suite was rotting unnoticed.
 unit-tests:
   extends: .uv
   stage: test
   script:
     - $UV_RUN pytest tests/unit -q --reruns 1 --reruns-delay 1
     - $UV_RUN pytest tests/property -m property -q
+    - $UV_RUN pytest tests/fuzz/test_parser_fuzz.py -m fuzz -q
 
 # Tier 2a — integration against real RabbitMQ + Valkey (deterministic).
 integration-tests:
@@ -139,9 +143,37 @@ e2e-tests:
   script:
     - $UV_RUN pytest tests/e2e -q
 
+# Tier 2c — stress against real services. Härtung R2 B1: previously never
+# executed by any CI job. Scheduled (nightly) + manual; honest gate on the
+# scheduled run (no allow_failure) so a stress regression actually notifies.
+stress-tests:
+  extends: .with-services
+  stage: test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - when: manual
+      allow_failure: true
+  script:
+    - $UV_RUN pytest tests/stress -m stress -q
+
+# Tier 3b — soak (1h sustained load). Deliberately manual-only: too long for
+# every schedule; run before releases. Documented here so the exclusion is
+# explicit, not silent (Härtung R2 B1).
+soak-tests:
+  extends: .with-services
+  stage: test
+  rules:
+    - when: manual
+      allow_failure: true
+  allow_failure: true
+  script:
+    - $UV_RUN pytest tests/soak -m soak -q
+
 # Tier 3 — chaos (Toxiproxy + docker compose). Opt-in only: runs on scheduled
 # pipelines or manual trigger, never blocks an MR. Needs a Docker-in-Docker
 # capable runner; left allow_failure until validated on the target runner.
+# Härtung R2 B1: runs the WHOLE chaos directory (previously only 1 of 5
+# files) plus the chaos-stack-backed external-publish fuzz suite.
 chaos-tests:
   image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
   stage: test
@@ -177,7 +209,8 @@ chaos-tests:
     - apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin
     - docker compose version
   script:
-    - $UV_RUN pytest -m chaos tests/chaos/test_workflow_chord_idempotency.py -q
+    - $UV_RUN pytest -m chaos tests/chaos -q
+    - $UV_RUN pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q
 
 secret_detection:
   stage: secret-detection

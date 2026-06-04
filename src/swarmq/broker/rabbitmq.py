@@ -42,6 +42,12 @@ _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
 )
 _PUBLISH_MAX_ATTEMPTS = 5
 
+# Härtung R2 P1-3: bound for acquiring a connection from an injected
+# pool. aio_pika's Pool.acquire() blocks indefinitely on Queue.get()
+# when the pool is exhausted (all items checked out, no overflow) —
+# without this bound, `async with SwarmQ(...)` hung silently.
+_POOL_ACQUIRE_TIMEOUT_S = 10.0
+
 
 class RabbitMQBroker:
     def __init__(
@@ -159,9 +165,52 @@ class RabbitMQBroker:
                 # exit, so we enter it manually here and release it in
                 # close() — releasing returns the connection to the pool
                 # rather than closing it (the pool stays the caller's).
+                # Härtung R2 P1-3: the acquire is bounded — an exhausted
+                # pool otherwise blocks forever on Queue.get().
                 self._pool_ctx = self._connection_pool.acquire()
-                self._connection = await self._pool_ctx.__aenter__()
+                try:
+                    self._connection = await asyncio.wait_for(
+                        self._pool_ctx.__aenter__(),
+                        timeout=_POOL_ACQUIRE_TIMEOUT_S,
+                    )
+                except TimeoutError as exc:
+                    # Review R2: best-effort release. wait_for cancelled
+                    # __aenter__ mid-Queue.get(), so normally nothing was
+                    # checked out — but if cancellation landed in the
+                    # narrow window after get() returned, __aexit__
+                    # returns that item to the pool instead of leaking it
+                    # (aio-pika's PoolItemContextManager.__aexit__ is a
+                    # no-op when no item was assigned).
+                    try:
+                        await self._pool_ctx.__aexit__(None, None, None)
+                    except Exception:  # noqa: BLE001 — release best-effort
+                        pass
+                    self._pool_ctx = None
+                    self._connection = None
+                    raise BrokerConnectionError(
+                        f"injected pool acquire timed out after "
+                        f"{_POOL_ACQUIRE_TIMEOUT_S}s — pool exhausted "
+                        "or closed?"
+                    ) from exc
+            # Härtung R2 P2: a plain (non-robust) injected connection has
+            # no reconnect self-healing — after a transport drop every
+            # publish runs into the full ready()-timeout wall and fails.
+            # The constructor docstring caveat alone is too quiet.
+            if not isinstance(
+                self._connection, aio_pika.abc.AbstractRobustConnection,
+            ):
+                logger.warning(
+                    "injected_connection_not_robust",
+                    hint=(
+                        "the injected connection has no reconnect "
+                        "self-healing; after a drop every publish waits "
+                        f"{_CHANNEL_READY_TIMEOUT_S}s and fails — prefer "
+                        "aio_pika.connect_robust()"
+                    ),
+                )
             self._publish_channel = await self._connection.channel()
+        except BrokerConnectionError:
+            raise
         except Exception as exc:
             # If we acquired a connection from the pool but failed before a
             # usable publish channel, release the checkout — SwarmQ.__aenter__

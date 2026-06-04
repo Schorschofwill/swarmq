@@ -1,0 +1,160 @@
+"""Property tests: WorkflowAdvancer state machine under adversarial order.
+
+Härtung R2 B5: the stateful, race-prone advancement logic (chord fan-in,
+result injection, redelivery idempotency) was example-based only. These
+properties drive random topologies through the in-memory Driver harness
+(tests/unit/test_workflow_advancer.py) with RANDOM completion order and
+random at-least-once redeliveries, and pin the invariants:
+
+* the workflow always reaches COMPLETED;
+* every step is published exactly once (chord body included — it fires
+  exactly once, never zero times, regardless of member order/redelivery);
+* the chord body receives the member results in DEFINITION order;
+* a chain threads each predecessor result into its successor.
+
+Opt-in under ``-m property``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from hypothesis import given
+from hypothesis import strategies as st
+
+from swarmq.serialization import decode_result, encode_json
+from swarmq.workflow import chain, chord, group
+from swarmq.workflow_orchestration import (
+    STATUS_COMPLETED,
+    build_initial_workflow_state,
+    initial_frontier,
+)
+from tests.unit.test_workflow_advancer import Driver, Echo
+
+
+async def _seed_enqueued(driver: Driver) -> None:
+    """Seed like Driver.seed(), but ENQUEUE the initial frontier as
+    published messages instead of advancing it inline — only then does
+    ``_drain_random`` control the COMPLETION ORDER of group/chord
+    members (Driver.seed() advances them sequentially, which would fix
+    the order and gut the property)."""
+    state = build_initial_workflow_state(driver.wf_id, driver.workflow.to_dict())
+    step_tasks = {}
+    frontier = list(initial_frontier(driver.workflow))
+    for step_path, _sig in frontier:
+        step_tasks[step_path] = f"seed-{step_path}"
+    state["step_tasks"] = step_tasks
+    driver.backend.wf_state[driver.wf_id] = encode_json(state)
+    for step_path, sig in frontier:
+        tid = step_tasks[step_path]
+        body = encode_json({
+            "task": {"id": tid, "queue": "default", "name": sig.task_name},
+            "args": list(sig.args),
+            "kwargs": {},
+        })
+        driver.published.append(
+            ("default", body, {"x-swarmq-workflow-step": step_path}),
+        )
+
+
+async def _drain_random(driver: Driver, data: st.DataObject) -> list[str]:
+    """Drain published steps in data-driven random order with random
+    redeliveries. Returns the execution order of step paths."""
+    order: list[str] = []
+    # Hard bound: |published| can only shrink unless the advancer is
+    # broken; 10_000 iterations means runaway re-publishing.
+    for _ in range(10_000):
+        if not driver.published:
+            return order
+        idx = data.draw(
+            st.integers(min_value=0, max_value=len(driver.published) - 1),
+            label="next_step",
+        )
+        _queue, body, headers = driver.published.pop(idx)
+        step_path = headers["x-swarmq-workflow-step"]
+        order.append(step_path)
+        task_id = await driver._run_step(body)
+        result_value = decode_result(driver.backend.results[task_id])["result"]
+        await driver.advancer.advance(
+            driver.wf_id, step_path, task_id, result_value,
+        )
+        if data.draw(st.booleans(), label="redeliver"):
+            # At-least-once redelivery of the SAME completion — must be
+            # a no-op (publish-then-mark idempotency).
+            await driver.advancer.advance(
+                driver.wf_id, step_path, task_id, result_value,
+            )
+    raise AssertionError("advancer kept re-publishing steps (runaway)")
+
+
+@given(
+    n_members=st.integers(min_value=2, max_value=5),
+    data=st.data(),
+)
+def test_chord_body_fires_exactly_once_with_ordered_results(n_members, data):
+    async def _run() -> None:
+        wf = chord(
+            group(*(Echo.s(i) for i in range(n_members))), Echo.s(),
+        )
+        driver = Driver(wf)
+        await _seed_enqueued(driver)
+        order = await _drain_random(driver, data)
+
+        st_dict = await driver.state()
+        assert st_dict["status"] == STATUS_COMPLETED
+
+        # Every published step ran exactly once — the chord body never
+        # double-fires and never gets lost.
+        assert len(order) == len(set(order)), f"duplicate publish: {order}"
+
+        # Body received member results in DEFINITION order, regardless
+        # of the (random) completion order: member i echoed [i].
+        final = await driver.final_value()
+        assert final == [[[i] for i in range(n_members)]]
+
+    asyncio.run(_run())
+
+
+@given(
+    depth=st.integers(min_value=2, max_value=5),
+    data=st.data(),
+)
+def test_chain_threads_results_under_redelivery(depth, data):
+    async def _run() -> None:
+        wf = chain(*(Echo.s() for _ in range(depth)))
+        driver = Driver(wf)
+        await _seed_enqueued(driver)
+        order = await _drain_random(driver, data)
+
+        st_dict = await driver.state()
+        assert st_dict["status"] == STATUS_COMPLETED
+        assert len(order) == len(set(order)), f"duplicate publish: {order}"
+
+        # Echo returns list(args); each chain hop wraps the previous
+        # result in one more list level. Seed step yields [] → final
+        # nesting depth == number of hops after the seed.
+        expected: list = []
+        for _ in range(depth - 1):
+            expected = [expected]
+        assert await driver.final_value() == expected
+
+    asyncio.run(_run())
+
+
+@given(
+    n_members=st.integers(min_value=2, max_value=5),
+    data=st.data(),
+)
+def test_standalone_group_aggregates_in_definition_order(n_members, data):
+    async def _run() -> None:
+        wf = group(*(Echo.s(i) for i in range(n_members)))
+        driver = Driver(wf)
+        await _seed_enqueued(driver)
+        order = await _drain_random(driver, data)
+
+        st_dict = await driver.state()
+        assert st_dict["status"] == STATUS_COMPLETED
+        assert len(order) == len(set(order))
+        assert await driver.final_value() == [[i] for i in range(n_members)]
+
+    asyncio.run(_run())

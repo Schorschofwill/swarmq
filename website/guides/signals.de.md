@@ -50,6 +50,7 @@ dispatched wurde — keine separate Event-Loop, kein Worker-Thread.
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | Worker-Lifecycle | `worker_id` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler-Leader-Übergänge | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader-Swap-Quellen | `worker_id` |
+| `SCHEDULER_FIRE_SKIPPED` | Catch-up nach Downtime hat Cron-Termine übersprungen | `worker_id`, `schedule_name`, `skipped_count` |
 
 Handler sollten `**kwargs` defensiv akzeptieren. Der
 `batch_index`-Key im `TASK_DUPLICATE_DETECTED`-Signal ist nur
