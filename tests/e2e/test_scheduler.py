@@ -765,6 +765,16 @@ class TestCronWithRateLimit:
                     # (which runs after the leader signal); otherwise the first
                     # forced fire can be clobbered to the next cron minute.
                     await _wait_zscore_present(client, task_name)
+                    # Stay clear of the sliding-window MINUTE boundary:
+                    # right after a window cross the previous-window
+                    # weight decays below 1 and the approximation
+                    # legitimately admits a SECOND execution (observed
+                    # on CI: 2/3 admitted). Keep the whole injection +
+                    # consume + drain span inside one window so exactly
+                    # one admission is the deterministic outcome.
+                    now_in_minute = time.time() % 60
+                    if now_in_minute > 50:
+                        await asyncio.sleep(60 - now_in_minute + 0.5)
                     for offset_ms in (200, 400, 600):
                         ts = int(time.time() * 1000) + offset_ms
                         await client.zadd(
