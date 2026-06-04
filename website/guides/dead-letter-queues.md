@@ -14,7 +14,7 @@ guide covers how to inspect, retry, and purge DLQ messages.
 
 | Trigger | Header on the DLQ message |
 |---|---|
-| Retry exhaustion (`max_retries` reached) | `x-swarmq-retry-count` at the limit |
+| Retry exhaustion (`max_retries` reached — incl. `max_retries=0`, where the FIRST failure is already terminal) | `x-swarmq-retry-count` at the limit |
 | `raise NoRetry("reason")` from task body | `x-swarmq-error=no_retry` |
 | `x-delivery-limit=20` tripped by RabbitMQ | `x-death` from broker |
 | `TaskInfo.max_age` exceeded at pickup | `x-swarmq-expired=1` |

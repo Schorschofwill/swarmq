@@ -16,7 +16,7 @@ inspizierst, retry'st und purgest.
 
 | Trigger | Header auf der DLQ-Nachricht |
 |---|---|
-| Retry-Erschöpfung (`max_retries` erreicht) | `x-swarmq-retry-count` am Limit |
+| Retry-Erschöpfung (`max_retries` erreicht — inkl. `max_retries=0`, wo bereits der ERSTE Fehlschlag terminal ist) | `x-swarmq-retry-count` am Limit |
 | `raise NoRetry("reason")` aus Task-Body | `x-swarmq-error=no_retry` |
 | `x-delivery-limit=20` von RabbitMQ ausgelöst | `x-death` vom Broker |
 | `TaskInfo.max_age` bei Pickup überschritten | `x-swarmq-expired=1` |
