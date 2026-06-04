@@ -725,10 +725,16 @@ class TestCronWithRateLimit:
         call_count = 0
 
         class LimitedCronTask(Task):
-            # 1/s means at most 1 execution per 1-second window.
+            # 1/m (NOT 1/s): the three forced fires span ~1s of wall
+            # clock plus CI consume latency — with a 1-second window a
+            # slow shared runner can legitimately place each execution
+            # attempt in its own window and admit all three (observed
+            # on the first CI run after Härtung R2: 3/3, flaky-red).
+            # A 60-second window dwarfs the injection span, so exactly
+            # ONE fire may pass — deterministic on any runner.
             task_info = TaskInfo(
                 name=task_name, queues=[queue],
-                cron="* * * * *", rate_limit="1/s",
+                cron="* * * * *", rate_limit="1/m",
             )
 
             async def run(self) -> str:
@@ -775,14 +781,11 @@ class TestCronWithRateLimit:
                 # to confirm not all 3 ran).
                 await asyncio.sleep(1.5)
 
-                assert call_count < 3, (
-                    f"rate-limit did not throttle scheduler fires: "
-                    f"{call_count} executions for 3 fires with 1/s "
-                    f"limit"
-                )
-                assert call_count >= 1, (
-                    f"no fire executed at all — scheduler or broker "
-                    f"path broken: {call_count}"
+                assert call_count == 1, (
+                    f"expected exactly 1 admitted execution for 3 "
+                    f"fires under a 1/m limit, got {call_count} "
+                    f"(0 = scheduler/broker path broken, >1 = "
+                    f"rate-limit not throttling)"
                 )
             finally:
                 worker_task.cancel()
