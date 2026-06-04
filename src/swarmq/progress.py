@@ -57,6 +57,18 @@ class ProgressInfo:
         caught immediately in tests rather than surfacing as a
         ``None`` to a downstream consumer.
         """
+        # Fuzz-Fund (Härtung R2 CI-Erstlauf): ein Pub/Sub-Payload, der
+        # als JSON-Skalar dekodiert (int/str/list/bool), erreichte
+        # ``raw.items()`` und schlug als AttributeError durch —
+        # watch_progress' Drop-Contract fängt nur ValueError. Nicht-
+        # Mappings werden jetzt als ValueError abgewiesen.
+        if not isinstance(raw, dict):
+            if raw is None:
+                return None
+            raise ValueError(
+                "progress payload must be a mapping, got "
+                f"{type(raw).__name__}"
+            )
         if not raw:
             return None
 

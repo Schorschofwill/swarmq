@@ -94,3 +94,21 @@ class TestProgressInfoFromHash:
         )
         with pytest.raises((AttributeError, TypeError)):
             p.current = 99  # type: ignore[misc]
+
+
+class TestFromHashNonMapping:
+    """Fuzz-Fund (Härtung R2, erster CI-Lauf der external-publish-Fuzz-
+    Suite): ein Pub/Sub-Payload, der als JSON-Skalar dekodiert, erreichte
+    ``raw.items()`` → AttributeError statt des ValueError, den
+    watch_progress' Drop-Contract fängt."""
+
+    @pytest.mark.parametrize("payload", [5, 0, "x", ["a"], True, 3.14])
+    def test_non_mapping_raises_value_error(self, payload):
+        with pytest.raises(ValueError, match="must be a mapping"):
+            ProgressInfo.from_hash(payload)
+
+    def test_none_returns_none(self):
+        assert ProgressInfo.from_hash(None) is None
+
+    def test_empty_mapping_returns_none(self):
+        assert ProgressInfo.from_hash({}) is None

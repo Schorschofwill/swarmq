@@ -376,21 +376,33 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
 
         await asyncio.wait_for(_any_leader(), timeout=10)
 
-        # Force 100 fires by re-scoring the zset, one at a time with a
-        # small gap so the leader's poll tick picks each up separately.
-        # If we batch-update in one ZADD burst the leader sees them as
-        # duplicates of the same schedule_name (only one zset entry per
-        # name exists) and can only fire the latest score.
-        for _ in range(total_fires):
+        # Force 100 fires by re-scoring the zset, one at a time. Each
+        # injection waits until the leader has COMMITTED the fire
+        # (commit_fire advances the score to the next cron minute, i.e.
+        # into the future) before injecting the next one. A fixed 80ms
+        # gap raced the 50ms poll tick on slow shared CI runners: the
+        # next ZADD overwrote a not-yet-polled score and the fire was
+        # lost as a pure test artefact (real crons never overwrite
+        # their own pending score) — first CI run of this suite, 98/100.
+        for fire_no in range(total_fires):
             now_ms = int(time.time() * 1000)
+            injected = now_ms - 100
             await valkey_client.zadd(
-                "sq:{sched}:zset", {task_name: now_ms - 100},
+                "sq:{sched}:zset", {task_name: injected},
             )
-            # Poll interval is 50ms; 80ms gives the leader room to
-            # see this fire, publish, commit, and advance the zset
-            # (via commit_fire → next cron minute) before we overwrite
-            # with the next forced score.
-            await asyncio.sleep(0.08)
+            commit_deadline = time.monotonic() + 15.0
+            while time.monotonic() < commit_deadline:
+                score = await valkey_client.zscore(
+                    "sq:{sched}:zset", task_name,
+                )
+                if score is not None and score > now_ms:
+                    break  # committed: advanced to a future cron slot
+                await asyncio.sleep(0.02)
+            else:
+                pytest.fail(
+                    f"leader did not commit forced fire #{fire_no + 1} "
+                    "within 15s"
+                )
 
         # Give workers a window to drain the final publishes.
         deadline = time.monotonic() + 30
