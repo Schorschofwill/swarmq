@@ -2,10 +2,18 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Whitelist statt Blacklist: nur src/ ins sdist (pyproject.toml, README,
+# LICENSE nimmt Hatchling automatisch auf). Hält Doku, Tests, Website,
+# CI-/Agenten-Infrastruktur und lokale Caches dauerhaft aus dem Paket —
+# sdist ~150 KB statt 1,6 MB.
+[tool.hatch.build.targets.sdist]
+only-include = ["src"]
+
 [project]
 name = "swarmq"
 version = "0.1.0"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
+readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
