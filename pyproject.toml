@@ -11,7 +11,7 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.1.0"
+version = "0.1.1"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
@@ -28,12 +28,19 @@ dependencies = [
     "msgpack>=1.0",
     "structlog>=24",
     "aio-pika>=9",
-    "valkey[libvalkey]>=6",
+    # Plain valkey (no [libvalkey] extra): libvalkey is a C accelerator
+    # that ships no cp314 wheels (sdist-only on PyPI), so a hard extra
+    # forces a compiler into every consumer image on Python 3.14.
+    # valkey-py picks libvalkey up automatically when present — opt in
+    # via the [fast] extra.
+    "valkey>=6",
     "croniter>=2",
 ]
 
 [project.optional-dependencies]
-fast = ["orjson"]
+# orjson: faster JSON encode. libvalkey: C parser for valkey-py (auto-
+# detected when installed); sdist-only on PyPI, needs a build toolchain.
+fast = ["orjson", "libvalkey>=4"]
 metrics = ["prometheus_client"]
 # R5.3: file-watch hot-reload trigger. Rust-backed, ~1 MB wheel —
 # kept optional so non-reload deployments skip the footprint.
