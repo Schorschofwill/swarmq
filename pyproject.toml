@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "swarmq"
 version = "0.1.0"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 # Härtung R2 P2: lower bounds protect downstream consumers installing
 # without our lockfile. msgpack>=1.0 pins the safe default-limit

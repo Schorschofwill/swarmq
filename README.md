@@ -287,4 +287,4 @@ For coding conventions and TDD discipline see `AGENTS.md`.
 
 ## License
 
-TBD.
+[MIT](LICENSE).
