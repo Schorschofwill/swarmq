@@ -1,0 +1,68 @@
+"""``DeliveryOutcome`` (Plan U6, KTD5): das typisierte Ergebnis jeder
+Pipeline-Stufe, das die Terminal-Flags ``_unique_release_pending`` /
+``_schedfire_terminal`` des Runners ersetzt (U19).
+
+Drei Ausgänge:
+
+- ``Continue`` — Stufe passiert, nächste Stufe.
+- ``Redelivered`` — Zustellung wurde erneut eingereiht (``redeliver`` /
+  ``retry_later``): Dedup-Flag bleibt, In-Flight-Claim wird gelöscht.
+- ``Terminal(release_unique, finalize_schedfire)`` — Zustellung ist erledigt;
+  die Felder sagen, ob der ``finally``-Block das Dedup-Flag freigibt und den
+  Schedfire-Completed-Marker schreibt. Die drei heutigen Varianten:
+  ``release_in_finally()`` (Erfolg, Fehler, Cancel, Unknown-Task),
+  ``already_released()`` (Lock-Pfade und Dead-Letter, die nach dem Ack inline
+  freigeben) und ``never_release()`` (Expiry: Flag bleibt stehen).
+
+Ein Gate *muss* einen Ausgang zurückgeben — „Reset vergessen" ist kein
+möglicher Zustand mehr (Entwurf §4).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+class DeliveryOutcome:
+    """Basisklasse der drei Ausgänge (für ``isinstance``-Prüfungen)."""
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _Continue(DeliveryOutcome):
+    def __repr__(self) -> str:
+        return "Continue"
+
+
+@dataclass(frozen=True, slots=True)
+class _Redelivered(DeliveryOutcome):
+    def __repr__(self) -> str:
+        return "Redelivered"
+
+
+@dataclass(frozen=True, slots=True)
+class Terminal(DeliveryOutcome):
+    release_unique: bool
+    finalize_schedfire: bool
+
+    @classmethod
+    def release_in_finally(cls) -> Terminal:
+        """Erfolg, Fehler-Ergebnis, Cancel, Unknown-Task: Flag im ``finally`` freigeben."""
+        return cls(release_unique=True, finalize_schedfire=True)
+
+    @classmethod
+    def already_released(cls) -> Terminal:
+        """Lock-Pfade und Dead-Letter: bereits nach dem Ack inline freigegeben."""
+        return cls(release_unique=False, finalize_schedfire=True)
+
+    @classmethod
+    def never_release(cls) -> Terminal:
+        """Expiry: das Dedup-Flag bleibt bewusst stehen (heutiges Verhalten)."""
+        return cls(release_unique=False, finalize_schedfire=False)
+
+
+Continue: DeliveryOutcome = _Continue()
+Redelivered: DeliveryOutcome = _Redelivered()
+
+__all__ = ["Continue", "DeliveryOutcome", "Redelivered", "Terminal"]

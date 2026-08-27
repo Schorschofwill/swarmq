@@ -38,7 +38,7 @@ _MAX_MODULE_LINES = 800
 
 # Modul → Unit, die es unter das Limit bringt.
 _LOC_EXCEPTIONS: dict[str, str] = {
-    "swarmq.worker": "U6",
+    "swarmq.worker.pipeline": "U19-U9",  # unveränderter worker.py-Inhalt bis zur Zerlegung
     "swarmq.client": "U10",
     "swarmq.scheduler": "U11",
     "swarmq.process_manager": "U21",
@@ -72,6 +72,7 @@ _ALIAS_MODULES: frozenset[str] = frozenset(
 _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.broker.rabbitmq": ["connection", "delivery", "admin"],  # U5
     "swarmq.backend.valkey": ["connection", "results"],  # U17
+    "swarmq.worker": ["outcome", "pipeline"],  # U6
 }
 
 

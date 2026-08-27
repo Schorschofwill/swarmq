@@ -369,7 +369,7 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
         headers={},
     )
 
-    with patch("swarmq.worker.logger") as mock_logger:
+    with patch("swarmq.worker.pipeline.logger") as mock_logger:
         await w._handle_message(msg)
 
         # Error must be logged
