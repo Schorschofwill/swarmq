@@ -192,9 +192,13 @@ async def queue_args() -> dict[str, Any]:
 
 
 def header_names() -> str:
+    """``x-swarmq-*``-Literale im Code — Kommentare werden ignoriert (U7: ein
+    Kommentar nannte den nie emittierten ``x-swarmq-cancel-deferred-count``)."""
     found: set[str] = set()
     for path in SRC_DIR.rglob("*.py"):
-        found.update(re.findall(r"x-swarmq-[a-z0-9-]+", path.read_text(encoding="utf-8")))
+        for line in path.read_text(encoding="utf-8").splitlines():
+            code = line.split("#", 1)[0]
+            found.update(re.findall(r"x-swarmq-[a-z0-9-]+", code))
     return "\n".join(sorted(found)) + "\n"
 
 

@@ -1,0 +1,121 @@
+"""Expiry-Gate (R4.4 ``max_age``), Plan U7 — verbatim aus ``pipeline.py``.
+
+Abgelaufen → Fehler-Ergebnis speichern, Signal ``TASK_EXPIRED``, an das
+Dead-Letter-Ziel veröffentlichen, bestätigen; Outcome ``Terminal.never_release()``
+(das Dedup-Flag bleibt bewusst stehen — heutiges Verhalten). Publish-Fehler →
+``nack(requeue=True)`` (Fallback laut KTD3: Redelivery).
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import structlog
+
+from swarmq.cancellation import build_result_dict
+from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
+from swarmq.headers import HEADER_ENQUEUED_AT
+from swarmq.signals import Signal
+from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
+
+logger = structlog.get_logger()
+
+
+class ExpiryGate:
+    def __init__(self, deps: GateDeps) -> None:
+        self._deps = deps
+
+    async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
+        """``max_age=None`` disables the check entirely. A missing
+        ``x-swarmq-enqueued-at`` header is treated as 'not expired'
+        (defensive — pre-R4.4 producers + external producers)."""
+        task_info = ctx.task_info
+        assert task_info is not None
+        if task_info.max_age is None:
+            return Continue
+        headers = delivery.headers or {}
+        enqueued_at = headers.get(HEADER_ENQUEUED_AT)
+        if enqueued_at is None:
+            return Continue
+        try:
+            enqueued_ts = int(enqueued_at)
+        except (TypeError, ValueError):
+            # Malformed header — treat as non-expiring rather than DLQ
+            # on a header-shape bug. An expired task with a corrupt
+            # header still gets MAX_RETRIES redeliveries + x-delivery-
+            # limit as the fallback safety net.
+            return Continue
+        now = int(time.time())
+        age = now - enqueued_ts
+        if age < task_info.max_age:
+            return Continue
+
+        deps = self._deps
+        logger.warning(
+            "task_expired",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            queue=ctx.queue,
+            age_s=age,
+            max_age_s=task_info.max_age,
+        )
+        await deps.signals.dispatch(
+            Signal.TASK_EXPIRED,
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            queue=ctx.queue,
+            age_s=age,
+            max_age_s=task_info.max_age,
+        )
+        # Store an error result so callers waiting on get_result() see
+        # a clean TaskError("expired") instead of an indefinite timeout.
+        # Härtung R2 P2: result_ttl=0 means fire-and-forget — skip the
+        # store entirely (mirrors the main-path semantics).
+        ttl_ms = (task_info.result_ttl or deps.config.result_ttl) * 1000
+        if ttl_ms > 0:
+            try:
+                await deps.backend.store_result(
+                    ctx.task_id,
+                    build_result_dict(
+                        task_id=ctx.task_id,
+                        queue=ctx.queue,
+                        task_name=ctx.task_name,
+                        is_error=True,
+                        is_cancelled=False,
+                        error_message=f"task expired: age {age}s exceeds max_age {task_info.max_age}s",
+                    ),
+                    ttl_ms=ttl_ms,
+                    op_timeout=deps.config.backend_op_timeout,
+                )
+            except BackendConnectionError:
+                # Best-effort: if the backend is down, the message still
+                # routes to the DLQ for operator inspection.
+                logger.warning("task_expired_result_store_failed")
+
+        # Route to DLQ + ack. Same pattern as the dead-letter path but
+        # inline because the DLQ semantics of 'expired' differ from
+        # 'error' (different signal, no retry-count bump).
+        #
+        # ce-review REL-02: guard the DLQ publish + ack pair. Without
+        # this, a broker hiccup between store_result (succeeded above)
+        # and the publish call leaves the TaskError('expired') result in
+        # Valkey while the original message cycles through redelivery,
+        # generating duplicate TASK_EXPIRED signals. nack(requeue=True)
+        # preserves the message so a subsequent delivery retries the
+        # terminal path.
+        try:
+            await deps.broker.publish_to_dead_letter_queue(
+                ctx.queue, delivery.body, headers=dict(delivery.headers or {})
+            )
+            await deps.broker.ack(delivery)
+        except BrokerConnectionError:
+            logger.warning("task_expired_dlq_publish_failed")
+            try:
+                await deps.broker.nack(delivery, requeue=True)
+            except BrokerConnectionError:
+                # Double-failure — let the message TTL / broker
+                # redeliver-limit be the safety net.
+                logger.error("task_expired_nack_also_failed")
+        return Terminal.never_release()

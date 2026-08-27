@@ -1,4 +1,3 @@
-x-swarmq-cancel-deferred-count
 x-swarmq-enqueued-at
 x-swarmq-lock-conflict-count
 x-swarmq-lock-name

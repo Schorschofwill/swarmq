@@ -34,6 +34,8 @@ from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.middleware import MessageContext, MiddlewareChain
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
+from swarmq.worker.gates import GateContext
+from swarmq.worker.outcome import Continue
 from tests.contracts._support import consume_into
 from tests.support.rabbitmq_faults import publish_failure
 
@@ -97,10 +99,11 @@ async def test_expiry_publish_failure_falls_back_to_redelivery(broker: RabbitMQB
     inbox, delivery = await _first_delivery(broker, queue, {HEADER_ENQUEUED_AT: int(time.time()) - 3600})
     task_info = TaskInfo(name="ctr-locked", queues=(queue,), max_age=1)
 
+    ctx = GateContext(task_id="t1", task_name="ctr-locked", queue=queue, task_info=task_info, task_class=_LockedTask)
     with publish_failure(broker):
-        handled = await worker._check_max_age_expired(delivery, task_info, queue, "t1", "ctr-locked")
+        outcome = await worker._expiry_gate.apply(delivery, ctx)
 
-    assert handled is True
+    assert outcome is not Continue
     again = await inbox.next()  # requeue=True → erneute Zustellung
     assert again.body == _BODY
     await broker.ack(again)
@@ -138,12 +141,14 @@ async def test_lock_render_failure_with_publish_failure_routes_via_dlx(
     inbox, delivery = await _first_delivery(broker, queue, {"x-swarmq-enqueued-at": 5})
     task_info = TaskInfo(name="ctr-locked", queues=(queue,), lock="user-{missing}", hard_timeout=5)
 
+    ctx = GateContext(
+        task_id="t1", task_name="ctr-locked", queue=queue, task_info=task_info, task_class=_LockedTask,
+        args=[1], kwargs={}, handler_id=uuid.uuid4(),
+    )
     with publish_failure(broker):
-        handled = await worker._try_apply_lock(
-            delivery, task_info, _LockedTask, queue, "t1", "ctr-locked", [1], {}, uuid.uuid4(), []
-        )
+        outcome = await worker._lock_gate.apply(delivery, ctx)
 
-    assert handled is True
+    assert outcome is not Continue
     await inbox.expect_nothing()  # nicht redelivered
     letters = await _read_dead_letters(rabbitmq_url, queue)
     assert len(letters) == 1
