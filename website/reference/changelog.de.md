@@ -6,6 +6,52 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+<!-- 0.2.0-Entwurf (Plan U14) — finalisiert durch U15/U16; Inventar mit
+Migrationsschritten: docs/design/2026-08-0-2-0-api-brueche.md -->
+
+### Geändert (Breaking — 0.2.0)
+
+- **`ValkeyBackend`-Legacy-Methodenaliase entfernt.** Es gelten die
+  Vertragsnamen — z. B. `setnx_unique` → `claim_unique`,
+  `get_results_batch` → `get_results`, `publish_notification` →
+  `notify_result`, `subscribe_and_wait` →
+  `wait_for_result`/`wait_for_workflow`; Schedule-/Schedfire-Primitive
+  liegen im Store `backend.schedules` (`zrangebyscore_schedules` →
+  `schedules.poll_due`, …). Semantik, Key-Layout und Lua-Verträge sind
+  unverändert (Golden-Fixtures). Migrationstabelle im
+  0.2.0-Bruch-Inventar.
+- **`RabbitMQBroker`-Admin-/Verb-Aliase entfernt.** `get_queue_depth` →
+  `queue_depth`, `get_dlq_depth` → `dead_letter_depth`,
+  `list_dead_letter_queue` → `list_dead_letters`; die Zustellungs-Verben
+  heißen `redeliver`, `route_via_dlx`, `retry_later` und `dead_letter`
+  (die letzten beiden bestätigen das Original selbst — separates `ack`
+  entfällt).
+- **Konstruktoren sind gegen die Verträge** in `swarmq.contracts`
+  typisiert (`Worker`, `Client`, `SwarmQ`). `RabbitMQBroker`/
+  `ValkeyBackend` implementieren sie; bestehender Code läuft unverändert.
+- **Interne Modulstruktur:** `worker`, `client`, `scheduler` und
+  `process_manager` sind jetzt Pakete; Klassen-Re-Exports wie
+  `swarmq.locking.LockManager`, `swarmq.limits.RateLimiter` und
+  `swarmq.workflow_orchestration.ChordManager` liegen kanonisch unter
+  `swarmq.backend.valkey.*` (nicht Teil der Public-Oberfläche; hier
+  gelistet, weil die CLI-Surface-Whitelist sie pinnt).
+
+### Entfernt (Breaking — 0.2.0)
+
+- **`ValkeyBackend.create_pubsub()`.** Stattdessen `wait_for_result` /
+  `watch_progress` / `wait_for_workflow`; die Kanalnamen (`sq:notify:…`)
+  bleiben für eigene Clients stabil.
+
+### Behoben (0.2.0)
+
+- **Band-Erhalt beim Retry.** Retries, Rate-Limit- und Lock-
+  Rückstellungen zielen jetzt auf das Verzögerungs-/Dead-Letter-Ziel der
+  **Zustellungs-Queue** — ein Retry aus `tasks.high` bleibt in
+  `tasks.high`, auch wenn der Nachrichten-Body die Basis-Queue nennt
+  (bisher ging das Band bei Fremd-Producer-Nachrichten verloren).
+  Abgesichert durch `tests/e2e/test_retry_band.py`. Dies ist die einzige
+  Verhaltensänderung der 0.2.0-Restrukturierung.
+
 ### Performance
 
 - **`import swarmq.cli` lädt `valkey` und `aio_pika` nicht mehr eager.**

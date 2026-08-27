@@ -6,6 +6,52 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+<!-- 0.2.0 draft (plan U14) — finalized by U15/U16; inventory with
+migration steps: docs/design/2026-08-0-2-0-api-brueche.md -->
+
+### Changed (breaking — 0.2.0)
+
+- **`ValkeyBackend` legacy method aliases removed.** The contract names
+  replace the Valkey-flavoured ones — e.g. `setnx_unique` →
+  `claim_unique`, `get_results_batch` → `get_results`,
+  `publish_notification` → `notify_result`, `subscribe_and_wait` →
+  `wait_for_result`/`wait_for_workflow`; schedule/schedfire primitives
+  moved to the `backend.schedules` store (`zrangebyscore_schedules` →
+  `schedules.poll_due`, …). Semantics, key layout, and Lua contracts are
+  unchanged (pinned by golden fixtures). See the migration table in the
+  0.2.0 breaking-changes inventory.
+- **`RabbitMQBroker` admin/verb aliases removed.** `get_queue_depth` →
+  `queue_depth`, `get_dlq_depth` → `dead_letter_depth`,
+  `list_dead_letter_queue` → `list_dead_letters`; the delivery verbs are
+  now `redeliver`, `route_via_dlx`, `retry_later`, and `dead_letter`
+  (the latter two confirm the original delivery themselves — drop any
+  separate `ack`).
+- **Constructors are typed against the contracts** in `swarmq.contracts`
+  (`Worker`, `Client`, `SwarmQ`). `RabbitMQBroker`/`ValkeyBackend`
+  implement them; existing code runs unchanged.
+- **Internal module layout:** `worker`, `client`, `scheduler`, and
+  `process_manager` are packages now; class re-exports such as
+  `swarmq.locking.LockManager`, `swarmq.limits.RateLimiter`, and
+  `swarmq.workflow_orchestration.ChordManager` moved to
+  `swarmq.backend.valkey.*` (not part of the public surface; listed here
+  because the CLI surface whitelist pins them).
+
+### Removed (breaking — 0.2.0)
+
+- **`ValkeyBackend.create_pubsub()`.** Use `wait_for_result` /
+  `watch_progress` / `wait_for_workflow`; the notification channel names
+  (`sq:notify:…`) remain stable for callers that bring their own client.
+
+### Fixed (0.2.0)
+
+- **Priority-band preservation on retry.** Retries, rate-limit and lock
+  requeues now target the delay/dead-letter destination of the queue the
+  message was **delivered** on — a retry from `tasks.high` stays in
+  `tasks.high` even when the message body names the base queue
+  (previously the band was lost for foreign-producer messages). Covered
+  by `tests/e2e/test_retry_band.py`. This is the single behavioural
+  change of the 0.2.0 restructuring.
+
 ### Performance
 
 - **`import swarmq.cli` no longer eagerly loads `valkey` and
