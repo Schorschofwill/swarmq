@@ -14,6 +14,7 @@ import pytest
 
 from swarmq.config import SwarmQConfig
 from swarmq.headers import HEADER_ENQUEUED_AT
+from swarmq.serialization import decode_result
 from swarmq.signals import Signal
 from swarmq.task import TaskInfo
 from swarmq.worker import Worker, WorkerState
@@ -128,9 +129,11 @@ class TestCheckMaxAgeExpired:
         await _apply(w, msg, ti, task_id="id")
         w._backend.store_result.assert_awaited_once()
         call = w._backend.store_result.await_args
-        # store_result is called as store_result(task_id, result_dict, ...)
-        # via kwargs or positional — support both shapes.
-        result = call.args[1] if call.args and len(call.args) >= 2 else call.kwargs.get("result_dict") or call.args[0]
+        # Seit dem U15-Bugfix gehen kodierte Bytes in den Store (vorher ein
+        # dict, das gegen echtes Valkey still scheiterte).
+        raw = call.args[1]
+        assert isinstance(raw, bytes)
+        result = decode_result(raw)
         assert result["is_error"] is True
         assert "expired" in result["error_message"].lower()
 
