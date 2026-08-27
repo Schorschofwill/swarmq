@@ -57,7 +57,7 @@ class ProgressInfo:
         caught immediately in tests rather than surfacing as a
         ``None`` to a downstream consumer.
         """
-        # Fuzz-Fund (Härtung R2 CI-Erstlauf): ein Pub/Sub-Payload, der
+        # Fuzz-Fund: ein Pub/Sub-Payload, der
         # als JSON-Skalar dekodiert (int/str/list/bool), erreichte
         # ``raw.items()`` und schlug als AttributeError durch —
         # watch_progress' Drop-Contract fängt nur ValueError. Nicht-

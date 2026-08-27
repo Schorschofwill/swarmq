@@ -60,7 +60,7 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # backwards-compatible with pre-R3.5 ScheduleDefinition entries in
     # sq:sched:defs (new field at the end of the struct).
     dedup_hash: str | None = None
-    # R3.5 ce-review P1 #5 / ADV-007: persist unique_until alongside
+    # R3.5: persist unique_until alongside
     # dedup_hash. Previously the scheduler re-resolved unique_until from
     # TaskInfo at fire-time, which silently flipped release semantics when
     # TaskInfo changed between enqueue and fire. The client knows the
@@ -83,7 +83,7 @@ def parse_schedfire_key(value: str) -> tuple[str, int]:
     """Inverse of :func:`make_schedfire_key`.
 
     Uses ``rsplit(":", 1)`` so that schedule_names containing colons
-    (e.g. ``oneshot:<uuid>``) round-trip correctly (P1-4).
+    (e.g. ``oneshot:<uuid>``) round-trip correctly.
     """
     if ":" not in value:
         raise ValueError(f"schedfire key missing ':' separator: {value!r}")
@@ -131,7 +131,7 @@ class ScheduleStore:
 
     async def add_schedule(self, definition: ScheduleDefinition) -> bool:
         """Insert a new schedule. Returns True on insert, False on no-op
-        (insert-if-absent via HSETNX, Unit 8 / M-14)."""
+        (insert-if-absent via HSETNX, Unit 8)."""
         return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
 
     async def update_static_schedule(self, definition: ScheduleDefinition) -> None:
@@ -140,15 +140,15 @@ class ScheduleStore:
 
     async def remove_schedule(self, schedule_name: str) -> bool:
         """Permanently remove a schedule (ZREM + HDEL). True only when an
-        entry existed (Unit 4 / M-2)."""
+        entry existed (Unit 4)."""
         return await self._store.remove(schedule_name)
 
     async def disable_schedule(self, schedule_name: str) -> bool:
         """Mark an existing schedule disabled AND remove it from the
         due-set. False when no entry was present OR the existing entry was
-        malformed (logged + parked for operator inspection, Unit 5 / M-3).
-        The write-pair runs atomically in ``sched_disable.lua`` (Unit 8 /
-        M-14); the HGET+decode stays in Python because Lua does not share our
+        malformed (logged + parked for operator inspection, Unit 5).
+        The write-pair runs atomically in ``sched_disable.lua`` (Unit 8);
+        the HGET+decode stays in Python because Lua does not share our
         msgspec encoding."""
         existing = await self._store.get(schedule_name)
         if existing is None:
@@ -169,7 +169,7 @@ class ScheduleStore:
     async def list_schedules(self) -> list[ScheduleDefinition]:
         """Every decodable ScheduleDefinition; malformed entries are logged
         and skipped so one bad row cannot break ``swarmq schedule list``
-        (Unit 5 / M-5)."""
+        (Unit 5)."""
         raw = await self._store.list_all()
         result: list[ScheduleDefinition] = []
         for name, payload in raw.items():
@@ -196,7 +196,7 @@ class ScheduleStore:
     ) -> bool:
         """Atomically commit a fire event. ``next_fire_ts_ms=-1`` +
         ``updated_def=None`` removes a one-shot entirely. False when the
-        owner-check rejected it (stale leader, P1-2)."""
+        owner-check rejected it (stale leader)."""
         return await self._store.commit_fire(
             schedule_name,
             next_fire_ts_ms=None if next_fire_ts_ms < 0 else next_fire_ts_ms,

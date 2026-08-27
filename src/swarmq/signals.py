@@ -163,9 +163,9 @@ class SignalDispatcher:
         Isolation boundary is ``Exception``, deliberately NOT
         ``BaseException``: an ``asyncio.CancelledError`` reaching a
         handler propagates out of ``dispatch`` so shutdown cancellation
-        is never swallowed (Härtung R2 P2).
+        is never swallowed.
 
-        ``handler_timeout`` (Härtung R2 P1-9) bounds each handler
+        ``handler_timeout`` bounds each handler
         individually — a *blocking* (non-raising) handler otherwise
         stalls the whole dispatch. The worker passes this for lifecycle
         signals (WORKER_ONLINE / WORKER_SHUTDOWN / WORKER_HEARTBEAT),

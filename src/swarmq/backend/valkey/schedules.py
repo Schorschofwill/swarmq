@@ -18,7 +18,7 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.lua import load_script
 
-# Härtung R2 P1-7: the {sched} hash tag co-locates zset, defs and the leader
+# The {sched} hash tag co-locates zset, defs and the leader
 # lock (sq:lock:{sched}:leader) in ONE Valkey-Cluster hash slot —
 # sched_poll.lua/sched_commit.lua touch them in a single EVAL and would
 # otherwise die with CROSSSLOT on a sharded cluster. Single-key markers
@@ -67,7 +67,7 @@ class ValkeyScheduleStore:
     # ------------------------------------------------------------------
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
-        """Insert-if-absent via HSETNX (Unit 8 / M-14: kein TOCTOU zwischen
+        """Insert-if-absent via HSETNX (Unit 8: kein TOCTOU zwischen
         HGET und HSET); danach der Fire-Zeitpunkt im Index."""
         if not await self.hsetnx_schedule_def(name, payload):
             return False
@@ -85,7 +85,7 @@ class ValkeyScheduleStore:
         return bool(result)
 
     async def remove(self, name: str) -> bool:
-        """ZREM + HDEL; ``True`` nur, wenn ein Eintrag existierte (Unit 4 / M-2)."""
+        """ZREM + HDEL; ``True`` nur, wenn ein Eintrag existierte (Unit 4)."""
         existed = await self.exists(name)
         await self.zrem_schedule(name)
         await self.hdel_schedule_def(name)
@@ -117,7 +117,7 @@ class ValkeyScheduleStore:
     async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None, payload: bytes | None, owner: str) -> bool:
         """``sched_commit.lua``: Owner-Check gegen den Leader-Lock im selben
         EVAL; ``next_fire_ts_ms=None`` + ``payload=None`` entfernt einen
-        One-Shot. ``False``, wenn der Owner-Check ablehnt (stale leader, P1-2)."""
+        One-Shot. ``False``, wenn der Owner-Check ablehnt (stale leader)."""
         result = await self._run(
             f"sched_commit for {name!r}",
             self._commit_script(
@@ -186,7 +186,7 @@ class ValkeyScheduleStore:
 
     async def set_schedfire_dedup(self, schedfire_key: str, ttl_ms: int) -> bool:
         """Consumer-side "completed" marker (long TTL, written AFTER the task
-        finished; Unit 1 / H-2). True when this was the first write."""
+        finished; Unit 1). True when this was the first write."""
         result = await self._run(
             "set_schedfire_dedup", self._client.set(fired_key(schedfire_key), "1", nx=True, px=ttl_ms)
         )
@@ -194,14 +194,14 @@ class ValkeyScheduleStore:
 
     async def set_schedfire_inflight(self, schedfire_key: str, ttl_ms: int) -> bool:
         """Pre-run claim with a short TTL; a crashed claimant lets the next
-        redelivery re-run (Unit 1 / H-2 / R-002)."""
+        redelivery re-run (Unit 1)."""
         result = await self._run(
             "set_schedfire_inflight", self._client.set(inflight_key(schedfire_key), "1", nx=True, px=ttl_ms)
         )
         return bool(result)
 
     async def clear_schedfire_inflight(self, schedfire_key: str) -> None:
-        """Release the claim WITHOUT the completed marker (P0-B, 2026-06-02):
+        """Release the claim WITHOUT the completed marker:
         the fire is being re-delivered, so the long-TTL marker must not make
         the redelivered copy get ack+skipped."""
         await self._run("clear_schedfire_inflight", self._client.delete(inflight_key(schedfire_key)))
@@ -211,7 +211,7 @@ class ValkeyScheduleStore:
         return bool(result == 1)
 
     async def set_schedfire_handover_marker(self, owner_token: str, ttl_ms: int) -> None:
-        """Leader marker set right before graceful release (Review P2-1)."""
+        """Leader marker set right before graceful release."""
         await self._run("set_schedfire_handover_marker", self._client.set(handover_key(owner_token), "1", px=ttl_ms))
 
     async def get_and_del_schedfire_handover_marker(self) -> bool:

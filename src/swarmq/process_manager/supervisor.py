@@ -56,8 +56,7 @@ class WorkerInfo:
 
     ``spawned_at`` is set to ``time.monotonic()`` at construction time
     and consumed by :meth:`ProcessManager._scale_down_one` to protect
-    freshly spawned replacements from immediate scale-down (ce-review
-    C-03 / Unit 5).
+    freshly spawned replacements from immediate scale-down.
     """
 
     process: multiprocessing.process.BaseProcess
@@ -104,8 +103,7 @@ class ProcessManager:
 
     # Graceful-shutdown phases (defaults — overridable per-instance via
     # ``shutdown_grace_s`` to align with ``SwarmQConfig.shutdown_timeout``
-    # so a subprocess actually gets its configured drain budget.
-    # ce-review REL-01).
+    # so a subprocess actually gets its configured drain budget).
     SHUTDOWN_GRACE_S = 30.0
     SHUTDOWN_TERM_S = 5.0
 
@@ -115,7 +113,7 @@ class ProcessManager:
     SCALE_COOLDOWN_S = 30.0  # minimum gap between scale actions
     AUTOSCALE_SAMPLE_INTERVAL = 10.0
     # Minimum worker age before the autoscaler may pick it for
-    # scale-down (ce-review C-03 / Unit 5). Literal 30.0, matching
+    # scale-down. Literal 30.0, matching
     # max(AUTOSCALE_SAMPLE_INTERVAL=10, SCALE_COOLDOWN_S=30) at the
     # current defaults — protects the crash → _maybe_restart →
     # _autoscale_tick churn path where a freshly spawned replacement
@@ -156,8 +154,8 @@ class ProcessManager:
         self._worker_args = worker_args
         self._autoscale = autoscale
         self._queue_depth_fn = queue_depth_fn
-        # Per-instance override of the phase-1 shutdown budget
-        # (ce-review REL-01). Without this, any task running longer
+        # Per-instance override of the phase-1 shutdown budget.
+        # Without this, any task running longer
         # than the class default was killed mid-execution regardless
         # of the configured SwarmQConfig.shutdown_timeout.
         if shutdown_grace_s is not None:
@@ -175,7 +173,7 @@ class ProcessManager:
         self._shutting_down = False
         self._reload_requested = False
         self._next_worker_id = 0
-        # Härtung R2 P0-1: count of slots whose crash-restart budget is
+        # Count of slots whose crash-restart budget is
         # exhausted. Each such slot permanently reduces the static
         # backfill target — without this, the backfill loop respawned a
         # fresh WorkerInfo (empty restart history) right after
@@ -196,7 +194,7 @@ class ProcessManager:
         self._last_autoscale_sample = float("-inf")
         self._idle_since: float | None = None
 
-        # ce-review SEC-01 / Unit 6: freeze argv AND environment at
+        # Freeze argv AND environment at
         # supervisor start. SIGHUP reload uses these snapshots so
         # in-process mutation (buggy 3rd-party lib rewriting sys.argv
         # or mutating os.environ['PYTHONPATH']) cannot change the
@@ -210,7 +208,7 @@ class ProcessManager:
         # PID — the existing _on_reload_signal handler does the work.
         self._reload: bool = bool(reload)
         self._watch_dirs: tuple[str, ...] = tuple(watch_dirs)
-        # ce-review #5: TYPE_CHECKING import gives mypy/IDEs full
+        # TYPE_CHECKING import gives mypy/IDEs full
         # coverage on .start()/.stop() call sites without forcing
         # watchfiles onto the import path at runtime.
         self._file_watcher: FileWatcher | None = None
@@ -271,7 +269,7 @@ class ProcessManager:
             self._collect_zombies()
 
         if self._reload_requested:
-            # ce-review REL-03 / Unit 4: orphan-guard. If any child
+            # Orphan-guard: if any child
             # survived Phase-3 SIGKILL (typically D-state: NFS stall,
             # dying disk), os.execvp would replace the parent image
             # and orphan the child to init/systemd. Prefer clean
@@ -295,7 +293,7 @@ class ProcessManager:
                 return 0
             try:
                 logger.info("process_manager_reload_execvp")
-                # ce-review SEC-01 / Unit 6: use the argv AND env
+                # Use the argv AND env
                 # snapshots captured in __init__. execvpe closes the
                 # env side of the trust boundary so in-process
                 # os.environ mutation (e.g., a library flipping
@@ -317,7 +315,7 @@ class ProcessManager:
     # ------------------------------------------------------------------
 
     def _setup_signals(self) -> None:
-        # Härtung R2 P1-1: deliberately NO SIGCHLD handler. A previous
+        # Deliberately NO SIGCHLD handler. A previous
         # `waitpid(-1, WNOHANG)` reaper raced multiprocessing's own
         # per-pid waitpid: whoever reaped first won, and when the
         # handler won, Popen.poll() got ECHILD and returned None →
@@ -427,7 +425,7 @@ class ProcessManager:
         while not self._shutting_down:
             self._check_dead_workers()
 
-            # Härtung R2 P0-1: all restart budgets burned and no live
+            # All restart budgets burned and no live
             # worker left → exit non-zero instead of spinning (or, pre-
             # fix, storming fresh spawns). systemd/k8s restart us with
             # their own backoff; staying alive here would just hide the
@@ -469,7 +467,7 @@ class ProcessManager:
         """Target worker count at this instant.
 
         Without autoscale: ``initial_workers`` minus permanently
-        exhausted slots (Härtung R2 P0-1 — backfilling an exhausted
+        exhausted slots (backfilling an exhausted
         slot would reset its restart history and bypass the rate
         limit).
         With autoscale: current ``len(self.workers)`` since
@@ -517,7 +515,7 @@ class ProcessManager:
     def _maybe_restart(self, old: WorkerInfo) -> None:
         """Restart ``old`` respecting the rolling-window rate limit.
 
-        ce-review C-01 / REL-02: true sliding window. Prunes
+        True sliding window: prunes
         ``restart_timestamps`` to entries inside
         ``[now - RESTART_WINDOW, now]`` and blocks when the count
         hits ``MAX_RESTARTS`` — regardless of how the events are
@@ -530,7 +528,7 @@ class ProcessManager:
         timestamps = [t for t in old.restart_timestamps if t >= cutoff]
 
         if len(timestamps) >= self.MAX_RESTARTS:
-            # Härtung R2 P0-1: mark the slot as permanently exhausted so
+            # Mark the slot as permanently exhausted so
             # _current_target shrinks and the backfill loop cannot
             # respawn it with a fresh (empty) restart history.
             self._exhausted_slots += 1
@@ -566,7 +564,7 @@ class ProcessManager:
         caller adapts async broker APIs into a sync wrapper (see
         :func:`make_queue_depth_sampler`).
         """
-        # ce-review M-7: use explicit checks instead of asserts so
+        # Use explicit checks instead of asserts so
         # the invariant survives python -O deployments. Constructor
         # already enforces these, but a subtle refactor could later
         # violate them.
@@ -577,7 +575,7 @@ class ProcessManager:
         if now - self._last_autoscale_sample < self.AUTOSCALE_SAMPLE_INTERVAL:
             return
 
-        # ce-review C-02: check cooldown BEFORE advancing the sample
+        # Check cooldown BEFORE advancing the sample
         # timestamp. Otherwise a cooldown early-return consumes the
         # sample slot, extending the effective dead-time by up to
         # AUTOSCALE_SAMPLE_INTERVAL beyond the documented cooldown.
@@ -589,7 +587,7 @@ class ProcessManager:
         try:
             depth = self._queue_depth_fn()
         except Exception as exc:
-            # ce-review SEC-03: sanitize_url strips embedded AMQP
+            # sanitize_url strips embedded AMQP
             # credentials before the exception text reaches structlog.
             logger.warning(
                 "autoscale_sample_failed", error=sanitize_url(str(exc)),
@@ -625,7 +623,7 @@ class ProcessManager:
     def _scale_down_one(self) -> None:
         """Tell the youngest eligible worker to drain + exit (SIGTERM).
 
-        ce-review C-03 / Unit 5: workers younger than
+        Workers younger than
         :attr:`SCALE_MIN_AGE_S` are excluded. Without this, a
         crash → ``_maybe_restart`` → ``_autoscale_tick`` sequence
         would spawn a replacement and immediately kill it, producing

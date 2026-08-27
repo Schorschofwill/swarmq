@@ -98,7 +98,7 @@ class Metrics:
     every metric is a :class:`_NoopMetric` so the hot path stays free
     of ``if enabled`` branches.
 
-    **Label cardinality warning (ce-review SEC-005).**
+    **Label cardinality warning.**
     ``task_name`` and ``queue`` labels are passed through verbatim
     from the message payload — they are NOT validated or normalised.
     Applications that embed user-controlled data in task names (e.g.
@@ -202,15 +202,15 @@ class Metrics:
 class MetricsServer:
     """Minimal asyncio HTTP server exposing ``/metrics``.
 
-    Uses the stdlib via :class:`swarmq._http.AsyncHttpServer`
-    (ce-review M-01 dedup). The server lives inside the worker event
-    loop and is shut down in tandem with the worker.
+    Uses the stdlib via :class:`swarmq._http.AsyncHttpServer`. The
+    server lives inside the worker event loop and is shut down in
+    tandem with the worker.
 
-    **Bind-host default: ``127.0.0.1``** (ce-review SEC-004). Production
+    **Bind-host default: ``127.0.0.1``.** Production
     deployments should front the worker with a reverse proxy /
     firewall boundary; /metrics has no built-in auth and task_name
     labels may carry sensitive payload if the application author
-    embeds identifiers in task names (see ce-review SEC-005). Bind
+    embeds identifiers in task names (see :class:`Metrics`). Bind
     to ``0.0.0.0`` explicitly when the scraper runs on another host
     and the network path is otherwise restricted.
     """
@@ -337,7 +337,7 @@ def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
     async def _task_expired(**kw: Any) -> None:
         # R4.4 Task Expiry — outcome="expired" label documented in the
         # module docstring. Without this handler the counter would
-        # never increment (ce-review T-06/TG-001).
+        # never increment.
         metrics.tasks_total.labels(
             task_name=kw.get("task_name", ""),
             queue=kw.get("queue", ""),
@@ -346,7 +346,7 @@ def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
 
     @dispatcher.on_signal(Signal.TASK_DLQ)
     async def _task_dlq(**kw: Any) -> None:
-        # 2026-06-02 audit P1-4: terminal dead-lettering was invisible to
+        # Terminal dead-lettering was invisible to
         # Prometheus (outcome="dlq" never incremented). tasks_active is
         # already decremented by the preceding TASK_FAILED handler, so
         # this only bumps the terminal counter operators alert on.
@@ -356,7 +356,7 @@ def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
             outcome="dlq",
         ).inc()
 
-    # 2026-06-02 audit P1-5: scheduler-leader status was unobservable
+    # Scheduler-leader status was unobservable
     # despite the SCHEDULER_* signals firing correctly. Map them to a
     # 0/1 gauge so a split-brain (two leaders) or zero-leader (cron
     # silently stopped) condition can be alerted on.

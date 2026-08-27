@@ -253,7 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
         args.format = resolve_format(args.format)
 
     if args.command == "worker":
-        # R5.3 ce-review #23: dry-run validation. Never starts the
+        # R5.3: dry-run validation. Never starts the
         # supervisor or touches the broker — just checks whether the
         # invocation would get past pre-flight.
         if getattr(args, "check", False):
@@ -262,7 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
         # R4.6/R4.7: when the user opted into multi-process mode,
         # dispatch to the synchronous supervisor. The supervisor
         # itself runs no asyncio loop — subprocesses do.
-        # R5.3 ce-review #1: --reload requires the ProcessManager
+        # R5.3: --reload requires the ProcessManager
         # supervisor — single-process path has no SIGHUP handler and
         # no execvpe pipeline. Activating multi-process implicitly
         # keeps the default invocation (`swarmq worker --reload`)

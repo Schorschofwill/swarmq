@@ -30,7 +30,7 @@ logger = structlog.get_logger()
 
 # Default TTL for the cancel flag. 24h is wide enough to outlive the
 # typical retry-horizon + redelivery window while still self-healing
-# orphaned flags within a day (REV-P3 cleanup). Callers who want a
+# orphaned flags within a day. Callers who want a
 # tighter window (e.g. deterministic task_id systems vulnerable to
 # stale-flag-zombie, see Client.cancel docstring) can override.
 _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
@@ -71,8 +71,8 @@ class ClientResults:
         """Retrieve a task result, waiting up to *timeout* seconds.
 
         ``timeout == 0`` is a single GET. Otherwise the wait (Pub/Sub with
-        polling fallback, every GET bound to the remaining deadline —
-        Härtung R2 P1-2) lives in ``ResultBackend.wait_for_result`` since
+        polling fallback, every GET bound to the remaining deadline)
+        lives in ``ResultBackend.wait_for_result`` since
         U17; ``polling`` is kept for API compatibility.
         """
         if timeout == 0:
@@ -202,7 +202,7 @@ class ClientResults:
 
         .. warning::
 
-           **Stale-flag zombie class** (REV-P2-5, accepted limitation).
+           **Stale-flag zombie class** (accepted limitation).
            The cancel flag lives for ``ttl_ms`` (24h by default) in
            Valkey. If the same ``task_id`` is reused within that window
            (e.g. deterministic IDs, nack-requeue redelivery after a

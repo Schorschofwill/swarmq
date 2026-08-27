@@ -157,7 +157,7 @@ class WorkflowHandle:
     async def cancel(self) -> bool:
         """Set the workflow-level cancel flag and wake any waiter (R17).
 
-        Effect (Härtung R2 P1-10): ``get()`` raises promptly; steps not
+        Effect: ``get()`` raises promptly; steps not
         yet picked up — including already-enqueued group/chord members —
         are stopped at worker pickup and finished as cancelled; a step
         already mid-execution runs to completion (cooperative model, no

@@ -69,7 +69,7 @@ class SwarmQ:
             # would capture a stale snapshot of self._middlewares here.
             middleware_chain=lambda: self.middleware_chain,
             signal_dispatcher=self._signal_dispatcher,
-            # R3.5 REL-001: bound every setnx_unique on the enqueue path.
+            # R3.5: bound every setnx_unique on the enqueue path.
             backend_op_timeout=self.config.backend_op_timeout,
         )
 
@@ -104,7 +104,7 @@ class SwarmQ:
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        # Härtung R2 P1-4: staged try/finally. broker.close() may raise
+        # Staged try/finally: broker.close() may raise
         # by design on the injected path (channel.close() errors are NOT
         # swallowed there); without the finally-chain that left the
         # Valkey client open and the log-listener thread running. Every

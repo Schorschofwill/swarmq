@@ -130,7 +130,7 @@ class Worker(WorkerLifecycle):
         # aio_pika's IncomingMessage forbids dynamic attribute
         # assignment. Populated when _pre_start_schedfire_dedup wins
         # the inflight SETNX, read + popped by _finalize_schedfire
-        # in the finally block (Unit 1 / H-2).
+        # in the finally block (Unit 1).
         self._schedfire_inflight_claims: dict[int, str] = {}
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
@@ -177,7 +177,7 @@ class Worker(WorkerLifecycle):
         # clock jumps don't trigger a false-idle exit.
         self._last_message_received_at: float = 0.0
         self._burst_monitor_task: asyncio.Task[None] | None = None
-        # 2026-06-02 audit P1-3: periodic metrics sampler. Populates the
+        # Periodic metrics sampler. Populates the
         # queue_depth / dlq_messages / worker_uptime_seconds gauges (which
         # were declared but never .set()) and emits WORKER_HEARTBEAT.
         # Started in start() only when metrics are enabled.
@@ -186,11 +186,10 @@ class Worker(WorkerLifecycle):
         # Guards the cancel-path teardown (see start()'s finally /
         # _teardown_on_exit) so it is a no-op once _execute_shutdown has run.
         self._torn_down = False
-        # R5.1/R5.2 auto-wire state (ce-review REL-06). Populated in
+        # R5.1/R5.2 auto-wire state. Populated in
         # start() when config.metrics_port / config.health_port are set.
-        # Proper Optional typing (kieran KP-001 / M-04) — TYPE_CHECKING
-        # import keeps the runtime dependency lazy without the
-        # type-ignore-Suppressions.
+        # Proper Optional typing — TYPE_CHECKING import keeps the
+        # runtime dependency lazy without the type-ignore-Suppressions.
         self._metrics: Metrics | None = None
         self._metrics_server: MetricsServer | None = None
         self._health_server: HealthServer | None = None
@@ -251,7 +250,7 @@ class Worker(WorkerLifecycle):
         * ``terminal=False`` (retry republish, rate-limit / lock-conflict
           / shutdown / result-write requeue): the fire is being
           re-delivered, so DELETE the short-TTL in-flight key instead of
-          writing the completed marker (P0-B, 2026-06-02 audit). Writing
+          writing the completed marker. Writing
           the completed marker here would make the redelivered/retry copy
           fail ``is_schedfire_completed`` and get silently dropped.
 
@@ -287,7 +286,7 @@ class Worker(WorkerLifecycle):
         release rather than forwarding unvalidated bytes to Valkey as a
         key. Defends against adversarial producers that could otherwise
         amplify a malformed header into a large per-message Valkey key
-        (plan Risks / R3.5 ADV-005).
+        (plan Risks / R3.5).
         """
         unique_hash = (message.headers or {}).get(HEADER_UNIQUE_HASH)
         if not isinstance(unique_hash, str) or len(unique_hash) != 64:
@@ -307,8 +306,8 @@ class Worker(WorkerLifecycle):
         8-4-4-4-12 positions. Any header that deviates — missing, wrong type,
         wrong length, non-hex, misplaced dashes — is treated as "no workflow":
         the caller skips advancement rather than forwarding unvalidated bytes
-        to Valkey as a workflow-state key. Mirrors ``_extract_valid_unique_hash``
-        (ADV-005): never mark a workflow failed on a malformed id.
+        to Valkey as a workflow-state key. Mirrors ``_extract_valid_unique_hash``:
+        never mark a workflow failed on a malformed id.
         """
         wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
         if not isinstance(wf_id, str) or len(wf_id) != 36:
@@ -382,7 +381,7 @@ class Worker(WorkerLifecycle):
 
     async def _handle_message(self, message: Any) -> None:  # noqa: C901, PLR0915  # U19 (Runner)
         """Core message handler logic."""
-        # Härtung R2 P2: size cap BEFORE the decode. msgspec has a
+        # Size cap BEFORE the decode. msgspec has a
         # built-in recursion-depth guard but no size guard — a
         # compromised/misconfigured producer could otherwise make the
         # worker decode an arbitrarily large body fully into memory
@@ -406,7 +405,7 @@ class Worker(WorkerLifecycle):
             task_name = task_meta["name"]
             args = payload["args"]
             kwargs = payload["kwargs"]
-            # 2026-06-02 audit P2-6: validate shapes before run(*args,
+            # Validate shapes before run(*args,
             # **kwargs). A wrong-typed payload from a misbehaving producer
             # (e.g. args="hello") would otherwise unpack a string
             # character-by-character into positional args and run the task
@@ -472,10 +471,10 @@ class Worker(WorkerLifecycle):
         # U19 (KTD5): ein typisiertes Zustellungs-Ergebnis statt zweier
         # Booleans. Default = terminal mit Freigabe im finally; jeder
         # nicht-terminale Zweig setzt ``Redelivered`` (Dedup-Flag bleibt,
-        # In-Flight-Claim wird gelöscht — P0-B), Expiry setzt
+        # In-Flight-Claim wird gelöscht), Expiry setzt
         # ``Terminal.never_release()``. Die Richtung ist bewusst so gewählt,
         # dass ein vergessener Zweig über-freigibt (owner-check-sicher) statt
-        # unter-freigibt (ce-review M-03 / P2 #12).
+        # unter-freigibt.
         outcome: DeliveryOutcome = Terminal.release_in_finally()
         # FIRE_AND_FORGET: nach dem letzten Gate wird bestätigt; danach darf
         # kein Zweig mehr ein Broker-Verb auslösen (Modus acked_before_execute).
@@ -546,7 +545,7 @@ class Worker(WorkerLifecycle):
                 return
             outcome = Terminal.release_in_finally()
 
-            # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
+            # 5c. R3.5 Unit 10: start-mode
             # dedup release happens AFTER rate-limit / lock checks and
             # BEFORE the FIRE_AND_FORGET ack. Releasing earlier would
             # break dedup semantics in the requeue case: rate-limit or
@@ -627,8 +626,7 @@ class Worker(WorkerLifecycle):
 
             # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
             #
-            # Audit 2026-06-02 P2-2, umgesetzt in Härtungs-Runde 2
-            # (user-approved behaviour change): max_retries=0 errors now
+            # Deliberate (user-approved) behaviour change: max_retries=0 errors now
             # route through _evaluate_retry like every other failure —
             # retry_count(0) >= max_retries(0) is immediately exhausted,
             # so _send_to_dlq runs: error result stored (get_result()
@@ -642,14 +640,14 @@ class Worker(WorkerLifecycle):
                 and not is_cancelled
                 and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
             ):
-                # Post-execution cancel guard (REV-P2-6): a cancel that
+                # Post-execution cancel guard: a cancel that
                 # arrived WHILE post_execution was running or between
                 # run_task.done() and this branch wouldn't have been
                 # caught by the cancel-monitor (which stops polling as
                 # soon as run_task.done() fires). Re-check the flag
                 # here so a cancel that raced into the tail of the
                 # pipeline suppresses the retry. Timeout-wrapped like
-                # every other cancel-path backend call (REV-P1-3).
+                # every other cancel-path backend call.
                 try:
                     late_cancel = await self._backend.is_cancelled(
                         task_id,
@@ -681,7 +679,7 @@ class Worker(WorkerLifecycle):
                     # U8: Retry-Bewertung und Dead-Letter leben in
                     # worker/retry.py. Beide Wege sind fuer den finally
                     # ``Redelivered`` (Dead-Letter gibt inline frei; das
-                    # In-Flight-Loeschen ist dort folgenlos, P0-B).
+                    # In-Flight-Loeschen ist dort folgenlos).
                     outcome = await self._retry_handler.evaluate(
                         message, ctx, task_exception, error_message, message_dict, chain
                     )
@@ -697,10 +695,10 @@ class Worker(WorkerLifecycle):
             # 12-pre. Finalize the schedfire claim if this message was a
             # schedfire delivery we claimed in-flight. On a terminal
             # outcome this writes the completed marker (a redelivery
-            # racing our in-flight-key expiry must see it, Unit 1 / H-2);
+            # racing our in-flight-key expiry must see it, Unit 1);
             # on a non-terminal outcome (retry/requeue) it instead clears
             # the in-flight key so the redelivered copy can re-run rather
-            # than being skipped as "completed" (P0-B, 2026-06-02 audit).
+            # than being skipped as "completed".
             # U19: der finally liest die Outcome-Felder. ``Redelivered`` (kein
             # Terminal) → In-Flight-Claim löschen, keine Freigabe.
             terminal = outcome if isinstance(outcome, Terminal) else None
@@ -766,7 +764,7 @@ class Worker(WorkerLifecycle):
             # coroutine kept running DETACHED and was never tracked —
             # _execute_shutdown would see an already-done wrapper and
             # close the backend while the real release was still in
-            # flight, leaving the lock held (REV-P1-1).
+            # flight, leaving the lock held.
             #
             # Fix: schedule the inner release as its own Task first and
             # track THAT task in _detached_releases. Then ``await

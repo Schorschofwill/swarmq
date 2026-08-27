@@ -42,7 +42,7 @@ class RateLimiter:
         now_ms = int(seconds) * 1000 + int(microseconds) // 1000
         window_ts = now_ms - (now_ms % config.window_size_ms)
         prev_ts = window_ts - config.window_size_ms
-        # Härtung R2 P1-7: the {task_name} hash tag keeps current +
+        # The {task_name} hash tag keeps current +
         # previous window in one Valkey-Cluster hash slot —
         # sliding_window_counter.lua reads both in one EVAL and would
         # otherwise fail with CROSSSLOT on a sharded cluster.

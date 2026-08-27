@@ -52,7 +52,7 @@ _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
 )
 _PUBLISH_MAX_ATTEMPTS = 5
 
-# Härtung R2 P1-3: bound for acquiring a connection from an injected
+# Bound for acquiring a connection from an injected
 # pool. aio_pika's Pool.acquire() blocks indefinitely on Queue.get()
 # when the pool is exhausted (all items checked out, no overflow) —
 # without this bound, `async with SwarmQ(...)` hung silently.
@@ -161,10 +161,10 @@ class RabbitMQConnection:
             self._connection = await aio_pika.connect_robust(self._url)
             # Channel creation can fail too (vhost misconfigured, per-
             # connection channel cap, broker restart between
-            # connect_robust success and channel() call). R3.10 review
-            # R-5: these two lines were outside the BrokerConnectionError
+            # connect_robust success and channel() call). These two
+            # lines were once outside the BrokerConnectionError
             # wrapper, letting raw aio_pika exceptions escape to the CLI
-            # as unformatted tracebacks. Pulled inside.
+            # as unformatted tracebacks; keep them inside.
             self._publish_channel = await self._connection.channel()
             self._consume_channel = await self._connection.channel()
         except Exception as exc:
@@ -181,7 +181,7 @@ class RabbitMQConnection:
         try:
             if self._connection is None and self._connection_pool is not None:
                 await self._acquire_from_pool()
-            # Härtung R2 P2: a plain (non-robust) injected connection has
+            # A plain (non-robust) injected connection has
             # no reconnect self-healing — after a transport drop every
             # publish runs into the full ready()-timeout wall and fails.
             # The constructor docstring caveat alone is too quiet.
@@ -221,7 +221,7 @@ class RabbitMQConnection:
         # exit, so we enter it manually here and release it in
         # close() — releasing returns the connection to the pool
         # rather than closing it (the pool stays the caller's).
-        # Härtung R2 P1-3: the acquire is bounded — an exhausted
+        # The acquire is bounded — an exhausted
         # pool otherwise blocks forever on Queue.get().
         assert self._connection_pool is not None
         self._pool_ctx = self._connection_pool.acquire()
@@ -231,7 +231,7 @@ class RabbitMQConnection:
                 timeout=_POOL_ACQUIRE_TIMEOUT_S,
             )
         except TimeoutError as exc:
-            # Review R2: best-effort release. wait_for cancelled
+            # Best-effort release: wait_for cancelled
             # __aenter__ mid-Queue.get(), so normally nothing was
             # checked out — but if cancellation landed in the
             # narrow window after get() returned, __aexit__
@@ -320,9 +320,9 @@ class RabbitMQConnection:
         re-applies the previous QoS prefetch when the channel was
         freshly recreated — otherwise the reconnected consumer
         silently loses its rate-limiting setting. On the fast path
-        (healthy channel), set_qos is NOT called (ce-review R-2/C-02:
-        an AMQP Basic.Qos RPC per consume access is wasteful and its
-        failure was previously unguarded).
+        (healthy channel), set_qos is NOT called — an AMQP Basic.Qos
+        RPC per consume access is wasteful and its failure was
+        previously unguarded.
         """
         chan, was_recreated = await self._ensure_channel_tracked("_consume_channel")
         if was_recreated and self._consume_prefetch is not None:

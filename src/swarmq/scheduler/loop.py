@@ -52,7 +52,7 @@ _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 ``max(floor, heartbeat_interval*2*1000)`` so a slow standby still
 observes the marker on its next election tick — otherwise every
 clean handover would time out before the successor polls and emit
-FAILOVER instead of LEADER (review-finding reliability R-001)."""
+FAILOVER instead of LEADER."""
 
 _SchedulerState = Literal["standby", "leader", "stopped"]
 
@@ -132,7 +132,7 @@ class SchedulerLoop(SchedulerCronSync):
         self._poll_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
-        # Härtung R2 P1-5: consecutive renew-ERROR counter. A renew that
+        # Consecutive renew-ERROR counter. A renew that
         # returns False (lock observably gone) already steps down, but a
         # renew that RAISES (Valkey unreachable) previously kept
         # state=="leader" indefinitely — the poll loop fired through the
@@ -173,7 +173,7 @@ class SchedulerLoop(SchedulerCronSync):
         the handover marker so the next acquirer emits LEADER instead
         of FAILOVER, then cancels both sub-coroutines.
 
-        Ordering (review-finding R-005): state transition and
+        Ordering: state transition and
         stop_event are set BEFORE lock release. Otherwise a window
         exists where the lock is already released (another worker can
         acquire it) while our own poll_loop still believes it is the
@@ -209,8 +209,8 @@ class SchedulerLoop(SchedulerCronSync):
                     "scheduler_lock_release_failed", error=str(exc)
                 )
 
-        # Idempotent — the leader path above already set this (R-005
-        # ordering fix); this call covers the standby path where the
+        # Idempotent — the leader path above already set this; this
+        # call covers the standby path where the
         # early-transition block was skipped entirely. Do not remove
         # either call; they belong to different control-flow branches.
         self._stop_event.set()
@@ -279,7 +279,7 @@ class SchedulerLoop(SchedulerCronSync):
                     int(self._config.scheduler_lock_ttl * 1000),
                 )
             except BackendConnectionError as exc:
-                # Härtung R2 P1-5: a renew ERROR must not keep the
+                # A renew ERROR must not keep the
                 # leader in office indefinitely. After `limit`
                 # consecutive failures (≈ one heartbeat before the lock
                 # TTL is provably expired) step down proactively so the
@@ -312,7 +312,7 @@ class SchedulerLoop(SchedulerCronSync):
                 # Revive SCHEDULER_STANDBY (declared but never emitted):
                 # a genuine leader->standby transition, the natural point
                 # for it. Emitted once per transition, not per tick, so it
-                # carries signal without noise (2026-06-02 audit).
+                # carries signal without noise.
                 await self._emit(Signal.SCHEDULER_STANDBY)
             return
 
@@ -347,7 +347,7 @@ class SchedulerLoop(SchedulerCronSync):
             had_handover = False
 
         self._state = "leader"
-        self._renew_failures = 0  # fresh term, fresh renew budget (P1-5)
+        self._renew_failures = 0  # fresh term, fresh renew budget
         if had_handover or not self._prev_leader_seen:
             await self._emit(Signal.SCHEDULER_LEADER)
         else:
@@ -391,8 +391,8 @@ class SchedulerLoop(SchedulerCronSync):
         for schedule_name, score_ms, definition in due:
             if self._state != "leader":
                 # Lost leadership mid-batch — abort remaining items so
-                # the new leader handles them (Review-Finding Unit 10
-                # 'lock lost mid-batch' scenario).
+                # the new leader handles them (Unit 10 'lock lost
+                # mid-batch' scenario).
                 return
             if definition.disabled:
                 continue
@@ -405,7 +405,7 @@ class SchedulerLoop(SchedulerCronSync):
         definition: ScheduleDefinition,
     ) -> None:
         # Use the authoritative zset score, not definition.fire_ts_ms
-        # (Unit 7 / M-11). The two can diverge briefly during a static-
+        # (Unit 7). The two can diverge briefly during a static-
         # cron update where update_static_schedule writes a new
         # fire_ts_ms into defs before the ZADD lands, or if an operator
         # hand-edits the zset. The dedup key must match what will
@@ -427,7 +427,7 @@ class SchedulerLoop(SchedulerCronSync):
 
         # --- R3.5 Unit 9: pre-publish SETNX for static crons, header
         # propagation for client-originated deferred (cli_unique) ---
-        # ce-review COR-M-03: stamp HEADER_ENQUEUED_AT so R4.4 max_age
+        # Stamp HEADER_ENQUEUED_AT so R4.4 max_age
         # works for scheduler-fired tasks (cron + delay + eta). Without
         # this the worker's _check_max_age_expired saw no header and
         # treated every scheduled message as non-expiring.
@@ -441,7 +441,7 @@ class SchedulerLoop(SchedulerCronSync):
             # Client already SETNX'd this task at schedule(delay=/eta=) time.
             # Propagate the hash + intended mode so the worker releases
             # at the right point. unique_until is persisted on the
-            # definition (P1 #5 / ADV-007 fix) so post-deploy TaskInfo
+            # definition so post-deploy TaskInfo
             # changes cannot silently flip release semantics.
             headers["x-swarmq-unique-hash"] = definition.dedup_hash
             headers["x-swarmq-unique-until"] = definition.unique_until
@@ -449,7 +449,7 @@ class SchedulerLoop(SchedulerCronSync):
             # Static cron or plain CLI — resolve TaskInfo and SETNX here.
             task_info = self._resolve_task_info(definition.task_name)
             if task_info is None:
-                # Härtung R2 P2: a schedule whose task was renamed or
+                # A schedule whose task was renamed or
                 # removed previously published into the void with no
                 # trace. Warn-only, deliberately NOT a skip: in multi-
                 # module deployments the task may live in ANOTHER
@@ -537,7 +537,7 @@ class SchedulerLoop(SchedulerCronSync):
                 fire_ts_ms=next_fire_ts_ms,
                 last_fire_at=int(time.time() * 1000),
             )
-            # Härtung R2 P2: catch-up-skip was correct but invisible —
+            # Catch-up-skip was correct but invisible —
             # a skipped daily report went unnoticed. Count the cron
             # occurrences that fell between the due score and now (they
             # will never fire) and surface them as a signal.
@@ -658,7 +658,7 @@ class SchedulerLoop(SchedulerCronSync):
         cron: str, score_ms: int, now: datetime,
     ) -> int:
         """Count cron occurrences in ``(score_ms, now]`` — fires that
-        catch-up-skip will never run (Härtung R2 P2).
+        catch-up-skip will never run.
 
         The due score itself is the fire we ARE running; everything
         between it and ``now`` is lost to the skip semantics. Iteration

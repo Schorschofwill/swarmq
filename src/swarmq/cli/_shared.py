@@ -144,7 +144,7 @@ def _autoscale_range(raw: str) -> tuple[int, int]:
     return low, high
 
 
-# ce-review pass 2 #22 / ADV-01: pseudo-filesystems generate inotify
+# Pseudo-filesystems generate inotify
 # events on every process / device / attribute read. Watching them
 # triggers reload-storms at kernel-event rate. Argparse rejects these
 # up-front so --check exit 0 cannot mislead an operator into a
@@ -162,7 +162,7 @@ def _watch_dir_path(raw: str) -> str:
     Rejects pseudo-filesystem prefixes (``/proc``, ``/sys``, ``/dev``)
     that would cause reload-storms on Linux: every process spawn
     generates ``/proc/*`` inotify events, every device attribute read
-    generates ``/sys/*`` events. ce-review pass 2 #22 advisory.
+    generates ``/sys/*`` events.
     """
     p = Path(raw)
     if not p.is_dir():

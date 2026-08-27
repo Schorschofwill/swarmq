@@ -86,8 +86,8 @@ class LockManager:
 
         Returns ``True`` when the script confirms the owner matches and the
         PEXPIRE succeeded, ``False`` when the lock is absent, expired, or
-        held by a different owner. Mutex-only for v1 (``Literal[1]``, Unit 6
-        / M-7); the runtime check is a safety net for untyped callers.
+        held by a different owner. Mutex-only for v1 (``Literal[1]``,
+        Unit 6); the runtime check is a safety net for untyped callers.
         """
         if max_concurrency != 1:
             raise NotImplementedError(

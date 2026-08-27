@@ -169,12 +169,12 @@ class RetryHandler:
             task_info_for_release = None
         try:
             await deps.broker.dead_letter(delivery, headers=headers)
-            # R3.5 ce-review P1 #3 / ADV-001: release AFTER successful
-            # ack (dead_letter bestätigt das Original). If it raises, the
-            # except branch redelivers and the redelivery's terminal path
-            # must still be able to release the flag.
+            # Release AFTER successful ack (dead_letter bestätigt das
+            # Original). If it raises, the except branch redelivers and
+            # the redelivery's terminal path must still be able to
+            # release the flag.
             await deps.maybe_release_unique(delivery, task_id, task_info_for_release)
-            # 2026-06-02 audit P1-4: emit the terminal dead-letter signal
+            # Emit the terminal dead-letter signal
             # AFTER a successful publish+ack so operators get a metric
             # (outcome="dlq") and any custom handler fires exactly once
             # per dead-lettered message. The redeliver branch below is

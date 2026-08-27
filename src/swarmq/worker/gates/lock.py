@@ -226,13 +226,13 @@ class LockGate:
         """Render-Fehler/leerer Render: Dead-Letter mit Diagnose-Header + Ack +
         Freigabe; bei Publish-Fehler der terminale DLX-Fallback
         (``nack(requeue=False)``) und danach die Freigabe — Ack-Ordering
-        bleibt einheitlich (P1 #3 / ADV-001)."""
+        bleibt einheitlich."""
         deps = self._deps
         original_headers = dict(delivery.headers) if delivery.headers else {}
         original_headers.update(extra_headers)
         try:
             await deps.broker.dead_letter(delivery, headers=original_headers)
-            # Release AFTER successful ack (P1 #3 / ADV-001).
+            # Release AFTER successful ack.
             await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
         except Exception as broker_exc:
             logger.error(

@@ -15,7 +15,7 @@ from typing import Any, Literal
 # Cancel-reason discriminators for the CancelledError branch of the
 # worker run loop. Named constants + Literal type so static type-
 # checkers catch typos at call-sites instead of letting a misspelled
-# reason silently fall into the hard-timeout path (REV-P2-9).
+# reason silently fall into the hard-timeout path.
 CancelReason = Literal["cancel", "timeout"]
 CANCEL_REASON_CANCEL: CancelReason = "cancel"
 CANCEL_REASON_TIMEOUT: CancelReason = "timeout"
@@ -34,7 +34,7 @@ def build_result_dict(
     """Build the canonical worker-result payload.
 
     Consolidates four previously-duplicated result-dict constructions
-    in :mod:`swarmq.worker` into one helper (REV-P2-10). Keyword-only
+    in :mod:`swarmq.worker` into one helper. Keyword-only
     arguments so a future field addition stays explicit at every
     call-site.
 

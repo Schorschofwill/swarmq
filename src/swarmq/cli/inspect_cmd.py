@@ -42,8 +42,7 @@ def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
 async def _run_inspect_async(args: argparse.Namespace) -> None:
     """Import *args.module* and print TaskInfo metadata for each task.
 
-    Read-only; no broker / backend connection. R3.5 ce-review P3 #23:
-    exposes the declarative dedup configuration so agents and operators
+    Read-only; no broker / backend connection. Exposes the declarative dedup configuration so agents and operators
     can discover which tasks have unique_for set without reading source.
     """
     importlib.import_module(args.module)

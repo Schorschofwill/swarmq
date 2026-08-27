@@ -135,13 +135,13 @@ class WorkerLifecycle:
         )
         await self._scheduler.start()
 
-        # ce-review REL-06: auto-wire Prometheus metrics + health
+        # Auto-wire Prometheus metrics + health
         # endpoints when config flags set. Operator no longer needs
         # to construct Metrics + install_signal_collectors + MetricsServer
         # manually — the default wiring is opt-in via metrics_port /
         # health_port config.
         #
-        # ce-review COR-001/REL-F-01: the partial-start cleanup path
+        # The partial-start cleanup path
         # wraps the whole observability bring-up. A failure after
         # scheduler.start() OR after metrics_server.start() now unwinds
         # whatever previously succeeded before re-raising, so a port
@@ -176,7 +176,7 @@ class WorkerLifecycle:
                 )
                 await self._health_server.start()
         except Exception:
-            # COR-002 tail: the scheduler has already started; its
+            # The scheduler has already started; its
             # leader-election + poll tasks would leak as "Task was
             # destroyed but it is pending!" on loop teardown without
             # this rollback.
@@ -197,7 +197,7 @@ class WorkerLifecycle:
                     logger.exception("rollback_scheduler_stop_failed")
             raise
 
-        # ce-review COR-M-05: warn when a registered task declares
+        # Warn when a registered task declares
         # priority != "normal" but the worker is not configured for
         # priority routing. Without the warning, a publish to
         # {queue}.high is silently dropped into a queue nobody
@@ -288,7 +288,7 @@ class WorkerLifecycle:
                 self._burst_monitor()
             )
 
-        # 2026-06-02 audit P1-3: start the metrics sampler when metrics are
+        # Start the metrics sampler when metrics are
         # enabled so the queue_depth / dlq_messages / uptime gauges are
         # actually populated and WORKER_HEARTBEAT is emitted.
         if self._metrics is not None and self._metrics.enabled:
@@ -338,7 +338,7 @@ class WorkerLifecycle:
         """Periodically populate the gauges that the signal-driven
         collectors cannot, and emit the periodic worker heartbeat.
 
-        2026-06-02 audit P1-3: queue_depth, dlq_messages and
+        queue_depth, dlq_messages and
         worker_uptime_seconds are declared in Metrics but were never
         ``.set()``, so backlog growth, DLQ filling and crash-looping
         workers were invisible to Prometheus. This sampler closes the
@@ -350,10 +350,10 @@ class WorkerLifecycle:
         interval = self._config.metrics_sample_interval
         try:
             while not self._shutdown_event.is_set():
-                # Härtung R2 P2: one failing iteration must not kill the
-                # loop — an unobserved sampler death froze the gauges on
-                # their last value with zero operator signal (the exact
-                # "looks instrumented but isn't" trap P1-3 closed).
+                # One failing iteration must not kill the loop — an
+                # unobserved sampler death froze the gauges on their last
+                # value with zero operator signal (the exact "looks
+                # instrumented but isn't" trap again).
                 try:
                     await self._sample_metrics_once()
                 except Exception as exc:
@@ -386,7 +386,7 @@ class WorkerLifecycle:
                 dlq = await self._broker.get_dlq_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
             except Exception as exc:
-                # Härtung R2 P2: broad on purpose. Catching only
+                # Broad on purpose. Catching only
                 # BrokerConnectionError let any other error (Timeout,
                 # ChannelInvalidStateError, decode glitch) propagate and
                 # kill the sampler task silently.
@@ -411,7 +411,7 @@ class WorkerLifecycle:
 
     async def _execute_shutdown(self) -> None:  # noqa: C901  # U9 (worker/lifecycle.py)
         """Execute the graceful shutdown sequence."""
-        # Härtung R2 P1-9: bounded — a hanging handler must not stall
+        # Bounded — a hanging handler must not stall
         # the drain/lock-release/close sequence below.
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_SHUTDOWN,

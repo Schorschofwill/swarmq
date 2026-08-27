@@ -93,7 +93,7 @@ class ValkeyResults(ValkeyConnection):
         """Persist a task result under its task_id key with TTL.
 
         *op_timeout* (seconds) bounds the Valkey SET so a slow backend
-        cannot wedge the worker finally-block (REV-P1-3).
+        cannot wedge the worker finally-block.
         """
         await self._run("store_result", self._require_client().set(self._key(task_id), data, px=ttl_ms), op_timeout)
 
@@ -120,7 +120,7 @@ class ValkeyResults(ValkeyConnection):
     async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:  # noqa: C901  # Client-Erbe, 0.2.x
         """Liefert das Ergebnis, sobald vorhanden; ``None`` bei Ablauf.
 
-        Ablauf (Client-Erbe, Härtung R2 P1-2): Pub/Sub zuerst abonnieren
+        Ablauf (Client-Erbe): Pub/Sub zuerst abonnieren
         (schließt das Rennen zwischen Erst-GET und Abonnement), dann Erst-GET,
         dann ein Pub/Sub-Fenster, dann Polling. Jeder GET ist an die
         Rest-Deadline gebunden, damit ein hängendes Valkey den Aufrufer nicht

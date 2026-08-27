@@ -19,7 +19,7 @@ from swarmq.exceptions import ConfigurationError
 #: Keys that ``--check`` always emits on its JSON payload, regardless of
 #: which validation step fails. Callers may rely on ``dict.get(key)`` +
 #: None for uniform handling across success + failure paths
-#: (ce-review #1 / P1: stable field-set contract).
+#: (stable field-set contract).
 _WORKER_CHECK_PAYLOAD_KEYS = (
     "ok",
     "module",
@@ -33,7 +33,7 @@ _WORKER_CHECK_PAYLOAD_KEYS = (
 
 
 def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
-    """Return a payload dict with every ce-review #1 key present.
+    """Return a payload dict with every check-contract key present.
 
     Fields are set to ``None`` until the validator fills them in;
     the JSON contract stays shape-stable regardless of where the
@@ -67,8 +67,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
     - ``1`` — any validation error (module unresolvable, missing
       ``watchfiles`` dep, invalid watch-dir, unexpected exception).
 
-    Unexpected exceptions are caught too (R5.3 ce-review #3 /
-    P1): a :exc:`PermissionError` from ``importlib.util.find_spec``
+    Unexpected exceptions are caught too: a :exc:`PermissionError` from ``importlib.util.find_spec``
     or a ``.pth``-related ``OSError`` must not escape as a raw
     traceback or the stdout-JSON contract is violated for agents
     that parse the output.
@@ -106,7 +105,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
 def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     """Detect ``swarmq worker --check`` from the raw argv.
 
-    ce-review pass 2 #2 / AC-06: when ``--check`` is on the command
+    When ``--check`` is on the command
     line, the caller (agent, CI script) expects JSON on stdout even
     for argparse-shape errors (bad ``--watch-dir`` path, missing
     ``--module``). Looking at the raw argv lets us catch argparse's

@@ -282,7 +282,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.
         "--task",
         required=True,
         metavar="NAME",
-        # Härtung R2 P2: schedule add is backend-only — the name is NOT
+        # schedule add is backend-only — the name is NOT
         # validated against any registry here; a typo surfaces only at
         # fire time as TaskNotFoundError on the worker (plus the
         # scheduler_task_not_in_local_registry warning).

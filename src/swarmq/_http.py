@@ -1,5 +1,5 @@
 """Stdlib asyncio HTTP helper shared by :mod:`swarmq.metrics` and
-:mod:`swarmq.health` (ce-review M-01).
+:mod:`swarmq.health`.
 
 Neither dependency (``/metrics``, ``/health``, ``/ready``) justifies
 pulling in aiohttp or starlette — a 3-endpoint HTTP surface is one
@@ -14,8 +14,8 @@ Public contract:
   ``asyncio.start_server`` with typed-exception conversion on bind
   failure.
 - :func:`parse_http_request` — bounded request-line + header drain
-  with timeout + line-count cap + UnicodeDecodeError hardening (SEC-002,
-  SEC-003). Returns (method, path) or raises :class:`BadRequest` /
+  with timeout + line-count cap + UnicodeDecodeError hardening.
+  Returns (method, path) or raises :class:`BadRequest` /
   :class:`RequestTimeout`.
 - :func:`write_http_response` — framing helper. Shared reason-code
   dictionary.
@@ -44,7 +44,7 @@ _REASON: dict[int, str] = {
 }
 
 # Max header lines accepted in a request. Prevents slow-header DoS
-# by bounding the request-processing loop (ce-review SEC-002).
+# by bounding the request-processing loop.
 _MAX_HEADER_LINES = 200
 # Overall per-request deadline — covers request line + header drain.
 _REQUEST_TIMEOUT_S = 5.0
@@ -81,7 +81,7 @@ async def parse_http_request(
             # ValueError when the line exceeds the 64 KB default limit.
             # Catch at the readline boundary so the client gets 400 and
             # we log-and-move-on instead of _accept()'s broad except
-            # logging a full exception trace (ce-review SEC-F2).
+            # logging a full exception trace.
             try:
                 request_line = await reader.readline()
             except ValueError as exc:
@@ -156,7 +156,7 @@ class AsyncHttpServer:
                 self._accept, host=self._host, port=self._port,
             )
         except OSError as exc:
-            # ce-review REL-01: port conflict / bind failure surfaces
+            # Port conflict / bind failure surfaces
             # as typed RuntimeError with operational context instead
             # of raw OSError.
             raise RuntimeError(

@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 # Buffer added on top of ``hard_timeout`` to derive the lock TTL.
-# (P0-A fix, 2026-06-02 production-safety audit.) The lock TTL is purely a
+# The lock TTL is purely a
 # crash-recovery deadline: under normal operation the holder releases the
 # lock cooperatively (the watchdog cancels the task at ``hard_timeout``), so
 # the TTL never matters. It only fires when a holder dies hard (SIGKILL/OOM)
@@ -56,7 +56,7 @@ def compute_lock_ttl_ms(hard_timeout: int | None) -> int:
     so the lock could expire while the holder was still legitimately
     running and a second worker could acquire the same mutex — duplicate
     execution of work that ``@task(lock=...)`` is meant to serialize.
-    (P0-A, 2026-06-02 production-safety audit.) The same TTL governs
+    The same TTL governs
     semaphore-slot expiry, so this also stops a still-running semaphore
     holder's slot from being swept and over-admitting concurrency.
 
@@ -86,7 +86,7 @@ SCHEDULER_LOCK_NAME = "{sched}:leader"
 """Logical lock name — LockManager's automatic ``sq:lock:`` prefix
 yields the final Valkey key ``sq:lock:{sched}:leader``.
 
-Härtung R2 P1-7: the ``{sched}`` hash tag co-locates the leader lock
+The ``{sched}`` hash tag co-locates the leader lock
 with ``sq:{sched}:zset`` / ``sq:{sched}:defs`` in one Valkey-Cluster
 hash slot — ``sched_commit.lua`` touches all three keys in one EVAL
 and would otherwise fail with CROSSSLOT on a sharded cluster.

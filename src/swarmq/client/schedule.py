@@ -145,7 +145,7 @@ class ClientScheduling:
         Shared helper — single source of truth for the SETNX + dup-
         signal shape used by ``Client.schedule``, ``_schedule_deferred``,
         and ``schedule_many``. Changing the signal payload now requires
-        exactly one edit (plan M-01 / ce-review P2 #10).
+        exactly one edit.
         """
         dedup_hash = compute_dedup_hash(task_name, args, kwargs)
         existing = await self._backend.setnx_unique(
@@ -194,7 +194,7 @@ class ClientScheduling:
             )
 
     def _ensure_schedule_store(self) -> ScheduleStore:
-        """Lazy ``ScheduleStore`` (Fork 2 / Review P2-6). Seit U18 kommt die
+        """Lazy ``ScheduleStore``. Seit U18 kommt die
         Valkey-Seite über ``backend.schedules`` — vor ``connect()`` wirft die
         Fassade ``BackendConnectionError``, hier als ``RuntimeError`` mit
         Hinweis auf ``async with SwarmQ(...)`` / ``backend.connect()``."""
@@ -223,7 +223,7 @@ class ClientScheduling:
 
         Reserved keyword-only args ``delay``, ``eta``, ``unique_for``,
         ``unique_until`` cannot collide with user payloads because they
-        are reserved at ``@app.task`` registration (P1-3).
+        are reserved at ``@app.task`` registration.
 
         Dedup (R3.5) is silent-by-default: a duplicate ``schedule`` call
         within ``unique_for`` seconds returns the *existing* task_id
@@ -318,7 +318,7 @@ class ClientScheduling:
         # sees any middlewares registered after Client construction.
         chain = self._get_chain()
 
-        # R3.5 ce-review P1 #1 / COR-001: if SETNX claimed the flag,
+        # If SETNX claimed the flag,
         # rollback on any downstream failure (pre_enqueue hook raises,
         # encode_json raises, broker.publish raises). Without rollback
         # the flag zombies until TTL while no message exists in the
@@ -425,7 +425,7 @@ class ClientScheduling:
         resolved_queues: dict[int, str] = {}
         task_names: dict[int, str] = {}
         dedup_headers: dict[int, dict[str, Any]] = {}
-        # R3.5 ce-review P1 #2 / COR-002 / ADV-004: track dedup flags
+        # Track dedup flags
         # claimed during Pass 1 so any downstream failure (Pass 1 mid-
         # loop exception, Pass 2 broker publish error) can roll them
         # back. Without this, a partial batch leaves orphan flags
@@ -482,7 +482,7 @@ class ClientScheduling:
         # Pass 1 (parallel): fire all SETNX calls concurrently. Sequential
         # loop was the main per-batch latency cost for dedup-tagged
         # batches — N * Valkey_RTT grew linearly with batch size. Gather
-        # amortises that to 1 * RTT (plan PERF-01 / ce-review P3 #22).
+        # amortises that to 1 * RTT.
         setnx_tasks: dict[int, asyncio.Task[str | None]] = {}
         for i, entry in enumerate(prepped):
             if entry["dedup_hash"] is None:
@@ -730,7 +730,7 @@ class ClientScheduling:
             unique_until=unique_until,
         )
 
-        # R3.5 ce-review P1 #1 / REL-004: rollback the dedup flag if the
+        # Rollback the dedup flag if the
         # ScheduleStore insert fails — for large delays the TTL is
         # (unique_for + fire_offset) seconds, potentially hours of
         # orphan window blocking re-schedule of the same args.

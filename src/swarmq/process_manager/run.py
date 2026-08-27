@@ -37,7 +37,7 @@ def run_multi_process_worker(args: argparse.Namespace, *, admin_factory: AdminFa
             "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set",
         )
 
-    # Härtung R2 P1-8: the supervisor parent never called
+    # The supervisor parent previously never called
     # setup_logging() — only the worker subprocesses did (via
     # SwarmQ.__init__). Result: worker_died / restart_limit_exceeded /
     # autoscale events rendered in structlog's unconfigured console
@@ -71,7 +71,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
             watch_dirs=list(watch_dirs_raw),
         )
 
-    # ce-review Unit 2 + #10: single pre-flight via the public
+    # Single pre-flight via the public
     # validator; check_worker_config runs the same sequence (find_spec,
     # watchfiles availability, watch-dir resolution) that
     # `swarmq worker --check` uses. Fails fast on any misconfiguration
@@ -99,7 +99,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
             )
         queue_depth_fn = _make_queue_depth_sampler(admin_factory, list(args.queues))
 
-    # ce-review REL-01: resolve SwarmQConfig.shutdown_timeout once in
+    # Resolve SwarmQConfig.shutdown_timeout once in
     # the parent and pass it as the phase-1 grace so a subprocess's
     # graceful-shutdown flow has the budget it was configured for.
     from swarmq.config import SwarmQConfig

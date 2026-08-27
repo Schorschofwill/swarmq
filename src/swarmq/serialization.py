@@ -62,7 +62,7 @@ def _canonicalize(obj: Any) -> Any:  # noqa: C901  # Follow-Up 0.2.x
     # Float must reject NaN / +Inf / -Inf: msgspec encodes them as
     # JSON null / Infinity / -Infinity, which either collides with
     # None in the hash (NaN → null) or breaks hash stability across
-    # msgspec versions (ADV-003). Finite floats pass through.
+    # msgspec versions. Finite floats pass through.
     if isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             raise TypeError(
@@ -184,7 +184,7 @@ def _msgpack_default(obj: Any) -> msgpack.ExtType:
     raise TypeError(f"Unknown type: {type(obj)}")
 
 
-# Härtung R2 P2: explicit unpack limits, defensive against a
+# Explicit unpack limits, defensive against a
 # compromised (or foreign-written) backend. msgpack's defaults derive
 # from len(data), which already blocks length-prefix bombs, but pinning
 # explicit ceilings makes the contract independent of msgpack-version
@@ -224,7 +224,7 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
                 data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
             )
         )
-    # 2026-06-02 audit P2-5: fail loud on an unknown ext code instead of
+    # Fail loud on an unknown ext code instead of
     # returning a raw, inert ExtType. An unknown code almost always means
     # schema drift -- a result written by a newer SwarmQ version with an
     # ext type this version does not understand. Silently handing back an

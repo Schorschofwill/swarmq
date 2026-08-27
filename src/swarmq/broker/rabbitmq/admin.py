@@ -44,8 +44,8 @@ class RabbitMQAdmin(RabbitMQDelivery):
     def _parse_task_fields(body: bytes) -> tuple[str | None, str | None, dict[str, Any] | None]:
         """Extract (task_id, task_name, payload_dict) from a SwarmQ message body.
 
-        Single-pass replacement for the earlier double-parse (plan M-5 /
-        KP-3). All three values are None when the body isn't valid
+        Single-pass replacement for the earlier double-parse. All
+        three values are None when the body isn't valid
         SwarmQ-shaped JSON. Catches both ``ValueError`` (bad JSON) and
         ``TypeError`` (body isn't bytes/str) so malformed inputs never
         crash the drain loop.
@@ -116,7 +116,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
             drain everything, forward valid messages to main, but route
             unparseable bodies back to the DLQ instead of re-publishing
             garbage into main that the worker would just dead-letter
-            again (plan P2 #6 / ADV-003).
+            again.
 
         Why drain+republish and not ``nack(requeue=True)``:
         ``basic.nack(requeue=True)`` re-inserts messages at the HEAD of
@@ -137,7 +137,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         Crash safety: if the process dies mid-drain, any messages that
         have been read but not yet republished are lost. Per-message
         republish-error handling: an AMQP error on one republish does
-        NOT abort the rest (plan P1 #1 / R-1) — the loop catches each
+        NOT abort the rest — the loop catches each
         publish individually, logs, and continues. After the loop runs
         to completion, the first collected error is re-raised so the
         caller observes the failure.
@@ -167,7 +167,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
                 # Malformed = we could not extract a task_id; such
                 # messages cannot be tracked for dedup or retried
                 # meaningfully. retry_all skips them to avoid an
-                # infinite cycle (plan ADV-003).
+                # infinite cycle.
                 is_malformed = task_id is None
                 entries.append(entry)
                 if is_match:
@@ -177,7 +177,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     break
         finally:
             # Per-item try/except so one publish failure doesn't truncate
-            # the rest of the drain (plan R-1). Failures are collected
+            # the rest of the drain. Failures are collected
             # and logged; the first is re-raised after the loop.
             errors: list[BaseException] = []
             for body, headers, is_match, is_malformed in drained:
@@ -190,8 +190,8 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     if to_main and skip_malformed_on_move and is_malformed:
                         to_main = False
 
-                    # Route through _publish_with_retry (ce-review R-1 /
-                    # C-01 / KP-002): transient channel errors during
+                    # Route through _publish_with_retry: transient
+                    # channel errors during
                     # reconnect windows must not silently drop drained
                     # messages. Same contract as every other publish
                     # site.
@@ -286,7 +286,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
 
         Returns ``(found, scanned_count)``. Uses
         ``break_after_first_match`` so duplicate task_ids in the DLQ
-        are NOT all forwarded by a single call (plan C-2 / ADV-002).
+        are NOT all forwarded by a single call.
 
         The ``x-swarmq-retry-count`` header is stripped on forward so
         the message gets the full retry budget again (operator intent:
@@ -308,7 +308,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         messages (invalid JSON, missing task.id) are routed back to the
         DLQ instead of forward to main — the worker would just fail to
         deserialize them and dead-letter them again, causing an
-        operator-invisible infinite cycle (plan ADV-003). Operator
+        operator-invisible infinite cycle. Operator
         clears these via ``purge``.
 
         ``scanned_count`` equals the total number of messages drained
@@ -382,7 +382,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """Return the live message count of ``{queue}.XQ`` (the
         dead-letter queue). Unlike queue_depth (which excludes the
         DLQ), this is exactly the "work that failed" backlog operators
-        alert on (2026-06-02 audit, P1-3)."""
+        alert on."""
         return await self._throwaway_channel_message_count(f"{queue}.XQ")
 
     # ------------------------------------------------------------------
