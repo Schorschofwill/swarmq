@@ -74,15 +74,16 @@ _CONFORMING = """
 """
 
 _FORGED_RECEIPT = """
-    from swarmq.contracts import PublishReceipt
+    from typing import Any
 
-    def mark_enqueued(receipt: PublishReceipt) -> None: ...
+    from swarmq.workflow_orchestration import WorkflowAdvancer
 
-    class Fake:
-        queue = "q"
-        message_id = None
+    def forge(advancer: WorkflowAdvancer, state: dict[str, Any]) -> None:
+        class Fake:
+            queue = "q"
+            message_id = None
 
-    mark_enqueued(Fake())
+        advancer.mark_enqueued(state, "/1", "tid", Fake())
 """
 
 
