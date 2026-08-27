@@ -23,6 +23,7 @@ from swarmq.workflow_orchestration import (
     initial_frontier,
     workflow_step_task_id,
 )
+from tests.support.inmemory import FakeClock, InMemoryBackend
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -34,50 +35,13 @@ class Echo(Task):
         return list(args)
 
 
-class FakeBackend:
-    def __init__(self) -> None:
-        self.wf_state: dict[str, bytes] = {}
-        self.results: dict[str, bytes] = {}
-        self.cancelled: set[str] = set()
-        self.notified: list[str] = []
-
-    async def get_workflow_state(self, wf_id, op_timeout=None):
-        return self.wf_state.get(wf_id)
-
-    async def store_workflow_state(self, wf_id, data, ttl_ms, op_timeout=None):
-        self.wf_state[wf_id] = data
-
-    async def get_result(self, task_id):
-        return self.results.get(task_id)
-
-    async def get_results_batch(self, task_ids):
-        return [self.results.get(tid) for tid in task_ids]
-
-    async def store_result(self, task_id, data, ttl_ms, op_timeout=None):
-        self.results[task_id] = data
-
-    async def is_workflow_cancelled(self, wf_id, op_timeout=None):
-        return wf_id in self.cancelled
-
-    async def publish_workflow_notification(self, wf_id):
-        self.notified.append(wf_id)
 
 
-class FakeChord:
-    """In-memory equivalent of chord_complete.lua: a distinct-member set
-    keyed by (wf_id, chord_id). Mirrors the post-fix Lua contract — returns
-    True on EVERY call once the set has reached N (no internal one-shot
-    flag); the real one-shot is the advancer's publish-then-mark
-    step_tasks["/b"] marker."""
-
-    def __init__(self) -> None:
-        self._sets: dict[tuple[str, str], set[str]] = {}
-
-    async def record_and_check_complete(self, wf_id, chord_id, member_id, n, ttl):
-        key = (wf_id, chord_id)
-        s = self._sets.setdefault(key, set())
-        s.add(member_id)
-        return len(s) == n
+def _connected_backend() -> InMemoryBackend:
+    """In-Memory-Stub (Plan U4) statt des früheren lokalen FakeBackend."""
+    backend = InMemoryBackend(FakeClock())
+    backend._connected = True  # synchron „verbunden" — connect() ist async
+    return backend
 
 
 def _unpack(raw: bytes):
@@ -95,8 +59,8 @@ class Driver:
     advancing the workflow — until no work remains."""
 
     def __init__(self, workflow):
-        self.backend = FakeBackend()
-        self.chord = FakeChord()
+        self.backend = _connected_backend()
+        self.chord = self.backend.chords
         self.published: list[tuple[str, bytes, dict]] = []
         self.wf_id = "wf-test"
         self.advancer = WorkflowAdvancer(
@@ -118,14 +82,18 @@ class Driver:
         task_id = msg["task"]["id"]
         # Echo task: result is the arg list (captures injected predecessor).
         result_value = list(msg["args"])
-        self.backend.results[task_id] = encode_result(
-            {
-                "task": msg["task"],
-                "is_error": False,
-                "is_cancelled": False,
-                "error_message": "",
-                "result": result_value,
-            }
+        await self.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": msg["task"],
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": result_value,
+                }
+            ),
+            60_000,
         )
         return task_id
 
@@ -136,18 +104,22 @@ class Driver:
             tid = f"seed-{step_path}"
             step_tasks[step_path] = tid
         state["step_tasks"] = step_tasks
-        self.backend.wf_state[self.wf_id] = encode_json(state)
+        await self.backend.store_workflow_state(self.wf_id, encode_json(state), 60_000)
         # "Publish" the initial frontier and run it through the driver.
         for step_path, sig in initial_frontier(self.workflow):
             tid = step_tasks[step_path]
-            self.backend.results[tid] = encode_result(
-                {
-                    "task": {"id": tid, "queue": "default", "name": sig.task_name},
-                    "is_error": False,
-                    "is_cancelled": False,
-                    "error_message": "",
-                    "result": list(sig.args),
-                }
+            await self.backend.store_result(
+                tid,
+                encode_result(
+                    {
+                        "task": {"id": tid, "queue": "default", "name": sig.task_name},
+                        "is_error": False,
+                        "is_cancelled": False,
+                        "error_message": "",
+                        "result": list(sig.args),
+                    }
+                ),
+                60_000,
             )
             await self.advancer.advance(self.wf_id, step_path, tid, list(sig.args))
 
@@ -157,18 +129,24 @@ class Driver:
             _queue, body, headers = self.published.pop(0)
             step_path = headers["x-swarmq-workflow-step"]
             task_id = await self._run_step(body)
-            result_value = decode_result(self.backend.results[task_id])["result"]
+            raw = await self.backend.get_result(task_id)
+            assert raw is not None
+            result_value = decode_result(raw)["result"]
             await self.advancer.advance(self.wf_id, step_path, task_id, result_value)
 
     async def state(self) -> dict:
-        return decode_json(self.backend.wf_state[self.wf_id])
+        raw = await self.backend.get_workflow_state(self.wf_id)
+        assert raw is not None
+        return decode_json(raw)
 
     async def final_value(self):
         st = await self.state()
         fid = st["final_result_task_id"]
         if fid is None:
             return None
-        return decode_result(self.backend.results[fid])["result"]
+        raw = await self.backend.get_result(fid)
+        assert raw is not None
+        return decode_result(raw)["result"]
 
 
 # --------------------------------------------------------------------------
@@ -208,7 +186,7 @@ async def test_chain_immutable_suppresses_injection():
 async def test_cancel_gate_stops_advancement():
     d = Driver(chain(Echo.s("a"), Echo.s(), Echo.s()))
     await d.seed()
-    d.backend.cancelled.add(d.wf_id)  # cancel before draining
+    await d.backend.set_workflow_cancel_flag(d.wf_id, 60_000)  # cancel before draining
     await d.drain()
     st = await d.state()
     assert st["status"] == STATUS_CANCELLED
@@ -246,8 +224,8 @@ async def test_expired_member_result_raises_workflow_result_expired():
     # must raise WorkflowResultExpired, not silently pass None to the body.
     from swarmq.exceptions import WorkflowResultExpired
 
-    be = FakeBackend()
-    ch = FakeChord()
+    be = _connected_backend()
+    ch = be.chords
     adv = WorkflowAdvancer(
         be,
         ch,
@@ -260,16 +238,20 @@ async def test_expired_member_result_raises_workflow_result_expired():
     wf = chord(group(Echo.s("a"), Echo.s("b")), Echo.s())
     state = build_initial_workflow_state("wf", wf.to_dict())
     state["step_tasks"] = {"/h/g0": "m0", "/h/g1": "m1"}
-    be.wf_state["wf"] = encode_json(state)
+    await be.store_workflow_state("wf", encode_json(state), 60_000)
     # Only m1's result exists; m0 expired before fan-in.
-    be.results["m1"] = encode_result(
-        {
-            "task": {"id": "m1", "queue": "default", "name": "echo"},
-            "is_error": False,
-            "is_cancelled": False,
-            "error_message": "",
-            "result": ["b"],
-        }
+    await be.store_result(
+        "m1",
+        encode_result(
+            {
+                "task": {"id": "m1", "queue": "default", "name": "echo"},
+                "is_error": False,
+                "is_cancelled": False,
+                "error_message": "",
+                "result": ["b"],
+            }
+        ),
+        60_000,
     )
     await adv.advance("wf", "/h/g0", "m0", ["a"])  # 1/2 — no gather yet
     with pytest.raises(WorkflowResultExpired):
@@ -318,7 +300,7 @@ async def test_chord_member_redelivery_enqueues_body_once():
 
     assert len(_body_msgs()) == 1
     last_tid = (await d.state())["step_tasks"]["/h/g1"]
-    # Redeliver the last header member: FakeChord reports complete=True again.
+    # Redeliver the last header member: der Chord-Store meldet erneut complete=True.
     await d.advancer.advance(d.wf_id, "/h/g1", last_tid, ["b"])
     assert len(_body_msgs()) == 1  # marker prevents a second body enqueue
 

@@ -131,6 +131,11 @@ module = [
     # 0.2.0 (KTD8 Phase 1): neue Pakete sind von Beginn an strict.
     "swarmq.contracts",
     "swarmq.contracts.*",
+    # Stub und Contract-Klassen laufen unter demselben strict-Gate (KTD1, U4).
+    "tests.support",
+    "tests.support.*",
+    "tests.contracts",
+    "tests.contracts.*",
 ]
 strict = true
 

@@ -17,6 +17,7 @@ from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.signals import Signal
 from swarmq.task import TaskInfo
 from swarmq.worker import Worker, WorkerState
+from tests.support.messages import make_message
 
 
 class TestTaskInfoMaxAge:
@@ -51,20 +52,18 @@ def _make_worker() -> Worker:
     return w
 
 
-def _make_message(enqueued_at: int | None) -> MagicMock:
-    msg = MagicMock()
-    msg.body = b'{"task": {"id": "t1", "name": "t", "queue": "q"}, "args": [], "kwargs": {}}'
-    msg.headers = {}
-    if enqueued_at is not None:
-        msg.headers[HEADER_ENQUEUED_AT] = enqueued_at
-    return msg
+_EXPIRY_BODY = b'{"task": {"id": "t1", "name": "t", "queue": "q"}, "args": [], "kwargs": {}}'
+
+
+def _expiry_message(enqueued_at: int | None) -> MagicMock:
+    return make_message(body=_EXPIRY_BODY, enqueued_at=enqueued_at)
 
 
 class TestCheckMaxAgeExpired:
     async def test_returns_false_when_max_age_not_set(self):
         w = _make_worker()
         ti = TaskInfo(name="t", queues=["q"])
-        msg = _make_message(int(time.time()) - 99999)
+        msg = _expiry_message(int(time.time()) - 99999)
         handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
         assert handled is False
         w._broker.publish_to_dead_letter_queue.assert_not_awaited()
@@ -75,14 +74,14 @@ class TestCheckMaxAgeExpired:
         pathological loops."""
         w = _make_worker()
         ti = TaskInfo(name="t", queues=["q"], max_age=60)
-        msg = _make_message(enqueued_at=None)
+        msg = _expiry_message(enqueued_at=None)
         handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
         assert handled is False
 
     async def test_returns_false_when_header_corrupt(self):
         w = _make_worker()
         ti = TaskInfo(name="t", queues=["q"], max_age=60)
-        msg = _make_message(0)
+        msg = _expiry_message(0)
         msg.headers[HEADER_ENQUEUED_AT] = "not-a-number"
         handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
         assert handled is False
@@ -90,7 +89,7 @@ class TestCheckMaxAgeExpired:
     async def test_fresh_message_not_expired(self):
         w = _make_worker()
         ti = TaskInfo(name="t", queues=["q"], max_age=60)
-        msg = _make_message(int(time.time()) - 5)  # 5s old, limit 60
+        msg = _expiry_message(int(time.time()) - 5)  # 5s old, limit 60
         handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
         assert handled is False
 
@@ -104,7 +103,7 @@ class TestCheckMaxAgeExpired:
             captured.append(kw)
 
         ti = TaskInfo(name="t", queues=["q"], max_age=60)
-        msg = _make_message(int(time.time()) - 120)  # 120s old, limit 60
+        msg = _expiry_message(int(time.time()) - 120)  # 120s old, limit 60
         handled = await w._check_max_age_expired(msg, ti, "q", "id-xyz", "t")
         assert handled is True
         w._broker.publish_to_dead_letter_queue.assert_awaited_once()
@@ -117,7 +116,7 @@ class TestCheckMaxAgeExpired:
     async def test_expired_stores_error_result_for_callers(self):
         w = _make_worker()
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
-        msg = _make_message(int(time.time()) - 30)
+        msg = _expiry_message(int(time.time()) - 30)
         await w._check_max_age_expired(msg, ti, "q", "id", "t")
         w._backend.store_result.assert_awaited_once()
         call = w._backend.store_result.await_args
@@ -136,7 +135,7 @@ class TestCheckMaxAgeExpired:
         w = _make_worker()
         w._config.result_ttl = 0
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
-        msg = _make_message(int(time.time()) - 30)
+        msg = _expiry_message(int(time.time()) - 30)
 
         handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
 
@@ -153,7 +152,7 @@ class TestCheckMaxAgeExpired:
             side_effect=BackendConnectionError("valkey down"),
         )
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
-        msg = _make_message(int(time.time()) - 30)
+        msg = _expiry_message(int(time.time()) - 30)
         handled = await w._check_max_age_expired(msg, ti, "q", "id", "t")
         assert handled is True
         # DLQ + ack still happen even though store_result failed.

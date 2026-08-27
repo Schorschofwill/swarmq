@@ -30,9 +30,9 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
-from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
+from tests.support.messages import make_message
 
 # Module-level capture buffers, reset per test.
 CAPTURED: list[str] = []
@@ -69,13 +69,6 @@ class DiFailTask(Task):
         raise ValueError("boom")
 
 
-def _make_message(payload: dict, headers: dict | None = None) -> MagicMock:
-    msg = MagicMock()
-    msg.body = encode_json(payload)
-    msg.headers = headers or {}
-    msg.ack = AsyncMock()
-    msg.nack = AsyncMock()
-    return msg
 
 
 def _payload(task_id: str, name: str, args: list) -> dict:
@@ -146,7 +139,7 @@ async def test_injection_through_handle_message(broker, backend, config):
     di.setup_dishka(container)
     try:
         worker = _worker(broker, backend, config, DiTask)
-        await worker._handle_message(_make_message(_payload("t-1", "di_task", [7])))
+        await worker._handle_message(make_message(_payload("t-1", "di_task", [7])))
     finally:
         await container.close()
 
@@ -163,7 +156,7 @@ async def test_finalizer_receives_exception(broker, backend, config):
     di.setup_dishka(container)
     try:
         worker = _worker(broker, backend, config, DiFailTask)
-        await worker._handle_message(_make_message(_payload("t-err", "di_fail", [])))
+        await worker._handle_message(make_message(_payload("t-err", "di_fail", [])))
     finally:
         await container.close()
 
@@ -178,7 +171,7 @@ async def test_concurrent_tasks_get_distinct_request_scopes(broker, backend, con
     di.setup_dishka(container)
     try:
         worker = _worker(broker, backend, config, DiTask)
-        msgs = [_make_message(_payload(f"c-{i}", "di_task", [i])) for i in range(5)]
+        msgs = [make_message(_payload(f"c-{i}", "di_task", [i])) for i in range(5)]
         await asyncio.gather(*(worker._handle_message(m) for m in msgs))
     finally:
         await container.close()
@@ -201,7 +194,7 @@ async def test_no_container_registered_skips_di_path(broker, backend, config):
             return x + 1
 
     worker = _worker(broker, backend, config, PlainTask)
-    await worker._handle_message(_make_message(_payload("p-1", "plain_w", [4])))
+    await worker._handle_message(make_message(_payload("p-1", "plain_w", [4])))
     assert FINALIZED == []  # no scope opened
     broker.ack.assert_awaited_once()
 

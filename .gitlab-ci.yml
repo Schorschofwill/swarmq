@@ -107,7 +107,7 @@ lint-and-types:
   before_script: []
   script:
     - $UV_RUN ruff check src/ tests/
-    - $UV_RUN mypy src/swarmq
+    - $UV_RUN mypy src/swarmq tests/support tests/contracts
 
 # Tier 1 — unit + property. No external services; the fast regression gate.
 # Guards against uv.lock drifting from pyproject.toml — including optional

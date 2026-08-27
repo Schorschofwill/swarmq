@@ -20,32 +20,18 @@ from swarmq.exceptions import (
 
 # SwarmQConfig is used in fixtures for the Unit 7 monitor tests.
 from swarmq.registry import TaskRegistry
-from swarmq.serialization import decode_result, encode_json
+from swarmq.serialization import decode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
+from tests.support.messages import make_message
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_message(payload: dict, headers: dict | None = None) -> MagicMock:
-    """Create a mock AMQP message with JSON-encoded body."""
-    msg = MagicMock()
-    msg.body = encode_json(payload)
-    msg.headers = headers or {}
-    msg.ack = AsyncMock()
-    msg.nack = AsyncMock()
-    return msg
 
 
-def _make_raw_message(body: bytes) -> MagicMock:
-    """Create a mock AMQP message with raw bytes body."""
-    msg = MagicMock()
-    msg.body = body
-    msg.ack = AsyncMock()
-    msg.nack = AsyncMock()
-    return msg
 
 
 def _default_payload(
@@ -140,7 +126,7 @@ def worker(broker, backend, registry, config):
 
 @pytest.mark.asyncio
 async def test_happy_path_message_processed_and_acked(worker, broker, backend):
-    msg = _make_message(_default_payload())
+    msg = make_message(_default_payload())
 
     await worker._handle_message(msg)
 
@@ -161,7 +147,7 @@ async def test_happy_path_message_processed_and_acked(worker, broker, backend):
 
 @pytest.mark.asyncio
 async def test_return_value_serialized_in_result_dict(worker, backend):
-    msg = _make_message(_default_payload(args=[10, 20]))
+    msg = make_message(_default_payload(args=[10, 20]))
 
     await worker._handle_message(msg)
 
@@ -197,7 +183,7 @@ async def test_pre_and_post_execution_called(broker, backend, config):
     reg.register(LifecycleTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="lifecycle", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="lifecycle", args=[], kwargs={}))
     await w._handle_message(msg)
 
     assert call_order == ["pre", "run", "post"]
@@ -239,7 +225,7 @@ async def test_semaphore_limits_concurrency(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config_limited)
 
     messages = [
-        _make_message(_default_payload(task_id=f"t-{i}", name="slow", args=[], kwargs={}))
+        make_message(_default_payload(task_id=f"t-{i}", name="slow", args=[], kwargs={}))
         for i in range(6)
     ]
     await asyncio.gather(*(w._handle_message(m) for m in messages))
@@ -264,7 +250,7 @@ async def test_result_ttl_zero_skips_store(broker, backend, config):
     reg.register(NoStoreTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="nostore", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="nostore", args=[], kwargs={}))
     await w._handle_message(msg)
 
     backend.store_result.assert_not_awaited()
@@ -288,7 +274,7 @@ async def test_task_exception_stores_error_result(broker, backend, config):
     reg.register(FailTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="fail", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="fail", args=[], kwargs={}))
     await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -324,7 +310,7 @@ async def test_pre_execution_raises_skips_post(broker, backend, config):
     reg.register(PreFailTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="prefail", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="prefail", args=[], kwargs={}))
     await w._handle_message(msg)
 
     assert post_called is False
@@ -354,7 +340,7 @@ async def test_post_execution_raises_overwrites_success(broker, backend, config)
     reg.register(PostFailTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="postfail", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="postfail", args=[], kwargs={}))
     await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -380,7 +366,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
     reg.register(BadResultTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="badresult", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="badresult", args=[], kwargs={}))
     await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -397,7 +383,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
 
 @pytest.mark.asyncio
 async def test_unknown_task_nacked_no_requeue(worker, broker, backend):
-    msg = _make_message(_default_payload(name="nonexistent"))
+    msg = make_message(_default_payload(name="nonexistent"))
 
     await worker._handle_message(msg)
 
@@ -416,7 +402,7 @@ async def test_backend_error_nacks_with_requeue(worker, broker, backend):
     backend.store_result = AsyncMock(
         side_effect=BackendConnectionError("conn lost")
     )
-    msg = _make_message(_default_payload())
+    msg = make_message(_default_payload())
 
     await worker._handle_message(msg)
 
@@ -431,7 +417,7 @@ async def test_backend_error_nacks_with_requeue(worker, broker, backend):
 
 @pytest.mark.asyncio
 async def test_invalid_json_nacked_no_requeue(worker, broker, backend):
-    msg = _make_raw_message(b"not valid json {{{")
+    msg = make_message(body=b"not valid json {{{")
 
     await worker._handle_message(msg)
 
@@ -448,7 +434,7 @@ async def test_invalid_json_nacked_no_requeue(worker, broker, backend):
 @pytest.mark.asyncio
 async def test_missing_task_name_nacked_no_requeue(worker, broker, backend):
     payload = {"task": {"id": "abc", "queue": "default"}, "args": [], "kwargs": {}}
-    msg = _make_message(payload)
+    msg = make_message(payload)
 
     await worker._handle_message(msg)
 
@@ -474,7 +460,7 @@ async def test_none_return_stored(broker, backend, config):
     reg.register(NoneTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="nonetask", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="nonetask", args=[], kwargs={}))
     await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -507,8 +493,8 @@ async def test_semaphore_released_on_error(broker, backend, config):
     )
     w = Worker(broker=broker, backend=backend, registry=reg, config=config_one)
 
-    msg1 = _make_message(_default_payload(name="explode", args=[], kwargs={}))
-    msg2 = _make_message(_default_payload(name="explode", args=[], kwargs={}))
+    msg1 = make_message(_default_payload(name="explode", args=[], kwargs={}))
+    msg2 = make_message(_default_payload(name="explode", args=[], kwargs={}))
 
     # If semaphore leaks, second message would hang forever
     await asyncio.wait_for(
@@ -527,7 +513,7 @@ async def test_semaphore_released_on_error(broker, backend, config):
 @pytest.mark.asyncio
 async def test_on_message_creates_task(worker, broker, backend):
     """_on_message should return immediately, spawning _handle_message as a task."""
-    msg = _make_message(_default_payload())
+    msg = make_message(_default_payload())
 
     await worker._on_message(msg)
 
@@ -608,7 +594,7 @@ async def test_result_ttl_from_task_info(broker, backend, config):
     reg.register(TtlTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="ttltask", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="ttltask", args=[], kwargs={}))
     await w._handle_message(msg)
 
     call_args = backend.store_result.call_args
@@ -617,7 +603,7 @@ async def test_result_ttl_from_task_info(broker, backend, config):
 
 @pytest.mark.asyncio
 async def test_result_ttl_falls_back_to_config(worker, backend):
-    msg = _make_message(_default_payload())
+    msg = make_message(_default_payload())
 
     await worker._handle_message(msg)
 
@@ -649,7 +635,7 @@ async def test_handle_message_binds_contextvars(broker, backend, config):
 
     structlog.contextvars.clear_contextvars()
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(task_id="ctx-123", name="captask", queue="myqueue", args=[], kwargs={})
     )
     await w._handle_message(msg)
@@ -712,7 +698,7 @@ async def test_fire_and_forget_acks_before_execution(broker, backend, config):
     reg.register(FnfTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="fnf", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="fnf", args=[], kwargs={}))
     await w._handle_message(msg)
 
     assert ack_happened_before_run is True
@@ -739,7 +725,7 @@ async def test_at_least_once_acks_after_execution(broker, backend, config):
     reg.register(AloTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="alo", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="alo", args=[], kwargs={}))
     await w._handle_message(msg)
 
     # ack must NOT have been called during run()
@@ -768,7 +754,7 @@ async def test_fire_and_forget_with_explicit_result_ttl_stores_result(broker, ba
     reg.register(FnfWithTtlTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="fnf_ttl", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="fnf_ttl", args=[], kwargs={}))
     await w._handle_message(msg)
 
     # Result MUST be stored with the explicit TTL
@@ -799,7 +785,7 @@ async def test_fire_and_forget_without_result_ttl_skips_storage(broker, backend,
     reg.register(FnfNoTtlTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="fnf_no_ttl", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="fnf_no_ttl", args=[], kwargs={}))
     await w._handle_message(msg)
 
     # Result must NOT be stored
@@ -826,7 +812,7 @@ async def test_fire_and_forget_exception_logged_no_nack(broker, backend, config)
     reg.register(FnfFailTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="fnf_fail", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="fnf_fail", args=[], kwargs={}))
 
     with patch("swarmq.worker.logger") as mock_logger:
         await w._handle_message(msg)
@@ -868,7 +854,7 @@ async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
     reg.register(DefaultDeliveryTask2)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="default_delivery2", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="default_delivery2", args=[], kwargs={}))
     await w._handle_message(msg)
 
     assert ack_count_during_run == 0  # not acked during execution
@@ -896,7 +882,7 @@ async def test_retry_first_failure_publishes_to_delay_queue(broker, backend, con
     reg.register(RetryTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="retry_task", args=[], kwargs={}),
         headers={},
     )
@@ -934,7 +920,7 @@ async def test_retry_count_incremented_in_headers(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     # First attempt (retry_count=0 in headers)
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="retry_inc", args=[], kwargs={}),
         headers={"x-swarmq-retry-count": 0},
     )
@@ -947,7 +933,7 @@ async def test_retry_count_incremented_in_headers(broker, backend, config):
     # Second attempt (retry_count=1 in headers)
     broker.publish_to_delay_queue.reset_mock()
     broker.ack.reset_mock()
-    msg2 = _make_message(
+    msg2 = make_message(
         _default_payload(name="retry_inc", args=[], kwargs={}),
         headers={"x-swarmq-retry-count": 1},
     )
@@ -975,7 +961,7 @@ async def test_retries_exhausted_sends_to_dlq(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     # Simulate retry_count=2 (== max_retries) -> exhausted
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="retry_exhaust", args=[], kwargs={}),
         headers={"x-swarmq-retry-count": 2},
     )
@@ -1007,7 +993,7 @@ async def test_retry_exception_overrides_backoff_delay(broker, backend, config):
     reg.register(RetryDelayTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="retry_delay", args=[], kwargs={}),
         headers={},
     )
@@ -1037,7 +1023,7 @@ async def test_noretry_exception_sends_to_dlq_directly(broker, backend, config):
     reg.register(NoRetryTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="noretry_task", args=[], kwargs={}),
         headers={},
     )
@@ -1069,7 +1055,7 @@ async def test_retry_exceptions_mismatch_sends_to_dlq(broker, backend, config):
     reg.register(FilteredRetryTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="filtered_retry", args=[], kwargs={}),
         headers={},
     )
@@ -1100,7 +1086,7 @@ async def test_retry_exceptions_match_retries(broker, backend, config):
     reg.register(FilteredRetryTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="filtered_retry_match", args=[], kwargs={}),
         headers={},
     )
@@ -1143,7 +1129,7 @@ async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
     async def _on_dlq(**kw):
         dlq_signals.append(kw)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="no_retry_default", args=[], kwargs={}),
         headers={},
     )
@@ -1180,7 +1166,7 @@ async def test_fire_and_forget_not_retried(broker, backend, config):
     reg.register(FnfRetryTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="fnf_retry", args=[], kwargs={}),
         headers={},
     )
@@ -1202,7 +1188,7 @@ async def test_fire_and_forget_not_retried(broker, backend, config):
 @pytest.mark.asyncio
 async def test_publish_notification_after_success(worker, broker, backend):
     """After successful task -> publish_notification(task_id) called."""
-    msg = _make_message(_default_payload())
+    msg = make_message(_default_payload())
 
     await worker._handle_message(msg)
 
@@ -1223,7 +1209,7 @@ async def test_publish_notification_after_error(broker, backend, config):
     reg.register(ErrorTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="error_notify", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="error_notify", args=[], kwargs={}))
     await w._handle_message(msg)
 
     backend.publish_notification.assert_awaited_once_with("abc-123")
@@ -1246,7 +1232,7 @@ async def test_publish_notification_after_dlq(broker, backend, config):
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     # retry_count == max_retries -> exhausted -> DLQ
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="dlq_notify", args=[], kwargs={}),
         headers={"x-swarmq-retry-count": 1},
     )
@@ -1270,7 +1256,7 @@ async def test_publish_notification_skipped_when_result_ttl_zero(broker, backend
     reg.register(NoTtlTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="no_ttl_notify", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="no_ttl_notify", args=[], kwargs={}))
     await w._handle_message(msg)
 
     backend.store_result.assert_not_awaited()
@@ -1292,7 +1278,7 @@ async def test_publish_notification_failure_does_not_block_ack(broker, backend, 
     reg.register(NotifyFailTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="notify_fail", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="notify_fail", args=[], kwargs={}))
     await w._handle_message(msg)
 
     # publish_notification was called (and failed)
@@ -1361,7 +1347,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(_default_payload(name="order_pre", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="order_pre", args=[], kwargs={}))
         await w._handle_message(msg)
 
         assert call_order == ["pre_execute", "run"]
@@ -1391,7 +1377,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(_default_payload(name="good_post", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="good_post", args=[], kwargs={}))
         await w._handle_message(msg)
 
         mw_chain.run_post_execute.assert_awaited_once()
@@ -1427,7 +1413,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(_default_payload(name="post_fail_hook", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="post_fail_hook", args=[], kwargs={}))
         await w._handle_message(msg)
 
         # post_execute (middleware) was NOT called because the lifecycle errored
@@ -1457,7 +1443,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(_default_payload(name="boom_hook", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="boom_hook", args=[], kwargs={}))
         await w._handle_message(msg)
 
         mw_chain.run_on_error.assert_awaited_once()
@@ -1492,7 +1478,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="retry_hook", args=[], kwargs={}),
             headers={},
         )
@@ -1542,7 +1528,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="retry_both", args=[], kwargs={}),
             headers={},
         )
@@ -1579,7 +1565,7 @@ class TestWorkerMiddlewareAndSignals:
         )
 
         # retry_count == max_retries (2) -> DLQ, no retry
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="exhausted_hook", args=[], kwargs={}),
             headers={"x-swarmq-retry-count": 2},
         )
@@ -1619,7 +1605,7 @@ class TestWorkerMiddlewareAndSignals:
         )
 
         # Start with retry_count=2 in headers -> next attempt is 3
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="retry_sync", args=[], kwargs={}),
             headers={"x-swarmq-retry-count": 2},
         )
@@ -1651,7 +1637,7 @@ class TestWorkerMiddlewareAndSignals:
             signal_dispatcher=dispatcher,
         )
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await w._handle_message(msg)
 
         started_calls = [
@@ -1681,7 +1667,7 @@ class TestWorkerMiddlewareAndSignals:
             signal_dispatcher=dispatcher,
         )
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await w._handle_message(msg)
 
         completed_calls = [
@@ -1721,7 +1707,7 @@ class TestWorkerMiddlewareAndSignals:
             signal_dispatcher=dispatcher,
         )
 
-        msg = _make_message(_default_payload(name="fail_sig", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="fail_sig", args=[], kwargs={}))
         await w._handle_message(msg)
 
         failed_calls = [
@@ -1764,7 +1750,7 @@ class TestWorkerMiddlewareAndSignals:
             signal_dispatcher=dispatcher,
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="retry_sig", args=[], kwargs={}),
             headers={},
         )
@@ -1845,7 +1831,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=mw_chain,
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(
                 task_id="mid-1",
                 queue="myq",
@@ -1878,7 +1864,7 @@ class TestWorkerMiddlewareAndSignals:
         # Neither middleware_chain nor signal_dispatcher provided
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await w._handle_message(msg)
 
         # Happy-path invariants hold
@@ -1918,9 +1904,9 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=factory,
         )
 
-        msg1 = _make_message(_default_payload())
+        msg1 = make_message(_default_payload())
         await w._handle_message(msg1)
-        msg2 = _make_message(_default_payload())
+        msg2 = make_message(_default_payload())
         await w._handle_message(msg2)
 
         assert factory.call_count == 2
@@ -1981,7 +1967,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=factory,
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="mw_retry_chain_identity", args=[], kwargs={})
         )
         await w._handle_message(msg)
@@ -2024,7 +2010,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=chain,
         )
 
-        await w._handle_message(_make_message(_default_payload()))
+        await w._handle_message(make_message(_default_payload()))
 
         assert [name for name, _ in captured] == ["pre", "post"]
 
@@ -2047,7 +2033,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=bad_factory,
         )
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await w._handle_message(msg)
 
         broker.nack.assert_awaited_once_with(msg, requeue=False)
@@ -2076,7 +2062,7 @@ class TestWorkerRateLimiting:
         w._rate_limiter = MagicMock()
         w._rate_limiter.check = AsyncMock(return_value=(True, 9, 0))
 
-        msg = _make_message(_default_payload(name="rate_limited", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="rate_limited", args=[], kwargs={}))
 
         async def _run(self):
             return None
@@ -2125,7 +2111,7 @@ class TestWorkerRateLimiting:
             ran = True
 
         with patch.object(RateLimitedTask, "run", _run):
-            msg = _make_message(
+            msg = make_message(
                 _default_payload(name="rate_limited", args=[], kwargs={})
             )
             await w._handle_message(msg)
@@ -2153,7 +2139,7 @@ class TestWorkerRateLimiting:
         w._rate_limiter = MagicMock()
         w._rate_limiter.check = AsyncMock()
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await w._handle_message(msg)
 
         w._rate_limiter.check.assert_not_called()
@@ -2178,7 +2164,7 @@ class TestWorkerRateLimiting:
             ran = True
 
         with patch.object(RateLimitedTask, "run", _run):
-            msg = _make_message(
+            msg = make_message(
                 _default_payload(name="rate_limited", args=[], kwargs={})
             )
             await w._handle_message(msg)
@@ -2203,7 +2189,7 @@ class TestWorkerRateLimiting:
             side_effect=ConnectionError("valkey down")
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="rate_limited", args=[], kwargs={})
         )
         await w._handle_message(msg)
@@ -2240,7 +2226,7 @@ class TestFireAndForgetRateLimit:
         w._rate_limiter = MagicMock()
         w._rate_limiter.check = AsyncMock(return_value=(False, 0, 1500))
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="ff_rate_limited", args=[], kwargs={})
         )
         await w._handle_message(msg)
@@ -2265,7 +2251,7 @@ class TestFireAndForgetRateLimit:
             side_effect=RuntimeError("simulated valkey hiccup")
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="ff_rate_limited", args=[], kwargs={})
         )
         await w._handle_message(msg)
@@ -2294,7 +2280,7 @@ class TestFireAndForgetRateLimit:
             ran = True
 
         with patch.object(FireAndForgetRateLimitedTask, "run", _run):
-            msg = _make_message(
+            msg = make_message(
                 _default_payload(name="ff_rate_limited", args=[], kwargs={})
             )
             await w._handle_message(msg)
@@ -2319,7 +2305,7 @@ class TestRateLimitRequeueCounter:
         w._rate_limiter = MagicMock()
         w._rate_limiter.check = AsyncMock(return_value=(False, 0, 1000))
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="rate_limited", args=[], kwargs={})
         )
         # No prior counter on the headers.
@@ -2341,7 +2327,7 @@ class TestRateLimitRequeueCounter:
         w._rate_limiter = MagicMock()
         w._rate_limiter.check = AsyncMock(return_value=(False, 0, 1000))
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="rate_limited", args=[], kwargs={})
         )
         msg.headers = {"x-swarmq-rate-limit-count": 5}
@@ -2394,7 +2380,7 @@ class TestWorkerLocking:
         w._lock_manager.acquire = AsyncMock(return_value=True)
         w._lock_manager.release = AsyncMock(return_value=True)
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
 
         async def _run(self):
             return None
@@ -2438,7 +2424,7 @@ class TestWorkerLocking:
             ran = True
 
         with patch.object(LockedTask, "run", _run):
-            msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+            msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
             await w._handle_message(msg)
 
         assert ran is False, "task.run must NOT run when lock conflicted"
@@ -2463,7 +2449,7 @@ class TestWorkerLocking:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock()
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await w._handle_message(msg)
 
         w._lock_manager.acquire.assert_not_called()
@@ -2492,7 +2478,7 @@ class TestWorkerLocking:
             ran = True
 
         with patch.object(LockedTask, "run", _run):
-            msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+            msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
             await w._handle_message(msg)
 
         assert ran is True
@@ -2517,7 +2503,7 @@ class TestWorkerLocking:
             side_effect=BackendConnectionError("valkey down")
         )
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
         broker.nack.assert_awaited_once_with(msg, requeue=True)
@@ -2542,7 +2528,7 @@ class TestFireAndForgetLock:
             side_effect=BackendConnectionError("simulated valkey hiccup")
         )
 
-        msg = _make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
         broker.nack.assert_awaited_once_with(msg, requeue=True)
@@ -2560,7 +2546,7 @@ class TestFireAndForgetLock:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
         broker.publish_to_delay_queue.assert_awaited_once()
@@ -2584,7 +2570,7 @@ class TestLockRequeueCounter:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {}
 
         await w._handle_message(msg)
@@ -2606,7 +2592,7 @@ class TestLockRequeueCounter:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {"x-swarmq-lock-conflict-count": 5}
 
         await w._handle_message(msg)
@@ -2628,7 +2614,7 @@ class TestLockRequeueCounter:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         # Prior count = 9; new_count = 10 → exactly at cap → DLQ
         msg.headers = {"x-swarmq-lock-conflict-count": 9}
 
@@ -2656,7 +2642,7 @@ class TestLockRequeueCounter:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {"x-swarmq-lock-conflict-count": 8}
 
         await w._handle_message(msg)
@@ -2685,7 +2671,7 @@ class TestLockRequeueCounter:
             side_effect=ConnectionError("broker down")
         )
 
-        msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {"x-swarmq-lock-conflict-count": 9}
 
         await w._handle_message(msg)
@@ -2726,7 +2712,7 @@ class TestFormatStringLock:
         w._lock_manager.acquire = AsyncMock(return_value=True)
         w._lock_manager.release = AsyncMock(return_value=True)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="user_charge", args=[], kwargs={"user_id": 42, "amount": 100})
         )
         await w._handle_message(msg)
@@ -2744,7 +2730,7 @@ class TestFormatStringLock:
         w._lock_manager.acquire = AsyncMock(return_value=True)
         w._lock_manager.release = AsyncMock(return_value=True)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="user_charge", args=[7, 100], kwargs={})
         )
         await w._handle_message(msg)
@@ -2764,7 +2750,7 @@ class TestFormatStringLock:
         w._lock_manager.acquire = AsyncMock()
 
         # Missing user_id entirely
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="user_charge", args=[], kwargs={"amount": 100})
         )
         await w._handle_message(msg)
@@ -2796,7 +2782,7 @@ class TestFormatStringLock:
             side_effect=ConnectionError("broker down")
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="user_charge", args=[], kwargs={"amount": 100})
         )
         await w._handle_message(msg)
@@ -2838,7 +2824,7 @@ class TestEmptyRenderedLock:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock()
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="empty_render", args=[], kwargs={"tag": ""})
         )
         await w._handle_message(msg)
@@ -2863,7 +2849,7 @@ class TestEmptyRenderedLock:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock()
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="empty_render", args=[], kwargs={"tag": "   "})
         )
         await w._handle_message(msg)
@@ -2888,7 +2874,7 @@ class TestEmptyRenderedLock:
             side_effect=ConnectionError("broker down")
         )
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="empty_render", args=[], kwargs={"tag": ""})
         )
         await w._handle_message(msg)
@@ -2915,7 +2901,7 @@ class TestWorkerPreStartCancelCheck:
         """When is_cancelled=True, task.run() must never be invoked."""
         backend.is_cancelled = AsyncMock(return_value=True)
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         with patch.object(AddTask, "run", new=AsyncMock()) as mock_run:
             await worker._handle_message(msg)
 
@@ -2926,7 +2912,7 @@ class TestWorkerPreStartCancelCheck:
     ):
         """AT_LEAST_ONCE cancel → result_data has is_cancelled=True."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -2944,7 +2930,7 @@ class TestWorkerPreStartCancelCheck:
     ):
         """Flag is cleared via backend.clear_cancel_flag."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -2952,7 +2938,7 @@ class TestWorkerPreStartCancelCheck:
 
     async def test_cancel_flag_set_acks_message(self, worker, broker, backend):
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -2972,7 +2958,7 @@ class TestWorkerPreStartCancelCheck:
             captured.append(kwargs)
 
         worker._signal_dispatcher.connect(Signal.TASK_CANCELLED, handler)
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -2995,7 +2981,7 @@ class TestWorkerPreStartCancelCheck:
         """
         backend.is_cancelled = AsyncMock(return_value=True)
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await worker._handle_message(msg)
 
         # If the cancel branch wrongly acquired-without-release, the
@@ -3012,7 +2998,7 @@ class TestWorkerPreStartCancelCheck:
     ):
         """Contextvars must be cleared after the cancel branch."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         # Sanity: context empty before
         assert structlog.contextvars.get_contextvars() == {}
@@ -3028,7 +3014,7 @@ class TestWorkerPreStartCancelCheck:
     ):
         """Regression: backend.is_cancelled returns False → full pipeline."""
         backend.is_cancelled = AsyncMock(return_value=False)
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -3058,7 +3044,7 @@ class TestWorkerPreStartCancelCheck:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload(name="faf", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="faf", args=[], kwargs={}))
 
         await w._handle_message(msg)
 
@@ -3085,7 +3071,7 @@ class TestWorkerPreStartCancelCheck:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload(name="faf_ttl", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="faf_ttl", args=[], kwargs={}))
 
         await w._handle_message(msg)
 
@@ -3100,7 +3086,7 @@ class TestWorkerPreStartCancelCheck:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         backend.is_cancelled = AsyncMock(return_value=True)
-        msg = _make_message(_default_payload(name="unknown_task"))
+        msg = make_message(_default_payload(name="unknown_task"))
 
         await w._handle_message(msg)
 
@@ -3115,7 +3101,7 @@ class TestWorkerPreStartCancelCheck:
         backend.is_cancelled = AsyncMock(
             side_effect=BackendConnectionError("valkey down")
         )
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -3133,7 +3119,7 @@ class TestWorkerPreStartCancelCheck:
         backend.store_result = AsyncMock(
             side_effect=BackendConnectionError("write failed")
         )
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -3150,7 +3136,7 @@ class TestWorkerPreStartCancelCheck:
         backend.publish_notification = AsyncMock(
             side_effect=Exception("pubsub down")
         )
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
 
@@ -3179,7 +3165,7 @@ class TestWorkerPreStartCancelCheck:
         w = Worker(broker=broker, backend=backend, registry=registry, config=worker._config)
         w._rate_limiter = worker._rate_limiter
 
-        msg = _make_message(_default_payload(name="rate_add"))
+        msg = make_message(_default_payload(name="rate_add"))
         await w._handle_message(msg)
 
         w._rate_limiter.check.assert_not_awaited()
@@ -3347,7 +3333,7 @@ class TestRunningCancelInHandleMessage:
             return call_count[0] >= 2
 
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
-        msg = _make_message(_default_payload(name="slow_run", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="slow_run", args=[], kwargs={}))
 
         await slow_worker._handle_message(msg)
 
@@ -3389,7 +3375,7 @@ class TestRunningCancelInHandleMessage:
         slow_worker._signal_dispatcher.connect(Signal.TASK_COMPLETED, completed_handler)
         slow_worker._signal_dispatcher.connect(Signal.TASK_FAILED, failed_handler)
 
-        msg = _make_message(_default_payload(name="slow_run", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="slow_run", args=[], kwargs={}))
         await slow_worker._handle_message(msg)
 
         kinds = [c[0] for c in captured]
@@ -3427,7 +3413,7 @@ class TestRunningCancelInHandleMessage:
             return call_count[0] >= 2
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
-        msg = _make_message(_default_payload(name="retry_slow", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="retry_slow", args=[], kwargs={}))
         await w._handle_message(msg)
 
         # Publish to delay queue (retry) must NOT happen.
@@ -3457,7 +3443,7 @@ class TestRunningCancelInHandleMessage:
             side_effect=lambda msg: call_order.append("ack"),
         )
 
-        msg = _make_message(_default_payload(name="slow_run", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="slow_run", args=[], kwargs={}))
         await slow_worker._handle_message(msg)
 
         assert call_order == ["clear", "ack"]
@@ -3497,7 +3483,7 @@ class TestRunningCancelInHandleMessage:
         from swarmq.signals import Signal
         w._signal_dispatcher.connect(Signal.TASK_CANCELLED, h)
 
-        msg = _make_message(_default_payload(name="faf_slow", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="faf_slow", args=[], kwargs={}))
         await w._handle_message(msg)
 
         backend.store_result.assert_not_awaited()
@@ -3542,7 +3528,7 @@ class TestHardTimeoutVsCancelRace:
             return call_count[0] >= 2
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
-        msg = _make_message(_default_payload(name="race_task", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="race_task", args=[], kwargs={}))
         await w._handle_message(msg)
 
         backend.store_result.assert_awaited_once()
@@ -3578,7 +3564,7 @@ class TestHardTimeoutVsCancelRace:
         # Cancel flag stays False throughout — regression for hard-timeout.
         backend.is_cancelled = AsyncMock(return_value=False)
 
-        msg = _make_message(_default_payload(name="timeout_only", args=[], kwargs={}))
+        msg = make_message(_default_payload(name="timeout_only", args=[], kwargs={}))
         await w._handle_message(msg)
 
         backend.store_result.assert_awaited_once()
@@ -3618,7 +3604,7 @@ class TestSchedfireDedup:
         registry.register(NoopTask)
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={},  # no x-swarmq-schedfire
         )
@@ -3645,7 +3631,7 @@ class TestSchedfireDedup:
 
         backend.is_schedfire_completed.return_value = False
         backend.set_schedfire_inflight.return_value = True  # claim wins
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
         )
@@ -3694,7 +3680,7 @@ class TestSchedfireDedup:
 
         backend.is_schedfire_completed.return_value = False
         backend.set_schedfire_inflight.return_value = True
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="long", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "long_cron:1700000000000"},
         )
@@ -3722,7 +3708,7 @@ class TestSchedfireDedup:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         backend.is_schedfire_completed.return_value = True  # prior run
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
         )
@@ -3753,7 +3739,7 @@ class TestSchedfireDedup:
 
         backend.is_schedfire_completed.return_value = False
         backend.set_schedfire_inflight.return_value = False  # someone else has it
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
         )
@@ -3785,7 +3771,7 @@ class TestSchedfireDedup:
         # First stage in the two-marker flow is completed-check;
         # fail it to exercise the nack path.
         backend.is_schedfire_completed.side_effect = BCE("valkey down")
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
         )
@@ -3829,7 +3815,7 @@ class TestSchedfireDedup:
             "x-swarmq-schedfire": "cron_a:1700000000000",
             "x-tracking-id": "abc-123",
         }
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop_pass", args=[], kwargs={}),
             headers=dict(original_headers),
         )
@@ -3906,7 +3892,7 @@ class TestSchedfireDedup:
         backend.is_cancelled.side_effect = AssertionError(
             "cancel-check must not run for a duplicate schedfire"
         )
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
         )
@@ -3947,7 +3933,7 @@ class TestWorkerUniqueRelease:
         return backend
 
     def _unique_message(self, *, unique_until="completion", task_name="add"):
-        return _make_message(
+        return make_message(
             _default_payload(name=task_name),
             headers={
                 "x-swarmq-unique-hash": self.HASH_DEFAULT,
@@ -3959,7 +3945,7 @@ class TestWorkerUniqueRelease:
         self, worker, broker, release_backend,
     ):
         """Baseline: messages without the header never call release_unique."""
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await worker._handle_message(msg)
         release_backend.release_unique.assert_not_awaited()
 
@@ -4014,7 +4000,7 @@ class TestWorkerUniqueRelease:
         backend.release_unique = AsyncMock(return_value=True)
         w = Worker(broker=broker, backend=backend, registry=registry,
                    config=config)
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="fail", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": self.HASH_FAIL,
@@ -4043,7 +4029,7 @@ class TestWorkerUniqueRelease:
         backend.release_unique = AsyncMock(return_value=True)
         w = Worker(broker=broker, backend=backend, registry=registry,
                    config=config)
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="retry_task", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": self.HASH_RETRY,
@@ -4080,7 +4066,7 @@ class TestWorkerUniqueRelease:
         backend.release_unique = AsyncMock(return_value=True)
         w = Worker(broker=broker, backend=backend, registry=registry,
                    config=config)
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="noretry_task", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": self.HASH_DLQ,
@@ -4119,7 +4105,7 @@ class TestWorkerUniqueRelease:
         w._rate_limiter = rl
         backend.release_unique = AsyncMock(return_value=True)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="rl_task", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": self.HASH_RATE_LIMIT,
@@ -4172,7 +4158,7 @@ class TestWorkerUniqueRelease:
         w = Worker(broker=broker, backend=backend, registry=registry,
                    config=config)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="add_c"),
             headers={
                 "x-swarmq-unique-hash": self.HASH_OVERRIDE,
@@ -4191,7 +4177,7 @@ class TestWorkerUniqueRelease:
         self, worker, broker, release_backend,
     ):
         """Unregistered task + unique header → nack(requeue=False), release fires in finally."""
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="unknown_task"),
             headers={
                 "x-swarmq-unique-hash": self.HASH_TNF,
@@ -4220,7 +4206,7 @@ class TestWorkerUniqueRelease:
             broker=broker, backend=backend, registry=registry,
             config=config, middleware_chain=broken_factory,
         )
-        msg = _make_message(
+        msg = make_message(
             _default_payload(),
             headers={
                 "x-swarmq-unique-hash": self.HASH_MW,
@@ -4237,7 +4223,7 @@ class TestWorkerUniqueRelease:
     ):
         """Adversarial producer: 100KB header value. Worker must reject
         (format validation) and never forward to Valkey."""
-        msg = _make_message(
+        msg = make_message(
             _default_payload(),
             headers={
                 "x-swarmq-unique-hash": "x" * 100_000,  # not 64-char hex
@@ -4259,7 +4245,7 @@ class TestWorkerUniqueRelease:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="locked", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": "4" * 64,
@@ -4284,7 +4270,7 @@ class TestWorkerUniqueRelease:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="locked", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": "5" * 64,
@@ -4323,7 +4309,7 @@ class TestWorkerUniqueRelease:
         backend.clear_cancel_flag = AsyncMock()
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="cancellable", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": "6" * 64,
@@ -4364,7 +4350,7 @@ class TestWorkerUniqueRelease:
         w._rate_limiter = rl
         backend.release_unique = AsyncMock(return_value=True)
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="rl_start_task", args=[], kwargs={}),
             headers={
                 "x-swarmq-unique-hash": "3" * 64,
@@ -4396,7 +4382,7 @@ class TestWorkflowCancelPickup:
     WF_ID = "0190b6f2-1234-7abc-8def-0123456789ab"
 
     def _wf_message(self):
-        return _make_message(
+        return make_message(
             _default_payload(name="add", args=[1, 2], kwargs={}),
             headers={"x-swarmq-workflow-id": self.WF_ID},
         )
@@ -4450,7 +4436,7 @@ class TestWorkflowCancelPickup:
     ):
         """Kein Workflow-Header → kein zusätzlicher Valkey-Roundtrip."""
         backend.is_workflow_cancelled = AsyncMock(return_value=False)
-        msg = _make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
+        msg = make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
         await worker._handle_message(msg)
         backend.is_workflow_cancelled.assert_not_awaited()
 
@@ -4500,7 +4486,7 @@ class TestBodySizeCap:
     async def test_body_at_cap_still_processed(self, worker, broker, backend):
         """Genau am Cap: normal verarbeiten (Grenze ist exklusiv)."""
         payload = _default_payload(name="add", args=[1, 2], kwargs={})
-        msg = _make_message(payload)
+        msg = make_message(payload)
         assert len(msg.body) <= worker._config.max_message_body_bytes
         await worker._handle_message(msg)
         broker.ack.assert_awaited()
@@ -4528,7 +4514,7 @@ class TestWorkflowCancelDoesNotOverwriteResult:
         # The step already completed once: a success result exists.
         backend.get_result = AsyncMock(return_value=b"original-success")
 
-        msg = _make_message(
+        msg = make_message(
             _default_payload(name="add", args=[1, 2], kwargs={}),
             headers={"x-swarmq-workflow-id": self.WF_ID},
         )
@@ -4546,7 +4532,7 @@ class TestWorkflowCancelDoesNotOverwriteResult:
         backend.is_cancelled = AsyncMock(return_value=True)
         backend.get_result = AsyncMock(return_value=b"should-not-be-read")
 
-        msg = _make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
+        msg = make_message(_default_payload(name="add", args=[1, 2], kwargs={}))
         await worker._handle_message(msg)
 
         backend.store_result.assert_awaited_once()

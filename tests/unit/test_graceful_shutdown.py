@@ -11,23 +11,16 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
-from swarmq.serialization import encode_json
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
+from tests.support.messages import make_message
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_message(payload: dict, headers: dict | None = None) -> MagicMock:
-    msg = MagicMock()
-    msg.body = encode_json(payload)
-    msg.headers = headers or {}
-    msg.ack = AsyncMock()
-    msg.nack = AsyncMock()
-    return msg
 
 
 def _default_payload(
@@ -136,7 +129,7 @@ class TestShutdownTimeoutConfig:
 class TestActiveTaskTracking:
     async def test_on_message_adds_task_and_removes_on_done(self, worker, broker, backend):
         """_on_message stores created task in _active_tasks; task removed when done."""
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
 
         await worker._on_message(msg)
 
@@ -296,7 +289,7 @@ class TestHandleMessageDuringShutdown:
         # Set shutdown event before handling message
         worker._shutdown_event.set()
 
-        msg = _make_message(_default_payload())
+        msg = make_message(_default_payload())
         await worker._handle_message(msg)
 
         broker.nack.assert_awaited_once_with(msg, requeue=True)
@@ -553,14 +546,14 @@ class TestPayloadShapeValidation:
 
     async def test_string_args_not_executed(self, worker, broker):
         # args="hello" would otherwise unpack character-by-character.
-        msg = _make_message(_default_payload(args="hello"))
+        msg = make_message(_default_payload(args="hello"))
         await worker._handle_message(msg)
         broker.nack.assert_awaited_once_with(msg, requeue=False)
         # Task never ran (no result stored).
         assert len(worker._active_tasks) == 0
 
     async def test_non_dict_kwargs_not_executed(self, worker, broker):
-        msg = _make_message(_default_payload(kwargs=["not", "a", "dict"]))
+        msg = make_message(_default_payload(kwargs=["not", "a", "dict"]))
         await worker._handle_message(msg)
         broker.nack.assert_awaited_once_with(msg, requeue=False)
 

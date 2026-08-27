@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-import socket
 
 import pytest
+
+from tests.support.services import port_is_open
 
 # Soak tests default to the swarmq-dev Docker stack
 # (docker-compose.swarmq-dev.yml): RabbitMQ 5673/15673, Valkey 6380.
@@ -17,12 +18,6 @@ _VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
 _VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6380"))
 
 
-def _port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -34,8 +29,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 @pytest.fixture(autouse=True, scope="session")
 def check_docker_soak():
     """Skip soak tests when Docker services are unreachable."""
-    rabbitmq_ok = _port_is_open(_RABBITMQ_HOST, _RABBITMQ_PORT)
-    valkey_ok = _port_is_open(_VALKEY_HOST, _VALKEY_PORT)
+    rabbitmq_ok = port_is_open(_RABBITMQ_HOST, _RABBITMQ_PORT)
+    valkey_ok = port_is_open(_VALKEY_HOST, _VALKEY_PORT)
 
     if not (rabbitmq_ok and valkey_ok):
         missing = []
