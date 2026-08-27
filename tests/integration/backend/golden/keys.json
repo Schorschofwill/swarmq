@@ -1,0 +1,18 @@
+{
+  "sq:cancel:golden-task-0001": "string",
+  "sq:lock:golden-lock": "string",
+  "sq:lock:golden-sem": "zset",
+  "sq:lock:{sched}:leader": "string",
+  "sq:progress:golden-task-0001": "hash",
+  "sq:result:golden-task-0001": "string",
+  "sq:rl:{golden-task}:<window>": "string",
+  "sq:sched:fired:golden-sched:1700000000000": "string",
+  "sq:sched:handover:golden-owner": "string",
+  "sq:sched:inflight:golden-sched:1700000060000": "string",
+  "sq:unique:0000000000000000000000000000000000000000000000000000000000000000": "string",
+  "sq:wf:cancel:golden-wf-0001": "string",
+  "sq:wf:chord:golden-wf-0001:c1": "set",
+  "sq:wf:golden-wf-0001": "string",
+  "sq:{sched}:defs": "hash",
+  "sq:{sched}:zset": "zset"
+}

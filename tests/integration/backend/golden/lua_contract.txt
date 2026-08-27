@@ -1,0 +1,13 @@
+chord_complete	KEYS=1	ARGV=3
+lock_acquire	KEYS=1	ARGV=4
+lock_release	KEYS=1	ARGV=2
+lock_renew	KEYS=1	ARGV=2
+sched_commit	KEYS=3	ARGV=4
+sched_disable	KEYS=2	ARGV=2
+sched_poll	KEYS=2	ARGV=2
+sliding_window_counter	KEYS=2	ARGV=3
+unique_release	KEYS=1	ARGV=1
+sched_commit	slots=equal	sq:{sched}:zset sq:{sched}:defs sq:lock:{sched}:leader
+sched_disable	slots=equal	sq:{sched}:defs sq:{sched}:zset
+sched_poll	slots=equal	sq:{sched}:zset sq:{sched}:defs
+sliding_window_counter	slots=equal	sq:rl:{golden-task}:1700000000000 sq:rl:{golden-task}:1699999940000

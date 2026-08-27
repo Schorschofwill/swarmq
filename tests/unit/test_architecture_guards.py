@@ -42,7 +42,6 @@ _LOC_EXCEPTIONS: dict[str, str] = {
     "swarmq.client": "U10",
     "swarmq.scheduler": "U11",
     "swarmq.process_manager": "U21",
-    "swarmq.backend.valkey": "U17",
 }
 
 # (Quelle, Ziel) auf Paketebene; Wurzel ``swarmq`` matcht nur exakt.
@@ -67,6 +66,7 @@ _ALIAS_MODULES: frozenset[str] = frozenset()  # U18: limits, locking, workflow_o
 
 _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.broker.rabbitmq": ["connection", "delivery", "admin"],  # U5
+    "swarmq.backend.valkey": ["connection", "results"],  # U17
 }
 
 

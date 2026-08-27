@@ -40,7 +40,7 @@ class TestValkeyBackendInjection:
         mock_pool = Mock()
         mock_client = AsyncMock()
         with patch(
-            "swarmq.backend.valkey.valkey.asyncio.Valkey", return_value=mock_client
+            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client
         ) as mock_valkey:
             backend = ValkeyBackend(pool=mock_pool)
 
@@ -67,7 +67,7 @@ class TestValkeyBackendInjection:
         backend = ValkeyBackend(client=mock_client)
 
         with patch(
-            "swarmq.backend.valkey.valkey.asyncio.Valkey.from_url"
+            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url"
         ) as mock_from_url:
             await backend.connect()
 
@@ -87,7 +87,7 @@ class TestValkeyBackendInjection:
         mock_pool = Mock()
         mock_client = AsyncMock()
         with patch(
-            "swarmq.backend.valkey.valkey.asyncio.Valkey", return_value=mock_client
+            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client
         ):
             backend = ValkeyBackend(pool=mock_pool)
 
@@ -124,7 +124,9 @@ class TestValkeyBackendConnect:
         backend = ValkeyBackend(url)
         mock_client = AsyncMock()
 
-        with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client) as mock_from_url:
+        with patch(
+            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client
+        ) as mock_from_url:
             await backend.connect()
 
         # Reliability hardening (2026-04-17 spike): retry policy +
@@ -150,7 +152,7 @@ class TestValkeyBackendConnect:
         mock_client = AsyncMock()
 
         with patch(
-            "swarmq.backend.valkey.valkey.asyncio.Valkey.from_url",
+            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url",
             return_value=mock_client,
         ) as mock_from_url:
             await backend.connect()
@@ -274,7 +276,9 @@ class TestValkeyBackendConnectGuard:
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
 
-        with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client) as mock_from_url:
+        with patch(
+            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client
+        ) as mock_from_url:
             await backend.connect()
             await backend.connect()
 
@@ -287,7 +291,7 @@ class TestValkeyBackendConnectError:
         mock_client = AsyncMock()
         mock_client.ping.side_effect = ValkeyConnectionError("Connection refused")
 
-        with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client):  # noqa: SIM117
+        with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client):  # noqa: SIM117
             with pytest.raises(BackendConnectionError):
                 await backend.connect()
 

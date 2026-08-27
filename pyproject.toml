@@ -133,6 +133,8 @@ module = [
     "swarmq.contracts.*",
     "swarmq.broker.rabbitmq",
     "swarmq.broker.rabbitmq.*",
+    "swarmq.backend.valkey",
+    "swarmq.backend.valkey.*",
     # Stub und Contract-Klassen laufen unter demselben strict-Gate (KTD1, U4).
     "tests.support",
     "tests.support.*",
@@ -160,7 +162,6 @@ module = [
     "swarmq.registry",
     "swarmq.serialization",
     "swarmq.logging",
-    "swarmq.backend.valkey",
     # Plan U2: bisher in keinem Override und nur auf Default-Niveau geprüft
     # (16 Fehler). Aufgenommen, damit ``lint-and-types`` blockierend laufen
     # kann; U21 erbt als ``swarmq.process_manager.*``, U12 räumt beide auf.

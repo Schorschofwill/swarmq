@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -35,11 +35,21 @@ def broker():
 def backend():
     b = AsyncMock()
     b.get_result = AsyncMock(return_value=None)
-    # Pub/Sub mock: create_pubsub returns a mock PubSub that times out by default
-    mock_pubsub = AsyncMock()
-    mock_pubsub.get_message = AsyncMock(return_value=None)  # no notification
-    b.create_pubsub = Mock(return_value=mock_pubsub)
-    b._mock_pubsub = mock_pubsub  # expose for test assertions
+
+    # U17: das Warten (Pub/Sub + Polling) lebt im Backend. Der Fake bildet
+    # den Vertrag von ``wait_for_result`` nach — pollt ``get_result`` bis zum
+    # Ergebnis oder Ablauf —, damit die Client-Tests weiter über
+    # ``get_result``-side_effects sprechen können.
+    async def _wait_for_result(task_id, *, timeout):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            raw = await b.get_result(task_id)
+            if raw is not None or loop.time() >= deadline:
+                return raw
+            await asyncio.sleep(0.005)
+
+    b.wait_for_result = AsyncMock(side_effect=_wait_for_result)
     return b
 
 
@@ -270,30 +280,6 @@ async def test_get_result_polls_multiple_times(client, backend):
     assert backend.get_result.await_count == 3
 
 
-@pytest.mark.asyncio
-async def test_get_result_timeout_honored_when_backend_hangs(client, backend):
-    """Härtung R2 P1-2: die Deadline wurde nur ZWISCHEN den
-    ``backend.get_result``-Aufrufen geprüft — ein einziger hängender
-    GET (half-open Valkey) ignorierte den ``timeout``-Parameter
-    komplett. Jeder Backend-Aufruf muss gegen die Rest-Deadline
-    gebunden sein."""
-    async def _hang(*args, **kwargs):
-        await asyncio.sleep(60)
-
-    backend.get_result = AsyncMock(side_effect=_hang)
-
-    started = asyncio.get_running_loop().time()
-    with pytest.raises(ResultNotReadyError):
-        # Outer wait_for is the test's own safety net: pre-fix the call
-        # hung 60s and the outer TimeoutError (not ResultNotReadyError)
-        # failed the test.
-        await asyncio.wait_for(
-            client.get_result("task-id", timeout=0.2), timeout=5,
-        )
-    elapsed = asyncio.get_running_loop().time() - started
-    assert elapsed < 4, f"deadline not enforced (took {elapsed:.1f}s)"
-
-
 # ---------------------------------------------------------------------------
 # 11. schedule() with empty args/kwargs
 # ---------------------------------------------------------------------------
@@ -354,98 +340,34 @@ async def test_client_mode_no_registry_explicit_queue(
 
 
 # ---------------------------------------------------------------------------
-# 14. Pub/Sub happy path: notification received -> result fetched immediately
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_result_pubsub_notification_fetches_result(client, backend):
-    """Pub/Sub notification received -> GET fetches result."""
-    result_data = encode_result({"result": "pubsub-ok", "is_error": False})
-    # Initial check returns None, then after notification returns result
-    backend.get_result = AsyncMock(side_effect=[None, result_data])
-    # Mock pubsub to return a message on first get_message call
-    backend._mock_pubsub.get_message = AsyncMock(
-        return_value={"type": "message", "data": b"done"}
-    )
-
-    value = await client.get_result("task-pub", timeout=5)
-    assert value == "pubsub-ok"
-    backend.create_pubsub.assert_called_once()
-    # First call is the initial check, second is after notification
-    assert backend.get_result.await_count == 2
-
-
-# ---------------------------------------------------------------------------
-# 15. Pub/Sub happy path: result already exists -> initial check finds it
+# 15. Result already exists -> a single backend read suffices
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_get_result_initial_check_finds_result(client, backend):
-    """Result already in backend -> returned before Pub/Sub is attempted."""
+    """Result already in backend -> returned after one read."""
     result_data = encode_result({"result": "fast", "is_error": False})
     backend.get_result = AsyncMock(return_value=result_data)
 
     value = await client.get_result("task-fast", timeout=5)
     assert value == "fast"
-    # Pub/Sub subscribe was called but result was found before waiting
     backend.get_result.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# 16. Pub/Sub miss -> polling fallback finds result
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_result_pubsub_miss_falls_back_to_polling(client, backend):
-    """Pub/Sub times out -> polling loop finds result."""
-    result_data = encode_result({"result": "polled", "is_error": False})
-    # Initial check: None, pub/sub times out, polling finds result eventually
-    # Need enough None values for 1s pub/sub wait + polling attempts
-    side_effects = [None] * 50 + [result_data]
-    backend.get_result = AsyncMock(side_effect=side_effects)
-    # Pub/Sub get_message returns None (timeout) — already the default from fixture
-
-    value = await client.get_result("task-poll", timeout=5)
-    assert value == "polled"
-    assert backend.get_result.await_count >= 2
-
-
-# ---------------------------------------------------------------------------
-# 17. Error-result -> TaskError raised (same as before, through new flow)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_result_pubsub_error_result_raises_task_error(client, backend):
-    """Error result via Pub/Sub path still raises TaskError."""
-    result_data = encode_result({
-        "result": None,
-        "is_error": True,
-        "error_message": "boom",
-    })
-    # Initial check returns None, after Pub/Sub notification GET returns error result
-    backend.get_result = AsyncMock(side_effect=[None, result_data, result_data])
-    backend._mock_pubsub.get_message = AsyncMock(
-        return_value={"type": "message", "data": b"done"}
-    )
-
-    with pytest.raises(TaskError, match="boom"):
-        await client.get_result("task-err", timeout=5)
-
-
-# ---------------------------------------------------------------------------
-# 18. timeout=0 -> single GET, no Pub/Sub (backward compatible)
+# 18. timeout=0 -> single GET, no waiting (backward compatible)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_get_result_timeout_zero_no_pubsub(client, backend):
-    """timeout=0 does a single GET without touching Pub/Sub."""
+    """timeout=0 does a single GET without entering the wait path."""
     backend.get_result = AsyncMock(return_value=None)
 
     with pytest.raises(ResultNotReadyError):
         await client.get_result("task-id", timeout=0)
 
     backend.get_result.assert_awaited_once()
-    backend.create_pubsub.assert_not_called()
+    backend.wait_for_result.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -459,40 +381,6 @@ async def test_get_result_overall_timeout_raises(client, backend):
 
     with pytest.raises(ResultNotReadyError):
         await client.get_result("task-timeout", timeout=0.05)
-
-
-# ---------------------------------------------------------------------------
-# 20. subscribe_and_wait returns False (Pub/Sub failed) -> polling fallback
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_result_pubsub_failure_falls_back(client, backend):
-    """Pub/Sub subscribe failure triggers polling fallback."""
-    result_data = encode_result({"result": "recovered", "is_error": False})
-    # Initial check None, then polling finds it
-    backend.get_result = AsyncMock(side_effect=[None, result_data])
-    # Make pubsub.subscribe raise — simulates Pub/Sub unavailable
-    mock_pubsub = AsyncMock()
-    mock_pubsub.subscribe = AsyncMock(side_effect=Exception("pubsub unavailable"))
-    backend.create_pubsub = Mock(return_value=mock_pubsub)
-
-    value = await client.get_result("task-recover", timeout=5)
-    assert value == "recovered"
-
-
-# ---------------------------------------------------------------------------
-# 21. CancelledError during Pub/Sub -> propagates cleanly
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_result_cancelled_error_propagates(client, backend):
-    """CancelledError during Pub/Sub wait propagates without catching."""
-    backend.get_result = AsyncMock(return_value=None)
-    # Make get_message raise CancelledError
-    backend._mock_pubsub.get_message = AsyncMock(side_effect=asyncio.CancelledError)
-
-    with pytest.raises(asyncio.CancelledError):
-        await client.get_result("task-cancel", timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -1898,252 +1786,39 @@ class TestClientProgress:
         )
         assert await client.get_progress("task-x") is None
 
-    async def test_watch_progress_yields_initial_and_streams_updates(
+    @staticmethod
+    def _streaming_backend(backend, payloads: list[bytes]):
+        """U17: das Backend liefert die Payloads (JSON der HASH-Felder);
+        Pub/Sub, Schnappschuss und Resubscribe sind dort getestet
+        (``tests/unit/backend/test_valkey_results.py``)."""
+
+        async def _watch(task_id: str):
+            for payload in payloads:
+                yield payload
+
+        backend.watch_progress = Mock(side_effect=_watch)
+        return backend
+
+    async def test_watch_progress_decodes_backend_payloads(
         self, progress_backend, broker, registry,
     ):
-        # Initial HASH yields once, then Pub/Sub emits one update.
-        progress_backend.get_progress = AsyncMock(
-            return_value=self._valid_hash(3, 10),
+        self._streaming_backend(
+            progress_backend, [self._valid_payload(3, 10), self._valid_payload(10, 10)],
         )
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock()
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
-        messages = [
-            None,  # drain-confirmation (after subscribe)
-            {"type": "message", "data": self._valid_payload(5, 10)},
-            {"type": "message", "data": self._valid_payload(10, 10)},
-        ]
-        pubsub.get_message = AsyncMock(side_effect=messages)
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
+        client = Client(broker=broker, backend=progress_backend, registry=registry)
+        observed = [info async for info in client.watch_progress("task-x")]
+        assert [i.current for i in observed] == [3, 10]
+        progress_backend.watch_progress.assert_called_once_with("task-x")
 
-        client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
-        )
-        observed = []
-        gen = client.watch_progress("task-x")
-        try:
-            async for info in gen:
-                observed.append(info)
-                if info.percent >= 100.0:
-                    break
-        finally:
-            await gen.aclose()
-
-        # Initial (3/10), mid (5/10), final (10/10).
-        assert [i.current for i in observed] == [3, 5, 10]
-        pubsub.unsubscribe.assert_awaited_once()
-        pubsub.aclose.assert_awaited_once()
-
-    async def test_watch_progress_drops_malformed_pubsub_payload(
+    async def test_watch_progress_drops_malformed_payloads(
         self, progress_backend, broker, registry,
     ):
         # A malformed publish must not crash the iterator — drop and
         # continue until the next valid message arrives.
-        progress_backend.get_progress = AsyncMock(return_value=None)
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock()
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
         bad_payload = json.dumps({"current": "oops", "total": "1"}).encode()
-        messages = [
-            None,
-            {"type": "message", "data": b"not-json-at-all"},
-            {"type": "message", "data": bad_payload},
-            {"type": "message", "data": self._valid_payload(10, 10)},
-        ]
-        pubsub.get_message = AsyncMock(side_effect=messages)
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
-
-        client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
+        self._streaming_backend(
+            progress_backend, [b"not-json-at-all", bad_payload, self._valid_payload(10, 10)],
         )
-        observed = []
-        gen = client.watch_progress("task-x")
-        try:
-            async for info in gen:
-                observed.append(info)
-                break
-        finally:
-            await gen.aclose()
-        assert len(observed) == 1
-        assert observed[0].current == 10
-
-    async def test_watch_progress_fallback_to_hash_on_pubsub_error(
-        self, progress_backend, broker, registry,
-    ):
-        # get_message raises (simulated disconnect) → fallback yields
-        # the HASH state so the caller keeps observing authoritative
-        # state during transport flapping.
-        hash_values = [
-            None,  # initial (nothing yet)
-            self._valid_hash(7, 10),  # fallback after disconnect
-            self._valid_hash(10, 10),  # final
-        ]
-        progress_backend.get_progress = AsyncMock(side_effect=hash_values)
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock()
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
-        pubsub.get_message = AsyncMock(side_effect=[
-            None,  # initial drain
-            ConnectionError("pubsub flap"),
-            None,  # resubscribe drain (spike-finding fix)
-            {"type": "message", "data": self._valid_payload(10, 10)},
-        ])
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
-
-        with patch("swarmq.client.asyncio.sleep", new=AsyncMock()):
-            client = Client(
-                broker=broker, backend=progress_backend, registry=registry,
-            )
-            observed = []
-            gen = client.watch_progress("task-x")
-            try:
-                async for info in gen:
-                    observed.append(info)
-                    if info.percent >= 100.0:
-                        break
-            finally:
-                await gen.aclose()
-
-        # Fallback HASH (7/10) precedes the Pub/Sub final (10/10).
-        currents = [i.current for i in observed]
-        assert 7 in currents
-        assert currents[-1] == 10
-
-    async def test_watch_progress_resubscribes_after_pubsub_disconnect(
-        self, progress_backend, broker, registry,
-    ):
-        # Spike-finding (2026-04-17): valkey-py pub/sub does NOT auto-
-        # reconnect after socket reset. The iterator must actively call
-        # subscribe() again, otherwise the subscriber is dead forever
-        # even after the connection recovers.
-        progress_backend.get_progress = AsyncMock(return_value=None)
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock()
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
-        pubsub.get_message = AsyncMock(side_effect=[
-            None,  # initial drain
-            ConnectionError("socket reset"),
-            None,  # resubscribe drain
-            {"type": "message", "data": self._valid_payload(10, 10)},
-        ])
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
-
-        with patch("swarmq.client.asyncio.sleep", new=AsyncMock()):
-            client = Client(
-                broker=broker, backend=progress_backend, registry=registry,
-            )
-            observed = []
-            gen = client.watch_progress("task-x")
-            try:
-                async for info in gen:
-                    observed.append(info)
-                    if info.percent >= 100.0:
-                        break
-            finally:
-                await gen.aclose()
-
-        # subscribe() was called twice: once at setup, once at recovery.
-        assert pubsub.subscribe.await_count == 2
-        # And the post-recovery message reached the caller.
-        assert observed[-1].current == 10
-
-    async def test_watch_progress_resubscribe_also_failing_keeps_trying(
-        self, progress_backend, broker, registry,
-    ):
-        # Pub/Sub disconnect + resubscribe attempt also fails. The
-        # iterator must NOT crash — it should yield a HASH snapshot
-        # and keep trying on the next loop iteration.
-        progress_backend.get_progress = AsyncMock(side_effect=[
-            None,  # initial read (nothing yet)
-            self._valid_hash(3, 10),  # fallback during flap
-            self._valid_hash(10, 10),  # fallback after second flap
-        ])
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock(side_effect=[
-            None,  # initial subscribe OK
-            ConnectionError("still down"),  # resubscribe fails too
-            None,  # second resubscribe OK
-        ])
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
-        pubsub.get_message = AsyncMock(side_effect=[
-            None,  # initial drain
-            ConnectionError("flap 1"),
-            ConnectionError("flap 2"),
-            None,  # drain after second resubscribe
-            {"type": "message", "data": self._valid_payload(10, 10)},
-        ])
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
-
-        with patch("swarmq.client.asyncio.sleep", new=AsyncMock()):
-            client = Client(
-                broker=broker, backend=progress_backend, registry=registry,
-            )
-            observed = []
-            gen = client.watch_progress("task-x")
-            try:
-                async for info in gen:
-                    observed.append(info)
-                    if info.percent >= 100.0:
-                        break
-            finally:
-                await gen.aclose()
-
-        # Caller saw HASH fallbacks (3/10, 10/10) despite repeated flaps.
-        currents = [i.current for i in observed]
-        assert 3 in currents
-        assert 10 in currents
-
-    async def test_watch_progress_finally_cleans_up_on_break(
-        self, progress_backend, broker, registry,
-    ):
-        progress_backend.get_progress = AsyncMock(
-            return_value=self._valid_hash(1, 10),
-        )
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock()
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
-        pubsub.get_message = AsyncMock(return_value=None)
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
-
-        client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
-        )
-        gen = client.watch_progress("task-x")
-        try:
-            async for info in gen:
-                assert info.current == 1
-                break  # exits early → triggers finally cleanup
-        finally:
-            await gen.aclose()
-        pubsub.unsubscribe.assert_awaited_once()
-        pubsub.aclose.assert_awaited_once()
-
-    async def test_watch_progress_setup_failure_yields_hash_and_exits(
-        self, progress_backend, broker, registry,
-    ):
-        # subscribe raises → no Pub/Sub stream, but HASH snapshot is
-        # still surfaced to the caller, then iterator completes.
-        progress_backend.get_progress = AsyncMock(
-            return_value=self._valid_hash(4, 10),
-        )
-        pubsub = AsyncMock()
-        pubsub.subscribe = AsyncMock(side_effect=ConnectionError("down"))
-        pubsub.unsubscribe = AsyncMock()
-        pubsub.aclose = AsyncMock()
-        progress_backend.create_pubsub = Mock(return_value=pubsub)
-
-        client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
-        )
-        observed = []
-        async for info in client.watch_progress("task-x"):
-            observed.append(info)
-        assert len(observed) == 1
-        assert observed[0].current == 4
-        pubsub.aclose.assert_awaited_once()
+        client = Client(broker=broker, backend=progress_backend, registry=registry)
+        observed = [info async for info in client.watch_progress("task-x")]
+        assert [i.current for i in observed] == [10]

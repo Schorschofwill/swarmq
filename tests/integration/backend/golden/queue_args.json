@@ -1,0 +1,52 @@
+{
+  "classic": {
+    "golden": {
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "golden.XQ",
+        "x-queue-type": "classic"
+      },
+      "durable": true
+    },
+    "golden.DQ": {
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "golden",
+        "x-queue-type": "classic"
+      },
+      "durable": true
+    },
+    "golden.XQ": {
+      "arguments": {
+        "x-queue-type": "classic"
+      },
+      "durable": true
+    }
+  },
+  "delay": "per-message expiration (Sekunden) auf {queue}.DQ; kein x-message-ttl",
+  "quorum": {
+    "golden": {
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "golden.XQ",
+        "x-delivery-limit": 20,
+        "x-queue-type": "quorum"
+      },
+      "durable": true
+    },
+    "golden.DQ": {
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "golden",
+        "x-queue-type": "quorum"
+      },
+      "durable": true
+    },
+    "golden.XQ": {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "durable": true
+    }
+  }
+}
