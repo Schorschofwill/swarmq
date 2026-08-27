@@ -28,16 +28,14 @@ from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
 from swarmq.dishka import (
     request_container,
 )
+from swarmq.exceptions import (
+    BackendConnectionError,
+    TaskNotFoundError,
+)
 from swarmq.headers import (
     HEADER_UNIQUE_HASH,
     HEADER_UNIQUE_UNTIL,
     HEADER_WORKFLOW_ID,
-)
-
-_LockEntry = LockToken  # Token-API seit U15 (LockStore-Vertrag)
-from swarmq.exceptions import (
-    BackendConnectionError,
-    TaskNotFoundError,
 )
 from swarmq.middleware import (
     MessageContext,
@@ -48,7 +46,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.scheduler import SchedulerLoop
 from swarmq.serialization import decode_json
 from swarmq.signals import SignalDispatcher
-from swarmq.task import DeliveryMode, TaskInfo
+from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker.execution import TaskExecutor
 from swarmq.worker.gates import (
     GateContext,
@@ -378,13 +376,13 @@ class Worker(WorkerLifecycle):
             queue = f"{queue}.{entry.task_info.priority}"
         return queue
 
-    async def _handle_message(self, message: Any) -> None:  # noqa: C901, PLR0915  # U19 (Runner)
-        """Core message handler logic."""
-        # Size cap BEFORE the decode. msgspec has a
-        # built-in recursion-depth guard but no size guard — a
-        # compromised/misconfigured producer could otherwise make the
-        # worker decode an arbitrarily large body fully into memory
-        # before any validation runs. Oversized → DLQ route, no decode.
+    async def _decode_and_validate(self, message: Any) -> tuple[str, str, str, list[Any], dict[str, Any]] | None:
+        """Size-Cap + Deserialize + Shape-Validierung; ``None`` = behandelt
+        (Oversize/Malformed → DLX-Route ohne Redelivery)."""
+        # Size cap BEFORE the decode. msgspec has a built-in recursion-depth
+        # guard but no size guard — a compromised/misconfigured producer
+        # could otherwise make the worker decode an arbitrarily large body
+        # fully into memory before any validation runs.
         if len(message.body) > self._config.max_message_body_bytes:
             logger.error(
                 "message_body_too_large",
@@ -393,9 +391,7 @@ class Worker(WorkerLifecycle):
                 hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
             )
             await route_via_dlx(self._broker, message)
-            return
-
-        # 1-2. Deserialize message body
+            return None
         try:
             payload = decode_json(message.body)
             task_meta = payload["task"]
@@ -404,12 +400,10 @@ class Worker(WorkerLifecycle):
             task_name = task_meta["name"]
             args = payload["args"]
             kwargs = payload["kwargs"]
-            # Validate shapes before run(*args,
-            # **kwargs). A wrong-typed payload from a misbehaving producer
-            # (e.g. args="hello") would otherwise unpack a string
+            # Validate shapes before run(*args, **kwargs). A wrong-typed
+            # payload (e.g. args="hello") would otherwise unpack a string
             # character-by-character into positional args and run the task
-            # with garbage instead of failing. Treat as a malformed
-            # message: route to DLQ (nack requeue=False), don't redeliver.
+            # with garbage. Treat as malformed: route to DLQ, don't redeliver.
             if not isinstance(args, list):
                 raise TypeError(
                     f"task 'args' must be a list, got {type(args).__name__}"
@@ -423,9 +417,140 @@ class Worker(WorkerLifecycle):
             # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
             # unknown). Accepted limitation — flag self-heals via TTL.
             await route_via_dlx(self._broker, message)
-            return
+            return None
+        return task_id, queue, task_name, args, kwargs
 
-        # Bind structured context for all log calls during this task
+    async def _check_late_cancel(self, task_id: str) -> bool:
+        """Post-execution cancel guard: ein Cancel, der während
+        ``post_execution`` oder zwischen ``run_task.done()`` und dem
+        Retry-Zweig eintraf, entgeht dem Cancel-Monitor — hier erneut
+        prüfen. Backend-Hiccup zählt als „nicht storniert" (die nächste
+        Zustellung honoriert das Flag im Pre-Start-Check)."""
+        try:
+            return await self._backend.is_cancelled(
+                task_id, op_timeout=self._config.backend_op_timeout,
+            )
+        except BackendConnectionError:
+            return False
+
+    async def _teardown_di_scope(
+        self, di_scope: Any, di_token: Any, is_cancelled: bool, task_exception: BaseException | None
+    ) -> None:
+        """Dishka-REQUEST-Scope schließen — ``__aexit__`` mit der
+        eingefangenen Exception (Commit/Rollback der yield-Finalizer);
+        User-Cancel übergibt CancelledError. Detached-Shield-Muster wie
+        beim Lock-Release: der Exit läuft als eigener getrackter Task,
+        ein Outer-Cancel in den finally bricht ihn nicht ab
+        (``_execute_shutdown`` drained ``_detached_releases``)."""
+        if di_token is not None:
+            request_container.reset(di_token)
+        _di_exc = asyncio.CancelledError() if is_cancelled else task_exception
+        _di_et = type(_di_exc) if _di_exc is not None else None
+        _di_tb = _di_exc.__traceback__ if _di_exc is not None else None
+        _di_exit = asyncio.create_task(di_scope.__aexit__(_di_et, _di_exc, _di_tb))
+        self._detached_releases.add(_di_exit)
+        _di_exit.add_done_callback(self._detached_releases.discard)
+        try:
+            await asyncio.shield(_di_exit)
+        except asyncio.CancelledError:
+            # Outer-cancel reached us. ``_di_exit`` is unaffected (shield
+            # protected it) and tracked in _detached_releases, which
+            # _execute_shutdown awaits before backend.close. Re-raise.
+            raise
+
+    async def _detached_lock_release(self, handler_id: uuid.UUID, acquired_locks: list[LockToken]) -> None:
+        """Lock-Release als eigener getrackter Task + geshieldeter Await.
+
+        Ein ``ensure_future(shield(...))``-Wrapper ließe die innere Coroutine
+        bei Outer-Cancel detached und ungetrackt weiterlaufen —
+        ``_execute_shutdown`` würde den Backend-Client schließen, während
+        der Release noch läuft, und der Lock bliebe bis zur TTL gehalten.
+        Deshalb: inneren Task tracken, nur den Await shielden."""
+        inner = asyncio.create_task(
+            self._release_acquired_locks(handler_id, acquired_locks)
+        )
+        self._detached_releases.add(inner)
+        inner.add_done_callback(self._detached_releases.discard)
+        try:
+            await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            # Outer-cancel reached us. ``inner`` is unaffected (shield
+            # protected it); _execute_shutdown awaits it via
+            # _detached_releases. Re-raise so the cancel is observed.
+            raise
+
+    async def _release_unique_on_start(self, message: Any, task_id: str, task_info: TaskInfo) -> None:
+        """R3.5 Unit 10: start-mode dedup release — AFTER rate-limit/lock
+        checks (a requeue republishes with the header intact; releasing
+        earlier would let a second schedule() win the SETNX and run twice)
+        and BEFORE the FIRE_AND_FORGET ack. Owner-check in
+        unique_release.lua protects against a foreign-owner DEL;
+        BackendConnectionError is swallowed inside release_unique
+        (log-only) — a Valkey flap must not turn dedup into a liveness
+        hazard."""
+        unique_hash = self._extract_valid_unique_hash(message)
+        header_unique_until = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
+        effective_unique_until = header_unique_until or task_info.unique_until
+        if unique_hash and effective_unique_until == "start":
+            await self._backend.release_unique(
+                unique_hash, task_id,
+                op_timeout=self._config.backend_op_timeout,
+            )
+
+    @staticmethod
+    def _build_message_dict(ctx: GateContext, message: Any) -> MessageContext:
+        """Canonical middleware payload + retry_count from the headers."""
+        assert ctx.task_info is not None
+        return {
+            "task_id": ctx.task_id,
+            "task_name": ctx.task_name,
+            "queue": ctx.queue,
+            "args": ctx.args,
+            "kwargs": ctx.kwargs,
+            "delivery_mode": ctx.task_info.delivery.value,
+            "retry_count": message.headers.get("x-swarmq-retry-count", 0),
+        }
+
+    async def _resolve_chain_or_route(self, message: Any, acked_before_execute: bool) -> Any:
+        """Resolve the middleware chain once per message (add_middleware()
+        after Worker construction stays visible; list-copy cost is
+        negligible vs broker roundtrip). A broken user-supplied factory
+        must not crash the consumer loop — DLX-route unless the FAF ack
+        already happened (KTD5: no verb after acked_before_execute)."""
+        try:
+            return self._get_chain()
+        except Exception as exc:
+            logger.error("middleware_chain_factory_failed", error=str(exc))
+            if not acked_before_execute:
+                await route_via_dlx(self._broker, message)
+            return None
+
+    async def _pre_pipeline_gates(self, message: Any, ctx: GateContext) -> bool:
+        """Ack-sichere Prä-Pipeline-Stufen VOR Semaphore und try/finally.
+
+        2a: Consumer-seitiges Schedfire-Dedup (Phase 3c Unit 8) läuft ZUERST
+        — ein doppelter Scheduled-Fire betritt keine weitere Stufe und
+        kostet nur den SETNX. 2b: Pre-Start-Cancel-Check (Phase 3b.3) —
+        vor dem Semaphore-Acquire (kein Slot für stornierte Arbeit), vor
+        Rate-Limit/Lock und vor dem FIRE_AND_FORGET-Früh-Ack; die Gates
+        räumen ihren structlog-Kontext auf den behandelten Zweigen selbst
+        auf (der Haupt-finally wird dort nie erreicht)."""
+        if await self._schedfire_gate.apply(message, ctx) is not Continue:
+            return False
+        return await self._cancel_gate.apply(message, ctx) is Continue
+
+    async def _lookup_task_or_route(self, message: Any, task_name: str) -> type[Task] | None:
+        """Registry-Lookup; unbekannte Tasks gehen über den DLX-Fallback
+        (``None`` = behandelt)."""
+        try:
+            return self._registry.get(task_name)
+        except TaskNotFoundError:
+            logger.error("task_not_found")
+            await route_via_dlx(self._broker, message)
+            return None
+
+    def _bind_log_context(self, task_id: str, task_name: str, queue: str) -> None:
+        """Bind structured context for all log calls during this task."""
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
             task_id=task_id,
@@ -434,46 +559,114 @@ class Worker(WorkerLifecycle):
             worker_id=id(self),
         )
 
-        # 2a. Consumer-side schedfire dedup (Phase 3c Unit 8). Runs FIRST —
-        # before cancel-check, semaphore, rate-limit, lock — so a
-        # duplicate scheduled fire never enters any of those stages and
-        # costs no Valkey round-trips beyond the SETNX. Ack-safe
-        # pre-pipeline stage, same discipline as cancel-check.
-        ctx = GateContext(task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs)
-        if await self._schedfire_gate.apply(message, ctx) is not Continue:
-            return
+    async def _finalize_delivery(
+        self, message: Any, outcome: DeliveryOutcome, task_id: str, task_info: TaskInfo | None
+    ) -> None:
+        """Finally-Kopf des Runners (U19: der finally liest das Outcome).
 
-        # 2b. Pre-start cancel check (Phase 3b.3). Runs BEFORE semaphore
-        # acquire so a cancelled message doesn't waste a slot, BEFORE
-        # rate-limit and lock so those stages are not entered for
-        # cancelled work, and BEFORE FIRE_AND_FORGET early-ack in the
-        # main try/finally. The helper is responsible for its own
-        # structlog cleanup on the cancel branch — the main finally at
-        # the end of this method is not reached on this branch.
-        if await self._cancel_gate.apply(message, ctx) is not Continue:
+        Schedfire: Terminal mit ``finalize_schedfire`` schreibt den
+        Completed-Marker (eine Redelivery, die in den Ablauf des
+        In-Flight-Keys rast, muss ihn sehen); nicht-terminal löscht den
+        In-Flight-Key, damit die Kopie erneut laufen kann.
+
+        Unique (R3.5 Unit 11, completion-mode): alle terminalen Hauptpfade
+        laufen mit ``release_unique=True`` hier durch; nicht-terminale
+        Pfade (Requeues) erhalten den ``x-swarmq-unique-hash``-Header in
+        der Kopie und melden ``Redelivered`` — die nächste Zustellung
+        durchläuft die Owner-Check-Pipeline erneut. Start-mode ist beim
+        Pickup bereits freigegeben (No-op), ebenso Nachrichten ohne Header."""
+        terminal = outcome if isinstance(outcome, Terminal) else None
+        await self._finalize_schedfire(
+            message, terminal=terminal is not None and terminal.finalize_schedfire,
+        )
+        if terminal is not None and terminal.release_unique:
+            await self._maybe_release_unique(message, task_id, task_info)
+
+    async def _resolve_error_path(
+        self,
+        message: Any,
+        ctx: GateContext,
+        execution: Any,
+        message_dict: MessageContext,
+        chain: Any,
+        current_outcome: DeliveryOutcome,
+    ) -> DeliveryOutcome | None:
+        """FAF-Fehler-Kurzschluss und AT_LEAST_ONCE-Retry-Bewertung.
+
+        Rückgabe: ein Outcome beendet den Hauptteil damit; ``None`` läuft
+        weiter in den Ergebnis-Tail (der FAF-Kurzschluss reicht das
+        aktuelle Outcome unverändert zurück).
+
+        FIRE_AND_FORGET mit Fehler/Cancel überspringt die Result-/Retry-
+        Pipeline (bei Cancel wird das Flag hier gelöscht — der
+        result-ttl-0-Zweig des Tails wird auf diesem Pfad nie erreicht).
+        Bewusste (user-approved) Verhaltensänderung von damals:
+        ``max_retries=0``-Fehler laufen wie jeder Fehler durch die
+        Retry-Bewertung — sofort erschöpft → DLQ mit gespeichertem
+        Fehlerergebnis und ``TASK_DLQ``; der Late-Cancel-Flip stellt einen
+        Cancel, der ins Pipeline-Ende raste, dem Tail als Cancel dar."""
+        task_info = ctx.task_info
+        assert task_info is not None
+        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and (
+            execution.is_error or execution.is_cancelled
+        ):
+            if execution.is_cancelled:
+                await self._backend.clear_cancel_flag(
+                    ctx.task_id, op_timeout=self._config.backend_op_timeout
+                )
+            return current_outcome
+
+        if (
+            execution.is_error
+            and execution.task_exception is not None
+            and not execution.is_cancelled
+            and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
+        ):
+            if await self._check_late_cancel(ctx.task_id):
+                logger.info(
+                    "cancel_observed_post_execution",
+                    task_id=ctx.task_id,
+                    task_name=ctx.task_name,
+                )
+                execution.is_cancelled = True
+                execution.is_error = False
+                execution.error_message = ""
+                execution.task_exception = None
+                return None
+            # U8: Retry-Bewertung und Dead-Letter leben in worker/retry.py.
+            # Beide Wege melden ``Redelivered`` an den finally (Dead-Letter
+            # gibt inline frei; das In-Flight-Löschen ist folgenlos).
+            return await self._retry_handler.evaluate(
+                message, ctx, execution.task_exception, execution.error_message, message_dict, chain
+            )
+        return None
+
+    async def _handle_message(self, message: Any) -> None:
+        """Core message handler logic."""
+        decoded = await self._decode_and_validate(message)
+        if decoded is None:
+            return
+        task_id, queue, task_name, args, kwargs = decoded
+
+        self._bind_log_context(task_id, task_name, queue)
+
+        ctx = GateContext(task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs)
+        if not await self._pre_pipeline_gates(message, ctx):
             return
 
         # 3. Acquire semaphore
         await self._semaphore.acquire()
-        # Per-handler lock-tracking state. handler_id is the registry key
-        # for shutdown cleanup; acquired_locks is the local source of truth
-        # the finally-block uses to release. Both are scoped to this
-        # _handle_message invocation — task_id alone would collide under
-        # AT_LEAST_ONCE redelivery within the same worker.
-        handler_id = uuid.uuid4()
-        acquired_locks: list[LockToken] = []
-        ctx.handler_id = handler_id
-        ctx.acquired_locks = acquired_locks
+        # Per-handler lock-tracking state, scoped to this invocation —
+        # task_id alone would collide under AT_LEAST_ONCE redelivery.
+        # handler_id ist der Registry-Schlüssel fürs Shutdown-Cleanup.
+        handler_id = ctx.handler_id = uuid.uuid4()
+        acquired_locks = ctx.acquired_locks  # lokale Quelle der Wahrheit für den finally
         # R3.5 Unit 11 state: task_info visible in finally even if
         # lookup fails.
         task_info: TaskInfo | None = None
-        # U19 (KTD5): ein typisiertes Zustellungs-Ergebnis statt zweier
-        # Booleans. Default = terminal mit Freigabe im finally; jeder
-        # nicht-terminale Zweig setzt ``Redelivered`` (Dedup-Flag bleibt,
-        # In-Flight-Claim wird gelöscht), Expiry setzt
-        # ``Terminal.never_release()``. Die Richtung ist bewusst so gewählt,
-        # dass ein vergessener Zweig über-freigibt (owner-check-sicher) statt
-        # unter-freigibt.
+        # U19 (KTD5): typisiertes Zustellungs-Ergebnis; Default = terminal
+        # mit Freigabe im finally — ein vergessener Zweig über-freigibt
+        # (owner-check-sicher) statt unter-freigibt. Semantik: outcome.py.
         outcome: DeliveryOutcome = Terminal.release_in_finally()
         # FIRE_AND_FORGET: nach dem letzten Gate wird bestätigt; danach darf
         # kein Zweig mehr ein Broker-Verb auslösen (Modus acked_before_execute).
@@ -493,78 +686,32 @@ class Worker(WorkerLifecycle):
                 return
 
             # 4-5. Look up task in registry
-            try:
-                task_class = self._registry.get(task_name)
-            except TaskNotFoundError:
-                logger.error("task_not_found")
-                await route_via_dlx(self._broker, message)
+            task_class = await self._lookup_task_or_route(message, task_name)
+            if task_class is None:
                 return
 
             task_info = task_class.task_info
             ctx.task_info = task_info
             ctx.task_class = task_class
 
-            # R4.4 Task Expiry: check max_age BEFORE any execution
-            # stages. An expired message takes the DLQ path without
-            # entering rate-limit, lock, pre_execute, etc. The enqueue
-            # time is stamped at publish (see Client.schedule +
-            # schedule_many), so this runs on every delivery including
-            # retry-after-delay-queue — each retry's clock starts from
-            # the ORIGINAL enqueue, which is the intended semantic
-            # (expiry is a wall-time contract, not a per-delivery one).
-            outcome = await self._expiry_gate.apply(message, ctx)
-            if outcome is not Continue:
-                return
-            outcome = Terminal.release_in_finally()
+            # 4a–5b. Gate-Sequenz in fester Reihenfolge (der Ordnungstest
+            # pinnt sie): Expiry (R4.4 — max_age VOR allen Stufen; die
+            # Enqueue-Zeit stammt vom Publish, jede Redelivery misst gegen
+            # das ORIGINAL — Expiry ist ein Wanduhr-Vertrag), dann
+            # Rate-Limit und Lock (beide VOR dem FIRE_AND_FORGET-Ack; ihre
+            # Requeue-Kopien erhalten den x-swarmq-unique-hash-Header, das
+            # Flag bleibt beansprucht; die Lock-DLQ-Unterpfade geben inline
+            # frei — siehe gates/rate_limit.py und gates/lock.py).
+            # Jedes „behandelt" beendet den Hauptteil mit dem Gate-Outcome;
+            # nach jedem Continue fällt das Outcome auf den Terminal-Default
+            # zurück (KTD5-Richtung: über- statt unter-freigeben).
+            for gate in (self._expiry_gate, self._rate_limit_gate, self._lock_gate):
+                outcome = await gate.apply(message, ctx)
+                if outcome is not Continue:
+                    return
+                outcome = Terminal.release_in_finally()
 
-            # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
-            # so a Valkey or broker hiccup cannot drop a message that has
-            # already been acked. Rate-limited tasks never reach
-            # pre_execute or middleware: they are republished into the
-            # delay queue and ack'd as a single transactional unit.
-            # Any "handled" return is a requeue (delay queue or nack=True)
-            # — the original message's x-swarmq-unique-hash header is
-            # preserved in the republished copy (Unit 11 header
-            # preservation), so the flag must stay claimed.
-            outcome = await self._rate_limit_gate.apply(message, ctx)
-            if outcome is not Continue:
-                return
-            outcome = Terminal.release_in_finally()
-
-            # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
-            # rate-limit. Conflict path: requeue with exponential backoff
-            # until the per-message cap, then DLQ. Acquired locks are
-            # released in the finally below.
-            # Terminal DLQ sub-paths inside the gate release the flag
-            # inline (render-fail, empty-render, conflict-cap); non-
-            # terminal sub-paths requeue and preserve the header (siehe
-            # gates/lock.py zur Outcome-Wahl).
-            outcome = await self._lock_gate.apply(message, ctx)
-            if outcome is not Continue:
-                return
-            outcome = Terminal.release_in_finally()
-
-            # 5c. R3.5 Unit 10: start-mode
-            # dedup release happens AFTER rate-limit / lock checks and
-            # BEFORE the FIRE_AND_FORGET ack. Releasing earlier would
-            # break dedup semantics in the requeue case: rate-limit or
-            # lock-conflict republishes the message with the header
-            # intact, a second schedule() call in the requeue window
-            # would win the SETNX, and both tasks would run. The flag
-            # must persist across requeue-based non-terminal stages and
-            # only release when the task is actually about to execute.
-            # Owner-check in unique_release.lua protects against a
-            # foreign-owner DEL; BackendConnectionError is swallowed
-            # inside release_unique (log-only) — letting Valkey flap
-            # abort pickup would turn dedup into a liveness hazard.
-            unique_hash = self._extract_valid_unique_hash(message)
-            header_unique_until = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
-            effective_unique_until = header_unique_until or task_info.unique_until
-            if unique_hash and effective_unique_until == "start":
-                await self._backend.release_unique(
-                    unique_hash, task_id,
-                    op_timeout=self._config.backend_op_timeout,
-                )
+            await self._release_unique_on_start(message, task_id, task_info)
 
             # 5d. FIRE_AND_FORGET: ack immediately before execution — ab hier
             # ist kein Broker-Verb mehr zulässig (acked_before_execute).
@@ -572,117 +719,30 @@ class Worker(WorkerLifecycle):
                 await self._broker.ack(message)
                 acked_before_execute = True
 
-            # Build canonical message_dict for middleware + track retry_count
-            retry_count = message.headers.get("x-swarmq-retry-count", 0)
-            message_dict: MessageContext = {
-                "task_id": task_id,
-                "task_name": task_name,
-                "queue": queue,
-                "args": args,
-                "kwargs": kwargs,
-                "delivery_mode": task_info.delivery.value,
-                "retry_count": retry_count,
-            }
-
-            # Resolve the middleware chain once per message so that any
-            # add_middleware() calls made after Worker construction are
-            # visible to every hook for this message. Chain-build cost is
-            # sub-microsecond (list copy), negligible vs broker roundtrip.
-            # A broken user-supplied factory must not crash the consumer
-            # loop — nack without requeue so the message hits the DLQ.
-            try:
-                chain = self._get_chain()
-            except Exception as exc:
-                logger.error("middleware_chain_factory_failed", error=str(exc))
-                # Nach dem FAF-Ack gibt es nichts mehr zu nacken (KTD5); vorher
-                # führt der heutige DLX-Fallback über die Broker-Konfiguration.
-                if not acked_before_execute:
-                    await route_via_dlx(self._broker, message)
+            message_dict = self._build_message_dict(ctx, message)
+            chain = await self._resolve_chain_or_route(message, acked_before_execute)
+            if chain is None:
                 return
 
             # 6. Ausführung (U8): Lifecycle, Timeouts, Cancel-Monitor,
             # Middleware-Hooks und Signale leben in worker/execution.py.
             execution = await self._executor.execute(ctx, message_dict, chain)
-            is_error = execution.is_error
             is_cancelled = execution.is_cancelled
-            error_message = execution.error_message
             task_exception = execution.task_exception
             _di_scope = execution.di_scope
             _di_token = execution.di_token
 
 
-            # For FIRE_AND_FORGET with errors: skip result/retry pipeline.
-            # For FIRE_AND_FORGET cancels: also clear the flag before we
-            # bail — the result-ttl-zero early-return below wouldn't
-            # clear it because FAF control flow doesn't reach that
-            # branch for cancelled tasks with errors.
-            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and (
-                is_error or is_cancelled
-            ):
-                if is_cancelled:
-                    await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
+            error_outcome = await self._resolve_error_path(
+                message, ctx, execution, message_dict, chain, outcome
+            )
+            # Der Late-Cancel-Flip mutiert das ExecutionResult — die lokalen
+            # Aliase (DI-Teardown im finally) nachziehen.
+            is_cancelled = execution.is_cancelled
+            task_exception = execution.task_exception
+            if error_outcome is not None:
+                outcome = error_outcome
                 return
-
-            # Retry logic (AT_LEAST_ONCE only) — cancel bypasses retry.
-            #
-            # Deliberate (user-approved) behaviour change: max_retries=0 errors now
-            # route through _evaluate_retry like every other failure —
-            # retry_count(0) >= max_retries(0) is immediately exhausted,
-            # so _send_to_dlq runs: error result stored (get_result()
-            # contract unchanged), message copied to {queue}.XQ, TASK_DLQ
-            # dispatched. Previously this branch was gated on
-            # max_retries > 0, which silently exempted the most common
-            # "no recovery" config from DLQ inspection and alerting.
-            if (
-                is_error
-                and task_exception is not None
-                and not is_cancelled
-                and task_info.delivery is DeliveryMode.AT_LEAST_ONCE
-            ):
-                # Post-execution cancel guard: a cancel that
-                # arrived WHILE post_execution was running or between
-                # run_task.done() and this branch wouldn't have been
-                # caught by the cancel-monitor (which stops polling as
-                # soon as run_task.done() fires). Re-check the flag
-                # here so a cancel that raced into the tail of the
-                # pipeline suppresses the retry. Timeout-wrapped like
-                # every other cancel-path backend call.
-                try:
-                    late_cancel = await self._backend.is_cancelled(
-                        task_id,
-                        op_timeout=self._config.backend_op_timeout,
-                    )
-                except BackendConnectionError:
-                    # Backend hiccup at this late stage: treat as "not
-                    # cancelled" and let the normal retry path decide.
-                    # The next pre-start check on the redelivered
-                    # message will still honor an actual cancel flag.
-                    late_cancel = False
-
-                if late_cancel:
-                    logger.info(
-                        "cancel_observed_post_execution",
-                        task_id=task_id,
-                        task_name=task_name,
-                    )
-                    # Flip state so downstream code treats this as a
-                    # cancel rather than an error → skip retry, store
-                    # is_cancelled=True result, clear flag, ack. Der
-                    # Ergebnis-Tail liest das ExecutionResult (U20), der
-                    # DI-Teardown die lokalen Aliase — beide umstellen.
-                    execution.is_cancelled = is_cancelled = True
-                    execution.is_error = is_error = False
-                    execution.error_message = error_message = ""
-                    execution.task_exception = task_exception = None
-                else:
-                    # U8: Retry-Bewertung und Dead-Letter leben in
-                    # worker/retry.py. Beide Wege sind fuer den finally
-                    # ``Redelivered`` (Dead-Letter gibt inline frei; das
-                    # In-Flight-Loeschen ist dort folgenlos).
-                    outcome = await self._retry_handler.evaluate(
-                        message, ctx, task_exception, error_message, message_dict, chain
-                    )
-                    return
 
             # 7.-11. Ergebnis-Tail (U20): Speichern, Benachrichtigung,
             # Cancel-Flag, Workflow-Advance-Seam und ALO-Ack leben in
@@ -700,28 +760,7 @@ class Worker(WorkerLifecycle):
             # than being skipped as "completed".
             # U19: der finally liest die Outcome-Felder. ``Redelivered`` (kein
             # Terminal) → In-Flight-Claim löschen, keine Freigabe.
-            terminal = outcome if isinstance(outcome, Terminal) else None
-            await self._finalize_schedfire(
-                message, terminal=terminal is not None and terminal.finalize_schedfire,
-            )
-
-            # 12-pre-b. R3.5 Unit 11: completion-mode dedup release.
-            # No-op in start-mode (Unit 10 already released at pickup),
-            # no-op when the message has no x-swarmq-unique-hash header.
-            # All main-body terminal paths (success, error, cancel,
-            # DLQ, lock-conflict-cap, task_not_found nack=False,
-            # lock-render-fail, middleware-factory-fail) flow through
-            # here with a Terminal outcome whose release_unique is True.
-            # Non-terminal paths (rate-limit requeue, lock-conflict
-            # requeue, retry delay queue, store_result nack=True,
-            # shutdown nack=True) also hit this finally, but they
-            # preserve the x-swarmq-unique-hash header in the
-            # republished message and report ``Redelivered`` so the
-            # next delivery re-runs the owner-check pipeline.
-            if terminal is not None and terminal.release_unique:
-                await self._maybe_release_unique(
-                    message, task_id, task_info,
-                )
+            await self._finalize_delivery(message, outcome, task_id, task_info)
 
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
             # __aexit__ with the captured task exception so yield-based
@@ -733,26 +772,7 @@ class Worker(WorkerLifecycle):
             # abort the finalizer mid-await — _execute_shutdown drains
             # _detached_releases before closing the backend.
             if _di_scope is not None:
-                if _di_token is not None:
-                    request_container.reset(_di_token)
-                _di_exc = (
-                    asyncio.CancelledError() if is_cancelled else task_exception
-                )
-                _di_et = type(_di_exc) if _di_exc is not None else None
-                _di_tb = _di_exc.__traceback__ if _di_exc is not None else None
-                _di_exit = asyncio.create_task(
-                    _di_scope.__aexit__(_di_et, _di_exc, _di_tb)
-                )
-                self._detached_releases.add(_di_exit)
-                _di_exit.add_done_callback(self._detached_releases.discard)
-                try:
-                    await asyncio.shield(_di_exit)
-                except asyncio.CancelledError:
-                    # Outer-cancel reached us. ``_di_exit`` is unaffected
-                    # (shield protected it) and tracked in
-                    # _detached_releases, which _execute_shutdown awaits
-                    # before backend.close. Re-raise to observe the cancel.
-                    raise
+                await self._teardown_di_scope(_di_scope, _di_token, is_cancelled, task_exception)
 
             # 12a. Release any task-locks acquired by this handler.
             #
@@ -772,19 +792,7 @@ class Worker(WorkerLifecycle):
             # wait, but the inner Task keeps running; _execute_shutdown
             # awaits it via _detached_releases before backend.close.
             if acquired_locks and self._lock_manager is not None:
-                inner = asyncio.create_task(
-                    self._release_acquired_locks(handler_id, acquired_locks)
-                )
-                self._detached_releases.add(inner)
-                inner.add_done_callback(self._detached_releases.discard)
-                try:
-                    await asyncio.shield(inner)
-                except asyncio.CancelledError:
-                    # Outer-cancel reached us. ``inner`` is unaffected
-                    # (shield protected it); _execute_shutdown awaits
-                    # it via _detached_releases. Re-raise so the
-                    # caller's cancel is observed.
-                    raise
+                await self._detached_lock_release(handler_id, acquired_locks)
             # 12b. Release semaphore
             self._semaphore.release()
             structlog.contextvars.clear_contextvars()

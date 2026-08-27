@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -117,7 +117,37 @@ class ValkeyResults(ValkeyConnection):
         except (BackendConnectionError, ValkeyError, OSError):
             logger.warning("publish_notification failed", task_id=task_id, exc_info=True)
 
-    async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:  # noqa: C901  # Client-Erbe, 0.2.x
+    async def _pubsub_window(
+        self,
+        pubsub: Any,
+        get_within_deadline: Callable[[], Awaitable[bytes | None]],
+        deadline: float,
+    ) -> bytes | None:
+        """Pub/Sub-Fenster: auf Benachrichtigung warten, dann erneut lesen.
+        ``None`` = kein Ergebnis im Fenster (Aufrufer pollt weiter)."""
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        pub_deadline = loop.time() + min(_PUBSUB_WINDOW_S, remaining)
+        while loop.time() < pub_deadline:
+            try:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
+            except Exception:
+                return None  # Pub/Sub error, fall through to polling
+            if msg is not None:
+                raw = await get_within_deadline()
+                if raw is not None:
+                    return raw
+        return None
+
+    @staticmethod
+    async def _close_pubsub(pubsub: Any, channel: str) -> None:
+        try:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+        except Exception:
+            pass
+
+    async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:
         """Liefert das Ergebnis, sobald vorhanden; ``None`` bei Ablauf.
 
         Ablauf (Client-Erbe): Pub/Sub zuerst abonnieren
@@ -150,17 +180,9 @@ class ValkeyResults(ValkeyConnection):
             if raw is not None:
                 return raw
             if pubsub is not None:
-                remaining = deadline - loop.time()
-                pub_deadline = loop.time() + min(_PUBSUB_WINDOW_S, remaining)
-                while loop.time() < pub_deadline:
-                    try:
-                        msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
-                    except Exception:
-                        break  # Pub/Sub error, fall through to polling
-                    if msg is not None:
-                        raw = await _get_within_deadline()
-                        if raw is not None:
-                            return raw
+                raw = await self._pubsub_window(pubsub, _get_within_deadline, deadline)
+                if raw is not None:
+                    return raw
             while loop.time() < deadline:
                 raw = await _get_within_deadline()
                 if raw is not None:
@@ -169,11 +191,7 @@ class ValkeyResults(ValkeyConnection):
             return None
         finally:
             if pubsub is not None:
-                try:
-                    await pubsub.unsubscribe(channel)
-                    await pubsub.aclose()
-                except Exception:
-                    pass
+                await self._close_pubsub(pubsub, channel)
 
     # ------------------------------------------------------------------
     # R3.7 Fortschritt — HASH-Zustand + Pub/Sub-Fan-out
@@ -224,7 +242,7 @@ class ValkeyResults(ValkeyConnection):
         except (BackendConnectionError, ValkeyError, OSError):
             logger.warning("publish_progress_failed", task_id=task_id, exc_info=True)
 
-    async def watch_progress(self, task_id: str) -> AsyncIterator[bytes]:  # noqa: C901  # Client-Erbe, 0.2.x
+    async def watch_progress(self, task_id: str) -> AsyncIterator[bytes]:
         """Fortschritts-Payloads (JSON der HASH-Felder) bis zum Abbruch.
 
         Abonniert ZUERST, liefert dann den aktuellen HASH-Stand als Payload
@@ -265,14 +283,12 @@ class ValkeyResults(ValkeyConnection):
                 try:
                     msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
                 except Exception:
+                    # Pub/Sub-Fehler: Schnappschuss überbrückt, dann aktives
+                    # Resubscribe mit 0,5 s Backoff.
                     fallback = await _snapshot()
                     if fallback is not None:
                         yield fallback
-                    try:
-                        await _subscribe_and_drain()
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.5)
+                    await self._try_resubscribe(_subscribe_and_drain)
                     continue
                 if msg is None or msg.get("type") != "message":
                     continue
@@ -280,11 +296,15 @@ class ValkeyResults(ValkeyConnection):
                 if isinstance(data, bytes):
                     yield data
         finally:
-            try:
-                await pubsub.unsubscribe(channel)
-                await pubsub.aclose()
-            except Exception:
-                pass
+            await self._close_pubsub(pubsub, channel)
+
+    @staticmethod
+    async def _try_resubscribe(subscribe_and_drain: Any) -> None:
+        try:
+            await subscribe_and_drain()
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
 
     # ------------------------------------------------------------------
     # Cancel-Flags

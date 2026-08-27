@@ -88,11 +88,8 @@ class WorkerLifecycle:
 
         def _resolve_workflow_queue(self, task_name: str) -> str: ...
 
-    async def start(self) -> None:  # noqa: C901, PLR0915  # U9 (worker/lifecycle.py)
-        """Connect broker + backend, declare queues, start consuming, block until shutdown."""
-        await self._broker.connect()
-        await self._backend.connect()
-
+    async def _wire_coordination(self) -> None:
+        """Verträge/Advancer/Scheduler nach ``connect()`` verdrahten."""
         # Die Koordinations-Verträge kommen seit U15 von der Fassade —
         # die Properties existieren erst nach connect() (registrierte
         # Lua-Skripte brauchen den lebenden Client).
@@ -130,6 +127,8 @@ class WorkerLifecycle:
         )
         await self._scheduler.start()
 
+    async def _start_observability(self) -> None:
+        """Metrics-/Health-Server mit Teilstart-Rollback hochfahren."""
         # Auto-wire Prometheus metrics + health
         # endpoints when config flags set. Operator no longer needs
         # to construct Metrics + install_signal_collectors + MetricsServer
@@ -192,6 +191,7 @@ class WorkerLifecycle:
                     logger.exception("rollback_scheduler_stop_failed")
             raise
 
+    def _warn_priority_tasks_without_routing(self) -> None:
         # Warn when a registered task declares
         # priority != "normal" but the worker is not configured for
         # priority routing. Without the warning, a publish to
@@ -218,6 +218,7 @@ class WorkerLifecycle:
                     ),
                 )
 
+    async def _declare_and_consume_queues(self) -> None:
         # R4.3 Task Priorities: expand each base queue into the
         # high/normal/low triplet when priorities are enabled.
         #
@@ -249,6 +250,34 @@ class WorkerLifecycle:
                     concurrency=self._config.concurrency,
                 )
 
+    def _start_background_monitors(self) -> None:
+        # R4.5 Burst-Mode: launch the idle monitor only when burst is
+        # enabled. The monitor sets _shutdown_event after the queues
+        # have been silent for burst_idle_timeout seconds, exiting the
+        # await below and triggering the same graceful path SIGTERM uses.
+        if self._config.burst_mode:
+            self._last_message_received_at = time.monotonic()
+            self._burst_monitor_task = asyncio.create_task(
+                self._burst_monitor()
+            )
+
+        # Start the metrics sampler when metrics are
+        # enabled so the queue_depth / dlq_messages / uptime gauges are
+        # actually populated and WORKER_HEARTBEAT is emitted.
+        if self._metrics is not None and self._metrics.enabled:
+            self._worker_started_at = time.monotonic()
+            self._metrics_sampler_task = asyncio.create_task(
+                self._metrics_sampler()
+            )
+
+    async def start(self) -> None:
+        """Connect broker + backend, declare queues, start consuming, block until shutdown."""
+        await self._broker.connect()
+        await self._backend.connect()
+        await self._wire_coordination()
+        await self._start_observability()
+        self._warn_priority_tasks_without_routing()
+        await self._declare_and_consume_queues()
         self._state = WorkerState.RUNNING
 
         # Register signal handlers for graceful shutdown
@@ -272,26 +301,7 @@ class WorkerLifecycle:
             handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
             worker_id=str(id(self)),
         )
-
-        # R4.5 Burst-Mode: launch the idle monitor only when burst is
-        # enabled. The monitor sets _shutdown_event after the queues
-        # have been silent for burst_idle_timeout seconds, exiting the
-        # await below and triggering the same graceful path SIGTERM uses.
-        if self._config.burst_mode:
-            self._last_message_received_at = time.monotonic()
-            self._burst_monitor_task = asyncio.create_task(
-                self._burst_monitor()
-            )
-
-        # Start the metrics sampler when metrics are
-        # enabled so the queue_depth / dlq_messages / uptime gauges are
-        # actually populated and WORKER_HEARTBEAT is emitted.
-        if self._metrics is not None and self._metrics.enabled:
-            self._worker_started_at = time.monotonic()
-            self._metrics_sampler_task = asyncio.create_task(
-                self._metrics_sampler()
-            )
-
+        self._start_background_monitors()
         # Block until shutdown is requested. The try/finally makes the cancel
         # path safe: a plain cancel of this coroutine (tests, ProcessManager
         # reload, embedded use) would otherwise skip _execute_shutdown and
@@ -404,16 +414,7 @@ class WorkerLifecycle:
         await self._broker.close()
         await self._backend.close()
 
-    async def _execute_shutdown(self) -> None:  # noqa: C901  # U9 (worker/lifecycle.py)
-        """Execute the graceful shutdown sequence."""
-        # Bounded — a hanging handler must not stall
-        # the drain/lock-release/close sequence below.
-        await self._signal_dispatcher.dispatch(
-            Signal.WORKER_SHUTDOWN,
-            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-            worker_id=str(id(self)),
-        )
-
+    async def _stop_http_surfaces(self) -> None:
         # Stop auto-wired HTTP surfaces first so scrapers / probes
         # get a clean connection-close rather than hitting a worker
         # in mid-drain. Idempotent when not started.
@@ -428,6 +429,7 @@ class WorkerLifecycle:
             except Exception:
                 logger.exception("health_server_stop_failed")
 
+    async def _drain_in_flight(self) -> None:
         # 1. DRAINING: stop accepting new messages. cancel_consume now
         # isolates per-consumer failures and raises only after attempting
         # every consumer + clearing its registry; guard it so a partial
@@ -453,6 +455,7 @@ class WorkerLifecycle:
                     task.cancel()
                 await asyncio.wait(pending, timeout=1)
 
+    async def _release_leftover_locks(self) -> None:
         # 3b. Await detached lock-release tasks (Phase 3b.3). When a
         # handler finally block was interrupted by outer-cancel, its
         # shielded _release_acquired_locks call was detached into
@@ -485,6 +488,7 @@ class WorkerLifecycle:
                         )
             self._active_handler_locks.clear()
 
+    async def _stop_scheduler_and_di(self) -> None:
         # 3d. Stop the embedded scheduler. Must run AFTER in-flight tasks
         # have drained (otherwise the leader could still fire during
         # drain and have its commit arrive at a closed backend) and
@@ -513,6 +517,19 @@ class WorkerLifecycle:
             except Exception:
                 logger.exception("dishka_container_close_failed")
 
+    async def _execute_shutdown(self) -> None:
+        """Execute the graceful shutdown sequence."""
+        # Bounded — a hanging handler must not stall
+        # the drain/lock-release/close sequence below.
+        await self._signal_dispatcher.dispatch(
+            Signal.WORKER_SHUTDOWN,
+            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+            worker_id=str(id(self)),
+        )
+        await self._stop_http_surfaces()
+        await self._drain_in_flight()
+        await self._release_leftover_locks()
+        await self._stop_scheduler_and_di()
         # 4. Close connections
         self._state = WorkerState.SHUTTING_DOWN
         await self._broker.close()

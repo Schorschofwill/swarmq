@@ -46,7 +46,44 @@ def decode_json(data: bytes, type_hint: type | None = None) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _canonicalize(obj: Any) -> Any:  # noqa: C901  # Follow-Up 0.2.x
+def _canonical_float(obj: float) -> float:
+    """Finite floats pass through; NaN / ±Inf have no stable JSON form
+    (NaN → null would collide with None in the hash)."""
+    if math.isnan(obj) or math.isinf(obj):
+        raise TypeError(
+            "canonical_encode does not support NaN / +Inf / -Inf — "
+            "these have no stable JSON representation (NaN would "
+            "collide with None). Normalize upstream or disable dedup."
+        )
+    return obj
+
+
+def _canonical_dict(obj: dict[Any, Any]) -> dict[str, Any]:
+    """Sort keys; reject non-str keys (JSON constraint, makes sort stable)."""
+    result = {}
+    for key in sorted(obj.keys()):
+        if not isinstance(key, str):
+            raise TypeError(
+                "canonical_encode requires str dict keys; "
+                f"got {type(key).__name__!r}"
+            )
+        result[key] = _canonicalize(obj[key])
+    return result
+
+
+def _canonical_set(obj: set[Any] | frozenset[Any]) -> list[Any]:
+    """Sort; raises TypeError for mixed/unsortable elements."""
+    try:
+        items = sorted(obj)
+    except TypeError as exc:
+        raise TypeError(
+            f"canonical_encode cannot sort {type(obj).__name__} "
+            f"with mixed element types: {exc}"
+        ) from exc
+    return [_canonicalize(item) for item in items]
+
+
+def _canonicalize(obj: Any) -> Any:
     """Pre-normalize a value into a form that JSON-encodes deterministically.
 
     Contract: identical semantic inputs produce identical bytes under
@@ -59,51 +96,18 @@ def _canonicalize(obj: Any) -> Any:  # noqa: C901  # Follow-Up 0.2.x
     if obj is None or isinstance(obj, (bool, int, str)):
         return obj
     # datetime IS date (isinstance-wise) — check datetime first.
-    # Float must reject NaN / +Inf / -Inf: msgspec encodes them as
-    # JSON null / Infinity / -Infinity, which either collides with
-    # None in the hash (NaN → null) or breaks hash stability across
-    # msgspec versions. Finite floats pass through.
     if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            raise TypeError(
-                "canonical_encode does not support NaN / +Inf / -Inf — "
-                "these have no stable JSON representation (NaN would "
-                "collide with None). Normalize upstream or disable dedup."
-            )
-        return obj
-    if isinstance(obj, UUID):
+        return _canonical_float(obj)
+    if isinstance(obj, (UUID, Decimal)):
         return str(obj)
-    if isinstance(obj, datetime):
+    if isinstance(obj, (datetime, date, time)):
         return obj.isoformat()
-    if isinstance(obj, date):
-        return obj.isoformat()
-    if isinstance(obj, time):
-        return obj.isoformat()
-    if isinstance(obj, Decimal):
-        return str(obj)
     if isinstance(obj, dict):
-        # Sort keys; reject non-str keys (JSON constraint, makes sort stable).
-        result = {}
-        for key in sorted(obj.keys()):
-            if not isinstance(key, str):
-                raise TypeError(
-                    "canonical_encode requires str dict keys; "
-                    f"got {type(key).__name__!r}"
-                )
-            result[key] = _canonicalize(obj[key])
-        return result
+        return _canonical_dict(obj)
     if isinstance(obj, (list, tuple)):
         return [_canonicalize(item) for item in obj]
     if isinstance(obj, (set, frozenset)):
-        # Sort; raises TypeError for mixed/unsortable elements.
-        try:
-            items = sorted(obj)
-        except TypeError as exc:
-            raise TypeError(
-                f"canonical_encode cannot sort {type(obj).__name__} "
-                f"with mixed element types: {exc}"
-            ) from exc
-        return [_canonicalize(item) for item in items]
+        return _canonical_set(obj)
     if isinstance(obj, (bytes, bytearray, memoryview)):
         raise TypeError(
             "canonical_encode does not support bytes; "

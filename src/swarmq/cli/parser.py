@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.metadata
+from typing import Any
 
 from swarmq.cli._shared import (
     _FORMAT_CHOICES,
@@ -38,7 +39,7 @@ def _swarmq_version() -> str:
         return "unknown"
 
 
-def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.2.x
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="swarmq",
         description=(
@@ -57,6 +58,15 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.
         required=True,
     )
 
+    _add_worker_parser(subparsers)
+    _add_schedule_parser(subparsers)
+    _add_dlq_parser(subparsers)
+    _add_inspect_parser(subparsers)
+    return parser
+
+
+def _add_worker_parser(subparsers: Any) -> None:
+    """``swarmq worker`` — Flags des (Multi-Process-)Workers."""
     worker = subparsers.add_parser(
         "worker",
         help="Start a worker that consumes tasks from one or more queues.",
@@ -230,6 +240,10 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.
     )
 
     # ---- schedule subcommand group (Phase 3c Unit 12) --------------------
+
+
+def _add_schedule_parser(subparsers: Any) -> None:
+    """``swarmq schedule list|add|remove|status``."""
     schedule = subparsers.add_parser(
         "schedule",
         help="Inspect or manage schedules without restarting workers.",
@@ -372,6 +386,31 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.
     )
 
     # ---- dlq subcommand group (R3.10) -----------------------------------
+
+    # status
+    sched_status = schedule_sub.add_parser(
+        "status",
+        help="Show current leader + next-N due schedules.",
+    )
+    sched_status.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=10,
+        help="How many upcoming schedules to list (default: 10).",
+    )
+    sched_status.add_argument(
+        "--format",
+        choices=_FORMAT_CHOICES,
+        default=None,
+        help=(
+            "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
+            "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
+        ),
+    )
+
+
+def _add_dlq_parser(subparsers: Any) -> None:
+    """``swarmq dlq list|inspect|retry|purge``."""
     dlq = subparsers.add_parser(
         "dlq",
         help="Inspect and recover messages from dead-letter queues.",
@@ -504,6 +543,10 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.
     )
 
     # inspect — introspect registered TaskInfo (including R3.5 dedup)
+
+
+def _add_inspect_parser(subparsers: Any) -> None:
+    """``swarmq inspect`` — TaskInfo-Metadaten."""
     inspect_parser = subparsers.add_parser(
         "inspect",
         help="List registered tasks and their TaskInfo metadata.",
@@ -531,25 +574,3 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.
         ),
     )
 
-    # status
-    sched_status = schedule_sub.add_parser(
-        "status",
-        help="Show current leader + next-N due schedules.",
-    )
-    sched_status.add_argument(
-        "--limit",
-        type=_positive_int,
-        default=10,
-        help="How many upcoming schedules to list (default: 10).",
-    )
-    sched_status.add_argument(
-        "--format",
-        choices=_FORMAT_CHOICES,
-        default=None,
-        help=(
-            "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
-            "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
-        ),
-    )
-
-    return parser

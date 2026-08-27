@@ -401,69 +401,18 @@ class ClientScheduling:
 
         return final_for, final_until
 
-    async def schedule_many(  # noqa: C901, PLR0915  # U10 (client/schedule.py)
+    def _batch_prepare(
         self,
         tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
-        queue: str | None = None,
-        *,
-        unique_for: int | None | _MissingType = _MISSING,
-        unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
-    ) -> list[str]:
-        """Submit multiple tasks for execution and return their task_ids.
-
-        Each element of *tasks* is a (task_name, args, kwargs) tuple.
-        All messages are published concurrently via asyncio.gather.
-
-        R3.5 dedup (Unit 8): the batch-level ``unique_for`` /
-        ``unique_until`` kwargs override TaskInfo defaults for every
-        element (same precedence as the immediate path — _MISSING falls
-        through to TaskInfo when a registry is available, None disables
-        dedup, int sets the TTL). Duplicates emit
-        ``TASK_DUPLICATE_DETECTED`` with ``batch_index=i`` in the
-        payload and the returned list places the existing owner's
-        task_id at index ``i`` — list length always equals
-        ``len(tasks)``.
-        """
-        if not tasks:
-            return []
-
-        # Positional result slots so dup-indices and success-indices
-        # stay aligned with the input list. Dup slots are filled in
-        # Pass 1; success slots overwrite their uuid7 in Pass 2 (no-op)
-        # and get published / signalled.
-        task_ids: list[str] = [""] * len(tasks)
-        publish_indices: list[int] = []  # positions that actually publish
-        message_dicts: dict[int, MessageContext] = {}
-        encoded_messages: dict[int, bytes] = {}
-        resolved_queues: dict[int, str] = {}
-        task_names: dict[int, str] = {}
-        dedup_headers: dict[int, dict[str, Any]] = {}
-        # Track dedup flags
-        # claimed during Pass 1 so any downstream failure (Pass 1 mid-
-        # loop exception, Pass 2 broker publish error) can roll them
-        # back. Without this, a partial batch leaves orphan flags
-        # pointing at task_ids that no broker will ever see, blocking
-        # re-schedule of those args for the full unique_for window.
-        # Keyed by batch index; value is (dedup_hash, task_id) for
-        # owner-checked release.
-        claimed_flags: dict[int, tuple[str, str]] = {}
-
-        # Resolve the middleware chain once for this whole batch so that
-        # every pre_enqueue/post_enqueue hook sees the same chain instance.
-        chain = self._get_chain()
-
-        # Pass 0 (sync): validate + generate task_ids + compute dedup
-        # parameters per element. Any validation error aborts before a
-        # single network call, so no rollback is needed yet.
-        # Layout per index:
-        #   prepped[i] = {
-        #       "task_name", "args", "kwargs", "task_id", "queue",
-        #       "delivery_mode", "unique_until",
-        #       "dedup_hash": str | None,       # sha256 hex or None
-        #       "dedup_ttl_ms": int | None,     # SETNX TTL
-        #   }
+        queue: str | None,
+        unique_for: int | None | _MissingType,
+        unique_until: Literal["start", "completion"] | _MissingType,
+    ) -> list[dict[str, Any]]:
+        """Pass 0 (sync): validate + generate task_ids + compute dedup
+        parameters per element. Any validation error aborts before a single
+        network call, so no rollback is needed yet."""
         prepped: list[dict[str, Any]] = []
-        for i, (task_name, args, kwargs) in enumerate(tasks):  # noqa: B007
+        for task_name, args, kwargs in tasks:
             if self._registry is not None and not self._registry.has(task_name):
                 raise TaskNotFoundError(task_name)
             resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
@@ -491,11 +440,14 @@ class ClientScheduling:
                 "dedup_hash": dedup_hash_precomp,
                 "dedup_ttl_ms": ttl_ms,
             })
+        return prepped
 
-        # Pass 1 (parallel): fire all SETNX calls concurrently. Sequential
-        # loop was the main per-batch latency cost for dedup-tagged
-        # batches — N * Valkey_RTT grew linearly with batch size. Gather
-        # amortises that to 1 * RTT.
+    async def _batch_claim_flags(
+        self, prepped: list[dict[str, Any]],
+    ) -> tuple[dict[int, asyncio.Task[str | None]], dict[int, str | None], dict[int, BaseException]]:
+        """Pass 1 (parallel): fire all SETNX calls concurrently. A sequential
+        loop was the main per-batch latency cost for dedup-tagged batches —
+        gather amortises N * Valkey_RTT to ~1 * RTT."""
         setnx_tasks: dict[int, asyncio.Task[str | None]] = {}
         for i, entry in enumerate(prepped):
             if entry["dedup_hash"] is None:
@@ -517,101 +469,56 @@ class ClientScheduling:
                     setnx_results[i] = t.result()
                 else:
                     setnx_errors[i] = exc
+        return setnx_tasks, setnx_results, setnx_errors
 
-        # Pass 2 (sequential): iterate in input order, emit per-element
-        # signals / build headers / register pre_enqueue. Ordering
-        # matters here: TASK_DUPLICATE_DETECTED handlers see events
-        # in batch-index order which matches the sequential contract.
-        # If any SETNX raised (setnx_errors non-empty) we rollback all
-        # successful claims and re-raise the first error.
-        try:
-            if setnx_errors:
-                raise next(iter(setnx_errors.values()))
+    async def _batch_rollback_claims(
+        self,
+        prepped: list[dict[str, Any]],
+        setnx_tasks: dict[int, asyncio.Task[str | None]],
+        setnx_results: dict[int, str | None],
+    ) -> None:
+        """Release every flag claimed in Pass 1 (all claims are equally
+        orphaned since publish was never reached)."""
+        for i, entry in enumerate(prepped):
+            if entry["dedup_hash"] is None:
+                continue
+            if setnx_results.get(i) is None and i in setnx_tasks:
+                # Claim succeeded in Pass 1.
+                await self._rollback_unique_claim(
+                    entry["dedup_hash"], entry["task_id"],
+                )
 
-            for i, entry in enumerate(prepped):
-                task_name = entry["task_name"]
-                args = entry["args"]
-                kwargs = entry["kwargs"]
-                task_id = entry["task_id"]
-                resolved_queue = entry["queue"]
-                delivery_mode = entry["delivery_mode"]
-                dedup_hash = entry["dedup_hash"]
-                headers: dict[str, Any] = {}
+    async def _batch_emit_duplicate(
+        self, i: int, entry: dict[str, Any], existing: str,
+    ) -> None:
+        payload = {
+            "existing_task_id": existing,
+            "task_name": entry["task_name"],
+            "dedup_hash": entry["dedup_hash"],
+            "source": "client.schedule_many",
+            "batch_index": i,
+        }
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_DUPLICATE_DETECTED, **payload,
+        )
+        logger.info("swarmq.dedup.detected", **payload)
 
-                if dedup_hash is not None:
-                    existing = setnx_results.get(i)
-                    if existing is not None:
-                        # Duplicate — emit signal, fill result slot, skip.
-                        payload = {
-                            "existing_task_id": existing,
-                            "task_name": task_name,
-                            "dedup_hash": dedup_hash,
-                            "source": "client.schedule_many",
-                            "batch_index": i,
-                        }
-                        await self._signal_dispatcher.dispatch(
-                            Signal.TASK_DUPLICATE_DETECTED, **payload,
-                        )
-                        logger.info("swarmq.dedup.detected", **payload)
-                        task_ids[i] = existing
-                        continue
-                    # Flag claimed — record for rollback + headers.
-                    headers[HEADER_UNIQUE_HASH] = dedup_hash
-                    headers[HEADER_UNIQUE_UNTIL] = entry["unique_until"]
-                    claimed_flags[i] = (dedup_hash, task_id)
-
-                # R4.4: always stamp enqueue time (see schedule()).
-                headers[HEADER_ENQUEUED_AT] = int(time.time())
-
-                task_ids[i] = task_id
-                publish_indices.append(i)
-                task_names[i] = task_name
-                resolved_queues[i] = resolved_queue
-                dedup_headers[i] = headers
-
-                message = {
-                    "task": {
-                        "id": task_id,
-                        "queue": resolved_queue,
-                        "name": task_name,
-                    },
-                    "args": list(args),
-                    "kwargs": kwargs,
-                }
-                encoded_messages[i] = encode_json(message)
-
-                message_dict: MessageContext = {
-                    "task_id": task_id,
-                    "task_name": task_name,
-                    "queue": resolved_queue,
-                    "args": list(args),
-                    "kwargs": kwargs,
-                    "delivery_mode": delivery_mode,
-                }
-                message_dicts[i] = message_dict
-
-                # pre_enqueue: exception aborts the whole batch.
-                await chain.run_pre_enqueue(message_dict)
-        except BaseException:
-            # Pass 2 aborted — release every flag already claimed in
-            # Pass 1 regardless of which batch position failed (all
-            # claims are equally orphaned since we never reach publish).
-            for i, entry in enumerate(prepped):
-                if entry["dedup_hash"] is None:
-                    continue
-                if setnx_results.get(i) is None and i in setnx_tasks:
-                    # Claim succeeded in Pass 1.
-                    await self._rollback_unique_claim(
-                        entry["dedup_hash"], entry["task_id"],
-                    )
-            raise
-
-        # Pass 2: publish concurrently. Only non-dup positions participate.
+    async def _batch_publish_and_finalize(
+        self,
+        state: dict[str, Any],
+        chain: Any,
+    ) -> None:
+        """Publish concurrently (non-dup positions), rollback flags of
+        failed publishes, and emit post_enqueue + TASK_ENQUEUED for the
+        successful ones — also on partial failure, so observers aren't
+        left with a half-emitted state."""
+        publish_indices = state["publish_indices"]
+        task_ids = state["task_ids"]
         coros = [
             self._broker.publish(
-                resolved_queues[i],
-                encoded_messages[i],
-                headers=dedup_headers[i] if dedup_headers[i] else None,
+                state["resolved_queues"][i],
+                state["encoded_messages"][i],
+                headers=state["dedup_headers"][i] if state["dedup_headers"][i] else None,
             )
             for i in publish_indices
         ]
@@ -620,13 +527,13 @@ class ClientScheduling:
             (publish_indices[k], r)
             for k, r in enumerate(results) if isinstance(r, BaseException)
         ]
+        ok_indices = [
+            publish_indices[k]
+            for k, r in enumerate(results) if not isinstance(r, BaseException)
+        ]
         if errors:
-            # Log partially-submitted task_ids so they can be recovered
-            submitted = [
-                task_ids[publish_indices[k]]
-                for k, r in enumerate(results)
-                if not isinstance(r, BaseException)
-            ]
+            # Log partially-submitted task_ids so they can be recovered.
+            submitted = [task_ids[i] for i in ok_indices]
             if submitted:
                 logger.warning(
                     "schedule_many_partial_failure",
@@ -636,36 +543,124 @@ class ClientScheduling:
             # Rollback flags for elements whose publish failed (the
             # successful ones still have matching messages in the broker).
             for idx, _ in errors:
-                claim = claimed_flags.get(idx)
+                claim = state["claimed_flags"].get(idx)
                 if claim is not None:
                     await self._rollback_unique_claim(*claim)
-            # Run post_enqueue + TASK_ENQUEUED only for the successful ones
-            # before raising, so observers aren't left with a half-emitted state.
-            for k, r in enumerate(results):
-                if isinstance(r, BaseException):
-                    continue
-                idx = publish_indices[k]
-                await chain.run_post_enqueue(message_dicts[idx])
-                await self._signal_dispatcher.dispatch(
-                    Signal.TASK_ENQUEUED,
-                    task_id=task_ids[idx],
-                    task_name=task_names[idx],
-                    queue=resolved_queues[idx],
-                )
-            raise errors[0][1]
-
-        # Pass 3: post_enqueue + TASK_ENQUEUED for each non-dup task.
-        # Duplicates never fire TASK_ENQUEUED (they emit
-        # TASK_DUPLICATE_DETECTED in Pass 1 instead).
-        for i in publish_indices:
-            await chain.run_post_enqueue(message_dicts[i])
+        for i in ok_indices:
+            await chain.run_post_enqueue(state["message_dicts"][i])
             await self._signal_dispatcher.dispatch(
                 Signal.TASK_ENQUEUED,
                 task_id=task_ids[i],
-                task_name=task_names[i],
-                queue=resolved_queues[i],
+                task_name=state["task_names"][i],
+                queue=state["resolved_queues"][i],
             )
+        if errors:
+            raise errors[0][1]
 
+    async def schedule_many(
+        self,
+        tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
+        queue: str | None = None,
+        *,
+        unique_for: int | None | _MissingType = _MISSING,
+        unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
+    ) -> list[str]:
+        """Submit multiple tasks for execution and return their task_ids.
+
+        Each element of *tasks* is a (task_name, args, kwargs) tuple.
+        All messages are published concurrently via asyncio.gather.
+
+        R3.5 dedup (Unit 8): the batch-level ``unique_for`` /
+        ``unique_until`` kwargs override TaskInfo defaults for every
+        element (same precedence as the immediate path — _MISSING falls
+        through to TaskInfo when a registry is available, None disables
+        dedup, int sets the TTL). Duplicates emit
+        ``TASK_DUPLICATE_DETECTED`` with ``batch_index=i`` in the
+        payload and the returned list places the existing owner's
+        task_id at index ``i`` — list length always equals
+        ``len(tasks)``.
+        """
+        if not tasks:
+            return []
+
+        # Resolve the middleware chain once for this whole batch so that
+        # every pre_enqueue/post_enqueue hook sees the same chain instance.
+        chain = self._get_chain()
+
+        prepped = self._batch_prepare(tasks, queue, unique_for, unique_until)
+        setnx_tasks, setnx_results, setnx_errors = await self._batch_claim_flags(prepped)
+
+        # Positional result slots so dup-indices and success-indices stay
+        # aligned with the input list; ``claimed_flags`` tracks Pass-1-claims
+        # for rollback on any downstream failure (orphan flags would block
+        # re-scheduling those args for the full unique_for window).
+        task_ids: list[str] = [""] * len(tasks)
+        state: dict[str, Any] = {
+            "task_ids": task_ids,
+            "publish_indices": [],
+            "message_dicts": {},
+            "encoded_messages": {},
+            "resolved_queues": {},
+            "task_names": {},
+            "dedup_headers": {},
+            "claimed_flags": {},
+        }
+
+        # Pass 2 (sequential): iterate in input order, emit per-element
+        # signals / build headers / register pre_enqueue. Ordering matters:
+        # TASK_DUPLICATE_DETECTED handlers see events in batch-index order.
+        try:
+            if setnx_errors:
+                raise next(iter(setnx_errors.values()))
+
+            for i, entry in enumerate(prepped):
+                headers: dict[str, Any] = {}
+                if entry["dedup_hash"] is not None:
+                    existing = setnx_results.get(i)
+                    if existing is not None:
+                        # Duplicate — emit signal, fill result slot, skip.
+                        await self._batch_emit_duplicate(i, entry, existing)
+                        state["task_ids"][i] = existing
+                        continue
+                    # Flag claimed — record for rollback + headers.
+                    headers[HEADER_UNIQUE_HASH] = entry["dedup_hash"]
+                    headers[HEADER_UNIQUE_UNTIL] = entry["unique_until"]
+                    state["claimed_flags"][i] = (entry["dedup_hash"], entry["task_id"])
+
+                # R4.4: always stamp enqueue time (see schedule()).
+                headers[HEADER_ENQUEUED_AT] = int(time.time())
+
+                state["task_ids"][i] = entry["task_id"]
+                state["publish_indices"].append(i)
+                state["task_names"][i] = entry["task_name"]
+                state["resolved_queues"][i] = entry["queue"]
+                state["dedup_headers"][i] = headers
+                state["encoded_messages"][i] = encode_json({
+                    "task": {
+                        "id": entry["task_id"],
+                        "queue": entry["queue"],
+                        "name": entry["task_name"],
+                    },
+                    "args": list(entry["args"]),
+                    "kwargs": entry["kwargs"],
+                })
+                message_dict: MessageContext = {
+                    "task_id": entry["task_id"],
+                    "task_name": entry["task_name"],
+                    "queue": entry["queue"],
+                    "args": list(entry["args"]),
+                    "kwargs": entry["kwargs"],
+                    "delivery_mode": entry["delivery_mode"],
+                }
+                state["message_dicts"][i] = message_dict
+
+                # pre_enqueue: exception aborts the whole batch.
+                await chain.run_pre_enqueue(message_dict)
+        except BaseException:
+            await self._batch_rollback_claims(prepped, setnx_tasks, setnx_results)
+            raise
+
+        await self._batch_publish_and_finalize(state, chain)
         return task_ids
 
     async def _schedule_deferred(

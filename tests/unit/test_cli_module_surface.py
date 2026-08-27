@@ -64,6 +64,10 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_WORKER_CHECK_PAYLOAD_KEYS",   # internal
         "_autoscale_range",             # internal — test_cli_multiprocess.py
         "_backend_from_env",            # internal
+        "_parse_args_for_mode",         # internal — main()-Zerlegung (Follow-Up 0.2.x)
+        "_run_command",                 # internal — dito
+        "_run_worker_command",          # internal — dito
+        "_startup_error_classes",       # internal — dito
         "_broker_from_env",             # internal
         "_build_parser",                # internal — test_cli_multiprocess.py
         "_dotted_module_name",          # internal

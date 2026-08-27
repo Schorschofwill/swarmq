@@ -156,7 +156,13 @@ class TaskInfo:
         object.__setattr__(self, "priority", priority)
         self.__post_init__()
 
-    def __post_init__(self) -> None:  # noqa: C901  # Follow-Up 0.2.x
+    def __post_init__(self) -> None:
+        self._validate_identity_and_retry()
+        self._validate_limits_and_locking()
+        self._validate_scheduling()
+        self._validate_unique()
+
+    def _validate_identity_and_retry(self) -> None:
         if not self.name:
             raise ValueError("name must not be empty")
         if len(self.name) > 255:
@@ -176,6 +182,8 @@ class TaskInfo:
             )
         if self.retry_base_delay < 0:
             raise ValueError("retry_base_delay must be >= 0")
+
+    def _validate_limits_and_locking(self) -> None:
         if self.rate_limit is not None:
             # Validate eagerly at construction so a bad string fails at
             # task-module import time, not inside the worker loop.
@@ -210,6 +218,8 @@ class TaskInfo:
             # contract — its ValueError is the right message verbatim.
             compute_lock_ttl_ms(self.hard_timeout)
 
+
+    def _validate_scheduling(self) -> None:
         # catchup=True is reserved for a future release; fail fast at
         # construction rather than letting the user
         # discover it on first fire (potentially days later for monthly
@@ -238,6 +248,8 @@ class TaskInfo:
                     f"cron is not a valid expression: {self.cron!r} ({exc})"
                 ) from exc
 
+
+    def _validate_unique(self) -> None:
         # R3.5 Unique Tasks validation (origin CD6):
         # - unique_for == 0 → ValueError (fail-fast; silent normalize to
         #   None would mask user typos).

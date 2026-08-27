@@ -167,7 +167,6 @@ max-complexity = 12
     "B905", "B017",          # zip()-Längen und generische raises sind in Tests bewusst
 ]
 # worker/pipeline.py: Import-Block nach dem _LockEntry-Dataclass; U19 räumt auf.
-"src/swarmq/worker/pipeline.py" = ["E402"]
 
 # E2E-Hardening Phase 3 U3.10 — mutation testing.
 # Runner scores mutants against the fast unit-test suite.
