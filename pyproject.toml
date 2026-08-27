@@ -135,6 +135,8 @@ module = [
     "swarmq.broker.rabbitmq.*",
     "swarmq.backend.valkey",
     "swarmq.backend.valkey.*",
+    "swarmq.worker",
+    "swarmq.worker.outcome",
     # Stub und Contract-Klassen laufen unter demselben strict-Gate (KTD1, U4).
     "tests.support",
     "tests.support.*",
@@ -148,7 +150,7 @@ strict = true
 [[tool.mypy.overrides]]
 module = [
     "swarmq.client",
-    "swarmq.worker",
+    "swarmq.worker.pipeline",  # U6: erbt den Eintrag des früheren worker.py bis U12
     "swarmq.task",
     "swarmq.scheduler",
     "swarmq.cli",
@@ -221,8 +223,8 @@ max-complexity = 12
     "RUF043",                # pytest.raises(match=…) mit literalem Text ist hier gewollt
     "B905", "B017",          # zip()-Längen und generische raises sind in Tests bewusst
 ]
-# worker.py: Import-Block nach dem _LockEntry-Dataclass; U6 löst die Datei auf.
-"src/swarmq/worker.py" = ["E402"]
+# worker/pipeline.py: Import-Block nach dem _LockEntry-Dataclass; U19 räumt auf.
+"src/swarmq/worker/pipeline.py" = ["E402"]
 
 # E2E-Hardening Phase 3 U3.10 — mutation testing.
 # Runner scores mutants against the fast unit-test suite.

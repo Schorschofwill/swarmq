@@ -570,7 +570,7 @@ class TestLifecycleSignalTimeout:
         self, worker, broker, backend, monkeypatch,
     ):
         monkeypatch.setattr(
-            "swarmq.worker._LIFECYCLE_DISPATCH_TIMEOUT_S", 0.1,
+            "swarmq.worker.pipeline._LIFECYCLE_DISPATCH_TIMEOUT_S", 0.1,
         )
 
         @worker._signal_dispatcher.on_signal(Signal.WORKER_SHUTDOWN)

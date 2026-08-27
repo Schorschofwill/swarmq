@@ -656,7 +656,7 @@ async def test_start_logs_startup_report(broker, backend, config):
     reg.register(AddTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    with patch("swarmq.worker.logger") as mock_logger:
+    with patch("swarmq.worker.pipeline.logger") as mock_logger:
         # Trigger shutdown immediately so start() returns
         w._shutdown_event.set()
         await w.start()
@@ -814,7 +814,7 @@ async def test_fire_and_forget_exception_logged_no_nack(broker, backend, config)
 
     msg = make_message(_default_payload(name="fnf_fail", args=[], kwargs={}))
 
-    with patch("swarmq.worker.logger") as mock_logger:
+    with patch("swarmq.worker.pipeline.logger") as mock_logger:
         await w._handle_message(msg)
 
         # Error must be logged
@@ -3829,9 +3829,9 @@ class TestSchedfireDedup:
     ):
         """Worker.start() must construct a SchedulerLoop after the
         backend + lock-manager are ready and call scheduler.start()."""
-        from swarmq import worker as worker_mod
         from swarmq.registry import TaskRegistry
         from swarmq.task import Task, TaskInfo
+        from swarmq.worker import pipeline as worker_mod  # U6: Patches zielen auf das Submodul
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_sched", queues=["default"])
@@ -4477,7 +4477,7 @@ class TestBodySizeCap:
         msg.body = b"x" * (cap + 1)
         msg.headers = {}
 
-        with patch("swarmq.worker.decode_json") as mock_decode:
+        with patch("swarmq.worker.pipeline.decode_json") as mock_decode:
             await worker._handle_message(msg)
 
         mock_decode.assert_not_called()

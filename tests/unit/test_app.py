@@ -663,7 +663,7 @@ class TestSwarmQMiddlewareAndSignals:
             )
 
             from tests.support.messages import make_message
-            from tests.unit.test_worker import _default_payload
+            from tests.unit.worker.test_worker import _default_payload
 
             msg = make_message(
                 _default_payload(name="noop", queue="q", args=[])
