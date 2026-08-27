@@ -1,16 +1,8 @@
-"""Unit tests for R4.6 ProcessManager + R4.7 Autoscaling.
-
-The supervisor is exercised via ``multiprocessing`` mocks so no real
-subprocesses are spawned (important for reliability on CI and for
-speed). The few paths that genuinely need a real child process are
-out-of-scope for unit tests and are covered by a separate integration
-suite if/when needed.
-"""
+"""Supervisor-Tests (Plan U21) — verbatim: Restart-Budget, Autoscale,
+Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 
 from __future__ import annotations
 
-import argparse
-import os
 import signal
 import time
 from unittest.mock import MagicMock, patch
@@ -19,47 +11,9 @@ import pytest
 
 from swarmq.process_manager import (
     ProcessManager,
-    WorkerConfig,
     WorkerInfo,
-    _make_queue_depth_sampler,
-    worker_subprocess_entry,
 )
-
-
-def _make_test_cfg(**overrides) -> WorkerConfig:
-    """Return a minimal WorkerConfig for unit tests (pickle-safe)."""
-    defaults = dict(
-        module="dummy.module",
-        queues=("default",),
-        concurrency=1,
-        log_level="ERROR",
-        log_format="human",
-        burst=False,
-        burst_idle_timeout=5.0,
-        priorities=False,
-        metrics_port=None,
-        health_port=None,
-    )
-    defaults.update(overrides)
-    return WorkerConfig(**defaults)
-
-
-def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 1234):
-    p = MagicMock()
-    p.is_alive.return_value = alive
-    p.exitcode = exitcode
-    p.pid = pid
-    return p
-
-
-def _entry_stub(worker_id, shutdown_event, *args):
-    """No-op entry — never actually invoked in these unit tests."""
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Core: init + start_worker + shutdown
-# ---------------------------------------------------------------------------
+from tests.unit.process_manager._helpers import _entry_stub, _fake_process, _instant_crash_entry
 
 
 class TestProcessManagerCore:
@@ -162,11 +116,6 @@ class TestProcessManagerCore:
         finally:
             for s, handler in previous.items():
                 signal.signal(s, handler)
-
-
-# ---------------------------------------------------------------------------
-# Restart: rate limit + SIGHUP reload
-# ---------------------------------------------------------------------------
 
 
 class TestProcessManagerRestart:
@@ -296,19 +245,9 @@ class TestProcessManagerRestart:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvpe") as execvp:
+             patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Härtung R2 P0-1: Backfill darf das Crash-Loop-Limit nicht umgehen
-# ---------------------------------------------------------------------------
-
-
-def _instant_crash_entry(worker_id, shutdown_event, *args):
-    """Real-subprocess entry that crashes immediately (exitcode 3)."""
-    os._exit(3)
 
 
 class TestCrashLoopExhaustion:
@@ -423,11 +362,6 @@ class TestCrashLoopExhaustion:
         finally:
             pm._shutdown_all_workers()
             pm._collect_zombies()
-
-
-# ---------------------------------------------------------------------------
-# Autoscaling
-# ---------------------------------------------------------------------------
 
 
 class TestProcessManagerAutoscale:
@@ -572,236 +506,6 @@ class TestProcessManagerAutoscale:
         assert pm._idle_since is None
 
 
-# ---------------------------------------------------------------------------
-# ce-review residuals: worker_subprocess_entry + sampler
-# ---------------------------------------------------------------------------
-
-
-class TestWorkerSubprocessEntry:
-    """ce-review T-04: cover the spawn-boundary entry + shutdown watcher.
-
-    The function runs inside a subprocess in production; the unit test
-    drives the same code path in-process with the cross-process Event
-    swapped for ``threading.Event`` (duck-type compatible).
-    """
-
-    def test_shutdown_event_triggers_sigterm_on_self(self, monkeypatch):
-        """Worker ignores the event (simulating a stuck worker) — the
-        watcher must still deliver SIGTERM so the Worker's own signal
-        handler can drive graceful shutdown."""
-        import asyncio
-        import threading
-
-        shutdown_event = threading.Event()
-        kills: list[tuple[int, int]] = []
-        worker_exited = threading.Event()
-
-        def fake_kill(pid, sig):
-            kills.append((pid, sig))
-            # Simulate SIGTERM causing the worker to exit.
-            worker_exited.set()
-
-        async def fakerun_worker_async(ns):
-            # Model a non-cooperative worker that does NOT consult
-            # shutdown_event. Exit only when SIGTERM is "delivered".
-            while not worker_exited.is_set():
-                await asyncio.sleep(0.02)
-
-        monkeypatch.setattr("swarmq.process_manager.os.kill", fake_kill)
-        monkeypatch.setattr(
-            "swarmq.cli.run_worker_async", fakerun_worker_async,
-        )
-
-        timer = threading.Timer(0.1, shutdown_event.set)
-        timer.start()
-        try:
-            worker_subprocess_entry(
-                worker_id=0,
-                shutdown_event=shutdown_event,
-                cfg=_make_test_cfg(),
-            )
-        finally:
-            timer.cancel()
-
-        import os
-        import signal as _signal
-        assert kills, "shutdown watcher never called os.kill"
-        pid, sig = kills[0]
-        assert pid == os.getpid()
-        assert sig == _signal.SIGTERM
-
-    def test_keyboard_interrupt_returns_cleanly(self, monkeypatch):
-        """KeyboardInterrupt from inside the worker must not propagate
-        out of the entry — otherwise multiprocessing logs a traceback."""
-        import threading
-
-        async def raise_kbd(ns):
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr("swarmq.cli.run_worker_async", raise_kbd)
-
-        # Should return None, not raise.
-        worker_subprocess_entry(
-            worker_id=0,
-            shutdown_event=threading.Event(),
-            cfg=_make_test_cfg(),
-        )
-
-    def test_reload_and_watch_dirs_stripped_from_namespace(self, monkeypatch):
-        """R5.3 ce-review #18: reload/watch_dirs are supervisor-only.
-        The subprocess must never see them on its Namespace — otherwise
-        a future `if ns.reload: ...` inside run_worker_async would
-        spawn N watchers, one per worker, each killing its own PID."""
-        import threading
-
-        captured: dict = {}
-
-        async def capture_ns(ns):
-            captured["ns"] = ns
-
-        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
-
-        cfg = _make_test_cfg(reload=True, watch_dirs=("/tmp",))
-        worker_subprocess_entry(
-            worker_id=0,
-            shutdown_event=threading.Event(),
-            cfg=cfg,
-        )
-
-        ns = captured["ns"]
-        assert not hasattr(ns, "reload"), (
-            "reload leaked to worker Namespace — "
-            "kwargs.pop('reload') missing in worker_subprocess_entry"
-        )
-        assert not hasattr(ns, "watch_dirs"), (
-            "watch_dirs leaked to worker Namespace"
-        )
-
-
-class TestQueueDepthSampler:
-    """ce-review T-05 + REL-05: sampler success path + timeout bound."""
-
-    def test_sums_multi_queue_depth(self, monkeypatch):
-
-        class FakeBroker:
-            def __init__(self, url):
-                self.url = url
-
-            async def connect(self):
-                return None
-
-            async def get_queue_depth(self, q):
-                return {"a": 3, "b": 7, "c": 0}[q]
-
-            async def close(self):
-                return None
-
-        monkeypatch.setattr(
-            "swarmq.process_manager.RabbitMQBroker"
-            if False else "swarmq.broker.rabbitmq.RabbitMQBroker",
-            FakeBroker,
-        )
-        sampler = _make_queue_depth_sampler("amqp://x", ["a", "b", "c"])
-        assert sampler() == 10
-
-    def test_timeout_does_not_hang(self, monkeypatch):
-        """A stuck broker.connect() must not block the sampler
-        beyond SAMPLE_TIMEOUT_S (ce-review REL-05)."""
-        import asyncio
-
-        class HangingBroker:
-            def __init__(self, url):
-                pass
-
-            async def connect(self):
-                # Block effectively forever.
-                await asyncio.sleep(3600)
-
-            async def get_queue_depth(self, q):
-                return 0
-
-            async def close(self):
-                return None
-
-        monkeypatch.setattr(
-            "swarmq.broker.rabbitmq.RabbitMQBroker", HangingBroker,
-        )
-        # Shrink the timeout so the test completes quickly while still
-        # exercising the same code path.
-        monkeypatch.setattr(
-            "swarmq.process_manager.SAMPLE_TIMEOUT_S", 0.2,
-        )
-        sampler = _make_queue_depth_sampler("amqp://x", ["a"])
-
-        # Sampler raises TimeoutError on the outer asyncio.timeout —
-        # the caller (_autoscale_tick) swallows it. Verify the
-        # exception type is a TimeoutError-compatible.
-        with pytest.raises(TimeoutError):
-            sampler()
-
-
-class TestWorkerConfig:
-    """ce-review F-1: pickle-boundary invariant + choices enforcement."""
-
-    def test_accepts_valid_fields(self):
-        cfg = _make_test_cfg()
-        assert cfg.queues == ("default",)
-        assert cfg.log_level == "ERROR"
-
-    def test_rejects_list_queues(self):
-        import pytest
-        with pytest.raises(TypeError, match="pickle-safe"):
-            WorkerConfig(
-                module="x", queues=["a"], concurrency=1,
-                log_level="INFO", log_format="human",
-                burst=False, burst_idle_timeout=5.0, priorities=False,
-                metrics_port=None, health_port=None,
-            )
-
-    def test_rejects_invalid_log_level(self):
-        import pytest
-        with pytest.raises(ValueError, match="log_level"):
-            _make_test_cfg(log_level="TRACE")
-
-    def test_pickle_roundtrip_preserves_fields(self):
-        """Regression-guard: spawn passes WorkerConfig across a pickle
-        boundary. A future non-primitive field would break this test
-        before breaking production."""
-        import pickle
-        cfg = _make_test_cfg()
-        restored = pickle.loads(pickle.dumps(cfg))
-        assert restored == cfg
-
-    def test_frozen_prevents_reassignment(self):
-        import dataclasses
-
-        import pytest
-        cfg = _make_test_cfg()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.module = "mutated"
-
-    def test_reload_defaults_to_false_and_empty_watch_dirs(self):
-        """R5.3 Unit 2: new fields default to (False, ())."""
-        cfg = _make_test_cfg()
-        assert cfg.reload is False
-        assert cfg.watch_dirs == ()
-
-    def test_reload_fields_pickle_roundtrip(self):
-        """R5.3 Unit 2: extended fields survive the spawn boundary."""
-        import pickle
-        cfg = _make_test_cfg(reload=True, watch_dirs=("/tmp/a", "/tmp/b"))
-        restored = pickle.loads(pickle.dumps(cfg))
-        assert restored.reload is True
-        assert restored.watch_dirs == ("/tmp/a", "/tmp/b")
-        assert restored == cfg
-
-    def test_rejects_list_watch_dirs(self):
-        """R5.3 Unit 2: watch_dirs must be tuple, not list."""
-        import pytest
-        with pytest.raises(TypeError, match="pickle-safe"):
-            _make_test_cfg(watch_dirs=["/tmp/x"])
-
-
 class TestReloadOrphanGuard:
     """ce-review REL-03 / Unit 4: execvp only when no children survive."""
 
@@ -819,7 +523,7 @@ class TestReloadOrphanGuard:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvpe") as execvp:
+             patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
 
@@ -833,7 +537,7 @@ class TestReloadOrphanGuard:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvpe") as execvp:
+             patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
             rc = pm.run()
             execvp.assert_not_called()
             assert rc == 0  # clean exit — systemd must not restart
@@ -847,7 +551,7 @@ class TestReloadOrphanGuard:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvpe",
+             patch("swarmq.process_manager.supervisor.os.execvpe",
                    side_effect=OSError("permission denied")):
             rc = pm.run()
             assert rc == 1
@@ -889,7 +593,7 @@ class TestArgvSnapshot:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvpe") as execvpe:
+             patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe:
             pm.run()
             execvpe.assert_called_once()
             _, argv_used, _ = execvpe.call_args.args
@@ -919,7 +623,7 @@ class TestArgvSnapshot:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.os.execvpe") as execvpe:
+             patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe:
             pm.run()
             _, _, env_used = execvpe.call_args.args
             assert env_used.get("PYTHONPATH") == "/safe/path"
@@ -981,39 +685,6 @@ class TestScaleDownMinAge:
         p_old1.terminate.assert_not_called()
         p_old2.terminate.assert_called_once()
         p_young.terminate.assert_not_called()
-
-
-@pytest.fixture
-def _restore_default_signals():
-    """R5.3 ce-review #10: tests that install real signal handlers
-    (`_setup_signals`) must reset them afterward so other suites
-    are not affected."""
-    import signal
-
-    saved_hup = signal.getsignal(signal.SIGHUP)
-    saved_int = signal.getsignal(signal.SIGINT)
-    saved_term = signal.getsignal(signal.SIGTERM)
-    saved_chld = signal.getsignal(signal.SIGCHLD)
-    yield
-    # ce-review pass 2 #8: SIG_DFL == 0 is falsy, so `saved if saved
-    # else SIG_DFL` worked by accident. Use `is not None` for the
-    # intended semantics (the only non-handler value getsignal returns).
-    signal.signal(
-        signal.SIGHUP,
-        saved_hup if saved_hup is not None else signal.SIG_DFL,
-    )
-    signal.signal(
-        signal.SIGINT,
-        saved_int if saved_int is not None else signal.SIG_DFL,
-    )
-    signal.signal(
-        signal.SIGTERM,
-        saved_term if saved_term is not None else signal.SIG_DFL,
-    )
-    signal.signal(
-        signal.SIGCHLD,
-        saved_chld if saved_chld is not None else signal.SIG_DFL,
-    )
 
 
 class TestReloadReentrancy:
@@ -1133,7 +804,7 @@ class TestFileWatcherIntegration:
                  "swarmq.hot_reload.FileWatcher",
                  return_value=fake_watcher,
              ) as fw_cls, \
-             patch("swarmq.process_manager.os.kill") as mock_kill:
+             patch("swarmq.process_manager.supervisor.os.kill") as mock_kill:
             pm.run()
 
             fake_watcher.start.assert_called_once()
@@ -1191,133 +862,3 @@ class TestFileWatcherIntegration:
              ), pytest.raises(RuntimeError, match="monitor bug"):
             pm.run()
         fake_watcher.stop.assert_called_once()
-
-
-class TestReloadRoutingThroughCLI:
-    """R5.3 Unit 6: run_multi_process_worker fails fast on missing dep
-    and resolves watch-dirs before handing off to ProcessManager."""
-
-    def _args(self, **over):
-        ns = argparse.Namespace(
-            module="json",  # stdlib, always resolvable
-            queues=["default"],
-            concurrency=1,
-            log_level="INFO",
-            log_format="human",
-            burst=False,
-            burst_idle_timeout=5.0,
-            priorities=False,
-            metrics_port=None,
-            health_port=None,
-            processes=1,
-            autoscale=None,
-            reload=False,
-            watch_dir=None,
-        )
-        for k, v in over.items():
-            setattr(ns, k, v)
-        return ns
-
-    def _env(self):
-        return {
-            "SWARMQ_BROKER_URL": "amqp://x",
-            "SWARMQ_BACKEND_URL": "valkey://x",
-        }
-
-    def test_reload_false_skips_watcher_wiring(self):
-        from swarmq.process_manager import run_multi_process_worker
-
-        pm_mock = MagicMock()
-        pm_mock.run.return_value = 0
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.ProcessManager",
-                 return_value=pm_mock,
-             ) as PM, \
-             patch(
-                 "swarmq.process_manager._validate_module_importable"
-             ):
-            rc = run_multi_process_worker(self._args())
-        assert rc == 0
-        kwargs = PM.call_args.kwargs
-        assert kwargs["reload"] is False
-        assert kwargs["watch_dirs"] == ()
-
-    def test_reload_true_resolves_dirs_and_passes_through(self):
-        """R5.3 ce-review #7: _validate_module_importable returns the
-        spec, which is handed to resolve_watch_dirs — find_spec is NOT
-        called a second time."""
-        import importlib.util
-
-        from swarmq.process_manager import run_multi_process_worker
-
-        json_spec = importlib.util.find_spec("json")
-        pm_mock = MagicMock()
-        pm_mock.run.return_value = 0
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.ProcessManager",
-                 return_value=pm_mock,
-             ) as PM, \
-             patch(
-                 "swarmq.process_manager._validate_module_importable",
-                 return_value=json_spec,
-             ), \
-             patch(
-                 "swarmq.hot_reload.importlib.util.find_spec"
-             ) as hot_reload_find_spec:
-            rc = run_multi_process_worker(self._args(reload=True))
-        assert rc == 0
-        kwargs = PM.call_args.kwargs
-        assert kwargs["reload"] is True
-        # json is a real stdlib package — resolved parent must end in 'json'.
-        assert len(kwargs["watch_dirs"]) == 1
-        assert kwargs["watch_dirs"][0].endswith("json")
-        # Single find_spec call — the one inside _validate_module_importable.
-        # resolve_watch_dirs must NOT call find_spec again because spec is passed.
-        hot_reload_find_spec.assert_not_called()
-
-    def test_reload_true_without_watchfiles_raises(self):
-        import importlib.util
-
-        from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager import run_multi_process_worker
-
-        json_spec = importlib.util.find_spec("json")
-        with (
-            patch.dict(os.environ, self._env(), clear=False),
-            patch(
-                "swarmq.process_manager._validate_module_importable",
-                return_value=json_spec,
-            ),
-            patch.dict("sys.modules", {"watchfiles": None}),
-            pytest.raises(ConfigurationError, match=r"swarmq\[reload\]"),
-        ):
-            run_multi_process_worker(self._args(reload=True))
-
-    def test_watch_dir_without_reload_logs_warning(self):
-        """--watch-dir without --reload must warn (not error)."""
-        from swarmq.process_manager import run_multi_process_worker
-
-        pm_mock = MagicMock()
-        pm_mock.run.return_value = 0
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.ProcessManager",
-                 return_value=pm_mock,
-             ), \
-             patch(
-                 "swarmq.process_manager._validate_module_importable"
-             ), \
-             patch(
-                 "swarmq.process_manager.logger"
-             ) as mock_logger:
-            run_multi_process_worker(
-                self._args(watch_dir=["/tmp"]),
-            )
-        # At least one warning call carries the ignore event name.
-        warn_events = [
-            call.args[0] for call in mock_logger.warning.call_args_list
-            if call.args
-        ]
-        assert "watch_dir_ignored_without_reload" in warn_events

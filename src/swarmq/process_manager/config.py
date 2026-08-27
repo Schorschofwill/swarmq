@@ -1,0 +1,75 @@
+"""Worker-Konfiguration (Plan U21) — verbatim: ``WorkerConfig`` mit
+Pickle-Safety-Validierung (Subprozess-Übergabe)."""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover — import-time only
+    pass
+
+import structlog
+
+logger = structlog.get_logger()
+
+
+_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+_PICKLE_SAFE_TYPES = (str, int, float, bool, tuple, type(None))
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkerConfig:
+    """Pickle-safe configuration bundle for a spawned worker.
+
+    Crosses the multiprocessing spawn boundary as the sole payload
+    inside ``worker_args``. Collapses the former 11-parameter
+    :func:`worker_subprocess_entry` signature into one object so a
+    new CLI flag is a single-site edit (add the field, set it in
+    :func:`run_multi_process_worker`).
+
+    ``queues`` is ``tuple[str, ...]`` — not ``list[str]`` — so the
+    ``frozen=True`` immutability promise is not violated by in-place
+    list mutation. ``__post_init__`` runtime-enforces a pickle-safe
+    type allowlist so the invariant survives future programmatic
+    callers that bypass argparse validation.
+
+    The allowlist check is shallow: tuple/list field contents are
+    not recursively type-checked. In production that is fine because
+    ``queues`` is always built from argparse's ``list[str]`` output
+    via ``tuple(args.queues)``. A future programmatic caller passing
+    ``queues=(lambda: None,)`` would still fail, but at
+    ``pickle.dumps`` time, not at construction.
+    """
+
+    module: str
+    queues: tuple[str, ...]
+    concurrency: int
+    log_level: str
+    log_format: str
+    burst: bool
+    burst_idle_timeout: float
+    priorities: bool
+    metrics_port: int | None
+    health_port: int | None
+    # R5.3: pipeline-uniform fields. Watcher lives in the supervisor
+    # (not the worker subprocess), but routing them through WorkerConfig
+    # avoids the supervisor-only-flag drift that R4.6-H Unit 1 removed.
+    reload: bool = False
+    watch_dirs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            if not isinstance(value, _PICKLE_SAFE_TYPES):
+                raise TypeError(
+                    f"WorkerConfig.{f.name} must be pickle-safe; "
+                    f"got {type(value).__name__}",
+                )
+        if self.log_level not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"WorkerConfig.log_level must be one of "
+                f"{_VALID_LOG_LEVELS}; got {self.log_level!r}",
+            )

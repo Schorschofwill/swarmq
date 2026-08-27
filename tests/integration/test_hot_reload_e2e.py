@@ -265,7 +265,7 @@ def test_full_pipeline_file_write_triggers_execvpe(
         target=_write_retrying, name="e2e-file-writer", daemon=True,
     )
 
-    with patch("swarmq.process_manager.os.execvpe", side_effect=_fake_execvpe), \
+    with patch("swarmq.process_manager.supervisor.os.execvpe", side_effect=_fake_execvpe), \
          patch.object(pm, "_start_all_workers"), \
          patch.object(pm, "_shutdown_all_workers"), \
          patch.object(pm, "_collect_zombies"):
