@@ -456,98 +456,26 @@ class Client:
 
         return final_for, final_until
 
-    async def get_result(  # noqa: C901  # U10 (client/results.py)
+    async def get_result(
         self,
         task_id: str,
         timeout: float = 10,
         polling: float = 0.2,
     ) -> Any:
-        """Retrieve a task result using Pub/Sub with polling fallback.
+        """Retrieve a task result, waiting up to *timeout* seconds.
 
-        Flow for timeout > 0:
-          1. Initial GET check (catches fast tasks / race window)
-          2. Pub/Sub wait via backend.subscribe_and_wait
-          3. Polling fallback (5ms interval) if Pub/Sub misses
+        ``timeout == 0`` is a single GET. Otherwise the wait (Pub/Sub with
+        polling fallback, every GET bound to the remaining deadline —
+        Härtung R2 P1-2) lives in ``ResultBackend.wait_for_result`` since
+        U17; ``polling`` is kept for API compatibility.
         """
-        _FALLBACK_POLL = 0.005  # 5ms polling for fallback  # noqa: N806
-
-        # --- timeout=0: single GET, no Pub/Sub ---
         if timeout == 0:
             raw = await self._backend.get_result(task_id)
-            if raw is None:
-                raise ResultNotReadyError(task_id)
-            return self._unpack(raw)
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-
-        # Härtung R2 P1-2: bind every backend GET to the remaining
-        # deadline. Previously the deadline was only checked BETWEEN
-        # calls — a single hanging GET (half-open Valkey) ignored the
-        # ``timeout`` parameter entirely and wedged the caller.
-        async def _get_within_deadline() -> bytes | None:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise ResultNotReadyError(task_id)
-            try:
-                return await asyncio.wait_for(
-                    self._backend.get_result(task_id), timeout=remaining,
-                )
-            except TimeoutError:
-                raise ResultNotReadyError(task_id) from None
-
-        # --- Step 1: Subscribe first (before initial check to close race window) ---
-        channel = f"sq:notify:{task_id}"
-        pubsub = self._backend.create_pubsub()
-        try:
-            await pubsub.subscribe(channel)
-        except Exception:
-            pubsub = None  # Pub/Sub unavailable, fall through to polling
-
-        try:
-            # --- Step 2: Initial check (result may already be in Valkey) ---
-            raw = await _get_within_deadline()
-            if raw is not None:
-                return self._unpack(raw)
-
-            # --- Step 3: Pub/Sub wait (subscription is already active) ---
-            if pubsub is not None:
-                remaining = deadline - loop.time()
-                pubsub_timeout = min(1.0, remaining) if remaining > 0 else 0
-                if pubsub_timeout > 0:
-                    pub_deadline = loop.time() + pubsub_timeout
-                    while loop.time() < pub_deadline:
-                        try:
-                            msg = await pubsub.get_message(
-                                ignore_subscribe_messages=True, timeout=0.05,
-                            )
-                        except Exception:
-                            break  # Pub/Sub error, fall through to polling
-                        # Outside the try: a deadline miss
-                        # (ResultNotReadyError) or a corrupt stored
-                        # result (ResultSerializationError) must
-                        # propagate with its real error class, not be
-                        # misfiled as a Pub/Sub glitch (review R2).
-                        if msg is not None:
-                            raw = await _get_within_deadline()
-                            if raw is not None:
-                                return self._unpack(raw)
-
-            # --- Step 4: Polling fallback ---
-            while loop.time() < deadline:
-                raw = await _get_within_deadline()
-                if raw is not None:
-                    return self._unpack(raw)
-                await asyncio.sleep(_FALLBACK_POLL)
-
+        else:
+            raw = await self._backend.wait_for_result(task_id, timeout=timeout)
+        if raw is None:
             raise ResultNotReadyError(task_id)
-        finally:
-            if pubsub is not None:
-                try:
-                    await pubsub.unsubscribe(channel)
-                    await pubsub.aclose()
-                except Exception:
-                    pass
+        return self._unpack(raw)
 
     # ------------------------------------------------------------------
     # R3.7 Progress tracking — consumer side
@@ -577,112 +505,30 @@ class Client:
         except ValueError:
             return None
 
-    async def watch_progress(  # noqa: C901  # U10 (client/results.py)
+    async def watch_progress(
         self, task_id: str,
     ) -> AsyncIterator[ProgressInfo]:
         """Stream progress updates for *task_id*.
 
-        Subscribes to the per-task Pub/Sub channel FIRST (so an update
-        arriving between the initial read and subscription isn't
-        missed), then yields the last known HASH state if present,
-        then streams every subsequent :meth:`Task.update_progress`
-        publish.
-
-        The iterator never completes on its own — the caller must
-        ``break`` when satisfied (typical: after a ProgressInfo with
-        ``percent == 100.0`` or after observing a terminal signal via
-        another channel).
-
-        Cleanup happens in the finally of the underlying
-        ``async_generator`` — unsubscribing from the channel on
-        iterator close or caller break.
-
-        Error-handling contract:
-        - Malformed Pub/Sub messages (non-JSON or missing required
-          progress fields) are dropped silently; the iterator continues.
-        - Pub/Sub transport errors (disconnect, Valkey restart): the
-          iterator yields a HASH snapshot for authoritative state, then
-          actively re-subscribes to the channel. valkey-py does not
-          auto-resubscribe after a socket reset — confirmed empirically
-          in the 2026-04-17 toxiproxy spike.
-        - Setup failures (initial subscribe/drain) surface as a single
-          HASH snapshot, then the iterator completes cleanly.
+        The Pub/Sub subscription, the initial HASH snapshot, the
+        resubscribe-after-disconnect discipline (2026-04-17 toxiproxy
+        spike) and the setup-failure fallback live in
+        ``ResultBackend.watch_progress`` since U17; it yields JSON payloads
+        of the progress fields. This layer decodes them into
+        :class:`ProgressInfo` and drops malformed payloads silently — the
+        iterator never crashes on a bad publish. It never completes on its
+        own; the caller ``break``s when satisfied.
         """
-        channel = self._backend.progress_channel_name(task_id)
-        pubsub = self._backend.create_pubsub()
-
-        async def _subscribe_and_drain() -> None:
-            await pubsub.subscribe(channel)
-            # Drain the subscribe-confirmation so later get_message
-            # calls don't return it as a false-positive update.
-            await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=0.05,
-            )
-
-        try:
+        async for payload in self._backend.watch_progress(task_id):
             try:
-                await _subscribe_and_drain()
-            except Exception:
-                # Setup failure — yield any HASH we can read, then exit.
-                fallback = await self.get_progress(task_id)
-                if fallback is not None:
-                    yield fallback
-                return
-
-            # Yield current state if present (bridges the gap between
-            # 'an update was published just before subscribe landed'
-            # and 'nothing has been published yet').
-            initial = await self.get_progress(task_id)
-            if initial is not None:
-                yield initial
-
-            while True:
-                try:
-                    msg = await pubsub.get_message(
-                        ignore_subscribe_messages=True, timeout=0.1,
-                    )
-                except Exception:
-                    # Pub/Sub error (disconnect, Valkey restart, etc).
-                    # Step 1: surface HASH snapshot so caller keeps
-                    # observing authoritative state while we recover.
-                    fallback = await self.get_progress(task_id)
-                    if fallback is not None:
-                        yield fallback
-                    # Step 2: actively re-subscribe. valkey-py's retry
-                    # policy covers commands but NOT the long-held
-                    # pub/sub socket — without this call the subscriber
-                    # never sees another message (spike finding).
-                    try:
-                        await _subscribe_and_drain()
-                    except Exception:
-                        # Still no reach to Valkey — back off and keep
-                        # trying on the next loop iteration.
-                        pass
-                    await asyncio.sleep(0.5)
-                    continue
-                if msg is None or msg.get("type") != "message":
-                    continue
-                data = msg.get("data")
-                if isinstance(data, bytes):
-                    try:
-                        fields = _json.loads(data)
-                    except ValueError:
-                        continue
-                    try:
-                        info = ProgressInfo.from_hash(fields)
-                    except ValueError:
-                        # Malformed publish (rogue producer, future
-                        # schema) — drop and continue; never crash the
-                        # iterator on a bad payload.
-                        continue
-                    if info is not None:
-                        yield info
-        finally:
-            try:
-                await pubsub.unsubscribe(channel)
-                await pubsub.aclose()
-            except Exception:
-                pass
+                fields = _json.loads(payload)
+                info = ProgressInfo.from_hash(fields)
+            except ValueError:
+                # Malformed publish (rogue producer, future schema) — drop
+                # and continue; never crash the iterator on a bad payload.
+                continue
+            if info is not None:
+                yield info
 
     async def schedule_many(  # noqa: C901, PLR0915  # U10 (client/schedule.py)
         self,

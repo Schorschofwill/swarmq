@@ -1,0 +1,1 @@
+{"schedule_name":"golden-sched","task_name":"golden.task","args":[1],"kwargs":{"k":"v"},"queue":"golden","cron":"* * * * *","fire_ts_ms":1700000000000,"source":"static","disabled":false,"last_fire_at":null,"dedup_hash":null,"unique_until":"completion"}
