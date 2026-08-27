@@ -6,8 +6,7 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
-<!-- 0.2.0 draft (plan U14) — finalized by U15/U16; inventory with
-migration steps: docs/design/2026-08-0-2-0-api-brueche.md -->
+## [0.2.0] — 2026-08-27
 
 ### Changed (breaking — 0.2.0)
 
@@ -54,6 +53,50 @@ migration steps: docs/design/2026-08-0-2-0-api-brueche.md -->
   (previously the band was lost for foreign-producer messages). Covered
   by `tests/e2e/test_retry_band.py`. This is the single behavioural
   change of the 0.2.0 restructuring.
+
+### Internal (0.2.0)
+
+- **Contracts backbone.** Explicit protocols in `swarmq.contracts`
+  (Publisher/Consumer/Broker, BrokerAdmin, ResultBackend, LockStore,
+  RateLimitStore, ChordStore, ScheduleStore) with batch-publish hooks
+  for the planned bulk fast-path; an in-memory stub in the test suite
+  implements the same contracts, and one contract-test suite runs
+  identically against the stub, RabbitMQ, and Valkey.
+- **Package split.** The four former monolith modules are packages
+  now (`worker/`, `client/`, `scheduler/`, `process_manager/`), with
+  CI-enforced structure guards (module size, import cycles, import
+  purity of the core packages).
+- **Project-wide mypy strict.** Both legacy override blocks are gone;
+  every remaining `# type: ignore` carries an error code.
+
+### Fixed (0.2.0, post-inventory)
+
+- **Expired-task error results are actually stored now.** The expiry
+  gate passed a dict instead of encoded bytes to the result store; the
+  SET failed silently against real Valkey and `get_result()` of an
+  expired task hung until its timeout instead of raising
+  `TaskError("expired")`.
+
+### Rollout (0.2.0)
+
+- Deploy the same version across the whole worker fleet.
+- No Valkey migration: key layout, Lua contracts, channels, headers,
+  and queue arguments are unchanged (pinned by golden fixtures).
+- In-flight 0.1.2 messages remain valid; a 0.2.0 worker consumes
+  queues declared by 0.1.2 without `PRECONDITION_FAILED`.
+- Rollback is a redeploy of 0.1.2.
+
+## [0.1.2] — 2026-06-07
+
+- Ship the `py.typed` marker so type checkers see the package as typed.
+
+## [0.1.1] — 2026-06-07
+
+- Trim the sdist to `src/` via whitelist; move `libvalkey` to the `fast` extra; declare the readme.
+
+## [0.1.0] — 2026-06-07
+
+First PyPI release. Everything below shipped with it.
 
 ### Performance
 

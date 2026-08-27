@@ -6,8 +6,7 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
-<!-- 0.2.0-Entwurf (Plan U14) — finalisiert durch U15/U16; Inventar mit
-Migrationsschritten: docs/design/2026-08-0-2-0-api-brueche.md -->
+## [0.2.0] — 2026-08-27
 
 ### Geändert (Breaking — 0.2.0)
 
@@ -54,6 +53,50 @@ Migrationsschritten: docs/design/2026-08-0-2-0-api-brueche.md -->
   (bisher ging das Band bei Fremd-Producer-Nachrichten verloren).
   Abgesichert durch `tests/e2e/test_retry_band.py`. Dies ist die einzige
   Verhaltensänderung der 0.2.0-Restrukturierung.
+
+### Intern (0.2.0)
+
+- **Vertrags-Rückgrat.** Explizite Protokolle in `swarmq.contracts`
+  (Publisher/Consumer/Broker, BrokerAdmin, ResultBackend, LockStore,
+  RateLimitStore, ChordStore, ScheduleStore) mit Batch-Publish-
+  Andockstellen für den geplanten Bulk-Fast-Path; ein In-Memory-Stub
+  in der Test-Suite implementiert dieselben Verträge, und eine
+  Contract-Test-Suite läuft identisch gegen Stub, RabbitMQ und Valkey.
+- **Paket-Zerlegung.** Die vier früheren Monolith-Module sind Pakete
+  (`worker/`, `client/`, `scheduler/`, `process_manager/`), mit
+  CI-erzwungenen Struktur-Guards (Modulgröße, Import-Zyklen,
+  Import-Reinheit der Kernpakete).
+- **Projektweites mypy strict.** Beide Legacy-Override-Blöcke sind
+  weg; jede verbleibende `# type: ignore` trägt einen Fehlercode.
+
+### Behoben (0.2.0, nach dem Inventar)
+
+- **Fehlerergebnisse abgelaufener Tasks werden jetzt wirklich
+  gespeichert.** Das Expiry-Gate übergab dem Result-Store ein dict
+  statt kodierter Bytes; der SET scheiterte gegen echtes Valkey still
+  und `get_result()` eines abgelaufenen Tasks hing bis zum Timeout
+  statt `TaskError("expired")` zu liefern.
+
+### Rollout (0.2.0)
+
+- Gleiche Version im gesamten Worker-Fleet ausrollen.
+- Keine Valkey-Migration: Key-Layout, Lua-Verträge, Channels, Header
+  und Queue-Argumente sind unverändert (Golden-Fixtures).
+- In-flight-0.1.2-Nachrichten bleiben gültig; ein 0.2.0-Worker
+  konsumiert von 0.1.2 deklarierte Queues ohne `PRECONDITION_FAILED`.
+- Rollback ist ein Redeploy von 0.1.2.
+
+## [0.1.2] — 2026-06-07
+
+- `py.typed`-Marker ausgeliefert, damit Type-Checker das Paket als typisiert sehen.
+
+## [0.1.1] — 2026-06-07
+
+- sdist per Whitelist auf `src/` getrimmt; `libvalkey` ins `fast`-Extra; Readme deklariert.
+
+## [0.1.0] — 2026-06-07
+
+Erstes PyPI-Release. Alles Folgende war darin enthalten.
 
 ### Performance
 
