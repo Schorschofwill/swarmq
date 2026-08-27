@@ -24,6 +24,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.services import (
+    RABBITMQ_HOST,
+    RABBITMQ_PORT,
+    VALKEY_HOST,
+    VALKEY_PORT,
+    rabbitmq_amqp_url,
+    valkey_db_url,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_PATH = REPO_ROOT / "benchmarks" / "bench.py"
 
@@ -37,7 +46,7 @@ def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
 
 
 def _docker_up() -> bool:
-    return _port_open("localhost", 5672) and _port_open("localhost", 6379)
+    return _port_open(RABBITMQ_HOST, RABBITMQ_PORT) and _port_open(VALKEY_HOST, VALKEY_PORT)
 
 
 @pytest.mark.integration
@@ -45,7 +54,7 @@ def _docker_up() -> bool:
 @pytest.mark.timeout(240)
 @pytest.mark.skipif(
     not _docker_up(),
-    reason="RabbitMQ (5672) or Valkey (6379) not reachable — start docker compose",
+    reason="RabbitMQ or Valkey not reachable on the configured test ports — start docker compose",
 )
 def test_benchmark_all_scenarios_small_load() -> None:
     """Full -s all run at n=500 must exit 0 within 3 minutes.
@@ -57,6 +66,9 @@ def test_benchmark_all_scenarios_small_load() -> None:
     assert BENCH_PATH.is_file()
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    # bench.py liest RABBITMQ_URL/VALKEY_URL — auf die Test-Ports zeigen.
+    env["RABBITMQ_URL"] = rabbitmq_amqp_url()
+    env["VALKEY_URL"] = valkey_db_url()
 
     result = subprocess.run(
         [
@@ -112,7 +124,7 @@ def test_benchmark_all_scenarios_small_load() -> None:
 @pytest.mark.timeout(240)
 @pytest.mark.skipif(
     not _docker_up(),
-    reason="RabbitMQ (5672) or Valkey (6379) not reachable — start docker compose",
+    reason="RabbitMQ or Valkey not reachable on the configured test ports — start docker compose",
 )
 def test_benchmark_repeat_mode_emits_aggregate() -> None:
     """`--repeat 2` must print two per-run results plus one AGGREGATE line.
@@ -124,6 +136,9 @@ def test_benchmark_repeat_mode_emits_aggregate() -> None:
     assert BENCH_PATH.is_file()
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    # bench.py liest RABBITMQ_URL/VALKEY_URL — auf die Test-Ports zeigen.
+    env["RABBITMQ_URL"] = rabbitmq_amqp_url()
+    env["VALKEY_URL"] = valkey_db_url()
 
     result = subprocess.run(
         [

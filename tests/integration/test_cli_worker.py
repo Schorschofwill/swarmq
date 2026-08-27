@@ -28,10 +28,14 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RABBITMQ_HOST = "localhost"
-RABBITMQ_PORT = 5672
-VALKEY_HOST = "localhost"
-VALKEY_PORT = 6379
+from tests.support.services import (  # noqa: E402  # nach den Konstanten-Docs
+    RABBITMQ_HOST,
+    RABBITMQ_PORT,
+    VALKEY_HOST,
+    VALKEY_PORT,
+    rabbitmq_amqp_url,
+    valkey_db_url,
+)
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -54,8 +58,8 @@ pytestmark = [
 
 def _spawn_worker(queue_name: str, env_extra: dict[str, str] | None = None):
     env = dict(os.environ)
-    env["SWARMQ_BROKER_URL"] = "amqp://guest:guest@localhost:5672/"
-    env["SWARMQ_BACKEND_URL"] = "valkey://localhost:6379/0"
+    env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
+    env["SWARMQ_BACKEND_URL"] = valkey_db_url()
     env["CLI_TEST_QUEUE"] = queue_name
     env["PYTHONUNBUFFERED"] = "1"
     if env_extra:
@@ -104,8 +108,8 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     os.environ["CLI_TEST_QUEUE"] = queue
     import tests.integration._cli_fixture_tasks  # noqa: F401
 
-    broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
-    backend = ValkeyBackend("valkey://localhost:6379/0")
+    broker = RabbitMQBroker(rabbitmq_amqp_url())
+    backend = ValkeyBackend(valkey_db_url())
     app = SwarmQ(broker, backend, queues=[queue])
     async with app:
         task_id = await app.schedule("cli_echo", value, queue=queue)
@@ -133,8 +137,8 @@ def test_cli_worker_round_trip_then_clean_sigterm() -> None:
 def test_cli_worker_unknown_module_exits_non_zero_quickly() -> None:
     """Sanity: bad --module should fail fast with exit 1, not hang."""
     env = dict(os.environ)
-    env["SWARMQ_BROKER_URL"] = "amqp://guest:guest@localhost:5672/"
-    env["SWARMQ_BACKEND_URL"] = "valkey://localhost:6379/0"
+    env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
+    env["SWARMQ_BACKEND_URL"] = valkey_db_url()
     proc = subprocess.run(
         [
             sys.executable, "-m", "swarmq.cli",

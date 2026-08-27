@@ -774,7 +774,7 @@ class TestDlqHandlerOrchestration:
         monkeypatch.setenv(
             "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
         )
-        monkeypatch.setattr(cli, "_broker_from_env", fake_from_env)
+        monkeypatch.setattr(cli._shared, "_broker_from_env", fake_from_env)
         return broker
 
     @pytest.mark.timeout(5)

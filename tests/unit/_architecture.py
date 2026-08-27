@@ -296,6 +296,74 @@ def stale_patch_targets(
     return hits
 
 
+def object_patch_targets(
+    tests_root: Path, split_modules: Mapping[str, Iterable[str]]
+) -> list[tuple[Path, str]]:
+    """Objekt-Patches auf Fassaden-Module (U6-Guard-Lücke, Follow-Up 0.2.x).
+
+    ``monkeypatch.setattr(modulobjekt, "name", …)`` und
+    ``patch.object(modulobjekt, "name")`` laufen am String-Guard vorbei.
+    Dieser Scan sammelt pro Testdatei die Import-Aliase, die exakt auf eine
+    aufgeteilte Fassade zeigen (``from swarmq import client as X`` /
+    ``import swarmq.client as X`` / ``from swarmq.worker import gates``
+    zeigt auf ein Submodul und ist erlaubt), und meldet setattr/patch.object
+    mit einem Nicht-CamelCase-Attribut auf so einem Fassaden-Alias.
+    """
+    facades = set(split_modules)
+    hits: list[tuple[Path, str]] = []
+    for path in sorted(tests_root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name in facades:
+                        aliases[(a.asname or a.name).split(".")[0] if a.asname else a.name.split(".")[0]] = a.name
+                        if a.asname:
+                            aliases[a.asname] = a.name
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                for a in node.names:
+                    full = f"{node.module}.{a.name}"
+                    if full in facades:
+                        aliases[a.asname or a.name] = full
+        if not aliases:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            is_setattr = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "setattr"
+            )
+            is_patch_object = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "object"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "patch"
+            ) or (
+                isinstance(func, ast.Attribute)
+                and func.attr == "object"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "patch"
+            )
+            if not (is_setattr or is_patch_object) or len(node.args) < 2:
+                continue
+            target, attr = node.args[0], node.args[1]
+            if not (isinstance(target, ast.Name) and target.id in aliases):
+                continue
+            if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)):
+                continue
+            name = attr.value
+            is_class = name[:1].isupper() and not name.isupper()
+            if not is_class:
+                hits.append((path, f"{aliases[target.id]}.{name}"))
+    return hits
+
+
 # ---------------------------------------------------------------------------
 # Contract-Bindings
 # ---------------------------------------------------------------------------

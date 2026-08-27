@@ -28,17 +28,17 @@ from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import compute_dedup_hash
 from swarmq.task import UniqueUntil
 
-# ``_backend_from_env`` is resolved LAZILY via ``swarmq.cli`` so that
-# a future ``monkeypatch.setattr(cli, "_backend_from_env", fake)`` in
-# schedule tests intercepts the call. Direct
+# ``_backend_from_env`` is resolved LAZILY from ``swarmq.cli._shared``
+# so a ``monkeypatch.setattr(cli._shared, "_backend_from_env", fake)`` in
+# schedule tests intercepts the call. A MODULE-LEVEL
 # ``from swarmq.cli._shared import _backend_from_env`` would bind the
 # name into this module's namespace and silently bypass the patch —
 # the same trap ``dlq_cmd._get_broker_factory`` avoids.
 
 
 def _get_backend_factory() -> Callable[[], Coroutine[Any, Any, ValkeyBackend]]:
-    """Lazy import of ``_backend_from_env`` through the facade."""
-    from swarmq.cli import _backend_from_env
+    """Lazy import of ``_backend_from_env`` (aus ``_shared``; patchbar dort)."""
+    from swarmq.cli._shared import _backend_from_env
     return _backend_from_env
 
 
