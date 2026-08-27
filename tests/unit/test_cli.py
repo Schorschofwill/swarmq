@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -574,6 +573,7 @@ class TestInspectCommand:
     async def test_inspect_module_without_tasks_raises(self, monkeypatch):
         """Empty module → ConfigurationError (same discipline as worker)."""
         import importlib
+
         from swarmq.task import Task
 
         Task._clear_registered_tasks()

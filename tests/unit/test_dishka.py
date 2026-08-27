@@ -111,7 +111,7 @@ async def test_lifecycle_injection_through_task_subclass():
 
     from swarmq.task import Task, TaskInfo
 
-    container, Svc = _make_container_with_svc()  # noqa: N806 — Svc is a class
+    container, Svc = _make_container_with_svc()
 
     class InjectTask(Task):
         task_info = TaskInfo(name="inject_task", queues=["q"])

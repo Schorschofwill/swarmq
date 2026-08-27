@@ -50,7 +50,7 @@ async def broker_and_queue(rabbitmq_url: str):
                 q = await ch.get_queue(qname, ensure=False)
                 await q.delete(if_empty=False, if_unused=False)
                 await ch.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         await b.close()
 
@@ -207,7 +207,7 @@ async def test_retry_moves_matching_message_to_main(broker_and_queue):
         headers={"x-swarmq-retry-count": 3, "x-swarmq-traceback": "err"},
     )
 
-    moved, scanned = await broker.retry_dead_letter_message(qname, "move")
+    moved, _scanned = await broker.retry_dead_letter_message(qname, "move")
     assert moved is True
     # DLQ shrunk by one; main gained one.
     assert await _dlq_depth(broker, qname) == 1

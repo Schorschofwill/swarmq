@@ -31,7 +31,7 @@ method. Attaching the HTTP exposition server is a worker-side concern
 
 from __future__ import annotations
 
-import asyncio  # noqa: F401 — used in type hints
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -258,7 +258,7 @@ async def serve_metrics(
         await server.stop()
 
 
-def install_signal_collectors(
+def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
     dispatcher: SignalDispatcher, metrics: Metrics,
 ) -> None:
     """Register Metrics-updater handlers on the given SignalDispatcher.

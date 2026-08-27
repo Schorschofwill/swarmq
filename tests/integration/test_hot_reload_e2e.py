@@ -22,7 +22,6 @@ import pytest
 
 from swarmq.hot_reload import FileWatcher
 
-
 # ce-review #21: probe write-to-trigger timeout. Small enough to keep
 # the helper tight, large enough to absorb the 200ms debounce + step
 # jitter in the integration FileWatcher config.

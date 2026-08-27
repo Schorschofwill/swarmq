@@ -12,14 +12,12 @@ from __future__ import annotations
 # 7. Error in post_execute-hook -> logged, next hook still runs
 # 8. Error in pre_enqueue -> propagates (raises)
 # 9. Integration: mock middleware with Counter tracks calls to verify order
-
 import inspect
 
 import pytest
 import structlog
 
 from swarmq.middleware import Middleware, MiddlewareChain
-
 
 # ---------------------------------------------------------------------------
 # 1. Middleware base class has 6 async no-op methods
@@ -95,7 +93,7 @@ class _RecordingMiddleware(Middleware):
     async def pre_execute(self, message: dict) -> None:
         self.calls.append((self.label, "pre_execute"))
 
-    async def post_execute(self, message: dict, result=None) -> None:  # noqa: ANN001
+    async def post_execute(self, message: dict, result=None) -> None:
         self.calls.append((self.label, "post_execute"))
 
     async def on_error(self, message: dict, exception: BaseException) -> None:
@@ -210,7 +208,7 @@ class _RaisingMiddleware(Middleware):
         if self.hook == "pre_enqueue":
             raise self.exc
 
-    async def post_execute(self, message: dict, result=None) -> None:  # noqa: ANN001
+    async def post_execute(self, message: dict, result=None) -> None:
         if self.hook == "post_execute":
             raise self.exc
 

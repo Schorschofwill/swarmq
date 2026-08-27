@@ -16,7 +16,7 @@ from __future__ import annotations
 
 # argparse is part of the frozen surface (tests construct
 # argparse.Namespace directly and dispatch through main()).
-import argparse  # noqa: F401 — frozen surface: used by tests via Namespace
+import argparse  # noqa: F401
 
 # tests/unit/test_cli_multiprocess.py:144 does
 # patch("swarmq.cli.asyncio.run", ...). Removing this import breaks
@@ -94,10 +94,10 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     ConfigurationError,
 )
-from swarmq.scheduler import (  # noqa: F401
-    SCHEDULER_LOCK_KEY,
-    ScheduleDefinition,
-    ScheduleStore,
+from swarmq.scheduler import (
+    SCHEDULER_LOCK_KEY,  # noqa: F401
+    ScheduleDefinition,  # noqa: F401
+    ScheduleStore,  # noqa: F401
 )
 from swarmq.serialization import compute_dedup_hash  # noqa: F401
 from swarmq.task import Task  # noqa: F401
@@ -204,7 +204,7 @@ __all__ = (
 )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0.2.x
     """Console-script entry point. Returns the process exit code.
 
     Returns 0 on graceful shutdown, 2 on bad arguments (argparse default),

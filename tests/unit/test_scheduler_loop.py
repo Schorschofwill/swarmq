@@ -16,7 +16,6 @@ import pytest
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.scheduler import (
-    SCHEDULER_LOCK_NAME,
     ScheduleDefinition,
     SchedulerLoop,
 )

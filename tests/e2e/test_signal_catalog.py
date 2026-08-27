@@ -948,8 +948,8 @@ async def test_signal_scheduler_standby(
     from swarmq.locking import LockManager
     from swarmq.scheduler import (
         SCHEDULER_LOCK_KEY,
-        ScheduleStore,
         SchedulerLoop,
+        ScheduleStore,
     )
     from swarmq.signals import SignalDispatcher
 

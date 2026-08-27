@@ -47,7 +47,6 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
-
 from tests.chaos.conftest import ChaosStack
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

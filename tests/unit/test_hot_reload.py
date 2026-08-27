@@ -17,7 +17,6 @@ from swarmq.hot_reload import (
     resolve_watch_dirs,
 )
 
-
 # ---------------------------------------------------------------------------
 # Unit 4: SwarmQFilter
 # ---------------------------------------------------------------------------
@@ -157,12 +156,11 @@ class TestCheckWatchfilesAvailable:
     def test_missing_raises_configuration_error(self):
         # Simulate missing dep by inserting None into sys.modules — the
         # import statement then raises ImportError on lookup.
-        with patch.dict(sys.modules, {"watchfiles": None}):
-            with pytest.raises(
-                ConfigurationError,
-                match=r"pip install 'swarmq\[reload\]'",
-            ):
-                check_watchfiles_available()
+        with patch.dict(sys.modules, {"watchfiles": None}), pytest.raises(
+            ConfigurationError,
+            match=r"pip install 'swarmq\[reload\]'",
+        ):
+            check_watchfiles_available()
 
 
 # ---------------------------------------------------------------------------

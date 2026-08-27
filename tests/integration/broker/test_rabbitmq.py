@@ -35,7 +35,7 @@ async def broker(rabbitmq_url: str):
                 q = await ch.get_queue(qname, ensure=False)
                 await q.delete(if_empty=False, if_unused=False)
                 await ch.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         await b.close()
 

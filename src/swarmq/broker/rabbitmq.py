@@ -55,8 +55,8 @@ class RabbitMQBroker:
         url: str | None = None,
         queue_type: str = "quorum",
         *,
-        connection: "aio_pika.abc.AbstractConnection | None" = None,
-        connection_pool: "aio_pika.pool.Pool | None" = None,
+        connection: aio_pika.abc.AbstractConnection | None = None,
+        connection_pool: aio_pika.pool.Pool | None = None,
     ) -> None:
         """Construct a broker from a URL, an existing connection, or a pool.
 
@@ -120,7 +120,7 @@ class RabbitMQBroker:
             # Credential-free placeholder so every _url reader (config,
             # sanitize_url log sites) stays safe without a None-guard.
             self._url: str = INJECTED_URL
-            self._connection: "aio_pika.abc.AbstractConnection | None" = connection
+            self._connection: aio_pika.abc.AbstractConnection | None = connection
             self._owns_connection = False
         elif connection_pool is not None:
             self._url = INJECTED_URL
@@ -131,7 +131,7 @@ class RabbitMQBroker:
             self._connection = None
             self._owns_connection = True
 
-    async def connect(self) -> None:
+    async def connect(self) -> None:  # noqa: C901  # U5 zerlegt connection.py
         # Owned (URL) path: dial once, open both channels. Idempotent via
         # the publish-channel check below.
         if self._owns_connection:
@@ -183,7 +183,7 @@ class RabbitMQBroker:
                     # no-op when no item was assigned).
                     try:
                         await self._pool_ctx.__aexit__(None, None, None)
-                    except Exception:  # noqa: BLE001 — release best-effort
+                    except Exception:
                         pass
                     self._pool_ctx = None
                     self._connection = None
@@ -223,13 +223,13 @@ class RabbitMQBroker:
                     await self._pool_ctx.__aexit__(
                         type(exc), exc, exc.__traceback__
                     )
-                except Exception:  # noqa: BLE001 — release is best-effort
+                except Exception:
                     pass
                 self._pool_ctx = None
                 self._connection = None
             raise BrokerConnectionError(str(exc)) from exc
 
-    async def _ensure_publish_channel(self) -> "aio_pika.abc.AbstractChannel":
+    async def _ensure_publish_channel(self) -> aio_pika.abc.AbstractChannel:
         """Return a ready publish channel; recreate if dropped.
 
         aio_pika's RobustChannel auto-reopens after a transport blip,
@@ -242,7 +242,7 @@ class RabbitMQBroker:
         """
         return await self._ensure_channel("_publish_channel")
 
-    async def _ensure_consume_channel(self) -> "aio_pika.abc.AbstractChannel":
+    async def _ensure_consume_channel(self) -> aio_pika.abc.AbstractChannel:
         """Return a ready consume channel; recreate if dropped.
 
         Same contract as :meth:`_ensure_publish_channel`, but also
@@ -261,7 +261,7 @@ class RabbitMQBroker:
         return chan
 
     async def _publish_with_retry(
-        self, routing_key: str, msg: "aio_pika.Message",
+        self, routing_key: str, msg: aio_pika.Message,
     ) -> None:
         """Publish with bounded retry across reconnect transitions.
 
@@ -307,7 +307,7 @@ class RabbitMQBroker:
                     try:
                         if not self._publish_channel.is_closed:
                             await self._publish_channel.close()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
                     self._publish_channel = None
                 # Skip the backoff sleep on the final attempt — we are
@@ -320,7 +320,7 @@ class RabbitMQBroker:
             f"{_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
         ) from last_exc
 
-    async def _ensure_channel(self, attr: str) -> "aio_pika.abc.AbstractChannel":
+    async def _ensure_channel(self, attr: str) -> aio_pika.abc.AbstractChannel:
         """Thin wrapper around :meth:`_ensure_channel_tracked` for
         callers that don't need the was-recreated signal."""
         chan, _ = await self._ensure_channel_tracked(attr)
@@ -328,7 +328,7 @@ class RabbitMQBroker:
 
     async def _ensure_channel_tracked(
         self, attr: str,
-    ) -> tuple["aio_pika.abc.AbstractChannel", bool]:
+    ) -> tuple[aio_pika.abc.AbstractChannel, bool]:
         """Return (channel, was_recreated). Lets callers apply per-
         recreate state (QoS prefetch, consumer re-registration)
         exactly when a new underlying channel was opened."""
@@ -355,7 +355,7 @@ class RabbitMQBroker:
                 ) from exc
             try:
                 channel = await self._connection.channel()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise BrokerConnectionError(
                     f"channel reopen failed for {attr!r} on "
                     f"{sanitize_url(self._url)!r}: {exc}"
@@ -387,7 +387,7 @@ class RabbitMQBroker:
 
     async def _declare_queue_triplet(
         self,
-        pub: "aio_pika.abc.AbstractChannel",
+        pub: aio_pika.abc.AbstractChannel,
         queue_name: str,
         main_args: dict[str, Any],
     ) -> None:
@@ -487,7 +487,7 @@ class RabbitMQBroker:
         for queue, consumer_tag in self._consumer_tags:
             try:
                 await queue.cancel(consumer_tag)
-            except Exception as exc:  # noqa: BLE001 — best-effort per consumer
+            except Exception as exc:
                 errors.append(exc)
                 logger.warning(
                     "consumer_cancel_failed",
@@ -742,7 +742,7 @@ class RabbitMQBroker:
                     # the aio_pika internal drain_future CancelledError
                     # via current_task().cancelling() guard.
                     raise
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     errors.append(exc)
             if errors:
                 # Wrap the first collected failure in a
@@ -868,7 +868,7 @@ class RabbitMQBroker:
             return int(getattr(result, "message_count", 0))
         except BrokerConnectionError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
 
     async def get_queue_depth(self, queue_name: str) -> int:
@@ -905,13 +905,13 @@ class RabbitMQBroker:
             except ChannelNotFoundEntity:
                 # Queue does not exist yet — counts as 0 depth.
                 continue
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise BrokerConnectionError(str(exc)) from exc
             finally:
                 if channel is not None and not channel.is_closed:
                     try:
                         await channel.close()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
         return total
 
@@ -935,13 +935,13 @@ class RabbitMQBroker:
             return 0
         except ChannelNotFoundEntity:
             return 0
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
         finally:
             if channel is not None and not channel.is_closed:
                 try:
                     await channel.close()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
     async def get_dlq_depth(self, queue_name: str) -> int:

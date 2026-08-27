@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
 
 import pytest
 
 from swarmq.metrics import (
+    _HAVE_PROMETHEUS,
     CONTENT_TYPE,
     Metrics,
-    MetricsServer,
-    _HAVE_PROMETHEUS,
     install_signal_collectors,
     serve_metrics,
 )
 from swarmq.signals import Signal, SignalDispatcher
-
 
 # ---------------------------------------------------------------------------
 # Metrics (registry + render)
@@ -181,7 +178,7 @@ class TestInstallSignalCollectors:
 class TestMetricsServer:
     async def test_metrics_endpoint_returns_200(self):
         m = Metrics()
-        async with serve_metrics(m, host="127.0.0.1", port=0) as server:
+        async with serve_metrics(m, host="127.0.0.1", port=0):
             # Bind on 0 to get a free port — but start_server needs a
             # real port. Rebind with one we can read.
             pass

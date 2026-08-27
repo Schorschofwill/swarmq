@@ -98,7 +98,8 @@ class TestAddWithAt:
             raw = await client.hget("sq:{sched}:defs", name)
             assert raw is not None
             import msgspec
-            from swarmq.scheduler import ScheduleDefinition  # noqa: F401 (nested use)
+
+            from swarmq.scheduler import ScheduleDefinition
             d = msgspec.json.decode(raw, type=ScheduleDefinition)
             assert d.cron is None
             assert d.source == "cli"
@@ -119,7 +120,8 @@ class TestRemove:
             raw = await client.hget("sq:{sched}:defs", name)
             assert raw is not None
             import msgspec
-            from swarmq.scheduler import ScheduleDefinition  # noqa: F401 (nested use)
+
+            from swarmq.scheduler import ScheduleDefinition
             d = msgspec.json.decode(raw, type=ScheduleDefinition)
             assert d.disabled is True
         finally:

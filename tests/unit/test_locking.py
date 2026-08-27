@@ -185,7 +185,7 @@ class TestLockManagerRenew:
 
     @pytest.mark.asyncio
     async def test_renew_returns_false_on_zero(self):
-        manager, _, _, renew_script = _make_lock_manager_with_scripts(
+        manager, _, _, _renew_script = _make_lock_manager_with_scripts(
             renew_returns=0
         )
         # Foreign owner OR key absent → script returns 0 → renew returns False

@@ -15,7 +15,6 @@ Auto-marker `chaos` ensures these tests stay opt-in.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import random
 import re

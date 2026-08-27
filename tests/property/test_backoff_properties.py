@@ -21,7 +21,6 @@ from hypothesis import strategies as st
 
 from swarmq.backoff import calculate_backoff
 
-
 # Bounded domains — astronomical base * 2**attempt trivially overflows
 # to inf on large attempt counts; the function's intent is real-world
 # retry delays, so cap attempt at something sensible.

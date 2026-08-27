@@ -429,7 +429,6 @@ class TestDLQRetryResultTTLCombo:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         app = SwarmQ(broker, backend, queues=[queue])
-        signals_received: list[Signal] = []
 
         recorder = SignalRecorder.attach(
             app._signal_dispatcher,
@@ -446,7 +445,7 @@ class TestDLQRetryResultTTLCombo:
                 rabbitmq_url, valkey_url, queue,
                 mirror_to=app._signal_dispatcher,
             ):
-                tid = await app.schedule(task_name, 0)
+                await app.schedule(task_name, 0)
                 await asyncio.wait_for(failed_event.wait(), timeout=12.0)
                 # Allow DLQ-move ack to propagate.
                 await asyncio.sleep(0.3)
@@ -1121,7 +1120,7 @@ class TestBrokerReconnectAtMostOnceCombo:
                 publish_error: Exception | None = None
                 try:
                     await app.schedule(task_name, 99)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     publish_error = exc
 
                 # Heal the connection.
@@ -1181,7 +1180,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
-                tid = await app.schedule(task_name, 7)
+                await app.schedule(task_name, 7)
 
                 # Wait briefly for task to be picked up, then drop the broker.
                 await asyncio.sleep(0.1)
@@ -1249,7 +1248,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
-                tid = await app.schedule(task_name, 1)
+                await app.schedule(task_name, 1)
 
                 # Let the task start, then drop the broker briefly.
                 await asyncio.sleep(0.15)

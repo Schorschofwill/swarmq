@@ -46,7 +46,6 @@ import pytest
 
 import swarmq.cli
 
-
 # --- frozen public surface ---------------------------------------------------
 
 _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(

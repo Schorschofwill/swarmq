@@ -140,9 +140,9 @@ class TestPublicSurfaceIdentity:
         """``__getattr__`` must still raise ``AttributeError`` for names
         not in the lazy-surface registry — otherwise typos silently
         return None and confuse callers."""
-        import swarmq
-
         import pytest
+
+        import swarmq
 
         with pytest.raises(AttributeError, match="NotARealSymbol"):
             _ = swarmq.NotARealSymbol  # type: ignore[attr-defined]

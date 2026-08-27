@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -524,6 +524,7 @@ class TestValidateModuleImportable:
         spec.origin=None and will fail in import_module — we reject it
         upfront."""
         import sys as _sys
+
         from swarmq.exceptions import ConfigurationError
         from swarmq.process_manager import _validate_module_importable
 

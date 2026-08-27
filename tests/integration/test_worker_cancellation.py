@@ -16,7 +16,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
 from swarmq.signals import Signal
-from swarmq.task import DeliveryMode, Task, TaskInfo
+from swarmq.task import Task, TaskInfo
 
 # Cancel integration tests run a worker and observe cancel propagation
 # in real time. 15s covers the slowest paths (hard-timeout watchdogs,
@@ -49,7 +49,7 @@ async def _stop_worker(app: SwarmQ, worker_task: asyncio.Task) -> None:
     for attr in ("_worker",):
         if hasattr(app, attr):
             break
-    worker = getattr(app, attr, None)
+    getattr(app, attr, None)
     # There's no single app-level stop; drain via cancel+await is safe
     # because start_worker's shutdown path handles CancelledError.
     worker_task.cancel()

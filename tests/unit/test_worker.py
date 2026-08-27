@@ -15,17 +15,15 @@ from swarmq.config import SwarmQConfig
 from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
-    ResultSerializationError,
     Retry,
-    TaskNotFoundError,
 )
+
 # SwarmQConfig is used in fixtures for the Unit 7 monitor tests.
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_result, encode_json
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2080,7 +2078,7 @@ class TestWorkerRateLimiting:
 
         msg = _make_message(_default_payload(name="rate_limited", args=[], kwargs={}))
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             return None
 
         with patch.object(RateLimitedTask, "run", _run):
@@ -2122,7 +2120,7 @@ class TestWorkerRateLimiting:
 
         ran = False
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             nonlocal ran
             ran = True
 
@@ -2175,7 +2173,7 @@ class TestWorkerRateLimiting:
 
         ran = False
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             nonlocal ran
             ran = True
 
@@ -2291,7 +2289,7 @@ class TestFireAndForgetRateLimit:
 
         ran = False
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             nonlocal ran
             ran = True
 
@@ -2398,7 +2396,7 @@ class TestWorkerLocking:
 
         msg = _make_message(_default_payload(name="locked", args=[], kwargs={}))
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             return None
 
         with patch.object(LockedTask, "run", _run):
@@ -2435,7 +2433,7 @@ class TestWorkerLocking:
 
         ran = False
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             nonlocal ran
             ran = True
 
@@ -2489,7 +2487,7 @@ class TestWorkerLocking:
 
         ran = False
 
-        async def _run(self):  # noqa: ANN001
+        async def _run(self):
             nonlocal ran
             ran = True
 
@@ -3608,8 +3606,8 @@ class TestSchedfireDedup:
     """
 
     async def test_no_header_skips_dedup(self, broker, backend, config):
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
@@ -3633,8 +3631,8 @@ class TestSchedfireDedup:
         """Unit 1 two-marker flow: completed=False, inflight-SETNX wins,
         task runs, finally block writes the completed marker with
         long TTL."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
@@ -3679,8 +3677,8 @@ class TestSchedfireDedup:
         Fires. Die TTL muss die maximal erlaubte Laufzeit überdecken:
         max(scheduler_inflight_ttl, hard_timeout + 30s) — dasselbe
         Muster wie compute_lock_ttl_ms (P0-A-Fix 2026-06-02)."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class LongTask(Task):
             task_info = TaskInfo(
@@ -3711,8 +3709,8 @@ class TestSchedfireDedup:
     ):
         """Redelivery after a prior successful fire sees the completed
         marker and ack-skips without claiming in-flight."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
@@ -3741,8 +3739,8 @@ class TestSchedfireDedup:
         without running. When that worker completes, the completed
         marker blocks future redeliveries; if it crashes, the in-flight
         TTL expires and the next redelivery can re-run."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
@@ -3771,8 +3769,8 @@ class TestSchedfireDedup:
     ):
         """A Valkey failure during dedup-check must requeue the message
         — we cannot assume either new or duplicate."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
@@ -3813,8 +3811,8 @@ class TestSchedfireDedup:
         """Unit 9 guard: pre-existing headers on the message (e.g. an
         operator-injected tracking header) pass through unchanged — we
         don't mutate the message object on the nack path at all."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_pass", queues=["default"])
@@ -3845,9 +3843,9 @@ class TestSchedfireDedup:
     ):
         """Worker.start() must construct a SchedulerLoop after the
         backend + lock-manager are ready and call scheduler.start()."""
-        from swarmq.task import Task, TaskInfo
-        from swarmq.registry import TaskRegistry
         from swarmq import worker as worker_mod
+        from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_sched", queues=["default"])
@@ -3892,8 +3890,8 @@ class TestSchedfireDedup:
         """Duplicate schedfire must ack+skip BEFORE cancel-check is reached.
         This guarantees the pipeline-ordering-discipline documented in
         docs/solutions/logic-errors/worker-pipeline-stage-ack-ordering-*."""
-        from swarmq.task import Task, TaskInfo
         from swarmq.registry import TaskRegistry
+        from swarmq.task import Task, TaskInfo
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])

@@ -1,6 +1,6 @@
 """Unit tests for RabbitMQBroker."""
 
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import aio_pika
 import pytest
@@ -539,9 +539,8 @@ class TestRabbitMQBrokerConnectError:
         with patch(
             "swarmq.broker.rabbitmq.aio_pika.connect_robust",
             side_effect=ConnectionError("refused"),
-        ):
-            with pytest.raises(BrokerConnectionError):
-                await broker.connect()
+        ), pytest.raises(BrokerConnectionError):
+            await broker.connect()
 
 
 class TestRabbitMQBrokerErrorSanitization:
@@ -664,5 +663,5 @@ class TestRabbitMQBrokerPublishToDeadLetterQueue:
         await broker.publish_to_dead_letter_queue("tasks", b"body")
 
         publish_call = mock_exchange.publish.call_args
-        message = publish_call.args[0]
+        publish_call.args[0]
         assert publish_call.kwargs["routing_key"] == "tasks.XQ"

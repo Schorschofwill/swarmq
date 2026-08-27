@@ -43,7 +43,7 @@ async def broker(rabbitmq_url: str):
                 q = await ch.get_queue(qname, ensure=False)
                 await q.delete(if_empty=False, if_unused=False)
                 await ch.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         await b.close()
 
@@ -94,7 +94,7 @@ async def test_publish_during_reconnect_window_waits_for_channel(broker):
             try:
                 await b.publish(q, f"in-window-{i}".encode())
                 results.append((i, True, ""))
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 results.append((i, False, f"{type(e).__name__}: {e}"))
             await asyncio.sleep(0.05)
     finally:
@@ -197,7 +197,7 @@ async def test_qos_prefetch_preserved_across_reconnect(broker, rabbitmq_url):
         for m in pending_acks:
             try:
                 await m.ack()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         pending_acks.clear()
 

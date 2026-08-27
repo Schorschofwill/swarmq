@@ -8,12 +8,10 @@ health_port. Without these tests a regression in the auto-wire block
 from __future__ import annotations
 
 import socket
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from swarmq.config import SwarmQConfig
-from swarmq.worker import Worker, WorkerState
+from swarmq.worker import Worker
 
 
 def _free_port() -> int:

@@ -1,6 +1,6 @@
 """Unit tests for swarmq.serialization."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from uuid import UUID
@@ -44,7 +44,7 @@ class TestJsonDatetime:
     """Test 2: JSON roundtrip with datetime."""
 
     def test_json_roundtrip_datetime(self):
-        dt = datetime(2025, 6, 15, 12, 30, 45, tzinfo=timezone.utc)
+        dt = datetime(2025, 6, 15, 12, 30, 45, tzinfo=UTC)
         encoded = encode_json(dt)
         # Should be ISO 8601 string in JSON
         assert b"2025-06-15" in encoded
@@ -129,7 +129,7 @@ class TestMsgpackDatetime:
     """Test 8: msgpack roundtrip with datetime (Ext-Type 1)."""
 
     def test_msgpack_roundtrip_datetime(self):
-        dt = datetime(2025, 6, 15, 12, 30, 45, tzinfo=timezone.utc)
+        dt = datetime(2025, 6, 15, 12, 30, 45, tzinfo=UTC)
         encoded = encode_result(dt)
         decoded = decode_result(encoded)
         assert decoded == dt
@@ -225,7 +225,7 @@ class TestNestedStructures:
     """Test 15: Nested structures (dict with datetime values)."""
 
     def test_msgpack_nested_datetime(self):
-        dt = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 6, 15, 12, 0, 0, tzinfo=UTC)
         data = {
             "task_id": "abc-123",
             "created_at": dt,

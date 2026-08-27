@@ -117,15 +117,10 @@ class TestWorkerPriorityDeclaration:
         # We only need to exercise the queue-declaration loop; the
         # rest of start() is out of scope. Patch shutdown to return
         # immediately so start() doesn't block.
-        from swarmq.locking import LockManager
-        from swarmq.limits import RateLimiter
         w = Worker(broker, backend, registry, cfg)
         # Simulate the subset of start() that declares+consumes.
         for base in cfg.queues:
-            if cfg.priorities:
-                names = [f"{base}.high", base, f"{base}.low"]
-            else:
-                names = [base]
+            names = [f"{base}.high", base, f"{base}.low"] if cfg.priorities else [base]
             for q in names:
                 await broker.declare_queue(q)
                 await broker.consume(q, w._on_message, prefetch_count=cfg.concurrency)
@@ -156,10 +151,7 @@ class TestWorkerPriorityDeclaration:
         w = Worker(broker, backend, registry, cfg)
 
         for base in cfg.queues:
-            if cfg.priorities:
-                names = [f"{base}.high", base, f"{base}.low"]
-            else:
-                names = [base]
+            names = [f"{base}.high", base, f"{base}.low"] if cfg.priorities else [base]
             for q in names:
                 await broker.declare_queue(q)
                 await broker.consume(q, w._on_message, prefetch_count=cfg.concurrency)

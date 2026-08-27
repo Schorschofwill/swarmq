@@ -12,10 +12,9 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import encode_json
-from swarmq.task import Task, TaskInfo
 from swarmq.signals import Signal
+from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
-
 
 # ---------------------------------------------------------------------------
 # Helpers

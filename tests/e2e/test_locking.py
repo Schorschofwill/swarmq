@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import time
 import uuid
 from typing import Any
-
-import pytest
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -106,7 +105,7 @@ async def test_mutex_serialises_concurrent_tasks(
 
     assert len(intervals) == total_messages
     intervals.sort(key=lambda iv: iv[0])
-    for prev, curr in zip(intervals, intervals[1:]):
+    for prev, curr in itertools.pairwise(intervals):
         assert prev[1] <= curr[0] + 1e-3, (
             f"mutex overlap detected: prev={prev}, curr={curr}"
         )
@@ -225,7 +224,7 @@ async def test_format_string_lock_serialises_per_user(
     # Within each user, intervals must not overlap
     for user_id, ivs in intervals_per_user.items():
         ivs.sort(key=lambda iv: iv[0])
-        for prev, curr in zip(ivs, ivs[1:]):
+        for prev, curr in itertools.pairwise(ivs):
             assert prev[1] <= curr[0] + 1e-3, (
                 f"user {user_id} mutex overlap: prev={prev}, curr={curr}"
             )
@@ -246,6 +245,7 @@ async def test_force_release_recovers_wedged_lock(
     operator-side equivalent).
     """
     import valkey.asyncio as valkey_asyncio
+
     from swarmq.locking import LockManager
 
     queue = _unique_queue()

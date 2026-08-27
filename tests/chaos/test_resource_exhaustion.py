@@ -46,7 +46,6 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BackendConnectionError
 from swarmq.task import Task, TaskInfo
-
 from tests.chaos.conftest import ChaosStack
 
 
@@ -77,7 +76,7 @@ async def _warmup_proxied_endpoints(chaos_stack: ChaosStack) -> None:
                 await broker.close()
                 await backend.close()
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_exc = exc
             await asyncio.sleep(0.8)
     raise RuntimeError(
@@ -291,6 +290,8 @@ class TestResourceExhaustion:
         try:
             from aiormq.exceptions import (
                 AMQPError as _AiormqAMQPError,
+            )
+            from aiormq.exceptions import (
                 ConnectionNotAllowed as _ConnectionNotAllowed,
             )
         except ImportError:  # pragma: no cover

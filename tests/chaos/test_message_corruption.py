@@ -47,7 +47,6 @@ from swarmq.client import Client
 from swarmq.exceptions import ResultSerializationError
 from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.task import Task
-
 from tests.chaos.conftest import ChaosStack
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -155,7 +154,7 @@ async def _wait_amqp_reachable(url: str, timeout: float = 30.0) -> None:
             conn = await aio_pika.connect_robust(url, timeout=3)
             await conn.close()
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last = exc
             await asyncio.sleep(0.5)
     raise RuntimeError(f"amqp never reachable at {url}: {last!r}")

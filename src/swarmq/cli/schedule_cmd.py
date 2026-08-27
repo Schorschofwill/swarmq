@@ -89,7 +89,7 @@ async def _run_schedule_list(args: argparse.Namespace) -> None:
         await backend.close()
 
 
-async def _run_schedule_add(args: argparse.Namespace) -> None:
+async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PLR0915  # Follow-Up 0.2.x
     try:
         parsed_args = json.loads(args.args)
     except json.JSONDecodeError as exc:

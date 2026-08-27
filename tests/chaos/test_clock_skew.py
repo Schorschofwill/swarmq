@@ -43,8 +43,8 @@ from swarmq.limits import RateLimiter, parse_rate_limit
 from swarmq.locking import LockManager
 from swarmq.scheduler import (
     ScheduleDefinition,
-    ScheduleStore,
     SchedulerLoop,
+    ScheduleStore,
 )
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo

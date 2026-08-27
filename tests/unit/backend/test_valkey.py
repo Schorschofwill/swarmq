@@ -287,7 +287,7 @@ class TestValkeyBackendConnectError:
         mock_client = AsyncMock()
         mock_client.ping.side_effect = ValkeyConnectionError("Connection refused")
 
-        with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client):
+        with patch("swarmq.backend.valkey.valkey.asyncio.Valkey.from_url", return_value=mock_client):  # noqa: SIM117
             with pytest.raises(BackendConnectionError):
                 await backend.connect()
 

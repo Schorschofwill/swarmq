@@ -128,7 +128,7 @@ class SwarmQConfig:
     # above any sane task payload; raise via env if legitimate.
     max_message_body_bytes: int = 16 * 1024 * 1024
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901, PLR0915  # Follow-Up 0.2.x
         env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
         if env_broker:
             self.broker_url = env_broker

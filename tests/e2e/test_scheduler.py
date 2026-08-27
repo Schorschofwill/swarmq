@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -18,8 +17,8 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.scheduler import SCHEDULER_LOCK_KEY
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.scheduler import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -51,7 +50,7 @@ def _leader_event(app: SwarmQ) -> asyncio.Event:
     event = asyncio.Event()
 
     @app.on_signal(Signal.SCHEDULER_LEADER)
-    async def _on_leader(**kwargs) -> None:  # noqa: ARG001
+    async def _on_leader(**kwargs) -> None:
         event.set()
 
     return event
@@ -397,7 +396,7 @@ class TestGracefulHandover:
             a_leader_event = asyncio.Event()
 
             @app_a.on_signal(Signal.SCHEDULER_LEADER)
-            async def _al(**kw) -> None:  # noqa: ARG001
+            async def _al(**kw) -> None:
                 a_leader_event.set()
 
             # Start A first so it wins the election.
@@ -442,7 +441,7 @@ class TestGracefulHandover:
                 b_leader_event = asyncio.Event()
 
                 @app_b.on_signal(Signal.SCHEDULER_LEADER)
-                async def _bl_event(**kw) -> None:  # noqa: ARG001
+                async def _bl_event(**kw) -> None:
                     b_leader_event.set()
 
                 # If b_leader already has entries (race between register
@@ -492,8 +491,9 @@ class TestCliRoundtrip:
 
         # Use the CLI handler directly to add a one-shot schedule that
         # fires in ~300ms.
-        from swarmq import cli
         import argparse
+
+        from swarmq import cli
         soon = datetime.now(UTC) + timedelta(milliseconds=300)
         ns = argparse.Namespace(
             name=f"cli-{uuid.uuid4().hex[:8]}",
@@ -579,15 +579,15 @@ class TestRecurringAcrossLeaderChange:
             b_active = asyncio.Event()  # B reached leader (LEADER or FAILOVER)
 
             @app_a.on_signal(Signal.SCHEDULER_LEADER)
-            async def _al(**kw) -> None:  # noqa: ARG001
+            async def _al(**kw) -> None:
                 a_leader.set()
 
             @app_b.on_signal(Signal.SCHEDULER_LEADER)
-            async def _bl(**kw) -> None:  # noqa: ARG001
+            async def _bl(**kw) -> None:
                 b_active.set()
 
             @app_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
-            async def _bfo(**kw) -> None:  # noqa: ARG001
+            async def _bfo(**kw) -> None:
                 b_active.set()
 
             # Start A and let it WIN the election before B joins. Starting
@@ -670,15 +670,15 @@ class TestCrashFailover:
             b_leader_observed: list[str] = []
 
             @app_a.on_signal(Signal.SCHEDULER_LEADER)
-            async def _al(**kw) -> None:  # noqa: ARG001
+            async def _al(**kw) -> None:
                 a_leader.set()
 
             @app_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
-            async def _bfo(**kw) -> None:  # noqa: ARG001
+            async def _bfo(**kw) -> None:
                 b_failover.set()
 
             @app_b.on_signal(Signal.SCHEDULER_LEADER)
-            async def _bl(**kw) -> None:  # noqa: ARG001
+            async def _bl(**kw) -> None:
                 b_leader_observed.append("leader")
 
             a_task = asyncio.create_task(app_a.start_worker())

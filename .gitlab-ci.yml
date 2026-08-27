@@ -96,6 +96,19 @@ variables:
       print("all services ready")
       PY
 
+# Lint + Typen (Plan U2): erstes blockierendes Gate für ruff und mypy — bis
+# dahin existierten beide nur in den toten GitHub-Workflows. mypy-Umfang
+# wächst in U4 um tests/support und tests/contracts (KTD1-Konformitätsanker).
+# Kein Build-Toolchain nötig (ruff/mypy brauchen die C-Extension nicht);
+# $UV_RUN, damit mypy das `reload`-Extra (watchfiles) auflösen kann.
+lint-and-types:
+  extends: .uv
+  stage: test
+  before_script: []
+  script:
+    - $UV_RUN ruff check src/ tests/
+    - $UV_RUN mypy src/swarmq
+
 # Tier 1 — unit + property. No external services; the fast regression gate.
 # Guards against uv.lock drifting from pyproject.toml — including optional
 # extras that no other job installs. UV_FROZEN cannot catch that drift: it only
@@ -169,9 +182,10 @@ soak-tests:
   script:
     - $UV_RUN pytest tests/soak -m soak -q
 
-# Tier 3 — chaos (Toxiproxy + docker compose). Opt-in only: runs on scheduled
-# pipelines or manual trigger, never blocks an MR. Needs a Docker-in-Docker
-# capable runner; left allow_failure until validated on the target runner.
+# Tier 3 — chaos (Toxiproxy + docker compose). Runs on scheduled pipelines,
+# on manual trigger, and — blocking-manual — on feature branches that touch
+# pipeline/broker/backend/contracts paths (KTD15, see rules below). Needs a
+# Docker-in-Docker capable runner.
 # Härtung R2 B1: runs the WHOLE chaos directory (previously only 1 of 5
 # files) plus the chaos-stack-backed external-publish fuzz suite.
 chaos-tests:
@@ -190,9 +204,25 @@ chaos-tests:
     UV_RUN: "uv run --extra test --extra reload"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    # Plan U2 / KTD15 — Chaos-Gate als CI-Regel: Feature-Branches, die die
+    # Worker-Pipeline, Broker-, Backend- oder Contracts-Pfade berühren,
+    # bekommen den Job als manuellen, NICHT überspringbaren Schritt; die
+    # Branch-Pipeline bleibt "blocked", bis er grün gelaufen ist. (MR-Pipelines
+    # sind per `workflow: rules` unterdrückt, eine MR-Regel griffe nie.)
+    # `allow_failure: true` auf Job-Ebene entfällt, sonst überstimmt es die Regel.
+    - if: '$CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      changes:
+        paths:
+          - src/swarmq/worker.py
+          - src/swarmq/worker/**
+          - src/swarmq/broker/**
+          - src/swarmq/backend/**
+          - src/swarmq/contracts/**
+        compare_to: refs/heads/main
+      when: manual
+      allow_failure: false  # Validierungslauf auf dem dind-Runner: Pipeline 2795414492 grün (2026-08-27)
     - when: manual
       allow_failure: true
-  allow_failure: true
   before_script:
     # build-essential: libvalkey C extension (the `reload` extra).
     # docker CLI + compose v2 plugin: NOT in Debian's repos
