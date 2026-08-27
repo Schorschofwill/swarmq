@@ -945,8 +945,8 @@ async def test_signal_scheduler_standby(
     schlägt fehl → STANDBY.
     """
     from swarmq.config import SwarmQConfig
+    from swarmq.locking import SCHEDULER_LOCK_KEY
     from swarmq.scheduler import (
-        SCHEDULER_LOCK_KEY,
         SchedulerLoop,
         ScheduleStore,
     )

@@ -93,13 +93,13 @@ async def test_is_workflow_cancelled_false_when_unset(backend):
 # --------------------------------------------------------------------------
 
 
-async def test_publish_workflow_notification_reaches_subscriber(backend):
+async def test_notify_workflow_reaches_subscriber(backend):
     wf_id = _wf_id()
     channel = backend.workflow_notify_channel(wf_id)
     subscribed = asyncio.Event()
 
     async def _subscribe_and_wait() -> bool:
-        pubsub = backend.create_pubsub()
+        pubsub = backend._pubsub()  # rohes Pub/Sub ist seit U15 nicht mehr public
         try:
             await pubsub.subscribe(channel)
             subscribed.set()  # signal readiness instead of a sleep
@@ -119,13 +119,13 @@ async def test_publish_workflow_notification_reaches_subscriber(backend):
     waiter = asyncio.create_task(_subscribe_and_wait())
     # Wait for the subscriber to be fully established before publishing.
     await subscribed.wait()
-    await backend.publish_workflow_notification(wf_id)
+    await backend.notify_workflow(wf_id)
     assert await waiter is True
 
 
-async def test_publish_workflow_notification_best_effort_when_no_subscriber(backend):
+async def test_notify_workflow_best_effort_when_no_subscriber(backend):
     # No subscriber: publish must not raise (best-effort, like per-task notify).
-    await backend.publish_workflow_notification(_wf_id())
+    await backend.notify_workflow(_wf_id())
 
 
 async def test_op_timeout_wraps_as_backend_error(backend):

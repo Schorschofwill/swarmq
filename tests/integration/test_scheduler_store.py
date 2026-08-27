@@ -11,7 +11,8 @@ import uuid
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.scheduler import SCHEDULER_LOCK_KEY, ScheduleDefinition, ScheduleStore
+from swarmq.locking import SCHEDULER_LOCK_KEY
+from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 

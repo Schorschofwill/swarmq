@@ -11,7 +11,6 @@ import msgspec
 import structlog
 
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key  # noqa: F401  # Re-Export (KTD10)
 
 if TYPE_CHECKING:
     from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore

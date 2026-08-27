@@ -2,7 +2,7 @@
 
 This module holds the worker-side machinery that advances workflows —
 distinct from the infrastructure-free topology layer in ``workflow.py``
-(client/producer side). The :class:`ChordManager` wraps the atomic
+(client/producer side). The ``ChordStore`` contract wraps the atomic
 ``chord_complete.lua`` script; the :class:`WorkflowAdvancer` and its
 enqueue/fan-in helpers live here too.
 """
@@ -10,13 +10,12 @@ enqueue/fan-in helpers live here too.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from swarmq.backend.valkey.chords import ChordManager, chord_set_key  # noqa: F401  # Re-Export (KTD10)
 from swarmq.contracts import PublishReceipt
+from swarmq.contracts.coordination import ChordStore
 from swarmq.exceptions import (
     ResultNotReadyError,
     TaskCancelledError,
@@ -41,7 +40,7 @@ from swarmq.workflow import (
 )
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.contracts import ResultBackend
 
 
 # --------------------------------------------------------------------------
@@ -100,7 +99,7 @@ class WorkflowHandle:
 
     def __init__(
         self,
-        backend: ValkeyBackend,
+        backend: ResultBackend,
         workflow_id: str,
         unpack: Callable[[bytes], Any],
         cancel_ttl_ms: int,
@@ -137,7 +136,7 @@ class WorkflowHandle:
             return {}
         paths = list(step_tasks)
         task_ids = [step_tasks[p] for p in paths]
-        raws = await self._backend.get_results_batch(task_ids)
+        raws = await self._backend.get_results(task_ids)
         out: dict[str, Any] = {}
         for path, tid, raw in zip(paths, task_ids, raws, strict=True):
             if raw is None:
@@ -167,7 +166,7 @@ class WorkflowHandle:
         newly = await self._backend.set_workflow_cancel_flag(
             self.workflow_id, ttl_ms=self._cancel_ttl_ms
         )
-        await self._backend.publish_workflow_notification(self.workflow_id)
+        await self._backend.notify_workflow(self.workflow_id)
         return newly
 
     async def get(self, timeout: float = 30.0) -> Any:
@@ -180,50 +179,34 @@ class WorkflowHandle:
         notification is best-effort, the poll guarantees liveness."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        channel = self._backend.workflow_notify_channel(self.workflow_id)
 
-        # valkey's PubSub is untyped; keep it Any so strict mode doesn't flag
-        # the get_message/aclose calls as untyped-call errors.
-        pubsub: Any
-        try:
-            pubsub = self._backend.create_pubsub()
-            await pubsub.subscribe(channel)
-        except Exception:
-            pubsub = None  # Pub/Sub unavailable — poll fallback carries liveness.
-
-        try:
-            while True:
-                state = await self._load_state()
-                if state["status"] in _TERMINAL_STATUSES:
-                    return await self._resolve_terminal(state)
-                # Cancel liveness (R17): a cancel() between steps (or while a
-                # step is slow) sets the flag but no advance() has run yet to
-                # write STATUS_CANCELLED. Surface it here so get() returns
-                # promptly instead of hanging until timeout. Checking the flag
-                # (not writing state) avoids a write race with a concurrent
-                # advance() that may be completing the workflow.
-                if await self._backend.is_workflow_cancelled(self.workflow_id):
-                    raise TaskCancelledError(self.workflow_id)
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise ResultNotReadyError(
-                        f"workflow {self.workflow_id} did not complete "
-                        f"within {timeout}s"
-                    )
-                if pubsub is not None:
-                    try:
-                        await pubsub.get_message(
-                            ignore_subscribe_messages=True,
-                            timeout=min(0.2, remaining),
-                        )
-                        continue
-                    except Exception:
-                        pubsub = None
+        while True:
+            state = await self._load_state()
+            if state["status"] in _TERMINAL_STATUSES:
+                return await self._resolve_terminal(state)
+            # Cancel liveness (R17): a cancel() between steps (or while a
+            # step is slow) sets the flag but no advance() has run yet to
+            # write STATUS_CANCELLED. Surface it here so get() returns
+            # promptly instead of hanging until timeout. Checking the flag
+            # (not writing state) avoids a write race with a concurrent
+            # advance() that may be completing the workflow.
+            if await self._backend.is_workflow_cancelled(self.workflow_id):
+                raise TaskCancelledError(self.workflow_id)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ResultNotReadyError(
+                    f"workflow {self.workflow_id} did not complete "
+                    f"within {timeout}s"
+                )
+            # Vertragsmethode (U15): wartet bis zur Benachrichtigung
+            # oder zum Slice-Ende; der Poll oben trägt die Liveness.
+            try:
+                await self._backend.wait_for_workflow(
+                    self.workflow_id, timeout=min(0.2, remaining)
+                )
+            except Exception:
+                # Pub/Sub nicht verfügbar — Poll-Fallback.
                 await asyncio.sleep(min(0.05, max(0.0, remaining)))
-        finally:
-            if pubsub is not None:
-                with contextlib.suppress(Exception):
-                    await pubsub.aclose()
 
     async def _resolve_terminal(self, state: dict[str, Any]) -> Any:
         status = state["status"]
@@ -312,7 +295,7 @@ def _frontier(node: WorkflowNode, prefix: str) -> list[tuple[str, Signature]]:
 
 
 # ``chord_set_key`` und ``ChordManager`` leben seit Plan U18 in
-# ``swarmq.backend.valkey.chords``; die Namen bleiben hier importierbar (KTD10).
+# ``swarmq.backend.valkey.chords`` (U15 hat die KTD10-Re-Exports entfernt).
 
 
 def workflow_step_task_id(wf_id: str, step_path: str) -> str:
@@ -359,7 +342,7 @@ class WorkflowAdvancer:
     """Worker-side workflow advancement (U5). Called at the success seam
     after a workflow-step's result is stored. Drives the topology forward:
     next chain step (with result injection), chord/group fan-in via the
-    atomic ChordManager, and terminal completion.
+    atomic ``ChordStore``, and terminal completion.
 
     Collaborators are injected so the DAG logic is unit-testable with fakes.
     ``publish`` is the broker publish coroutine, ``resolve_queue`` maps a
@@ -371,8 +354,8 @@ class WorkflowAdvancer:
 
     def __init__(
         self,
-        backend: ValkeyBackend,
-        chord_manager: ChordManager,
+        backend: ResultBackend,
+        chord_manager: ChordStore,
         *,
         publish: Callable[[str, bytes, dict[str, Any]], Awaitable[PublishReceipt]],
         resolve_queue: Callable[[str], str],
@@ -468,8 +451,8 @@ class WorkflowAdvancer:
         result: Any,
     ) -> None:
         expected_n = len(group.members)
-        fired = await self._chord.record_and_check_complete(
-            wf_id, group_path, member_task_id, expected_n, self._ttl_ms
+        fired = await self._chord.record_member(
+            wf_id, group_path, member_task_id, expected=expected_n, ttl_ms=self._ttl_ms
         )
         if not fired:
             return  # not the last member (or a redelivery) — nothing to do
@@ -630,7 +613,7 @@ class WorkflowAdvancer:
         # _result_value): surface WorkflowResultExpired rather than a None
         # hole (R6). A stored None return is a non-None result dict, so None
         # here unambiguously means "key gone".
-        raws = await self._backend.get_results_batch(task_ids)
+        raws = await self._backend.get_results(task_ids)
         values: list[Any] = []
         for tid, raw in zip(task_ids, raws, strict=True):
             if raw is None:
@@ -691,7 +674,7 @@ class WorkflowAdvancer:
                 result_task_id = await self._materialise(wf_id, "", None, result_value)
             state["final_result_task_id"] = result_task_id
         await self._persist(wf_id, state)
-        await self._backend.publish_workflow_notification(wf_id)
+        await self._backend.notify_workflow(wf_id)
 
     async def fail(self, wf_id: str, error_type: str, error_message: str) -> None:
         """Mark the workflow failed and wake any ``get()`` waiter (R16
@@ -706,7 +689,7 @@ class WorkflowAdvancer:
         state["status"] = STATUS_FAILED
         state["error"] = {"type": error_type, "message": error_message}
         await self._persist(wf_id, state)
-        await self._backend.publish_workflow_notification(wf_id)
+        await self._backend.notify_workflow(wf_id)
 
     async def _persist(self, wf_id: str, state: dict[str, Any]) -> None:
         await self._backend.store_workflow_state(

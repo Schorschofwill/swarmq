@@ -37,9 +37,10 @@ import pytest
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
-from swarmq.limits import RateLimiter, parse_rate_limit
+from swarmq.limits import parse_rate_limit
 from swarmq.scheduler import (
     ScheduleDefinition,
     SchedulerLoop,
@@ -232,7 +233,7 @@ class TestClockSkew:
             first_id = await client_app.client.schedule(task_name, 42)
             assert first_id, "first schedule must return a task id"
 
-            # Directly issue a second setnx_unique under a frozen wall-
+            # Directly issue a second claim_unique under a frozen wall-
             # clock, bypassing the broker to keep aiormq heartbeats off
             # freezegun's patched monotonic. The Valkey PX TTL is
             # server-measured, so the flag is still alive even though
@@ -241,12 +242,12 @@ class TestClockSkew:
             dedup_hash = compute_dedup_hash(task_name, (42,), {})
 
             with freezegun.freeze_time("2099-06-15 14:00:00"):
-                existing = await client_backend.setnx_unique(
+                existing = await client_backend.claim_unique(
                     dedup_hash, "second-candidate", 30_000,
                 )
 
             assert existing == first_id, (
-                f"second setnx_unique under a 60s-future frozen wall-clock "
+                f"second claim_unique under a 60s-future frozen wall-clock "
                 f"was granted (existing={existing!r}); Valkey PX TTL must "
                 f"be server-side and keep the flag alive irrespective of "
                 f"client clock"

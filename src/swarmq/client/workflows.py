@@ -10,8 +10,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.client.schedule import ClientBackend, ClientBroker
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
 
@@ -52,8 +51,8 @@ class ClientWorkflows:
     # Mixin über dem Client-Zustand (U10); ``_resolve_queue_and_delivery_mode``
     # ist in ``ClientScheduling`` verbindlich definiert.
     if TYPE_CHECKING:
-        _broker: RabbitMQBroker
-        _backend: ValkeyBackend
+        _broker: ClientBroker
+        _backend: ClientBackend
         _registry: TaskRegistry | None
         _backend_op_timeout: float | None
         _signal_dispatcher: SignalDispatcher

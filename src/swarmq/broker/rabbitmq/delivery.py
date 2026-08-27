@@ -4,9 +4,8 @@ Abbildung auf AMQP: ``redeliver`` → ``nack(requeue=True)``; ``retry_later`` �
 Publish an ``{queue}.DQ`` mit Per-Message-``expiration`` + ``ack``;
 ``dead_letter`` → Publish an ``{queue}.XQ`` + ``ack``. Beide werfen
 ``BrokerConnectionError``, wenn der Publish scheitert, und lassen das Original
-unbestätigt. Die alten Methoden ``nack``, ``publish_to_delay_queue`` und
-``publish_to_dead_letter_queue`` bleiben, bis der Worker in U7/U8 auf die
-Verben wechselt.
+unbestätigt. Die Legacy-Namen (``nack``, ``publish_to_*``) sind seit U15
+entfernt; die Delay-/DLQ-Publishes sind private Helfer der Verben.
 """
 
 from __future__ import annotations
@@ -110,7 +109,7 @@ class RabbitMQDelivery(RabbitMQConnection):
         await self._publish_with_retry(queue, msg)
         return PublishReceipt(queue=queue, message_id=msg.message_id)
 
-    async def publish_to_delay_queue(
+    async def _publish_to_delay_queue(
         self,
         queue_name: str,
         message_body: bytes,
@@ -125,7 +124,7 @@ class RabbitMQDelivery(RabbitMQConnection):
         )
         await self._publish_with_retry(f"{queue_name}.DQ", msg)
 
-    async def publish_to_dead_letter_queue(
+    async def _publish_to_dead_letter_queue(
         self,
         queue_name: str,
         message_body: bytes,
@@ -247,24 +246,19 @@ class RabbitMQDelivery(RabbitMQConnection):
             ) from errors[0]
 
     # ------------------------------------------------------------------
-    # Die vier Verben (KTD2) + Legacy ``nack`` bis U7/U8
+    # Die vier Verben (KTD2)
     # ------------------------------------------------------------------
 
     async def ack(self, delivery: Delivery) -> None:
         await message_of(delivery).ack()
 
-    async def nack(self, delivery: Delivery, requeue: bool = False) -> None:
-        """Legacy (bis U7/U8): ``requeue=True`` entspricht ``redeliver``,
-        ``requeue=False`` entspricht ``BrokerAdmin.route_via_dlx``."""
-        await message_of(delivery).nack(requeue=requeue)
-
     async def redeliver(self, delivery: Delivery) -> None:
         await message_of(delivery).nack(requeue=True)
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
-        await self.publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)
+        await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)
         await self.ack(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
-        await self.publish_to_dead_letter_queue(delivery.queue, delivery.body, headers)
+        await self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers)
         await self.ack(delivery)

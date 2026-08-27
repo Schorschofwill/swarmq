@@ -15,6 +15,7 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
+from swarmq.contracts.coordination import LockToken, RateLimitDecision
 from swarmq.exceptions import BackendConnectionError
 from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.registry import TaskRegistry
@@ -110,14 +111,14 @@ def broker(rec: Recorder) -> MagicMock:
 def backend(rec: Recorder) -> MagicMock:
     be = MagicMock(spec=ValkeyBackend)
     be.store_result = rec.spy("backend.store_result")
-    be.publish_notification = rec.spy("backend.publish_notification")
+    be.notify_result = rec.spy("backend.notify_result")
     be.is_cancelled = rec.spy("backend.is_cancelled", False)
     be.is_workflow_cancelled = rec.spy("backend.is_workflow_cancelled", False)
     be.clear_cancel_flag = rec.spy("backend.clear_cancel_flag")
-    be.is_schedfire_completed = rec.spy("backend.is_schedfire_completed", False)
-    be.set_schedfire_inflight = rec.spy("backend.set_schedfire_inflight", True)
-    be.set_schedfire_dedup = rec.spy("backend.set_schedfire_dedup", True)
-    be.clear_schedfire_inflight = rec.spy("backend.clear_schedfire_inflight")
+    be.schedules.is_fire_completed = rec.spy("backend.schedules.is_fire_completed", False)
+    be.schedules.claim_fire = rec.spy("backend.schedules.claim_fire", True)
+    be.schedules.mark_fire_completed = rec.spy("backend.schedules.mark_fire_completed", True)
+    be.schedules.release_fire_claim = rec.spy("backend.schedules.release_fire_claim")
     be.release_unique = rec.spy("backend.release_unique", True)
     return be
 
@@ -129,18 +130,18 @@ def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, *tasks: type[T
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", concurrency=4, queues=["default"])
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config, **kwargs)
     limiter = MagicMock()
-    limiter.check = rec.spy("rate_limiter.check", (True, 9, 0))
+    limiter.check = rec.spy("rate_limiter.check", RateLimitDecision(allowed=True, remaining=9, retry_after_ms=0))
     worker._rate_limiter = limiter
     locks = MagicMock()
-    locks.acquire = rec.spy("lock_manager.acquire", True)
+    locks.acquire = rec.spy("lock_manager.acquire", LockToken(name="res", owner="tok", max_concurrency=1))
     locks.release = rec.spy("lock_manager.release", True)
     worker._lock_manager = locks
     return worker
 
 
 _GATE_ORDER = [
-    "backend.is_schedfire_completed",
-    "backend.set_schedfire_inflight",
+    "backend.schedules.is_fire_completed",
+    "backend.schedules.claim_fire",
     "backend.is_cancelled",
     "rate_limiter.check",
     "lock_manager.acquire",
@@ -204,8 +205,8 @@ async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(br
     broker.redeliver.assert_awaited_once_with(msg)
     assert "broker.ack" not in rec.calls
     assert "backend.release_unique" not in rec.calls
-    assert "backend.clear_schedfire_inflight" in rec.calls
-    assert "backend.set_schedfire_dedup" not in rec.calls
+    assert "backend.schedules.release_fire_claim" in rec.calls
+    assert "backend.schedules.mark_fire_completed" not in rec.calls
 
 
 async def test_terminal_release_in_finally_releases_after_ack_and_writes_completed_marker(
@@ -220,14 +221,14 @@ async def test_terminal_release_in_finally_releases_after_ack_and_writes_complet
 
     assert rec.index("broker.ack") < rec.index("backend.release_unique")
     assert rec.calls.count("backend.release_unique") == 1
-    assert "backend.set_schedfire_dedup" in rec.calls
-    assert "backend.clear_schedfire_inflight" not in rec.calls
+    assert "backend.schedules.mark_fire_completed" in rec.calls
+    assert "backend.schedules.release_fire_claim" not in rec.calls
 
 
 async def test_terminal_already_released_does_not_release_twice(broker, backend, rec) -> None:
     """Lock-Konflikt am Cap: Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
     worker = _worker(broker, backend, rec, LockedTask)
-    worker._lock_manager.acquire = rec.spy("lock_manager.acquire", False)
+    worker._lock_manager.acquire = rec.spy("lock_manager.acquire", None)
     msg = make_message(
         _payload("pipe-locked"),
         headers={HEADER_UNIQUE_HASH: _HASH, "x-swarmq-lock-conflict-count": 9},
@@ -267,4 +268,4 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
         await worker._handle_message(msg)
 
     assert "backend.release_unique" in rec.calls
-    assert "backend.set_schedfire_dedup" in rec.calls
+    assert "backend.schedules.mark_fire_completed" in rec.calls

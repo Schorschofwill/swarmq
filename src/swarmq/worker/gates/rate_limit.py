@@ -39,7 +39,15 @@ class RateLimitGate:
 
         config = parse_rate_limit(task_info.rate_limit)
         try:
-            allowed, remaining, retry_after_ms = await limiter.check(ctx.task_name, config)
+            # RateLimitStore-Vertrag (U15): eine Entscheidung statt Tupel.
+            decision = await limiter.check(
+                ctx.task_name,
+                max_requests=config.max_requests,
+                window_ms=config.window_size_ms,
+            )
+            allowed, remaining, retry_after_ms = (
+                decision.allowed, decision.remaining, decision.retry_after_ms,
+            )
         except Exception as exc:
             # The limiter is the only side-effect-free decision-point we
             # have. If Valkey is unreachable we cannot decide safely;

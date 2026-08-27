@@ -246,7 +246,7 @@ async def test_force_release_recovers_wedged_lock(
     """
     import valkey.asyncio as valkey_asyncio
 
-    from swarmq.locking import LockManager
+    from swarmq.backend.valkey.locks import LockManager
 
     queue = _unique_queue()
     task_name = f"e2e_wedge_{uuid.uuid4().hex[:8]}"

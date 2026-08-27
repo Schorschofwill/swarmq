@@ -382,7 +382,7 @@ class TestRabbitMQBrokerGetQueueDepth:
         chan_main.declare_queue = AsyncMock(return_value=q_main)
         chan_delay.declare_queue = AsyncMock(return_value=q_delay)
 
-        depth = await broker.get_queue_depth("tasks")
+        depth = await broker.queue_depth("tasks")
         assert depth == 8
         chan_main.declare_queue.assert_awaited_once_with("tasks", passive=True)
         chan_delay.declare_queue.assert_awaited_once_with(
@@ -407,14 +407,14 @@ class TestRabbitMQBrokerGetQueueDepth:
             side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
         )
 
-        depth = await broker.get_queue_depth("tasks")
+        depth = await broker.queue_depth("tasks")
         assert depth == 0
 
     async def test_raises_when_not_connected(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         broker._connection = None
         with pytest.raises(BrokerConnectionError, match="not connected"):
-            await broker.get_queue_depth("tasks")
+            await broker.queue_depth("tasks")
 
     async def test_wraps_transport_errors(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
@@ -425,7 +425,7 @@ class TestRabbitMQBrokerGetQueueDepth:
         chan.declare_queue = AsyncMock(side_effect=ConnectionError("gone"))
 
         with pytest.raises(BrokerConnectionError):
-            await broker.get_queue_depth("tasks")
+            await broker.queue_depth("tasks")
 
 
 class TestRabbitMQBrokerGetDlqDepth:
@@ -441,7 +441,7 @@ class TestRabbitMQBrokerGetDlqDepth:
         q_xq.declaration_result = type("R", (), {"message_count": 7})()
         chan.declare_queue = AsyncMock(return_value=q_xq)
 
-        depth = await broker.get_dlq_depth("tasks")
+        depth = await broker.dead_letter_depth("tasks")
         assert depth == 7
         chan.declare_queue.assert_awaited_once_with("tasks.XQ", passive=True)
         chan.close.assert_awaited()
@@ -458,7 +458,7 @@ class TestRabbitMQBrokerGetDlqDepth:
             side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
         )
 
-        assert await broker.get_dlq_depth("tasks") == 0
+        assert await broker.dead_letter_depth("tasks") == 0
 
 
 class TestRabbitMQBrokerPublish:
@@ -507,19 +507,19 @@ class TestRabbitMQBrokerAckNack:
 
         mock_message.ack.assert_awaited_once()
 
-    async def test_nack_delegates_to_message_with_requeue_false(self):
+    async def test_route_via_dlx_delegates_to_message_nack_no_requeue(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         mock_message = AsyncMock()
 
-        await broker.nack(mock_message)
+        await broker.route_via_dlx(mock_message)
 
         mock_message.nack.assert_awaited_once_with(requeue=False)
 
-    async def test_nack_delegates_to_message_with_requeue_true(self):
+    async def test_redeliver_delegates_to_message_nack_requeue(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         mock_message = AsyncMock()
 
-        await broker.nack(mock_message, requeue=True)
+        await broker.redeliver(mock_message)
 
         mock_message.nack.assert_awaited_once_with(requeue=True)
 
@@ -613,7 +613,7 @@ class TestRabbitMQBrokerPublishToDelayQueue:
         broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
-        await broker.publish_to_delay_queue(
+        await broker._publish_to_delay_queue(
             "tasks", b'{"task": "data"}', delay_ms=5000, headers={"x-swarmq-retry-count": 1}
         )
 
@@ -633,7 +633,7 @@ class TestRabbitMQBrokerPublishToDelayQueue:
         broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
-        await broker.publish_to_delay_queue("tasks", b"body", delay_ms=1000)
+        await broker._publish_to_delay_queue("tasks", b"body", delay_ms=1000)
 
         publish_call = mock_exchange.publish.call_args
         message = publish_call.args[0]
@@ -648,7 +648,7 @@ class TestRabbitMQBrokerPublishToDeadLetterQueue:
         broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
-        await broker.publish_to_dead_letter_queue(
+        await broker._publish_to_dead_letter_queue(
             "tasks", b'{"error": "data"}', headers={"x-swarmq-traceback": "boom"}
         )
 
@@ -667,7 +667,7 @@ class TestRabbitMQBrokerPublishToDeadLetterQueue:
         broker._connection = AsyncMock()
         mock_exchange = broker._publish_channel.default_exchange
 
-        await broker.publish_to_dead_letter_queue("tasks", b"body")
+        await broker._publish_to_dead_letter_queue("tasks", b"body")
 
         publish_call = mock_exchange.publish.call_args
         publish_call.args[0]

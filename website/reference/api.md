@@ -517,10 +517,13 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 broker = RabbitMQBroker(url: str)
 ```
 
-Async AMQP broker wrapping aio-pika. All configuration (queue type,
-prefetch, reconnect policy) flows through `SwarmQConfig` and
-`TaskInfo` — you do not call methods on this class directly from
-application code.
+Async AMQP broker wrapping aio-pika. Implements the `Broker` and
+`BrokerAdmin` protocols from `swarmq.contracts` (connect/declare/
+publish/consume, the four delivery verbs `ack`/`redeliver`/
+`retry_later`/`dead_letter`, queue depths and DLQ operations). All
+configuration (queue type, prefetch, reconnect policy) flows through
+`SwarmQConfig` and `TaskInfo` — you do not call methods on this class
+directly from application code.
 
 ## `class ValkeyBackend`
 
@@ -531,8 +534,13 @@ backend = ValkeyBackend(url: str)
 ```
 
 Async Valkey client backing results, locks, rate limits, cancel
-flags, scheduler state, and leader election. Wire through `SwarmQ`
-as the second positional argument.
+flags, scheduler state, and leader election. Implements the
+`ResultBackend` protocol from `swarmq.contracts` and exposes the
+coordination stores as `backend.locks`, `.rate_limit`, `.chords`, and
+`.schedules` (available after `connect()`). Wire through `SwarmQ`
+as the second positional argument. Since 0.2.0 the constructor
+signatures of `Worker` and `Client` name these contracts instead of
+the concrete classes — existing code keeps working unchanged.
 
 ## Exceptions
 

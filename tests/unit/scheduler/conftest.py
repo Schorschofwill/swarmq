@@ -34,14 +34,14 @@ def config():
 @pytest.fixture
 def backend():
     be = MagicMock()
-    be.hget_schedule_def = AsyncMock(return_value=None)
+    be.schedules.get = AsyncMock(return_value=None)
     be.hset_schedule_def = AsyncMock()
     be.hdel_schedule_def = AsyncMock()
-    be.hgetall_schedule_defs = AsyncMock(return_value={})
+    be.schedules.list_all = AsyncMock(return_value={})
     be.zadd_schedule = AsyncMock()
     be.zrem_schedule = AsyncMock()
-    be.set_schedfire_handover_marker = AsyncMock()
-    be.get_and_del_schedfire_handover_marker = AsyncMock(return_value=False)
+    be.schedules.set_handover_marker = AsyncMock()
+    be.schedules.take_handover_marker = AsyncMock(return_value=False)
     return be
 
 

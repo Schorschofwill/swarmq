@@ -14,8 +14,6 @@ Modul hält die reinen Ableitungen (``lock_key``, ``compute_lock_ttl_ms``,
 
 from __future__ import annotations
 
-from typing import Any
-
 # Buffer added on top of ``hard_timeout`` to derive the lock TTL.
 # The lock TTL is purely a
 # crash-recovery deadline: under normal operation the holder releases the
@@ -102,14 +100,3 @@ SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
 _LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME`` holds by construction — if
 the prefix ever changes, ``sched_commit.lua``'s owner-check and the
 CLI status view stay in sync automatically (Unit 10 / Fork B1)."""
-
-
-def __getattr__(name: str) -> Any:
-    """Import-Alias (KTD10, bis U15): ``swarmq.locking.LockManager`` ist
-    ``swarmq.backend.valkey.locks.LockManager``. Lazy, damit dieses reine
-    Modul die Valkey-Implementierung nicht eager zieht."""
-    if name == "LockManager":
-        from swarmq.backend.valkey.locks import LockManager
-
-        return LockManager
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

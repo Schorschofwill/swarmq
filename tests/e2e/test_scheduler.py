@@ -18,7 +18,7 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.scheduler import SCHEDULER_LOCK_KEY
+from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -423,7 +423,7 @@ class TestGracefulHandover:
                 # to Valkey ourselves — setting a 5s handover marker —
                 # then cancelling A's tasks. B will see the marker on
                 # its next acquire.
-                await backend_a.set_schedfire_handover_marker(
+                await backend_a.schedules.set_handover_marker(
                     "simulated-A-token", 5_000,
                 )
                 # Now force A's lock to disappear without TTL wait by

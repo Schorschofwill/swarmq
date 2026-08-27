@@ -10,6 +10,7 @@ import pytest
 import structlog
 
 from swarmq.config import SwarmQConfig
+from swarmq.contracts.coordination import RateLimitDecision
 from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
@@ -1118,18 +1119,18 @@ async def test_fire_and_forget_not_retried(broker, backend, config):
 
 
 @pytest.mark.asyncio
-async def test_publish_notification_after_success(worker, broker, backend):
-    """After successful task -> publish_notification(task_id) called."""
+async def test_notify_result_after_success(worker, broker, backend):
+    """After successful task -> notify_result(task_id) called."""
     msg = make_message(_default_payload())
 
     await worker._handle_message(msg)
 
-    backend.publish_notification.assert_awaited_once_with("abc-123")
+    backend.notify_result.assert_awaited_once_with("abc-123")
 
 
 @pytest.mark.asyncio
-async def test_publish_notification_after_error(broker, backend, config):
-    """After error task -> publish_notification(task_id) called."""
+async def test_notify_result_after_error(broker, backend, config):
+    """After error task -> notify_result(task_id) called."""
 
     class ErrorTask(Task):
         task_info = TaskInfo(name="error_notify", queues=["default"])
@@ -1144,12 +1145,12 @@ async def test_publish_notification_after_error(broker, backend, config):
     msg = make_message(_default_payload(name="error_notify", args=[], kwargs={}))
     await w._handle_message(msg)
 
-    backend.publish_notification.assert_awaited_once_with("abc-123")
+    backend.notify_result.assert_awaited_once_with("abc-123")
 
 
 @pytest.mark.asyncio
-async def test_publish_notification_after_dlq(broker, backend, config):
-    """After DLQ routing -> publish_notification(task_id) called."""
+async def test_notify_result_after_dlq(broker, backend, config):
+    """After DLQ routing -> notify_result(task_id) called."""
 
     class DlqTask(Task):
         task_info = TaskInfo(
@@ -1171,12 +1172,12 @@ async def test_publish_notification_after_dlq(broker, backend, config):
     await w._handle_message(msg)
 
     broker.dead_letter.assert_awaited_once()
-    backend.publish_notification.assert_awaited_once_with("abc-123")
+    backend.notify_result.assert_awaited_once_with("abc-123")
 
 
 @pytest.mark.asyncio
-async def test_publish_notification_skipped_when_result_ttl_zero(broker, backend, config):
-    """result_ttl=0 -> publish_notification NOT called."""
+async def test_notify_result_skipped_when_result_ttl_zero(broker, backend, config):
+    """result_ttl=0 -> notify_result NOT called."""
 
     class NoTtlTask(Task):
         task_info = TaskInfo(name="no_ttl_notify", queues=["default"], result_ttl=0)
@@ -1192,13 +1193,13 @@ async def test_publish_notification_skipped_when_result_ttl_zero(broker, backend
     await w._handle_message(msg)
 
     backend.store_result.assert_not_awaited()
-    backend.publish_notification.assert_not_awaited()
+    backend.notify_result.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_publish_notification_failure_does_not_block_ack(broker, backend, config):
-    """publish_notification failure -> task ack still succeeds (fire-and-forget)."""
-    backend.publish_notification = AsyncMock(side_effect=Exception("pubsub down"))
+async def test_notify_result_failure_does_not_block_ack(broker, backend, config):
+    """notify_result failure -> task ack still succeeds (fire-and-forget)."""
+    backend.notify_result = AsyncMock(side_effect=Exception("pubsub down"))
 
     class NotifyFailTask(Task):
         task_info = TaskInfo(name="notify_fail", queues=["default"])
@@ -1213,8 +1214,8 @@ async def test_publish_notification_failure_does_not_block_ack(broker, backend, 
     msg = make_message(_default_payload(name="notify_fail", args=[], kwargs={}))
     await w._handle_message(msg)
 
-    # publish_notification was called (and failed)
-    backend.publish_notification.assert_awaited_once_with("abc-123")
+    # notify_result was called (and failed)
+    backend.notify_result.assert_awaited_once_with("abc-123")
     # But ack still happened
     broker.ack.assert_awaited_once_with(msg)
     # And the result was stored
@@ -2561,11 +2562,11 @@ class TestWorkerUniqueRelease:
         registry = TaskRegistry()
         registry.register(RateTask)
 
-        from swarmq.limits import RateLimiter
+        from swarmq.backend.valkey.rate_limit import RateLimiter
         w = Worker(broker=broker, backend=backend, registry=registry,
                    config=config)
         rl = MagicMock(spec=RateLimiter)
-        rl.check = AsyncMock(return_value=(False, 0, 500))
+        rl.check = AsyncMock(return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500))
         w._rate_limiter = rl
         backend.release_unique = AsyncMock(return_value=True)
 
@@ -2707,7 +2708,7 @@ class TestWorkerUniqueRelease:
         backend.release_unique = AsyncMock(return_value=True)
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(
             _default_payload(name="locked", args=[], kwargs={}),
@@ -2733,7 +2734,7 @@ class TestWorkerUniqueRelease:
         backend.release_unique = AsyncMock(return_value=True)
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(
             _default_payload(name="locked", args=[], kwargs={}),
@@ -2807,11 +2808,11 @@ class TestWorkerUniqueRelease:
         registry = TaskRegistry()
         registry.register(RateStartTask)
 
-        from swarmq.limits import RateLimiter
+        from swarmq.backend.valkey.rate_limit import RateLimiter
         w = Worker(broker=broker, backend=backend, registry=registry,
                    config=config)
         rl = MagicMock(spec=RateLimiter)
-        rl.check = AsyncMock(return_value=(False, 0, 500))
+        rl.check = AsyncMock(return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500))
         w._rate_limiter = rl
         backend.release_unique = AsyncMock(return_value=True)
 

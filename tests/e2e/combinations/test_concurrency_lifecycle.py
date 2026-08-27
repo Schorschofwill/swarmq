@@ -1348,7 +1348,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
             backend = ValkeyBackend(valkey_url)
             await backend.connect()
             try:
-                from swarmq.scheduler import SCHEDULER_LOCK_KEY
+                from swarmq.locking import SCHEDULER_LOCK_KEY
 
                 await assert_no_deadlock(
                     lambda: backend._client.exists(SCHEDULER_LOCK_KEY),
@@ -1692,7 +1692,7 @@ class TestProcessManagerWorkerCrashLockCombo:
         backend = ValkeyBackend(valkey_url)
         await backend.connect()
         try:
-            from swarmq.scheduler import SCHEDULER_LOCK_KEY
+            from swarmq.locking import SCHEDULER_LOCK_KEY
 
             await assert_no_deadlock(
                 lambda: backend._client.exists(SCHEDULER_LOCK_KEY),

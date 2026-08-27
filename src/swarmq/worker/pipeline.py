@@ -12,12 +12,19 @@ import structlog
 
 if TYPE_CHECKING:
 
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
 
 from swarmq.config import SwarmQConfig
+
+# Lock-conflict policy. Module-level so they sit alongside other constants
+# and can be referenced from tests without a class qualifier. Mirrors the
+# locking.py module-level _LOCK_TTL_BUFFER_SECONDS pattern.
+#
+# Type alias for lock-tracking entries: (lock_name, owner_token, max_concurrency).
+# Used by the per-handler acquired_locks list and the worker-wide
+from swarmq.contracts import PublishReceipt
+from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
 from swarmq.dishka import (
     request_container,
 )
@@ -26,20 +33,8 @@ from swarmq.headers import (
     HEADER_UNIQUE_UNTIL,
     HEADER_WORKFLOW_ID,
 )
-from swarmq.limits import RateLimiter
-from swarmq.locking import LockManager
 
-# Lock-conflict policy. Module-level so they sit alongside other constants
-# and can be referenced from tests without a class qualifier. Mirrors the
-# locking.py module-level _LOCK_TTL_BUFFER_SECONDS pattern.
-#
-
-# Type alias for lock-tracking entries: (lock_name, owner_token, max_concurrency).
-# Used by the per-handler acquired_locks list and the worker-wide
-# _active_handler_locks registry. Single source of truth for the field
-# ordering so destructuring sites are self-documenting.
-_LockEntry = tuple[str, str, int]
-from swarmq.contracts import PublishReceipt
+_LockEntry = LockToken  # Token-API seit U15 (LockStore-Vertrag)
 from swarmq.exceptions import (
     BackendConnectionError,
     TaskNotFoundError,
@@ -55,7 +50,13 @@ from swarmq.serialization import decode_json
 from swarmq.signals import SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.execution import TaskExecutor
-from swarmq.worker.gates import GateContext, GateDeps, route_via_dlx
+from swarmq.worker.gates import (
+    GateContext,
+    GateDeps,
+    WorkerBackend,
+    WorkerBroker,
+    route_via_dlx,
+)
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
@@ -82,8 +83,8 @@ logger = structlog.get_logger()
 class Worker(WorkerLifecycle):
     def __init__(
         self,
-        broker: RabbitMQBroker,
-        backend: ValkeyBackend,
+        broker: WorkerBroker,
+        backend: WorkerBackend,
         registry: TaskRegistry,
         config: SwarmQConfig,
         middleware_chain: MiddlewareChain
@@ -112,10 +113,10 @@ class Worker(WorkerLifecycle):
         self._shutdown_event = asyncio.Event()
         # RateLimiter needs an already-connected Valkey client; instantiated
         # in start() after backend.connect(). See plan 005 Unit 5 Lifecycle.
-        self._rate_limiter: RateLimiter | None = None
+        self._rate_limiter: RateLimitStore | None = None
         # LockManager has the same lifecycle as RateLimiter — instantiated
         # in start() once the Valkey client is live. See plan 008 Unit 4.
-        self._lock_manager: LockManager | None = None
+        self._lock_manager: LockStore | None = None
         # R4.1 workflow advancement (U5). Same lifecycle constraint — its
         # ChordManager registers a Lua script needing a live client. None
         # means workflow-step messages are not advanced (no live client yet).
@@ -135,10 +136,10 @@ class Worker(WorkerLifecycle):
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
         # AT_LEAST_ONCE redelivery within the same worker). Values are the
-        # list of _LockEntry tuples currently held by that handler invocation.
+        # list of LockTokens currently held by that handler invocation.
         # _release_acquired_locks pops the entry; _execute_shutdown drains
         # anything still here.
-        self._active_handler_locks: dict[uuid.UUID, list[_LockEntry]] = {}
+        self._active_handler_locks: dict[uuid.UUID, list[LockToken]] = {}
         # U7: die Pre-Execute-Stufen als Gates (KTD5/KTD6). Rate-Limiter und
         # Lock-Manager entstehen erst in start(), daher Getter.
         gate_deps = GateDeps(
@@ -201,7 +202,7 @@ class Worker(WorkerLifecycle):
     async def _release_acquired_locks(
         self,
         handler_id: uuid.UUID,
-        acquired_locks: list[_LockEntry],
+        acquired_locks: list[LockToken],
     ) -> None:
         """Release every lock acquired by this handler. Called in the
         ``_handle_message`` finally block. Failures are logged and
@@ -210,15 +211,13 @@ class Worker(WorkerLifecycle):
         path is the safety net for any lock that ends up not released.
         """
         assert self._lock_manager is not None  # Locks existieren nur nach start()
-        for lock_name, owner_token, max_concurrency in acquired_locks:
+        for token in acquired_locks:
             try:
-                await self._lock_manager.release(
-                    lock_name, owner_token, max_concurrency
-                )
+                await self._lock_manager.release(token)
             except Exception as exc:
                 logger.error(
                     "lock_release_failed",
-                    lock_name=lock_name,
+                    lock_name=token.name,
                     error=str(exc),
                 )
         # Drop the worker-wide registry entry whether release succeeded
@@ -265,9 +264,9 @@ class Worker(WorkerLifecycle):
             if terminal:
                 assert self._config.scheduler_dedup_ttl is not None  # Config-Default
                 ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
-                await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
+                await self._backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
             else:
-                await self._backend.clear_schedfire_inflight(schedfire_key)
+                await self._backend.schedules.release_fire_claim(schedfire_key)
         except BackendConnectionError as exc:
             logger.warning(
                 "schedfire_finalize_failed",
@@ -462,7 +461,7 @@ class Worker(WorkerLifecycle):
         # _handle_message invocation — task_id alone would collide under
         # AT_LEAST_ONCE redelivery within the same worker.
         handler_id = uuid.uuid4()
-        acquired_locks: list[_LockEntry] = []
+        acquired_locks: list[LockToken] = []
         ctx.handler_id = handler_id
         ctx.acquired_locks = acquired_locks
         # R3.5 Unit 11 state: task_info visible in finally even if

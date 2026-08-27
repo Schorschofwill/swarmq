@@ -17,7 +17,7 @@ from croniter import croniter
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key  # noqa: F401  # Re-Export (KTD10)
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.serialization import compute_dedup_hash, encode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from swarmq.contracts.coordination import LockStore
 
 from swarmq.contracts.coordination import LockToken
+from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
 from swarmq.scheduler.sync import SchedulerCronSync
 
@@ -34,18 +35,16 @@ logger = structlog.get_logger()
 
 
 class SchedulerBackend(Protocol):
-    """Struktureller Backend-Ausschnitt des Loops (U11): Schedfire-Dedup
-    über den Vertragsnamen ``claim_unique`` (ResultBackend) plus die
-    Handover-Marker-Aliase der Fassade (KTD10; Vertragsnamen
-    ``set_handover_marker``/``take_handover_marker`` entscheidet U15)."""
+    """Struktureller Backend-Ausschnitt des Loops (U11/U15): Schedfire-Dedup
+    über ``claim_unique`` (ResultBackend) plus der ``schedules``-Store der
+    Fassade (Handover-Marker, rohe Definitionen für den Cron-Sync)."""
 
     async def claim_unique(
         self, dedup_hash: str, owner: str, ttl_ms: int, *, op_timeout: float | None = None
     ) -> str | None: ...
 
-    async def set_schedfire_handover_marker(self, owner_token: str, ttl_ms: int) -> None: ...
-
-    async def get_and_del_schedfire_handover_marker(self) -> bool: ...
+    @property
+    def schedules(self) -> ContractScheduleStore: ...
 
 _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 """Minimum TTL for the handover marker (5s). The actual TTL used is
@@ -190,7 +189,7 @@ class SchedulerLoop(SchedulerCronSync):
                     _HANDOVER_MARKER_TTL_MS_FLOOR,
                     int(self._config.scheduler_heartbeat_interval * 2 * 1000),
                 )
-                await self._backend.set_schedfire_handover_marker(
+                await self._backend.schedules.set_handover_marker(
                     self._owner_token, marker_ttl_ms
                 )
             except BackendConnectionError as exc:
@@ -338,7 +337,7 @@ class SchedulerLoop(SchedulerCronSync):
         # Acquired the lock — decide which signal to emit.
         try:
             had_handover = (
-                await self._backend.get_and_del_schedfire_handover_marker()
+                await self._backend.schedules.take_handover_marker()
             )
         except BackendConnectionError as exc:
             logger.warning(

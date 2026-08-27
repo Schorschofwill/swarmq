@@ -134,7 +134,7 @@ class RetryHandler:
                 task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
             )
             try:
-                await deps.backend.publish_notification(task_id)
+                await deps.backend.notify_result(task_id)
             except Exception as exc:
                 logger.warning("publish_notification_failed", error=str(exc), task_id=task_id)
         except Exception as store_exc:

@@ -61,7 +61,7 @@ async def test_happy_path_stores_notifies_and_acks(broker, backend, config):
     outcome = await tail.finish(msg, _ctx(), _execution())
     assert outcome == Terminal.release_in_finally()
     backend.store_result.assert_awaited_once()
-    backend.publish_notification.assert_awaited_once()
+    backend.notify_result.assert_awaited_once()
     broker.ack.assert_awaited_once_with(msg)
 
 

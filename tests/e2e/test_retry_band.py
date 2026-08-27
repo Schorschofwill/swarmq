@@ -75,8 +75,8 @@ async def test_retry_from_high_band_returns_to_high_band(rabbitmq_url: str, valk
             await asyncio.sleep(0.3)  # Retry-Kopie liegt jetzt im Verzögerungsziel
 
             # Band-Erhalt: die Kopie wartet in {queue}.high(.DQ), nicht in {queue}(.DQ).
-            assert await broker.get_queue_depth(f"{queue}.high") == 1
-            assert await broker.get_queue_depth(queue) == 0
+            assert await broker.queue_depth(f"{queue}.high") == 1
+            assert await broker.queue_depth(queue) == 0
 
             result = await app.get_result(task_id, timeout=20)
             assert result == "ok"

@@ -44,7 +44,7 @@ class SchedfireGate:
         deps = self._deps
 
         try:
-            already_completed = await deps.backend.is_schedfire_completed(header_value)
+            already_completed = await deps.backend.schedules.is_fire_completed(header_value)
         except BackendConnectionError:
             logger.error("schedfire_dedup_backend_error", schedfire_key=header_value, stage="completed_check")
             await deps.broker.redeliver(delivery)
@@ -72,7 +72,7 @@ class SchedfireGate:
             inflight_ttl_s = max(inflight_ttl_s, hard_timeout + 30)
         inflight_ttl_ms = int(inflight_ttl_s * 1000)
         try:
-            claimed = await deps.backend.set_schedfire_inflight(header_value, inflight_ttl_ms)
+            claimed = await deps.backend.schedules.claim_fire(header_value, inflight_ttl_ms)
         except BackendConnectionError:
             logger.error("schedfire_dedup_backend_error", schedfire_key=header_value, stage="inflight_claim")
             await deps.broker.redeliver(delivery)

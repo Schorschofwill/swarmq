@@ -69,25 +69,25 @@ async def test_apply_persists_state_and_topology(client):
 
 async def test_apply_chain_enqueues_only_first_step(client):
     c, broker, _backend = client
-    before = await broker.get_queue_depth(_QUEUE)
+    before = await broker.queue_depth(_QUEUE)
     await c.apply(chain(WA.s("x"), WB.s()))
-    after = await broker.get_queue_depth(_QUEUE)
+    after = await broker.queue_depth(_QUEUE)
     assert after - before == 1
 
 
 async def test_apply_group_enqueues_all_members(client):
     c, broker, _backend = client
-    before = await broker.get_queue_depth(_QUEUE)
+    before = await broker.queue_depth(_QUEUE)
     await c.apply(group(WA.s("a"), WA.s("b"), WB.s("c")))
-    after = await broker.get_queue_depth(_QUEUE)
+    after = await broker.queue_depth(_QUEUE)
     assert after - before == 3
 
 
 async def test_apply_chord_enqueues_header_members_only(client):
     c, broker, _backend = client
-    before = await broker.get_queue_depth(_QUEUE)
+    before = await broker.queue_depth(_QUEUE)
     await c.apply(chord(group(WA.s("a"), WA.s("b")), WB.s()))
-    after = await broker.get_queue_depth(_QUEUE)
+    after = await broker.queue_depth(_QUEUE)
     # Header members enqueued; body waits for fan-in (U5).
     assert after - before == 2
 

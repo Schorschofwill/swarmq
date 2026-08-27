@@ -95,11 +95,11 @@ def _backend_with_state(state: dict | None) -> MagicMock:
     raw = encode_json(state) if state is not None else None
     be.get_workflow_state = AsyncMock(return_value=raw)
     be.set_workflow_cancel_flag = AsyncMock(return_value=True)
-    be.publish_workflow_notification = AsyncMock()
+    be.notify_workflow = AsyncMock()
     be.workflow_notify_channel = MagicMock(return_value="sq:wf:notify:wf-1")
     be.get_result = AsyncMock(return_value=None)
     be.is_workflow_cancelled = AsyncMock(return_value=False)
-    be.get_results_batch = AsyncMock(return_value=[])
+    be.get_results = AsyncMock(return_value=[])
     return be
 
 
@@ -126,7 +126,7 @@ async def test_cancel_sets_flag_and_notifies():
     h = _handle(be)
     assert await h.cancel() is True
     be.set_workflow_cancel_flag.assert_awaited_once()
-    be.publish_workflow_notification.assert_awaited_once_with("wf-1")
+    be.notify_workflow.assert_awaited_once_with("wf-1")
 
 
 async def test_get_returns_final_result_on_completed():
@@ -223,7 +223,7 @@ async def test_children_reports_running_and_completed_members():
             "result": "r0",
         }
     )
-    be.get_results_batch = AsyncMock(return_value=[done, None])
+    be.get_results = AsyncMock(return_value=[done, None])
     h = _handle(be)
     children = await h.children()
     assert children["/h/g0"] == {"task_id": "m0", "status": "completed", "result": "r0"}
@@ -243,7 +243,7 @@ async def test_children_reports_failed_member():
             "result": None,
         }
     )
-    be.get_results_batch = AsyncMock(return_value=[errored])
+    be.get_results = AsyncMock(return_value=[errored])
     h = _handle(be)
     children = await h.children()
     assert children["/g0"]["status"] == "failed"

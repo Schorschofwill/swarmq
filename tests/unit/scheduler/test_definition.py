@@ -16,10 +16,8 @@ import msgspec
 import pytest
 
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import lock_key
+from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key
 from swarmq.scheduler import (
-    SCHEDULER_LOCK_KEY,
-    SCHEDULER_LOCK_NAME,
     ScheduleDefinition,
     ScheduleStore,
     make_schedfire_key,

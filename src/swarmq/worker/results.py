@@ -128,7 +128,7 @@ class ResultTail:
             return Terminal.release_in_finally()
 
         try:
-            await deps.backend.publish_notification(ctx.task_id)
+            await deps.backend.notify_result(ctx.task_id)
         except Exception as exc:
             logger.warning(
                 "publish_notification_failed",

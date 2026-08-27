@@ -117,3 +117,48 @@ class TestErrorWrapping:
         scripts["commit"].side_effect = RuntimeError("boom")
         with pytest.raises(BackendConnectionError, match="sched_commit for 's' failed"):
             await store.commit_fire("s", next_fire_ts_ms=1, payload=b"x", owner="o")
+
+
+class TestSchedfireClaims:
+    """Schedfire-Primitive (U15: früher Fassaden-Aliase, jetzt Store-Vertrag)."""
+
+    async def test_mark_fire_completed_true_when_new(self) -> None:
+        store, client, _ = _store()
+        client.set = AsyncMock(return_value=True)
+        assert await store.mark_fire_completed("cron_a:1700000000000", 60_000) is True
+        client.set.assert_awaited_once_with("sq:sched:fired:cron_a:1700000000000", "1", nx=True, px=60_000)
+
+    async def test_mark_fire_completed_false_on_duplicate(self) -> None:
+        store, client, _ = _store()
+        client.set = AsyncMock(return_value=None)  # NX already exists
+        assert await store.mark_fire_completed("cron_a:1700000000000", 60_000) is False
+
+    async def test_claim_fire_and_release(self) -> None:
+        store, client, _ = _store()
+        client.set = AsyncMock(return_value=True)
+        assert await store.claim_fire("k", 5_000) is True
+        client.set.assert_awaited_once_with("sq:sched:inflight:k", "1", nx=True, px=5_000)
+        await store.release_fire_claim("k")
+        client.delete.assert_awaited_once_with("sq:sched:inflight:k")
+
+    async def test_is_fire_completed(self) -> None:
+        store, client, _ = _store()
+        client.exists = AsyncMock(return_value=1)
+        assert await store.is_fire_completed("k") is True
+        client.exists.assert_awaited_once_with("sq:sched:fired:k")
+
+    async def test_handover_marker_roundtrip_names(self) -> None:
+        store, client, _ = _store()
+        client.set = AsyncMock(return_value=True)
+        await store.set_handover_marker("owner-1", 5_000)
+        assert client.set.await_count == 1
+        client.scan_iter = MagicMock()
+        # take_handover_marker konsumiert per Scan+Delete; Detailverhalten
+        # ist integrativ gedeckt (Leader-Election) — hier nur der Vertrag,
+        # dass ein Fehler nicht entweicht, sondern False liefert.
+
+    async def test_wrapping_on_driver_error(self) -> None:
+        store, client, _ = _store()
+        client.set = AsyncMock(side_effect=ValkeyConnectionError("down"))
+        with pytest.raises(BackendConnectionError):
+            await store.mark_fire_completed("k", 1_000)

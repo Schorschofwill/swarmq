@@ -16,8 +16,8 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
+from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.registry import TaskRegistry
-from swarmq.scheduler import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker

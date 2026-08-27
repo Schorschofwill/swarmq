@@ -80,7 +80,7 @@ class TestClusterHashTags:
     async def test_window_keys_share_hash_tag(self):
         from unittest.mock import AsyncMock, MagicMock
 
-        from swarmq.limits import RateLimiter
+        from swarmq.backend.valkey.rate_limit import RateLimiter
 
         client = MagicMock()
         script = AsyncMock(return_value=[1, 4, 0])

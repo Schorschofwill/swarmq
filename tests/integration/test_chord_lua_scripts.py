@@ -17,7 +17,7 @@ import uuid
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.workflow_orchestration import ChordManager
+from swarmq.backend.valkey.chords import ChordManager
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 

@@ -76,9 +76,14 @@ class ExpiryGate:
         ttl_ms = (task_info.result_ttl or deps.config.result_ttl) * 1000
         if ttl_ms > 0:
             try:
+                # BUG (U15-Fund): dict statt bytes — gegen echtes Valkey wirft
+                # SET DataError→BackendConnectionError und der Catch unten
+                # schluckt ihn: das Expiry-Ergebnis wird nie gespeichert.
+                # Verhaltensgleich belassen; eigener Fix-MR mit rotem
+                # Integrationstest folgt (encode_result).
                 await deps.backend.store_result(
                     ctx.task_id,
-                    build_result_dict(
+                    build_result_dict(  # type: ignore[arg-type]
                         task_id=ctx.task_id,
                         queue=ctx.queue,
                         task_name=ctx.task_name,

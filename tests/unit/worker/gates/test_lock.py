@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from swarmq.contracts.coordination import LockToken
 from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
@@ -52,7 +53,11 @@ class TestWorkerLocking:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=True)
+        w._lock_manager.acquire = AsyncMock(
+            side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
+                name=name, owner=owner, max_concurrency=max_concurrency
+            )
+        )
         w._lock_manager.release = AsyncMock(return_value=True)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
@@ -89,7 +94,7 @@ class TestWorkerLocking:
             signal_dispatcher=dispatcher,
         )
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
         w._lock_manager.release = AsyncMock(return_value=True)
 
         ran = False
@@ -220,7 +225,7 @@ class TestFireAndForgetLock:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
         await w._handle_message(msg)
@@ -244,7 +249,7 @@ class TestLockRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {}
@@ -266,7 +271,7 @@ class TestLockRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {"x-swarmq-lock-conflict-count": 5}
@@ -288,7 +293,7 @@ class TestLockRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         # Prior count = 9; new_count = 10 → exactly at cap → DLQ
@@ -317,7 +322,7 @@ class TestLockRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = {"x-swarmq-lock-conflict-count": 8}
@@ -343,7 +348,7 @@ class TestLockRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=False)
+        w._lock_manager.acquire = AsyncMock(return_value=None)
         broker.dead_letter = AsyncMock(
             side_effect=ConnectionError("broker down")
         )
@@ -386,7 +391,11 @@ class TestFormatStringLock:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=True)
+        w._lock_manager.acquire = AsyncMock(
+            side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
+                name=name, owner=owner, max_concurrency=max_concurrency
+            )
+        )
         w._lock_manager.release = AsyncMock(return_value=True)
 
         msg = make_message(
@@ -404,7 +413,11 @@ class TestFormatStringLock:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
-        w._lock_manager.acquire = AsyncMock(return_value=True)
+        w._lock_manager.acquire = AsyncMock(
+            side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
+                name=name, owner=owner, max_concurrency=max_concurrency
+            )
+        )
         w._lock_manager.release = AsyncMock(return_value=True)
 
         msg = make_message(
@@ -579,15 +592,19 @@ class TestLockGateOutcomes:
 
     async def test_acquire_is_continue_and_registers_entry(self, worker):
         worker._lock_manager = MagicMock()
-        worker._lock_manager.acquire = AsyncMock(return_value=True)
+        worker._lock_manager.acquire = AsyncMock(
+            side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
+                name=name, owner=owner, max_concurrency=max_concurrency
+            )
+        )
         ctx = self._ctx()
         assert await worker._lock_gate.apply(make_message(_default_payload()), ctx) is Continue
-        assert len(ctx.acquired_locks) == 1 and ctx.acquired_locks[0][0] == "resource"
+        assert len(ctx.acquired_locks) == 1 and ctx.acquired_locks[0].name == "resource"
         assert worker._active_handler_locks[ctx.handler_id] == ctx.acquired_locks
 
     async def test_conflict_under_cap_is_redelivered_with_exponential_delay(self, worker, broker):
         worker._lock_manager = MagicMock()
-        worker._lock_manager.acquire = AsyncMock(return_value=False)
+        worker._lock_manager.acquire = AsyncMock(return_value=None)
         msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": 2})
         assert await worker._lock_gate.apply(msg, self._ctx()) is Redelivered
         kwargs = broker.retry_later.await_args.kwargs
@@ -596,7 +613,7 @@ class TestLockGateOutcomes:
 
     async def test_conflict_at_cap_dead_letters_with_diagnostics(self, worker, broker):
         worker._lock_manager = MagicMock()
-        worker._lock_manager.acquire = AsyncMock(return_value=False)
+        worker._lock_manager.acquire = AsyncMock(return_value=None)
         msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1})
         assert await worker._lock_gate.apply(msg, self._ctx()) is Redelivered
         headers = broker.dead_letter.await_args.kwargs["headers"]

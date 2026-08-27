@@ -39,7 +39,7 @@ class TestElectionLoop:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
         lock_manager.acquire.return_value = _LEADER_TOKEN
-        backend.get_and_del_schedfire_handover_marker.return_value = False
+        backend.schedules.take_handover_marker.return_value = False
 
         await loop._election_tick()
 
@@ -80,7 +80,7 @@ class TestElectionLoop:
 
         # Second tick: acquire wins, no handover marker → failover
         lock_manager.acquire.return_value = _LEADER_TOKEN
-        backend.get_and_del_schedfire_handover_marker.return_value = False
+        backend.schedules.take_handover_marker.return_value = False
         await loop._election_tick()
         assert events == [Signal.SCHEDULER_LEADER_FAILOVER]
 
@@ -107,7 +107,7 @@ class TestElectionLoop:
         assert loop._prev_leader_seen is True
 
         lock_manager.acquire.return_value = _LEADER_TOKEN
-        backend.get_and_del_schedfire_handover_marker.return_value = True
+        backend.schedules.take_handover_marker.return_value = True
         await loop._election_tick()
 
         assert leader_events == [Signal.SCHEDULER_LEADER]
@@ -477,7 +477,7 @@ class TestStop:
         await loop.stop()
 
         assert events == [Signal.SCHEDULER_LEADER_HANDOVER]
-        backend.set_schedfire_handover_marker.assert_awaited_once()
+        backend.schedules.set_handover_marker.assert_awaited_once()
         lock_manager.release.assert_awaited_once()
         assert loop.state == "stopped"
 
@@ -498,7 +498,7 @@ class TestStop:
         await loop.stop()
 
         assert events == []
-        backend.set_schedfire_handover_marker.assert_not_awaited()
+        backend.schedules.set_handover_marker.assert_not_awaited()
         lock_manager.release.assert_not_awaited()
 
 

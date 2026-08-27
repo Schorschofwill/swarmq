@@ -14,7 +14,7 @@ import uuid
 import pytest
 import valkey.asyncio as valkey_asyncio
 
-from swarmq.locking import LockManager
+from swarmq.backend.valkey.locks import LockManager
 
 VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
 VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))

@@ -47,6 +47,34 @@ Ein SwarmQ-Deployment sind nur diese vier Kästen. Kein Celery
 Flower, kein kombu, keine Django-Integration, keine
 Datenbank-Migrationen.
 
+## Verträge und Pakete
+
+Seit 0.2.0 programmiert der Kern gegen explizite Protokolle in
+`swarmq.contracts` statt gegen konkrete Klassen:
+
+- **Broker-Verträge** — `Publisher`/`Consumer`/`Broker` (connect,
+  declare, publish, consume und die vier Zustellungs-Verben `ack`,
+  `redeliver`, `retry_later`, `dead_letter`) plus die optionale
+  `BrokerAdmin`-Erweiterung (Queue-Tiefen, DLQ-Operationen,
+  `route_via_dlx`). `RabbitMQBroker` implementiert beide.
+- **Backend-Verträge** — `ResultBackend` (Ergebnisse, Fortschritt,
+  Cancel-Flags, Workflow-Zustand, Dedup-Claims) und die
+  Koordinations-Stores `LockStore` (Token-basiertes
+  acquire/renew/release), `RateLimitStore`, `ChordStore` und
+  `ScheduleStore`. `ValkeyBackend` implementiert sie und reicht die
+  Stores als `backend.locks`, `.rate_limit`, `.chords` und
+  `.schedules` heraus.
+
+Ein In-Memory-Stub in der Test-Suite implementiert dieselben Verträge,
+und eine Contract-Test-Suite läuft identisch gegen Stub, RabbitMQ und
+Valkey — der Litmus-Test, der die Verträge broker-neutral hält.
+
+Die früheren Monolith-Module sind heute Pakete, eine Pipeline-Stufe pro
+Modul: `worker/` (Gates, Execution, Retry, Ergebnis-Tail, Lifecycle),
+`client/` (Schedule, Results, Workflows), `scheduler/` (Definition,
+Loop, Cron-Sync) und `process_manager/` (Supervisor, Sampler, Check,
+Entry, Run).
+
 ## Nachrichten-Lifecycle
 
 Ein einzelner Task durchläuft einen von zwei Pfaden: **immediate**

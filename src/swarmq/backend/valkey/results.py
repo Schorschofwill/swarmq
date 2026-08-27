@@ -424,44 +424,10 @@ class ValkeyResults(ValkeyConnection):
     # Aliase der heutigen Namen (KTD10; entfallen in U15)
     # ------------------------------------------------------------------
 
-    async def get_results_batch(self, task_ids: list[str]) -> list[bytes | None]:
-        return await self.get_results(task_ids)
 
-    async def publish_notification(self, task_id: str) -> None:
-        await self.notify_result(task_id)
 
-    async def publish_workflow_notification(self, wf_id: str) -> None:
-        await self.notify_workflow(wf_id)
 
-    async def setnx_unique(
-        self, dedup_hash: str, task_id: str, ttl_ms: int, op_timeout: float | None = None
-    ) -> str | None:
-        return await self.claim_unique(dedup_hash, task_id, ttl_ms, op_timeout)
 
-    async def subscribe_and_wait(self, channel: str, timeout: float) -> bool:
-        """Alias-Fläche ohne Aufrufer in ``src/`` (Client-Erbe); bleibt bis
-        U15 (KTD10). Returns True if a message was received, False on
-        timeout or error."""
-        pubsub: Any = self._pubsub()
-        try:
-            await pubsub.subscribe(channel)
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout
-            while loop.time() < deadline:
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
-                if msg is not None:
-                    return True
-            return False
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return False
-        finally:
-            try:
-                await pubsub.unsubscribe(channel)
-                await pubsub.aclose()
-            except Exception:
-                pass
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

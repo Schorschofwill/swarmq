@@ -6,10 +6,9 @@ und ``Terminal`` beenden sie. Jedes Gate kapselt seine Fehlerbehandlung
 (Backend-Fehler → ``Redelivered`` über den Broker) und seinen heutigen
 Fallback (KTD3) — der Runner kennt keine Gate-Spezialfälle.
 
-Die Gates sprechen bis U8 die Legacy-Broker-Methoden (``nack``,
-``publish_to_delay_queue``, ``publish_to_dead_letter_queue``) und die
-Body-Queue aus ``ctx.queue``; der Band-Erhalt beim Retry ist die benannte
-Verhaltenskorrektur aus U8 (KTD2).
+Die Gates sprechen die Vertragsverben (``redeliver``/``retry_later``/
+``dead_letter``); Rückstellungen zielen auf die Zustellungs-Queue —
+der Band-Erhalt beim Retry ist die benannte Verhaltenskorrektur (KTD2, U8).
 """
 
 from __future__ import annotations
@@ -19,6 +18,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from swarmq.contracts import Broker, BrokerAdmin, ResultBackend
+from swarmq.contracts.coordination import (
+    ChordStore,
+    LockStore,
+    LockToken,
+    RateLimitStore,
+    ScheduleStore,
+)
 from swarmq.worker.outcome import DeliveryOutcome
 
 if TYPE_CHECKING:
@@ -27,8 +34,31 @@ if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
     from swarmq.task import TaskInfo
 
-# (lock_name, owner_token, max_concurrency) — Worker-weite Registry-Form.
-LockEntry = tuple[str, str, int]
+
+class WorkerBroker(Broker, BrokerAdmin, Protocol):
+    """Broker-Bedarf des Workers (U15): die vier Verben + Consume-Lifecycle
+    (``Broker``) und die Tiefen/DLX-Seite (``BrokerAdmin``)."""
+
+
+class WorkerBackend(ResultBackend, Protocol):
+    """Backend-Bedarf des Workers (U15): der ``ResultBackend``-Vertrag plus
+    die Koordinations-Stores der Fassade (existieren nach ``connect()``)."""
+
+    @property
+    def schedules(self) -> ScheduleStore: ...
+
+    @property
+    def locks(self) -> LockStore: ...
+
+    @property
+    def rate_limit(self) -> RateLimitStore: ...
+
+    @property
+    def chords(self) -> ChordStore: ...
+
+
+# Worker-weite Registry-Form eines gehaltenen Locks (Token-API seit U15).
+LockEntry = LockToken
 
 
 @dataclass
@@ -54,13 +84,13 @@ class GateDeps:
     erst nach ``backend.connect()`` baut (und Tests sie direkt setzen).
     """
 
-    broker: Any
-    backend: Any
+    broker: WorkerBroker
+    backend: WorkerBackend
     config: SwarmQConfig
     signals: SignalDispatcher
     registry: TaskRegistry
-    rate_limiter: Callable[[], Any]
-    lock_manager: Callable[[], Any]
+    rate_limiter: Callable[[], RateLimitStore | None]
+    lock_manager: Callable[[], LockStore | None]
     finalize_schedfire: Callable[[Any, bool], Awaitable[None]]
     maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
@@ -85,4 +115,12 @@ async def route_via_dlx(broker: Any, delivery: Any) -> None:
     await broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
 
 
-__all__ = ["Gate", "GateContext", "GateDeps", "LockEntry", "route_via_dlx"]
+__all__ = [
+    "Gate",
+    "GateContext",
+    "GateDeps",
+    "LockEntry",
+    "WorkerBackend",
+    "WorkerBroker",
+    "route_via_dlx",
+]

@@ -528,10 +528,13 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 broker = RabbitMQBroker(url: str)
 ```
 
-Async-AMQP-Broker-Wrapper um aio-pika. Alle Konfigurationen
-(Queue-Typ, Prefetch, Reconnect-Policy) laufen durch `SwarmQConfig`
-und `TaskInfo` — Anwendungscode ruft Methoden an dieser Klasse
-nicht direkt auf.
+Asynchroner AMQP-Broker über aio-pika. Implementiert die Protokolle
+`Broker` und `BrokerAdmin` aus `swarmq.contracts` (connect/declare/
+publish/consume, die vier Zustellungs-Verben `ack`/`redeliver`/
+`retry_later`/`dead_letter`, Queue-Tiefen und DLQ-Operationen). Die
+gesamte Konfiguration (Queue-Typ, Prefetch, Reconnect) läuft über
+`SwarmQConfig` und `TaskInfo` — aus Anwendungscode rufst du diese
+Klasse nicht direkt.
 
 ## `class ValkeyBackend`
 
@@ -541,9 +544,14 @@ from swarmq.backend.valkey import ValkeyBackend
 backend = ValkeyBackend(url: str)
 ```
 
-Async-Valkey-Client hinter Results, Locks, Rate-Limits,
-Cancel-Flags, Scheduler-State und Leader-Election. Wird als
-zweites Positional-Argument an `SwarmQ` gereicht.
+Asynchroner Valkey-Client für Ergebnisse, Locks, Rate-Limits,
+Cancel-Flags, Scheduler-Zustand und Leader-Election. Implementiert das
+`ResultBackend`-Protokoll aus `swarmq.contracts` und reicht die
+Koordinations-Stores als `backend.locks`, `.rate_limit`, `.chords` und
+`.schedules` heraus (verfügbar nach `connect()`). Wird als zweites
+Positionsargument durch `SwarmQ` gereicht. Seit 0.2.0 nennen die
+Konstruktor-Signaturen von `Worker` und `Client` diese Verträge statt
+der konkreten Klassen — bestehender Code läuft unverändert.
 
 ## Exceptions
 

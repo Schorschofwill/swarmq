@@ -89,7 +89,7 @@ class _DLQNotFound(Exception):
 async def _run_dlq_list(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
-        entries, scanned = await broker.list_dead_letter_queue(
+        entries, scanned = await broker.list_dead_letters(
             args.queue, limit=args.limit,
         )
         if args.format == "json":
@@ -121,7 +121,7 @@ async def _run_dlq_list(args: argparse.Namespace) -> None:
 async def _run_dlq_inspect(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
-        result, scanned = await broker.inspect_dead_letter_message(
+        result, scanned = await broker.inspect_dead_letter(
             args.queue, args.task_id, scan_limit=args.scan_limit,
         )
         if result is None:
@@ -198,7 +198,7 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
         if args.all:
-            moved, scanned = await broker.retry_all_dead_letter_messages(
+            moved, scanned = await broker.retry_all_dead_letters(
                 args.queue, limit=args.limit,
             )
             skipped = scanned - moved
@@ -223,7 +223,7 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
                 )
             return
 
-        found, scanned = await broker.retry_dead_letter_message(
+        found, scanned = await broker.retry_dead_letter(
             args.queue, args.task_id, scan_limit=args.scan_limit,
         )
         if args.format == "json":
@@ -258,7 +258,7 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
 async def _run_dlq_purge(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
-        purged = await broker.purge_dead_letter_queue(args.queue)
+        purged = await broker.purge_dead_letters(args.queue)
         if args.format == "json":
             sys.stdout.write(json.dumps({
                 "purged": purged, "queue": args.queue,
