@@ -249,7 +249,7 @@ class TestSchedfireDedup:
     ):
         """Worker.start() must construct a SchedulerLoop after the
         backend + lock-manager are ready and call scheduler.start()."""
-        from swarmq.worker import pipeline as worker_mod  # U6: Patches zielen auf das Submodul
+        from swarmq.worker import lifecycle as worker_mod  # U9: SchedulerLoop lebt im Lifecycle-Modul
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_sched", queues=["default"])

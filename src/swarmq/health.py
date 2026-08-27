@@ -31,8 +31,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.contracts import Publisher, ResultBackend
 
 logger = logging.getLogger("swarmq.health")
 
@@ -58,15 +57,16 @@ class HealthChecker:
     """Pings broker + backend for the readiness endpoint and CLI probe.
 
     Each check is bounded by a 2s asyncio.wait_for so a slow remote
-    cannot wedge the readiness response. The backend uses Valkey
-    ``PING``; the broker uses an aio_pika channel-status check (no
-    queue declarations — purely transport-level liveness).
+    cannot wedge the readiness response. Seit Plan U9 laufen beide Checks
+    über die Vertragsmethode ``ping`` (Publisher/ResultBackend) — kein
+    Zugriff auf ``_client``/``_connection`` mehr; damit ist Health gegen den
+    In-Memory-Stub testbar.
     """
 
     def __init__(
         self,
-        broker: RabbitMQBroker,
-        backend: ValkeyBackend,
+        broker: Publisher,
+        backend: ResultBackend,
         *,
         timeout_s: float = 2.0,
     ) -> None:
@@ -102,26 +102,20 @@ class HealthChecker:
         return f"{cls}: {msg}"
 
     async def check_backend(self) -> tuple[bool, str | None]:
-        """Return (ok, error_tag_or_None)."""
+        """Return (ok, error_tag_or_None). ``ResultBackend.ping`` wirft vor
+        ``connect()`` und bei Störung ``BackendConnectionError``."""
         try:
-            client = self._backend._client
-            if client is None:
-                return False, "backend not connected"
-            await asyncio.wait_for(client.ping(), timeout=self._timeout)
+            await asyncio.wait_for(self._backend.ping(), timeout=self._timeout)
             return True, None
         except Exception as exc:
             logger.info("check_backend_failed", exc_info=exc)
             return False, self._sanitise_error(exc)
 
     async def check_broker(self) -> tuple[bool, str | None]:
+        """``Publisher.ping`` wirft, wenn nicht verbunden oder die Verbindung
+        nicht bereit ist (transportnah, keine Queue-Deklarationen)."""
         try:
-            conn = self._broker._connection
-            if conn is None or conn.is_closed:
-                return False, "broker not connected"
-            # connection.ready() resolves immediately when the
-            # underlying socket is open and the AMQP handshake is
-            # complete.
-            await asyncio.wait_for(conn.ready(), timeout=self._timeout)
+            await asyncio.wait_for(self._broker.ping(), timeout=self._timeout)
             return True, None
         except Exception as exc:
             logger.info("check_broker_failed", exc_info=exc)
