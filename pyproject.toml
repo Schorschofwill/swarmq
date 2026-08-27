@@ -128,6 +128,9 @@ module = [
     "swarmq.signals",
     "swarmq.workflow",
     "swarmq.workflow_orchestration",
+    # 0.2.0 (KTD8 Phase 1): neue Pakete sind von Beginn an strict.
+    "swarmq.contracts",
+    "swarmq.contracts.*",
 ]
 strict = true
 
