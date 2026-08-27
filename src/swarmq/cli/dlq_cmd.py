@@ -28,8 +28,8 @@ from swarmq.exceptions import ConfigurationError
 
 
 def _get_broker_factory() -> Callable[[], Coroutine[Any, Any, RabbitMQBroker]]:
-    """Lazy import of ``_broker_from_env`` through the facade."""
-    from swarmq.cli import _broker_from_env
+    """Lazy import of ``_broker_from_env`` (aus ``_shared``; patchbar dort)."""
+    from swarmq.cli._shared import _broker_from_env
     return _broker_from_env
 
 

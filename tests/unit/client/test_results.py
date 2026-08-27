@@ -118,7 +118,10 @@ async def test_get_result_polls_multiple_times(client, backend):
         side_effect=[None, None, result_data],
     )
 
-    value = await client.get_result("task-id", timeout=2, polling=0.05)
+    # Großzügiges Timeout: der Test prüft das Polling (3 GETs), nicht den
+    # Ablauf — mit timeout=2 lief die Deadline unter CI-Last gelegentlich
+    # vor dem dritten Poll ab (Flake).
+    value = await client.get_result("task-id", timeout=30, polling=0.05)
     assert value == "ok"
     assert backend.get_result.await_count == 3
 

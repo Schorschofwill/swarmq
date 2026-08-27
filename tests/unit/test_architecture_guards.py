@@ -45,10 +45,6 @@ _CYCLE_ALLOWLIST: list[tuple[str, str]] = [
     ("swarmq.cli", "swarmq.process_manager"),          # KTD7
     ("swarmq", "swarmq.app"),                          # PEP-562-Fassade ↔ app
     ("swarmq.app", "swarmq"),
-    # cli/__init__ ↔ cli/{dlq,schedule}_cmd (funktionslokale Re-Importe der
-    # Env-Factories). Nicht im Plan vorgesehen; ``cli`` wird in diesem
-    # Programm nicht zerlegt → Follow-Up 0.2.x (im Plan nachgetragen).
-    ("swarmq.cli", "swarmq.cli"),
 ]
 
 _CORE_PACKAGES = ("swarmq.contracts", "swarmq.worker", "swarmq.client", "swarmq.scheduler")
@@ -107,6 +103,16 @@ def test_mypy_override_entries_match_existing_modules(graph: dict[str, set[str]]
     entries = arch.mypy_override_modules(_PYPROJECT)
     bad = arch.unmatched_override_entries(entries, graph, _PKG)
     assert not bad, f"mypy-Override-Einträge ohne Modul: {bad}"
+
+
+def test_no_object_patches_on_split_facades() -> None:
+    """U6-Guard-Lücke (Follow-Up 0.2.x): ``monkeypatch.setattr(fassade, …)``
+    und ``patch.object(fassade, …)`` liefen am String-Guard vorbei."""
+    hits = arch.object_patch_targets(_TESTS, _SPLIT_MODULES)
+    assert not hits, (
+        "Objekt-Patches auf aufgeteilte Fassaden — auf das Submodul zielen: "
+        + ", ".join(f"{p.name}: {t}" for p, t in hits)
+    )
 
 
 def test_no_patch_paths_into_split_modules() -> None:
