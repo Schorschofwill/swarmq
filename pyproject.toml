@@ -150,6 +150,7 @@ strict = true
 [[tool.mypy.overrides]]
 module = [
     "swarmq.client",
+    "swarmq.client.*",  # U10: Submodule erben den Monolith-Eintrag bis U12
     "swarmq.worker.pipeline",  # U6: erbt den Eintrag des früheren worker.py bis U12
     "swarmq.worker.lifecycle",  # U9: dito (Mixin über dem Worker-Zustand)
     "swarmq.task",
