@@ -42,7 +42,6 @@ _LOC_EXCEPTIONS: dict[str, str] = {
     "swarmq.client": "U10",
     "swarmq.scheduler": "U11",
     "swarmq.process_manager": "U21",
-    "swarmq.broker.rabbitmq": "U5",
     "swarmq.backend.valkey": "U17",
 }
 
@@ -66,7 +65,9 @@ _PHASE4_COMPLETE = False
 _FORBIDDEN_IN_CORE = ("aio_pika", "valkey", "swarmq.backend.valkey", "swarmq.broker.rabbitmq")
 _ALIAS_MODULES: frozenset[str] = frozenset()  # U18: limits, locking, workflow_orchestration, scheduler-Kompat
 
-_SPLIT_MODULES: dict[str, list[str]] = {}
+_SPLIT_MODULES: dict[str, list[str]] = {
+    "swarmq.broker.rabbitmq": ["connection", "delivery", "admin"],  # U5
+}
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +293,11 @@ class TestPatchPathGuard:
         )
         hits = arch.stale_patch_targets(tmp_path / "tests", {"pkg.worker": ["pipeline"]})
         assert [t for _, t in hits] == ["pkg.worker.logger", "pkg.worker.decode"]
+
+    def test_facade_class_patch_is_allowed(self, tmp_path: Path) -> None:
+        _write_tree(tmp_path, {"tests/test_x.py": "patch('pkg.worker.Worker.start')\npatch('pkg.worker._CONST')\n"})
+        hits = arch.stale_patch_targets(tmp_path / "tests", {"pkg.worker": ["pipeline"]})
+        assert [t for _, t in hits] == ["pkg.worker._CONST"]
 
     def test_unsplit_module_is_not_reported(self, tmp_path: Path) -> None:
         _write_tree(tmp_path, {"tests/test_x.py": "patch('pkg.worker.logger')\n"})

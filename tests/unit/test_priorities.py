@@ -123,7 +123,7 @@ class TestWorkerPriorityDeclaration:
             names = [f"{base}.high", base, f"{base}.low"] if cfg.priorities else [base]
             for q in names:
                 await broker.declare_queue(q)
-                await broker.consume(q, w._on_message, prefetch_count=cfg.concurrency)
+                await broker.consume(q, w._on_message, concurrency=cfg.concurrency)
 
         assert broker.declare_queue.await_count == 2
         assert broker.consume.await_count == 2
@@ -154,7 +154,7 @@ class TestWorkerPriorityDeclaration:
             names = [f"{base}.high", base, f"{base}.low"] if cfg.priorities else [base]
             for q in names:
                 await broker.declare_queue(q)
-                await broker.consume(q, w._on_message, prefetch_count=cfg.concurrency)
+                await broker.consume(q, w._on_message, concurrency=cfg.concurrency)
 
         assert broker.declare_queue.await_count == 3
         declared = [c.args[0] for c in broker.declare_queue.await_args_list]

@@ -286,7 +286,11 @@ def stale_patch_targets(
                 if not target.startswith(facade + "."):
                     continue
                 first = target[len(facade) + 1 :].split(".", 1)[0]
-                if first not in set(submodules):
+                # Erlaubt: Submodule und die von der Fassade re-exportierten
+                # Klassen (CamelCase). Konstanten/Funktionen/Module-Aliase
+                # (``logger``, ``asyncio``, ``_POOL_…``) sind veraltet.
+                is_class = first[:1].isupper() and not first.isupper()
+                if first not in set(submodules) and not is_class:
                     hits.append((path, target))
                 break
     return hits

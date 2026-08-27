@@ -158,8 +158,8 @@ class TestBrokerCancelConsume:
         broker._consume_channel.get_queue.side_effect = [mock_queue_1, mock_queue_2]
 
         callback = AsyncMock()
-        await broker.consume("q1", callback, prefetch_count=10)
-        await broker.consume("q2", callback, prefetch_count=10)
+        await broker.consume("q1", callback, concurrency=10)
+        await broker.consume("q2", callback, concurrency=10)
 
         await broker.cancel_consume()
 
@@ -185,8 +185,8 @@ class TestBrokerCancelConsume:
         broker._consume_channel.get_queue.side_effect = [mock_queue_1, mock_queue_2]
 
         callback = AsyncMock()
-        await broker.consume("q1", callback, prefetch_count=10)
-        await broker.consume("q2", callback, prefetch_count=10)
+        await broker.consume("q1", callback, concurrency=10)
+        await broker.consume("q2", callback, concurrency=10)
 
         with pytest.raises(BrokerConnectionError):
             await broker.cancel_consume()
