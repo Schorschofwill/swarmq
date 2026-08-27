@@ -42,7 +42,7 @@ def _make_queue_depth_sampler(
     open a throwaway connection each call, sum depth across all
     configured queues, and close. 10s cadence makes this cheap.
     Wrapped in :data:`SAMPLE_TIMEOUT_S` so a stuck broker does not
-    hang the supervisor (ce-review REL-05).
+    hang the supervisor.
     """
     import asyncio
 

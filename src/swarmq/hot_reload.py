@@ -87,15 +87,14 @@ def resolve_watch_dirs(
     footgun (reload storms on ``pip install -e .``).
 
     Pass ``spec`` when the caller already resolved the module (e.g.
-    ``_validate_module_importable``) — ce-review #7 avoids a second
+    ``_validate_module_importable``) — this avoids a second
     ``find_spec`` call that would re-execute ``pkg/__init__.py`` in
     edge cases that invalidate their own ``sys.modules`` entry.
 
     .. warning::
         The caller is responsible for ensuring ``spec`` corresponds
         to ``module``. No cross-validation is performed; a mismatched
-        spec silently resolves the wrong watch directory (ce-review
-        #17 advisory).
+        spec silently resolves the wrong watch directory.
     """
     explicit = tuple(dict.fromkeys(explicit_dirs))
     if explicit:
@@ -122,7 +121,7 @@ def resolve_watch_dirs(
         )
 
     resolved = str(Path(spec.origin).parent)
-    # ce-review #17: Reload-storm guard — warn when the auto-resolved
+    # Reload-storm guard: warn when the auto-resolved
     # dir lives under sys.prefix (installed package) or sys.exec_prefix
     # (stdlib). Operator still gets what they asked for; this is a
     # loud hint that they probably want --watch-dir instead.
@@ -155,7 +154,7 @@ class SwarmQFilter:
     is rejected but ``tasks.bak.py`` passes through — the latter is a
     legitimate Python file name (``PythonFilter`` accepts ``.py``), and
     filtering on infix substrings would reject every file under a
-    directory literally named ``bak``. ce-review #21 advisory.
+    directory literally named ``bak``.
     """
 
     _IGNORED_BASENAMES = frozenset({"4913"})  # Vim probe-file
@@ -205,7 +204,7 @@ class FileWatcher:
         self._debounce_ms = debounce_ms
         self._step_ms = step_ms
         self._stop_event = threading.Event()
-        # ce-review #19: public-observable completion signal so tests
+        # Public-observable completion signal so tests
         # (and operators) can wait for watcher exit without reaching
         # into the private thread handle.
         self._exit_event = threading.Event()
@@ -214,7 +213,7 @@ class FileWatcher:
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("FileWatcher already started")
-        # ce-review #7: assign self._thread only AFTER .start() returns
+        # Assign self._thread only AFTER .start() returns
         # so is_running() never reports True while the thread has not
         # actually been scheduled yet. If .start() raises (rare — OS
         # thread-limit), _thread stays None and the watcher is cleanly
@@ -236,7 +235,7 @@ class FileWatcher:
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=timeout)
-            # ce-review #6: surface the silent-abandonment case. daemon=True
+            # Surface the silent-abandonment case: daemon=True
             # guarantees the process can still exit, but the operator
             # deserves to know the watcher did not stop cleanly (inotify
             # stuck in kernel wait, Rust runtime poll > budget).
@@ -272,7 +271,7 @@ class FileWatcher:
         return self._exit_event.wait(timeout=timeout)
 
     def _run(self) -> None:
-        # ce-review #15: single method — try/finally sets _exit_event so
+        # The try/finally sets _exit_event so
         # callers observing is_running() / wait_until_stopped() see the
         # transition without racing against the thread handle.
         try:
@@ -282,7 +281,7 @@ class FileWatcher:
                 logger.error("watchfiles_import_failed")
                 return
 
-            # ce-review #4: re-validate watch dirs just before arming.
+            # Re-validate watch dirs just before arming.
             # Parse-time validation in argparse cannot catch NFS unmount /
             # bind-mount removal / tmpfs eviction that happens between
             # argument parsing and supervisor start. Fail loud with the
@@ -306,7 +305,7 @@ class FileWatcher:
                     debounce=self._debounce_ms,
                     step=self._step_ms,
                     rust_timeout=1000,
-                    # ce-review #2: default True lets KeyboardInterrupt
+                    # Default True lets KeyboardInterrupt
                     # (BaseException) escape our `except Exception` — thread
                     # dies silently. We install our own SIGINT handler at
                     # the supervisor level; let the Rust layer forward them
@@ -331,11 +330,11 @@ class FileWatcher:
                     except Exception:
                         logger.exception("reload_trigger_failed")
             except Exception:
-                # ce-review #11: logger.exception is the codebase convention
+                # logger.exception is the codebase convention
                 # for top-level exception boundaries (see worker.py).
                 logger.exception("watch_thread_crashed")
         finally:
-            # ce-review #19: set the public exit event so callers
+            # Set the public exit event so callers
             # observing is_running() / wait_until_stopped() see the
             # transition without racing against the thread handle.
             self._exit_event.set()

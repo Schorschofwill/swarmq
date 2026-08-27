@@ -1,4 +1,4 @@
-"""Pre-Start-Cancel-Gate (Phase 3b.3, Härtung R2 P1-10), Plan U7 — verbatim
+"""Pre-Start-Cancel-Gate (Phase 3b.3), Plan U7 — verbatim
 aus ``pipeline.py``. Läuft nach dem Schedfire-Gate, vor Semaphore,
 Rate-Limit, Lock und FIRE_AND_FORGET-Ack.
 
@@ -37,8 +37,8 @@ class CancelGate:
         try:
             is_cancelled = await deps.backend.is_cancelled(task_id, op_timeout=deps.config.backend_op_timeout)
         except BackendConnectionError:
-            # Observability is via the structured log event only (REV-P2-7
-            # scope-down): AMQP nack(requeue=True) redelivers the stored
+            # Observability is via the structured log event only:
+            # AMQP nack(requeue=True) redelivers the stored
             # message, so in-memory header mutations would be lost anyway.
             logger.error("cancel_check_backend_error", task_id=task_id)
             await deps.broker.redeliver(delivery)
@@ -47,7 +47,7 @@ class CancelGate:
 
         workflow_cancel = False
         if not is_cancelled:
-            # Härtung R2 P1-10: the per-task flag is clear, but the step
+            # The per-task flag is clear, but the step
             # may belong to a cancelled WORKFLOW. handle.cancel() only
             # sets the workflow flag; group/chord members are all
             # enqueued at apply() time, so without this check every
@@ -89,7 +89,7 @@ class CancelGate:
             result_ttl = deps.config.result_ttl
 
         try:
-            # Review R2: on the WORKFLOW-cancel path a redelivery of an
+            # On the WORKFLOW-cancel path a redelivery of an
             # already-completed step (success stored, ack lost) must not
             # overwrite the original result with a cancel marker — a
             # direct get_result(task_id) would then misreport a step
@@ -116,7 +116,7 @@ class CancelGate:
 
             # If this was a schedfire delivery we claimed in-flight, mark it
             # completed so a redelivery after in-flight-TTL expiry does not
-            # re-run the task (Unit 1 / H-2). User-initiated cancel is
+            # re-run the task (Unit 1). User-initiated cancel is
             # terminal — "this fire was processed."
             await deps.finalize_schedfire(delivery, True)
 

@@ -89,8 +89,8 @@ def setup_dishka(container: AsyncContainer) -> None:
     container fresh on re-import (spawn-safe). The worker reads it after
     importing the task module.
 
-    Calling it twice replaces the previous container (Härtung R2 P2:
-    logged at WARNING — two modules both calling setup_dishka is almost
+    Calling it twice replaces the previous container (logged at
+    WARNING — two modules both calling setup_dishka is almost
     always an accident, and the silent last-writer-wins made the losing
     module's providers vanish without a trace).
     """

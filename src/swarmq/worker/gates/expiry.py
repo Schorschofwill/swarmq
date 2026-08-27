@@ -71,7 +71,7 @@ class ExpiryGate:
         )
         # Store an error result so callers waiting on get_result() see
         # a clean TaskError("expired") instead of an indefinite timeout.
-        # Härtung R2 P2: result_ttl=0 means fire-and-forget — skip the
+        # result_ttl=0 means fire-and-forget — skip the
         # store entirely (mirrors the main-path semantics).
         ttl_ms = (task_info.result_ttl or deps.config.result_ttl) * 1000
         if ttl_ms > 0:
@@ -98,7 +98,7 @@ class ExpiryGate:
         # inline because the DLQ semantics of 'expired' differ from
         # 'error' (different signal, no retry-count bump).
         #
-        # ce-review REL-02: guard the DLQ publish + ack pair. Without
+        # Guard the DLQ publish + ack pair. Without
         # this, a broker hiccup between store_result (succeeded above)
         # and the publish call leaves the TaskError('expired') result in
         # Valkey while the original message cycles through redelivery,

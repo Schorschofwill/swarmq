@@ -34,8 +34,7 @@ _FORBIDDEN_CRON_CHARS = re.compile(r"[LW#]")
 # Task.run parameter names reserved by Client.schedule. A task that accepts
 # these as its own arguments would silently lose its payload because
 # schedule(delay=) / schedule(eta=) / schedule(unique_for=) intercepts them
-# before kwargs forwarding. See plan Review-Finding P1-3 for the migration
-# hint users get.
+# before kwargs forwarding.
 _RESERVED_RUN_PARAM_NAMES = frozenset({"delay", "eta", "unique_for", "unique_until"})
 
 UniqueUntil = Literal["start", "completion"]
@@ -212,13 +211,13 @@ class TaskInfo:
             compute_lock_ttl_ms(self.hard_timeout)
 
         # catchup=True is reserved for a future release; fail fast at
-        # construction (Review-Finding P2-3) rather than letting the user
+        # construction rather than letting the user
         # discover it on first fire (potentially days later for monthly
         # crons). Feld bleibt für Forward-Compat erhalten.
         # ValueError (not NotImplementedError) — this is a reserved-but-
         # unsupported API value, not an abstract method stub. Code that
         # catches NotImplementedError for abstract-method handling must
-        # not accidentally swallow it. (review-finding api-contract AC-03)
+        # not accidentally swallow it.
         if self.catchup:
             raise ValueError(
                 "catchup=True is reserved for a future release; "

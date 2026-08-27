@@ -20,7 +20,7 @@ logger = structlog.get_logger()
 
 def _validate_module_importable(module: str) -> ModuleSpec:
     """Pre-flight check: raise ConfigurationError if ``module`` cannot
-    be resolved (ce-review REL-07 / Unit 2).
+    be resolved.
 
     Runs in the PARENT before the supervisor starts, so a typo or
     a filesystem-level missing module fails once with a clear error
@@ -41,7 +41,7 @@ def _validate_module_importable(module: str) -> ModuleSpec:
     ``swarmq inspect --module ...`` nutzen um Import-Fehler vorab zu
     diagnostizieren.
 
-    ce-review SEC-FINDSPEC-01: note that resolving ``pkg.sub`` via
+    Note that resolving ``pkg.sub`` via
     find_spec imports and executes ``pkg/__init__.py`` in THIS
     process (the supervisor). For most operators that is harmless;
     for packages with side-effectful top-level code (thread spawn,
@@ -65,7 +65,7 @@ def _validate_module_importable(module: str) -> ModuleSpec:
             f"--module {module!r} resolves to no loadable spec — "
             "check spelling, PYTHONPATH, and __init__.py presence",
         )
-    # R5.3 ce-review #7: return the spec so run_multi_process_worker
+    # Return the spec so run_multi_process_worker
     # can hand it to resolve_watch_dirs instead of calling find_spec
     # a second time (which would re-execute pkg/__init__.py in the
     # edge case where it invalidates its own sys.modules entry).
@@ -75,7 +75,7 @@ def _validate_module_importable(module: str) -> ModuleSpec:
 class WorkerConfigCheckResult(TypedDict):
     """Return shape for :func:`check_worker_config`.
 
-    ce-review pass 2 #20: TypedDict so mypy narrows field accesses
+    TypedDict so mypy narrows field accesses
     instead of treating values as ``object``. Mirrors the ``--check``
     JSON payload keys but drops ``ok``/``error``/``error_type`` —
     those are CLI-level framing (success implies ok=True; raise on
@@ -101,7 +101,7 @@ def check_worker_config(
 
     Scope mirrors ``run_multi_process_worker``'s pre-supervisor checks
     so a successful ``check_worker_config`` result implies the
-    supervisor would get past pre-flight (R5.3 ce-review #10 / #23):
+    supervisor would get past pre-flight:
 
     - ``module`` is importable (``find_spec``-based).
     - When ``reload=True``: ``watchfiles`` is installed and watch-dirs
@@ -115,7 +115,7 @@ def check_worker_config(
 
     ``stdout`` is captured while importing the module to protect
     machine-readable callers (``--check``) against ``print()`` calls
-    inside ``pkg/__init__.py`` (R5.3 ce-review #23 / adv ADV-04).
+    inside ``pkg/__init__.py``.
 
     Returned dict has a fixed shape with every key always present —
     callers can rely on ``dict["watch_dirs"]`` being accessible
@@ -131,7 +131,7 @@ def check_worker_config(
 
     warnings: list[str] = []
 
-    # ce-review #23 / ADV-04: protect JSON-on-stdout callers against
+    # Protect JSON-on-stdout callers against
     # module-init print() contaminating the payload. Side-effects
     # captured here are discarded on success; on failure the captured
     # text is forwarded to stderr so an operator debugging a bad

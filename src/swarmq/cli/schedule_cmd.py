@@ -47,7 +47,7 @@ def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
 
     Columns include R3.5 dedup state (DEDUP + UNIQUE_UNTIL) so operators
     can tell client-originated deferred-dedup entries from plain CLI or
-    static-cron ones at a glance (ce-review P3 #23).
+    static-cron ones at a glance.
     """
     rows = [(
         "NAME", "CRON", "TASK", "QUEUE", "NEXT_FIRE",
@@ -129,7 +129,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PL
         cron = None
         fire_ts_ms = int(dt.timestamp() * 1000)
 
-    # R3.5 ce-review P3 #23: --unique-for claims the dedup flag before
+    # R3.5: --unique-for claims the dedup flag before
     # the ScheduleStore insert, matching Client._schedule_deferred
     # semantics. On duplicate, the insert is skipped and the existing
     # claim's owner is reported so operators can correlate.

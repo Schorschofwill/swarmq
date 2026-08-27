@@ -69,7 +69,7 @@ class Client(ClientScheduling, ClientResults, ClientWorkflows):
         self._signal_dispatcher = (
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )
-        # Lazy-init (Fork 2 / Review-Finding P2-6). ScheduleStore requires a
+        # Lazy-init: ScheduleStore requires a
         # connected backend to register its Lua scripts — but Client is
         # constructed before backend.connect(). We defer the construction to
         # the first schedule(delay=|eta=) call.

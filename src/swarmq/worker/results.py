@@ -166,9 +166,9 @@ class ResultTail:
             # the whole workflow failed synchronously and wake any
             # handle.get() waiter, so it raises within bounded time instead
             # of hanging, and no successor / chord body is enqueued.
-            # Since Härtung R2 (P2-2 follow-up) every AT_LEAST_ONCE error
+            # Every AT_LEAST_ONCE error
             # with an exception goes through _send_to_dlq (which fail-marks
-            # there); this inline branch now covers cancels and the rare
+            # there); this inline branch covers cancels and the rare
             # error-without-exception shapes.
             reason = "task was cancelled" if execution.is_cancelled else (
                 execution.error_message or "workflow step failed"

@@ -1,4 +1,4 @@
-"""Schedfire-Dedup-Gate (Phase 3c Unit 8 / H-2 / R-002), Plan U7 — verbatim
+"""Schedfire-Dedup-Gate (Phase 3c Unit 8), Plan U7 — verbatim
 aus ``pipeline.py``. Läuft als erstes Gate, vor Cancel-Check, Semaphore,
 Rate-Limit und Lock.
 
@@ -57,7 +57,7 @@ class SchedfireGate:
             structlog.contextvars.clear_contextvars()
             return Terminal.never_release()
 
-        # Härtung R2 P1-6: couple the in-flight TTL to the task's maximum
+        # Couple the in-flight TTL to the task's maximum
         # legal runtime (same pattern as compute_lock_ttl_ms) — a fixed TTL
         # could expire DURING a long run and let a stale-leader duplicate
         # win the freed SETNX. Tasks without hard_timeout keep the

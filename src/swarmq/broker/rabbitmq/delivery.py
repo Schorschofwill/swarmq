@@ -54,7 +54,7 @@ class RabbitMQDelivery(RabbitMQConnection):
         try:
             await self._declare_queue_triplet(pub, queue_name, main_args)
         except aio_pika.exceptions.AMQPChannelError as exc:
-            # ce-review REL-05: a pre-existing queue with mismatched
+            # A pre-existing queue with mismatched
             # arguments raises aio_pika ChannelClosed (PRECONDITION_FAILED).
             # Without this wrap, the CLI surfaces a raw aio_pika traceback
             # instead of a clean 'queue arg conflict' message.
@@ -71,7 +71,7 @@ class RabbitMQDelivery(RabbitMQConnection):
         queue_name: str,
         main_args: dict[str, Any],
     ) -> None:
-        # Quorum-queue safety net (ce-review / U2.1 skip): without
+        # Quorum-queue safety net (U2.1 skip): without
         # x-delivery-limit a deterministically-crashing task
         # (SIGSEGV/OOM) is redelivered forever by the broker, never
         # reaching max_retries. 20 covers ~3-4 task-level retries per
@@ -188,7 +188,7 @@ class RabbitMQDelivery(RabbitMQConnection):
                     self._publish_channel = None
                 # Skip the backoff sleep on the final attempt — we are
                 # about to raise anyway. Saves up to 800ms latency at
-                # exhaustion (ce-review R-4).
+                # exhaustion.
                 if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
                     await asyncio.sleep(0.05 * (2**attempt))
         raise BrokerConnectionError(
@@ -208,8 +208,8 @@ class RabbitMQDelivery(RabbitMQConnection):
         self._consume_prefetch = concurrency
         chan = await self._ensure_consume_channel()
         # Apply QoS on the initial consume() — _ensure_consume_channel
-        # only re-applies after a recreate (ce-review R-2/C-02: avoid
-        # an AMQP RPC per every consume-channel access).
+        # only re-applies after a recreate (avoids an AMQP RPC per
+        # consume-channel access).
         await chan.set_qos(prefetch_count=concurrency)
         amqp_queue = await chan.get_queue(queue)
 
@@ -223,7 +223,7 @@ class RabbitMQDelivery(RabbitMQConnection):
     async def cancel_consume(self) -> None:
         """Cancel all active consumers to stop receiving new messages.
 
-        Per-consumer error isolation (2026-06-02 audit): with multiple
+        Per-consumer error isolation: with multiple
         queues/priority-bands a single ``queue.cancel`` that raises (e.g.
         channel transition, AMQP error) must not abort cancellation of the
         remaining consumers, nor leave ``_consumer_tags`` populated. A leak

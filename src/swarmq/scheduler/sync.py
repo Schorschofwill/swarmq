@@ -45,8 +45,7 @@ class SchedulerCronSync:
         6. Existing ``source="static"`` entry with a **different**
            cron-string → ``update_static_schedule`` (Fork 1). The
            existing ``disabled`` flag is preserved so an operator's
-           ``schedule remove`` is not silently reversed
-           (correctness C-01).
+           ``schedule remove`` is not silently reversed.
         """
         for task_class in Task._registered_tasks:
             task_info = getattr(task_class, "task_info", None)
@@ -85,7 +84,7 @@ class SchedulerCronSync:
             if existing_raw is None:
                 # New entry — per-schedule error isolation so one
                 # BackendConnectionError does not abort the full sync
-                # (Unit 5 / M-4).
+                # (Unit 5).
                 try:
                     await self._store.add_schedule(definition)
                 except BackendConnectionError as exc:
@@ -101,7 +100,7 @@ class SchedulerCronSync:
                     existing_raw, type=ScheduleDefinition
                 )
             except msgspec.DecodeError as exc:
-                # Unit 5 / M-3: do NOT silently overwrite on decode
+                # Unit 5: do NOT silently overwrite on decode
                 # error. We cannot tell if the malformed bytes were
                 # source="cli" (CD11-protected) or source="static"
                 # (overwriteable). Preserve operator intent by
@@ -120,7 +119,7 @@ class SchedulerCronSync:
 
             if existing.source == "cli":
                 # CD11 protection: CLI ownership beats code. Log so
-                # the silent shadow is discoverable (reliability R-006).
+                # the silent shadow is discoverable.
                 logger.warning(
                     "scheduler_static_cron_shadowed_by_cli",
                     schedule_name=schedule_name,
@@ -133,7 +132,7 @@ class SchedulerCronSync:
             # Static cron changed — propagate (Fork 1).
             # Preserve the disabled flag from the existing entry so
             # an operator's `schedule remove` intent is not silently
-            # reversed by the next redeploy (correctness C-01).
+            # reversed by the next redeploy.
             propagated = msgspec.structs.replace(
                 definition, disabled=existing.disabled
             )
@@ -147,7 +146,7 @@ class SchedulerCronSync:
             try:
                 await self._store.update_static_schedule(propagated)
             except BackendConnectionError as exc:
-                # Per-schedule error isolation (Unit 5 / M-4).
+                # Per-schedule error isolation (Unit 5).
                 logger.warning(
                     "scheduler_sync_update_failed",
                     schedule_name=schedule_name,

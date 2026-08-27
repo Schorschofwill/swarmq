@@ -40,7 +40,7 @@ def worker_subprocess_entry(
     import logging as _stdlib_logging
     import signal as _signal
 
-    # ce-review M-3 / Unit 7: import a public symbol so a rename in
+    # Import a public symbol so a rename in
     # cli.py is detectable via tests rather than a silent subprocess
     # crash at runtime. Spawn re-imports modules fresh — the import
     # executes in the child, not the parent. The win is symbol-
@@ -57,7 +57,7 @@ def worker_subprocess_entry(
     # Namespace callers expect list-typed queues so we re-wrap explicitly.
     kwargs = dataclasses.asdict(cfg)
     kwargs["queues"] = list(kwargs["queues"])
-    # R5.3 ce-review #18: reload/watch_dirs are supervisor-only state.
+    # reload/watch_dirs are supervisor-only state.
     # They ride along on WorkerConfig for pipeline-uniformity (R4.6-H
     # Unit 1), but the worker subprocess must not construct a watcher
     # — that would spawn N reload pipelines, one per worker, each

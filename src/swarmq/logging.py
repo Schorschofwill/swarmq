@@ -20,7 +20,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     stringifies record.msg. structlog's ProcessorFormatter needs
     record.msg to remain a dict (set by wrap_for_formatter).
 
-    Härtung R2 P2: drops are counted and surfaced. The stdlib path
+    Drops are counted and surfaced. The stdlib path
     (queue.Full → handleError) silently discarded records under burst —
     a saturated log pipeline looked identical to a quiet one. ``dropped``
     is the cumulative counter; a rate-limited stderr notice (at most one

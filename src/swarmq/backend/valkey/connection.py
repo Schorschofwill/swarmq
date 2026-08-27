@@ -32,7 +32,7 @@ _TRANSIENT_ERRORS: list[type[Exception]] = [
     OSError,
 ]
 
-# Härtung R2 P1-2: socket-level bounds for the owned client. Without
+# Socket-level bounds for the owned client. Without
 # socket_timeout, an in-flight recv on a half-open connection (peer
 # silently gone, no RST) blocks forever — health_check_interval only
 # PINGs before a command after idle; it cannot interrupt a running
@@ -129,7 +129,7 @@ class ValkeyConnection:
                 retry=Retry(ExponentialBackoff(cap=2.0, base=0.05), retries=5),
                 retry_on_error=_TRANSIENT_ERRORS,
                 health_check_interval=30,
-                # Härtung R2 P1-2: bound every op at the socket so a
+                # Bound every op at the socket so a
                 # half-open connection cannot wedge a read forever.
                 socket_timeout=_SOCKET_TIMEOUT_S,
                 socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_S,
@@ -166,7 +166,7 @@ class ValkeyConnection:
         """Führt eine Valkey-Operation aus: optional mit ``op_timeout``
         (Sekunden) begrenzt, Treiber- und Timeout-Fehler als
         ``BackendConnectionError``. Ersetzt die zwölf gleichartigen Blöcke des
-        früheren ``valkey.py`` (REV-P1-3: ein langsames Backend darf den
+        früheren ``valkey.py`` (ein langsames Backend darf den
         Worker-``finally``-Block nicht blockieren). ``coro`` ist ``Any``, weil
         valkey-py seine Rückgaben als ``Awaitable[T] | T`` tippt."""
         try:

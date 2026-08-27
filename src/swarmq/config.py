@@ -20,9 +20,9 @@ INJECTED_URL = "<injected>"
 def _parse_port(raw: str, env_var: str) -> int:
     """Parse an env-var port value with range validation.
 
-    Mirrors the CLI-side ``_positive_int`` guard (ce-review kieran
-    RR-02). A bad port surfaces here as ``ConfigurationError`` rather
-    than a confusing ``OSError`` at bind time.
+    Mirrors the CLI-side ``_positive_int`` guard. A bad port surfaces
+    here as ``ConfigurationError`` rather than a confusing ``OSError``
+    at bind time.
     """
     try:
         port = int(raw)
@@ -40,9 +40,9 @@ def _parse_port(raw: str, env_var: str) -> int:
 def _parse_int(raw: str, env_var: str) -> int:
     """Parse an integer env var as ``ConfigurationError`` on garbage.
 
-    Härtung R2 P2: ``SWARMQ_CONCURRENCY=abc`` previously surfaced as a
-    raw ``ValueError`` traceback — inconsistent with the RR-02 port
-    hardening and opaque for operators.
+    ``SWARMQ_CONCURRENCY=abc`` previously surfaced as a raw
+    ``ValueError`` traceback — inconsistent with the ``_parse_port``
+    guard and opaque for operators.
     """
     try:
         return int(raw)
@@ -78,8 +78,7 @@ class SwarmQConfig:
     # Upper bound for individual Valkey operations used by the cancel
     # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
     # Valkey would otherwise wedge the cancel monitor at TCP-default
-    # latency. 5s is conservative for a local Valkey deployment
-    # (REV-P1-3).
+    # latency. 5s is conservative for a local Valkey deployment.
     backend_op_timeout: float = 5.0
     scheduler_poll_interval: float = 1.0
     scheduler_heartbeat_interval: float = 10.0
@@ -90,7 +89,7 @@ class SwarmQConfig:
     # In-flight marker TTL (seconds). Pre-run SETNX with this TTL
     # blocks duplicate schedfire deliveries WHILE the task runs; the
     # long-TTL completed marker takes over once the task finishes
-    # (Unit 1 / H-2). 300s default covers typical task runtimes plus
+    # (Unit 1). 300s default covers typical task runtimes plus
     # a large safety margin before the marker expires and a
     # redelivery of a still-in-flight message could double-run.
     scheduler_inflight_ttl: float = 300.0
@@ -107,7 +106,7 @@ class SwarmQConfig:
     # proportionally more in-flight slots under saturation. Opt-in so
     # existing single-queue deployments stay on their one-queue topology.
     priorities: bool = False
-    # R5.1/R5.2 auto-wire (ce-review REL-06). When set, Worker.start()
+    # R5.1/R5.2 auto-wire. When set, Worker.start()
     # constructs a :class:`Metrics`, registers signal collectors, and
     # serves /metrics on the given port. Same for health on its port.
     # None on both disables the HTTP surfaces — the operator can still
@@ -116,12 +115,12 @@ class SwarmQConfig:
     metrics_host: str = "127.0.0.1"
     health_port: int | None = None
     health_host: str = "127.0.0.1"
-    # 2026-06-02 audit P1-3: cadence of the worker metrics sampler that
+    # Cadence of the worker metrics sampler that
     # populates queue_depth / dlq_messages / worker_uptime_seconds and
     # emits WORKER_HEARTBEAT. Passive AMQP declares are cheap; 10s is a
     # sensible default for backlog/DLQ alerting without polling pressure.
     metrics_sample_interval: float = 10.0
-    # Härtung R2 P2: upper bound for an incoming task-message body. The
+    # Upper bound for an incoming task-message body. The
     # worker rejects (DLQ-route, no decode) anything larger — msgspec
     # guards recursion depth but not size, so a rogue producer could
     # otherwise force arbitrarily large in-memory decodes. 16 MiB is far
@@ -209,7 +208,7 @@ class SwarmQConfig:
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
         # retry horizon and prevent retried schedule-fires from bypassing
-        # consumer-side SETNX dedup (review-finding P1-1).
+        # consumer-side SETNX dedup.
         if self.scheduler_dedup_ttl is None:
             self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
 
@@ -318,7 +317,7 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
-        # R4.5 Burst-Mode env-var overrides (ce-review CLR-01).
+        # R4.5 Burst-Mode env-var overrides.
         env_burst = os.environ.get("SWARMQ_BURST_MODE", "")
         if env_burst:
             self.burst_mode = env_burst.lower() in ("true", "1", "yes")
@@ -334,13 +333,13 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
-        # R4.3 Task Priorities env-var override (ce-review CLR-04).
+        # R4.3 Task Priorities env-var override.
         env_priorities = os.environ.get("SWARMQ_PRIORITIES", "")
         if env_priorities:
             self.priorities = env_priorities.lower() in ("true", "1", "yes")
 
-        # R5.1/R5.2 env-var overrides (ce-review REL-06).
-        # ce-review kieran RR-02: validate port ranges at config-time
+        # R5.1/R5.2 env-var overrides.
+        # Validate port ranges at config-time
         # so a bad env var produces a ConfigurationError instead of a
         # confusing OSError at bind time.
         env_metrics_port = os.environ.get("SWARMQ_METRICS_PORT", "")

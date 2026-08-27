@@ -42,7 +42,7 @@ class _DependencyState(TypedDict):
 
 
 class ReadinessSnapshot(TypedDict):
-    """Shape of :meth:`HealthChecker.check_all` (ce-review KP-003).
+    """Shape of :meth:`HealthChecker.check_all`.
 
     Documented for callers that compose /ready checks (Kubernetes
     probes, test fixtures, downstream health aggregators).
@@ -78,8 +78,7 @@ class HealthChecker:
     def _sanitise_error(exc: BaseException) -> str:
         """Return a minimally-informative error tag for the /ready body.
 
-        ce-review SEC-001 / REL-07: valkey-py and aio_pika exception
-        messages embed host:port (and in some code paths the full URL
+        valkey-py and aio_pika exception messages embed host:port (and in some code paths the full URL
         with credentials). /ready is typically behind a reverse proxy
         but may be externally reachable in some deployments, so we
         return only the exception class + a short static reason and
@@ -95,7 +94,7 @@ class HealthChecker:
         if len(msg) > 120 or "://" in msg or "@" in msg:
             return cls
         # Strip host:port fragments. Two patterns:
-        #  (a) '[::1]:6379' — IPv6 bracket notation (ce-review SEC-F1)
+        #  (a) '[::1]:6379' — IPv6 bracket notation
         #  (b) 'host.example:6379' — v4 / DNS
         msg = re.sub(r"\[[0-9a-fA-F:]+\]:\d+", "<redacted>", msg)
         msg = re.sub(r"[\w.-]+:\d+", "<redacted>", msg)
@@ -140,13 +139,13 @@ class HealthServer:
     health on the same port as the worker proxy, metrics on the
     metrics-scraping port).
 
-    **Bind-host default: ``127.0.0.1``** (ce-review SEC-004).
+    **Bind-host default: ``127.0.0.1``.**
     Kubernetes liveness / readiness probes run in the same network
     namespace as the pod by default, so loopback is sufficient. Bind
     to ``0.0.0.0`` only when the probe originates outside the pod /
     container.
 
-    **No built-in auth** (Härtung R2 P2, mirrors the /metrics note):
+    **No built-in auth** (mirrors the /metrics note):
     ``/ready`` reveals which dependency (broker/backend) is down plus a
     sanitised error tag — an infrastructure fingerprint. When binding
     to ``0.0.0.0``, front the endpoint with a reverse proxy / firewall
