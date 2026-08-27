@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
-import inspect
 import os
 import signal
 import sys
@@ -29,7 +28,6 @@ from swarmq.cancellation import (
     CANCEL_REASON_CANCEL,
     CANCEL_REASON_TIMEOUT,
     CancelReason,
-    build_cancel_result_dict,
     build_error_result_dict,
     build_result_dict,
 )
@@ -41,29 +39,18 @@ from swarmq.dishka import (
     request_container,
 )
 from swarmq.headers import (
-    HEADER_ENQUEUED_AT,
     HEADER_UNIQUE_HASH,
     HEADER_UNIQUE_UNTIL,
     HEADER_WORKFLOW_ID,
     HEADER_WORKFLOW_STEP,
 )
-from swarmq.limits import RateLimiter, parse_rate_limit
-from swarmq.locking import LockManager, compute_lock_ttl_ms
+from swarmq.limits import RateLimiter
+from swarmq.locking import LockManager
 
 # Lock-conflict policy. Module-level so they sit alongside other constants
 # and can be referenced from tests without a class qualifier. Mirrors the
 # locking.py module-level _LOCK_TTL_BUFFER_SECONDS pattern.
 #
-# DLQ_CAP: when conflict_count reaches this value (inclusive), the message
-# routes to DLQ instead of being requeued. Operator inspects the
-# x-swarmq-lock-name DLQ header and runs `valkey-cli DEL sq:lock:<name>`
-# to recover from a wedged holder.
-LOCK_CONFLICT_DLQ_CAP = 10
-# Backoff cap for lock-conflict requeue: 100 ms * 2 ** (count-1), capped at
-# 60 s so an exponential ramp doesn't run away. The cap is reached around
-# the 9th conflict (100ms * 2**8 ≈ 25.6s, then 51s, then DLQ at 10).
-LOCK_CONFLICT_BACKOFF_BASE_MS = 100
-LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
 
 # Type alias for lock-tracking entries: (lock_name, owner_token, max_concurrency).
 # Used by the per-handler acquired_locks list and the worker-wide
@@ -90,7 +77,18 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_json, decode_result, encode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
-from swarmq.worker.outcome import DeliveryOutcome, Redelivered, Terminal
+from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates.cancel import CancelGate
+from swarmq.worker.gates.expiry import ExpiryGate
+from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
+    LOCK_CONFLICT_BACKOFF_BASE_MS,
+    LOCK_CONFLICT_BACKOFF_CAP_MS,
+    LOCK_CONFLICT_DLQ_CAP,
+    LockGate,
+)
+from swarmq.worker.gates.rate_limit import RateLimitGate
+from swarmq.worker.gates.schedfire import SchedfireGate
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 from swarmq.workflow_orchestration import (
     ChordManager,
     WorkflowAdvancer,
@@ -179,6 +177,27 @@ class Worker:
         # _release_acquired_locks pops the entry; _execute_shutdown drains
         # anything still here.
         self._active_handler_locks: dict[uuid.UUID, list[_LockEntry]] = {}
+        # U7: die Pre-Execute-Stufen als Gates (KTD5/KTD6). Rate-Limiter und
+        # Lock-Manager entstehen erst in start(), daher Getter.
+        gate_deps = GateDeps(
+            broker=self._broker,
+            backend=self._backend,
+            config=self._config,
+            signals=self._signal_dispatcher,
+            registry=self._registry,
+            rate_limiter=lambda: self._rate_limiter,
+            lock_manager=lambda: self._lock_manager,
+            finalize_schedfire=lambda message, terminal: self._finalize_schedfire(message, terminal=terminal),
+            maybe_release_unique=self._maybe_release_unique,
+            extract_valid_workflow_id=self._extract_valid_workflow_id,
+            claim_schedfire=lambda message, key: self._schedfire_inflight_claims.__setitem__(id(message), key),
+            register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
+        )
+        self._schedfire_gate = SchedfireGate(gate_deps)
+        self._cancel_gate = CancelGate(gate_deps)
+        self._expiry_gate = ExpiryGate(gate_deps)
+        self._rate_limit_gate = RateLimitGate(gate_deps)
+        self._lock_gate = LockGate(gate_deps)
         # Phase 3b.3: detached lock-release tasks. The shield pattern
         # around _release_acquired_locks protects against run_task
         # cancellation (inner-cancel). Against graceful-shutdown
@@ -214,531 +233,6 @@ class Worker:
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
         return self._middleware_chain_factory()
-
-    async def _check_max_age_expired(
-        self,
-        message: aio_pika.abc.AbstractIncomingMessage,
-        task_info: TaskInfo,
-        queue: str,
-        task_id: str,
-        task_name: str,
-    ) -> bool:
-        """R4.4 — route expired messages to the DLQ with TASK_EXPIRED.
-
-        Returns True when the message was expired and handled; caller
-        exits the main pipeline. Returns False on the happy path.
-
-        ``max_age=None`` disables the check entirely. A missing
-        ``x-swarmq-enqueued-at`` header is treated as 'not expired'
-        (defensive — pre-R4.4 producers + external producers).
-        """
-        if task_info.max_age is None:
-            return False
-        headers = message.headers or {}
-        enqueued_at = headers.get(HEADER_ENQUEUED_AT)
-        if enqueued_at is None:
-            return False
-        try:
-            enqueued_ts = int(enqueued_at)
-        except (TypeError, ValueError):
-            # Malformed header — treat as non-expiring rather than DLQ
-            # on a header-shape bug. An expired task with a corrupt
-            # header still gets MAX_RETRIES redeliveries + x-delivery-
-            # limit as the fallback safety net.
-            return False
-        now = int(time.time())
-        age = now - enqueued_ts
-        if age < task_info.max_age:
-            return False
-
-        logger.warning(
-            "task_expired",
-            task_id=task_id,
-            task_name=task_name,
-            queue=queue,
-            age_s=age,
-            max_age_s=task_info.max_age,
-        )
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_EXPIRED,
-            task_id=task_id,
-            task_name=task_name,
-            queue=queue,
-            age_s=age,
-            max_age_s=task_info.max_age,
-        )
-        # Store an error result so callers waiting on get_result() see
-        # a clean TaskError("expired") instead of an indefinite timeout.
-        # Härtung R2 P2: result_ttl=0 means fire-and-forget — skip the
-        # store entirely (mirrors the main-path semantics). Previously
-        # this produced `SET ... PX 0`, which Valkey rejects with
-        # 'invalid expire time', losing the error result as a spurious
-        # backend failure.
-        ttl_ms = (task_info.result_ttl or self._config.result_ttl) * 1000
-        if ttl_ms > 0:
-            try:
-                await self._backend.store_result(
-                    task_id,
-                    build_result_dict(
-                        task_id=task_id,
-                        queue=queue,
-                        task_name=task_name,
-                        is_error=True,
-                        is_cancelled=False,
-                        error_message=(
-                            f"task expired: age {age}s exceeds "
-                            f"max_age {task_info.max_age}s"
-                        ),
-                    ),
-                    ttl_ms=ttl_ms,
-                    op_timeout=self._config.backend_op_timeout,
-                )
-            except BackendConnectionError:
-                # Best-effort: if the backend is down, the message still
-                # routes to the DLQ for operator inspection.
-                logger.warning("task_expired_result_store_failed")
-
-        # Route to DLQ + ack. Same pattern as _send_to_dlq but inline
-        # because the DLQ semantics of 'expired' differ from 'error'
-        # (different signal, no retry-count bump).
-        #
-        # ce-review REL-02: guard the DLQ publish + ack pair. Without
-        # this, a broker hiccup between store_result (succeeded above)
-        # and the publish_to_dead_letter_queue call leaves the
-        # TaskError('expired') result in Valkey while the original
-        # message cycles through redelivery, generating duplicate
-        # TASK_EXPIRED signals. nack(requeue=True) preserves the
-        # message so a subsequent delivery retries the terminal path.
-        try:
-            await self._broker.publish_to_dead_letter_queue(
-                queue, message.body, headers=dict(message.headers or {}),
-            )
-            await self._broker.ack(message)
-        except BrokerConnectionError:
-            logger.warning("task_expired_dlq_publish_failed")
-            try:
-                await self._broker.nack(message, requeue=True)
-            except BrokerConnectionError:
-                # Double-failure — let the message TTL / broker
-                # redeliver-limit be the safety net.
-                logger.error("task_expired_nack_also_failed")
-        return True
-
-    async def _try_apply_rate_limit(
-        self,
-        message: aio_pika.abc.AbstractIncomingMessage,
-        task_info: TaskInfo,
-        queue: str,
-        task_id: str,
-        task_name: str,
-    ) -> bool:
-        """Decide whether the message must be requeued for rate-limit reasons.
-
-        Returns ``True`` when the message was rate-limited and handled
-        (republished into the delay queue and acknowledged), so the
-        caller must stop processing it. Returns ``False`` when the
-        message should continue through the normal pipeline (no limit
-        configured, limiter not initialised, or the call was allowed).
-
-        The whole sequence — Valkey check, signal/log, broker republish,
-        ack — runs inside a single ``try`` so that a Valkey or broker
-        failure cannot leave the message in a half-processed state.
-        Mirrors ``_evaluate_retry``'s try/except contract around
-        ``publish_to_delay_queue``.
-        """
-        if task_info.rate_limit is None or self._rate_limiter is None:
-            return False
-
-        config = parse_rate_limit(task_info.rate_limit)
-        try:
-            allowed, remaining, retry_after_ms = await self._rate_limiter.check(
-                task_name, config
-            )
-        except Exception as exc:
-            # The limiter is the only side-effect-free decision-point we
-            # have. If Valkey is unreachable we cannot decide safely;
-            # nack(requeue=True) so the broker hands the message to the
-            # next worker that may have a healthier client. Important:
-            # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
-            logger.error(
-                "rate_limit_check_failed",
-                task_id=task_id,
-                task_name=task_name,
-                error=str(exc),
-            )
-            await self._broker.nack(message, requeue=True)
-            return True
-
-        if allowed:
-            return False
-
-        # Rate-limited. Track how often this exact message has bounced
-        # so operators (and TASK_RATE_LIMITED handlers) can see when a
-        # task has been stuck in the limiter loop. We don't auto-DLQ
-        # here — that decision belongs to the operator and is documented
-        # as a Non-Goal in plan 005. The header is the visible knob.
-        original_headers = dict(message.headers) if message.headers else {}
-        rl_count = int(original_headers.get("x-swarmq-rate-limit-count", 0)) + 1
-        original_headers["x-swarmq-rate-limit-count"] = rl_count
-
-        logger.info(
-            "task_rate_limited",
-            task_id=task_id,
-            task_name=task_name,
-            retry_after_ms=retry_after_ms,
-            remaining=remaining,
-            rate_limit_count=rl_count,
-        )
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_RATE_LIMITED,
-            task_id=task_id,
-            task_name=task_name,
-            retry_after_ms=retry_after_ms,
-            remaining=remaining,
-            rate_limit_count=rl_count,
-        )
-
-        try:
-            await self._broker.publish_to_delay_queue(
-                queue,
-                message.body,
-                delay_ms=retry_after_ms,
-                headers=original_headers,
-            )
-            await self._broker.ack(message)
-        except Exception as exc:
-            # Broker failure between publish and ack would create a
-            # duplicate (republished + redelivered original). nack with
-            # requeue=True keeps the original in flight for retry; the
-            # delay-queue copy may still arrive but the rate-limit check
-            # on the next consume cycle will naturally serialize them.
-            logger.error(
-                "rate_limit_requeue_failed",
-                task_id=task_id,
-                task_name=task_name,
-                error=str(exc),
-            )
-            await self._broker.nack(message, requeue=True)
-
-        return True
-
-    @staticmethod
-    def _render_lock_name(
-        lock_template: str,
-        task_class: type,
-        args: list,
-        kwargs: dict,
-    ) -> str:
-        """Resolve format placeholders in ``lock_template`` against the
-        task's run-method signature so positional and keyword args can
-        both fill ``"user-{user_id}"``-style templates.
-
-        Raises ``ValueError`` (with a wrapped TypeError / KeyError as
-        cause) on render failure — caller routes the message to DLQ
-        with an explanatory header. Plain non-format strings short-
-        circuit before any inspect work, keeping the common case cheap.
-        """
-        if "{" not in lock_template:
-            return lock_template
-        try:
-            bound = inspect.signature(task_class.run).bind(
-                None, *args, **kwargs
-            ).arguments
-            # Drop the first parameter ('self') so {self} placeholders
-            # don't accidentally pull in the bound None.
-            bound.pop("self", None)
-            return lock_template.format_map(bound)
-        except (TypeError, KeyError) as exc:
-            raise ValueError(
-                f"failed to render lock name {lock_template!r}: {exc}"
-            ) from exc
-
-    async def _try_apply_lock(
-        self,
-        message: aio_pika.abc.AbstractIncomingMessage,
-        task_info: TaskInfo,
-        task_class: type,
-        queue: str,
-        task_id: str,
-        task_name: str,
-        args: list,
-        kwargs: dict,
-        handler_id: uuid.UUID,
-        acquired_locks: list[_LockEntry],
-    ) -> bool:
-        """Decide whether the message must be requeued for lock-conflict
-        reasons. Mirrors :meth:`_try_apply_rate_limit` shape — the four
-        mandatory rules from
-        ``docs/solutions/.../worker-pipeline-stage-ack-ordering-2026-04-16.md``:
-
-        1. Runs BEFORE the FIRE_AND_FORGET ack.
-        2. Whole decision-and-handoff sequence wrapped in try/except,
-           mirroring ``_evaluate_retry``.
-        3. Per-stage requeue counter on the message header
-           (``x-swarmq-lock-conflict-count``) plus diagnostic
-           ``x-swarmq-lock-name`` so operators can DEL the wedged key.
-        4. Single helper returning bool — True = handled, False = continue.
-
-        On successful acquire, the (lock_name, owner_token,
-        max_concurrency) tuple is appended to ``acquired_locks`` (the
-        per-handler list) AND mirrored into ``_active_handler_locks``
-        (the worker-wide registry used by graceful-shutdown cleanup).
-        Both writes happen inside an ``asyncio.shield`` so a
-        ``CancelledError`` between Lua-acquire and registration cannot
-        leave a held lock untracked.
-        """
-        if task_info.lock is None or self._lock_manager is None:
-            return False
-
-        # Render the lock name once. A render failure is a user
-        # configuration bug — route to DLQ with a clear header, do NOT
-        # requeue (it would just bounce until the cap and then DLQ
-        # anyway, but with a less informative diagnostic).
-        try:
-            lock_name = self._render_lock_name(
-                task_info.lock, task_class, args, kwargs
-            )
-        except ValueError as exc:
-            logger.error(
-                "lock_name_render_failed",
-                task_id=task_id,
-                task_name=task_name,
-                lock_template=task_info.lock,
-                error=str(exc),
-            )
-            original_headers = dict(message.headers) if message.headers else {}
-            original_headers["x-swarmq-lock-render-error"] = str(exc)
-            # Mirror the rate-limit/_evaluate_retry try/except contract:
-            # broker fault between publish and ack must NOT loop-bounce a
-            # message whose render error is permanent — the next delivery
-            # would render-fail again, hit the DLQ-publish failure again,
-            # and bounce forever (same shape as ADV-002 at the conflict cap).
-            # nack(requeue=False) routes the message via the broker-side
-            # x-dead-letter-exchange config (see RabbitMQBroker.declare_queue)
-            # to {queue}.XQ — the message is NOT lost, but the diagnostic
-            # x-swarmq-lock-render-error header that this code path tried
-            # to attach will be missing. Operator inspecting the DLQ sees
-            # only the original headers + RabbitMQ's x-death info.
-            try:
-                await self._broker.publish_to_dead_letter_queue(
-                    queue, message.body, headers=original_headers,
-                )
-                await self._broker.ack(message)
-                # Release AFTER successful ack (P1 #3 / ADV-001).
-                await self._maybe_release_unique(message, task_id, task_info)
-            except Exception as broker_exc:
-                logger.error(
-                    "lock_render_dlq_failed",
-                    task_id=task_id,
-                    task_name=task_name,
-                    lock_template=task_info.lock,
-                    error=str(broker_exc),
-                    note="message routed via broker DLX to "
-                         f"{queue}.XQ without diagnostic headers",
-                )
-                # Fallback nack(requeue=False) still terminal (DLX
-                # routes it); release after the nack to keep the
-                # ack-ordering discipline uniform with the happy path.
-                await self._broker.nack(message, requeue=False)
-                await self._maybe_release_unique(message, task_id, task_info)
-            return True
-
-        # Empty-rendered lock guard. TaskInfo rejects literal lock="" and
-        # whitespace-only at construction, but a format-string template
-        # like lock="{var}" with var="" renders to "" at runtime. Without
-        # this check, lock_key("") returns "sq:lock:" — the bare namespace
-        # prefix — which silently collides with every other empty-rendered
-        # lock in the system. Same DLX-via-nack pattern as the render-fail
-        # branch above.
-        if not lock_name.strip():
-            logger.error(
-                "lock_name_rendered_empty",
-                task_id=task_id,
-                task_name=task_name,
-                lock_template=task_info.lock,
-            )
-            original_headers = dict(message.headers) if message.headers else {}
-            original_headers["x-swarmq-lock-render-error"] = (
-                f"lock template {task_info.lock!r} rendered to empty string"
-            )
-            try:
-                await self._broker.publish_to_dead_letter_queue(
-                    queue, message.body, headers=original_headers,
-                )
-                await self._broker.ack(message)
-                await self._maybe_release_unique(message, task_id, task_info)
-            except Exception as broker_exc:
-                logger.error(
-                    "lock_empty_render_dlq_failed",
-                    task_id=task_id,
-                    task_name=task_name,
-                    error=str(broker_exc),
-                    note="message routed via broker DLX to "
-                         f"{queue}.XQ without diagnostic headers",
-                )
-                await self._broker.nack(message, requeue=False)
-                await self._maybe_release_unique(message, task_id, task_info)
-            return True
-
-        owner_token = uuid.uuid4().hex
-        ttl_ms = compute_lock_ttl_ms(task_info.hard_timeout)
-
-        # Acquire + register run inside asyncio.shield so a cancellation
-        # between successful Lua-acquire and the in-memory registration
-        # cannot leave the lock held with no Python record. The shield
-        # itself cannot block KeyboardInterrupt, but SIGTERM goes through
-        # the graceful-shutdown path which drains active tasks first.
-        try:
-            acquired = await asyncio.shield(
-                self._acquire_and_register(
-                    lock_name=lock_name,
-                    owner_token=owner_token,
-                    ttl_ms=ttl_ms,
-                    max_concurrency=task_info.max_concurrency,
-                    handler_id=handler_id,
-                    acquired_locks=acquired_locks,
-                )
-            )
-        except Exception as exc:
-            # Same shape as rate-limit: BackendConnectionError or any
-            # other failure means we cannot decide safely. nack(requeue)
-            # so the broker hands the message to the next worker. Runs
-            # BEFORE FIRE_AND_FORGET ack — no data loss.
-            logger.error(
-                "lock_acquire_failed",
-                task_id=task_id,
-                task_name=task_name,
-                lock_name=lock_name,
-                error=str(exc),
-            )
-            await self._broker.nack(message, requeue=True)
-            return True
-
-        if acquired:
-            return False
-
-        # Conflict: lock held by someone else (mutex) or semaphore full.
-        # Track how often this exact message has bounced so operators can
-        # see a wedged lock. Plan 005 set the precedent — visibility-first,
-        # auto-DLQ at the cap is the safety net.
-        original_headers = dict(message.headers) if message.headers else {}
-        prior_count = int(original_headers.get("x-swarmq-lock-conflict-count", 0))
-        new_count = prior_count + 1
-        original_headers["x-swarmq-lock-conflict-count"] = new_count
-        # Wedged-lock recovery: operator reads this header from the DLQ
-        # message and runs `valkey-cli DEL sq:lock:<lock_name>`.
-        original_headers["x-swarmq-lock-name"] = lock_name
-
-        logger.info(
-            "task_lock_conflict",
-            task_id=task_id,
-            task_name=task_name,
-            lock_name=lock_name,
-            lock_conflict_count=new_count,
-        )
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_LOCKED,
-            task_id=task_id,
-            task_name=task_name,
-            lock_name=lock_name,
-            lock_conflict_count=new_count,
-        )
-
-        # At the cap, route to DLQ instead of requeuing — operator must
-        # intervene (typically: DEL the wedged Valkey key, then republish
-        # the DLQ message). This caps the bounce window; without it a
-        # broken upstream could consume queue capacity indefinitely.
-        # Comparison uses >= so the cap is inclusive: cap=10 means the 10th
-        # conflict routes to DLQ (matches the brief's "cap 10 → DLQ"; the
-        # earlier > was off-by-one and let conflict 10 requeue).
-        if new_count >= LOCK_CONFLICT_DLQ_CAP:
-            try:
-                await self._broker.publish_to_dead_letter_queue(
-                    queue, message.body, headers=original_headers,
-                )
-                await self._broker.ack(message)
-                await self._maybe_release_unique(message, task_id, task_info)
-            except Exception as exc:
-                # DLQ-publish failure at the cap creates a hazard: nacking
-                # with requeue lets the message bounce back at count >= cap
-                # again, hit the same DLQ failure, and loop without backoff
-                # (the requeue branch below is unreachable past the cap).
-                # nack(requeue=False) routes the message via the broker-side
-                # x-dead-letter-exchange config (see RabbitMQBroker.declare_queue)
-                # to {queue}.XQ — the message is NOT lost, but the diagnostic
-                # headers (x-swarmq-lock-name, x-swarmq-lock-conflict-count)
-                # that this branch tried to attach will be missing. Operator
-                # sees only the original headers + RabbitMQ's x-death info.
-                logger.error(
-                    "lock_conflict_dlq_failed",
-                    task_id=task_id,
-                    task_name=task_name,
-                    lock_name=lock_name,
-                    lock_conflict_count=new_count,
-                    error=str(exc),
-                    note=f"message routed via broker DLX to {queue}.XQ "
-                         "without diagnostic headers; recover wedged lock "
-                         f"via valkey-cli DEL sq:lock:{lock_name}",
-                )
-                # Terminal DLX fallback — nack first, then release.
-                await self._broker.nack(message, requeue=False)
-                await self._maybe_release_unique(message, task_id, task_info)
-            return True
-
-        delay_ms = min(
-            LOCK_CONFLICT_BACKOFF_BASE_MS * (2 ** (new_count - 1)),
-            LOCK_CONFLICT_BACKOFF_CAP_MS,
-        )
-
-        try:
-            await self._broker.publish_to_delay_queue(
-                queue,
-                message.body,
-                delay_ms=delay_ms,
-                headers=original_headers,
-            )
-            await self._broker.ack(message)
-        except Exception as exc:
-            # Same try/except shape as _evaluate_retry / rate-limit:
-            # broker failure between publish and ack means the message
-            # might double-deliver. nack(requeue=True) keeps the original
-            # in flight; the next acquire will naturally serialize.
-            logger.error(
-                "lock_conflict_requeue_failed",
-                task_id=task_id,
-                task_name=task_name,
-                lock_name=lock_name,
-                error=str(exc),
-            )
-            await self._broker.nack(message, requeue=True)
-
-        return True
-
-    async def _acquire_and_register(
-        self,
-        *,
-        lock_name: str,
-        owner_token: str,
-        ttl_ms: int,
-        max_concurrency: int,
-        handler_id: uuid.UUID,
-        acquired_locks: list[_LockEntry],
-    ) -> bool:
-        """Atomic-ish acquire + dual-register helper for asyncio.shield.
-
-        Calls ``LockManager.acquire``; on success appends to both the
-        per-handler list and the worker-wide registry. The two writes
-        are sync (list.append + dict assignment) so they cannot raise
-        between them — the only failure mode is the acquire itself.
-        """
-        acquired = await self._lock_manager.acquire(
-            lock_name, owner_token, ttl_ms, max_concurrency
-        )
-        if acquired:
-            entry = (lock_name, owner_token, max_concurrency)
-            acquired_locks.append(entry)
-            self._active_handler_locks.setdefault(handler_id, []).append(entry)
-        return acquired
 
     async def _release_acquired_locks(
         self,
@@ -1283,115 +777,6 @@ class Worker:
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _pre_start_schedfire_dedup(
-        self, message, task_name: str | None = None,
-    ) -> bool:
-        """Two-marker schedfire dedup (Unit 1 / H-2 / reliability R-002).
-
-        ``task_name`` (when the caller already decoded the body) lets
-        the in-flight TTL grow to cover the task's ``hard_timeout``
-        (Härtung R2 P1-6) — see the claim block below.
-
-        Three-state check:
-
-        1. **Completed marker present** (``sq:sched:fired:<key>``) → a
-           previous delivery of this fire already finished. Ack + skip.
-        2. **Completed absent, in-flight SETNX succeeded**
-           (``sq:sched:inflight:<key>``) → we own the run now. Caller
-           proceeds to the full pipeline. The finally block in
-           ``_handle_message`` writes the completed marker on exit
-           regardless of success (idempotent).
-        3. **Completed absent, in-flight SETNX lost** → another worker
-           is currently running this fire. Ack + skip. If that worker
-           crashes before writing the completed marker, the in-flight
-           key expires on its short TTL (default 300s) and the next
-           redelivery can re-run. That closes the silent-drop hole the
-           one-marker design had (SETNX winner crash → key persists
-           for 3900s → at-most-once failure mode).
-
-        Backend errors → nack(requeue=True); we cannot safely classify
-        the state and want a healthy worker to retry later.
-        """
-        header_value = (message.headers or {}).get("x-swarmq-schedfire")
-        if not header_value:
-            return False
-
-        try:
-            already_completed = await self._backend.is_schedfire_completed(
-                header_value
-            )
-        except BackendConnectionError:
-            logger.error(
-                "schedfire_dedup_backend_error",
-                schedfire_key=header_value,
-                stage="completed_check",
-            )
-            await self._broker.nack(message, requeue=True)
-            structlog.contextvars.clear_contextvars()
-            return True
-
-        if already_completed:
-            logger.info(
-                "schedfire_completed_duplicate_acked",
-                schedfire_key=header_value,
-            )
-            await self._broker.ack(message)
-            structlog.contextvars.clear_contextvars()
-            return True
-
-        # Härtung R2 P1-6: the fixed inflight TTL was the ONLY split-
-        # brain guard for the publish-before-commit window. If it
-        # expired DURING a long run (hard_timeout > inflight_ttl is
-        # legal), a stale-leader duplicate won the freed SETNX and the
-        # same fire executed twice. Couple the TTL to the task's
-        # maximum legal runtime — same pattern as compute_lock_ttl_ms
-        # (P0-A fix 2026-06-02). Tasks without hard_timeout keep the
-        # configured TTL (documented residual: unbounded tasks need an
-        # explicit hard_timeout for airtight schedfire dedup).
-        inflight_ttl_s = self._config.scheduler_inflight_ttl
-        hard_timeout: int | None = None
-        if task_name is not None:
-            try:
-                hard_timeout = self._registry.get(
-                    task_name
-                ).task_info.hard_timeout
-            except TaskNotFoundError:
-                pass  # unknown task fails later in the pipeline anyway
-        if hard_timeout is not None:
-            inflight_ttl_s = max(inflight_ttl_s, hard_timeout + 30)
-        inflight_ttl_ms = int(inflight_ttl_s * 1000)
-        try:
-            claimed = await self._backend.set_schedfire_inflight(
-                header_value, inflight_ttl_ms
-            )
-        except BackendConnectionError:
-            logger.error(
-                "schedfire_dedup_backend_error",
-                schedfire_key=header_value,
-                stage="inflight_claim",
-            )
-            await self._broker.nack(message, requeue=True)
-            structlog.contextvars.clear_contextvars()
-            return True
-
-        if claimed:
-            # This worker owns the run. Stash the key in a Worker-local
-            # dict keyed by id(message) so the finally block in
-            # _handle_message can look it up and write the completed
-            # marker once the task finishes. (aio_pika's IncomingMessage
-            # rejects dynamic attribute assignment.)
-            self._schedfire_inflight_claims[id(message)] = header_value
-            return False
-
-        # Another worker is running it right now.
-        logger.info(
-            "schedfire_inflight_duplicate_acked",
-            schedfire_key=header_value,
-        )
-        await self._broker.ack(message)
-        structlog.contextvars.clear_contextvars()
-        return True
-
     async def _finalize_schedfire(self, message, *, terminal: bool) -> None:
         """Finalize the in-flight schedfire claim for this message.
 
@@ -1430,180 +815,6 @@ class Worker:
                 terminal=terminal,
                 error=str(exc),
             )
-
-    async def _pre_start_cancel_check(  # U7 (worker/gates/cancel.py)
-        self,
-        message,
-        task_id: str,
-        task_name: str,
-        queue: str,
-    ) -> bool:
-        """Check whether this message has been cancelled before execution.
-
-        Called at the earliest point in the pipeline — after deserialize,
-        before semaphore acquire, rate-limit, lock, and FAF-ack.  If the
-        cancel flag is set, stores an ``is_cancelled=True`` result
-        (AT_LEAST_ONCE) or skips storage (FAF with result_ttl=0),
-        dispatches TASK_CANCELLED, clears the flag, acks the message.
-
-        The helper is responsible for its own structlog cleanup when it
-        returns True: the main handler's finally is not reached on this
-        branch.
-
-        Returns:
-            True when the cancel was handled (caller must return
-            immediately). False when no cancel flag is set and normal
-            execution should proceed.
-        """
-        try:
-            is_cancelled = await self._backend.is_cancelled(
-                task_id, op_timeout=self._config.backend_op_timeout,
-            )
-        except BackendConnectionError:
-            # Observability is via the structured log event only (REV-P2-7
-            # scope-down). An x-swarmq-cancel-deferred-count header was
-            # originally planned, but AMQP nack(requeue=True) redelivers
-            # the stored message — in-memory header mutations are lost,
-            # as confirmed by the Phase 3c Fork-A2 decision for the
-            # sibling schedfire-dedup path. A per-message cap has no
-            # defensive value against a systemic Valkey outage (every
-            # message bounces the same way); operators rely on Valkey
-            # up/down alerts instead.
-            logger.error("cancel_check_backend_error", task_id=task_id)
-            await self._broker.nack(message, requeue=True)
-            structlog.contextvars.clear_contextvars()
-            return True
-
-        _workflow_cancel = False
-        if not is_cancelled:
-            # Härtung R2 P1-10: the per-task flag is clear, but the step
-            # may belong to a cancelled WORKFLOW. handle.cancel() only
-            # sets the workflow flag; group/chord members are all
-            # enqueued at apply() time, so without this check every
-            # already-enqueued member ran to completion after a cancel
-            # ("best effort" where the docstring promised a stop).
-            wf_id = self._extract_valid_workflow_id(message)
-            if wf_id is None:
-                return False
-            try:
-                wf_cancelled = await self._backend.is_workflow_cancelled(
-                    wf_id, op_timeout=self._config.backend_op_timeout,
-                )
-            except BackendConnectionError:
-                logger.error(
-                    "workflow_cancel_check_backend_error",
-                    task_id=task_id,
-                    workflow_id=wf_id,
-                )
-                await self._broker.nack(message, requeue=True)
-                structlog.contextvars.clear_contextvars()
-                return True
-            if not wf_cancelled:
-                return False
-            _workflow_cancel = True
-            logger.info(
-                "workflow_step_cancelled_pre_start",
-                task_id=task_id,
-                workflow_id=wf_id,
-            )
-            # Fall through to the shared cancelled-handling below:
-            # store an is_cancelled result for this step, finalize
-            # schedfire/unique bookkeeping, ack, dispatch
-            # TASK_CANCELLED. clear_cancel_flag(task_id) is an
-            # idempotent DEL on a key that does not exist — harmless.
-
-        # Cancel flag is set. Resolve DeliveryMode + result_ttl from
-        # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
-        # the client's get_result does not hang forever waiting for a
-        # result that will never arrive).
-        task_info: TaskInfo | None = None
-        try:
-            task_class = self._registry.get(task_name)
-            task_info = task_class.task_info
-            delivery = task_info.delivery
-            # result_ttl falls through: task → global → 86400.
-            result_ttl = task_info.result_ttl
-            if result_ttl is None:
-                result_ttl = 0 if delivery is DeliveryMode.FIRE_AND_FORGET else self._config.result_ttl
-        except TaskNotFoundError:
-            delivery = DeliveryMode.AT_LEAST_ONCE
-            result_ttl = self._config.result_ttl
-
-        try:
-            # Review R2: on the WORKFLOW-cancel path a redelivery of an
-            # already-completed step (success stored, ack lost) must not
-            # overwrite the original result with a cancel marker — a
-            # direct get_result(task_id) would then misreport a step
-            # that genuinely ran. The per-task cancel path keeps its
-            # unconditional write (the flag only exists pre-/mid-run).
-            store_cancel_result = result_ttl > 0
-            if store_cancel_result and _workflow_cancel:
-                existing = await self._backend.get_result(task_id)
-                store_cancel_result = existing is None
-            if store_cancel_result:
-                result_data = build_cancel_result_dict(
-                    task_id=task_id, queue=queue, task_name=task_name,
-                )
-                result_bytes = encode_result(result_data)
-                await self._backend.store_result(
-                    task_id, result_bytes, result_ttl * 1000,
-                    op_timeout=self._config.backend_op_timeout,
-                )
-                try:
-                    await self._backend.publish_notification(task_id)
-                except Exception as exc:
-                    logger.warning(
-                        "publish_notification_failed",
-                        task_id=task_id,
-                        error=str(exc),
-                    )
-
-            # Clear the flag (log+swallow at backend boundary — Unit 3).
-            await self._backend.clear_cancel_flag(
-                task_id, op_timeout=self._config.backend_op_timeout,
-            )
-
-            # If this was a schedfire delivery we claimed in-flight,
-            # mark it completed so a redelivery after in-flight-TTL
-            # expiry does not re-run the task (Unit 1 / H-2). User-
-            # initiated cancel is terminal — "this fire was processed."
-            await self._finalize_schedfire(message, terminal=True)
-
-            # R3.5 Unit 11: pre-start cancel is a terminal path — the
-            # task never ran; release the dedup flag so a future
-            # legitimate schedule() can enqueue again. task_info is
-            # None when task is unregistered (fallback to completion
-            # mode inside _maybe_release_unique).
-            await self._maybe_release_unique(message, task_id, task_info)
-
-            # Ack the message.
-            await self._broker.ack(message)
-
-        except BackendConnectionError as exc:
-            # Result-write failure: nack(requeue=True) so a redelivery
-            # re-runs this branch.  Flag stays in Valkey (that's what
-            # triggers the re-cancel on redelivery).
-            logger.error(
-                "cancel_store_result_failed",
-                task_id=task_id,
-                error=str(exc),
-            )
-            await self._broker.nack(message, requeue=True)
-            structlog.contextvars.clear_contextvars()
-            return True
-
-        # Signal AFTER the broker ack so a handler that raises doesn't
-        # prevent the message from being committed.
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_CANCELLED,
-            task_id=task_id,
-            task_name=task_name,
-            queue=queue,
-        )
-
-        logger.info("task_cancelled_pre_start", task_id=task_id, task_name=task_name)
-        structlog.contextvars.clear_contextvars()
-        return True
 
     @staticmethod
     def _extract_valid_unique_hash(message) -> str | None:
@@ -1770,7 +981,8 @@ class Worker:
         # duplicate scheduled fire never enters any of those stages and
         # costs no Valkey round-trips beyond the SETNX. Ack-safe
         # pre-pipeline stage, same discipline as cancel-check.
-        if await self._pre_start_schedfire_dedup(message, task_name):
+        ctx = GateContext(task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs)
+        if await self._schedfire_gate.apply(message, ctx) is not Continue:
             return
 
         # 2b. Pre-start cancel check (Phase 3b.3). Runs BEFORE semaphore
@@ -1780,9 +992,7 @@ class Worker:
         # main try/finally. The helper is responsible for its own
         # structlog cleanup on the cancel branch — the main finally at
         # the end of this method is not reached on this branch.
-        if await self._pre_start_cancel_check(
-            message, task_id, task_name, queue
-        ):
+        if await self._cancel_gate.apply(message, ctx) is not Continue:
             return
 
         # 3. Acquire semaphore
@@ -1794,6 +1004,8 @@ class Worker:
         # AT_LEAST_ONCE redelivery within the same worker.
         handler_id = uuid.uuid4()
         acquired_locks: list[_LockEntry] = []
+        ctx.handler_id = handler_id
+        ctx.acquired_locks = acquired_locks
         # R3.5 Unit 11 state: task_info visible in finally even if
         # lookup fails.
         task_info: TaskInfo | None = None
@@ -1831,6 +1043,8 @@ class Worker:
                 return
 
             task_info = task_class.task_info
+            ctx.task_info = task_info
+            ctx.task_class = task_class
 
             # R4.4 Task Expiry: check max_age BEFORE any execution
             # stages. An expired message takes the DLQ path without
@@ -1840,13 +1054,10 @@ class Worker:
             # retry-after-delay-queue — each retry's clock starts from
             # the ORIGINAL enqueue, which is the intended semantic
             # (expiry is a wall-time contract, not a per-delivery one).
-            if await self._check_max_age_expired(
-                message, task_info, queue, task_id, task_name,
-            ):
-                # Expiry lässt das Dedup-Flag bewusst stehen (heutiges
-                # Verhalten); der In-Flight-Claim wird gelöscht.
-                outcome = Terminal.never_release()
+            outcome = await self._expiry_gate.apply(message, ctx)
+            if outcome is not Continue:
                 return
+            outcome = Terminal.release_in_finally()
 
             # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
             # so a Valkey or broker hiccup cannot drop a message that has
@@ -1857,29 +1068,23 @@ class Worker:
             # — the original message's x-swarmq-unique-hash header is
             # preserved in the republished copy (Unit 11 header
             # preservation), so the flag must stay claimed.
-            if await self._try_apply_rate_limit(
-                message, task_info, queue, task_id, task_name,
-            ):
-                outcome = Redelivered
+            outcome = await self._rate_limit_gate.apply(message, ctx)
+            if outcome is not Continue:
                 return
+            outcome = Terminal.release_in_finally()
 
             # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
             # rate-limit. Conflict path: requeue with exponential backoff
             # until the per-message cap, then DLQ. Acquired locks are
             # released in the finally below.
-            # Terminal DLQ sub-paths inside the helper release the flag
+            # Terminal DLQ sub-paths inside the gate release the flag
             # inline (render-fail, empty-render, conflict-cap); non-
-            # terminal sub-paths requeue and preserve the header. Bis U7 die
-            # Sub-Pfade als Gate-Outcomes trennt, meldet der Helfer nur
-            # „behandelt"; für den finally ist ``Redelivered`` in beiden
-            # Fällen verhaltensgleich (keine erneute Freigabe, In-Flight-
-            # Claim gelöscht — auf dem DLQ-Zweig folgenlos).
-            if await self._try_apply_lock(
-                message, task_info, task_class, queue, task_id, task_name,
-                args, kwargs, handler_id, acquired_locks,
-            ):
-                outcome = Redelivered
+            # terminal sub-paths requeue and preserve the header (siehe
+            # gates/lock.py zur Outcome-Wahl).
+            outcome = await self._lock_gate.apply(message, ctx)
+            if outcome is not Continue:
                 return
+            outcome = Terminal.release_in_finally()
 
             # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
             # dedup release happens AFTER rate-limit / lock checks and
