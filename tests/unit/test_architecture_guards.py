@@ -36,16 +36,13 @@ _PKG = "swarmq"
 
 _MAX_MODULE_LINES = 800
 
-# Modul → Unit, die es unter das Limit bringt.
-_LOC_EXCEPTIONS: dict[str, str] = {
-    "swarmq.process_manager": "U21",
-}
+# Modul → Unit, die es unter das Limit bringt. Seit U21 leer (KTD7).
+_LOC_EXCEPTIONS: dict[str, str] = {}
 
 # (Quelle, Ziel) auf Paketebene; Wurzel ``swarmq`` matcht nur exakt.
 _CYCLE_ALLOWLIST: list[tuple[str, str]] = [
     ("swarmq.process_manager", "swarmq.cli"),          # entry → cli (lazy, KTD7)
     ("swarmq.cli", "swarmq.process_manager"),          # KTD7
-    ("swarmq.process_manager", "swarmq.broker.rabbitmq"),  # bis U21 (Sampler-Factory)
     ("swarmq", "swarmq.app"),                          # PEP-562-Fassade ↔ app
     ("swarmq.app", "swarmq"),
     # KTD10-Import-Aliase (PEP-562 ``__getattr__``) bis U15: die reinen Module
@@ -72,6 +69,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.worker": ["outcome", "pipeline", "gates", "execution", "retry", "results", "lifecycle"],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows"],  # U10
     "swarmq.scheduler": ["definition", "loop", "sync"],  # U11
+    "swarmq.process_manager": ["config", "supervisor", "entry", "sampler", "check", "run"],  # U21
 }
 
 

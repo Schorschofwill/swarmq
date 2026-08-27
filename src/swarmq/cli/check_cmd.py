@@ -73,7 +73,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
     traceback or the stdout-JSON contract is violated for agents
     that parse the output.
     """
-    from swarmq.process_manager import check_worker_config
+    from swarmq.process_manager.check import check_worker_config
 
     payload = _seed_check_payload(args)
     try:

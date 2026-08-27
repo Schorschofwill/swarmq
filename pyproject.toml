@@ -171,6 +171,7 @@ module = [
     # (16 Fehler). Aufgenommen, damit ``lint-and-types`` blockierend laufen
     # kann; U21 erbt als ``swarmq.process_manager.*``, U12 räumt beide auf.
     "swarmq.process_manager",
+    "swarmq.process_manager.*",  # U21: Submodule erben den Monolith-Eintrag bis U12
     "swarmq.metrics",
 ]
 ignore_errors = true

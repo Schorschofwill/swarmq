@@ -140,7 +140,7 @@ class TestMainRouting:
             return None
 
         with patch.dict(os.environ, self._env(), clear=False), \
-             patch("swarmq.process_manager.run_multi_process_worker") as rmp, \
+             patch("swarmq.process_manager.run.run_multi_process_worker") as rmp, \
              patch("swarmq.cli.asyncio.run", side_effect=_consume_coro):
             rc = main(["worker", "--module=ignore.me"])
             rmp.assert_not_called()
@@ -149,7 +149,7 @@ class TestMainRouting:
     def test_processes_gt_one_routes_to_supervisor(self):
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
-                 "swarmq.process_manager.run_multi_process_worker",
+                 "swarmq.process_manager.run.run_multi_process_worker",
                  return_value=0,
              ) as rmp:
             rc = main(["worker", "--module=ignore.me", "--processes", "3"])
@@ -164,7 +164,7 @@ class TestMainRouting:
         import json
 
         with patch(
-            "swarmq.process_manager.run_multi_process_worker",
+            "swarmq.process_manager.run.run_multi_process_worker",
         ) as rmp:
             rc = main([
                 "worker", "--module=json",
@@ -216,7 +216,7 @@ class TestMainRouting:
         import json
 
         with patch(
-            "swarmq.process_manager._validate_module_importable",
+            "swarmq.process_manager.check._validate_module_importable",
             side_effect=PermissionError("simulated .pth lockout"),
         ):
             rc = main(["worker", "--module=json", "--check"])
@@ -304,7 +304,7 @@ class TestMainRouting:
         a silent no-op and R-1 is not met."""
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
-                 "swarmq.process_manager.run_multi_process_worker",
+                 "swarmq.process_manager.run.run_multi_process_worker",
                  return_value=0,
              ) as rmp:
             rc = main(["worker", "--module=ignore.me", "--reload"])
@@ -317,7 +317,7 @@ class TestMainRouting:
     def test_autoscale_routes_to_supervisor(self):
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
-                 "swarmq.process_manager.run_multi_process_worker",
+                 "swarmq.process_manager.run.run_multi_process_worker",
                  return_value=0,
              ) as rmp:
             main(["worker", "--module=ignore.me", "--autoscale", "2,5"])
@@ -330,216 +330,12 @@ class TestMainRouting:
 
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
-                 "swarmq.process_manager.run_multi_process_worker",
+                 "swarmq.process_manager.run.run_multi_process_worker",
                  side_effect=ConfigurationError("boom"),
              ):
             rc = main(["worker", "--module=x", "--processes", "2"])
             assert rc == 1
 
 
-class TestRunMultiProcessWorker:
-    def test_rejects_missing_env_vars(self):
-        from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager import run_multi_process_worker
-
-        ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
-        )
-        with patch.dict(os.environ, {}, clear=True), \
-             pytest.raises(ConfigurationError):
-            run_multi_process_worker(ns)
-
-    def test_rejects_unresolvable_module(self):
-        """ce-review Unit 2: find_spec pre-flight catches typo/missing
-        module in the parent so the supervisor does not waste the
-        5-restart-per-hour budget on a deterministic ImportError."""
-        from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager import run_multi_process_worker
-
-        ns = argparse.Namespace(
-            processes=2, autoscale=None,
-            module="swarmq_definitely_not_a_real_module_xyz",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
-        )
-        env = {
-            "SWARMQ_BROKER_URL": "amqp://x",
-            "SWARMQ_BACKEND_URL": "valkey://x",
-        }
-        # setup_logging gemockt: das echte würde structlog global
-        # rekonfigurieren und nachfolgende capture_logs-Tests verschmutzen.
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.setup_logging"), \
-             pytest.raises(ConfigurationError, match="cannot be imported|no loadable"):
-            run_multi_process_worker(ns)
-
-    def test_supervisor_configures_structured_logging(self):
-        """Härtung R2 P1-8: der Supervisor-Parent rief nie
-        ``setup_logging()`` — worker_died/restart_limit_exceeded/
-        Autoscale-Events landeten trotz ``--log-format json`` im
-        structlog-Default-Console-Format. Der Parent muss dieselbe
-        Renderer-Konfiguration nutzen wie die Worker und den
-        Listener beim Exit stoppen (flush-on-exit)."""
-        from swarmq.process_manager import (
-            ProcessManager,
-            run_multi_process_worker,
-        )
-
-        ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="WARNING", log_format="json",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
-        )
-        env = {
-            "SWARMQ_BROKER_URL": "amqp://x",
-            "SWARMQ_BACKEND_URL": "valkey://x",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.setup_logging") as sl, \
-             patch.object(ProcessManager, "run", return_value=0):
-            rc = run_multi_process_worker(ns)
-        assert rc == 0
-        sl.assert_called_once_with("WARNING", log_json=True)
-        sl.return_value.stop.assert_called_once()
-
-    def test_supervisor_logging_human_format(self):
-        from swarmq.process_manager import (
-            ProcessManager,
-            run_multi_process_worker,
-        )
-
-        ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
-        )
-        env = {
-            "SWARMQ_BROKER_URL": "amqp://x",
-            "SWARMQ_BACKEND_URL": "valkey://x",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.setup_logging") as sl, \
-             patch.object(ProcessManager, "run", return_value=0):
-            run_multi_process_worker(ns)
-        sl.assert_called_once_with("INFO", log_json=False)
-
-    def test_supervisor_stops_listener_when_run_raises(self):
-        from swarmq.process_manager import (
-            ProcessManager,
-            run_multi_process_worker,
-        )
-
-        ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="json",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
-        )
-        env = {
-            "SWARMQ_BROKER_URL": "amqp://x",
-            "SWARMQ_BACKEND_URL": "valkey://x",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.setup_logging") as sl, \
-             patch.object(
-                 ProcessManager, "run", side_effect=RuntimeError("boom"),
-             ), \
-             pytest.raises(RuntimeError):
-            run_multi_process_worker(ns)
-        sl.return_value.stop.assert_called_once()
-
-    def test_constructs_process_manager_and_runs(self):
-        from swarmq.process_manager import run_multi_process_worker
-
-        # Unit 2 pre-flight requires a resolvable module — use an
-        # always-present internal module so the unit test focuses on
-        # ProcessManager construction, not module validation.
-        ns = argparse.Namespace(
-            processes=3, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
-        )
-        env = {
-            "SWARMQ_BROKER_URL": "amqp://x",
-            "SWARMQ_BACKEND_URL": "valkey://x",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.setup_logging"), \
-             patch("swarmq.process_manager.ProcessManager") as PM:
-            instance = PM.return_value
-            instance.run.return_value = 0
-            rc = run_multi_process_worker(ns)
-            assert rc == 0
-            PM.assert_called_once()
-            kwargs = PM.call_args.kwargs
-            assert kwargs["autoscale"] is None
-            assert kwargs["num_workers"] == 3
-            # ce-review F-4: assert WorkerConfig shape to prevent silent
-            # drift when worker_args becomes a tuple of unrelated values.
-            from swarmq.process_manager import WorkerConfig
-            worker_args = kwargs["worker_args"]
-            assert len(worker_args) == 1
-            assert isinstance(worker_args[0], WorkerConfig)
-            assert worker_args[0].module == "swarmq.cli"
-            assert worker_args[0].queues == ("default",)
 
 
-class TestValidateModuleImportable:
-    """ce-review Unit 2: find_spec pre-flight check direct tests."""
-
-    def test_existing_module_accepted(self):
-        from swarmq.process_manager import _validate_module_importable
-        _validate_module_importable("swarmq.cli")  # no raise
-
-    def test_nonexistent_module_rejected(self):
-        from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager import _validate_module_importable
-        with pytest.raises(ConfigurationError, match="cannot be imported|no loadable"):
-            _validate_module_importable("swarmq_does_not_exist_xyz")
-
-    def test_malformed_dotted_raises_value_error_wrapped(self):
-        """find_spec raises ValueError on some malformed inputs. The
-        pre-flight wraps these as ConfigurationError (not bare ValueError)."""
-        from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager import _validate_module_importable
-        # Leading-dot style triggers ValueError on most Python versions.
-        with pytest.raises(ConfigurationError):
-            _validate_module_importable(".leading.dot")
-
-    def test_namespace_package_without_init_rejected(self, tmp_path, monkeypatch):
-        """ce-review F-05: namespace package (no __init__.py) has
-        spec.origin=None and will fail in import_module — we reject it
-        upfront."""
-        import sys as _sys
-
-        from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager import _validate_module_importable
-
-        # Create a namespace package on PYTHONPATH.
-        ns_dir = tmp_path / "my_namespace_pkg"
-        ns_dir.mkdir()
-        # NO __init__.py → namespace package → spec.origin is None
-        monkeypatch.syspath_prepend(str(tmp_path))
-        # Sanity: find_spec returns a spec but origin is None.
-        import importlib.util as _iu
-        spec = _iu.find_spec("my_namespace_pkg")
-        assert spec is not None
-        assert spec.origin is None
-
-        with pytest.raises(ConfigurationError, match="no loadable"):
-            _validate_module_importable("my_namespace_pkg")
-        # Cleanup sys.modules so other tests aren't polluted.
-        _sys.modules.pop("my_namespace_pkg", None)

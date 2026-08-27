@@ -270,9 +270,19 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
             or getattr(args, "reload", False)
         )
         if use_multi:
-            from swarmq.process_manager import run_multi_process_worker
+            from swarmq.process_manager.run import run_multi_process_worker
+
+            # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
+            # process_manager importiert keine Broker-Implementierung mehr.
+            def _admin_factory():
+                import os as _os
+
+                from swarmq.broker.rabbitmq import RabbitMQBroker
+
+                return RabbitMQBroker(_os.environ["SWARMQ_BROKER_URL"])
+
             try:
-                return run_multi_process_worker(args)
+                return run_multi_process_worker(args, admin_factory=_admin_factory)
             except (
                 ConfigurationError,
                 BrokerConnectionError,
