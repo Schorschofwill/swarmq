@@ -892,3 +892,13 @@ Das Chaos-Gate läuft auf GitLab in der Branch-Pipeline als manueller, nicht üb
 | U14 | Inventar vollständig gegen KTD16 inklusive Fallback-Entscheidung |
 | U15 | Brüche umgesetzt; Reinheits-Guard für alle vier Kernpakete aktiv, Alias-Modul-Liste leer; Whitelist und Spec regeneriert; Website de/en aktualisiert |
 | U16 | 0.2.0 auf PyPI; Tag; Changelog vollständig mit Rollout-Hinweis |
+
+---
+
+## Fortschrittsprotokoll
+
+Eine Zeile pro Unit bei Abschluss; Abweichungen und Entscheidungen, die im Entwurf oder in der Umsetzung getroffen wurden, stehen hier.
+
+| Datum | Unit | Stand | Abweichungen / Entscheidungen |
+|---|---|---|---|
+| 2026-08-27 | U1 | Tag `v0.1.2` auf `2c622b7` gesetzt und gepusht; Entwurf `docs/design/2026-09-0-2-0-vertraege-und-modulschnitt.md`; AE1-Lesung ohne Befund (0 Kernmethoden „nur Erweiterung") | Zeitbox: Programmende **2026-11-19** (12 Wochen ab Tag). Offene Plan-Fragen entschieden: `Delivery` trägt sein Broker-Handle selbst (keine Zuordnung im Broker); Stub-Zeit über injizierbare Fake-Clock mit `clock`-Hook in den Contract-Klassen. Owner-Check der Dedup-Flags und des Schedule-Commits bleibt String (Wire-/Storage-Format, KTD12) — begründete R6-Ausnahme, per Contract-Test abgesichert. R4.2-Andockstellen als optionale Protocols `BatchPublisher`/`BatchResultBackend`. `subscribe_and_wait` und `zrangebyscore_schedules` (ohne Aufrufer in `src/`) entfallen ohne Alias → U14-Inventar. Heute nur als Literale gesetzte `x-swarmq-*`-Header ziehen bei der Extraktion nach `headers.py` (Name unverändert). |
