@@ -1,0 +1,270 @@
+"""Pipeline-Runner (Plan U19, KTD5): Gate-Reihenfolge, Ack-Ordering, FAF-Modus
+und die drei terminalen Varianten des ``DeliveryOutcome``.
+
+Die Tests sprechen nur die Aufrufreihenfolge an Broker und Backend an — nicht
+die inneren Flags des Runners (AGENTS.md: Verhalten, nicht Struktur).
+"""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.config import SwarmQConfig
+from swarmq.exceptions import BackendConnectionError
+from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
+from swarmq.registry import TaskRegistry
+from swarmq.task import DeliveryMode, Task, TaskInfo
+from swarmq.worker import Worker
+from tests.support.messages import make_message
+
+_HASH = "a" * 64
+_SCHEDFIRE = "golden-sched:1700000000000"
+
+
+class Recorder:
+    """Protokolliert die Aufrufreihenfolge über Broker, Backend und Gates."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def spy(self, name: str, result: object = None, exc: Exception | None = None) -> AsyncMock:
+        async def _side_effect(*args: object, **kwargs: object) -> object:
+            self.calls.append(name)
+            if exc is not None:
+                raise exc
+            return result
+
+        return AsyncMock(side_effect=_side_effect)
+
+    def index(self, name: str) -> int:
+        return self.calls.index(name)
+
+
+class GatedTask(Task):
+    task_info = TaskInfo(
+        name="pipe-gated",
+        queues=["default"],
+        delivery=DeliveryMode.FIRE_AND_FORGET,
+        rate_limit="10/m",
+        lock="resource",
+        hard_timeout=60,
+    )
+
+    async def run(self) -> str:
+        return "ok"
+
+
+class PlainTask(Task):
+    task_info = TaskInfo(name="pipe-plain", queues=["default"], max_retries=0)
+
+    async def run(self) -> str:
+        return "ok"
+
+
+class LockedTask(Task):
+    task_info = TaskInfo(name="pipe-locked", queues=["default"], lock="resource", hard_timeout=60)
+
+    async def run(self) -> str:
+        return "ok"
+
+
+class ExpiringTask(Task):
+    task_info = TaskInfo(name="pipe-expiring", queues=["default"], max_age=1)
+
+    async def run(self) -> str:
+        return "ok"
+
+
+class FafTask(Task):
+    task_info = TaskInfo(name="pipe-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
+
+    async def run(self) -> str:
+        return "ok"
+
+
+def _payload(name: str, task_id: str = "t-1") -> dict:
+    return {"task": {"id": task_id, "queue": "default", "name": name}, "args": [], "kwargs": {}}
+
+
+@pytest.fixture
+def rec() -> Recorder:
+    return Recorder()
+
+
+@pytest.fixture
+def broker(rec: Recorder) -> MagicMock:
+    b = MagicMock(spec=RabbitMQBroker)
+    b.ack = rec.spy("broker.ack")
+    b.nack = rec.spy("broker.nack")
+    b.publish_to_delay_queue = rec.spy("broker.publish_to_delay_queue")
+    b.publish_to_dead_letter_queue = rec.spy("broker.publish_to_dead_letter_queue")
+    return b
+
+
+@pytest.fixture
+def backend(rec: Recorder) -> MagicMock:
+    be = MagicMock(spec=ValkeyBackend)
+    be.store_result = rec.spy("backend.store_result")
+    be.publish_notification = rec.spy("backend.publish_notification")
+    be.is_cancelled = rec.spy("backend.is_cancelled", False)
+    be.is_workflow_cancelled = rec.spy("backend.is_workflow_cancelled", False)
+    be.clear_cancel_flag = rec.spy("backend.clear_cancel_flag")
+    be.is_schedfire_completed = rec.spy("backend.is_schedfire_completed", False)
+    be.set_schedfire_inflight = rec.spy("backend.set_schedfire_inflight", True)
+    be.set_schedfire_dedup = rec.spy("backend.set_schedfire_dedup", True)
+    be.clear_schedfire_inflight = rec.spy("backend.clear_schedfire_inflight")
+    be.release_unique = rec.spy("backend.release_unique", True)
+    return be
+
+
+def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, *tasks: type[Task], **kwargs: object) -> Worker:
+    registry = TaskRegistry()
+    for task in tasks:
+        registry.register(task)
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", concurrency=4, queues=["default"])
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config, **kwargs)
+    limiter = MagicMock()
+    limiter.check = rec.spy("rate_limiter.check", (True, 9, 0))
+    worker._rate_limiter = limiter
+    locks = MagicMock()
+    locks.acquire = rec.spy("lock_manager.acquire", True)
+    locks.release = rec.spy("lock_manager.release", True)
+    worker._lock_manager = locks
+    return worker
+
+
+_GATE_ORDER = [
+    "backend.is_schedfire_completed",
+    "backend.set_schedfire_inflight",
+    "backend.is_cancelled",
+    "rate_limiter.check",
+    "lock_manager.acquire",
+    "backend.release_unique",  # Dedup-Start-Release
+    "broker.ack",  # FAF-Ack nach dem letzten Gate
+]
+
+
+async def test_gates_run_in_fixed_order_and_ack_comes_last(broker, backend, rec) -> None:
+    worker = _worker(broker, backend, rec, GatedTask)
+    msg = make_message(
+        _payload("pipe-gated"),
+        headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH, HEADER_UNIQUE_UNTIL: "start"},
+    )
+
+    await worker._handle_message(msg)
+
+    observed = [c for c in rec.calls if c in _GATE_ORDER]
+    assert observed == _GATE_ORDER
+    assert "broker.nack" not in rec.calls
+
+
+async def test_no_broker_verb_before_last_gate_returns_continue(broker, backend, rec) -> None:
+    worker = _worker(broker, backend, rec, GatedTask)
+    msg = make_message(_payload("pipe-gated"), headers={"x-swarmq-schedfire": _SCHEDFIRE})
+
+    await worker._handle_message(msg)
+
+    first_verb = min(i for i, c in enumerate(rec.calls) if c.startswith("broker."))
+    last_gate = max(rec.index(g) for g in ("rate_limiter.check", "lock_manager.acquire", "backend.is_cancelled"))
+    assert first_verb > last_gate
+
+
+async def test_faf_acks_exactly_once_and_no_verb_after_failure(broker, backend, rec) -> None:
+    """FAF: genau ein Ack vor der Ausführung; ein späterer Fehler (hier: die
+    Middleware-Factory) löst kein weiteres Broker-Verb mehr aus."""
+
+    def broken_factory():
+        raise RuntimeError("factory down")
+
+    worker = _worker(broker, backend, rec, FafTask, middleware_chain=broken_factory)
+    msg = make_message(_payload("pipe-faf"))
+
+    await worker._handle_message(msg)
+
+    assert rec.calls.count("broker.ack") == 1
+    assert "broker.nack" not in rec.calls
+    assert "broker.publish_to_dead_letter_queue" not in rec.calls
+
+
+async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(broker, backend, rec) -> None:
+    backend.store_result = rec.spy("backend.store_result", exc=BackendConnectionError("down"))
+    worker = _worker(broker, backend, rec, PlainTask)
+    msg = make_message(
+        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
+    )
+
+    await worker._handle_message(msg)
+
+    assert rec.calls.count("broker.nack") == 1
+    broker.nack.assert_awaited_once_with(msg, requeue=True)
+    assert "broker.ack" not in rec.calls
+    assert "backend.release_unique" not in rec.calls
+    assert "backend.clear_schedfire_inflight" in rec.calls
+    assert "backend.set_schedfire_dedup" not in rec.calls
+
+
+async def test_terminal_release_in_finally_releases_after_ack_and_writes_completed_marker(
+    broker, backend, rec
+) -> None:
+    worker = _worker(broker, backend, rec, PlainTask)
+    msg = make_message(
+        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
+    )
+
+    await worker._handle_message(msg)
+
+    assert rec.index("broker.ack") < rec.index("backend.release_unique")
+    assert rec.calls.count("backend.release_unique") == 1
+    assert "backend.set_schedfire_dedup" in rec.calls
+    assert "backend.clear_schedfire_inflight" not in rec.calls
+
+
+async def test_terminal_already_released_does_not_release_twice(broker, backend, rec) -> None:
+    """Lock-Konflikt am Cap: Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
+    worker = _worker(broker, backend, rec, LockedTask)
+    worker._lock_manager.acquire = rec.spy("lock_manager.acquire", False)
+    msg = make_message(
+        _payload("pipe-locked"),
+        headers={HEADER_UNIQUE_HASH: _HASH, "x-swarmq-lock-conflict-count": 9},
+    )
+
+    await worker._handle_message(msg)
+
+    assert "broker.publish_to_dead_letter_queue" in rec.calls
+    assert rec.calls.count("broker.ack") == 1
+    assert rec.calls.count("backend.release_unique") == 1
+    assert rec.index("broker.ack") < rec.index("backend.release_unique")
+
+
+async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend, rec) -> None:
+    worker = _worker(broker, backend, rec, ExpiringTask)
+    msg = make_message(
+        _payload("pipe-expiring"),
+        headers={HEADER_UNIQUE_HASH: _HASH, HEADER_ENQUEUED_AT: int(time.time()) - 3600},
+    )
+
+    await worker._handle_message(msg)
+
+    assert "broker.publish_to_dead_letter_queue" in rec.calls
+    assert rec.calls.count("broker.ack") == 1
+    assert "backend.release_unique" not in rec.calls
+
+
+async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(broker, backend, rec) -> None:
+    chain = MagicMock()
+    chain.run_pre_execute = AsyncMock(side_effect=RuntimeError("hook exploded"))
+    worker = _worker(broker, backend, rec, PlainTask, middleware_chain=lambda: chain)
+    msg = make_message(
+        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
+    )
+
+    with pytest.raises(RuntimeError, match="hook exploded"):
+        await worker._handle_message(msg)
+
+    assert "backend.release_unique" in rec.calls
+    assert "backend.set_schedfire_dedup" in rec.calls

@@ -90,6 +90,7 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_json, decode_result, encode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
+from swarmq.worker.outcome import DeliveryOutcome, Redelivered, Terminal
 from swarmq.workflow_orchestration import (
     ChordManager,
     WorkflowAdvancer,
@@ -1794,26 +1795,19 @@ class Worker:
         handler_id = uuid.uuid4()
         acquired_locks: list[_LockEntry] = []
         # R3.5 Unit 11 state: task_info visible in finally even if
-        # lookup fails; _unique_release_pending tracks whether the
-        # finally block should fire _maybe_release_unique.
-        # Default TRUE = this delivery is terminal until a branch
-        # proves otherwise. Non-terminal branches (nack(requeue=True),
-        # delay-queue republish) MUST clear the flag to False —
-        # otherwise the dedup flag gets released while a redelivered
-        # copy of the message is still in flight, creating a bypass
-        # window (ce-review M-03 / P2 #12: name + direction chosen
-        # so that forgetting the mutation over-releases rather than
-        # under-releases; over-release is owner-check-safe).
+        # lookup fails.
         task_info: TaskInfo | None = None
-        _unique_release_pending = True
-        # P0-B (2026-06-02 audit): mirrors _unique_release_pending for the
-        # schedfire completed-marker. Default TRUE = terminal until a
-        # non-terminal branch (nack(requeue=True), retry delay-queue
-        # republish) proves otherwise. A non-terminal branch MUST clear
-        # this to False so the finally clears the in-flight key instead of
-        # writing the completed marker — otherwise the redelivered/retry
-        # copy is skipped as "completed" and the task is silently dropped.
-        _schedfire_terminal = True
+        # U19 (KTD5): ein typisiertes Zustellungs-Ergebnis statt zweier
+        # Booleans. Default = terminal mit Freigabe im finally; jeder
+        # nicht-terminale Zweig setzt ``Redelivered`` (Dedup-Flag bleibt,
+        # In-Flight-Claim wird gelöscht — P0-B), Expiry setzt
+        # ``Terminal.never_release()``. Die Richtung ist bewusst so gewählt,
+        # dass ein vergessener Zweig über-freigibt (owner-check-sicher) statt
+        # unter-freigibt (ce-review M-03 / P2 #12).
+        outcome: DeliveryOutcome = Terminal.release_in_finally()
+        # FIRE_AND_FORGET: nach dem letzten Gate wird bestätigt; danach darf
+        # kein Zweig mehr ein Broker-Verb auslösen (Modus acked_before_execute).
+        acked_before_execute = False
         # Optional Dishka REQUEST scope. Entered just before the task
         # lifecycle (below) and torn down in the finally via the same
         # detached-shield pattern as lock release. None when DI is inactive.
@@ -1824,8 +1818,7 @@ class Worker:
             if self._shutdown_event.is_set():
                 # nack(requeue=True): broker redelivers with headers
                 # intact → keep the flag so redelivery can release.
-                _unique_release_pending = False
-                _schedfire_terminal = False
+                outcome = Redelivered
                 await self._broker.nack(message, requeue=True)
                 return
 
@@ -1850,8 +1843,9 @@ class Worker:
             if await self._check_max_age_expired(
                 message, task_info, queue, task_id, task_name,
             ):
-                _unique_release_pending = False
-                _schedfire_terminal = False
+                # Expiry lässt das Dedup-Flag bewusst stehen (heutiges
+                # Verhalten); der In-Flight-Claim wird gelöscht.
+                outcome = Terminal.never_release()
                 return
 
             # 5a. Rate limit check — runs BEFORE the FIRE_AND_FORGET ack
@@ -1866,8 +1860,7 @@ class Worker:
             if await self._try_apply_rate_limit(
                 message, task_info, queue, task_id, task_name,
             ):
-                _unique_release_pending = False
-                _schedfire_terminal = False
+                outcome = Redelivered
                 return
 
             # 5b. Lock check — same FIRE_AND_FORGET-ordering discipline as
@@ -1876,16 +1869,16 @@ class Worker:
             # released in the finally below.
             # Terminal DLQ sub-paths inside the helper release the flag
             # inline (render-fail, empty-render, conflict-cap); non-
-            # terminal sub-paths requeue and preserve the header. Clear
-            # _unique_release_pending either way to avoid double-release
-            # (terminal sub-paths already released) or premature release
-            # (non-terminal sub-paths still in flight).
+            # terminal sub-paths requeue and preserve the header. Bis U7 die
+            # Sub-Pfade als Gate-Outcomes trennt, meldet der Helfer nur
+            # „behandelt"; für den finally ist ``Redelivered`` in beiden
+            # Fällen verhaltensgleich (keine erneute Freigabe, In-Flight-
+            # Claim gelöscht — auf dem DLQ-Zweig folgenlos).
             if await self._try_apply_lock(
                 message, task_info, task_class, queue, task_id, task_name,
                 args, kwargs, handler_id, acquired_locks,
             ):
-                _unique_release_pending = False
-                _schedfire_terminal = False
+                outcome = Redelivered
                 return
 
             # 5c. R3.5 Unit 10 (ce-review P1 #4 / ADV-002 fix): start-mode
@@ -1910,9 +1903,11 @@ class Worker:
                     op_timeout=self._config.backend_op_timeout,
                 )
 
-            # 5d. FIRE_AND_FORGET: ack immediately before execution.
+            # 5d. FIRE_AND_FORGET: ack immediately before execution — ab hier
+            # ist kein Broker-Verb mehr zulässig (acked_before_execute).
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
                 await self._broker.ack(message)
+                acked_before_execute = True
 
             # Build canonical message_dict for middleware + track retry_count
             retry_count = message.headers.get("x-swarmq-retry-count", 0)
@@ -1936,7 +1931,10 @@ class Worker:
                 chain = self._get_chain()
             except Exception as exc:
                 logger.error("middleware_chain_factory_failed", error=str(exc))
-                await self._broker.nack(message, requeue=False)
+                # Nach dem FAF-Ack gibt es nichts mehr zu nacken (KTD5); vorher
+                # führt der heutige DLX-Fallback über die Broker-Konfiguration.
+                if not acked_before_execute:
+                    await self._broker.nack(message, requeue=False)
                 return
 
             # Pre-execute hooks
@@ -2244,8 +2242,7 @@ class Worker:
                         # Same for schedfire: clear the in-flight key so
                         # the retry copy re-runs (P0-B); on the DLQ branch
                         # over-clearing is harmless (no redelivery).
-                        _unique_release_pending = False
-                        _schedfire_terminal = False
+                        outcome = Redelivered
                         return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
@@ -2328,8 +2325,7 @@ class Worker:
                     # Non-terminal — redelivery will re-run the task
                     # from scratch; keep the flag so next terminal
                     # path can release it.
-                    _unique_release_pending = False
-                    _schedfire_terminal = False
+                    outcome = Redelivered
                     await self._broker.nack(message, requeue=True)
                 return
 
@@ -2397,8 +2393,7 @@ class Worker:
                     logger.error("workflow_advance_backend_error", workflow_id=wf_id)
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         # Transient — redelivery retries the idempotent advance.
-                        _unique_release_pending = False
-                        _schedfire_terminal = False
+                        outcome = Redelivered
                         await self._broker.nack(message, requeue=True)
                     return
                 except BrokerConnectionError:
@@ -2410,8 +2405,7 @@ class Worker:
                     # (deterministic step ids + step_tasks markers).
                     logger.error("workflow_advance_broker_error", workflow_id=wf_id)
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                        _unique_release_pending = False
-                        _schedfire_terminal = False
+                        outcome = Redelivered
                         await self._broker.nack(message, requeue=True)
                     return
                 except Exception as exc:
@@ -2442,8 +2436,11 @@ class Worker:
             # on a non-terminal outcome (retry/requeue) it instead clears
             # the in-flight key so the redelivered copy can re-run rather
             # than being skipped as "completed" (P0-B, 2026-06-02 audit).
+            # U19: der finally liest die Outcome-Felder. ``Redelivered`` (kein
+            # Terminal) → In-Flight-Claim löschen, keine Freigabe.
+            terminal = outcome if isinstance(outcome, Terminal) else None
             await self._finalize_schedfire(
-                message, terminal=_schedfire_terminal,
+                message, terminal=terminal is not None and terminal.finalize_schedfire,
             )
 
             # 12-pre-b. R3.5 Unit 11: completion-mode dedup release.
@@ -2452,14 +2449,14 @@ class Worker:
             # All main-body terminal paths (success, error, cancel,
             # DLQ, lock-conflict-cap, task_not_found nack=False,
             # lock-render-fail, middleware-factory-fail) flow through
-            # here with _unique_release_pending still True. Non-
-            # terminal paths (rate-limit requeue, lock-conflict
+            # here with a Terminal outcome whose release_unique is True.
+            # Non-terminal paths (rate-limit requeue, lock-conflict
             # requeue, retry delay queue, store_result nack=True,
             # shutdown nack=True) also hit this finally, but they
             # preserve the x-swarmq-unique-hash header in the
-            # republished message and clear _unique_release_pending
-            # so the next delivery re-runs the owner-check pipeline.
-            if _unique_release_pending:
+            # republished message and report ``Redelivered`` so the
+            # next delivery re-runs the owner-check pipeline.
+            if terminal is not None and terminal.release_unique:
                 await self._maybe_release_unique(
                     message, task_id, task_info,
                 )
