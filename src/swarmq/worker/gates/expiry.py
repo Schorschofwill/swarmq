@@ -1,9 +1,9 @@
 """Expiry-Gate (R4.4 ``max_age``), Plan U7 — verbatim aus ``pipeline.py``.
 
 Abgelaufen → Fehler-Ergebnis speichern, Signal ``TASK_EXPIRED``, an das
-Dead-Letter-Ziel veröffentlichen, bestätigen; Outcome ``Terminal.never_release()``
-(das Dedup-Flag bleibt bewusst stehen — heutiges Verhalten). Publish-Fehler →
-``nack(requeue=True)`` (Fallback laut KTD3: Redelivery).
+Dead-Letter-Ziel veröffentlichen, bestätigen (``dead_letter``); Outcome
+``Terminal.never_release()`` (das Dedup-Flag bleibt bewusst stehen — heutiges
+Verhalten). Publish-Fehler → ``redeliver`` (Fallback laut KTD3).
 """
 
 from __future__ import annotations
@@ -106,14 +106,11 @@ class ExpiryGate:
         # preserves the message so a subsequent delivery retries the
         # terminal path.
         try:
-            await deps.broker.publish_to_dead_letter_queue(
-                ctx.queue, delivery.body, headers=dict(delivery.headers or {})
-            )
-            await deps.broker.ack(delivery)
+            await deps.broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
         except BrokerConnectionError:
             logger.warning("task_expired_dlq_publish_failed")
             try:
-                await deps.broker.nack(delivery, requeue=True)
+                await deps.broker.redeliver(delivery)
             except BrokerConnectionError:
                 # Double-failure — let the message TTL / broker
                 # redeliver-limit be the safety net.

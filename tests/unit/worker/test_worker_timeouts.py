@@ -47,8 +47,8 @@ def broker():
     b.ack = AsyncMock()
     b.nack = AsyncMock()
     b.close = AsyncMock()
-    b.publish_to_delay_queue = AsyncMock()
-    b.publish_to_dead_letter_queue = AsyncMock()
+    b.retry_later = AsyncMock()
+    b.dead_letter = AsyncMock()
     return b
 
 
@@ -150,11 +150,12 @@ async def test_soft_timeout_triggers_retry(broker, backend, config):
     await w._handle_message(msg)
 
     # Should publish to delay queue (retry), NOT store error result
-    broker.publish_to_delay_queue.assert_awaited_once()
-    call_kwargs = broker.publish_to_delay_queue.call_args
+    broker.retry_later.assert_awaited_once()
+    call_kwargs = broker.retry_later.call_args
     headers = call_kwargs.kwargs["headers"]
     assert headers["x-swarmq-retry-count"] == 1
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
 
@@ -191,11 +192,12 @@ async def test_hard_timeout_fires_and_retries(broker, backend, config):
     await w._handle_message(msg)
 
     # Should publish to delay queue (retry)
-    broker.publish_to_delay_queue.assert_awaited_once()
-    call_kwargs = broker.publish_to_delay_queue.call_args
+    broker.retry_later.assert_awaited_once()
+    call_kwargs = broker.retry_later.call_args
     headers = call_kwargs.kwargs["headers"]
     assert headers["x-swarmq-retry-count"] == 1
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
 
@@ -292,10 +294,11 @@ async def test_hard_timeout_exhausted_retries_sends_to_dlq(broker, backend, conf
     await w._handle_message(msg)
 
     # Should go to DLQ
-    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    broker.dead_letter.assert_awaited_once()
     # Should NOT retry
-    broker.publish_to_delay_queue.assert_not_awaited()
-    broker.ack.assert_awaited_once_with(msg)
+    broker.retry_later.assert_not_awaited()
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -331,12 +334,13 @@ async def test_only_hard_timeout_no_soft(broker, backend, config):
     await w._handle_message(msg)
 
     # Should retry via delay queue (hard timeout triggers retry)
-    broker.publish_to_delay_queue.assert_awaited_once()
-    call_kwargs = broker.publish_to_delay_queue.call_args
+    broker.retry_later.assert_awaited_once()
+    call_kwargs = broker.retry_later.call_args
     headers = call_kwargs.kwargs["headers"]
     assert headers["x-swarmq-retry-count"] == 1
     assert "hard timeout" in headers["x-swarmq-traceback"]
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -369,17 +373,17 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
         headers={},
     )
 
-    with patch("swarmq.worker.pipeline.logger") as mock_logger:
+    with patch("swarmq.worker.execution.logger") as mock_logger:
         await w._handle_message(msg)
 
         # Error must be logged
         mock_logger.error.assert_called()
 
     # nack must NOT be called
-    broker.nack.assert_not_awaited()
+    broker.redeliver.assert_not_awaited()
     # No retry, no DLQ
-    broker.publish_to_delay_queue.assert_not_awaited()
-    broker.publish_to_dead_letter_queue.assert_not_awaited()
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_not_awaited()
     # ack was called exactly once (the early FIRE_AND_FORGET ack)
     broker.ack.assert_awaited_once_with(msg)
     # No error result stored
@@ -395,13 +399,13 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
 
 
 def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task]:
-    """Patch worker._hard_timeout_watchdog to track spawned watchdog tasks.
+    """Patch worker._executor._hard_timeout_watchdog to track spawned watchdog tasks.
 
     Returns a list that the test can inspect after _handle_message completes.
     Each element is the actual asyncio.Task created for the watchdog coroutine.
     """
     created: list[asyncio.Task] = []
-    original = worker._hard_timeout_watchdog
+    original = worker._executor._hard_timeout_watchdog
 
     async def tracking_watchdog(run_task, timeout, set_reason_if_unset=None):
         # Record the *current* task (the watchdog task) on first yield so the
@@ -411,7 +415,7 @@ def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task]:
             created.append(current)
         await original(run_task, timeout, set_reason_if_unset)
 
-    worker._hard_timeout_watchdog = tracking_watchdog  # type: ignore[assignment]
+    worker._executor._hard_timeout_watchdog = tracking_watchdog  # type: ignore[assignment]
     return created
 
 

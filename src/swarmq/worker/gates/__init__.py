@@ -72,4 +72,17 @@ class Gate(Protocol):
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome: ...
 
 
-__all__ = ["Gate", "GateContext", "GateDeps", "LockEntry"]
+async def route_via_dlx(broker: Any, delivery: Any) -> None:
+    """Terminaler DLX-Fallback (KTD3): ``BrokerAdmin.route_via_dlx`` — bei
+    RabbitMQ ``nack(requeue=False)`` über die Broker-Konfiguration, ohne
+    Diagnose-Header. Ein Broker ohne diese Fähigkeit veröffentlicht
+    stattdessen an sein Dead-Letter-Ziel mit den Original-Headern; der Kern
+    referenziert ``BrokerAdmin`` dadurch nicht als Typ."""
+    admin = getattr(broker, "route_via_dlx", None)
+    if admin is not None:
+        await admin(delivery)
+        return
+    await broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
+
+
+__all__ = ["Gate", "GateContext", "GateDeps", "LockEntry", "route_via_dlx"]

@@ -23,10 +23,12 @@ def broker():
     b.consume = AsyncMock()
     b.ack = AsyncMock()
     b.nack = AsyncMock()
+    b.redeliver = AsyncMock()
+    b.retry_later = AsyncMock()
+    b.dead_letter = AsyncMock()
+    b.route_via_dlx = AsyncMock()
     b.close = AsyncMock()
     b.cancel_consume = AsyncMock()
-    b.publish_to_delay_queue = AsyncMock()
-    b.publish_to_dead_letter_queue = AsyncMock()
     return b
 
 

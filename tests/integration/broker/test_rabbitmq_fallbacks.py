@@ -123,12 +123,13 @@ async def test_retry_publish_failure_falls_back_to_redelivery(broker: RabbitMQBr
         "retry_count": 0,
     }
 
+    ctx = GateContext(task_id="t1", task_name="ctr-locked", queue=queue, task_info=task_info)
     with publish_failure(broker):
-        handled = await worker._evaluate_retry(
-            delivery, task_info, RuntimeError("boom"), queue, "t1", "ctr-locked", "boom", context, MiddlewareChain([])
+        outcome = await worker._retry_handler.evaluate(
+            delivery, ctx, RuntimeError("boom"), "boom", context, MiddlewareChain([])
         )
 
-    assert handled is True
+    assert outcome is not Continue
     again = await inbox.next()
     assert again.body == _BODY
     await broker.ack(again)

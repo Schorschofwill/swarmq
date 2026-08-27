@@ -201,11 +201,9 @@ class TestSchedfireDedup:
         )
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once()
-        nack_call = broker.nack.await_args
-        # requeue=True so the message comes back and a healthy worker
-        # can try again
-        assert nack_call.kwargs.get("requeue") is True
+        # U8: redeliver — die Nachricht kommt zurück und ein gesunder Worker
+        # versucht es erneut.
+        broker.redeliver.assert_awaited_once_with(msg)
 
         # Unit 9 / Fork A2: no header mutation on the nack path — AMQP
         # nack-with-requeue does not transmit in-memory header changes

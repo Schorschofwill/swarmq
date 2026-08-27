@@ -28,7 +28,7 @@ import structlog
 
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, route_via_dlx
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = structlog.get_logger()
@@ -136,7 +136,7 @@ class LockGate:
             logger.error(
                 "lock_acquire_failed", task_id=ctx.task_id, task_name=ctx.task_name, lock_name=lock_name, error=str(exc)
             )
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
             return Redelivered
 
         if acquired:
@@ -175,8 +175,7 @@ class LockGate:
         # cap=10 means the 10th conflict routes to DLQ.
         if new_count >= LOCK_CONFLICT_DLQ_CAP:
             try:
-                await deps.broker.publish_to_dead_letter_queue(ctx.queue, delivery.body, headers=original_headers)
-                await deps.broker.ack(delivery)
+                await deps.broker.dead_letter(delivery, headers=original_headers)
                 await deps.maybe_release_unique(delivery, ctx.task_id, task_info)
             except Exception as exc:
                 # DLQ-publish failure at the cap creates a hazard: nacking
@@ -196,18 +195,15 @@ class LockGate:
                     "without diagnostic headers; recover wedged lock "
                     f"via valkey-cli DEL sq:lock:{lock_name}",
                 )
-                # Terminal DLX fallback — nack first, then release.
-                await deps.broker.nack(delivery, requeue=False)
+                # Terminal DLX fallback — route first, then release.
+                await route_via_dlx(deps.broker, delivery)
                 await deps.maybe_release_unique(delivery, ctx.task_id, task_info)
             return Redelivered
 
         delay_ms = min(LOCK_CONFLICT_BACKOFF_BASE_MS * (2 ** (new_count - 1)), LOCK_CONFLICT_BACKOFF_CAP_MS)
 
         try:
-            await deps.broker.publish_to_delay_queue(
-                ctx.queue, delivery.body, delay_ms=delay_ms, headers=original_headers
-            )
-            await deps.broker.ack(delivery)
+            await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=original_headers)
         except Exception as exc:
             # Same try/except shape as retry / rate-limit: broker failure
             # between publish and ack means the message might double-
@@ -220,7 +216,7 @@ class LockGate:
                 lock_name=lock_name,
                 error=str(exc),
             )
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
 
         return Redelivered
 
@@ -235,8 +231,7 @@ class LockGate:
         original_headers = dict(delivery.headers) if delivery.headers else {}
         original_headers.update(extra_headers)
         try:
-            await deps.broker.publish_to_dead_letter_queue(ctx.queue, delivery.body, headers=original_headers)
-            await deps.broker.ack(delivery)
+            await deps.broker.dead_letter(delivery, headers=original_headers)
             # Release AFTER successful ack (P1 #3 / ADV-001).
             await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
         except Exception as broker_exc:
@@ -248,7 +243,7 @@ class LockGate:
                 error=str(broker_exc),
                 note=f"message routed via broker DLX to {ctx.queue}.XQ without diagnostic headers",
             )
-            await deps.broker.nack(delivery, requeue=False)
+            await route_via_dlx(deps.broker, delivery)
             await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
 
     async def _acquire_and_register(

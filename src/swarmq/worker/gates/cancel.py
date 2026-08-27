@@ -41,7 +41,7 @@ class CancelGate:
             # scope-down): AMQP nack(requeue=True) redelivers the stored
             # message, so in-memory header mutations would be lost anyway.
             logger.error("cancel_check_backend_error", task_id=task_id)
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
             structlog.contextvars.clear_contextvars()
             return Redelivered
 
@@ -61,7 +61,7 @@ class CancelGate:
                 )
             except BackendConnectionError:
                 logger.error("workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id)
-                await deps.broker.nack(delivery, requeue=True)
+                await deps.broker.redeliver(delivery)
                 structlog.contextvars.clear_contextvars()
                 return Redelivered
             if not wf_cancelled:
@@ -132,7 +132,7 @@ class CancelGate:
             # re-runs this branch. Flag stays in Valkey (that's what
             # triggers the re-cancel on redelivery).
             logger.error("cancel_store_result_failed", task_id=task_id, error=str(exc))
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
             structlog.contextvars.clear_contextvars()
             return Redelivered
 

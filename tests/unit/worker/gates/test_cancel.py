@@ -78,7 +78,7 @@ class TestWorkerPreStartCancelCheck:
         await worker._handle_message(msg)
 
         broker.ack.assert_awaited_once_with(msg)
-        broker.nack.assert_not_awaited()
+        broker.redeliver.assert_not_awaited()
 
     async def test_cancel_flag_set_dispatches_task_cancelled_signal(
         self, worker, broker, backend,
@@ -240,7 +240,7 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
         backend.store_result.assert_not_awaited()
         # Contextvars cleared even on error path.
@@ -258,7 +258,7 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
         # Flag was NOT cleared — redelivery will re-trigger the cancel branch.
         backend.clear_cancel_flag.assert_not_awaited()
@@ -393,7 +393,7 @@ class TestWorkflowCancelPickup:
         msg = self._wf_message()
         await worker._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         backend.store_result.assert_not_awaited()
 
 
@@ -464,4 +464,4 @@ class TestCancelGateOutcomes:
         backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("down"))
         msg = make_message(_default_payload())
         assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)

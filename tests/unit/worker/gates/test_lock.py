@@ -65,7 +65,7 @@ class TestWorkerLocking:
 
         w._lock_manager.acquire.assert_awaited_once()
         w._lock_manager.release.assert_awaited_once()
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
         broker.ack.assert_awaited_once_with(msg)
 
     @pytest.mark.asyncio
@@ -103,9 +103,10 @@ class TestWorkerLocking:
             await w._handle_message(msg)
 
         assert ran is False, "task.run must NOT run when lock conflicted"
-        broker.publish_to_delay_queue.assert_awaited_once()
-        broker.ack.assert_awaited_once_with(msg)
-        broker.publish_to_dead_letter_queue.assert_not_called()
+        broker.retry_later.assert_awaited_once()
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        broker.ack.assert_not_awaited()
+        broker.dead_letter.assert_not_called()
         # Release is NOT called when acquire returned False
         w._lock_manager.release.assert_not_awaited()
         assert len(seen) == 1
@@ -158,7 +159,7 @@ class TestWorkerLocking:
 
         assert ran is True
         broker.ack.assert_awaited_once_with(msg)
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
 
     # --- Mandatory regression #2 ---------------------------------------------
 
@@ -181,9 +182,9 @@ class TestWorkerLocking:
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
 
 
 class TestFireAndForgetLock:
@@ -206,7 +207,7 @@ class TestFireAndForgetLock:
         msg = make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         # Crucially: NO ack happened. Message survives for redelivery.
         broker.ack.assert_not_awaited()
 
@@ -224,9 +225,9 @@ class TestFireAndForgetLock:
         msg = make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
-        broker.publish_to_delay_queue.assert_awaited_once()
-        # Single ack — not the old "FIRE_AND_FORGET ack + lock-conflict ack" double.
-        assert broker.ack.await_count == 1
+        broker.retry_later.assert_awaited_once()
+        # U8: retry_later bestätigt selbst; das FAF-Ack wird nie erreicht.
+        broker.ack.assert_not_awaited()
 
 
 class TestLockRequeueCounter:
@@ -250,7 +251,7 @@ class TestLockRequeueCounter:
 
         await w._handle_message(msg)
 
-        _, kwargs = broker.publish_to_delay_queue.call_args
+        _, kwargs = broker.retry_later.call_args
         assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 1
         # Wedged-lock recovery: DLQ (and requeue) messages must carry the
         # rendered lock name so operators can `valkey-cli DEL sq:lock:<name>`.
@@ -272,7 +273,7 @@ class TestLockRequeueCounter:
 
         await w._handle_message(msg)
 
-        _, kwargs = broker.publish_to_delay_queue.call_args
+        _, kwargs = broker.retry_later.call_args
         assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 6
 
     @pytest.mark.asyncio
@@ -296,13 +297,14 @@ class TestLockRequeueCounter:
         await w._handle_message(msg)
 
         # No more requeue
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
         # DLQ instead, with diagnostic header
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
-        _, kwargs = broker.publish_to_dead_letter_queue.call_args
+        broker.dead_letter.assert_awaited_once()
+        _, kwargs = broker.dead_letter.call_args
         assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 10
         assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
-        broker.ack.assert_awaited_once_with(msg)
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        broker.ack.assert_not_awaited()
 
     async def test_counter_just_below_cap_still_requeues(
         self, broker, backend, config
@@ -322,15 +324,15 @@ class TestLockRequeueCounter:
 
         await w._handle_message(msg)
 
-        broker.publish_to_delay_queue.assert_awaited_once()
-        broker.publish_to_dead_letter_queue.assert_not_called()
-        _, kwargs = broker.publish_to_delay_queue.call_args
+        broker.retry_later.assert_awaited_once()
+        broker.dead_letter.assert_not_called()
+        _, kwargs = broker.retry_later.call_args
         assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 9
 
     async def test_dlq_failure_at_cap_drops_message_no_infinite_loop(
         self, broker, backend, config
     ):
-        """Cascade-fix regression: when publish_to_dead_letter_queue fails
+        """Cascade-fix regression: when dead_letter fails
         AT the cap, falling back to nack(requeue=True) would let the
         message bounce back at count >= cap, hit the same DLQ failure,
         and loop forever without backoff (the requeue branch is
@@ -342,7 +344,7 @@ class TestLockRequeueCounter:
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=False)
-        broker.publish_to_dead_letter_queue = AsyncMock(
+        broker.dead_letter = AsyncMock(
             side_effect=ConnectionError("broker down")
         )
 
@@ -353,11 +355,11 @@ class TestLockRequeueCounter:
 
         # nack(requeue=False) — drop the message, do not requeue into the
         # bounce loop.
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         # No ack happened.
         broker.ack.assert_not_awaited()
         # No requeue either — the requeue branch is unreachable past the cap.
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
 
 
 class FormatStringLockTask(Task):
@@ -431,8 +433,8 @@ class TestFormatStringLock:
         await w._handle_message(msg)
 
         w._lock_manager.acquire.assert_not_called()
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
-        _, kwargs = broker.publish_to_dead_letter_queue.call_args
+        broker.dead_letter.assert_awaited_once()
+        _, kwargs = broker.dead_letter.call_args
         assert "x-swarmq-lock-render-error" in kwargs["headers"]
 
     @pytest.mark.asyncio
@@ -453,7 +455,7 @@ class TestFormatStringLock:
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock()
-        broker.publish_to_dead_letter_queue = AsyncMock(
+        broker.dead_letter = AsyncMock(
             side_effect=ConnectionError("broker down")
         )
 
@@ -464,7 +466,7 @@ class TestFormatStringLock:
 
         # Render failed, DLQ publish failed → nack(requeue=False) routes
         # via DLX to {queue}.XQ (not lost), no ack.
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
 
 
@@ -506,12 +508,13 @@ class TestEmptyRenderedLock:
 
         # Acquire never called — guard fires before LockManager
         w._lock_manager.acquire.assert_not_called()
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
-        _, kwargs = broker.publish_to_dead_letter_queue.call_args
+        broker.dead_letter.assert_awaited_once()
+        _, kwargs = broker.dead_letter.call_args
         assert "rendered to empty string" in kwargs["headers"][
             "x-swarmq-lock-render-error"
         ]
-        broker.ack.assert_awaited_once_with(msg)
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        broker.ack.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_whitespace_render_also_rejected(
@@ -530,7 +533,7 @@ class TestEmptyRenderedLock:
         await w._handle_message(msg)
 
         w._lock_manager.acquire.assert_not_called()
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        broker.dead_letter.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_render_with_dlq_failure_nacks_no_requeue(
@@ -545,7 +548,7 @@ class TestEmptyRenderedLock:
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock()
-        broker.publish_to_dead_letter_queue = AsyncMock(
+        broker.dead_letter = AsyncMock(
             side_effect=ConnectionError("broker down")
         )
 
@@ -554,7 +557,7 @@ class TestEmptyRenderedLock:
         )
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
 
 
@@ -587,7 +590,7 @@ class TestLockGateOutcomes:
         worker._lock_manager.acquire = AsyncMock(return_value=False)
         msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": 2})
         assert await worker._lock_gate.apply(msg, self._ctx()) is Redelivered
-        kwargs = broker.publish_to_delay_queue.await_args.kwargs
+        kwargs = broker.retry_later.await_args.kwargs
         assert kwargs["delay_ms"] == 400  # 100 * 2**(3-1)
         assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
 
@@ -596,17 +599,17 @@ class TestLockGateOutcomes:
         worker._lock_manager.acquire = AsyncMock(return_value=False)
         msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1})
         assert await worker._lock_gate.apply(msg, self._ctx()) is Redelivered
-        headers = broker.publish_to_dead_letter_queue.await_args.kwargs["headers"]
+        headers = broker.dead_letter.await_args.kwargs["headers"]
         assert headers["x-swarmq-lock-conflict-count"] == LOCK_CONFLICT_DLQ_CAP
-        broker.ack.assert_awaited_once_with(msg)
+        broker.ack.assert_not_awaited()  # dead_letter bestätigt selbst (U8)
 
     async def test_render_error_dead_letters_and_falls_back_to_dlx(self, worker, broker):
         worker._lock_manager = MagicMock()
-        broker.publish_to_dead_letter_queue = AsyncMock(side_effect=BrokerConnectionError("down"))
+        broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
         msg = make_message(_default_payload())
         outcome = await worker._lock_gate.apply(msg, self._ctx(FormatStringLockTask, args=[], kwargs={}))
         assert outcome is Redelivered
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
 
     def test_render_lock_name_binds_run_signature(self):
         assert render_lock_name("user-{user_id}", FormatStringLockTask, [7, 1], {}) == "user-7"
