@@ -220,7 +220,7 @@ chaos-tests:
           - src/swarmq/contracts/**
         compare_to: refs/heads/main
       when: manual
-      allow_failure: true  # → false nach dem Validierungslauf (U2 Schritt 4)
+      allow_failure: false  # Validierungslauf auf dem dind-Runner: Pipeline 2795414492 grün (2026-08-27)
     - when: manual
       allow_failure: true
   before_script:
