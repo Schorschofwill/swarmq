@@ -93,8 +93,8 @@ def broker():
     b = MagicMock(spec=RabbitMQBroker)
     for m in (
         "connect", "declare_queue", "consume", "ack", "nack", "close",
-        "cancel_consume", "publish_to_delay_queue",
-        "publish_to_dead_letter_queue",
+        "cancel_consume", "retry_later",
+        "dead_letter",
     ):
         setattr(b, m, AsyncMock())
     return b

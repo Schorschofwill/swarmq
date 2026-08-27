@@ -198,7 +198,9 @@ async def test_task_exception_stores_error_result(broker, backend, config):
     assert stored["is_error"] is True
     assert "boom" in stored["error_message"]
     assert stored["result"] is None
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: der Dead-Letter-Pfad bestätigt das Original selbst
+    broker.dead_letter.assert_awaited_once()
+    broker.ack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +236,9 @@ async def test_pre_execution_raises_skips_post(broker, backend, config):
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
     assert "pre failed" in stored["error_message"]
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: der Dead-Letter-Pfad bestätigt das Original selbst
+    broker.dead_letter.assert_awaited_once()
+    broker.ack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +267,9 @@ async def test_post_execution_raises_overwrites_success(broker, backend, config)
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
     assert "post failed" in stored["error_message"]
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: der Dead-Letter-Pfad bestätigt das Original selbst
+    broker.dead_letter.assert_awaited_once()
+    broker.ack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +296,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
     assert stored["is_error"] is True
     assert stored["result"] is None
     broker.ack.assert_awaited_once_with(msg)
-    broker.nack.assert_not_awaited()
+    broker.redeliver.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +310,7 @@ async def test_unknown_task_nacked_no_requeue(worker, broker, backend):
 
     await worker._handle_message(msg)
 
-    broker.nack.assert_awaited_once_with(msg, requeue=False)
+    broker.route_via_dlx.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
@@ -323,7 +329,7 @@ async def test_backend_error_nacks_with_requeue(worker, broker, backend):
 
     await worker._handle_message(msg)
 
-    broker.nack.assert_awaited_once_with(msg, requeue=True)
+    broker.redeliver.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
 
 
@@ -338,7 +344,7 @@ async def test_invalid_json_nacked_no_requeue(worker, broker, backend):
 
     await worker._handle_message(msg)
 
-    broker.nack.assert_awaited_once_with(msg, requeue=False)
+    broker.route_via_dlx.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
@@ -355,7 +361,7 @@ async def test_missing_task_name_nacked_no_requeue(worker, broker, backend):
 
     await worker._handle_message(msg)
 
-    broker.nack.assert_awaited_once_with(msg, requeue=False)
+    broker.route_via_dlx.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
@@ -419,7 +425,9 @@ async def test_semaphore_released_on_error(broker, backend, config):
         timeout=2.0,
     )
 
-    assert broker.ack.await_count == 2
+    # U8: beide Fehler gehen über dead_letter (bestätigt selbst)
+    assert broker.dead_letter.await_count == 2
+    broker.ack.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -731,14 +739,14 @@ async def test_fire_and_forget_exception_logged_no_nack(broker, backend, config)
 
     msg = make_message(_default_payload(name="fnf_fail", args=[], kwargs={}))
 
-    with patch("swarmq.worker.pipeline.logger") as mock_logger:
+    with patch("swarmq.worker.execution.logger") as mock_logger:
         await w._handle_message(msg)
 
         # Error must be logged
         mock_logger.error.assert_called()
 
     # nack must NOT be called (message was already acked)
-    broker.nack.assert_not_awaited()
+    broker.redeliver.assert_not_awaited()
     # ack was called exactly once (the early ack)
     broker.ack.assert_awaited_once_with(msg)
 
@@ -806,16 +814,17 @@ async def test_retry_first_failure_publishes_to_delay_queue(broker, backend, con
     await w._handle_message(msg)
 
     # Should publish to delay queue, not store error result
-    broker.publish_to_delay_queue.assert_awaited_once()
-    call_kwargs = broker.publish_to_delay_queue.call_args
-    queue_name = call_kwargs[0][0]
-    assert queue_name == "default"
+    broker.retry_later.assert_awaited_once()
+    call_kwargs = broker.retry_later.call_args
+    # U8 (KTD2): retry_later erhält die Zustellung selbst — das Ziel ist das
+    # Verzögerungsziel der Zustellungs-Queue, nicht mehr die Body-Queue.
+    assert call_kwargs[0][0] is msg
     # delay_ms should be within jitter bounds: base=1.0, attempt=0
     # exponential: 1.0 * 2^0 * jitter(1,2) = [1.0, 2.0] seconds = [1000, 2000] ms
     delay_ms = call_kwargs.kwargs["delay_ms"]
     assert 1000 <= delay_ms <= 2000
-    # Original message acked
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: retry_later bestätigt das Original selbst
+    broker.ack.assert_not_awaited()
     # No error result stored
     backend.store_result.assert_not_awaited()
 
@@ -843,12 +852,12 @@ async def test_retry_count_incremented_in_headers(broker, backend, config):
     )
     await w._handle_message(msg)
 
-    call_kwargs = broker.publish_to_delay_queue.call_args
+    call_kwargs = broker.retry_later.call_args
     headers = call_kwargs.kwargs["headers"]
     assert headers["x-swarmq-retry-count"] == 1
 
     # Second attempt (retry_count=1 in headers)
-    broker.publish_to_delay_queue.reset_mock()
+    broker.retry_later.reset_mock()
     broker.ack.reset_mock()
     msg2 = make_message(
         _default_payload(name="retry_inc", args=[], kwargs={}),
@@ -856,7 +865,7 @@ async def test_retry_count_incremented_in_headers(broker, backend, config):
     )
     await w._handle_message(msg2)
 
-    call_kwargs2 = broker.publish_to_delay_queue.call_args
+    call_kwargs2 = broker.retry_later.call_args
     headers2 = call_kwargs2.kwargs["headers"]
     assert headers2["x-swarmq-retry-count"] == 2
 
@@ -885,13 +894,14 @@ async def test_retries_exhausted_sends_to_dlq(broker, backend, config):
     await w._handle_message(msg)
 
     # Should publish to DLQ
-    broker.publish_to_dead_letter_queue.assert_awaited_once()
-    dlq_call = broker.publish_to_dead_letter_queue.call_args
-    assert dlq_call[0][0] == "default"  # queue_name
+    broker.dead_letter.assert_awaited_once()
+    dlq_call = broker.dead_letter.call_args
+    assert dlq_call[0][0] is msg  # U8: dead_letter erhält die Zustellung selbst
     # Should NOT publish to delay queue
-    broker.publish_to_delay_queue.assert_not_awaited()
+    broker.retry_later.assert_not_awaited()
     # Original message acked
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -916,12 +926,13 @@ async def test_retry_exception_overrides_backoff_delay(broker, backend, config):
     )
     await w._handle_message(msg)
 
-    broker.publish_to_delay_queue.assert_awaited_once()
-    call_kwargs = broker.publish_to_delay_queue.call_args
+    broker.retry_later.assert_awaited_once()
+    call_kwargs = broker.retry_later.call_args
     delay_ms = call_kwargs.kwargs["delay_ms"]
     # Should be exactly 60 seconds = 60000 ms (no jitter)
     assert delay_ms == 60000
-    broker.ack.assert_awaited_once_with(msg)
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -947,10 +958,11 @@ async def test_noretry_exception_sends_to_dlq_directly(broker, backend, config):
     await w._handle_message(msg)
 
     # Should go to DLQ directly
-    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    broker.dead_letter.assert_awaited_once()
     # Should NOT retry
-    broker.publish_to_delay_queue.assert_not_awaited()
-    broker.ack.assert_awaited_once()
+    broker.retry_later.assert_not_awaited()
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -979,9 +991,10 @@ async def test_retry_exceptions_mismatch_sends_to_dlq(broker, backend, config):
     await w._handle_message(msg)
 
     # ValueError is not in retry_exceptions -> DLQ
-    broker.publish_to_dead_letter_queue.assert_awaited_once()
-    broker.publish_to_delay_queue.assert_not_awaited()
-    broker.ack.assert_awaited_once()
+    broker.dead_letter.assert_awaited_once()
+    broker.retry_later.assert_not_awaited()
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1010,9 +1023,10 @@ async def test_retry_exceptions_match_retries(broker, backend, config):
     await w._handle_message(msg)
 
     # ConnectionError matches retry_exceptions -> retry
-    broker.publish_to_delay_queue.assert_awaited_once()
-    broker.publish_to_dead_letter_queue.assert_not_awaited()
-    broker.ack.assert_awaited_once()
+    broker.retry_later.assert_awaited_once()
+    broker.dead_letter.assert_not_awaited()
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1053,13 +1067,14 @@ async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
     await w._handle_message(msg)
 
     # No retry — straight to terminal DLQ handling.
-    broker.publish_to_delay_queue.assert_not_awaited()
-    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()
     backend.store_result.assert_awaited_once()
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
     assert "error without retry" in stored["error_message"]
-    broker.ack.assert_awaited_once()
+    # U8: retry_later/dead_letter bestätigen das Original selbst
+    broker.ack.assert_not_awaited()
     assert len(dlq_signals) == 1
     assert dlq_signals[0]["task_name"] == "no_retry_default"
 
@@ -1090,8 +1105,8 @@ async def test_fire_and_forget_not_retried(broker, backend, config):
     await w._handle_message(msg)
 
     # FIRE_AND_FORGET: no retry, no DLQ publish, no error result
-    broker.publish_to_delay_queue.assert_not_awaited()
-    broker.publish_to_dead_letter_queue.assert_not_awaited()
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_not_awaited()
     backend.store_result.assert_not_awaited()
     # Ack happened once (the early FIRE_AND_FORGET ack)
     broker.ack.assert_awaited_once()
@@ -1155,7 +1170,7 @@ async def test_publish_notification_after_dlq(broker, backend, config):
     )
     await w._handle_message(msg)
 
-    broker.publish_to_dead_letter_queue.assert_awaited_once()
+    broker.dead_letter.assert_awaited_once()
     backend.publish_notification.assert_awaited_once_with("abc-123")
 
 
@@ -1407,7 +1422,7 @@ class TestWorkerMiddlewareAndSignals:
         assert call_kwargs["delay"] > 0
         assert isinstance(call_kwargs["exception"], RuntimeError)
         # retry path hit the delay queue
-        broker.publish_to_delay_queue.assert_awaited_once()
+        broker.retry_later.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_on_error_and_on_retry_both_fire_on_retried_failure(
@@ -1490,7 +1505,7 @@ class TestWorkerMiddlewareAndSignals:
 
         mw_chain.run_on_error.assert_awaited_once()
         mw_chain.run_on_retry.assert_not_awaited()
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        broker.dead_letter.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_on_retry_message_dict_retry_count_matches_parameter(
@@ -1948,7 +1963,7 @@ class TestWorkerMiddlewareAndSignals:
         msg = make_message(_default_payload())
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
 
 
@@ -1984,7 +1999,7 @@ class TestCancelMonitorEdgeCases:
         reasons: list[str | None] = [None]
 
         try:
-            await worker._cancel_monitor(
+            await worker._executor._cancel_monitor(
                 "task-abc", run_task,
                 lambda r: reasons.__setitem__(0, r) if reasons[0] is None else None,
             )
@@ -2014,7 +2029,7 @@ class TestCancelMonitorEdgeCases:
         # Wrap in wait_for with a tight timeout: if the monitor blocks
         # for the full 1.0 s poll interval it will time out here.
         await asyncio.wait_for(
-            worker._cancel_monitor(
+            worker._executor._cancel_monitor(
                 "task-abc", run_task,
                 lambda r: reasons.__setitem__(0, r),
             ),
@@ -2125,7 +2140,7 @@ class TestRunningCancelInHandleMessage:
         # Flag was cleared after result-write.
         backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
         broker.ack.assert_awaited_once()
-        broker.nack.assert_not_awaited()
+        broker.redeliver.assert_not_awaited()
 
     async def test_cancel_during_run_dispatches_task_cancelled_signal(
         self, slow_worker, backend,
@@ -2193,8 +2208,8 @@ class TestRunningCancelInHandleMessage:
         await w._handle_message(msg)
 
         # Publish to delay queue (retry) must NOT happen.
-        broker.publish_to_delay_queue.assert_not_awaited()
-        broker.publish_to_dead_letter_queue.assert_not_awaited()
+        broker.retry_later.assert_not_awaited()
+        broker.dead_letter.assert_not_awaited()
         # Cancel result stored.
         backend.store_result.assert_awaited_once()
         stored_bytes = backend.store_result.await_args.args[1]
@@ -2462,7 +2477,7 @@ class TestWorkerUniqueRelease:
     async def test_retry_path_preserves_unique_header_and_skips_release(
         self, broker, backend, config,
     ):
-        """Retry → publish_to_delay_queue must carry x-swarmq-unique-hash
+        """Retry → retry_later must carry x-swarmq-unique-hash
         forward AND the finally must NOT release (redelivery still owns
         the flag)."""
         class RetryTask(Task):
@@ -2487,8 +2502,8 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.publish_to_delay_queue.assert_awaited_once()
-        forwarded_headers = broker.publish_to_delay_queue.await_args.kwargs[
+        broker.retry_later.assert_awaited_once()
+        forwarded_headers = broker.retry_later.await_args.kwargs[
             "headers"
         ]
         # Header merge preserves the original dedup identity.
@@ -2524,9 +2539,9 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
+        broker.dead_letter.assert_awaited_once()
         backend.release_unique.assert_awaited()
-        dlq_headers = broker.publish_to_dead_letter_queue.await_args.kwargs[
+        dlq_headers = broker.dead_letter.await_args.kwargs[
             "headers"
         ]
         assert dlq_headers["x-swarmq-unique-hash"] == self.HASH_DLQ
@@ -2563,8 +2578,8 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.publish_to_delay_queue.assert_awaited_once()
-        headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
+        broker.retry_later.assert_awaited_once()
+        headers = broker.retry_later.await_args.kwargs["headers"]
         assert headers["x-swarmq-unique-hash"] == self.HASH_RATE_LIMIT
         backend.release_unique.assert_not_awaited()
 
@@ -2575,7 +2590,7 @@ class TestWorkerUniqueRelease:
         msg = self._unique_message(unique_until="completion")
         worker._shutdown_event.set()
         await worker._handle_message(msg)
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         release_backend.release_unique.assert_not_awaited()
 
     async def test_pre_start_cancel_releases_unique(
@@ -2635,7 +2650,7 @@ class TestWorkerUniqueRelease:
         )
         await worker._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         release_backend.release_unique.assert_awaited_once()
         call_args = release_backend.release_unique.await_args.args
         assert call_args[0] == self.HASH_TNF
@@ -2664,7 +2679,7 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         backend.release_unique.assert_awaited_once()
 
     async def test_malformed_unique_hash_header_is_ignored(
@@ -2704,8 +2719,9 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.publish_to_dead_letter_queue.assert_awaited_once()
-        broker.ack.assert_awaited_once_with(msg)
+        broker.dead_letter.assert_awaited_once()
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        broker.ack.assert_not_awaited()
         backend.release_unique.assert_awaited()
 
     async def test_lock_conflict_requeue_preserves_header_skips_release(
@@ -2728,8 +2744,8 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.publish_to_delay_queue.assert_awaited_once()
-        headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
+        broker.retry_later.assert_awaited_once()
+        headers = broker.retry_later.await_args.kwargs["headers"]
         assert headers["x-swarmq-unique-hash"] == "5" * 64
         backend.release_unique.assert_not_awaited()
 
@@ -2809,9 +2825,9 @@ class TestWorkerUniqueRelease:
         await w._handle_message(msg)
 
         # Rate-limit path re-published the message — no release at all.
-        broker.publish_to_delay_queue.assert_awaited_once()
+        broker.retry_later.assert_awaited_once()
         backend.release_unique.assert_not_awaited()
-        headers = broker.publish_to_delay_queue.await_args.kwargs["headers"]
+        headers = broker.retry_later.await_args.kwargs["headers"]
         assert headers["x-swarmq-unique-hash"] == "3" * 64
         assert headers["x-swarmq-unique-until"] == "start"
 
@@ -2840,7 +2856,7 @@ class TestBodySizeCap:
             await worker._handle_message(msg)
 
         mock_decode.assert_not_called()
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
 
     async def test_body_at_cap_still_processed(self, worker, broker, backend):
         """Genau am Cap: normal verarbeiten (Grenze ist exklusiv)."""

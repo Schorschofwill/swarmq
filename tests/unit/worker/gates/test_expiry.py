@@ -43,7 +43,7 @@ class TestTaskInfoMaxAge:
 def _make_worker() -> Worker:
     cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
     broker = MagicMock()
-    broker.publish_to_dead_letter_queue = AsyncMock()
+    broker.dead_letter = AsyncMock()
     broker.ack = AsyncMock()
     backend = MagicMock()
     backend.store_result = AsyncMock()
@@ -73,7 +73,7 @@ class TestCheckMaxAgeExpired:
         msg = _expiry_message(int(time.time()) - 99999)
         handled = await _apply(w, msg, ti, task_id="id")
         assert handled is Continue
-        w._broker.publish_to_dead_letter_queue.assert_not_awaited()
+        w._broker.dead_letter.assert_not_awaited()
 
     async def test_returns_false_when_header_missing(self):
         """Pre-R4.4 producers (or external) omit the header — treat as
@@ -113,8 +113,9 @@ class TestCheckMaxAgeExpired:
         msg = _expiry_message(int(time.time()) - 120)  # 120s old, limit 60
         handled = await _apply(w, msg, ti, task_id="id-xyz")
         assert handled == Terminal.never_release()
-        w._broker.publish_to_dead_letter_queue.assert_awaited_once()
-        w._broker.ack.assert_awaited_once()
+        w._broker.dead_letter.assert_awaited_once()
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        w._broker.ack.assert_not_awaited()
         assert len(captured) == 1
         assert captured[0]["task_id"] == "id-xyz"
         assert captured[0]["max_age_s"] == 60
@@ -149,8 +150,9 @@ class TestCheckMaxAgeExpired:
         assert handled == Terminal.never_release()
         w._backend.store_result.assert_not_awaited()
         # DLQ + ack continue regardless.
-        w._broker.publish_to_dead_letter_queue.assert_awaited_once()
-        w._broker.ack.assert_awaited_once()
+        w._broker.dead_letter.assert_awaited_once()
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        w._broker.ack.assert_not_awaited()
 
     async def test_expired_dlq_route_tolerates_backend_failure(self):
         w = _make_worker()
@@ -163,5 +165,6 @@ class TestCheckMaxAgeExpired:
         handled = await _apply(w, msg, ti, task_id="id")
         assert handled == Terminal.never_release()
         # DLQ + ack still happen even though store_result failed.
-        w._broker.publish_to_dead_letter_queue.assert_awaited_once()
-        w._broker.ack.assert_awaited_once()
+        w._broker.dead_letter.assert_awaited_once()
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        w._broker.ack.assert_not_awaited()

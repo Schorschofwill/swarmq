@@ -16,25 +16,19 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    import aio_pika
 
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
 
-from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import (
-    CANCEL_REASON_CANCEL,
-    CANCEL_REASON_TIMEOUT,
-    CancelReason,
     build_error_result_dict,
     build_result_dict,
 )
 from swarmq.config import SwarmQConfig
 from swarmq.dishka import (
     _MISSING,
-    TaskContext,
     get_registered_container,
     request_container,
 )
@@ -60,10 +54,7 @@ _LockEntry = tuple[str, str, int]
 from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
-    NoRetry,
     ResultSerializationError,
-    Retry,
-    SoftTimeoutError,
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
@@ -77,7 +68,8 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_json, decode_result, encode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.execution import TaskExecutor
+from swarmq.worker.gates import GateContext, GateDeps, route_via_dlx
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
@@ -89,6 +81,7 @@ from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten
 from swarmq.worker.gates.rate_limit import RateLimitGate
 from swarmq.worker.gates.schedfire import SchedfireGate
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
+from swarmq.worker.retry import RetryHandler
 from swarmq.workflow_orchestration import (
     ChordManager,
     WorkflowAdvancer,
@@ -198,6 +191,8 @@ class Worker:
         self._expiry_gate = ExpiryGate(gate_deps)
         self._rate_limit_gate = RateLimitGate(gate_deps)
         self._lock_gate = LockGate(gate_deps)
+        self._executor = TaskExecutor(gate_deps)
+        self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         # Phase 3b.3: detached lock-release tasks. The shield pattern
         # around _release_acquired_locks protects against run_task
         # cancellation (inner-cancel). Against graceful-shutdown
@@ -934,7 +929,7 @@ class Worker:
                 cap_bytes=self._config.max_message_body_bytes,
                 hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
             )
-            await self._broker.nack(message, requeue=False)
+            await route_via_dlx(self._broker, message)
             return
 
         # 1-2. Deserialize message body
@@ -964,7 +959,7 @@ class Worker:
             logger.error("deserialize_failed", error=str(exc))
             # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
             # unknown). Accepted limitation — flag self-heals via TTL.
-            await self._broker.nack(message, requeue=False)
+            await route_via_dlx(self._broker, message)
             return
 
         # Bind structured context for all log calls during this task
@@ -1031,7 +1026,7 @@ class Worker:
                 # nack(requeue=True): broker redelivers with headers
                 # intact → keep the flag so redelivery can release.
                 outcome = Redelivered
-                await self._broker.nack(message, requeue=True)
+                await self._broker.redeliver(message)
                 return
 
             # 4-5. Look up task in registry
@@ -1039,7 +1034,7 @@ class Worker:
                 task_class = self._registry.get(task_name)
             except TaskNotFoundError:
                 logger.error("task_not_found")
-                await self._broker.nack(message, requeue=False)
+                await route_via_dlx(self._broker, message)
                 return
 
             task_info = task_class.task_info
@@ -1139,226 +1134,20 @@ class Worker:
                 # Nach dem FAF-Ack gibt es nichts mehr zu nacken (KTD5); vorher
                 # führt der heutige DLX-Fallback über die Broker-Konfiguration.
                 if not acked_before_execute:
-                    await self._broker.nack(message, requeue=False)
+                    await route_via_dlx(self._broker, message)
                 return
 
-            # Pre-execute hooks
-            await chain.run_pre_execute(message_dict)
-            await self._signal_dispatcher.dispatch(
-                Signal.TASK_STARTED,
-                task_id=task_id, task_name=task_name, queue=queue,
-            )
-            start_time = time.monotonic()
+            # 6. Ausführung (U8): Lifecycle, Timeouts, Cancel-Monitor,
+            # Middleware-Hooks und Signale leben in worker/execution.py.
+            execution = await self._executor.execute(ctx, message_dict, chain)
+            result_value = execution.result_value
+            is_error = execution.is_error
+            is_cancelled = execution.is_cancelled
+            error_message = execution.error_message
+            task_exception = execution.task_exception
+            _di_scope = execution.di_scope
+            _di_token = execution.di_token
 
-            # 6. Create task instance, run lifecycle
-            task_instance = task_class()
-
-            # R3.7 progress-tracking wiring. Task.update_progress relies
-            # on these four instance attributes; if the task never calls
-            # update_progress, setting them is a handful of wasted cycles.
-            # Resolving result_ttl once here mirrors the cascade used
-            # further below for the result-storage path (task_info →
-            # config → 86400 fallback).
-            progress_result_ttl = task_info.result_ttl
-            if progress_result_ttl is None:
-                if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                    progress_result_ttl = 0
-                else:
-                    progress_result_ttl = self._config.result_ttl
-            if progress_result_ttl in (None, 0):
-                # result_ttl=0 means "don't store results" — progress
-                # gets the default 24h fallback so it's still inspectable
-                # during the task's run.
-                progress_result_ttl = 86400
-            task_instance._task_id = task_id
-            task_instance._backend = self._backend
-            task_instance._task_start_time = time.monotonic()
-            task_instance._result_ttl_ms = progress_result_ttl * 1000
-
-            result_value = None
-            is_error = False
-            is_cancelled = False
-            error_message = ""
-            task_exception = None
-
-            # Optional Dishka DI: open a REQUEST scope spanning the whole
-            # task lifecycle and expose the per-task TaskContext to providers.
-            # Set the ContextVar here — BEFORE the run coroutine's
-            # asyncio.create_task below — so the run task copies it into its
-            # context (the injected lifecycle methods read it via their
-            # container_getter). Inactive (no perf/behaviour change) when no
-            # container was registered via setup_dishka. The scope is torn
-            # down in the finally with the captured exception (so yield
-            # finalizers can commit/rollback) using the detached-shield
-            # pattern that protects against the shutdown-cancel path.
-            _di_container = get_registered_container()
-            if _di_container is not _MISSING:
-                _di_scope = _di_container(
-                    context={
-                        TaskContext: TaskContext(
-                            task_id=task_id,
-                            task_name=task_name,
-                            queue=queue,
-                            retry_count=retry_count,
-                        )
-                    }
-                )
-                _di_request = await _di_scope.__aenter__()
-                _di_token = request_container.set(_di_request)
-
-            try:
-                await task_instance.pre_execution()
-            except Exception as exc:
-                is_error = True
-                error_message = str(exc)
-                task_exception = exc
-                if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                    logger.error("fire_and_forget_error", error=error_message)
-            else:
-                run_coro = task_instance.run(*args, **kwargs)
-                if task_info.soft_timeout is not None:
-                    run_coro = asyncio.wait_for(
-                        run_coro, timeout=task_info.soft_timeout
-                    )
-
-                run_task = asyncio.create_task(run_coro)
-
-                # Per-handler cancel-reason box (Phase 3b.3). Both the
-                # hard-timeout watchdog and the cancel monitor write via
-                # set_reason_if_unset — first writer wins. The
-                # CancelledError branch below reads cancel_reason[0] to
-                # decide which path to take.
-                cancel_reason: list[CancelReason | None] = [None]
-
-                def set_reason_if_unset(reason: CancelReason) -> None:
-                    if cancel_reason[0] is None:
-                        cancel_reason[0] = reason
-
-                watchdog = None
-                monitor = asyncio.create_task(
-                    self._cancel_monitor(task_id, run_task, set_reason_if_unset)
-                )
-                try:
-                    if task_info.hard_timeout is not None:
-                        watchdog = asyncio.create_task(
-                            self._hard_timeout_watchdog(
-                                run_task,
-                                task_info.hard_timeout,
-                                set_reason_if_unset,
-                            )
-                        )
-
-                    try:
-                        result_value = await run_task
-                    except TimeoutError:
-                        soft_err = SoftTimeoutError(
-                            f"soft timeout after {task_info.soft_timeout}s"
-                        )
-                        is_error = True
-                        error_message = f"SoftTimeoutError: {soft_err}"
-                        task_exception = soft_err
-                        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                            logger.error(
-                                "fire_and_forget_error", error=error_message
-                            )
-                    except asyncio.CancelledError:
-                        # Discriminate user-cancel vs hard-timeout via
-                        # cancel_reason box (Phase 3b.3).  The box is
-                        # written BEFORE run_task.cancel() by whichever
-                        # source fires first — first-writer-wins.
-                        if cancel_reason[0] == CANCEL_REASON_CANCEL:
-                            is_cancelled = True
-                            # No task_exception / error_message: cancel
-                            # bypasses the error pipeline entirely.
-                        else:
-                            # "timeout" or None (bare CancelledError):
-                            # fall through to the existing hard-timeout
-                            # path.
-                            hard_err_msg = (
-                                f"hard timeout after {task_info.hard_timeout}s"
-                            )
-                            is_error = True
-                            error_message = hard_err_msg
-                            task_exception = RuntimeError(hard_err_msg)
-                            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                                logger.error(
-                                    "fire_and_forget_error",
-                                    error=error_message,
-                                )
-                    except Exception as exc:
-                        is_error = True
-                        error_message = str(exc)
-                        task_exception = exc
-                        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                            logger.error(
-                                "fire_and_forget_error", error=error_message
-                            )
-                    else:
-                        try:
-                            await task_instance.post_execution()
-                        except Exception as exc:
-                            is_error = True
-                            error_message = str(exc)
-                            task_exception = exc
-                            result_value = None
-                            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                                logger.error(
-                                    "fire_and_forget_error", error=error_message
-                                )
-                finally:
-                    # Outer finally: guarantees watchdog + monitor cleanup
-                    # regardless of which path was taken (success, soft/
-                    # hard timeout, user cancel, or any other exception
-                    # from run_task / post_execution).
-                    if watchdog is not None and not watchdog.done():
-                        watchdog.cancel()
-                        try:
-                            await watchdog
-                        except asyncio.CancelledError:
-                            pass
-                    if not monitor.done():
-                        monitor.cancel()
-                        try:
-                            await monitor
-                        except asyncio.CancelledError:
-                            pass
-
-            # Emit post-execute / on-error / on-cancel hooks now that
-            # the run lifecycle is resolved.
-            duration_ms = (time.monotonic() - start_time) * 1000.0
-            if is_cancelled:
-                # Cancel bypasses the error/success pipeline: no
-                # on_error, no post_execute hooks — cancel is not an
-                # error from middleware's perspective.  Only the
-                # TASK_CANCELLED signal fires.
-                await self._signal_dispatcher.dispatch(
-                    Signal.TASK_CANCELLED,
-                    task_id=task_id,
-                    task_name=task_name,
-                    queue=queue,
-                )
-            elif is_error and task_exception is not None:
-                await chain.run_on_error(
-                    message_dict, exception=task_exception
-                )
-                await self._signal_dispatcher.dispatch(
-                    Signal.TASK_FAILED,
-                    task_id=task_id,
-                    task_name=task_name,
-                    queue=queue,
-                    exception=str(task_exception),
-                )
-            else:
-                await chain.run_post_execute(
-                    message_dict, result=result_value
-                )
-                await self._signal_dispatcher.dispatch(
-                    Signal.TASK_COMPLETED,
-                    task_id=task_id,
-                    task_name=task_name,
-                    queue=queue,
-                    duration_ms=duration_ms,
-                )
 
             # For FIRE_AND_FORGET with errors: skip result/retry pipeline.
             # For FIRE_AND_FORGET cancels: also clear the flag before we
@@ -1423,32 +1212,14 @@ class Worker:
                     error_message = ""
                     task_exception = None
                 else:
-                    should_retry = await self._evaluate_retry(
-                        message,
-                        task_info,
-                        task_exception,
-                        queue,
-                        task_id,
-                        task_name,
-                        error_message,
-                        message_dict,
-                        chain,
+                    # U8: Retry-Bewertung und Dead-Letter leben in
+                    # worker/retry.py. Beide Wege sind fuer den finally
+                    # ``Redelivered`` (Dead-Letter gibt inline frei; das
+                    # In-Flight-Loeschen ist dort folgenlos, P0-B).
+                    outcome = await self._retry_handler.evaluate(
+                        message, ctx, task_exception, error_message, message_dict, chain
                     )
-                    if should_retry:
-                        # Retry path covers two outcomes:
-                        #   * delay-queue republish (non-terminal —
-                        #     header preserved, next delivery runs the
-                        #     full pipeline again),
-                        #   * _send_to_dlq (terminal — releases
-                        #     inline).
-                        # Either way the finally must NOT release:
-                        # non-terminal would strand the redelivered
-                        # message, terminal already released inline.
-                        # Same for schedfire: clear the in-flight key so
-                        # the retry copy re-runs (P0-B); on the DLQ branch
-                        # over-clearing is harmless (no redelivery).
-                        outcome = Redelivered
-                        return
+                    return
 
             # Build result dict. is_cancelled is a new key in Phase 3b.3;
             # Client._unpack reads it via .get() so pre-R3.6 consumers
@@ -1531,7 +1302,7 @@ class Worker:
                     # from scratch; keep the flag so next terminal
                     # path can release it.
                     outcome = Redelivered
-                    await self._broker.nack(message, requeue=True)
+                    await self._broker.redeliver(message)
                 return
 
             try:
@@ -1599,7 +1370,7 @@ class Worker:
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         # Transient — redelivery retries the idempotent advance.
                         outcome = Redelivered
-                        await self._broker.nack(message, requeue=True)
+                        await self._broker.redeliver(message)
                     return
                 except BrokerConnectionError:
                     # A workflow-step publish failed transiently (e.g. a
@@ -1611,7 +1382,7 @@ class Worker:
                     logger.error("workflow_advance_broker_error", workflow_id=wf_id)
                     if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                         outcome = Redelivered
-                        await self._broker.nack(message, requeue=True)
+                        await self._broker.redeliver(message)
                     return
                 except Exception as exc:
                     # Unexpected advance bug: fail the workflow so get() raises
@@ -1731,273 +1502,3 @@ class Worker:
             # 12b. Release semaphore
             self._semaphore.release()
             structlog.contextvars.clear_contextvars()
-
-    async def _hard_timeout_watchdog(
-        self,
-        run_task: asyncio.Task,
-        timeout: float,
-        set_reason_if_unset: Callable[[str], None] | None = None,
-    ) -> None:
-        """Sleep for *timeout* seconds, then cancel *run_task*.
-
-        The optional *set_reason_if_unset* callback writes ``"timeout"``
-        into the per-handler cancel-reason box (Phase 3b.3) so the
-        CancelledError branch in _handle_message can distinguish a
-        hard-timeout from a user cancel.  Omitted arg keeps the old
-        behaviour for tests that instantiate the watchdog directly.
-        """
-        await asyncio.sleep(timeout)
-        if set_reason_if_unset is not None:
-            set_reason_if_unset(CANCEL_REASON_TIMEOUT)
-        run_task.cancel()
-
-    async def _cancel_monitor(
-        self,
-        task_id: str,
-        run_task: asyncio.Task,
-        set_reason_if_unset: Callable[[str], None],
-    ) -> None:
-        """Poll Valkey for a cancel flag and cancel *run_task* when set.
-
-        Polling interval: ``self._config.cancel_poll_interval``.  Uses
-        ``asyncio.wait(timeout=…)`` to short-circuit the sleep as soon
-        as *run_task* completes — a vanilla ``asyncio.sleep`` would
-        keep the coroutine alive for a full poll interval past
-        run_task completion.
-
-        Transient errors from ``backend.is_cancelled`` are logged as a
-        warning and do not break the loop — the next poll re-tries.
-
-        The caller is responsible for cancelling and awaiting this
-        coroutine in its finally block.
-        """
-        poll_interval = self._config.cancel_poll_interval
-        while not run_task.done():
-            try:
-                done, _ = await asyncio.wait(
-                    {run_task}, timeout=poll_interval
-                )
-                if run_task in done:
-                    # Task completed on its own — stop polling.
-                    return
-                if await self._backend.is_cancelled(
-                    task_id, op_timeout=self._config.backend_op_timeout,
-                ):
-                    set_reason_if_unset(CANCEL_REASON_CANCEL)
-                    run_task.cancel()
-                    return
-            except asyncio.CancelledError:
-                # Handler finally cancels us explicitly — propagate.
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "cancel_monitor_error",
-                    task_id=task_id,
-                    error=str(exc),
-                )
-                # Fall through — the next iteration's asyncio.wait
-                # already waits poll_interval, so no extra sleep is
-                # needed.  A prior version slept an additional
-                # poll_interval here, doubling the effective latency
-                # between checks during transient Valkey errors.
-
-    async def _evaluate_retry(
-        self,
-        message: aio_pika.abc.AbstractIncomingMessage,
-        task_info: TaskInfo,
-        exc: Exception,
-        queue: str,
-        task_id: str,
-        task_name: str,
-        error_message: str,
-        message_dict: MessageContext,
-        chain: MiddlewareChain,
-    ) -> bool:
-        """Evaluate whether to retry a failed task.
-
-        Returns True if the message was handled (retried or sent to DLQ),
-        meaning the caller should return early. Returns False if the
-        caller should proceed with normal error-result storage.
-        """
-        # 1. NoRetry -> direct DLQ
-        if isinstance(exc, NoRetry):
-            await self._send_to_dlq(message, queue, task_id, task_name, error_message)
-            return True
-
-        # 2. Check retry_exceptions filter
-        if task_info.retry_exceptions is not None and not isinstance(exc, task_info.retry_exceptions):
-            await self._send_to_dlq(message, queue, task_id, task_name, error_message)
-            return True
-
-        # 3. Read retry count from message headers
-        retry_count = message.headers.get("x-swarmq-retry-count", 0)
-
-        # 4. Check if retries exhausted
-        if retry_count >= task_info.max_retries:
-            await self._send_to_dlq(message, queue, task_id, task_name, error_message)
-            return True
-
-        # 5. Calculate delay
-        if isinstance(exc, Retry) and exc.delay is not None:
-            delay_seconds = exc.delay
-        else:
-            delay_seconds = calculate_backoff(
-                retry_count,
-                task_info.retry_backoff,
-                task_info.retry_base_delay,
-                self._config.retry_max_delay,
-            )
-
-        delay_ms = int(delay_seconds * 1000)
-
-        # 5b. Middleware + signal hooks fire BEFORE publish_to_delay_queue.
-        # Synchronize retry_count in message_dict with the on_retry parameter:
-        # both represent the NEW attempt number (the retry we're about to do).
-        message_dict["retry_count"] = retry_count + 1
-        await chain.run_on_retry(
-            message_dict,
-            exception=exc,
-            retry_count=retry_count + 1,
-            delay=delay_seconds,
-        )
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_RETRYING,
-            task_id=task_id,
-            task_name=task_name,
-            queue=queue,
-            retry_count=retry_count + 1,
-            delay=delay_seconds,
-        )
-
-        # 6. Publish to delay queue with incremented retry count.
-        # R3.5 Unit 11: merge original headers so x-swarmq-unique-hash
-        # (and any future stage-specific header) survives redelivery.
-        # Otherwise the flag would zombie in Valkey until TTL while the
-        # retry succeeds and the terminal-release finds no header to
-        # release on. Same merge pattern as rate-limit (worker.py ~208)
-        # and lock-conflict requeue (worker.py ~443).
-        headers = {**(dict(message.headers) if message.headers else {})}
-        headers["x-swarmq-retry-count"] = retry_count + 1
-        headers["x-swarmq-traceback"] = error_message
-        try:
-            await self._broker.publish_to_delay_queue(
-                queue, message.body, delay_ms=delay_ms, headers=headers
-            )
-            await self._broker.ack(message)
-        except Exception as broker_exc:
-            logger.error("retry_publish_failed", error=str(broker_exc))
-            try:
-                await self._broker.nack(message, requeue=True)
-            except Exception:
-                pass
-            return True
-        logger.info(
-            "task_retrying",
-            retry_count=retry_count + 1,
-            max_retries=task_info.max_retries,
-            delay_ms=delay_ms,
-        )
-        return True
-
-    async def _send_to_dlq(
-        self,
-        message,
-        queue: str,
-        task_id: str,
-        task_name: str,
-        error_message: str,
-    ) -> None:
-        """Store error result in backend, publish to .XQ, and ack original message."""
-        # Store error result so callers of get_result() get a response
-        result_data = build_error_result_dict(
-            task_id=task_id, queue=queue, task_name=task_name,
-            error_message=error_message,
-        )
-        try:
-            result_bytes = encode_result(result_data)
-            result_ttl = self._config.result_ttl or 86400
-            await self._backend.store_result(
-                task_id, result_bytes, result_ttl * 1000,
-                op_timeout=self._config.backend_op_timeout,
-            )
-            try:
-                await self._backend.publish_notification(task_id)
-            except Exception as exc:
-                logger.warning(
-                    "publish_notification_failed",
-                    error=str(exc),
-                    task_id=task_id,
-                )
-        except Exception as store_exc:
-            logger.warning("dlq_result_store_failed", error=str(store_exc))
-
-        # R4.1 fail-fast + liveness (U6): if this terminally-failed message is
-        # a workflow step, mark the whole workflow failed synchronously and
-        # wake any handle.get() waiter — so get() raises the error within
-        # bounded time instead of hanging to its timeout, and no subsequent
-        # step / chord body is enqueued. Same hook that wrote the error result
-        # above, so the two cannot diverge.
-        wf_id = self._extract_valid_workflow_id(message)
-        if wf_id is None and (message.headers or {}).get(
-            HEADER_WORKFLOW_ID
-        ) is not None:
-            logger.warning(
-                "workflow_id_header_invalid", task_id=task_id, task_name=task_name,
-            )
-        if wf_id is not None and self._workflow_advancer is not None:
-            try:
-                await self._workflow_advancer.fail(wf_id, "TaskError", error_message)
-            except Exception as wf_exc:
-                logger.warning(
-                    "workflow_fail_mark_failed", workflow_id=wf_id, error=str(wf_exc)
-                )
-
-        # R3.5 Unit 11: preserve all inbound headers so a message that
-        # reached DLQ via retry-exhaustion still carries its original
-        # x-swarmq-unique-hash for operator introspection (inline
-        # release below takes care of the actual flag cleanup).
-        headers = {**(dict(message.headers) if message.headers else {})}
-        headers["x-swarmq-traceback"] = error_message
-        # Fetch task_info for release-mode; unregistered tasks default
-        # to completion (see _maybe_release_unique contract).
-        try:
-            task_class = self._registry.get(task_name)
-            task_info_for_release = task_class.task_info
-        except TaskNotFoundError:
-            task_info_for_release = None
-        try:
-            await self._broker.publish_to_dead_letter_queue(
-                queue, message.body, headers=headers
-            )
-            await self._broker.ack(message)
-            # R3.5 ce-review P1 #3 / ADV-001: release AFTER successful
-            # ack. If ack raises, the except branch nacks with
-            # requeue=True, and redelivery's terminal path must still
-            # be able to release the flag. Releasing before ack would
-            # make the redelivered task run a second time within the
-            # dedup window.
-            await self._maybe_release_unique(
-                message, task_id, task_info_for_release
-            )
-            # 2026-06-02 audit P1-4: emit the terminal dead-letter signal
-            # AFTER a successful publish+ack so operators get a metric
-            # (outcome="dlq") and any custom handler fires exactly once
-            # per dead-lettered message. The nack(requeue=True) branch
-            # below is non-terminal, so it intentionally emits nothing.
-            await self._signal_dispatcher.dispatch(
-                Signal.TASK_DLQ,
-                task_id=task_id,
-                task_name=task_name,
-                queue=queue,
-                error=error_message,
-            )
-        except Exception as broker_exc:
-            logger.error("dlq_publish_failed", error=str(broker_exc))
-            try:
-                await self._broker.nack(message, requeue=True)
-            except Exception:
-                pass
-            # nack(requeue=True) is non-terminal — leave the flag so
-            # the redelivery's terminal path releases it. No release
-            # here.
-        logger.warning("task_sent_to_dlq", error=error_message)

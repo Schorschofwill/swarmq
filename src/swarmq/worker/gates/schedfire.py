@@ -47,7 +47,7 @@ class SchedfireGate:
             already_completed = await deps.backend.is_schedfire_completed(header_value)
         except BackendConnectionError:
             logger.error("schedfire_dedup_backend_error", schedfire_key=header_value, stage="completed_check")
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
             structlog.contextvars.clear_contextvars()
             return Redelivered
 
@@ -75,7 +75,7 @@ class SchedfireGate:
             claimed = await deps.backend.set_schedfire_inflight(header_value, inflight_ttl_ms)
         except BackendConnectionError:
             logger.error("schedfire_dedup_backend_error", schedfire_key=header_value, stage="inflight_claim")
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
             structlog.contextvars.clear_contextvars()
             return Redelivered
 

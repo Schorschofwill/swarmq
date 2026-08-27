@@ -72,7 +72,7 @@ _ALIAS_MODULES: frozenset[str] = frozenset(
 _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.broker.rabbitmq": ["connection", "delivery", "admin"],  # U5
     "swarmq.backend.valkey": ["connection", "results"],  # U17
-    "swarmq.worker": ["outcome", "pipeline"],  # U6
+    "swarmq.worker": ["outcome", "pipeline", "gates", "execution", "retry"],  # U6/U7/U8
 }
 
 

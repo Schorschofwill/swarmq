@@ -100,9 +100,9 @@ def rec() -> Recorder:
 def broker(rec: Recorder) -> MagicMock:
     b = MagicMock(spec=RabbitMQBroker)
     b.ack = rec.spy("broker.ack")
-    b.nack = rec.spy("broker.nack")
-    b.publish_to_delay_queue = rec.spy("broker.publish_to_delay_queue")
-    b.publish_to_dead_letter_queue = rec.spy("broker.publish_to_dead_letter_queue")
+    b.redeliver = rec.spy("broker.redeliver")
+    b.route_via_dlx = rec.spy("broker.route_via_dlx")
+    b.dead_letter = rec.spy("broker.dead_letter")
     return b
 
 
@@ -160,7 +160,7 @@ async def test_gates_run_in_fixed_order_and_ack_comes_last(broker, backend, rec)
 
     observed = [c for c in rec.calls if c in _GATE_ORDER]
     assert observed == _GATE_ORDER
-    assert "broker.nack" not in rec.calls
+    assert not any(c in rec.calls for c in ("broker.redeliver", "broker.route_via_dlx"))
 
 
 async def test_no_broker_verb_before_last_gate_returns_continue(broker, backend, rec) -> None:
@@ -187,8 +187,8 @@ async def test_faf_acks_exactly_once_and_no_verb_after_failure(broker, backend, 
     await worker._handle_message(msg)
 
     assert rec.calls.count("broker.ack") == 1
-    assert "broker.nack" not in rec.calls
-    assert "broker.publish_to_dead_letter_queue" not in rec.calls
+    assert not any(c in rec.calls for c in ("broker.redeliver", "broker.route_via_dlx"))
+    assert "broker.dead_letter" not in rec.calls
 
 
 async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(broker, backend, rec) -> None:
@@ -200,8 +200,8 @@ async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(br
 
     await worker._handle_message(msg)
 
-    assert rec.calls.count("broker.nack") == 1
-    broker.nack.assert_awaited_once_with(msg, requeue=True)
+    assert rec.calls.count("broker.redeliver") == 1
+    broker.redeliver.assert_awaited_once_with(msg)
     assert "broker.ack" not in rec.calls
     assert "backend.release_unique" not in rec.calls
     assert "backend.clear_schedfire_inflight" in rec.calls
@@ -235,10 +235,10 @@ async def test_terminal_already_released_does_not_release_twice(broker, backend,
 
     await worker._handle_message(msg)
 
-    assert "broker.publish_to_dead_letter_queue" in rec.calls
-    assert rec.calls.count("broker.ack") == 1
+    assert rec.calls.count("broker.dead_letter") == 1  # bestätigt das Original selbst (U8)
+    assert "broker.ack" not in rec.calls
     assert rec.calls.count("backend.release_unique") == 1
-    assert rec.index("broker.ack") < rec.index("backend.release_unique")
+    assert rec.index("broker.dead_letter") < rec.index("backend.release_unique")
 
 
 async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend, rec) -> None:
@@ -250,8 +250,8 @@ async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend
 
     await worker._handle_message(msg)
 
-    assert "broker.publish_to_dead_letter_queue" in rec.calls
-    assert rec.calls.count("broker.ack") == 1
+    assert rec.calls.count("broker.dead_letter") == 1  # bestätigt das Original selbst (U8)
+    assert "broker.ack" not in rec.calls
     assert "backend.release_unique" not in rec.calls
 
 

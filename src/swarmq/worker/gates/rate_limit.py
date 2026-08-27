@@ -1,9 +1,9 @@
 """Rate-Limit-Gate, Plan U7 — verbatim aus ``pipeline.py``.
 
 Limitiert → Zähler-Header ``x-swarmq-rate-limit-count`` erhöhen, Signal
-``TASK_RATE_LIMITED``, Rückstellung über das Verzögerungsziel + Ack;
-Outcome ``Redelivered``. Limiter- oder Publish-Fehler → ``nack(requeue=True)``
-(KTD3), ebenfalls ``Redelivered``.
+``TASK_RATE_LIMITED``, Rückstellung über ``retry_later`` (Verzögerungsziel der
+Zustellungs-Queue, KTD2); Outcome ``Redelivered``. Limiter- oder Publish-Fehler
+→ ``redeliver`` (KTD3), ebenfalls ``Redelivered``.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class RateLimitGate:
             # next worker that may have a healthier client. Important:
             # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
             logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc))
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
             return Redelivered
 
         if allowed:
@@ -80,10 +80,7 @@ class RateLimitGate:
         )
 
         try:
-            await deps.broker.publish_to_delay_queue(
-                ctx.queue, delivery.body, delay_ms=retry_after_ms, headers=original_headers
-            )
-            await deps.broker.ack(delivery)
+            await deps.broker.retry_later(delivery, delay_ms=retry_after_ms, headers=original_headers)
         except Exception as exc:
             # Broker failure between publish and ack would create a
             # duplicate (republished + redelivered original). nack with
@@ -91,6 +88,6 @@ class RateLimitGate:
             # delay-queue copy may still arrive but the rate-limit check
             # on the next consume cycle will naturally serialize them.
             logger.error("rate_limit_requeue_failed", task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc))
-            await deps.broker.nack(delivery, requeue=True)
+            await deps.broker.redeliver(delivery)
 
         return Redelivered

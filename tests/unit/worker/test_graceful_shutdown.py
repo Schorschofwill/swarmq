@@ -59,8 +59,8 @@ def broker():
     b.nack = AsyncMock()
     b.close = AsyncMock()
     b.cancel_consume = AsyncMock()
-    b.publish_to_delay_queue = AsyncMock()
-    b.publish_to_dead_letter_queue = AsyncMock()
+    b.retry_later = AsyncMock()
+    b.dead_letter = AsyncMock()
     return b
 
 
@@ -292,7 +292,7 @@ class TestHandleMessageDuringShutdown:
         msg = make_message(_default_payload())
         await worker._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
 
 
@@ -548,14 +548,14 @@ class TestPayloadShapeValidation:
         # args="hello" would otherwise unpack character-by-character.
         msg = make_message(_default_payload(args="hello"))
         await worker._handle_message(msg)
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
         # Task never ran (no result stored).
         assert len(worker._active_tasks) == 0
 
     async def test_non_dict_kwargs_not_executed(self, worker, broker):
         msg = make_message(_default_payload(kwargs=["not", "a", "dict"]))
         await worker._handle_message(msg)
-        broker.nack.assert_awaited_once_with(msg, requeue=False)
+        broker.route_via_dlx.assert_awaited_once_with(msg)
 
 
 class TestLifecycleSignalTimeout:

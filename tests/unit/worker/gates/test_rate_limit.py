@@ -51,7 +51,7 @@ class TestWorkerRateLimiting:
             await w._handle_message(msg)
 
         w._rate_limiter.check.assert_awaited_once()
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
         # Normal ack after successful execution (AT_LEAST_ONCE).
         broker.ack.assert_awaited_once_with(msg)
 
@@ -59,7 +59,7 @@ class TestWorkerRateLimiting:
     async def test_rate_limited_path_requeues_with_delay_and_skips_execution(
         self, broker, backend, config
     ):
-        """allowed=False -> publish_to_delay_queue + ack, no pre_execute,
+        """allowed=False -> retry_later + ack, no pre_execute,
         no DLQ, TASK_RATE_LIMITED signal fired with retry_after + remaining.
         """
         from swarmq.signals import SignalDispatcher
@@ -97,11 +97,12 @@ class TestWorkerRateLimiting:
             await w._handle_message(msg)
 
         assert ran is False, "task.run must NOT run when rate-limited"
-        broker.publish_to_delay_queue.assert_awaited_once()
-        _, kwargs = broker.publish_to_delay_queue.call_args
+        broker.retry_later.assert_awaited_once()
+        _, kwargs = broker.retry_later.call_args
         assert kwargs["delay_ms"] == 2500
-        broker.ack.assert_awaited_once_with(msg)
-        broker.publish_to_dead_letter_queue.assert_not_called()
+        # U8: retry_later/dead_letter bestätigen das Original selbst
+        broker.ack.assert_not_awaited()
+        broker.dead_letter.assert_not_called()
         assert len(seen) == 1
         assert seen[0]["retry_after_ms"] == 2500
         assert seen[0]["remaining"] == 0
@@ -151,7 +152,7 @@ class TestWorkerRateLimiting:
 
         assert ran is True
         broker.ack.assert_awaited_once_with(msg)
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_limiter_connection_error_nacks_with_requeue(
@@ -174,9 +175,9 @@ class TestWorkerRateLimiting:
         )
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
-        broker.publish_to_delay_queue.assert_not_called()
+        broker.retry_later.assert_not_called()
 
 
 class FireAndForgetRateLimitedTask(Task):
@@ -211,9 +212,9 @@ class TestFireAndForgetRateLimit:
         )
         await w._handle_message(msg)
 
-        broker.publish_to_delay_queue.assert_awaited_once()
-        # Single ack — not the old "FIRE_AND_FORGET ack + rate-limit ack" double.
-        assert broker.ack.await_count == 1
+        broker.retry_later.assert_awaited_once()
+        # U8: retry_later bestätigt selbst; das FAF-Ack wird nie erreicht.
+        broker.ack.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_fire_and_forget_limiter_failure_does_not_drop_message(
@@ -236,7 +237,7 @@ class TestFireAndForgetRateLimit:
         )
         await w._handle_message(msg)
 
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         # Crucially: NO ack happened. Message survives for redelivery.
         broker.ack.assert_not_awaited()
 
@@ -293,7 +294,7 @@ class TestRateLimitRequeueCounter:
 
         await w._handle_message(msg)
 
-        _, kwargs = broker.publish_to_delay_queue.call_args
+        _, kwargs = broker.retry_later.call_args
         assert kwargs["headers"]["x-swarmq-rate-limit-count"] == 1
 
     @pytest.mark.asyncio
@@ -314,7 +315,7 @@ class TestRateLimitRequeueCounter:
 
         await w._handle_message(msg)
 
-        _, kwargs = broker.publish_to_delay_queue.call_args
+        _, kwargs = broker.retry_later.call_args
         assert kwargs["headers"]["x-swarmq-rate-limit-count"] == 6
 
 
@@ -349,14 +350,14 @@ class TestRateLimitGateOutcomes:
         worker._rate_limiter.check = AsyncMock(return_value=(False, 0, 1500))
         msg = make_message(_default_payload(), headers={"x-swarmq-rate-limit-count": 2})
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
-        kwargs = broker.publish_to_delay_queue.await_args.kwargs
+        kwargs = broker.retry_later.await_args.kwargs
         assert kwargs["delay_ms"] == 1500 and kwargs["headers"]["x-swarmq-rate-limit-count"] == 3
-        broker.ack.assert_awaited_once_with(msg)
+        broker.ack.assert_not_awaited()  # retry_later bestätigt selbst (U8)
 
     async def test_backend_error_is_redelivered_via_nack_without_ack(self, worker, broker):
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
         msg = make_message(_default_payload())
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
-        broker.nack.assert_awaited_once_with(msg, requeue=True)
+        broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
