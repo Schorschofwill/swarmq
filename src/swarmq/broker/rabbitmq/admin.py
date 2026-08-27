@@ -2,7 +2,7 @@
 Queue-Tiefen und ``route_via_dlx``.
 
 Die heutigen Methodennamen (``list_dead_letter_queue``, ``get_queue_depth``,
-…) bleiben als Aliase, bis U15 die Brüche bündelt (KTD10).
+…) sind seit U15 entfernt; es gelten die Vertragsnamen (KTD10 abgeschlossen).
 """
 
 from __future__ import annotations
@@ -386,33 +386,14 @@ class RabbitMQAdmin(RabbitMQDelivery):
         return await self._throwaway_channel_message_count(f"{queue}.XQ")
 
     # ------------------------------------------------------------------
-    # Aliase der heutigen Namen (KTD10; entfallen in U15)
     # ------------------------------------------------------------------
 
-    async def list_dead_letter_queue(self, queue_name: str, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
-        return await self.list_dead_letters(queue_name, limit)
 
-    async def inspect_dead_letter_message(
-        self, queue_name: str, task_id: str, scan_limit: int = 1000
-    ) -> tuple[dict[str, Any] | None, int]:
-        return await self.inspect_dead_letter(queue_name, task_id, scan_limit)
 
-    async def retry_dead_letter_message(
-        self, queue_name: str, task_id: str, scan_limit: int = 1000
-    ) -> tuple[bool, int]:
-        return await self.retry_dead_letter(queue_name, task_id, scan_limit)
 
-    async def retry_all_dead_letter_messages(self, queue_name: str, limit: int = 10_000) -> tuple[int, int]:
-        return await self.retry_all_dead_letters(queue_name, limit)
 
-    async def purge_dead_letter_queue(self, queue_name: str) -> int:
-        return await self.purge_dead_letters(queue_name)
 
-    async def get_queue_depth(self, queue_name: str) -> int:
-        return await self.queue_depth(queue_name)
 
-    async def get_dlq_depth(self, queue_name: str) -> int:
-        return await self.dead_letter_depth(queue_name)
 
     async def _passive_message_count(self, name: str) -> int:
         return await self._throwaway_channel_message_count(name)

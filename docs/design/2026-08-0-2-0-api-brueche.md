@@ -65,6 +65,10 @@ Nur relevant für Nutzer, die `ValkeyBackend` direkt ansprechen (die
 | Alt (Alias) | Neu (Vertragsname) |
 |---|---|
 | `list_dead_letter_queue(queue, limit)` | `list_dead_letters(queue, limit)` |
+| `inspect_dead_letter_message(…)` | `inspect_dead_letter(…)` |
+| `retry_dead_letter_message(…)` | `retry_dead_letter(…)` |
+| `retry_all_dead_letter_messages(…)` | `retry_all_dead_letters(…)` |
+| `purge_dead_letter_queue(queue)` | `purge_dead_letters(queue)` |
 | `get_queue_depth(queue)` | `queue_depth(queue)` |
 | `get_dlq_depth(queue)` | `dead_letter_depth(queue)` |
 | `nack(delivery, requeue=True)` | `redeliver(delivery)` |

@@ -1,6 +1,5 @@
 """Unit tests for ValkeyBackend."""
 
-import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -326,47 +325,47 @@ class TestValkeyBackendKeyFormat:
         assert backend._key(task_id) == f"sq:result:{task_id}"
 
 
-class TestValkeyBackendPublishNotification:
-    async def test_publish_notification_calls_publish_with_correct_channel(self):
+class TestValkeyBackendNotifyResult:
+    async def test_notify_result_calls_publish_with_correct_channel(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
         backend._client = mock_client
 
-        await backend.publish_notification("task-123")
+        await backend.notify_result("task-123")
 
         mock_client.publish.assert_awaited_once_with("sq:notify:task-123", "done")
 
 
-class TestValkeyBackendGetResultsBatch:
-    async def test_get_results_batch_calls_mget_with_correct_keys(self):
+class TestValkeyBackendGetResults:
+    async def test_get_results_calls_mget_with_correct_keys(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.mget.return_value = [b"r1", b"r2", b"r3"]
 
-        result = await backend.get_results_batch(["a", "b", "c"])
+        result = await backend.get_results(["a", "b", "c"])
 
         mock_client.mget.assert_awaited_once_with(
             "sq:result:a", "sq:result:b", "sq:result:c"
         )
         assert result == [b"r1", b"r2", b"r3"]
 
-    async def test_get_results_batch_empty_list_returns_empty(self):
+    async def test_get_results_empty_list_returns_empty(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
         backend._client = mock_client
 
-        result = await backend.get_results_batch([])
+        result = await backend.get_results([])
 
         mock_client.mget.assert_not_awaited()
         assert result == []
 
 
-class TestValkeyBackendPublishNotificationError:
-    async def test_publish_notification_swallows_valkey_error(self):
+class TestValkeyBackendNotifyResultError:
+    async def test_notify_result_swallows_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
@@ -374,11 +373,11 @@ class TestValkeyBackendPublishNotificationError:
         mock_client.publish.side_effect = ValkeyError("publish failed")
 
         # Should NOT raise -- fire-and-forget
-        await backend.publish_notification("task-123")
+        await backend.notify_result("task-123")
 
 
-class TestValkeyBackendGetResultsBatchError:
-    async def test_get_results_batch_wraps_valkey_error(self):
+class TestValkeyBackendGetResultsError:
+    async def test_get_results_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
@@ -386,18 +385,18 @@ class TestValkeyBackendGetResultsBatchError:
         mock_client.mget.side_effect = ValkeyError("mget failed")
 
         with pytest.raises(BackendConnectionError):
-            await backend.get_results_batch(["a", "b"])
+            await backend.get_results(["a", "b"])
 
 
-class TestValkeyBackendGetResultsBatchPartial:
-    async def test_get_results_batch_returns_none_for_missing_keys(self):
+class TestValkeyBackendGetResultsPartial:
+    async def test_get_results_returns_none_for_missing_keys(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.mget.return_value = [b"data-a", None, b"data-c"]
 
-        result = await backend.get_results_batch(["a", "missing", "c"])
+        result = await backend.get_results(["a", "missing", "c"])
 
         mock_client.mget.assert_awaited_once_with(
             "sq:result:a", "sq:result:missing", "sq:result:c"
@@ -405,102 +404,16 @@ class TestValkeyBackendGetResultsBatchPartial:
         assert result == [b"data-a", None, b"data-c"]
 
 
-class TestValkeyBackendCreatePubsub:
-    def test_create_pubsub_returns_pubsub_from_client(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = Mock(return_value=mock_pubsub)
-        backend._client = mock_client
-
-        result = backend.create_pubsub()
-
-        mock_client.pubsub.assert_called_once()
-        assert result is mock_pubsub
 
 
-class TestValkeyBackendSubscribeAndWaitMessage:
-    async def test_subscribe_and_wait_returns_true_on_message(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = Mock(return_value=mock_pubsub)
-        mock_pubsub.get_message.return_value = {"type": "message", "data": b"done"}
-        backend._client = mock_client
-
-        result = await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
-
-        assert result is True
-        mock_pubsub.subscribe.assert_awaited_once_with("sq:notify:task-1")
-        # With polling loop, get_message is called with timeout=0.05 (not 5.0)
-        mock_pubsub.get_message.assert_awaited_with(
-            ignore_subscribe_messages=True, timeout=0.05
-        )
 
 
-class TestValkeyBackendSubscribeAndWaitTimeout:
-    async def test_subscribe_and_wait_returns_false_on_timeout(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = Mock(return_value=mock_pubsub)
-        mock_pubsub.get_message.return_value = None
-        backend._client = mock_client
-
-        result = await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
-
-        assert result is False
 
 
-class TestValkeyBackendSubscribeAndWaitValkeyError:
-    async def test_subscribe_and_wait_returns_false_on_valkey_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = Mock(return_value=mock_pubsub)
-        mock_pubsub.subscribe.side_effect = ValkeyError("connection lost")
-        backend._client = mock_client
-
-        result = await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
-
-        assert result is False
 
 
-class TestValkeyBackendSubscribeAndWaitCleanup:
-    async def test_subscribe_and_wait_always_calls_unsubscribe_and_aclose(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = Mock(return_value=mock_pubsub)
-        mock_pubsub.get_message.side_effect = ValkeyError("read error")
-        backend._client = mock_client
-
-        await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
-
-        mock_pubsub.unsubscribe.assert_awaited_once_with("sq:notify:task-1")
-        mock_pubsub.aclose.assert_awaited_once()
 
 
-class TestValkeyBackendSubscribeAndWaitCancelledError:
-    async def test_subscribe_and_wait_propagates_cancelled_error_after_cleanup(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = Mock(return_value=mock_pubsub)
-        mock_pubsub.get_message.side_effect = asyncio.CancelledError()
-        backend._client = mock_client
-
-        with pytest.raises(asyncio.CancelledError):
-            await backend.subscribe_and_wait("sq:notify:task-1", timeout=5.0)
-
-        mock_pubsub.unsubscribe.assert_awaited_once_with("sq:notify:task-1")
-        mock_pubsub.aclose.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -618,253 +531,18 @@ class TestValkeyBackendClearCancelFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestValkeyBackendScheduleKeys:
-    """Key-format helpers are the single source of truth for schedule
-    persistence layout. Test them independently from the I/O methods."""
-
-    def test_sched_zset_key(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert backend._sched_zset_key() == "sq:{sched}:zset"
-
-    def test_sched_defs_key(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert backend._sched_defs_key() == "sq:{sched}:defs"
-
-    def test_sched_fired_key(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert (
-            backend._sched_fired_key("cron_a:1234567890")
-            == "sq:sched:fired:cron_a:1234567890"
-        )
-
-    def test_sched_handover_key(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert (
-            backend._sched_handover_key("owner-tok-42")
-            == "sq:sched:handover:owner-tok-42"
-        )
 
 
-class TestValkeyBackendZAddSchedule:
-    async def test_zadd_schedule_calls_zadd(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        backend._client = mock_client
-
-        await backend.zadd_schedule("cron_a", 1_700_000_000_000)
-
-        mock_client.zadd.assert_awaited_once_with(
-            "sq:{sched}:zset", {"cron_a": 1_700_000_000_000}
-        )
-
-    async def test_zadd_schedule_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.zadd.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.zadd_schedule("cron_a", 1)
 
 
-class TestValkeyBackendZRemSchedule:
-    async def test_zrem_schedule_calls_zrem(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        backend._client = mock_client
-
-        await backend.zrem_schedule("cron_a")
-
-        mock_client.zrem.assert_awaited_once_with("sq:{sched}:zset", "cron_a")
-
-    async def test_zrem_schedule_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.zrem.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.zrem_schedule("cron_a")
 
 
-class TestValkeyBackendZRangeByScore:
-    async def test_zrangebyscore_schedules_reads_only(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.zrangebyscore.return_value = [b"cron_a", b"cron_b"]
-        backend._client = mock_client
-
-        result = await backend.zrangebyscore_schedules(1_700_000_000_000, 100)
-
-        mock_client.zrangebyscore.assert_awaited_once_with(
-            "sq:{sched}:zset", "-inf", 1_700_000_000_000, start=0, num=100
-        )
-        assert result == [b"cron_a", b"cron_b"]
-
-    async def test_zrangebyscore_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.zrangebyscore.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.zrangebyscore_schedules(0, 100)
 
 
-class TestValkeyBackendHashDefs:
-    async def test_hset_schedule_def_calls_hset(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        backend._client = mock_client
-
-        await backend.hset_schedule_def("cron_a", b'{"x":1}')
-
-        mock_client.hset.assert_awaited_once_with(
-            "sq:{sched}:defs", "cron_a", b'{"x":1}'
-        )
-
-    async def test_hget_schedule_def_calls_hget(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.hget.return_value = b'{"x":1}'
-        backend._client = mock_client
-
-        result = await backend.hget_schedule_def("cron_a")
-
-        mock_client.hget.assert_awaited_once_with("sq:{sched}:defs", "cron_a")
-        assert result == b'{"x":1}'
-
-    async def test_hdel_schedule_def_calls_hdel(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        backend._client = mock_client
-
-        await backend.hdel_schedule_def("cron_a")
-
-        mock_client.hdel.assert_awaited_once_with("sq:{sched}:defs", "cron_a")
-
-    async def test_hgetall_schedule_defs_calls_hgetall(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.hgetall.return_value = {b"cron_a": b'{"x":1}'}
-        backend._client = mock_client
-
-        result = await backend.hgetall_schedule_defs()
-
-        mock_client.hgetall.assert_awaited_once_with("sq:{sched}:defs")
-        assert result == {b"cron_a": b'{"x":1}'}
-
-    async def test_hset_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.hset.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.hset_schedule_def("cron_a", b"x")
 
 
-class TestValkeyBackendSchedfireDedup:
-    async def test_set_schedfire_dedup_returns_true_when_new(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.return_value = True
-        backend._client = mock_client
-
-        result = await backend.set_schedfire_dedup(
-            "cron_a:1700000000000", 60_000
-        )
-
-        mock_client.set.assert_awaited_once_with(
-            "sq:sched:fired:cron_a:1700000000000", "1", nx=True, px=60_000
-        )
-        assert result is True
-
-    async def test_set_schedfire_dedup_returns_false_on_duplicate(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.return_value = None  # NX already exists
-        backend._client = mock_client
-
-        result = await backend.set_schedfire_dedup(
-            "cron_a:1700000000000", 60_000
-        )
-        assert result is False
-
-    async def test_set_schedfire_dedup_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.set_schedfire_dedup("cron_a:1", 60_000)
 
 
-class TestValkeyBackendHandoverMarker:
-    async def test_set_handover_marker_sets_key_with_ttl(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        backend._client = mock_client
-
-        await backend.set_schedfire_handover_marker("owner-42", 5_000)
-
-        mock_client.set.assert_awaited_once_with(
-            "sq:sched:handover:owner-42", "1", px=5_000
-        )
-
-    async def test_get_and_del_handover_marker_returns_true_when_any_exist(self):
-        """Incoming leader GETs+DELs any handover key. Returns True if at
-        least one existed (clean handover), False otherwise (failover)."""
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        # SCAN yields one handover key, DEL reports 1
-        mock_client.scan_iter = Mock(return_value=_async_iter(
-            [b"sq:sched:handover:owner-42"]
-        ))
-        mock_client.delete.return_value = 1
-        backend._client = mock_client
-
-        result = await backend.get_and_del_schedfire_handover_marker()
-        assert result is True
-        mock_client.delete.assert_awaited_once_with(b"sq:sched:handover:owner-42")
-
-    async def test_get_and_del_handover_marker_returns_false_when_none(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.scan_iter = Mock(return_value=_async_iter([]))
-        backend._client = mock_client
-
-        result = await backend.get_and_del_schedfire_handover_marker()
-        assert result is False
-        mock_client.delete.assert_not_awaited()
-
-    async def test_set_handover_marker_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.set_schedfire_handover_marker("tok", 5_000)
 
 
 def _async_iter(items):
@@ -875,83 +553,8 @@ def _async_iter(items):
     return gen()
 
 
-class TestValkeyBackendSchedfireInflight:
-    """Unit 1 / H-2: two-marker dedup. In-flight (short TTL) blocks
-    concurrent workers from double-running a task while it's executing;
-    completed (long TTL) blocks redeliveries after successful completion."""
-
-    def test_sched_inflight_key(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        assert (
-            backend._sched_inflight_key("cron_a:1234567890")
-            == "sq:sched:inflight:cron_a:1234567890"
-        )
-
-    async def test_set_schedfire_inflight_wins_on_first_call(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.return_value = True  # SETNX wins
-        backend._client = mock_client
-
-        result = await backend.set_schedfire_inflight("cron_a:1", 300_000)
-
-        mock_client.set.assert_awaited_once_with(
-            "sq:sched:inflight:cron_a:1", "1", nx=True, px=300_000
-        )
-        assert result is True
-
-    async def test_set_schedfire_inflight_loses_on_conflict(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.return_value = None  # another worker holds it
-        backend._client = mock_client
-
-        result = await backend.set_schedfire_inflight("cron_a:1", 300_000)
-        assert result is False
-
-    async def test_set_schedfire_inflight_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.set.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.set_schedfire_inflight("cron_a:1", 300_000)
 
 
-class TestValkeyBackendIsSchedfireCompleted:
-    async def test_is_completed_returns_true_when_key_exists(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.exists.return_value = 1
-        backend._client = mock_client
-
-        result = await backend.is_schedfire_completed("cron_a:1")
-        mock_client.exists.assert_awaited_once_with("sq:sched:fired:cron_a:1")
-        assert result is True
-
-    async def test_is_completed_returns_false_when_key_missing(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.exists.return_value = 0
-        backend._client = mock_client
-
-        assert await backend.is_schedfire_completed("cron_a:1") is False
-
-    async def test_is_completed_wraps_error(self):
-        backend = ValkeyBackend("valkey://localhost:6379/0")
-        mock_client = AsyncMock()
-        mock_client.register_script = Mock()
-        mock_client.exists.side_effect = ValkeyError("nope")
-        backend._client = mock_client
-
-        with pytest.raises(BackendConnectionError):
-            await backend.is_schedfire_completed("cron_a:1")
 
 
 class TestSchedulerLeader:
@@ -965,7 +568,7 @@ class TestSchedulerLeader:
     """
 
     async def test_get_scheduler_leader_returns_holder_when_locked(self):
-        from swarmq.scheduler import SCHEDULER_LOCK_KEY
+        from swarmq.locking import SCHEDULER_LOCK_KEY
 
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()

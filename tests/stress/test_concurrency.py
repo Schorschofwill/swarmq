@@ -25,8 +25,9 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.limits import RateLimitConfig, RateLimiter
+from swarmq.limits import RateLimitConfig
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.services import port_is_open

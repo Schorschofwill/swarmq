@@ -97,7 +97,7 @@ class TestPublishConsumeAck:
 
 class TestNackRequeue:
     async def test_nack_requeue_redelivers(self, broker: RabbitMQBroker) -> None:
-        """nack(requeue=True) makes the message available for re-consumption."""
+        """redeliver() makes the message available for re-consumption."""
         qname = _unique("test_nack")
         await _declare_and_track(broker, qname)
 
@@ -119,7 +119,7 @@ class TestNackRequeue:
             if idx == 0:
                 # First delivery: nack with requeue.
                 deliveries[0].set_result(msg)
-                await broker.nack(msg, requeue=True)
+                await broker.redeliver(msg)
             elif idx == 1:
                 # Second delivery: ack and record.
                 deliveries[1].set_result(msg)

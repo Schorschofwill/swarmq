@@ -61,7 +61,7 @@ async def test_injected_connection_and_client_roundtrip_and_caller_reuse(
             assert task_id
             # Publish really landed on the broker (visible via a
             # passive declare on the caller's own connection).
-            depth = await broker.get_queue_depth(queue)
+            depth = await broker.queue_depth(queue)
             assert depth == 1
 
             # Backend ops ride the borrowed client.

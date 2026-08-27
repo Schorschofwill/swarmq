@@ -44,7 +44,7 @@ class TestSchedfireDedup:
         )
         await w._handle_message(msg)
 
-        backend.set_schedfire_dedup.assert_not_awaited()
+        backend.schedules.mark_fire_completed.assert_not_awaited()
         backend.store_result.assert_awaited_once()
 
     async def test_first_delivery_runs_task(self, broker, backend, config):
@@ -61,26 +61,26 @@ class TestSchedfireDedup:
         registry.register(NoopTask)
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
-        backend.is_schedfire_completed.return_value = False
-        backend.set_schedfire_inflight.return_value = True  # claim wins
+        backend.schedules.is_fire_completed.return_value = False
+        backend.schedules.claim_fire.return_value = True  # claim wins
         msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
         )
         await w._handle_message(msg)
 
-        backend.is_schedfire_completed.assert_awaited_once_with(
+        backend.schedules.is_fire_completed.assert_awaited_once_with(
             "cron_a:1700000000000"
         )
         # Inflight TTL = scheduler_inflight_ttl * 1000 = 300 * 1000
         # (no hard_timeout on NoopTask → config value applies).
-        inflight_call = backend.set_schedfire_inflight.await_args
+        inflight_call = backend.schedules.claim_fire.await_args
         assert inflight_call.args[0] == "cron_a:1700000000000"
         assert inflight_call.args[1] == 300_000
         # Task ran
         backend.store_result.assert_awaited_once()
         # finally-block wrote the long-TTL completed marker
-        dedup_call = backend.set_schedfire_dedup.await_args
+        dedup_call = backend.schedules.mark_fire_completed.await_args
         assert dedup_call.args[0] == "cron_a:1700000000000"
         # dedup_ttl * 1000 = 3900 * 1000
         assert dedup_call.args[1] == 3_900_000
@@ -108,15 +108,15 @@ class TestSchedfireDedup:
         registry.register(LongTask)
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
-        backend.is_schedfire_completed.return_value = False
-        backend.set_schedfire_inflight.return_value = True
+        backend.schedules.is_fire_completed.return_value = False
+        backend.schedules.claim_fire.return_value = True
         msg = make_message(
             _default_payload(name="long", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "long_cron:1700000000000"},
         )
         await w._handle_message(msg)
 
-        inflight_call = backend.set_schedfire_inflight.await_args
+        inflight_call = backend.schedules.claim_fire.await_args
         # (600 + 30) * 1000 — outlives the watchdog-bounded runtime.
         assert inflight_call.args[1] == 630_000
 
@@ -135,7 +135,7 @@ class TestSchedfireDedup:
         registry.register(NoopTask)
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
-        backend.is_schedfire_completed.return_value = True  # prior run
+        backend.schedules.is_fire_completed.return_value = True  # prior run
         msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
@@ -143,7 +143,7 @@ class TestSchedfireDedup:
         await w._handle_message(msg)
 
         broker.ack.assert_awaited_once_with(msg)
-        backend.set_schedfire_inflight.assert_not_awaited()
+        backend.schedules.claim_fire.assert_not_awaited()
         backend.store_result.assert_not_awaited()
 
     async def test_duplicate_when_inflight_claim_lost(
@@ -163,8 +163,8 @@ class TestSchedfireDedup:
         registry.register(NoopTask)
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
-        backend.is_schedfire_completed.return_value = False
-        backend.set_schedfire_inflight.return_value = False  # someone else has it
+        backend.schedules.is_fire_completed.return_value = False
+        backend.schedules.claim_fire.return_value = False  # someone else has it
         msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
@@ -174,7 +174,7 @@ class TestSchedfireDedup:
         broker.ack.assert_awaited_once_with(msg)
         backend.store_result.assert_not_awaited()
         # No long-TTL write because we didn't own the run.
-        backend.set_schedfire_dedup.assert_not_awaited()
+        backend.schedules.mark_fire_completed.assert_not_awaited()
 
     async def test_dedup_backend_error_nacks_for_requeue(
         self, broker, backend, config
@@ -194,7 +194,7 @@ class TestSchedfireDedup:
         from swarmq.exceptions import BackendConnectionError as BCE
         # First stage in the two-marker flow is completed-check;
         # fail it to exercise the nack path.
-        backend.is_schedfire_completed.side_effect = BCE("valkey down")
+        backend.schedules.is_fire_completed.side_effect = BCE("valkey down")
         msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
@@ -230,7 +230,7 @@ class TestSchedfireDedup:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         from swarmq.exceptions import BackendConnectionError as BCE
-        backend.set_schedfire_dedup.side_effect = BCE("valkey down")
+        backend.schedules.mark_fire_completed.side_effect = BCE("valkey down")
         original_headers = {
             "x-swarmq-schedfire": "cron_a:1700000000000",
             "x-tracking-id": "abc-123",
@@ -304,7 +304,7 @@ class TestSchedfireDedup:
         registry.register(NoopTask)
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
-        backend.is_schedfire_completed.return_value = True  # prior fire
+        backend.schedules.is_fire_completed.return_value = True  # prior fire
         backend.is_cancelled.side_effect = AssertionError(
             "cancel-check must not run for a duplicate schedfire"
         )
@@ -332,11 +332,11 @@ class TestSchedfireGateOutcomes:
         assert await worker._schedfire_gate.apply(make_message(_default_payload()), self._ctx()) is Continue
 
     async def test_completed_marker_is_terminal_without_execution(self, worker, broker, backend):
-        backend.is_schedfire_completed = AsyncMock(return_value=True)
+        backend.schedules.is_fire_completed = AsyncMock(return_value=True)
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
         assert await worker._schedfire_gate.apply(msg, self._ctx()) == Terminal.never_release()
         broker.ack.assert_awaited_once_with(msg)
-        backend.set_schedfire_inflight.assert_not_awaited()
+        backend.schedules.claim_fire.assert_not_awaited()
 
     async def test_won_claim_is_continue_and_records_claim(self, worker, backend):
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
@@ -348,7 +348,7 @@ class TestSchedfireGateOutcomes:
         msg = make_message(_default_payload(name="long"), headers={"x-swarmq-schedfire": "s:2"})
         ctx = GateContext(task_id="abc-123", task_name="long", queue="default")
         await worker._schedfire_gate.apply(msg, ctx)
-        ttl_ms = backend.set_schedfire_inflight.await_args.args[1]
+        ttl_ms = backend.schedules.claim_fire.await_args.args[1]
         assert ttl_ms == max(config.scheduler_inflight_ttl, 900 + 30) * 1000
 
 

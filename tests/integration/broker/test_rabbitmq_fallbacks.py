@@ -51,7 +51,7 @@ def _worker(broker: RabbitMQBroker) -> Worker:
     cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
     backend = MagicMock()
     backend.store_result = AsyncMock()
-    backend.publish_notification = AsyncMock()
+    backend.notify_result = AsyncMock()
     backend.release_unique = AsyncMock(return_value=True)
     registry = MagicMock()
     registry.get_all = MagicMock(return_value=[])

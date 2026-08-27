@@ -256,10 +256,13 @@ class LockGate:
         are sync so they cannot raise between them — the only failure
         mode is the acquire itself.
         """
-        acquired = await lock_manager.acquire(lock_name, owner_token, ttl_ms, max_concurrency)
-        if acquired:
-            entry = (lock_name, owner_token, max_concurrency)
-            ctx.acquired_locks.append(entry)
+        # LockStore-Vertrag (U15): acquire liefert den Token, der später
+        # renew/release adressiert — die Registry hält Tokens.
+        token = await lock_manager.acquire(
+            lock_name, owner=owner_token, ttl_ms=ttl_ms, max_concurrency=max_concurrency
+        )
+        if token is not None:
+            ctx.acquired_locks.append(token)
             assert ctx.handler_id is not None
-            self._deps.register_lock(ctx.handler_id, entry)
-        return bool(acquired)
+            self._deps.register_lock(ctx.handler_id, token)
+        return token is not None

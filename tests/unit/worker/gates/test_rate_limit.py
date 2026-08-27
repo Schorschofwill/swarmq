@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from swarmq.contracts.coordination import RateLimitDecision
 from swarmq.exceptions import BackendConnectionError
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
@@ -40,7 +41,9 @@ class TestWorkerRateLimiting:
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         # Simulate start()'s lifecycle step without connecting.
         w._rate_limiter = MagicMock()
-        w._rate_limiter.check = AsyncMock(return_value=(True, 9, 0))
+        w._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=True, remaining=9, retry_after_ms=0)
+        )
 
         msg = make_message(_default_payload(name="rate_limited", args=[], kwargs={}))
 
@@ -82,7 +85,9 @@ class TestWorkerRateLimiting:
             signal_dispatcher=dispatcher,
         )
         w._rate_limiter = MagicMock()
-        w._rate_limiter.check = AsyncMock(return_value=(False, 0, 2500))
+        w._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=2500)
+        )
 
         ran = False
 
@@ -205,7 +210,9 @@ class TestFireAndForgetRateLimit:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._rate_limiter = MagicMock()
-        w._rate_limiter.check = AsyncMock(return_value=(False, 0, 1500))
+        w._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
 
         msg = make_message(
             _default_payload(name="ff_rate_limited", args=[], kwargs={})
@@ -252,7 +259,9 @@ class TestFireAndForgetRateLimit:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._rate_limiter = MagicMock()
-        w._rate_limiter.check = AsyncMock(return_value=(True, 9, 0))
+        w._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=True, remaining=9, retry_after_ms=0)
+        )
 
         ran = False
 
@@ -284,7 +293,9 @@ class TestRateLimitRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._rate_limiter = MagicMock()
-        w._rate_limiter.check = AsyncMock(return_value=(False, 0, 1000))
+        w._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1000)
+        )
 
         msg = make_message(
             _default_payload(name="rate_limited", args=[], kwargs={})
@@ -306,7 +317,9 @@ class TestRateLimitRequeueCounter:
 
         w = Worker(broker=broker, backend=backend, registry=reg, config=config)
         w._rate_limiter = MagicMock()
-        w._rate_limiter.check = AsyncMock(return_value=(False, 0, 1000))
+        w._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1000)
+        )
 
         msg = make_message(
             _default_payload(name="rate_limited", args=[], kwargs={})
@@ -342,12 +355,16 @@ class TestRateLimitGateOutcomes:
 
     async def test_allowed_is_continue(self, worker):
         worker._rate_limiter = MagicMock()
-        worker._rate_limiter.check = AsyncMock(return_value=(True, 9, 0))
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=True, remaining=9, retry_after_ms=0)
+        )
         assert await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx()) is Continue
 
     async def test_limited_is_redelivered_with_counter_header(self, worker, broker):
         worker._rate_limiter = MagicMock()
-        worker._rate_limiter.check = AsyncMock(return_value=(False, 0, 1500))
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
         msg = make_message(_default_payload(), headers={"x-swarmq-rate-limit-count": 2})
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
         kwargs = broker.retry_later.await_args.kwargs

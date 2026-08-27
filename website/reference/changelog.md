@@ -22,7 +22,10 @@ migration steps: docs/design/2026-08-0-2-0-api-brueche.md -->
   0.2.0 breaking-changes inventory.
 - **`RabbitMQBroker` admin/verb aliases removed.** `get_queue_depth` →
   `queue_depth`, `get_dlq_depth` → `dead_letter_depth`,
-  `list_dead_letter_queue` → `list_dead_letters`; the delivery verbs are
+  `list_dead_letter_queue` → `list_dead_letters`, `inspect_dead_letter_message` →
+  `inspect_dead_letter`, `retry_dead_letter_message` → `retry_dead_letter`,
+  `retry_all_dead_letter_messages` → `retry_all_dead_letters`,
+  `purge_dead_letter_queue` → `purge_dead_letters`; the delivery verbs are
   now `redeliver`, `route_via_dlx`, `retry_later`, and `dead_letter`
   (the latter two confirm the original delivery themselves — drop any
   separate `ack`).

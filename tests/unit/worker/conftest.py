@@ -37,7 +37,7 @@ def backend():
     be = MagicMock(spec=ValkeyBackend)
     be.connect = AsyncMock()
     be.store_result = AsyncMock()
-    be.publish_notification = AsyncMock()
+    be.notify_result = AsyncMock()
     be.close = AsyncMock()
     # Cancel-flag primitives (Phase 3b.3). Default: no flag set, so
     # existing happy-path tests continue to pass the pre-start check.
@@ -46,10 +46,11 @@ def backend():
     be.clear_cancel_flag = AsyncMock()
     # Schedfire-dedup (Phase 3c Unit 8 + Unit 1 pre/post markers).
     # Defaults represent "first delivery, no prior completion":
-    # is_schedfire_completed=False, inflight-SETNX wins, dedup-write OK.
-    be.is_schedfire_completed = AsyncMock(return_value=False)
-    be.set_schedfire_inflight = AsyncMock(return_value=True)
-    be.set_schedfire_dedup = AsyncMock(return_value=True)
+    # is_fire_completed=False, Inflight-Claim gewinnt, Completed-Write OK.
+    be.schedules.is_fire_completed = AsyncMock(return_value=False)
+    be.schedules.claim_fire = AsyncMock(return_value=True)
+    be.schedules.mark_fire_completed = AsyncMock(return_value=True)
+    be.schedules.release_fire_claim = AsyncMock()
     # Härtung R2 P1-10: workflow-level cancel flag, default unset.
     be.is_workflow_cancelled = AsyncMock(return_value=False)
     # _client is needed by Worker.start() to construct RateLimiter. We

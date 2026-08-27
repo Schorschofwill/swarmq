@@ -263,12 +263,12 @@ class TestWorkerPreStartCancelCheck:
         # Flag was NOT cleared — redelivery will re-trigger the cancel branch.
         backend.clear_cancel_flag.assert_not_awaited()
 
-    async def test_cancel_publish_notification_failure_still_acks(
+    async def test_cancel_notify_result_failure_still_acks(
         self, worker, broker, backend,
     ):
-        """publish_notification wirft → log+continue, message is still acked."""
+        """notify_result wirft → log+continue, message is still acked."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        backend.publish_notification = AsyncMock(
+        backend.notify_result = AsyncMock(
             side_effect=Exception("pubsub down")
         )
         msg = make_message(_default_payload())

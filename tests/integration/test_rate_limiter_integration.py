@@ -8,7 +8,8 @@ import uuid
 import pytest
 import valkey.asyncio as valkey_asyncio
 
-from swarmq.limits import RateLimiter, parse_rate_limit
+from swarmq.backend.valkey.rate_limit import RateLimiter
+from swarmq.limits import parse_rate_limit
 
 VALKEY_HOST = "localhost"
 VALKEY_PORT = 6379

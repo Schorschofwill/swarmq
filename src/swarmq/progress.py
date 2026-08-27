@@ -9,6 +9,7 @@ wrapper the :class:`Client` surface returns to Python callers.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -42,7 +43,7 @@ class ProgressInfo:
 
     @classmethod
     def from_hash(
-        cls, raw: dict[bytes, bytes] | dict[str, str],
+        cls, raw: Mapping[bytes, bytes] | Mapping[str, str],
     ) -> ProgressInfo | None:
         """Decode a Valkey HGETALL response into a ProgressInfo.
 

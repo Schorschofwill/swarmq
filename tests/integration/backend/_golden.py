@@ -33,14 +33,16 @@ import msgspec
 from valkey.crc import key_slot
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.chords import ChordManager
+from swarmq.backend.valkey.locks import LockManager
+from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.cancellation import build_result_dict
-from swarmq.limits import RateLimitConfig, RateLimiter
-from swarmq.locking import LockManager
+from swarmq.limits import RateLimitConfig
 from swarmq.scheduler import ScheduleDefinition
 from swarmq.serialization import encode_json, encode_result
 from swarmq.workflow import Signature, chain, chord, group
-from swarmq.workflow_orchestration import ChordManager, build_initial_workflow_state
+from swarmq.workflow_orchestration import build_initial_workflow_state
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 SRC_DIR = Path(__file__).resolve().parents[3] / "src" / "swarmq"
@@ -139,11 +141,10 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await backend.store_workflow_state(WF_ID, value_fixtures()["workflow_state.json"], TTL_MS)
     await backend.set_workflow_cancel_flag(WF_ID, TTL_MS)
     await backend.claim_unique(DEDUP_HASH, TASK_ID, TTL_MS)
-    await backend.hset_schedule_def(SCHEDULE, value_fixtures()["schedule_definition.json"])
-    await backend.zadd_schedule(SCHEDULE, FIRE_TS_MS)
-    await backend.set_schedfire_dedup(f"{SCHEDULE}:{FIRE_TS_MS}", TTL_MS)
-    await backend.set_schedfire_inflight(f"{SCHEDULE}:{FIRE_TS_MS + 60_000}", TTL_MS)
-    await backend.set_schedfire_handover_marker("golden-owner", TTL_MS)
+    await backend.schedules.put(SCHEDULE, value_fixtures()["schedule_definition.json"], FIRE_TS_MS)
+    await backend.schedules.mark_fire_completed(f"{SCHEDULE}:{FIRE_TS_MS}", TTL_MS)
+    await backend.schedules.claim_fire(f"{SCHEDULE}:{FIRE_TS_MS + 60_000}", TTL_MS)
+    await backend.schedules.set_handover_marker("golden-owner", TTL_MS)
     locks = LockManager(client)
     await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
     await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)

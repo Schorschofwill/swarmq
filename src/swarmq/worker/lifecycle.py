@@ -25,10 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from swarmq.backend.valkey.chords import ChordManager
 from swarmq.dishka import _Missing, get_registered_container
-from swarmq.limits import RateLimiter
-from swarmq.locking import LockManager
 from swarmq.logging import sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
@@ -36,13 +33,13 @@ from swarmq.signals import Signal
 from swarmq.workflow_orchestration import WorkflowAdvancer, workflow_step_task_id
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.config import SwarmQConfig
+    from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
+    from swarmq.worker.gates import WorkerBackend, WorkerBroker
 
 logger = structlog.get_logger()
 
@@ -64,19 +61,19 @@ class WorkerLifecycle:
     # Mixin über dem Worker-Zustand (U9); die Attribute setzt
     # ``Worker.__init__`` (pipeline.py), die Methoden-Stubs zeigen dorthin.
     if TYPE_CHECKING:
-        _broker: RabbitMQBroker
-        _backend: ValkeyBackend
+        _broker: WorkerBroker
+        _backend: WorkerBackend
         _registry: TaskRegistry
         _config: SwarmQConfig
         _signal_dispatcher: SignalDispatcher
         _shutdown_event: asyncio.Event
         _active_tasks: set[asyncio.Task[None]]
-        _active_handler_locks: dict[uuid.UUID, list[tuple[str, str, int]]]
+        _active_handler_locks: dict[uuid.UUID, list[LockToken]]
         _detached_releases: set[asyncio.Task[None]]
         _workflow_advancer: WorkflowAdvancer | None
         _scheduler: SchedulerLoop | None
-        _rate_limiter: RateLimiter | None
-        _lock_manager: LockManager | None
+        _rate_limiter: RateLimitStore | None
+        _lock_manager: LockStore | None
         _metrics: Metrics | None
         _metrics_server: MetricsServer | None
         _health_server: HealthServer | None
@@ -96,19 +93,17 @@ class WorkerLifecycle:
         await self._broker.connect()
         await self._backend.connect()
 
-        # Backend.client is available only after connect(). Instantiate
-        # the rate limiter here so the registered Lua script uses the
-        # live client.
-        self._rate_limiter = RateLimiter(self._backend.client)
-        # LockManager has the same lifecycle constraint — registered
-        # AsyncScripts need a live client. See plan 008 Unit 4.
-        self._lock_manager = LockManager(self._backend.client)
+        # Die Koordinations-Verträge kommen seit U15 von der Fassade —
+        # die Properties existieren erst nach connect() (registrierte
+        # Lua-Skripte brauchen den lebenden Client).
+        self._rate_limiter = self._backend.rate_limit
+        self._lock_manager = self._backend.locks
 
-        # R4.1 workflow advancer (U5) — ChordManager registers chord_complete.lua
-        # against the live client, same as RateLimiter/LockManager above.
+        # R4.1 workflow advancer (U5) — der ChordStore-Vertrag kommt
+        # ebenfalls von der Fassade (chord_complete.lua, lebender Client).
         self._workflow_advancer = WorkflowAdvancer(
             self._backend,
-            ChordManager(self._backend.client),
+            self._backend.chords,
             publish=self._publish_workflow_step,
             resolve_queue=self._resolve_workflow_queue,
             make_task_id=workflow_step_task_id,
@@ -379,11 +374,11 @@ class WorkerLifecycle:
         ).set(uptime)
         for queue in self._config.queues:
             try:
-                depth = await self._broker.get_queue_depth(queue)
+                depth = await self._broker.queue_depth(queue)
                 self._metrics.queue_depth.labels(
                     queue=queue, kind="pending",
                 ).set(depth)
-                dlq = await self._broker.get_dlq_depth(queue)
+                dlq = await self._broker.dead_letter_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
             except Exception as exc:
                 # Broad on purpose. Catching only
@@ -479,15 +474,13 @@ class WorkerLifecycle:
         # because the task was cancel()ed before reaching it).
         if self._lock_manager is not None and self._active_handler_locks:
             for handler_id, locks in list(self._active_handler_locks.items()):  # noqa: B007
-                for lock_name, owner_token, max_concurrency in locks:
+                for token in locks:
                     try:
-                        await self._lock_manager.release(
-                            lock_name, owner_token, max_concurrency
-                        )
+                        await self._lock_manager.release(token)
                     except Exception as exc:
                         logger.error(
                             "shutdown_lock_release_failed",
-                            lock_name=lock_name,
+                            lock_name=token.name,
                             error=str(exc),
                         )
             self._active_handler_locks.clear()

@@ -677,8 +677,8 @@ class TestClientUniqueSchedule:
 
     @pytest.fixture
     def backend_setnx(self, backend):
-        """Backend variant with setnx_unique mocked — default NX granted."""
-        backend.setnx_unique = AsyncMock(return_value=None)  # NX success
+        """Backend variant with claim_unique mocked — default NX granted."""
+        backend.claim_unique = AsyncMock(return_value=None)  # NX success
         return backend
 
     @pytest.fixture
@@ -692,7 +692,7 @@ class TestClientUniqueSchedule:
         only R4.4 enqueued-at header (no dedup headers)."""
         await client_setnx.schedule("add", 1, 2, queue="math")
         broker.publish.assert_awaited_once()
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
         call_kwargs = broker.publish.await_args.kwargs
         headers = call_kwargs.get("headers")
         assert headers is not None
@@ -705,8 +705,8 @@ class TestClientUniqueSchedule:
         task_id = await client_setnx.schedule(
             "add", 1, 2, queue="math", unique_for=60,
         )
-        backend_setnx.setnx_unique.assert_awaited_once()
-        setnx_call = backend_setnx.setnx_unique.await_args
+        backend_setnx.claim_unique.assert_awaited_once()
+        setnx_call = backend_setnx.claim_unique.await_args
         dedup_hash = setnx_call[0][0]
         stored_task_id = setnx_call[0][1]
         ttl_ms = setnx_call[0][2]
@@ -722,7 +722,7 @@ class TestClientUniqueSchedule:
         self, client_setnx, broker, backend_setnx,
     ):
         """Silent dedup: schedule() returns existing task_id, does not publish."""
-        backend_setnx.setnx_unique = AsyncMock(return_value="t-existing")
+        backend_setnx.claim_unique = AsyncMock(return_value="t-existing")
         task_id = await client_setnx.schedule(
             "add", 1, 2, queue="math", unique_for=60,
         )
@@ -742,7 +742,7 @@ class TestClientUniqueSchedule:
         async def handler(**kwargs):
             received.append(kwargs)
 
-        backend_setnx.setnx_unique = AsyncMock(return_value="t-win")
+        backend_setnx.claim_unique = AsyncMock(return_value="t-win")
         client = Client(
             broker=broker, backend=backend_setnx,
             registry=client_setnx._registry,
@@ -767,7 +767,7 @@ class TestClientUniqueSchedule:
         await client_setnx.schedule(
             "add", 1, 2, queue="math", unique_for=None,
         )
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_unique_for_uses_taskinfo_default(
         self, broker, backend_setnx,
@@ -785,8 +785,8 @@ class TestClientUniqueSchedule:
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
         await client.schedule("add", 1, queue="math")
 
-        backend_setnx.setnx_unique.assert_awaited_once()
-        assert backend_setnx.setnx_unique.await_args[0][2] == 30_000
+        backend_setnx.claim_unique.assert_awaited_once()
+        assert backend_setnx.claim_unique.await_args[0][2] == 30_000
         publish_kwargs = broker.publish.await_args.kwargs
         assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
 
@@ -796,7 +796,7 @@ class TestClientUniqueSchedule:
         """Client-Modus (registry=None) can't resolve TaskInfo — _MISSING → None."""
         client = Client(broker=broker, backend=backend_setnx, registry=None)
         await client.schedule("add", 1, queue="math")  # no unique_for
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_client_modus_explicit_unique_for_works(
         self, broker, backend_setnx,
@@ -806,7 +806,7 @@ class TestClientUniqueSchedule:
         await client.schedule(
             "add", 1, queue="math", unique_for=60, unique_until="start",
         )
-        backend_setnx.setnx_unique.assert_awaited_once()
+        backend_setnx.claim_unique.assert_awaited_once()
         publish_kwargs = broker.publish.await_args.kwargs
         assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
 
@@ -837,7 +837,7 @@ class TestClientUniqueSchedule:
             captured_hashes.append(h)
             return None
 
-        backend_setnx.setnx_unique = AsyncMock(side_effect=capture_setnx)
+        backend_setnx.claim_unique = AsyncMock(side_effect=capture_setnx)
         await client_setnx.schedule("add", 1, 2, queue="math", unique_for=60)
         await client_setnx.schedule("add", 1, 2, queue="math", unique_for=60)
         assert captured_hashes[0] == captured_hashes[1]
@@ -852,7 +852,7 @@ class TestClientUniqueSchedule:
             captured_hashes.append(h)
             return None
 
-        backend_setnx.setnx_unique = AsyncMock(side_effect=capture_setnx)
+        backend_setnx.claim_unique = AsyncMock(side_effect=capture_setnx)
         await client_setnx.schedule(
             "add", queue="math", unique_for=60, a=1, b=2,
         )
@@ -878,10 +878,10 @@ class TestClientUniqueSchedule:
             await client_setnx.schedule(
                 "add", 1, 2, queue="math", unique_for=60,
             )
-        backend_setnx.setnx_unique.assert_awaited_once()
+        backend_setnx.claim_unique.assert_awaited_once()
         backend_setnx.release_unique.assert_awaited_once()
         # Same (hash, task_id) pair passed to both.
-        setnx_args = backend_setnx.setnx_unique.await_args.args
+        setnx_args = backend_setnx.claim_unique.await_args.args
         release_args = backend_setnx.release_unique.await_args.args
         assert setnx_args[0] == release_args[0]  # dedup_hash
         assert setnx_args[1] == release_args[1]  # task_id
@@ -892,7 +892,7 @@ class TestClientUniqueDeferred:
 
     @pytest.fixture
     def backend_setnx(self, backend):
-        backend.setnx_unique = AsyncMock(return_value=None)  # NX granted
+        backend.claim_unique = AsyncMock(return_value=None)  # NX granted
         return backend
 
     @pytest.fixture
@@ -904,7 +904,7 @@ class TestClientUniqueDeferred:
     ):
         """delay= + no unique_for → no SETNX, ScheduleDefinition stays source=cli."""
         await client_setnx.schedule("add", 1, queue="math", delay=60.0)
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
         definition = _patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.source == "cli"
         assert definition.dedup_hash is None
@@ -916,8 +916,8 @@ class TestClientUniqueDeferred:
         task_id = await client_setnx.schedule(
             "add", 1, 2, queue="math", delay=60.0, unique_for=300,
         )
-        backend_setnx.setnx_unique.assert_awaited_once()
-        call = backend_setnx.setnx_unique.await_args
+        backend_setnx.claim_unique.assert_awaited_once()
+        call = backend_setnx.claim_unique.await_args
         dedup_hash = call[0][0]
         stored_task_id = call[0][1]
         ttl_ms = call[0][2]
@@ -935,7 +935,7 @@ class TestClientUniqueDeferred:
         self, client_setnx, backend_setnx, _patched_schedule_store,
     ):
         """Dup: return existing task_id; no ScheduleStore.add_schedule call."""
-        backend_setnx.setnx_unique = AsyncMock(return_value="t-existing")
+        backend_setnx.claim_unique = AsyncMock(return_value="t-existing")
         tid = await client_setnx.schedule(
             "add", 1, queue="math", delay=10.0, unique_for=60,
         )
@@ -955,7 +955,7 @@ class TestClientUniqueDeferred:
         async def handler(**kwargs):
             received.append(kwargs)
 
-        backend_setnx.setnx_unique = AsyncMock(return_value="t-win")
+        backend_setnx.claim_unique = AsyncMock(return_value="t-win")
         client = Client(
             broker=broker, backend=backend_setnx,
             registry=registry, signal_dispatcher=dispatcher,
@@ -979,7 +979,7 @@ class TestClientUniqueDeferred:
         await client_setnx.schedule(
             "add", 1, queue="math", eta=eta, unique_for=300,
         )
-        ttl_ms = backend_setnx.setnx_unique.await_args[0][2]
+        ttl_ms = backend_setnx.claim_unique.await_args[0][2]
         # Range allows for any clock drift / asyncio scheduling.
         assert 415_000 <= ttl_ms <= 425_000
 
@@ -993,7 +993,7 @@ class TestClientUniqueDeferred:
         await client_setnx.schedule(
             "add", 1, queue="math", eta=eta, unique_for=60,
         )
-        ttl_ms = backend_setnx.setnx_unique.await_args[0][2]
+        ttl_ms = backend_setnx.claim_unique.await_args[0][2]
         # fire_offset clamped to 0, so TTL stays at unique_for * 1000.
         assert ttl_ms == 60_000
 
@@ -1003,12 +1003,12 @@ class TestClientUniqueDeferred:
         """Without registry, _MISSING → no dedup; explicit unique_for works."""
         client = Client(broker=broker, backend=backend_setnx, registry=None)
         await client.schedule("add", queue="math", delay=10.0)
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
 
         await client.schedule(
             "add", queue="math", delay=10.0, unique_for=60,
         )
-        backend_setnx.setnx_unique.assert_awaited_once()
+        backend_setnx.claim_unique.assert_awaited_once()
 
     async def test_deferred_setnx_call_before_store_insert(
         self, client_setnx, backend_setnx, _patched_schedule_store,
@@ -1023,7 +1023,7 @@ class TestClientUniqueDeferred:
         async def track_store(*args, **kwargs):
             call_order.append("store")
 
-        backend_setnx.setnx_unique = AsyncMock(side_effect=track_setnx)
+        backend_setnx.claim_unique = AsyncMock(side_effect=track_setnx)
         _patched_schedule_store.add_schedule = AsyncMock(side_effect=track_store)
 
         await client_setnx.schedule(
@@ -1049,7 +1049,7 @@ class TestClientUniqueDeferred:
             await client_setnx.schedule(
                 "add", 1, queue="math", delay=60.0, unique_for=300,
             )
-        backend_setnx.setnx_unique.assert_awaited_once()
+        backend_setnx.claim_unique.assert_awaited_once()
         backend_setnx.release_unique.assert_awaited_once()
 
 
@@ -1058,7 +1058,7 @@ class TestClientUniqueScheduleMany:
 
     @pytest.fixture
     def backend_setnx(self, backend):
-        backend.setnx_unique = AsyncMock(return_value=None)
+        backend.claim_unique = AsyncMock(return_value=None)
         return backend
 
     @pytest.fixture
@@ -1072,7 +1072,7 @@ class TestClientUniqueScheduleMany:
         tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
         ids = await client_setnx.schedule_many(tasks, queue="math")
         assert len(ids) == 2
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
         for call in broker.publish.await_args_list:
             headers = call.kwargs.get("headers")
             # R4.4: enqueued-at is always stamped; dedup headers are absent.
@@ -1089,7 +1089,7 @@ class TestClientUniqueScheduleMany:
             tasks, queue="math", unique_for=60,
         )
         assert len(ids) == 3
-        assert backend_setnx.setnx_unique.await_count == 3
+        assert backend_setnx.claim_unique.await_count == 3
         assert broker.publish.await_count == 3
         for call in broker.publish.await_args_list:
             headers = call.kwargs["headers"]
@@ -1108,7 +1108,7 @@ class TestClientUniqueScheduleMany:
         async def setnx_mock(*_args, **_kwargs):
             return next(returns)
 
-        backend_setnx.setnx_unique = AsyncMock(side_effect=setnx_mock)
+        backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
 
         tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         ids = await client_setnx.schedule_many(
@@ -1141,7 +1141,7 @@ class TestClientUniqueScheduleMany:
         async def setnx_mock(*_a, **_kw):
             return next(returns)
 
-        backend_setnx.setnx_unique = AsyncMock(side_effect=setnx_mock)
+        backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
         client = Client(
             broker=broker, backend=backend_setnx,
             registry=registry, signal_dispatcher=dispatcher,
@@ -1168,7 +1168,7 @@ class TestClientUniqueScheduleMany:
 
         tasks = [("add", (1,), {}), ("add", (2,), {})]
         await client.schedule_many(tasks, queue="math", unique_for=None)
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_many_uses_taskinfo_default_when_missing(
         self, broker, backend_setnx,
@@ -1185,9 +1185,9 @@ class TestClientUniqueScheduleMany:
 
         tasks = [("add", (1,), {}), ("add", (2,), {})]
         await client.schedule_many(tasks, queue="math")
-        assert backend_setnx.setnx_unique.await_count == 2
+        assert backend_setnx.claim_unique.await_count == 2
         # All elements use the TaskInfo default TTL.
-        for call in backend_setnx.setnx_unique.await_args_list:
+        for call in backend_setnx.claim_unique.await_args_list:
             assert call.args[2] == 45_000
         for call in broker.publish.await_args_list:
             assert call.kwargs["headers"]["x-swarmq-unique-until"] == "start"
@@ -1197,7 +1197,7 @@ class TestClientUniqueScheduleMany:
     ):
         ids = await client_setnx.schedule_many([], queue="math", unique_for=60)
         assert ids == []
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_many_duplicates_skip_task_enqueued_signal(
         self, broker, backend_setnx, registry,
@@ -1217,7 +1217,7 @@ class TestClientUniqueScheduleMany:
         async def setnx_mock(*_a, **_kw):
             return next(returns)
 
-        backend_setnx.setnx_unique = AsyncMock(side_effect=setnx_mock)
+        backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
         client = Client(
             broker=broker, backend=backend_setnx,
             registry=registry, signal_dispatcher=dispatcher,
@@ -1281,7 +1281,7 @@ class TestClientUniqueScheduleMany:
 
         # No SETNX was called (validation fails first), so no rollback
         # is needed either.
-        backend_setnx.setnx_unique.assert_not_awaited()
+        backend_setnx.claim_unique.assert_not_awaited()
         backend_setnx.release_unique.assert_not_awaited()
 
     async def test_schedule_many_parallel_setnx_pre_enqueue_fail_rolls_back(
@@ -1311,7 +1311,7 @@ class TestClientUniqueScheduleMany:
             await client.schedule_many(tasks, queue="math", unique_for=60)
 
         # All three SETNX fired in parallel; all three must be rolled back.
-        assert backend_setnx.setnx_unique.await_count == 3
+        assert backend_setnx.claim_unique.await_count == 3
         assert backend_setnx.release_unique.await_count == 3
 
 

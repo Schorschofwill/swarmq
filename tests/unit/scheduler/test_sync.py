@@ -32,7 +32,7 @@ class TestSyncTaskinfoCrons:
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        backend.hget_schedule_def.return_value = None  # fresh
+        backend.schedules.get.return_value = None  # fresh
 
         await loop.sync_taskinfo_crons()
 
@@ -54,7 +54,7 @@ class TestSyncTaskinfoCrons:
             fire_ts_ms=1_700_000_000_000, source="static",
         )
         import msgspec
-        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+        backend.schedules.get.return_value = msgspec.json.encode(existing)
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -80,7 +80,7 @@ class TestSyncTaskinfoCrons:
             fire_ts_ms=1_700_000_000_000, source="static",
         )
         import msgspec
-        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+        backend.schedules.get.return_value = msgspec.json.encode(existing)
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -113,7 +113,7 @@ class TestSyncTaskinfoCrons:
             disabled=True,                # operator disabled this entry
         )
         import msgspec
-        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+        backend.schedules.get.return_value = msgspec.json.encode(existing)
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -146,7 +146,7 @@ class TestSyncTaskinfoCrons:
             disabled=False,
         )
         import msgspec
-        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+        backend.schedules.get.return_value = msgspec.json.encode(existing)
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -174,7 +174,7 @@ class TestSyncTaskinfoCrons:
             fire_ts_ms=1_700_000_000_000, source="cli",  # CLI entry
         )
         import msgspec
-        backend.hget_schedule_def.return_value = msgspec.json.encode(existing)
+        backend.schedules.get.return_value = msgspec.json.encode(existing)
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -198,7 +198,7 @@ class TestSyncTaskinfoCrons:
             async def run(self):
                 return None
 
-        backend.hget_schedule_def.return_value = b"{not valid json"
+        backend.schedules.get.return_value = b"{not valid json"
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
@@ -227,7 +227,7 @@ class TestSyncTaskinfoCrons:
                                  cron="0 3 * * *")
             async def run(self): return None
 
-        backend.hget_schedule_def.return_value = None  # fresh for all
+        backend.schedules.get.return_value = None  # fresh for all
         # First add_schedule call raises, second succeeds
         store.add_schedule.side_effect = [BCE("valkey flap"), None]
 

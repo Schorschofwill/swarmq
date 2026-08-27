@@ -103,7 +103,7 @@ def broker():
 @pytest.fixture()
 def backend():
     be = MagicMock(spec=ValkeyBackend)
-    for m in ("connect", "store_result", "publish_notification", "close",
+    for m in ("connect", "store_result", "notify_result", "close",
               "clear_cancel_flag"):
         setattr(be, m, AsyncMock())
     be.is_cancelled = AsyncMock(return_value=False)

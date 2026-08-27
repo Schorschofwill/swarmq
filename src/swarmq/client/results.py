@@ -14,9 +14,7 @@ import structlog
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
-    from swarmq.client.schedule import _MISSING, _MissingType
+    from swarmq.client.schedule import _MISSING, ClientBackend, ClientBroker, _MissingType
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
 
@@ -41,8 +39,8 @@ class ClientResults:
     # die Geschwister-Mixins (schedule → ClientScheduling, _unpack →
     # ClientWorkflows) — die Signaturen sind dort verbindlich.
     if TYPE_CHECKING:
-        _broker: RabbitMQBroker
-        _backend: ValkeyBackend
+        _broker: ClientBroker
+        _backend: ClientBackend
         _registry: TaskRegistry | None
         _backend_op_timeout: float | None
         _signal_dispatcher: SignalDispatcher
@@ -151,7 +149,7 @@ class ClientResults:
         raw_list: list[bytes | None] = [None] * len(task_ids)
 
         while loop.time() < deadline:
-            raw_list = await self._backend.get_results_batch(task_ids)
+            raw_list = await self._backend.get_results(task_ids)
             if all(r is not None for r in raw_list):
                 # ``all(... is not None)`` schließt None aus; mypy sieht das
                 # Narrowing über die Comprehension-Grenze nicht.

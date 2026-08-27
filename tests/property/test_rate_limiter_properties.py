@@ -43,7 +43,8 @@ import valkey.asyncio as valkey_asyncio
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from swarmq.limits import RateLimitConfig, RateLimiter
+from swarmq.backend.valkey.rate_limit import RateLimiter
+from swarmq.limits import RateLimitConfig
 
 _VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
 _VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6380"))

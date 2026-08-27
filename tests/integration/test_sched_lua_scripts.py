@@ -11,8 +11,8 @@ import uuid
 import pytest
 import valkey.asyncio as valkey_asyncio
 
+from swarmq.locking import SCHEDULER_LOCK_KEY as LOCK_KEY
 from swarmq.lua import load_script
-from swarmq.scheduler import SCHEDULER_LOCK_KEY as LOCK_KEY
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 

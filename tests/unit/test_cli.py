@@ -762,11 +762,11 @@ class TestDlqHandlerOrchestration:
 
         broker = MagicMock()
         broker.close = AsyncMock()
-        broker.list_dead_letter_queue = AsyncMock()
-        broker.inspect_dead_letter_message = AsyncMock()
-        broker.retry_dead_letter_message = AsyncMock()
-        broker.retry_all_dead_letter_messages = AsyncMock()
-        broker.purge_dead_letter_queue = AsyncMock()
+        broker.list_dead_letters = AsyncMock()
+        broker.inspect_dead_letter = AsyncMock()
+        broker.retry_dead_letter = AsyncMock()
+        broker.retry_all_dead_letters = AsyncMock()
+        broker.purge_dead_letters = AsyncMock()
 
         async def fake_from_env():
             return broker
@@ -779,7 +779,7 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_list_json_output_wraps_envelope(self, mock_broker, capsys):
-        mock_broker.list_dead_letter_queue.return_value = (
+        mock_broker.list_dead_letters.return_value = (
             [{"task_id": "t-1", "task_name": "add", "queue": "q",
               "headers": {"x-swarmq-retry-count": 3}, "body_size": 128}],
             1,
@@ -799,7 +799,7 @@ class TestDlqHandlerOrchestration:
     async def test_list_table_truncated_hint_when_at_limit(
         self, mock_broker, capsys,
     ):
-        mock_broker.list_dead_letter_queue.return_value = (
+        mock_broker.list_dead_letters.return_value = (
             [{"task_id": f"t-{i}", "task_name": "x", "queue": "q",
               "headers": {}, "body_size": 10} for i in range(2)],
             2,
@@ -811,7 +811,7 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_inspect_found_json_adds_found_true(self, mock_broker, capsys):
-        mock_broker.inspect_dead_letter_message.return_value = (
+        mock_broker.inspect_dead_letter.return_value = (
             {"task_id": "t-1", "task_name": "add", "queue": "q",
              "headers": {}, "body": {"task": {"id": "t-1"}},
              "body_raw": '{"task":{"id":"t-1"}}', "body_size": 20},
@@ -829,7 +829,7 @@ class TestDlqHandlerOrchestration:
     async def test_inspect_not_found_raises_dlq_not_found(
         self, mock_broker, capsys,
     ):
-        mock_broker.inspect_dead_letter_message.return_value = (None, 5)
+        mock_broker.inspect_dead_letter.return_value = (None, 5)
         ns = argparse.Namespace(
             task_id="missing", queue="q", scan_limit=1000, format="json",
         )
@@ -844,7 +844,7 @@ class TestDlqHandlerOrchestration:
     async def test_inspect_table_body_raw_fallback_for_malformed(
         self, mock_broker, capsys,
     ):
-        mock_broker.inspect_dead_letter_message.return_value = (
+        mock_broker.inspect_dead_letter.return_value = (
             {"task_id": None, "task_name": None, "queue": "q",
              "headers": {}, "body": None, "body_raw": "not-json",
              "body_size": 8},
@@ -856,8 +856,8 @@ class TestDlqHandlerOrchestration:
         # Passing task_id=None happens to be what you'd hit if you tried
         # to inspect a malformed DLQ message; this test pins the
         # body_raw fallback branch.
-        mock_broker.inspect_dead_letter_message.return_value = (
-            mock_broker.inspect_dead_letter_message.return_value[0], 1,
+        mock_broker.inspect_dead_letter.return_value = (
+            mock_broker.inspect_dead_letter.return_value[0], 1,
         )
         await cli._run_dlq_inspect(ns)
         out = capsys.readouterr().out
@@ -865,7 +865,7 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_retry_single_success_json_shape(self, mock_broker, capsys):
-        mock_broker.retry_dead_letter_message.return_value = (True, 3)
+        mock_broker.retry_dead_letter.return_value = (True, 3)
         ns = argparse.Namespace(
             task_id="t-1", all=False, queue="q",
             limit=10_000, scan_limit=1000, format="json",
@@ -880,7 +880,7 @@ class TestDlqHandlerOrchestration:
     async def test_retry_single_not_found_exits_via_sentinel(
         self, mock_broker, capsys,
     ):
-        mock_broker.retry_dead_letter_message.return_value = (False, 1000)
+        mock_broker.retry_dead_letter.return_value = (False, 1000)
         ns = argparse.Namespace(
             task_id="missing", all=False, queue="q",
             limit=10_000, scan_limit=1000, format="json",
@@ -895,7 +895,7 @@ class TestDlqHandlerOrchestration:
     async def test_retry_all_json_reports_skipped_malformed(
         self, mock_broker, capsys,
     ):
-        mock_broker.retry_all_dead_letter_messages.return_value = (4, 5)
+        mock_broker.retry_all_dead_letters.return_value = (4, 5)
         ns = argparse.Namespace(
             task_id=None, all=True, queue="q",
             limit=10_000, scan_limit=1000, format="json",
@@ -911,7 +911,7 @@ class TestDlqHandlerOrchestration:
     async def test_retry_all_table_warns_about_skipped_malformed(
         self, mock_broker, capsys,
     ):
-        mock_broker.retry_all_dead_letter_messages.return_value = (3, 4)
+        mock_broker.retry_all_dead_letters.return_value = (3, 4)
         ns = argparse.Namespace(
             task_id=None, all=True, queue="q",
             limit=10_000, scan_limit=1000, format="table",
@@ -923,7 +923,7 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_purge_json_shape(self, mock_broker, capsys):
-        mock_broker.purge_dead_letter_queue.return_value = 7
+        mock_broker.purge_dead_letters.return_value = 7
         ns = argparse.Namespace(queue="q", format="json")
         await cli._run_dlq_purge(ns)
         payload = json.loads(capsys.readouterr().out)
@@ -933,17 +933,17 @@ class TestDlqHandlerOrchestration:
     async def test_dispatch_all_four_commands(self, mock_broker):
         """Dispatcher _run_dlq_async routes the four subcommand strings
         to the right handler (P2 #8 / T-02)."""
-        mock_broker.list_dead_letter_queue.return_value = ([], 0)
-        mock_broker.inspect_dead_letter_message.return_value = (None, 0)
-        mock_broker.retry_all_dead_letter_messages.return_value = (0, 0)
-        mock_broker.purge_dead_letter_queue.return_value = 0
+        mock_broker.list_dead_letters.return_value = ([], 0)
+        mock_broker.inspect_dead_letter.return_value = (None, 0)
+        mock_broker.retry_all_dead_letters.return_value = (0, 0)
+        mock_broker.purge_dead_letters.return_value = 0
 
         # list
         ns = argparse.Namespace(
             dlq_command="list", queue="q", limit=10, format="json",
         )
         await cli._run_dlq_async(ns)
-        mock_broker.list_dead_letter_queue.assert_awaited_once()
+        mock_broker.list_dead_letters.assert_awaited_once()
 
         # inspect not-found raises sentinel; swallow for this smoke.
         ns = argparse.Namespace(
@@ -952,7 +952,7 @@ class TestDlqHandlerOrchestration:
         )
         with pytest.raises(cli._DLQNotFound):
             await cli._run_dlq_async(ns)
-        mock_broker.inspect_dead_letter_message.assert_awaited_once()
+        mock_broker.inspect_dead_letter.assert_awaited_once()
 
         # retry --all
         ns = argparse.Namespace(
@@ -960,14 +960,14 @@ class TestDlqHandlerOrchestration:
             limit=10, scan_limit=10, format="json",
         )
         await cli._run_dlq_async(ns)
-        mock_broker.retry_all_dead_letter_messages.assert_awaited_once()
+        mock_broker.retry_all_dead_letters.assert_awaited_once()
 
         # purge
         ns = argparse.Namespace(
             dlq_command="purge", queue="q", format="json",
         )
         await cli._run_dlq_async(ns)
-        mock_broker.purge_dead_letter_queue.assert_awaited_once()
+        mock_broker.purge_dead_letters.assert_awaited_once()
 
 
 class TestRenderTable:

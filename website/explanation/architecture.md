@@ -43,6 +43,33 @@ flowchart LR
 A SwarmQ deployment is just these four boxes. No Celery Flower, no
 kombu, no Django integration, no database migrations.
 
+## Contracts and packages
+
+Since 0.2.0 the core programs against explicit protocols in
+`swarmq.contracts` instead of concrete classes:
+
+- **Broker contracts** — `Publisher`/`Consumer`/`Broker` (connect,
+  declare, publish, consume, and the four delivery verbs `ack`,
+  `redeliver`, `retry_later`, `dead_letter`) plus the optional
+  `BrokerAdmin` extension (queue depths, DLQ operations,
+  `route_via_dlx`). `RabbitMQBroker` implements both.
+- **Backend contracts** — `ResultBackend` (results, progress, cancel
+  flags, workflow state, dedup claims) and the coordination stores
+  `LockStore` (token-based acquire/renew/release), `RateLimitStore`,
+  `ChordStore`, and `ScheduleStore`. `ValkeyBackend` implements them
+  and exposes the stores as `backend.locks`, `.rate_limit`, `.chords`,
+  and `.schedules`.
+
+An in-memory stub in the test suite implements the same contracts, and
+one contract-test suite runs against the stub, RabbitMQ, and Valkey
+alike — the litmus test that keeps the contracts broker-neutral.
+
+The former monolith modules are packages now, one pipeline stage per
+module: `worker/` (gates, execution, retry, result tail, lifecycle),
+`client/` (schedule, results, workflows), `scheduler/` (definition,
+loop, cron-sync), and `process_manager/` (supervisor, sampler, check,
+entry, run).
+
 ## Message lifecycle
 
 A single task takes one of two paths through the system: **immediate**

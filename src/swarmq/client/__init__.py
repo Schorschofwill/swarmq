@@ -15,8 +15,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.signals import SignalDispatcher
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.client.schedule import ClientBackend, ClientBroker
     from swarmq.scheduler import ScheduleStore
 
 from swarmq.client.results import ClientResults
@@ -40,8 +39,8 @@ class Client(ClientScheduling, ClientResults, ClientWorkflows):
 
     def __init__(
         self,
-        broker: RabbitMQBroker,
-        backend: ValkeyBackend,
+        broker: ClientBroker,
+        backend: ClientBackend,
         registry: TaskRegistry | None = None,
         middleware_chain: MiddlewareChain
         | Callable[[], MiddlewareChain]

@@ -53,7 +53,7 @@ async def test_sampler_populates_gauges_from_real_broker(
         await broker.declare_queue(queue)
         # Seed one REAL dead-lettered message so dlq_messages has a
         # non-trivial value to sample.
-        await broker.publish_to_dead_letter_queue(queue, b"{}", headers={})
+        await broker._publish_to_dead_letter_queue(queue, b"{}", headers={})
 
         app.config.metrics_port = _free_port()
         app.config.metrics_sample_interval = 0.2

@@ -11,7 +11,6 @@ import structlog
 from croniter import croniter
 
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key  # noqa: F401  # Re-Export (KTD10)
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
 from swarmq.task import Task
 
@@ -70,7 +69,7 @@ class SchedulerCronSync:
             )
 
             try:
-                existing_raw = await self._backend.hget_schedule_def(
+                existing_raw = await self._backend.schedules.get(
                     schedule_name
                 )
             except BackendConnectionError as exc:

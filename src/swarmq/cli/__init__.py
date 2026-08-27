@@ -97,8 +97,8 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     ConfigurationError,
 )
+from swarmq.locking import SCHEDULER_LOCK_KEY  # noqa: F401
 from swarmq.scheduler import (
-    SCHEDULER_LOCK_KEY,  # noqa: F401
     ScheduleDefinition,  # noqa: F401
     ScheduleStore,  # noqa: F401
 )

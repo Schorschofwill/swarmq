@@ -182,7 +182,7 @@ async def test_get_results_returns_all_in_order(client, backend):
     data_c = encode_result({"result": "gamma", "is_error": False})
 
     # First poll: none ready; second poll: all ready
-    backend.get_results_batch = AsyncMock(
+    backend.get_results = AsyncMock(
         side_effect=[
             [None, None, None],
             [data_a, data_b, data_c],
@@ -195,7 +195,7 @@ async def test_get_results_returns_all_in_order(client, backend):
 
 @pytest.mark.asyncio
 async def test_get_results_timeout_raises(client, backend):
-    backend.get_results_batch = AsyncMock(return_value=[None, None])
+    backend.get_results = AsyncMock(return_value=[None, None])
 
     with pytest.raises(ResultNotReadyError):
         await client.get_results(["x", "y"], timeout=0.05, poll_interval=0.01)

@@ -13,7 +13,7 @@ dieses Modul hält Parser und Konfiguration (rein) und den Import-Alias
 from __future__ import annotations
 
 import re
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 
 class RateLimitConfig(NamedTuple):
@@ -75,13 +75,3 @@ def parse_rate_limit(raw: str) -> RateLimitConfig:
             f"supported: {supported}"
         )
     return RateLimitConfig(max_requests=count, window_size_ms=_UNIT_TO_MS[unit])
-
-
-def __getattr__(name: str) -> Any:
-    """Import-Alias (KTD10, bis U15): ``swarmq.limits.RateLimiter`` ist
-    ``swarmq.backend.valkey.rate_limit.RateLimiter``."""
-    if name == "RateLimiter":
-        from swarmq.backend.valkey.rate_limit import RateLimiter
-
-        return RateLimiter
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

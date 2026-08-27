@@ -151,7 +151,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PL
             fire_offset_ms = max(0, fire_ts_ms - now_ms)
             fire_offset_s = (fire_offset_ms + 999) // 1000
             ttl_ms = (unique_for + int(fire_offset_s)) * 1000
-            existing_owner = await backend.setnx_unique(
+            existing_owner = await backend.claim_unique(
                 dedup_hash, args.name, ttl_ms,
             )
 

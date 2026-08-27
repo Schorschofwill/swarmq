@@ -9,17 +9,17 @@ import asyncio
 import time
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import structlog
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.middleware import MiddlewareChain
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
 
+from swarmq.contracts import Publisher, ResultBackend
+from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
     TaskNotFoundError,
 )
@@ -40,6 +40,19 @@ from swarmq.signals import Signal
 from swarmq.task import UniqueUntil
 
 logger = structlog.get_logger()
+
+class ClientBroker(Publisher, Protocol):
+    """Broker-Bedarf des Clients (U15): publish + Verbindungs-Lifecycle."""
+
+
+class ClientBackend(ResultBackend, Protocol):
+    """Backend-Bedarf des Clients (U15): ``ResultBackend`` plus der
+    ``schedules``-Store der Fassade (Delay/ETA, existiert nach ``connect()``)."""
+
+    @property
+    def schedules(self) -> ContractScheduleStore: ...
+
+
 
 
 
@@ -82,8 +95,8 @@ class ClientScheduling:
     # Mixin über dem Client-Zustand (U10); die Attribute setzt ``Client.__init__``.
     _schedule_store: ScheduleStore | None
     if TYPE_CHECKING:
-        _broker: RabbitMQBroker
-        _backend: ValkeyBackend
+        _broker: ClientBroker
+        _backend: ClientBackend
         _registry: TaskRegistry | None
         _backend_op_timeout: float | None
         _signal_dispatcher: SignalDispatcher
@@ -148,7 +161,7 @@ class ClientScheduling:
         exactly one edit.
         """
         dedup_hash = compute_dedup_hash(task_name, args, kwargs)
-        existing = await self._backend.setnx_unique(
+        existing = await self._backend.claim_unique(
             dedup_hash, task_id, ttl_ms,
             op_timeout=self._backend_op_timeout,
         )
@@ -488,7 +501,7 @@ class ClientScheduling:
             if entry["dedup_hash"] is None:
                 continue
             setnx_tasks[i] = asyncio.create_task(
-                self._backend.setnx_unique(
+                self._backend.claim_unique(
                     entry["dedup_hash"], entry["task_id"],
                     entry["dedup_ttl_ms"],
                     op_timeout=self._backend_op_timeout,

@@ -178,10 +178,5 @@ class ValkeyConnection:
         except (ValkeyError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
 
-    def create_pubsub(self) -> valkey.asyncio.client.PubSub:
-        """Alias (KTD10, entfällt in U15): rohes Pub/Sub-Objekt. Neue
-        Aufrufer nutzen ``wait_for_result``/``watch_progress``."""
-        return self._require_client().pubsub()
-
     def _pubsub(self) -> Any:
         return self._require_client().pubsub()

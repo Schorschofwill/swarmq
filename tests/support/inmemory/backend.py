@@ -235,16 +235,6 @@ class InMemoryBackend:
         self._unique.pop(dedup_hash)
         return True
 
-    # --- Aliase der heutigen Fassade (KTD10; entfallen in U15) ------------------
-    # Bis U17/U20 rufen WorkflowAdvancer/WorkflowHandle die alten Namen; der
-    # Stub spiegelt sie, damit er den FakeBackend der Advancer-Tests ersetzt.
-
-    async def get_results_batch(self, task_ids: Sequence[str]) -> list[bytes | None]:
-        return await self.get_results(task_ids)
-
-    async def publish_workflow_notification(self, wf_id: str) -> None:
-        await self.notify_workflow(wf_id)
-
 
 async def _wait_until(read: object, event: asyncio.Event, timeout: float) -> bytes | None:
     """Liest sofort, wartet dann auf ``event`` oder pollt, bis ``timeout`` abläuft."""

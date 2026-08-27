@@ -16,6 +16,7 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
+from swarmq.contracts.coordination import LockToken
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
@@ -342,10 +343,10 @@ class TestShutdownLockDrain:
         # ran (cancelled mid-execute, before _release_acquired_locks).
         h1 = _uuid.uuid4()
         h2 = _uuid.uuid4()
-        worker._active_handler_locks[h1] = [("res-A", "tok-1", 1)]
+        worker._active_handler_locks[h1] = [LockToken(name="res-A", owner="tok-1", max_concurrency=1)]
         worker._active_handler_locks[h2] = [
-            ("res-B", "tok-2", 3),
-            ("res-C", "tok-3", 1),
+            LockToken(name="res-B", owner="tok-2", max_concurrency=3),
+            LockToken(name="res-C", owner="tok-3", max_concurrency=1),
         ]
 
         # Track ordering: release calls must complete before backend.close
@@ -397,7 +398,7 @@ class TestShutdownLockDrain:
         )
 
         h1 = _uuid.uuid4()
-        worker._active_handler_locks[h1] = [("res-X", "tok-X", 1)]
+        worker._active_handler_locks[h1] = [LockToken(name="res-X", owner="tok-X", max_concurrency=1)]
 
         worker._request_shutdown()
         # Must not raise
@@ -446,8 +447,8 @@ class TestMetricsSampler:
             pytest.skip("prometheus_client missing")
         worker._metrics = m
         worker._worker_started_at = _time.monotonic() - 5
-        broker.get_queue_depth = AsyncMock(return_value=12)
-        broker.get_dlq_depth = AsyncMock(return_value=3)
+        broker.queue_depth = AsyncMock(return_value=12)
+        broker.dead_letter_depth = AsyncMock(return_value=3)
 
         captured: list[dict] = []
 
@@ -480,10 +481,10 @@ class TestMetricsSampler:
         if not m.enabled:
             pytest.skip("prometheus_client missing")
         worker._metrics = m
-        broker.get_queue_depth = AsyncMock(
+        broker.queue_depth = AsyncMock(
             side_effect=BrokerConnectionError("broker down")
         )
-        broker.get_dlq_depth = AsyncMock(return_value=0)
+        broker.dead_letter_depth = AsyncMock(return_value=0)
 
         # Per-queue error is logged and skipped; the call must not raise.
         await worker._sample_metrics_once()
@@ -502,10 +503,10 @@ class TestMetricsSampler:
         if not m.enabled:
             pytest.skip("prometheus_client missing")
         worker._metrics = m
-        broker.get_queue_depth = AsyncMock(
+        broker.queue_depth = AsyncMock(
             side_effect=RuntimeError("channel in weird state")
         )
-        broker.get_dlq_depth = AsyncMock(return_value=0)
+        broker.dead_letter_depth = AsyncMock(return_value=0)
 
         await worker._sample_metrics_once()  # must not raise
 
