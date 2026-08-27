@@ -161,7 +161,7 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
         # ``False`` means ``main()`` takes the non-check branch; if
         # the user really meant ``--check``, they will get argparse's
         # default error. This is the conservative fallback.
-        parsed = None  # type: ignore[assignment]
+        parsed = None
 
     if (
         parsed is not None
@@ -196,7 +196,7 @@ def _emit_argparse_check_error(message: str) -> int:
     watch_dirs, warnings, error, error_type) so agents consuming
     ``--check`` can parse any failure uniformly.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "ok": False,
         "module": None,
         "module_origin": None,

@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import structlog
 from croniter import CroniterBadCronError, croniter
@@ -271,7 +271,7 @@ interval, UNLESS current == total (final-flush always honoured)."""
 
 class Task:
     task_info: TaskInfo
-    _registered_tasks: list[type] = []  # noqa: RUF012
+    _registered_tasks: ClassVar[list[type[Task]]] = []
 
     # R3.7 progress-tracking state. The worker sets these as instance
     # attrs after constructing the task and before pre_execution.
@@ -344,7 +344,7 @@ class Task:
     async def pre_execution(self) -> None:
         pass
 
-    async def run(self, *args, **kwargs):
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError
 
     async def post_execution(self) -> None:

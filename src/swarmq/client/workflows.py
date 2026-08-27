@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
-    pass
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.registry import TaskRegistry
+    from swarmq.signals import SignalDispatcher
 
 from swarmq.exceptions import (
     TaskCancelledError,
@@ -46,6 +49,19 @@ _DEFAULT_WORKFLOW_TTL_MS = 86_400_000  # 24h
 
 
 class ClientWorkflows:
+    # Mixin über dem Client-Zustand (U10); ``_resolve_queue_and_delivery_mode``
+    # ist in ``ClientScheduling`` verbindlich definiert.
+    if TYPE_CHECKING:
+        _broker: RabbitMQBroker
+        _backend: ValkeyBackend
+        _registry: TaskRegistry | None
+        _backend_op_timeout: float | None
+        _signal_dispatcher: SignalDispatcher
+
+        def _resolve_queue_and_delivery_mode(
+            self, task_name: str, queue: str | None
+        ) -> tuple[str, str]: ...
+
     async def apply(
         self,
         workflow: Signature | Chain | Group | Chord,

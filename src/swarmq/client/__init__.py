@@ -20,7 +20,9 @@ if TYPE_CHECKING:
     from swarmq.scheduler import ScheduleStore
 
 from swarmq.client.results import ClientResults
-from swarmq.client.schedule import _MISSING, ClientScheduling, _MissingType  # noqa: F401  # Re-Export (app.py)
+from swarmq.client.schedule import _MISSING as _MISSING  # Re-Export (app.py)
+from swarmq.client.schedule import ClientScheduling
+from swarmq.client.schedule import _MissingType as _MissingType
 from swarmq.client.workflows import ClientWorkflows
 
 logger = structlog.get_logger()

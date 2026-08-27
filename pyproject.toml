@@ -108,77 +108,16 @@ markers = [
 ]
 
 [tool.mypy]
-# Phased strict rollout (U4.2). The modules listed in strict-override
-# below are strict-clean and gate CI. Legacy modules still have
-# accumulated type debt and are checked at non-strict level; each
-# migrates to strict by clearing its override block.
-strict = false
+# Projektweit strict seit Plan U12 (R7/AE4): keine Override-Blöcke mehr —
+# jede verbleibende ``# type: ignore`` trägt einen Fehlercode
+# (warn_unused_ignores meldet tote Suppressions).
+strict = true
+warn_unused_ignores = true
 packages = ["swarmq"]
 mypy_path = "src"
-disallow_untyped_defs = false
-check_untyped_defs = true
 
-# Strict-clean modules — tightened per the U4.2 phased rollout.
 [[tool.mypy.overrides]]
-module = [
-    "swarmq.progress",
-    "swarmq.headers",
-    "swarmq.exceptions",
-    "swarmq.backoff",
-    "swarmq.signals",
-    "swarmq.workflow",
-    "swarmq.workflow_orchestration",
-    # 0.2.0 (KTD8 Phase 1): neue Pakete sind von Beginn an strict.
-    "swarmq.contracts",
-    "swarmq.contracts.*",
-    "swarmq.broker.rabbitmq",
-    "swarmq.broker.rabbitmq.*",
-    "swarmq.backend.valkey",
-    "swarmq.backend.valkey.*",
-    "swarmq.worker",
-    "swarmq.worker.outcome",
-    # Stub und Contract-Klassen laufen unter demselben strict-Gate (KTD1, U4).
-    "tests.support",
-    "tests.support.*",
-    "tests.contracts",
-    "tests.contracts.*",
-]
-strict = true
-
-# Legacy modules — kept at non-strict until separate cleanup passes.
-# Listing them explicitly keeps the debt visible.
-[[tool.mypy.overrides]]
-module = [
-    "swarmq.client",
-    "swarmq.client.*",  # U10: Submodule erben den Monolith-Eintrag bis U12
-    "swarmq.worker.pipeline",  # U6: erbt den Eintrag des früheren worker.py bis U12
-    "swarmq.worker.lifecycle",  # U9: dito (Mixin über dem Worker-Zustand)
-    "swarmq.task",
-    "swarmq.scheduler",
-    "swarmq.scheduler.*",  # U11: Submodule erben den Monolith-Eintrag bis U12
-    "swarmq.cli",
-    "swarmq.cli.*",
-    "swarmq.app",
-    "swarmq.config",
-    "swarmq.limits",
-    "swarmq.locking",
-    "swarmq.cancellation",
-    "swarmq.middleware",
-    "swarmq.registry",
-    "swarmq.serialization",
-    "swarmq.logging",
-    # Plan U2: bisher in keinem Override und nur auf Default-Niveau geprüft
-    # (16 Fehler). Aufgenommen, damit ``lint-and-types`` blockierend laufen
-    # kann; U21 erbt als ``swarmq.process_manager.*``, U12 räumt beide auf.
-    "swarmq.process_manager",
-    "swarmq.process_manager.*",  # U21: Submodule erben den Monolith-Eintrag bis U12
-    "swarmq.metrics",
-]
-ignore_errors = true
-
-# Third-party stubs missing — bypass rather than require the stub packages.
-[[tool.mypy.overrides]]
-module = ["croniter.*", "msgpack.*"]
+module = ["croniter.*", "msgpack.*"]  # liefern keine Typ-Stubs
 ignore_missing_imports = true
 
 [tool.ruff]

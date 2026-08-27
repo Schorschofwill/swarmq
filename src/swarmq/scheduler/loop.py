@@ -45,7 +45,7 @@ class SchedulerBackend(Protocol):
 
     async def set_schedfire_handover_marker(self, owner_token: str, ttl_ms: int) -> None: ...
 
-    async def get_and_del_schedfire_handover_marker(self) -> bytes | None: ...
+    async def get_and_del_schedfire_handover_marker(self) -> bool: ...
 
 _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 """Minimum TTL for the handover marker (5s). The actual TTL used is
@@ -594,7 +594,7 @@ class SchedulerLoop(SchedulerCronSync):
         cost, so no index is introduced.
         """
         for task_class in Task._registered_tasks:
-            ti = getattr(task_class, "task_info", None)
+            ti: TaskInfo | None = getattr(task_class, "task_info", None)
             if ti is not None and ti.name == task_name:
                 return ti
         return None

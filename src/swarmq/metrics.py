@@ -116,14 +116,14 @@ class Metrics:
     ) -> None:
         self._enabled = _HAVE_PROMETHEUS
         if self._enabled:
-            self.registry = registry or CollectorRegistry()
-            self.tasks_total = Counter(
+            self.registry: CollectorRegistry | None = registry or CollectorRegistry()
+            self.tasks_total: Counter | _NoopMetric = Counter(
                 f"{namespace}_tasks_total",
                 "Total tasks processed by outcome",
                 labelnames=("task_name", "queue", "outcome"),
                 registry=self.registry,
             )
-            self.task_duration_seconds = Histogram(
+            self.task_duration_seconds: Histogram | _NoopMetric = Histogram(
                 f"{namespace}_task_duration_seconds",
                 "Task run() duration in seconds",
                 labelnames=("task_name", "queue"),
@@ -135,37 +135,37 @@ class Metrics:
                     1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0,
                 ),
             )
-            self.tasks_active = Gauge(
+            self.tasks_active: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_tasks_active",
                 "Tasks currently in-flight per queue",
                 labelnames=("queue",),
                 registry=self.registry,
             )
-            self.queue_depth = Gauge(
+            self.queue_depth: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_queue_depth",
                 "Broker-reported queue message count",
                 labelnames=("queue", "kind"),
                 registry=self.registry,
             )
-            self.worker_uptime_seconds = Gauge(
+            self.worker_uptime_seconds: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_worker_uptime_seconds",
                 "Seconds since worker start",
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
-            self.retries_total = Counter(
+            self.retries_total: Counter | _NoopMetric = Counter(
                 f"{namespace}_retries_total",
                 "Task retries scheduled",
                 labelnames=("task_name", "queue"),
                 registry=self.registry,
             )
-            self.dlq_messages = Gauge(
+            self.dlq_messages: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_dlq_messages",
                 "Dead-letter-queue live message count",
                 labelnames=("queue",),
                 registry=self.registry,
             )
-            self.scheduler_leader = Gauge(
+            self.scheduler_leader: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_scheduler_leader",
                 "1 when this worker holds the scheduler leader lock, else 0",
                 labelnames=("worker_id",),
@@ -195,6 +195,7 @@ class Metrics:
         """
         if not self._enabled:
             return b"# swarmq metrics disabled - install prometheus_client\n"
+        assert self.registry is not None  # _enabled impliziert echte Registry
         return generate_latest(self.registry)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any, NotRequired, TypedDict
 
 import structlog
@@ -97,14 +98,14 @@ class MiddlewareChain:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
             await _swallow(
-                "post_enqueue", mw, lambda mw=mw: mw.post_enqueue(message)
+                "post_enqueue", mw, partial(mw.post_enqueue, message)
             )
 
     async def run_pre_execute(self, message: MessageContext) -> None:
         """Forward order. Errors logged, not propagated."""
         for mw in self._middlewares:
             await _swallow(
-                "pre_execute", mw, lambda mw=mw: mw.pre_execute(message)
+                "pre_execute", mw, partial(mw.pre_execute, message)
             )
 
     async def run_post_execute(
@@ -113,7 +114,7 @@ class MiddlewareChain:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
             await _swallow(
-                "post_execute", mw, lambda mw=mw: mw.post_execute(message, result)
+                "post_execute", mw, partial(mw.post_execute, message, result)
             )
 
     async def run_on_error(
@@ -122,7 +123,7 @@ class MiddlewareChain:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
             await _swallow(
-                "on_error", mw, lambda mw=mw: mw.on_error(message, exception)
+                "on_error", mw, partial(mw.on_error, message, exception)
             )
 
     async def run_on_retry(
@@ -137,7 +138,7 @@ class MiddlewareChain:
             await _swallow(
                 "on_retry",
                 mw,
-                lambda mw=mw: mw.on_retry(message, exception, retry_count, delay),
+                partial(mw.on_retry, message, exception, retry_count, delay),
             )
 
 

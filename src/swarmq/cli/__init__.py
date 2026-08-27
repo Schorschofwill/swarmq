@@ -35,7 +35,10 @@ import traceback
 from collections.abc import Sequence
 from datetime import UTC, datetime  # noqa: F401
 from pathlib import Path  # noqa: F401
-from typing import Any  # noqa: F401
+from typing import TYPE_CHECKING, Any  # noqa: F401
+
+if TYPE_CHECKING:
+    from swarmq.broker.rabbitmq import RabbitMQBroker
 
 import msgspec  # noqa: F401
 
@@ -274,7 +277,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
 
             # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
             # process_manager importiert keine Broker-Implementierung mehr.
-            def _admin_factory():
+            def _admin_factory() -> RabbitMQBroker:
                 import os as _os
 
                 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -340,7 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
         BrokerConnectionError,
         BackendConnectionError,
         *_valkey_errs,
-    ) as exc:
+    ) as exc:  # type: ignore[misc]  # Stern-Entpacken im except-Tupel (Laufzeit ok)
         sys.stderr.write(f"{error_prefix}: {exc}\n")
         if getattr(args, "log_level", "INFO") == "DEBUG":
             traceback.print_exc(file=sys.stderr)

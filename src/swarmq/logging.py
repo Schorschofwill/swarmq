@@ -7,6 +7,7 @@ import logging.handlers
 import queue
 import sys
 import time
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import structlog
@@ -28,7 +29,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
 
     _DROP_NOTICE_INTERVAL_S = 1.0
 
-    def __init__(self, queue_: queue.Queue) -> None:
+    def __init__(self, queue_: queue.Queue[logging.LogRecord]) -> None:
         super().__init__(queue_)
         self.dropped = 0
         self._last_drop_notice = 0.0
@@ -76,7 +77,7 @@ def setup_logging(
         else structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
     )
 
-    shared_processors: list = [
+    shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -99,7 +100,7 @@ def setup_logging(
     )
 
     # Non-blocking I/O via QueueHandler + QueueListener
-    log_queue: queue.Queue = queue.Queue(maxsize=10_000)
+    log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10_000)
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[renderer],

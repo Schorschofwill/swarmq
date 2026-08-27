@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
@@ -19,7 +19,7 @@ logger = structlog.get_logger()
 
 def worker_subprocess_entry(
     worker_id: int,
-    shutdown_event,
+    shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
     cfg: WorkerConfig,
 ) -> None:
     """Run a single worker inside a spawned subprocess.
