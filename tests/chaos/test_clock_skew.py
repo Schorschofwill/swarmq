@@ -85,8 +85,12 @@ class TestClockSkew:
         backend = ValkeyBackend(chaos_stack.valkey_url)
         await backend.connect()
         try:
-            limiter = RateLimiter(backend._client)
-            config = parse_rate_limit("2/s")
+            limiter = RateLimiter(backend.client)
+            # 2/m statt 2/s: mit einem Sekundenfenster überschritt der dritte
+            # Claim gelegentlich die Server-Sekundengrenze und wurde zu Recht
+            # erlaubt (Flake, U17-Pipeline 2026-08-27). Die Invariante — Server-
+            # TIME statt lokaler Uhr — ist mit einem Minutenfenster identisch.
+            config = parse_rate_limit("2/m")
             task_name = _unique_name("rl_skew")
 
             # Two claims while wall-clock is real — fills the window.

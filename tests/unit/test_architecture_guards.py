@@ -51,7 +51,10 @@ _CYCLE_ALLOWLIST: list[tuple[str, str]] = [
     ("swarmq.process_manager", "swarmq.broker.rabbitmq"),  # bis U21 (Sampler-Factory)
     ("swarmq", "swarmq.app"),                          # PEP-562-Fassade ↔ app
     ("swarmq.app", "swarmq"),
-    ("swarmq.backend.valkey", "swarmq.scheduler"),     # bis U18 (SCHEDULER_LOCK_KEY lazy)
+    # KTD10-Import-Aliase (PEP-562 ``__getattr__``) bis U15: die reinen Module
+    # re-exportieren ihre nach backend/valkey/ gezogenen Klassen lazy.
+    ("swarmq.locking", "swarmq.backend.valkey.locks"),
+    ("swarmq.limits", "swarmq.backend.valkey.rate_limit"),
     # cli/__init__ ↔ cli/{dlq,schedule}_cmd (funktionslokale Re-Importe der
     # Env-Factories). Nicht im Plan vorgesehen; ``cli`` wird in diesem
     # Programm nicht zerlegt → Follow-Up 0.2.x (im Plan nachgetragen).
@@ -62,7 +65,9 @@ _CORE_PACKAGES = ("swarmq.contracts", "swarmq.worker", "swarmq.client", "swarmq.
 _PURITY_ACTIVE: frozenset[str] = frozenset({"swarmq.contracts"})  # U11: scheduler; U15: client, worker
 _PHASE4_COMPLETE = False
 _FORBIDDEN_IN_CORE = ("aio_pika", "valkey", "swarmq.backend.valkey", "swarmq.broker.rabbitmq")
-_ALIAS_MODULES: frozenset[str] = frozenset()  # U18: limits, locking, workflow_orchestration, scheduler-Kompat
+_ALIAS_MODULES: frozenset[str] = frozenset(
+    {"swarmq.limits", "swarmq.locking", "swarmq.workflow_orchestration", "swarmq.scheduler"}
+)  # KTD10-Re-Exports, bis U15
 
 _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.broker.rabbitmq": ["connection", "delivery", "admin"],  # U5

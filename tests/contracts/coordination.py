@@ -73,12 +73,17 @@ class LockStoreContract:
         assert await impl.release(t1) is True
         assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is not None
 
-    async def test_semaphore_slots_expire_individually(self, impl: LockStore, clock: Clock) -> None:
+    async def test_semaphore_slots_expire_after_ttl(self, impl: LockStore, clock: Clock) -> None:
+        """Slots, deren Halter länger als ``ttl_ms`` inaktiv sind, werden beim
+        nächsten ``acquire`` mit derselben TTL freigegeben. (Kein Anspruch
+        auf slot-individuelle TTLs: ``lock_acquire.lua`` räumt mit der TTL
+        des Aufrufers auf.)"""
         name = _name("sem")
         await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=2)
-        await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2)
+        await impl.acquire(name, owner="b", ttl_ms=300, max_concurrency=2)
+        assert await impl.acquire(name, owner="c", ttl_ms=300, max_concurrency=2) is None
         await clock.advance(0.8)
-        assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is not None
+        assert await impl.acquire(name, owner="c", ttl_ms=300, max_concurrency=2) is not None
 
     async def test_current_owner_of_unknown_lock_is_none(self, impl: LockStore) -> None:
         assert await impl.current_owner(_name("lock")) is None

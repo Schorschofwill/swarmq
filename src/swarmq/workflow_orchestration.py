@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from swarmq.backend.valkey.chords import ChordManager, chord_set_key  # noqa: F401  # Re-Export (KTD10)
 from swarmq.exceptions import (
     ResultNotReadyError,
     TaskCancelledError,
@@ -28,7 +29,6 @@ from swarmq.headers import (
     HEADER_WORKFLOW_ID,
     HEADER_WORKFLOW_STEP,
 )
-from swarmq.lua import load_script
 from swarmq.serialization import decode_json, encode_json, encode_result
 from swarmq.workflow import (
     Chain,
@@ -40,8 +40,6 @@ from swarmq.workflow import (
 )
 
 if TYPE_CHECKING:
-    import valkey.asyncio
-
     from swarmq.backend.valkey import ValkeyBackend
 
 
@@ -312,9 +310,8 @@ def _frontier(node: WorkflowNode, prefix: str) -> list[tuple[str, Signature]]:
     raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
 
-def chord_set_key(wf_id: str, chord_id: str) -> str:
-    """Key for the per-chord completed-member set (SADD of task ids)."""
-    return f"sq:wf:chord:{wf_id}:{chord_id}"
+# ``chord_set_key`` und ``ChordManager`` leben seit Plan U18 in
+# ``swarmq.backend.valkey.chords``; die Namen bleiben hier importierbar (KTD10).
 
 
 def workflow_step_task_id(wf_id: str, step_path: str) -> str:
@@ -700,41 +697,3 @@ class WorkflowAdvancer:
             wf_id, encode_json(state), ttl_ms=self._ttl_ms
         )
 
-
-class ChordManager:
-    """Async wrapper around ``chord_complete.lua``.
-
-    One instance per worker, constructed in ``Worker.start()`` after the
-    backend connects (the registered ``AsyncScript`` needs a live client).
-    Follows the collaborator-owned-script pattern of ``RateLimiter``.
-    """
-
-    def __init__(self, client: valkey.asyncio.Valkey) -> None:
-        self._client = client
-        self._script = client.register_script(load_script("chord_complete"))
-
-    async def record_and_check_complete(
-        self,
-        wf_id: str,
-        chord_id: str,
-        member_id: str,
-        expected_n: int,
-        ttl_ms: int,
-    ) -> bool:
-        """Record one header-member completion; return True iff the chord is
-        now complete (all ``expected_n`` distinct members done) (R12).
-
-        Idempotent under redelivery: a member already in the completed set
-        does not advance the count. This returns True on EVERY call once the
-        set has reached N — including post-completion redeliveries — so the
-        true one-shot is the downstream publish-then-mark ``step_tasks["/b"]``
-        marker in :meth:`WorkflowAdvancer._enqueue_node`, not a flag consumed
-        here. That ordering guarantees the body is never lost under a crash
-        in the completion→publish window (at worst a rare idempotent
-        double-enqueue, absorbed by step idempotency).
-        """
-        result = await self._script(
-            keys=[chord_set_key(wf_id, chord_id)],
-            args=[member_id, expected_n, ttl_ms],
-        )
-        return bool(result == 1)

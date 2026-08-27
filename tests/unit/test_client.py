@@ -1046,9 +1046,13 @@ class TestClientScheduleDelayEta:
         (Fork 2 — clear RuntimeError with migration hint)."""
         # Ensure backend has no _client attribute (unconnected)
         # We use a fresh client with a plain Mock backend
+        from unittest.mock import PropertyMock
+
         from swarmq.client import Client as _Client
+        from swarmq.exceptions import BackendConnectionError
         backend = MagicMock()
-        backend._client = None
+        # U18: die Fassade wirft vor connect() auf ``.schedules``
+        type(backend).schedules = PropertyMock(side_effect=BackendConnectionError("not connected"))
         c = _Client(broker=broker, backend=backend, registry=None)
         with pytest.raises(RuntimeError, match="connected"):
             await c.schedule("add", queue="math", delay=1.0)

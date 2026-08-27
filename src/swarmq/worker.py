@@ -771,19 +771,19 @@ class Worker:
         await self._broker.connect()
         await self._backend.connect()
 
-        # Backend._client is available only after connect(). Instantiate
+        # Backend.client is available only after connect(). Instantiate
         # the rate limiter here so the registered Lua script uses the
         # live client.
-        self._rate_limiter = RateLimiter(self._backend._client)
+        self._rate_limiter = RateLimiter(self._backend.client)
         # LockManager has the same lifecycle constraint — registered
         # AsyncScripts need a live client. See plan 008 Unit 4.
-        self._lock_manager = LockManager(self._backend._client)
+        self._lock_manager = LockManager(self._backend.client)
 
         # R4.1 workflow advancer (U5) — ChordManager registers chord_complete.lua
         # against the live client, same as RateLimiter/LockManager above.
         self._workflow_advancer = WorkflowAdvancer(
             self._backend,
-            ChordManager(self._backend._client),
+            ChordManager(self._backend.client),
             publish=self._publish_workflow_step,
             resolve_queue=self._resolve_workflow_queue,
             make_task_id=workflow_step_task_id,
