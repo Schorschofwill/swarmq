@@ -1,0 +1,42 @@
+"""Broker- und Backend-Verträge der 0.2.0-Restrukturierung (R1, KTD1–KTD4).
+
+Siehe ``docs/design/2026-09-0-2-0-vertraege-und-modulschnitt.md``.
+"""
+
+from swarmq.contracts.backend import BatchResultBackend, ResultBackend
+from swarmq.contracts.broker import (
+    BatchPublisher,
+    Broker,
+    BrokerAdmin,
+    Consumer,
+    DeliveryCallback,
+    Publisher,
+)
+from swarmq.contracts.coordination import (
+    ChordStore,
+    LockStore,
+    LockToken,
+    RateLimitDecision,
+    RateLimitStore,
+    ScheduleStore,
+)
+from swarmq.contracts.message import Delivery, PublishReceipt
+
+__all__ = [
+    "BatchPublisher",
+    "BatchResultBackend",
+    "Broker",
+    "BrokerAdmin",
+    "ChordStore",
+    "Consumer",
+    "Delivery",
+    "DeliveryCallback",
+    "LockStore",
+    "LockToken",
+    "PublishReceipt",
+    "Publisher",
+    "RateLimitDecision",
+    "RateLimitStore",
+    "ResultBackend",
+    "ScheduleStore",
+]

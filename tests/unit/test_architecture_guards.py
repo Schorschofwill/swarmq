@@ -61,7 +61,7 @@ _CYCLE_ALLOWLIST: list[tuple[str, str]] = [
 ]
 
 _CORE_PACKAGES = ("swarmq.contracts", "swarmq.worker", "swarmq.client", "swarmq.scheduler")
-_PURITY_ACTIVE: frozenset[str] = frozenset()  # U3: contracts; U11: scheduler; U15: client, worker
+_PURITY_ACTIVE: frozenset[str] = frozenset({"swarmq.contracts"})  # U11: scheduler; U15: client, worker
 _PHASE4_COMPLETE = False
 _FORBIDDEN_IN_CORE = ("aio_pika", "valkey", "swarmq.backend.valkey", "swarmq.broker.rabbitmq")
 _ALIAS_MODULES: frozenset[str] = frozenset()  # U18: limits, locking, workflow_orchestration, scheduler-Kompat
