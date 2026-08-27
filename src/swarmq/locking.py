@@ -6,20 +6,15 @@ via ``SET NX PX``) and Semaphore (max_concurrency>1 via SortedSet)
 modes; this module provides the Python surface (TTL helper, async
 ``acquire`` / ``release``).
 
-Pattern mirrors ``RateLimiter`` in ``swarmq.limits``: ``register_script``
-returns a ``valkey.AsyncScript`` whose own NOSCRIPT-recovery loop
-handles cache eviction.
+Seit Plan U18 lebt ``LockManager`` in ``swarmq.backend.valkey.locks``; dieses
+Modul hält die reinen Ableitungen (``lock_key``, ``compute_lock_ttl_ms``,
+``SCHEDULER_LOCK_NAME``/``SCHEDULER_LOCK_KEY``) und den Import-Alias
+``swarmq.locking.LockManager`` (KTD10, entfällt in U15).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
-
-if TYPE_CHECKING:
-    import valkey.asyncio as valkey_asyncio
-
-from swarmq.exceptions import BackendConnectionError
-from swarmq.lua import load_script
+from typing import Any
 
 # Buffer added on top of ``hard_timeout`` to derive the lock TTL.
 # (P0-A fix, 2026-06-02 production-safety audit.) The lock TTL is purely a
@@ -87,122 +82,34 @@ def compute_lock_ttl_ms(hard_timeout: int | None) -> int:
     seconds = hard_timeout + _LOCK_TTL_BUFFER_SECONDS
     return int(seconds * 1000)
 
+SCHEDULER_LOCK_NAME = "{sched}:leader"
+"""Logical lock name — LockManager's automatic ``sq:lock:`` prefix
+yields the final Valkey key ``sq:lock:{sched}:leader``.
 
-class LockManager:
-    """Async wrapper around ``lock_acquire.lua`` + ``lock_release.lua``.
+Härtung R2 P1-7: the ``{sched}`` hash tag co-locates the leader lock
+with ``sq:{sched}:zset`` / ``sq:{sched}:defs`` in one Valkey-Cluster
+hash slot — ``sched_commit.lua`` touches all three keys in one EVAL
+and would otherwise fail with CROSSSLOT on a sharded cluster.
 
-    One instance per worker, constructed after the backend connects
-    (mirrors ``RateLimiter`` lifecycle in ``Worker.start``). Holds two
-    registered ``AsyncScript`` instances so the NOSCRIPT-recovery loop
-    inside ``valkey.asyncio.AsyncScript`` is the recovery path — we do
-    not reimplement it.
+BREAKING (pre-1.0): deployments upgrading from the un-tagged
+``sq:lock:scheduler:leader`` / ``sq:sched:*`` keys must re-create
+their schedules (or RENAME the keys manually) — swarmq does not
+migrate them."""
 
-    All Valkey-facing methods catch arbitrary exceptions and re-raise
-    them as :class:`BackendConnectionError`. The boundary is drawn here
-    so the worker's pre-execute pipeline (``_try_apply_lock``) sees one
-    error class regardless of whether the underlying transport raised
-    ``ConnectionError``, ``TimeoutError``, or a Valkey-specific error.
-    """
+SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
+"""Final Valkey key for the leader lock. Derived live from
+``lock_key()`` so the invariant ``SCHEDULER_LOCK_KEY ==
+_LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME`` holds by construction — if
+the prefix ever changes, ``sched_commit.lua``'s owner-check and the
+CLI status view stay in sync automatically (Unit 10 / Fork B1)."""
 
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
-        self._client = client
-        self._acquire_script = client.register_script(load_script("lock_acquire"))
-        self._release_script = client.register_script(load_script("lock_release"))
-        self._renew_script = client.register_script(load_script("lock_renew"))
 
-    async def acquire(
-        self,
-        lock_name: str,
-        owner_token: str,
-        ttl_ms: int,
-        max_concurrency: int,
-    ) -> bool:
-        """Try to claim the lock. Returns ``True`` on success, ``False``
-        on conflict (mutex held by someone else, or semaphore full).
+def __getattr__(name: str) -> Any:
+    """Import-Alias (KTD10, bis U15): ``swarmq.locking.LockManager`` ist
+    ``swarmq.backend.valkey.locks.LockManager``. Lazy, damit dieses reine
+    Modul die Valkey-Implementierung nicht eager zieht."""
+    if name == "LockManager":
+        from swarmq.backend.valkey.locks import LockManager
 
-        Pulls server-side ``TIME`` once so the script's expiry
-        arithmetic uses the same wall clock the SortedSet was scored
-        with — same pattern as ``RateLimiter.check``.
-        """
-        try:
-            seconds, microseconds = await self._client.time()
-            now_ms = int(seconds) * 1000 + int(microseconds) // 1000
-            result = await self._acquire_script(
-                keys=[lock_key(lock_name)],
-                args=[owner_token, ttl_ms, max_concurrency, now_ms],
-            )
-        except BackendConnectionError:
-            raise
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"lock acquire failed for {lock_name!r}: {exc}"
-            ) from exc
-        return int(result) == 1
-
-    async def release(
-        self,
-        lock_name: str,
-        owner_token: str,
-        max_concurrency: int,
-    ) -> bool:
-        """Release a lock previously acquired by this token.
-
-        Returns ``True`` when the script reported a release (owned-release
-        or admin force-release), ``False`` when nothing was released
-        (foreign owner, key gone, or token not in the semaphore set).
-        Pass ``owner_token="__force__"`` to bypass the owner check —
-        reserved for cancellation / admin paths.
-        """
-        try:
-            result = await self._release_script(
-                keys=[lock_key(lock_name)],
-                args=[owner_token, max_concurrency],
-            )
-        except BackendConnectionError:
-            raise
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"lock release failed for {lock_name!r}: {exc}"
-            ) from exc
-        # Lua returns 1 (owned release), 2 (force release), 0 (no-op).
-        # Both 1 and 2 count as "released" from the caller's perspective.
-        return int(result) >= 1
-
-    async def renew(
-        self,
-        lock_name: str,
-        owner_token: str,
-        ttl_ms: int,
-        max_concurrency: Literal[1] = 1,
-    ) -> bool:
-        """Extend the TTL of a mutex lock we still own (heartbeat path).
-
-        Returns ``True`` when the script confirms the owner matches and the
-        PEXPIRE succeeded, ``False`` when the lock is absent, expired, or
-        held by a different owner. The caller uses the boolean to decide
-        whether to keep asserting leadership — a ``False`` means the lock
-        was lost and the caller should transition back to standby.
-
-        Mutex-only for v1. ``max_concurrency`` is typed as ``Literal[1]``
-        (Unit 6 / M-7) so static type-checkers (mypy, pyright) surface
-        semaphore callers at the call-site instead of letting them reach
-        the runtime guard. The runtime check is retained as a safety net
-        for untyped callers and dynamic invocations.
-        """
-        if max_concurrency != 1:
-            raise NotImplementedError(
-                "LockManager.renew is mutex-only in this release; "
-                f"got max_concurrency={max_concurrency}"
-            )
-        try:
-            result = await self._renew_script(
-                keys=[lock_key(lock_name)],
-                args=[owner_token, ttl_ms],
-            )
-        except BackendConnectionError:
-            raise
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"lock renew failed for {lock_name!r}: {exc}"
-            ) from exc
-        return int(result) == 1
+        return LockManager
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

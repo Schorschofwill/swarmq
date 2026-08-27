@@ -258,20 +258,18 @@ class Client:
             )
 
     def _ensure_schedule_store(self) -> ScheduleStore:
-        """Construct and cache the ScheduleStore on first deferred schedule.
-
-        ScheduleStore needs a connected backend (for Lua script-register).
-        Client is built before backend.connect() is awaited, so we defer
-        the construction to the first ``schedule(delay=|eta=)`` call.
-        """
+        """Lazy ``ScheduleStore`` (Fork 2 / Review P2-6). Seit U18 kommt die
+        Valkey-Seite über ``backend.schedules`` — vor ``connect()`` wirft die
+        Fassade ``BackendConnectionError``, hier als ``RuntimeError`` mit
+        Hinweis auf ``async with SwarmQ(...)`` / ``backend.connect()``."""
         if self._schedule_store is None:
-            if getattr(self._backend, "_client", None) is None:
+            try:
+                self._schedule_store = ScheduleStore(self._backend)
+            except RuntimeError as exc:
                 raise RuntimeError(
-                    "Client.schedule(delay=/eta=) requires a connected "
-                    "backend. Use 'async with SwarmQ(...)' or await "
-                    "backend.connect() before scheduling deferred tasks."
-                )
-            self._schedule_store = ScheduleStore(self._backend)
+                    "Client.schedule(delay=/eta=) requires a connected backend — "
+                    "use `async with SwarmQ(...)` or await backend.connect() first"
+                ) from exc
         return self._schedule_store
 
     async def schedule(

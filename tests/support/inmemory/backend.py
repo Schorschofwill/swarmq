@@ -23,7 +23,7 @@ from swarmq.contracts import (
     ScheduleStore,
 )
 from swarmq.exceptions import BackendConnectionError
-from swarmq.scheduler import SCHEDULER_LOCK_NAME
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from tests.support.inmemory.clock import FakeClock
 
 _POLL_S = 0.05

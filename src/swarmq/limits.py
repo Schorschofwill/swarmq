@@ -5,19 +5,15 @@ Valkey. The script itself lives in ``src/swarmq/lua/sliding_window_counter.lua``
 and is atomic; this module provides the Python surface (string parser,
 config NamedTuple, and async ``check``).
 
-Phase 3b.2 (lock / semaphore / unique) and 3b.3 (cancel) will add
-sibling classes using the same ``load_script`` + ``register_script`` path.
+Seit Plan U18 lebt ``RateLimiter`` in ``swarmq.backend.valkey.rate_limit``;
+dieses Modul hält Parser und Konfiguration (rein) und den Import-Alias
+``swarmq.limits.RateLimiter`` (KTD10, entfällt in U15).
 """
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, NamedTuple
-
-if TYPE_CHECKING:
-    import valkey.asyncio as valkey_asyncio
-
-from swarmq.lua import load_script
+from typing import Any, NamedTuple
 
 
 class RateLimitConfig(NamedTuple):
@@ -81,47 +77,11 @@ def parse_rate_limit(raw: str) -> RateLimitConfig:
     return RateLimitConfig(max_requests=count, window_size_ms=_UNIT_TO_MS[unit])
 
 
-class RateLimiter:
-    """Async wrapper around ``sliding_window_counter.lua``.
+def __getattr__(name: str) -> Any:
+    """Import-Alias (KTD10, bis U15): ``swarmq.limits.RateLimiter`` ist
+    ``swarmq.backend.valkey.rate_limit.RateLimiter``."""
+    if name == "RateLimiter":
+        from swarmq.backend.valkey.rate_limit import RateLimiter
 
-    One instance per worker. Holds a registered ``AsyncScript`` so the
-    NOSCRIPT-recovery loop inside ``valkey.asyncio.AsyncScript`` is the
-    path — we do not reimplement it.
-    """
-
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
-        self._client = client
-        self._script = client.register_script(load_script("sliding_window_counter"))
-
-    async def check(
-        self,
-        task_name: str,
-        config: RateLimitConfig,
-    ) -> tuple[bool, int, int]:
-        """Return ``(allowed, remaining, retry_after_ms)`` atomically.
-
-        Pulls server-side ``TIME`` once so all derived key windows and
-        the script see the same ``now_ms``. Two round-trips
-        (``TIME`` + ``EVALSHA``) is acceptable; reading TIME inside the
-        script would break the pattern documented in
-        ``docs/recherche-deepening-lua-scripts.md`` §3.1 and complicates
-        future Valkey-replication semantics.
-        """
-        seconds, microseconds = await self._client.time()
-        now_ms = int(seconds) * 1000 + int(microseconds) // 1000
-        window_ts = now_ms - (now_ms % config.window_size_ms)
-        prev_ts = window_ts - config.window_size_ms
-        # Härtung R2 P1-7: the {task_name} hash tag keeps current +
-        # previous window in one Valkey-Cluster hash slot —
-        # sliding_window_counter.lua reads both in one EVAL and would
-        # otherwise fail with CROSSSLOT on a sharded cluster.
-        keys = [
-            f"sq:rl:{{{task_name}}}:{window_ts}",
-            f"sq:rl:{{{task_name}}}:{prev_ts}",
-        ]
-        result = await self._script(
-            keys=keys,
-            args=[config.max_requests, config.window_size_ms, now_ms],
-        )
-        allowed_raw, remaining_raw, retry_raw = result
-        return bool(int(allowed_raw)), int(remaining_raw), int(retry_raw)
+        return RateLimiter
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from swarmq.scheduler import SCHEDULER_LOCK_NAME
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from tests.contracts import coordination, publisher_consumer, result_backend
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
 

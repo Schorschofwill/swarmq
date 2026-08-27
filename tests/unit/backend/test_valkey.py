@@ -29,6 +29,7 @@ class TestValkeyBackendInjection:
 
     def test_injected_client_is_stored_and_not_owned(self):
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend = ValkeyBackend(client=mock_client)
 
         assert backend._client is mock_client
@@ -39,6 +40,7 @@ class TestValkeyBackendInjection:
     def test_injected_pool_builds_client_and_not_owned(self):
         mock_pool = Mock()
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         with patch(
             "swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client
         ) as mock_valkey:
@@ -64,6 +66,7 @@ class TestValkeyBackendInjection:
     async def test_connect_is_noop_for_injected_client(self):
         """connect() must not build a second client when one was injected."""
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend = ValkeyBackend(client=mock_client)
 
         with patch(
@@ -77,6 +80,7 @@ class TestValkeyBackendInjection:
     async def test_close_does_not_close_injected_client(self):
         """AE1: a borrowed client survives the swarmq teardown."""
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend = ValkeyBackend(client=mock_client)
 
         await backend.close()
@@ -86,6 +90,7 @@ class TestValkeyBackendInjection:
     async def test_close_does_not_close_injected_pool_client(self):
         mock_pool = Mock()
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         with patch(
             "swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client
         ):
@@ -99,6 +104,7 @@ class TestValkeyBackendInjection:
         """The default (URL) path keeps closing its self-built client."""
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client  # simulate post-connect state
 
         await backend.close()
@@ -109,6 +115,7 @@ class TestValkeyBackendInjection:
     async def test_injected_client_used_for_operations(self):
         """Borrowed client serves backend operations normally (AE1)."""
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.return_value = b'{"result": 1}'
         backend = ValkeyBackend(client=mock_client)
 
@@ -123,6 +130,7 @@ class TestValkeyBackendConnect:
         url = "valkey://localhost:6379/0"
         backend = ValkeyBackend(url)
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
 
         with patch(
             "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client
@@ -150,6 +158,7 @@ class TestValkeyBackendConnect:
         TCP-Handshake gegen einen blackholed Host."""
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
 
         with patch(
             "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url",
@@ -170,6 +179,7 @@ class TestValkeyBackendClose:
     async def test_close_closes_client(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.close()
@@ -189,6 +199,7 @@ class TestValkeyBackendStoreResult:
     async def test_store_result_calls_set_with_px(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         task_id = "abc-123"
@@ -206,6 +217,7 @@ class TestValkeyBackendGetResult:
     async def test_get_result_returns_data(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         expected = b'{"result": 42}'
         mock_client.get.return_value = expected
@@ -218,6 +230,7 @@ class TestValkeyBackendGetResult:
     async def test_get_result_returns_none_for_missing_key(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.get.return_value = None
 
@@ -231,6 +244,7 @@ class TestValkeyBackendDeleteResult:
     async def test_delete_result_calls_del(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.delete_result("abc-123")
@@ -242,6 +256,7 @@ class TestValkeyBackendStoreResultError:
     async def test_store_result_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.set.side_effect = ValkeyError("write failed")
 
@@ -253,6 +268,7 @@ class TestValkeyBackendGetResultError:
     async def test_get_result_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.get.side_effect = ValkeyError("read failed")
 
@@ -264,6 +280,7 @@ class TestValkeyBackendDeleteResultError:
     async def test_delete_result_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.delete.side_effect = ValkeyError("delete failed")
 
@@ -275,6 +292,7 @@ class TestValkeyBackendConnectGuard:
     async def test_connect_twice_only_calls_from_url_once(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
 
         with patch(
             "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client
@@ -289,6 +307,7 @@ class TestValkeyBackendConnectError:
     async def test_connect_wraps_connection_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.ping.side_effect = ValkeyConnectionError("Connection refused")
 
         with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client):  # noqa: SIM117
@@ -311,6 +330,7 @@ class TestValkeyBackendPublishNotification:
     async def test_publish_notification_calls_publish_with_correct_channel(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.publish_notification("task-123")
@@ -322,6 +342,7 @@ class TestValkeyBackendGetResultsBatch:
     async def test_get_results_batch_calls_mget_with_correct_keys(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.mget.return_value = [b"r1", b"r2", b"r3"]
 
@@ -335,6 +356,7 @@ class TestValkeyBackendGetResultsBatch:
     async def test_get_results_batch_empty_list_returns_empty(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         result = await backend.get_results_batch([])
@@ -347,6 +369,7 @@ class TestValkeyBackendPublishNotificationError:
     async def test_publish_notification_swallows_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.publish.side_effect = ValkeyError("publish failed")
 
@@ -358,6 +381,7 @@ class TestValkeyBackendGetResultsBatchError:
     async def test_get_results_batch_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.mget.side_effect = ValkeyError("mget failed")
 
@@ -369,6 +393,7 @@ class TestValkeyBackendGetResultsBatchPartial:
     async def test_get_results_batch_returns_none_for_missing_keys(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
         mock_client.mget.return_value = [b"data-a", None, b"data-c"]
 
@@ -384,6 +409,7 @@ class TestValkeyBackendCreatePubsub:
     def test_create_pubsub_returns_pubsub_from_client(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_pubsub = AsyncMock()
         mock_client.pubsub = Mock(return_value=mock_pubsub)
         backend._client = mock_client
@@ -398,6 +424,7 @@ class TestValkeyBackendSubscribeAndWaitMessage:
     async def test_subscribe_and_wait_returns_true_on_message(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_pubsub = AsyncMock()
         mock_client.pubsub = Mock(return_value=mock_pubsub)
         mock_pubsub.get_message.return_value = {"type": "message", "data": b"done"}
@@ -417,6 +444,7 @@ class TestValkeyBackendSubscribeAndWaitTimeout:
     async def test_subscribe_and_wait_returns_false_on_timeout(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_pubsub = AsyncMock()
         mock_client.pubsub = Mock(return_value=mock_pubsub)
         mock_pubsub.get_message.return_value = None
@@ -431,6 +459,7 @@ class TestValkeyBackendSubscribeAndWaitValkeyError:
     async def test_subscribe_and_wait_returns_false_on_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_pubsub = AsyncMock()
         mock_client.pubsub = Mock(return_value=mock_pubsub)
         mock_pubsub.subscribe.side_effect = ValkeyError("connection lost")
@@ -445,6 +474,7 @@ class TestValkeyBackendSubscribeAndWaitCleanup:
     async def test_subscribe_and_wait_always_calls_unsubscribe_and_aclose(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_pubsub = AsyncMock()
         mock_client.pubsub = Mock(return_value=mock_pubsub)
         mock_pubsub.get_message.side_effect = ValkeyError("read error")
@@ -460,6 +490,7 @@ class TestValkeyBackendSubscribeAndWaitCancelledError:
     async def test_subscribe_and_wait_propagates_cancelled_error_after_cleanup(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_pubsub = AsyncMock()
         mock_client.pubsub = Mock(return_value=mock_pubsub)
         mock_pubsub.get_message.side_effect = asyncio.CancelledError()
@@ -487,6 +518,7 @@ class TestValkeyBackendSetCancelFlag:
     async def test_set_cancel_flag_calls_set_with_nx_px(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.return_value = True  # valkey-py with nx=True returns True on success
         backend._client = mock_client
 
@@ -500,6 +532,7 @@ class TestValkeyBackendSetCancelFlag:
     async def test_set_cancel_flag_returns_false_when_already_set(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.return_value = None  # nx=True returns None when key already exists
         backend._client = mock_client
 
@@ -510,6 +543,7 @@ class TestValkeyBackendSetCancelFlag:
     async def test_set_cancel_flag_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.side_effect = ValkeyError("write failed")
         backend._client = mock_client
 
@@ -521,6 +555,7 @@ class TestValkeyBackendIsCancelled:
     async def test_is_cancelled_returns_true_when_key_exists(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.exists.return_value = 1
         backend._client = mock_client
 
@@ -532,6 +567,7 @@ class TestValkeyBackendIsCancelled:
     async def test_is_cancelled_returns_false_when_key_missing(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.exists.return_value = 0
         backend._client = mock_client
 
@@ -541,6 +577,7 @@ class TestValkeyBackendIsCancelled:
     async def test_is_cancelled_wraps_valkey_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.exists.side_effect = ValkeyError("read failed")
         backend._client = mock_client
 
@@ -552,6 +589,7 @@ class TestValkeyBackendClearCancelFlag:
     async def test_clear_cancel_flag_calls_delete(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.clear_cancel_flag("task-abc")
@@ -566,6 +604,7 @@ class TestValkeyBackendClearCancelFlag:
         """
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.delete.side_effect = ValkeyError("delete failed")
         backend._client = mock_client
 
@@ -610,6 +649,7 @@ class TestValkeyBackendZAddSchedule:
     async def test_zadd_schedule_calls_zadd(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.zadd_schedule("cron_a", 1_700_000_000_000)
@@ -621,6 +661,7 @@ class TestValkeyBackendZAddSchedule:
     async def test_zadd_schedule_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.zadd.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -632,6 +673,7 @@ class TestValkeyBackendZRemSchedule:
     async def test_zrem_schedule_calls_zrem(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.zrem_schedule("cron_a")
@@ -641,6 +683,7 @@ class TestValkeyBackendZRemSchedule:
     async def test_zrem_schedule_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.zrem.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -652,6 +695,7 @@ class TestValkeyBackendZRangeByScore:
     async def test_zrangebyscore_schedules_reads_only(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.zrangebyscore.return_value = [b"cron_a", b"cron_b"]
         backend._client = mock_client
 
@@ -665,6 +709,7 @@ class TestValkeyBackendZRangeByScore:
     async def test_zrangebyscore_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.zrangebyscore.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -676,6 +721,7 @@ class TestValkeyBackendHashDefs:
     async def test_hset_schedule_def_calls_hset(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.hset_schedule_def("cron_a", b'{"x":1}')
@@ -687,6 +733,7 @@ class TestValkeyBackendHashDefs:
     async def test_hget_schedule_def_calls_hget(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.hget.return_value = b'{"x":1}'
         backend._client = mock_client
 
@@ -698,6 +745,7 @@ class TestValkeyBackendHashDefs:
     async def test_hdel_schedule_def_calls_hdel(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.hdel_schedule_def("cron_a")
@@ -707,6 +755,7 @@ class TestValkeyBackendHashDefs:
     async def test_hgetall_schedule_defs_calls_hgetall(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.hgetall.return_value = {b"cron_a": b'{"x":1}'}
         backend._client = mock_client
 
@@ -718,6 +767,7 @@ class TestValkeyBackendHashDefs:
     async def test_hset_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.hset.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -729,6 +779,7 @@ class TestValkeyBackendSchedfireDedup:
     async def test_set_schedfire_dedup_returns_true_when_new(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.return_value = True
         backend._client = mock_client
 
@@ -744,6 +795,7 @@ class TestValkeyBackendSchedfireDedup:
     async def test_set_schedfire_dedup_returns_false_on_duplicate(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.return_value = None  # NX already exists
         backend._client = mock_client
 
@@ -755,6 +807,7 @@ class TestValkeyBackendSchedfireDedup:
     async def test_set_schedfire_dedup_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -766,6 +819,7 @@ class TestValkeyBackendHandoverMarker:
     async def test_set_handover_marker_sets_key_with_ttl(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         backend._client = mock_client
 
         await backend.set_schedfire_handover_marker("owner-42", 5_000)
@@ -779,6 +833,7 @@ class TestValkeyBackendHandoverMarker:
         least one existed (clean handover), False otherwise (failover)."""
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         # SCAN yields one handover key, DEL reports 1
         mock_client.scan_iter = Mock(return_value=_async_iter(
             [b"sq:sched:handover:owner-42"]
@@ -793,6 +848,7 @@ class TestValkeyBackendHandoverMarker:
     async def test_get_and_del_handover_marker_returns_false_when_none(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.scan_iter = Mock(return_value=_async_iter([]))
         backend._client = mock_client
 
@@ -803,6 +859,7 @@ class TestValkeyBackendHandoverMarker:
     async def test_set_handover_marker_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -833,6 +890,7 @@ class TestValkeyBackendSchedfireInflight:
     async def test_set_schedfire_inflight_wins_on_first_call(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.return_value = True  # SETNX wins
         backend._client = mock_client
 
@@ -846,6 +904,7 @@ class TestValkeyBackendSchedfireInflight:
     async def test_set_schedfire_inflight_loses_on_conflict(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.return_value = None  # another worker holds it
         backend._client = mock_client
 
@@ -855,6 +914,7 @@ class TestValkeyBackendSchedfireInflight:
     async def test_set_schedfire_inflight_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.set.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -866,6 +926,7 @@ class TestValkeyBackendIsSchedfireCompleted:
     async def test_is_completed_returns_true_when_key_exists(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.exists.return_value = 1
         backend._client = mock_client
 
@@ -876,6 +937,7 @@ class TestValkeyBackendIsSchedfireCompleted:
     async def test_is_completed_returns_false_when_key_missing(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.exists.return_value = 0
         backend._client = mock_client
 
@@ -884,6 +946,7 @@ class TestValkeyBackendIsSchedfireCompleted:
     async def test_is_completed_wraps_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.exists.side_effect = ValkeyError("nope")
         backend._client = mock_client
 
@@ -906,6 +969,7 @@ class TestSchedulerLeader:
 
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.return_value = b"worker-42"
         backend._client = mock_client
 
@@ -917,6 +981,7 @@ class TestSchedulerLeader:
     async def test_get_scheduler_leader_decodes_bytes_to_str(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.return_value = b"node-7.region-us-east-1"
         backend._client = mock_client
 
@@ -928,6 +993,7 @@ class TestSchedulerLeader:
     async def test_get_scheduler_leader_returns_none_when_unlocked(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.return_value = None
         backend._client = mock_client
 
@@ -938,6 +1004,7 @@ class TestSchedulerLeader:
     async def test_get_scheduler_leader_propagates_connection_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.side_effect = ValkeyConnectionError("backend down")
         backend._client = mock_client
 
@@ -949,6 +1016,7 @@ class TestSchedulerLeader:
 
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.side_effect = ValkeyTimeoutError("took too long")
         backend._client = mock_client
 
@@ -964,6 +1032,7 @@ class TestSchedulerLeader:
         """
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         # 0xff is invalid UTF-8 start byte
         mock_client.get.return_value = b"node-\xff-bad"
         backend._client = mock_client
@@ -984,6 +1053,7 @@ class TestSchedulerLeader:
         """
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
+        mock_client.register_script = Mock()
         mock_client.get.return_value = b""
         backend._client = mock_client
 

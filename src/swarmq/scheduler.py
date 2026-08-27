@@ -35,15 +35,13 @@ import structlog
 from croniter import croniter
 
 if TYPE_CHECKING:
-    import valkey.asyncio as valkey_asyncio
-
     from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.backend.valkey.locks import LockManager
     from swarmq.broker.rabbitmq import RabbitMQBroker
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import LockManager, lock_key
-from swarmq.lua import load_script
+from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key  # noqa: F401  # Re-Export (KTD10)
 from swarmq.serialization import compute_dedup_hash, encode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
@@ -51,25 +49,8 @@ from swarmq.task import Task, TaskInfo
 logger = structlog.get_logger()
 
 
-SCHEDULER_LOCK_NAME = "{sched}:leader"
-"""Logical lock name — LockManager's automatic ``sq:lock:`` prefix
-yields the final Valkey key ``sq:lock:{sched}:leader``.
-
-Härtung R2 P1-7: the ``{sched}`` hash tag co-locates the leader lock
-with ``sq:{sched}:zset`` / ``sq:{sched}:defs`` in one Valkey-Cluster
-hash slot — ``sched_commit.lua`` touches all three keys in one EVAL
-and would otherwise fail with CROSSSLOT on a sharded cluster.
-BREAKING (pre-1.0): deployments upgrading from the un-tagged
-``sq:lock:scheduler:leader`` / ``sq:sched:*`` keys must re-create
-their schedules (or RENAME the keys manually) — swarmq does not
-migrate them."""
-
-SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
-"""Final Valkey key for the leader lock. Derived live from
-``locking.lock_key()`` so the invariant ``SCHEDULER_LOCK_KEY ==
-_LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME`` holds by construction — if
-the prefix ever changes, ``sched_commit.lua``'s owner-check and the
-CLI status view stay in sync automatically (Unit 10 / Fork B1)."""
+# ``SCHEDULER_LOCK_NAME``/``SCHEDULER_LOCK_KEY`` leben seit Plan U18 in
+# ``swarmq.locking`` (KTD6) und bleiben hier importierbar.
 
 _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 """Minimum TTL for the handover marker (5s). The actual TTL used is
@@ -171,13 +152,14 @@ def parse_schedfire_key(value: str) -> tuple[str, int]:
 
 
 class ScheduleStore:
-    """Valkey-facing surface for scheduler persistence.
+    """Definitions-Sicht der Scheduler-Persistenz.
 
-    Constructed after the backend connects (mirrors ``LockManager`` /
-    ``RateLimiter`` lifecycle). Holds two registered Lua scripts
-    (sched_poll, sched_commit) so the NOSCRIPT-recovery loop inside
-    ``valkey.asyncio.AsyncScript`` is the recovery path — no
-    reimplementation here.
+    Seit Plan U18 liegt die Valkey-Seite (Lua-Skripte, Keys, Marker) in
+    ``ValkeyBackend.schedules`` (``ValkeyScheduleStore``, Vertrag
+    ``ScheduleStore`` auf ``bytes``); diese Klasse kodiert/dekodiert die
+    ``ScheduleDefinition`` (msgspec) und delegiert. Konstruiert nach dem
+    ``connect()`` des Backends — davor wirft ``backend.schedules``
+    ``BackendConnectionError``.
 
     Insert semantics encode the plan's Fork-1 decision:
 
@@ -190,196 +172,72 @@ class ScheduleStore:
 
     def __init__(self, backend: ValkeyBackend) -> None:
         self._backend = backend
-        client = backend._client
-        if client is None:
+        try:
+            self._store = backend.schedules
+        except BackendConnectionError as exc:
             raise RuntimeError(
-                "ScheduleStore requires a connected ValkeyBackend "
-                "(backend.connect() must have been awaited first)"
-            )
-        self._client: valkey_asyncio.Valkey = client
-        self._poll_script = client.register_script(load_script("sched_poll"))
-        self._commit_script = client.register_script(
-            load_script("sched_commit")
-        )
-        self._disable_script = client.register_script(
-            load_script("sched_disable")
-        )
+                "ScheduleStore requires a connected ValkeyBackend (backend.connect() must have been awaited first)"
+            ) from exc
 
     # ---- CRUD -----------------------------------------------------------
 
     async def add_schedule(self, definition: ScheduleDefinition) -> bool:
-        """Insert a new schedule. Returns True on insert, False on no-op.
+        """Insert a new schedule. Returns True on insert, False on no-op
+        (insert-if-absent via HSETNX, Unit 8 / M-14)."""
+        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
 
-        Insert-if-absent (CD11) via HSETNX (Unit 8 / M-14): closes the
-        TOCTOU gap that the previous hget+hset sequence had against
-        concurrent callers. Two workers racing on the same
-        schedule_name now get a deterministic winner — HSETNX=1 wins,
-        HSETNX=0 loses. Static cron updates go through
-        :meth:`update_static_schedule` (Fork 1).
-        """
-        payload = msgspec.json.encode(definition)
-        inserted = await self._backend.hsetnx_schedule_def(
-            definition.schedule_name, payload
-        )
-        if not inserted:
-            return False
-        if definition.fire_ts_ms is not None:
-            await self._backend.zadd_schedule(
-                definition.schedule_name, definition.fire_ts_ms
-            )
-        return True
-
-    async def update_static_schedule(
-        self, definition: ScheduleDefinition
-    ) -> None:
-        """Unconditionally write a static-sourced definition (Fork 1).
-
-        The caller is responsible for verifying that the existing entry
-        was ``source="static"`` and that its cron-string actually
-        changed. CLI-sourced entries never go through this path.
-        """
-        payload = msgspec.json.encode(definition)
-        await self._backend.hset_schedule_def(
-            definition.schedule_name, payload
-        )
-        if definition.fire_ts_ms is not None:
-            await self._backend.zadd_schedule(
-                definition.schedule_name, definition.fire_ts_ms
-            )
+    async def update_static_schedule(self, definition: ScheduleDefinition) -> None:
+        """Unconditionally write a static-sourced definition (Fork 1)."""
+        await self._store.put(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
 
     async def remove_schedule(self, schedule_name: str) -> bool:
-        """Permanently remove a schedule (ZREM + HDEL).
-
-        Returns True when the entry existed and was actually removed,
-        False when no entry was present (both HDEL and ZREM no-oped).
-        Callers (CLI, agents) use the boolean to tell "removed" from
-        "missing" without a second HEXISTS round-trip (Unit 4 / M-2).
-        """
-        # HEXISTS first so the return value reflects whether there was
-        # anything to remove. Two extra bytes on the wire; saves an
-        # entire HGET round-trip that callers would otherwise do.
-        try:
-            existed = bool(
-                await self._backend._client.hexists(
-                    self._backend._sched_defs_key(), schedule_name
-                )
-            )
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"hexists failed for {schedule_name!r}: {exc}"
-            ) from exc
-        await self._backend.zrem_schedule(schedule_name)
-        await self._backend.hdel_schedule_def(schedule_name)
-        return existed
+        """Permanently remove a schedule (ZREM + HDEL). True only when an
+        entry existed (Unit 4 / M-2)."""
+        return await self._store.remove(schedule_name)
 
     async def disable_schedule(self, schedule_name: str) -> bool:
         """Mark an existing schedule disabled AND remove it from the
-        due-set so the poll loop no longer touches it.
-
-        Returns True when the entry existed and was disabled, False
-        when no entry was present OR the existing entry was malformed
-        (in which case we log + skip rather than overwriting; Unit 4
-        /M-2 boolean lets the CLI distinguish "disabled" from "no-op").
-
-        Uses sched_disable.lua for the HSET+ZREM atomic write-pair
-        (Unit 8 / M-14): a concurrent remove or re-add on the same
-        schedule_name between our HGET and the write-pair can no
-        longer see a half-applied state. The HGET+decode step stays
-        in Python because Lua does not share our msgspec encoding.
-        """
-        existing = await self._backend.hget_schedule_def(schedule_name)
+        due-set. False when no entry was present OR the existing entry was
+        malformed (logged + parked for operator inspection, Unit 5 / M-3).
+        The write-pair runs atomically in ``sched_disable.lua`` (Unit 8 /
+        M-14); the HGET+decode stays in Python because Lua does not share our
+        msgspec encoding."""
+        existing = await self._store.get(schedule_name)
         if existing is None:
             return False
         try:
             current = msgspec.json.decode(existing, type=ScheduleDefinition)
         except msgspec.DecodeError as exc:
-            # Mirrors list_schedules: malformed entries stay parked for
-            # operator inspection (Unit 5 / M-3).
             logger.warning(
                 "schedule_def_malformed_skipped",
                 schedule_name=schedule_name,
                 error=str(exc),
-                hint=(
-                    "run 'swarmq schedule remove --permanent <name>' "
-                    "to clear the malformed entry"
-                ),
+                hint="run 'swarmq schedule remove --permanent <name>' to clear the malformed entry",
             )
             return False
         updated = msgspec.structs.replace(current, disabled=True)
-        try:
-            await self._disable_script(
-                keys=[
-                    self._backend._sched_defs_key(),
-                    self._backend._sched_zset_key(),
-                ],
-                args=[schedule_name, msgspec.json.encode(updated)],
-            )
-        except BackendConnectionError:
-            raise
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"sched_disable failed for {schedule_name!r}: {exc}"
-            ) from exc
-        return True
+        return await self._store.disable(schedule_name, msgspec.json.encode(updated))
 
     async def list_schedules(self) -> list[ScheduleDefinition]:
-        """Return every decodable ScheduleDefinition in the defs hash.
-
-        Malformed entries (incompatible schema from a downgrade, or a
-        hand-edited payload) are logged at WARNING and skipped so that
-        one bad row cannot break ``swarmq schedule list`` for the whole
-        fleet (Unit 5 / M-5). Operators can still find the malformed
-        names via the log events.
-        """
-        raw = await self._backend.hgetall_schedule_defs()
+        """Every decodable ScheduleDefinition; malformed entries are logged
+        and skipped so one bad row cannot break ``swarmq schedule list``
+        (Unit 5 / M-5)."""
+        raw = await self._store.list_all()
         result: list[ScheduleDefinition] = []
         for name, payload in raw.items():
             try:
-                result.append(
-                    msgspec.json.decode(payload, type=ScheduleDefinition)
-                )
+                result.append(msgspec.json.decode(payload, type=ScheduleDefinition))
             except msgspec.DecodeError as exc:
-                logger.warning(
-                    "schedule_def_malformed_skipped",
-                    schedule_name=_decode_bytes(name),
-                    error=str(exc),
-                )
+                logger.warning("schedule_def_malformed_skipped", schedule_name=name, error=str(exc))
         return result
 
     # ---- Poll / commit --------------------------------------------------
 
-    async def poll_due(
-        self, now_ms: int, limit: int = 100
-    ) -> list[tuple[str, int, ScheduleDefinition]]:
-        """Return schedules whose fire-ts is <= ``now_ms``.
-
-        Runs sched_poll.lua which is read-only. The return list is
-        decoded into (schedule_name, score_ms, ScheduleDefinition) for
-        the leader's publish loop. Orphan zset entries (def missing)
-        are skipped inside the Lua script.
-        """
-        try:
-            rows = await self._poll_script(
-                keys=[
-                    self._backend._sched_zset_key(),
-                    self._backend._sched_defs_key(),
-                ],
-                args=[now_ms, limit],
-            )
-        except BackendConnectionError:
-            raise
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"sched_poll failed: {exc}"
-            ) from exc
-        result: list[tuple[str, int, ScheduleDefinition]] = []
-        for row in rows:
-            member_raw, score_raw, def_raw = row
-            name = _decode_bytes(member_raw)
-            score = int(_decode_bytes(score_raw))
-            definition = msgspec.json.decode(def_raw, type=ScheduleDefinition)
-            result.append((name, score, definition))
-        return result
+    async def poll_due(self, now_ms: int, limit: int = 100) -> list[tuple[str, int, ScheduleDefinition]]:
+        """Schedules whose fire-ts is <= ``now_ms`` as
+        ``(schedule_name, score_ms, ScheduleDefinition)``."""
+        rows = await self._store.poll_due(now_ms, limit=limit)
+        return [(name, score, msgspec.json.decode(payload, type=ScheduleDefinition)) for name, score, payload in rows]
 
     async def commit_fire(
         self,
@@ -388,38 +246,15 @@ class ScheduleStore:
         updated_def: ScheduleDefinition | None,
         owner_token: str,
     ) -> bool:
-        """Atomically commit a fire event.
-
-        ``next_fire_ts_ms=-1`` + ``updated_def=None`` signals a one-shot
-        that should be removed entirely (zset-rem + defs-del). Returns
-        True when the script confirmed the commit, False when the
-        owner-check rejected it (stale leader, P1-2).
-        """
-        def_payload = (
-            msgspec.json.encode(updated_def) if updated_def is not None else b""
+        """Atomically commit a fire event. ``next_fire_ts_ms=-1`` +
+        ``updated_def=None`` removes a one-shot entirely. False when the
+        owner-check rejected it (stale leader, P1-2)."""
+        return await self._store.commit_fire(
+            schedule_name,
+            next_fire_ts_ms=None if next_fire_ts_ms < 0 else next_fire_ts_ms,
+            payload=msgspec.json.encode(updated_def) if updated_def is not None else None,
+            owner=owner_token,
         )
-        try:
-            result = await self._commit_script(
-                keys=[
-                    self._backend._sched_zset_key(),
-                    self._backend._sched_defs_key(),
-                    SCHEDULER_LOCK_KEY,
-                ],
-                args=[
-                    schedule_name,
-                    next_fire_ts_ms,
-                    def_payload,
-                    owner_token,
-                ],
-            )
-        except BackendConnectionError:
-            raise
-        except Exception as exc:
-            raise BackendConnectionError(
-                f"sched_commit failed for {schedule_name!r}: {exc}"
-            ) from exc
-        return int(result) == 1
-
 
 def _decode_bytes(value: bytes | str) -> str:
     return value.decode() if isinstance(value, bytes) else value
