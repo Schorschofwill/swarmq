@@ -114,8 +114,10 @@ class BrokerContract:
         first = await inbox.next()
         await impl.redeliver(first)
         second = await inbox.next()
-        assert second == first  # Body, Header, Queue gleich; Handle darf abweichen
-        assert second.headers["x-swarmq-unique-hash"] == "h"
+        # Body und Queue gleich, Original-Header erhalten; der Transport darf
+        # eigene Header ergänzen (RabbitMQ-Quorum-Queues: ``x-delivery-count``).
+        assert (second.body, second.queue) == (first.body, first.queue)
+        assert {k: v for k, v in second.headers.items() if k.startswith("x-swarmq-")} == dict(first.headers)
         await impl.ack(second)
 
     async def test_retry_later_holds_delay_and_returns_to_delivery_queue(

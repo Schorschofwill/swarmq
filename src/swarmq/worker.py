@@ -924,7 +924,7 @@ class Worker:
                 await self._broker.consume(
                     queue_name,
                     self._on_message,
-                    prefetch_count=self._config.concurrency,
+                    concurrency=self._config.concurrency,
                 )
 
         self._state = WorkerState.RUNNING

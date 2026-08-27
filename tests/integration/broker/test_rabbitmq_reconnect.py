@@ -125,9 +125,9 @@ async def test_consume_survives_connection_reconnect(broker, rabbitmq_url):
 
     async def handler(msg) -> None:
         received.append(msg.body)
-        await msg.ack()
+        await b.ack(msg)
 
-    await b.consume(q, handler, prefetch_count=10)
+    await b.consume(q, handler, concurrency=10)
 
     # Publish before outage
     producer = RabbitMQBroker(rabbitmq_url)
@@ -177,7 +177,7 @@ async def test_qos_prefetch_preserved_across_reconnect(broker, rabbitmq_url):
         # Intentionally do NOT ack — hold the message to stress prefetch.
         pending_acks.append(msg)
 
-    await b.consume(q, slow_handler, prefetch_count=2)
+    await b.consume(q, slow_handler, concurrency=2)
 
     producer = RabbitMQBroker(rabbitmq_url)
     await producer.connect()
@@ -196,7 +196,7 @@ async def test_qos_prefetch_preserved_across_reconnect(broker, rabbitmq_url):
         # reconnect anyway, we just want a clean slate)
         for m in pending_acks:
             try:
-                await m.ack()
+                await b.ack(m)
             except Exception:
                 pass
         pending_acks.clear()
@@ -215,6 +215,6 @@ async def test_qos_prefetch_preserved_across_reconnect(broker, rabbitmq_url):
 
         # Drain
         for m in pending_acks:
-            await m.ack()
+            await b.ack(m)
     finally:
         await producer.close()

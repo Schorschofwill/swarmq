@@ -88,7 +88,7 @@ class TestPublishConsumeAck:
             if not received.done():
                 received.set_result(msg)
 
-        await broker.consume(qname, _on_message, prefetch_count=1)
+        await broker.consume(qname, _on_message, concurrency=1)
         msg = await asyncio.wait_for(received, timeout=5.0)
 
         assert msg.body == payload
@@ -125,7 +125,7 @@ class TestNackRequeue:
                 deliveries[1].set_result(msg)
                 await broker.ack(msg)
 
-        await broker.consume(qname, _on_message, prefetch_count=1)
+        await broker.consume(qname, _on_message, concurrency=1)
 
         msg1 = await asyncio.wait_for(deliveries[0], timeout=5.0)
         msg2 = await asyncio.wait_for(deliveries[1], timeout=5.0)

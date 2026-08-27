@@ -1,0 +1,389 @@
+"""RabbitMQ-Verbindung: connect/close/ping, Channel-Recreate, injizierte Pools
+(Plan U5; Entwurf §5).
+
+``RabbitMQConnection`` hält den gesamten Verbindungszustand; die Mixins in
+``delivery.py`` und ``admin.py`` bauen darauf auf. Die Fassade
+``RabbitMQBroker`` in ``__init__`` vereint alles.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import aio_pika
+import structlog
+from aio_pika.exceptions import (
+    AMQPChannelError,
+    ChannelClosed,
+    ChannelInvalidStateError,
+    ConnectionClosed,
+)
+
+from swarmq.config import INJECTED_URL
+from swarmq.exceptions import BrokerConnectionError, ConfigurationError
+from swarmq.logging import sanitize_url
+
+logger = structlog.get_logger()
+
+# How long to wait for the connection/channel to become ready again
+# during a reconnect before surfacing BrokerConnectionError. U1.1
+# (2026-04-17): the toxiproxy spike showed publish-during-reconnect
+# fails with CancelledError; the broker now waits instead.
+_CHANNEL_READY_TIMEOUT_S = 10.0
+
+# ``ping`` prüft ``connection.ready()`` mit derselben Schranke wie der
+# bisherige HealthChecker (health.py, 2.0 s).
+_PING_TIMEOUT_S = 2.0
+
+# Transient failure modes that indicate the channel/connection is in a
+# reconnect-transition state. Safe to retry after a short backoff.
+# CancelledError is included because aio_pika's internal drain_future
+# surfaces as CancelledError when the transport is closed mid-publish
+# (2026-04-17 spike evidence). We guard against swallowing task-level
+# cancellation via asyncio.current_task().cancelling() below.
+_CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
+    ChannelInvalidStateError,
+    ChannelClosed,
+    AMQPChannelError,
+    ConnectionClosed,
+    asyncio.CancelledError,
+)
+_PUBLISH_MAX_ATTEMPTS = 5
+
+# Härtung R2 P1-3: bound for acquiring a connection from an injected
+# pool. aio_pika's Pool.acquire() blocks indefinitely on Queue.get()
+# when the pool is exhausted (all items checked out, no overflow) —
+# without this bound, `async with SwarmQ(...)` hung silently.
+_POOL_ACQUIRE_TIMEOUT_S = 10.0
+
+ChannelFactory = Callable[[], Awaitable[aio_pika.abc.AbstractChannel]]
+
+
+class RabbitMQConnection:
+    def __init__(
+        self,
+        url: str | None = None,
+        queue_type: str = "quorum",
+        *,
+        connection: aio_pika.abc.AbstractConnection | None = None,
+        connection_pool: aio_pika.pool.Pool[Any] | None = None,
+    ) -> None:
+        """Construct a broker from a URL, an existing connection, or a pool.
+
+        Exactly one source must be given:
+
+        * ``url`` — swarmq dials and owns the connection (default path).
+        * ``connection`` — an existing aio-pika ``(Robust)Connection``;
+          swarmq borrows it, opens its *own* publish channel on it, and at
+          teardown closes that channel but never the borrowed connection.
+        * ``connection_pool`` — an ``aio_pika.pool.Pool``; swarmq acquires
+          from it and leaves the pool's lifecycle to the caller.
+
+        Passing more than one source is a :class:`ConfigurationError`
+        rather than a silent precedence rule.
+
+        Injected objects are for the producer (task-sending) path only —
+        ``SwarmQ.start_worker`` rejects an injected broker.
+
+        Caveats for the injected path: prefer a robust connection
+        (``aio_pika.connect_robust``) so swarmq's channel-reconnect
+        handling behaves as designed, and the connection must target the
+        same vhost the rest of the swarmq config expects — swarmq does not
+        validate this, and a mismatch silently publishes to the wrong vhost.
+        """
+        sources = [
+            ("url", url is not None),
+            ("connection", connection is not None),
+            ("connection_pool", connection_pool is not None),
+        ]
+        given = [name for name, present in sources if present]
+        if not given:
+            raise ConfigurationError("RabbitMQBroker requires exactly one of: url, connection, or connection_pool")
+        if len(given) > 1:
+            raise ConfigurationError(
+                f"RabbitMQBroker accepts exactly one of url, connection, or connection_pool — got {', '.join(given)}"
+            )
+
+        self._queue_type = queue_type
+        self._publish_channel: aio_pika.abc.AbstractChannel | None = None
+        self._consume_channel: aio_pika.abc.AbstractChannel | None = None
+        # list of (queue, consumer_tag)
+        self._consumer_tags: list[tuple[aio_pika.abc.AbstractQueue, str]] = []
+        # U1.1: QoS state re-applied after channel recreate. Without
+        # this, a reconnected consumer silently loses its prefetch.
+        self._consume_prefetch: int | None = None
+        # Guard against two concurrent channel-reopen operations.
+        self._channel_lock = asyncio.Lock()
+        # Test-Naht (U5, KTD9 „dead_letter/retry_later werfen bei
+        # Publish-Fehler"): eine injizierte Factory ersetzt den Publish-Kanal.
+        # ``None`` = ``self._connection.channel()``.
+        self._publish_channel_factory: ChannelFactory | None = None
+
+        # _owns_connection is the single source of truth for whether close()
+        # may tear the connection down (mirrors ValkeyBackend._owns_client
+        # and the worker-cancel-safe-teardown convention). _connection_pool
+        # is set only on the pool path so connect() can acquire from it;
+        # _pool_ctx holds the live acquire() context so close() can release
+        # the borrowed connection back to the pool instead of closing it.
+        self._connection_pool = connection_pool
+        self._pool_ctx: Any = None
+        self._connection: aio_pika.abc.AbstractConnection | None
+        if connection is not None:
+            # Credential-free placeholder so every _url reader (config,
+            # sanitize_url log sites) stays safe without a None-guard.
+            self._url: str = INJECTED_URL
+            self._connection = connection
+            self._owns_connection = False
+        elif connection_pool is not None:
+            self._url = INJECTED_URL
+            self._connection = None
+            self._owns_connection = False
+        else:
+            assert url is not None
+            self._url = url
+            self._connection = None
+            self._owns_connection = True
+
+    async def connect(self) -> None:
+        # Owned (URL) path: dial once, open both channels. Idempotent via
+        # the connection check below.
+        if self._owns_connection:
+            await self._connect_owned()
+            return
+        await self._connect_injected()
+
+    async def _connect_owned(self) -> None:
+        if self._connection is not None:
+            return
+        try:
+            self._connection = await aio_pika.connect_robust(self._url)
+            # Channel creation can fail too (vhost misconfigured, per-
+            # connection channel cap, broker restart between
+            # connect_robust success and channel() call). R3.10 review
+            # R-5: these two lines were outside the BrokerConnectionError
+            # wrapper, letting raw aio_pika exceptions escape to the CLI
+            # as unformatted tracebacks. Pulled inside.
+            self._publish_channel = await self._connection.channel()
+            self._consume_channel = await self._connection.channel()
+        except Exception as exc:
+            raise BrokerConnectionError(str(exc)) from exc
+
+    async def _connect_injected(self) -> None:
+        # Injected path (producer-only). The borrowed connection (or a
+        # connection drawn from the borrowed pool) already exists; swarmq
+        # only needs its OWN publish channel on it. No consume channel —
+        # consuming is the worker's job, and start_worker() rejects an
+        # injected broker (U4).
+        if self._publish_channel is not None:
+            return
+        try:
+            if self._connection is None and self._connection_pool is not None:
+                await self._acquire_from_pool()
+            # Härtung R2 P2: a plain (non-robust) injected connection has
+            # no reconnect self-healing — after a transport drop every
+            # publish runs into the full ready()-timeout wall and fails.
+            # The constructor docstring caveat alone is too quiet.
+            if not isinstance(self._connection, aio_pika.abc.AbstractRobustConnection):
+                logger.warning(
+                    "injected_connection_not_robust",
+                    hint=(
+                        "the injected connection has no reconnect "
+                        "self-healing; after a drop every publish waits "
+                        f"{_CHANNEL_READY_TIMEOUT_S}s and fails — prefer "
+                        "aio_pika.connect_robust()"
+                    ),
+                )
+            assert self._connection is not None
+            self._publish_channel = await self._connection.channel()
+        except BrokerConnectionError:
+            raise
+        except Exception as exc:
+            # If we acquired a connection from the pool but failed before a
+            # usable publish channel, release the checkout — SwarmQ.__aenter__
+            # calls connect() outside its try/except, so a failed connect()
+            # is never followed by close(), and the borrowed pool connection
+            # would otherwise leak. A directly-injected (bare) connection is
+            # left untouched: it is the caller's and is not ours to release.
+            if self._pool_ctx is not None:
+                try:
+                    await self._pool_ctx.__aexit__(type(exc), exc, exc.__traceback__)
+                except Exception:
+                    pass
+                self._pool_ctx = None
+                self._connection = None
+            raise BrokerConnectionError(str(exc)) from exc
+
+    async def _acquire_from_pool(self) -> None:
+        # Acquire a connection and HOLD it for the publish channel's
+        # lifetime. acquire() is a context manager that releases on
+        # exit, so we enter it manually here and release it in
+        # close() — releasing returns the connection to the pool
+        # rather than closing it (the pool stays the caller's).
+        # Härtung R2 P1-3: the acquire is bounded — an exhausted
+        # pool otherwise blocks forever on Queue.get().
+        assert self._connection_pool is not None
+        self._pool_ctx = self._connection_pool.acquire()
+        try:
+            self._connection = await asyncio.wait_for(
+                self._pool_ctx.__aenter__(),
+                timeout=_POOL_ACQUIRE_TIMEOUT_S,
+            )
+        except TimeoutError as exc:
+            # Review R2: best-effort release. wait_for cancelled
+            # __aenter__ mid-Queue.get(), so normally nothing was
+            # checked out — but if cancellation landed in the
+            # narrow window after get() returned, __aexit__
+            # returns that item to the pool instead of leaking it
+            # (aio-pika's PoolItemContextManager.__aexit__ is a
+            # no-op when no item was assigned).
+            try:
+                await self._pool_ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._pool_ctx = None
+            self._connection = None
+            raise BrokerConnectionError(
+                f"injected pool acquire timed out after {_POOL_ACQUIRE_TIMEOUT_S}s — pool exhausted or closed?"
+            ) from exc
+
+    async def ping(self) -> None:
+        """Wirft ``BrokerConnectionError``, wenn nicht verbunden oder die
+        Verbindung nicht innerhalb von ``_PING_TIMEOUT_S`` bereit ist."""
+        if self._connection is None or self._connection.is_closed:
+            raise BrokerConnectionError("broker not connected")
+        try:
+            await asyncio.wait_for(self._connection.ready(), timeout=_PING_TIMEOUT_S)
+        except TimeoutError as exc:
+            raise BrokerConnectionError(f"broker connection not ready within {_PING_TIMEOUT_S}s") from exc
+        except Exception as exc:
+            raise BrokerConnectionError(str(exc)) from exc
+
+    async def close(self) -> None:
+        if self._owns_connection:
+            # Owned (URL) path unchanged: closing the connection closes its
+            # channels too.
+            if self._connection is not None:
+                await self._connection.close()
+                self._connection = None
+            return
+
+        # Injected path: close ONLY the channels swarmq opened itself —
+        # they belong to swarmq regardless of who owns the connection. Do
+        # NOT swallow channel.close() in a bare except: a swallowed close
+        # corrupts later channel() calls (aiormq-reader-leak learning).
+        # The channel-close loop runs in try/finally so a raised
+        # channel.close() still propagates but never skips the pool release.
+        try:
+            for attr in ("_publish_channel", "_consume_channel"):
+                chan: aio_pika.abc.AbstractChannel | None = getattr(self, attr)
+                if chan is not None:
+                    if not chan.is_closed:
+                        await chan.close()
+                    setattr(self, attr, None)
+        finally:
+            if self._pool_ctx is not None:
+                # Borrowed from a pool: release the connection back to the
+                # pool (do not close it — the pool is the caller's) and drop
+                # the reference so the next connect() re-acquires a fresh one.
+                await self._pool_ctx.__aexit__(None, None, None)
+                self._pool_ctx = None
+                self._connection = None
+            # A directly-injected (bare) connection is intentionally KEPT on
+            # self._connection: it stays the caller's open connection, and
+            # retaining it lets a subsequent connect() reopen a publish
+            # channel on it — mirroring the owned path's connect/close reuse.
+
+    # ------------------------------------------------------------------
+    # Channel-Recreate
+    # ------------------------------------------------------------------
+
+    async def _ensure_publish_channel(self) -> aio_pika.abc.AbstractChannel:
+        """Return a ready publish channel; recreate if dropped.
+
+        aio_pika's RobustChannel auto-reopens after a transport blip,
+        but operations initiated during the `is_closed=True` window
+        fail (CancelledError / ChannelInvalidStateError). Spike
+        evidence: docs/solutions/spikes/2026-04-17-toxiproxy-
+        reconnect-spike.md. This guard waits for the connection to
+        be ready, then reopens the channel if still closed, before
+        returning it to the caller.
+        """
+        chan, _ = await self._ensure_channel_tracked("_publish_channel")
+        return chan
+
+    async def _ensure_consume_channel(self) -> aio_pika.abc.AbstractChannel:
+        """Return a ready consume channel; recreate if dropped.
+
+        Same contract as :meth:`_ensure_publish_channel`, but also
+        re-applies the previous QoS prefetch when the channel was
+        freshly recreated — otherwise the reconnected consumer
+        silently loses its rate-limiting setting. On the fast path
+        (healthy channel), set_qos is NOT called (ce-review R-2/C-02:
+        an AMQP Basic.Qos RPC per consume access is wasteful and its
+        failure was previously unguarded).
+        """
+        chan, was_recreated = await self._ensure_channel_tracked("_consume_channel")
+        if was_recreated and self._consume_prefetch is not None:
+            await chan.set_qos(prefetch_count=self._consume_prefetch)
+        return chan
+
+    async def _ensure_channel_tracked(self, attr: str) -> tuple[aio_pika.abc.AbstractChannel, bool]:
+        """Return (channel, was_recreated). Lets callers apply per-
+        recreate state (QoS prefetch, consumer re-registration)
+        exactly when a new underlying channel was opened."""
+        channel: aio_pika.abc.AbstractChannel | None = getattr(self, attr)
+        if channel is not None and not channel.is_closed:
+            return channel, False
+        async with self._channel_lock:
+            # Re-check under the lock — another coroutine may have
+            # reopened while we were waiting.
+            channel = getattr(self, attr)
+            if channel is not None and not channel.is_closed:
+                return channel, False
+            if self._connection is None:
+                raise BrokerConnectionError("broker not connected")
+            try:
+                await asyncio.wait_for(self._connection.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
+            except TimeoutError as exc:
+                raise BrokerConnectionError(
+                    f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
+                    f"(reopening {attr!r} on {sanitize_url(self._url)!r})"
+                ) from exc
+            try:
+                if attr == "_publish_channel" and self._publish_channel_factory is not None:
+                    channel = await self._publish_channel_factory()
+                else:
+                    channel = await self._connection.channel()
+            except Exception as exc:
+                raise BrokerConnectionError(
+                    f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"
+                ) from exc
+            setattr(self, attr, channel)
+            return channel, True
+
+    async def _throwaway_channel_message_count(self, name: str) -> int:
+        """Message count of one queue via passive declare on a throwaway
+        channel (a failed passive-declare closes the channel). A missing
+        queue counts as 0. Shared by the admin depth queries."""
+        if self._connection is None or self._connection.is_closed:
+            raise BrokerConnectionError("broker is not connected")
+        channel: aio_pika.abc.AbstractChannel | None = None
+        try:
+            channel = await self._connection.channel()
+            q = await channel.declare_queue(name, passive=True)
+            result = getattr(q, "declaration_result", None)
+            if result is not None:
+                return int(getattr(result, "message_count", 0))
+            return 0
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            return 0
+        except Exception as exc:
+            raise BrokerConnectionError(str(exc)) from exc
+        finally:
+            if channel is not None and not channel.is_closed:
+                try:
+                    await channel.close()
+                except Exception:
+                    pass

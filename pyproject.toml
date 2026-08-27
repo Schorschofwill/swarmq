@@ -131,6 +131,8 @@ module = [
     # 0.2.0 (KTD8 Phase 1): neue Pakete sind von Beginn an strict.
     "swarmq.contracts",
     "swarmq.contracts.*",
+    "swarmq.broker.rabbitmq",
+    "swarmq.broker.rabbitmq.*",
     # Stub und Contract-Klassen laufen unter demselben strict-Gate (KTD1, U4).
     "tests.support",
     "tests.support.*",
@@ -159,7 +161,6 @@ module = [
     "swarmq.serialization",
     "swarmq.logging",
     "swarmq.backend.valkey",
-    "swarmq.broker.rabbitmq",
     # Plan U2: bisher in keinem Override und nur auf Default-Niveau geprüft
     # (16 Fehler). Aufgenommen, damit ``lint-and-types`` blockierend laufen
     # kann; U21 erbt als ``swarmq.process_manager.*``, U12 räumt beide auf.

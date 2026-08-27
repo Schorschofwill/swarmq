@@ -37,7 +37,9 @@ class TestRabbitMQBrokerConnect:
         mock_consume_channel = AsyncMock()
         mock_connection.channel.side_effect = [mock_publish_channel, mock_consume_channel]
 
-        with patch("swarmq.broker.rabbitmq.aio_pika.connect_robust", return_value=mock_connection) as mock_connect:
+        with patch(
+            "swarmq.broker.rabbitmq.connection.aio_pika.connect_robust", return_value=mock_connection
+        ) as mock_connect:
             await broker.connect()
 
         mock_connect.assert_awaited_once_with("amqp://guest:guest@localhost/")
@@ -186,7 +188,7 @@ class TestRabbitMQBrokerInjection:
         import asyncio
 
         monkeypatch.setattr(
-            "swarmq.broker.rabbitmq._POOL_ACQUIRE_TIMEOUT_S", 0.1,
+            "swarmq.broker.rabbitmq.connection._POOL_ACQUIRE_TIMEOUT_S", 0.1,
         )
 
         async def _never_returns():
@@ -214,7 +216,7 @@ class TestRabbitMQBrokerInjection:
         mock_conn.channel = AsyncMock(return_value=AsyncMock())
         broker = RabbitMQBroker(connection=mock_conn)
 
-        with patch("swarmq.broker.rabbitmq.logger") as mock_logger:
+        with patch("swarmq.broker.rabbitmq.connection.logger") as mock_logger:
             await broker.connect()
 
         assert mock_logger.warning.called
@@ -226,7 +228,7 @@ class TestRabbitMQBrokerInjection:
         mock_conn.channel = AsyncMock(return_value=AsyncMock())
         broker = RabbitMQBroker(connection=mock_conn)
 
-        with patch("swarmq.broker.rabbitmq.logger") as mock_logger:
+        with patch("swarmq.broker.rabbitmq.connection.logger") as mock_logger:
             await broker.connect()
 
         mock_logger.warning.assert_not_called()
@@ -486,11 +488,14 @@ class TestRabbitMQBrokerConsume:
         broker._consume_channel.get_queue.return_value = mock_queue
         callback = AsyncMock()
 
-        await broker.consume("tasks", callback, prefetch_count=10)
+        await broker.consume("tasks", callback, concurrency=10)
 
         broker._consume_channel.set_qos.assert_awaited_once_with(prefetch_count=10)
         broker._consume_channel.get_queue.assert_awaited_once_with("tasks")
-        mock_queue.consume.assert_awaited_once_with(callback)
+        # U5: der Broker registriert einen Wrapper, der aio_pika-Nachrichten
+        # in ``Delivery`` übersetzt — nicht mehr den rohen Callback.
+        mock_queue.consume.assert_awaited_once()
+        assert mock_queue.consume.await_args.args[0] is not callback
 
 
 class TestRabbitMQBrokerAckNack:
@@ -525,7 +530,9 @@ class TestRabbitMQBrokerConnectGuard:
         mock_connection = AsyncMock()
         mock_connection.channel.side_effect = [AsyncMock(), AsyncMock()]
 
-        with patch("swarmq.broker.rabbitmq.aio_pika.connect_robust", return_value=mock_connection) as mock_connect:
+        with patch(
+            "swarmq.broker.rabbitmq.connection.aio_pika.connect_robust", return_value=mock_connection
+        ) as mock_connect:
             await broker.connect()
             await broker.connect()
 
@@ -537,7 +544,7 @@ class TestRabbitMQBrokerConnectError:
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
 
         with patch(
-            "swarmq.broker.rabbitmq.aio_pika.connect_robust",
+            "swarmq.broker.rabbitmq.connection.aio_pika.connect_robust",
             side_effect=ConnectionError("refused"),
         ), pytest.raises(BrokerConnectionError):
             await broker.connect()
@@ -557,7 +564,7 @@ class TestRabbitMQBrokerErrorSanitization:
         broker._connection = conn
 
         with pytest.raises(BrokerConnectionError) as exc_info:
-            await broker._ensure_channel("_publish_channel")
+            await broker._ensure_publish_channel()
 
         message = str(exc_info.value)
         assert "supersecret" not in message
@@ -572,7 +579,7 @@ class TestRabbitMQBrokerErrorSanitization:
         broker._connection = conn
 
         with pytest.raises(BrokerConnectionError) as exc_info:
-            await broker._ensure_channel("_publish_channel")
+            await broker._ensure_publish_channel()
 
         message = str(exc_info.value)
         assert "supersecret" not in message
