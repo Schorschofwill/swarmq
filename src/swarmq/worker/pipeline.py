@@ -22,10 +22,6 @@ if TYPE_CHECKING:
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
 
-from swarmq.cancellation import (
-    build_error_result_dict,
-    build_result_dict,
-)
 from swarmq.config import SwarmQConfig
 from swarmq.dishka import (
     _MISSING,
@@ -36,7 +32,6 @@ from swarmq.headers import (
     HEADER_UNIQUE_HASH,
     HEADER_UNIQUE_UNTIL,
     HEADER_WORKFLOW_ID,
-    HEADER_WORKFLOW_STEP,
 )
 from swarmq.limits import RateLimiter
 from swarmq.locking import LockManager
@@ -53,8 +48,6 @@ from swarmq.locking import LockManager
 _LockEntry = tuple[str, str, int]
 from swarmq.exceptions import (
     BackendConnectionError,
-    BrokerConnectionError,
-    ResultSerializationError,
     TaskNotFoundError,
 )
 from swarmq.logging import sanitize_url
@@ -65,7 +58,7 @@ from swarmq.middleware import (
 )
 from swarmq.registry import TaskRegistry
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
-from swarmq.serialization import decode_json, decode_result, encode_result
+from swarmq.serialization import decode_json, decode_result
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.execution import TaskExecutor
@@ -81,6 +74,7 @@ from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten
 from swarmq.worker.gates.rate_limit import RateLimitGate
 from swarmq.worker.gates.schedfire import SchedfireGate
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
+from swarmq.worker.results import ResultTail
 from swarmq.worker.retry import RetryHandler
 from swarmq.workflow_orchestration import (
     ChordManager,
@@ -193,6 +187,7 @@ class Worker:
         self._lock_gate = LockGate(gate_deps)
         self._executor = TaskExecutor(gate_deps)
         self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
+        self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         # Phase 3b.3: detached lock-release tasks. The shield pattern
         # around _release_acquired_locks protects against run_task
         # cancellation (inner-cancel). Against graceful-shutdown
@@ -897,14 +892,13 @@ class Worker:
             op_timeout=self._config.backend_op_timeout,
         )
 
-    async def _publish_workflow_step(
-        self, queue: str, body: bytes, headers: dict
-    ) -> None:
+    async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict):
         """Publish a next workflow step. Thin adapter so the advancer stays
         broker-agnostic; broker.publish runs on aio_pika's publisher-confirms
         channel, so the awaited call returns only after the broker confirms
-        the enqueue (the publish-then-mark safety invariant)."""
-        await self._broker.publish(queue, body, headers=headers)
+        the enqueue. Seit U20 gibt er den ``PublishReceipt`` zurück, den
+        ``WorkflowAdvancer.mark_enqueued`` verlangt (publish-then-mark, AE5)."""
+        return await self._broker.publish(queue, body, headers=headers)
 
     def _resolve_workflow_queue(self, task_name: str) -> str:
         """Resolve the target queue for a workflow step from the registry,
@@ -1140,7 +1134,6 @@ class Worker:
             # 6. Ausführung (U8): Lifecycle, Timeouts, Cancel-Monitor,
             # Middleware-Hooks und Signale leben in worker/execution.py.
             execution = await self._executor.execute(ctx, message_dict, chain)
-            result_value = execution.result_value
             is_error = execution.is_error
             is_cancelled = execution.is_cancelled
             error_message = execution.error_message
@@ -1206,11 +1199,13 @@ class Worker:
                     )
                     # Flip state so downstream code treats this as a
                     # cancel rather than an error → skip retry, store
-                    # is_cancelled=True result, clear flag, ack.
-                    is_cancelled = True
-                    is_error = False
-                    error_message = ""
-                    task_exception = None
+                    # is_cancelled=True result, clear flag, ack. Der
+                    # Ergebnis-Tail liest das ExecutionResult (U20), der
+                    # DI-Teardown die lokalen Aliase — beide umstellen.
+                    execution.is_cancelled = is_cancelled = True
+                    execution.is_error = is_error = False
+                    execution.error_message = error_message = ""
+                    execution.task_exception = task_exception = None
                 else:
                     # U8: Retry-Bewertung und Dead-Letter leben in
                     # worker/retry.py. Beide Wege sind fuer den finally
@@ -1221,188 +1216,11 @@ class Worker:
                     )
                     return
 
-            # Build result dict. is_cancelled is a new key in Phase 3b.3;
-            # Client._unpack reads it via .get() so pre-R3.6 consumers
-            # don't break when the key is absent.
-            result_data = build_result_dict(
-                task_id=task_id,
-                queue=queue,
-                task_name=task_name,
-                is_error=is_error,
-                is_cancelled=is_cancelled,
-                error_message=error_message,
-                result=None if (is_error or is_cancelled) else result_value,
-            )
-
-            # 7. Serialize result
-            try:
-                result_bytes = encode_result(result_data)
-            except ResultSerializationError as exc:
-                logger.error("result_serialization_failed", error=str(exc))
-                result_data = build_error_result_dict(
-                    task_id=task_id, queue=queue, task_name=task_name,
-                    error_message=str(exc),
-                )
-                result_bytes = encode_result(result_data)
-
-            # 8. Resolve result_ttl
-            result_ttl = task_info.result_ttl
-            if result_ttl is None:
-                result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else self._config.result_ttl
-            if result_ttl is None:
-                result_ttl = 86400
-
-            if result_ttl == 0:
-                # R4.1 FAF runtime guard (U5): a FIRE_AND_FORGET task used as
-                # a workflow step acks before producing a stored result and
-                # never reaches the advancement seam below — the workflow
-                # would stall forever. Construction-time rejection (U1) covers
-                # Task.s(); sig()-by-name can only be caught here. Mark the
-                # workflow failed so handle.get() raises instead of hanging.
-                wf_id_faf = self._extract_valid_workflow_id(message)
-                if wf_id_faf is None and (message.headers or {}).get(
-                    HEADER_WORKFLOW_ID
-                ) is not None:
-                    logger.warning(
-                        "workflow_id_header_invalid",
-                        task_id=task_id, task_name=task_name,
-                    )
-                if wf_id_faf is not None and self._workflow_advancer is not None:
-                    try:
-                        await self._workflow_advancer.fail(
-                            wf_id_faf,
-                            "WorkflowValidationError",
-                            f"task {task_name!r} is FIRE_AND_FORGET and cannot "
-                            "advance a workflow",
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "workflow_faf_fail_mark_error",
-                            workflow_id=wf_id_faf, error=str(exc),
-                        )
-                if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                    await self._broker.ack(message)
-                # Even with result_ttl=0 we must clear the cancel flag
-                # when the task was cancelled — otherwise it lives until
-                # TTL expires and a task_id reuse would silently cancel.
-                if is_cancelled:
-                    await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
-                return
-
-            # 9-11. Store result + ack/nack
-            try:
-                await self._backend.store_result(
-                    task_id, result_bytes, result_ttl * 1000,
-                    op_timeout=self._config.backend_op_timeout,
-                )
-            except BackendConnectionError:
-                logger.error("backend_connection_error")
-                if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                    # Non-terminal — redelivery will re-run the task
-                    # from scratch; keep the flag so next terminal
-                    # path can release it.
-                    outcome = Redelivered
-                    await self._broker.redeliver(message)
-                return
-
-            try:
-                await self._backend.publish_notification(task_id)
-            except Exception as exc:
-                logger.warning(
-                    "publish_notification_failed",
-                    error=str(exc),
-                    task_id=task_id,
-                )
-
-            # Clear the cancel flag AFTER the result is safely stored so
-            # a mid-op failure leaves the flag in place and a redelivery
-            # re-triggers the cancel branch.
-            if is_cancelled:
-                await self._backend.clear_cancel_flag(task_id, op_timeout=self._config.backend_op_timeout)
-
-            # R4.1 workflow advancement (U5): if this message is a workflow
-            # step that succeeded, drive the workflow forward (next chain
-            # step / chord fan-in / completion) AFTER the result is stored and
-            # BEFORE the ack — so a crash before ack redelivers and the
-            # idempotent advance (next-enqueued markers + chord set) re-runs
-            # without losing or double-enqueueing.
-            wf_id = self._extract_valid_workflow_id(message)
-            if wf_id is None and (message.headers or {}).get(
-                HEADER_WORKFLOW_ID
-            ) is not None:
-                logger.warning(
-                    "workflow_id_header_invalid",
-                    task_id=task_id, task_name=task_name,
-                )
-            if (
-                wf_id is not None
-                and self._workflow_advancer is not None
-                and (is_error or is_cancelled)
-            ):
-                # R4.1 fail-fast + liveness (U6): a workflow step that
-                # reached this point as error/cancelled cannot advance — mark
-                # the whole workflow failed synchronously and wake any
-                # handle.get() waiter, so it raises within bounded time instead
-                # of hanging, and no successor / chord body is enqueued.
-                # Since Härtung R2 (P2-2 follow-up) every AT_LEAST_ONCE error
-                # with an exception goes through _send_to_dlq (which fail-marks
-                # there); this inline branch now covers cancels and the rare
-                # error-without-exception shapes.
-                reason = "task was cancelled" if is_cancelled else (
-                    error_message or "workflow step failed"
-                )
-                try:
-                    await self._workflow_advancer.fail(wf_id, "TaskError", reason)
-                except Exception as exc:
-                    logger.warning(
-                        "workflow_fail_mark_failed", workflow_id=wf_id, error=str(exc)
-                    )
-            elif wf_id is not None and self._workflow_advancer is not None:
-                step_path = (message.headers or {}).get(HEADER_WORKFLOW_STEP, "")
-                if not isinstance(step_path, str):
-                    step_path = ""
-                try:
-                    await self._workflow_advancer.advance(
-                        wf_id, step_path, task_id, result_value
-                    )
-                except BackendConnectionError:
-                    logger.error("workflow_advance_backend_error", workflow_id=wf_id)
-                    if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                        # Transient — redelivery retries the idempotent advance.
-                        outcome = Redelivered
-                        await self._broker.redeliver(message)
-                    return
-                except BrokerConnectionError:
-                    # A workflow-step publish failed transiently (e.g. a
-                    # publisher-confirm Nack that persisted past the broker's
-                    # retry budget). Do NOT mark the workflow failed — a Nack
-                    # means the message was not committed, so redelivery
-                    # re-runs the idempotent advance and re-publishes safely
-                    # (deterministic step ids + step_tasks markers).
-                    logger.error("workflow_advance_broker_error", workflow_id=wf_id)
-                    if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                        outcome = Redelivered
-                        await self._broker.redeliver(message)
-                    return
-                except Exception as exc:
-                    # Unexpected advance bug: fail the workflow so get() raises
-                    # instead of hanging, then ack (no infinite redelivery loop).
-                    logger.error(
-                        "workflow_advance_failed",
-                        workflow_id=wf_id, error=str(exc),
-                    )
-                    try:
-                        await self._workflow_advancer.fail(
-                            wf_id, type(exc).__name__, str(exc)
-                        )
-                    except Exception as fail_exc:
-                        logger.error(
-                            "workflow_fail_mark_error",
-                            workflow_id=wf_id, error=str(fail_exc),
-                        )
-
-            if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                await self._broker.ack(message)
+            # 7.-11. Ergebnis-Tail (U20): Speichern, Benachrichtigung,
+            # Cancel-Flag, Workflow-Advance-Seam und ALO-Ack leben in
+            # worker/results.py.
+            outcome = await self._result_tail.finish(message, ctx, execution)
+            return
 
         finally:
             # 12-pre. Finalize the schedfire claim if this message was a

@@ -12,10 +12,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from swarmq.backend.valkey.chords import ChordManager, chord_set_key  # noqa: F401  # Re-Export (KTD10)
+from swarmq.contracts import PublishReceipt
 from swarmq.exceptions import (
     ResultNotReadyError,
     TaskCancelledError,
@@ -373,7 +374,7 @@ class WorkflowAdvancer:
         backend: ValkeyBackend,
         chord_manager: ChordManager,
         *,
-        publish: Callable[[str, bytes, dict[str, Any]], Any],
+        publish: Callable[[str, bytes, dict[str, Any]], Awaitable[PublishReceipt]],
         resolve_queue: Callable[[str], str],
         make_task_id: Callable[[str, str], str],
         unpack: Callable[[bytes], Any],
@@ -574,7 +575,9 @@ class WorkflowAdvancer:
         workflow-step messages, injecting *inject* into mutable leaves.
         publish-then-mark: each step is published (on a publisher-confirms
         channel) before its step-task id is recorded, so a crash never loses
-        the step (at worst a rare idempotent double-enqueue)."""
+        the step (at worst a rare idempotent double-enqueue). Seit U20 ist die
+        Reihenfolge strukturell erzwungen: :meth:`mark_enqueued` verlangt den
+        ``PublishReceipt`` aus ``Publisher.publish`` (AE5)."""
         enqueued_at = int(time.time())
         for step_path, signature in _frontier(node, node_path):
             # next-enqueued marker (publish-then-mark): skip if already done.
@@ -593,8 +596,21 @@ class WorkflowAdvancer:
                 HEADER_WORKFLOW_STEP: step_path,
                 HEADER_ENQUEUED_AT: enqueued_at,
             }
-            await self._publish(queue, encode_json(message), headers)
-            state["step_tasks"][step_path] = task_id
+            receipt = await self._publish(queue, encode_json(message), headers)
+            self.mark_enqueued(state, step_path, task_id, receipt)
+
+    def mark_enqueued(
+        self, state: dict[str, Any], step_path: str, task_id: str, receipt: PublishReceipt
+    ) -> None:
+        """publish-then-mark (AE5): die Markierung verlangt den Beleg der
+        Veröffentlichung. Ohne ``PublishReceipt`` — den nur
+        ``Publisher.publish`` erzeugt — ist die Markierung ein Typfehler
+        (mypy) und zur Laufzeit ein ``TypeError``."""
+        if not isinstance(receipt, PublishReceipt):
+            raise TypeError(
+                f"mark_enqueued requires the PublishReceipt returned by Publisher.publish, got {type(receipt).__name__}"
+            )
+        state["step_tasks"][step_path] = task_id
 
     def _ordered_member_ids(
         self, state: dict[str, Any], group_path: str, expected_n: int

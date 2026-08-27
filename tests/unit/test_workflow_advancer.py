@@ -10,8 +10,11 @@ stores the result, and calls advance() with the step's path.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
+from swarmq.contracts import PublishReceipt
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain, chord, group
@@ -76,6 +79,7 @@ class Driver:
 
     async def _publish(self, queue, body, headers):
         self.published.append((queue, body, headers))
+        return PublishReceipt(queue=queue)
 
     async def _run_step(self, body: bytes) -> str:
         msg = decode_json(body)
@@ -312,3 +316,33 @@ async def test_workflow_step_task_id_is_deterministic():
         "wf-1", "/h/g0"
     )
     assert workflow_step_task_id("wf-1", "/0") != workflow_step_task_id("wf-1", "/1")
+
+
+class TestMarkEnqueuedRequiresReceipt:
+    """AE5 (Plan U20): publish-then-mark ist strukturell erzwungen — die
+    Markierung verlangt den ``PublishReceipt`` aus ``Publisher.publish``."""
+
+    def _advancer(self):
+        backend = _connected_backend()
+        return WorkflowAdvancer(
+            backend, backend.chords, publish=AsyncMock(), resolve_queue=lambda name: "default",
+            make_task_id=workflow_step_task_id, unpack=_unpack, ttl_ms=60_000,
+        )
+
+    def test_forged_receipt_raises_type_error(self):
+        advancer = self._advancer()
+
+        class Fake:
+            queue = "q"
+            message_id = None
+
+        state = {"step_tasks": {}}
+        with pytest.raises(TypeError, match="PublishReceipt"):
+            advancer.mark_enqueued(state, "/1", "tid", Fake())
+        assert state["step_tasks"] == {}
+
+    def test_real_receipt_marks_the_step(self):
+        advancer = self._advancer()
+        state = {"step_tasks": {}}
+        advancer.mark_enqueued(state, "/1", "tid", PublishReceipt(queue="default"))
+        assert state["step_tasks"] == {"/1": "tid"}
