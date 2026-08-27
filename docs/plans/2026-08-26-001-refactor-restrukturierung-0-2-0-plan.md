@@ -377,6 +377,20 @@ tests/
 
 Wird am Checkpoint nach Phase 2 vom Maintainer ausgefüllt (R16, KTD13): Datum, Stand von R1–R6 und R9, Entscheidung (0.2.0 mit Phase 4 fortsetzen / einmalige Verlängerung bis Datum / Abbruch mit Rücksetzen auf `v0.1.2`), Begründung.
 
+**Checkpoint 2026-08-27** (Phase 0–2 komplett; alle Units U1–U11, U17–U21 gemergt: MR !13–!28, jede mit grünem Chaos-Lauf):
+
+- **R1 (Verträge) — erfüllt im Phase-2-Umfang.** Alle Protocols existieren (`contracts/`: Publisher/Consumer/Broker, BrokerAdmin, Batch-Andockstellen, ResultBackend, LockStore/RateLimitStore/ChordStore/ScheduleStore); die Kernlogik spricht Verträge: Gates/Retry/Results über die vier Broker-Verben (U7/U8/U20), SchedulerLoop über LockStore/Publisher/`claim_unique` (U11), Sampler über die BrokerAdmin-Factory (U21), HealthChecker über `ping` (U9). Vertragsvokabular broker-neutral (AE1-Lesung ohne Befund, U1). **Offener, geplanter Rest für U15:** Konstruktor-Annotationen der Fassaden (`Client`, `Worker`, `SwarmQ`) nennen noch `RabbitMQBroker`/`ValkeyBackend` (TYPE_CHECKING), KTD10-Aliase aktiv; Reinheits-Guard für `client/`/`worker/` schaltet planmäßig erst U15 scharf.
+- **R2 (In-Memory-Stub) — erfüllt.** `tests/support/inmemory/` (FakeClock, InMemoryBroker, InMemoryBackend) als dauerhafte Fixture; Stub läuft gegen dieselben Contract-Klassen wie RabbitMQ/Valkey.
+- **R3 (Contract-Suite) — erfüllt.** `tests/contracts/` broker-neutral formuliert; gebunden gegen Stub (Unit-Gate), RabbitMQ (`test_contracts_rabbitmq.py`) und Valkey (`test_contracts_valkey.py`, 54 Fälle inkl. vier Koordinationsverträge); Rate-Limit-Rückstellung als Kernmethode getestet; Contract-Binding-Guard aktiv.
+- **R4 (Zerlegung + Grenzen) — erfüllt.** Alle vier Großmodule sind Pakete (worker 7+5 Module, client 3, scheduler 3, process_manager 6); **die LOC-Ausnahmeliste des Guards ist leer** (≤ 800 Zeilen projektweit), ruff-Komplexitätsregeln aktiv (Bestandsverstöße per noqa mit Unit-/Follow-Up-Verweis).
+- **R5 (keine Zyklen) — erfüllt.** AST-Zyklen-Guard grün; Allowlist enthält nur dokumentierte Lazy-/Alias-Kanten (PEP-562-Aliase locking/limits bis U15, cli↔process_manager, cli↔cli als 0.2.x-Follow-Up); die Implementierungs-Kante `process_manager → broker.rabbitmq` ist seit U21 gestrichen.
+- **R6 (Invarianten strukturell) — erfüllt.** Ack-Ordering: Outcome-Gates + Ordnungstests (U7/U19); Terminal-Flags: `DeliveryOutcome`/`Terminal` ersetzt die Flag-Paare (U19); Owner-Checks: LockToken-/`claim_unique`-Verträge + Contract-Tests (U18); publish-then-mark: `PublishReceipt` als Pflichtargument von `mark_enqueued` (mypy + Laufzeit-TypeError, U20). Zuordnungstabelle im Entwurf (U1) vollständig.
+- **R9 (Verhaltensparität) — erfüllt.** e2e (210), Chaos (je MR manuell getriggert, alle grün), Property (33) semantisch unverändert; einzige benannte Verhaltenskorrektur ist der Band-Erhalt beim Retry (KTD2, U8) mit eigenem e2e-Test; die Golden-Fixtures (KTD12) pinnen Key-Layout, Lua-Arität, Header, Queue-Argumente und Channels unverändert.
+
+**Releasebarkeit:** main ist ohne die Phase-3-Reste (R7-Sweep U12, R10-Kuration U13) releasebar; Phase 4 (U14/U15, API-Brüche + Doku) und R15 bleiben Release-Pflicht vor U16. Zeitbox (12 Wochen ab v0.1.2, KTD13): Tag 1 — weit innerhalb.
+
+**Entscheidung:** _ausstehend — Maintainer-Entscheidung angefragt (Fortsetzen mit Phase 3/4 empfohlen; alle Checkpoint-Kriterien erfüllt)._
+
 ### Risks & Dependencies
 
 | Risiko | Wirkung | Mitigation |
