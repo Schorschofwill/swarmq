@@ -581,7 +581,7 @@ async def test_start_logs_startup_report(broker, backend, config):
     reg.register(AddTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    with patch("swarmq.worker.pipeline.logger") as mock_logger:
+    with patch("swarmq.worker.lifecycle.logger") as mock_logger:
         # Trigger shutdown immediately so start() returns
         w._shutdown_event.set()
         await w.start()

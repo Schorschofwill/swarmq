@@ -11,7 +11,8 @@ auf ``swarmq.worker.pipeline.*`` (KTD6/KTD14).
 
 from __future__ import annotations
 
+from swarmq.worker.lifecycle import WorkerState
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
-from swarmq.worker.pipeline import Worker, WorkerState
+from swarmq.worker.pipeline import Worker
 
 __all__ = ["Continue", "DeliveryOutcome", "Redelivered", "Terminal", "Worker", "WorkerState"]

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from unittest.mock import AsyncMock, MagicMock
 
 from swarmq.health import HealthChecker, serve_health
+from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
 
 
 class TestSanitiseError:
@@ -88,102 +88,73 @@ async def _http_get(host: str, port: int, path: str) -> tuple[int, dict, bytes]:
 
 
 class TestHealthChecker:
-    async def test_check_backend_ok_when_ping_succeeds(self):
-        backend = MagicMock()
-        backend._client = MagicMock()
-        backend._client.ping = AsyncMock(return_value=True)
-        broker = MagicMock()
-        checker = HealthChecker(broker, backend)
-        ok, err = await checker.check_backend()
-        assert ok is True
-        assert err is None
+    """Seit Plan U9 prüft Health über die Vertragsmethode ``ping`` — gegen den
+    In-Memory-Stub testbar, kein ``_client``/``_connection``-Zugriff."""
 
-    async def test_check_backend_fail_when_no_client(self):
-        backend = MagicMock()
-        backend._client = None
-        broker = MagicMock()
-        checker = HealthChecker(broker, backend)
-        ok, err = await checker.check_backend()
+    @staticmethod
+    async def _connected_stubs():
+        clock = FakeClock()
+        broker = InMemoryBroker(clock)
+        backend = InMemoryBackend(clock)
+        await broker.connect()
+        await backend.connect()
+        return broker, backend
+
+    async def test_check_backend_ok_when_ping_succeeds(self):
+        broker, backend = await self._connected_stubs()
+        ok, err = await HealthChecker(broker, backend).check_backend()
+        assert (ok, err) == (True, None)
+
+    async def test_check_backend_fail_before_connect(self):
+        backend = InMemoryBackend(FakeClock())
+        broker, _ = await self._connected_stubs()
+        ok, err = await HealthChecker(broker, backend).check_backend()
         assert ok is False
-        assert err is not None
-        assert "not connected" in err
+        assert err is not None and "not connected" in err
 
     async def test_check_backend_fail_on_timeout(self):
-        backend = MagicMock()
-        backend._client = MagicMock()
+        broker, backend = await self._connected_stubs()
 
         async def hang():
             await asyncio.sleep(10)
 
-        backend._client.ping = AsyncMock(side_effect=hang)
-        broker = MagicMock()
-        checker = HealthChecker(broker, backend, timeout_s=0.1)
-        ok, err = await checker.check_backend()
+        backend.ping = hang
+        ok, err = await HealthChecker(broker, backend, timeout_s=0.1).check_backend()
         assert ok is False
         assert err is not None and "TimeoutError" in err
 
     async def test_check_broker_fail_when_closed(self):
-        broker = MagicMock()
-        conn = MagicMock()
-        conn.is_closed = True
-        broker._connection = conn
-        backend = MagicMock()
-        checker = HealthChecker(broker, backend)
-        ok, err = await checker.check_broker()
+        broker, backend = await self._connected_stubs()
+        await broker.close()
+        ok, err = await HealthChecker(broker, backend).check_broker()
         assert ok is False
         assert err is not None
 
     async def test_check_all_combines_results(self):
-        backend = MagicMock()
-        backend._client = MagicMock()
-        backend._client.ping = AsyncMock(return_value=True)
-        broker = MagicMock()
-        conn = MagicMock()
-        conn.is_closed = False
-        conn.ready = AsyncMock()
-        broker._connection = conn
-        checker = HealthChecker(broker, backend)
-        snapshot = await checker.check_all()
+        broker, backend = await self._connected_stubs()
+        snapshot = await HealthChecker(broker, backend).check_all()
         assert snapshot["ready"] is True
         assert snapshot["broker"]["ok"] is True
         assert snapshot["backend"]["ok"] is True
 
     async def test_check_all_not_ready_when_one_fails(self):
-        backend = MagicMock()
-        backend._client = None  # backend down
-        broker = MagicMock()
-        conn = MagicMock()
-        conn.is_closed = False
-        conn.ready = AsyncMock()
-        broker._connection = conn
-        checker = HealthChecker(broker, backend)
-        snapshot = await checker.check_all()
+        broker, backend = await self._connected_stubs()
+        await backend.close()
+        snapshot = await HealthChecker(broker, backend).check_all()
         assert snapshot["ready"] is False
-        assert snapshot["broker"]["ok"] is True
         assert snapshot["backend"]["ok"] is False
-
-
-# ---------------------------------------------------------------------------
-# HealthServer
-# ---------------------------------------------------------------------------
+        assert snapshot["broker"]["ok"] is True
 
 
 class TestHealthServer:
     async def _make_checker(self, *, broker_ok: bool, backend_ok: bool):
-        backend = MagicMock()
-        if backend_ok:
-            backend._client = MagicMock()
-            backend._client.ping = AsyncMock(return_value=True)
-        else:
-            backend._client = None
-        broker = MagicMock()
+        clock = FakeClock()
+        broker = InMemoryBroker(clock)
+        backend = InMemoryBackend(clock)
         if broker_ok:
-            conn = MagicMock()
-            conn.is_closed = False
-            conn.ready = AsyncMock()
-            broker._connection = conn
-        else:
-            broker._connection = None
+            await broker.connect()
+        if backend_ok:
+            await backend.connect()
         return HealthChecker(broker, backend)
 
     async def test_health_endpoint_returns_200(self):
