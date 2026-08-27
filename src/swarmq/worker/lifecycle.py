@@ -84,7 +84,9 @@ class WorkerLifecycle:
             backend=self._backend,
             broker=self._broker,
             config=self._config,
-            lock_manager=self._lock_manager,
+            # U11: der Loop spricht den LockStore-Vertrag (Token-API);
+            # der Worker-Lock-Pfad nutzt weiter den LockManager oben.
+            lock_manager=self._backend.locks,
             store=schedule_store,
             signal_dispatcher=self._signal_dispatcher,
             worker_id=str(id(self)),

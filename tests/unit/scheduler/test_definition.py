@@ -1,4 +1,6 @@
-"""Unit tests for swarmq.scheduler — ScheduleDefinition, ScheduleStore,
+"""Definition-Tests (Plan U11) — verbatim aus ``test_scheduler_store.py``.
+
+Unit tests for swarmq.scheduler — ScheduleDefinition, ScheduleStore,
 and schedfire-key helpers.
 
 The happy-path store methods talk to Valkey via registered Lua scripts;

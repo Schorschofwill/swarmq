@@ -1,25 +1,6 @@
-"""SwarmQ embedded scheduler — ScheduleDefinition, ScheduleStore, SchedulerLoop.
-
-The scheduler owns two Valkey datastructures:
-
-- ``sq:{sched}:defs`` — global hash keyed by schedule_name holding the
-  JSON-encoded :class:`ScheduleDefinition` (inline ``disabled`` flag,
-  inline ``source``, etc. — see plan Persistence-Layout).
-- ``sq:{sched}:zset`` — sorted-set where score is the next fire-ts_ms and
-  member is the schedule_name. Poll reads a batch (sched_poll.lua),
-  the leader publishes + commits (sched_commit.lua with owner-check).
-
-Three top-level pieces:
-
-- :class:`ScheduleDefinition` — msgspec.Struct persisted per schedule.
-- :class:`ScheduleStore` — CRUD + poll/commit wrapper around the
-  two Valkey keys, holding the registered Lua scripts.
-- :class:`SchedulerLoop` — embedded-in-each-worker coroutine. Two
-  sub-loops: ``_election_loop`` drives leader-election + heartbeat,
-  ``_poll_loop`` drives the publish-before-ZREM firing. Only the
-  leader runs the poll body; standbys short-circuit.
-"""
-
+"""Scheduler-Loop (Plan U11) — verbatim aus ``scheduler.py``: Election
+(Leader-Lock über den ``LockStore``-Vertrag), Poll/Fire mit Schedfire-Dedup
+und Handover-Marker. Der Cron-Sync lebt als Mixin in ``sync.py``."""
 from __future__ import annotations
 
 import asyncio
@@ -28,16 +9,11 @@ import socket
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import msgspec
 import structlog
 from croniter import croniter
-
-if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.backend.valkey.locks import LockManager
-    from swarmq.broker.rabbitmq import RabbitMQBroker
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
@@ -46,11 +22,30 @@ from swarmq.serialization import compute_dedup_hash, encode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 
+if TYPE_CHECKING:
+    from swarmq.contracts import Publisher
+    from swarmq.contracts.coordination import LockStore
+
+from swarmq.contracts.coordination import LockToken
+from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
+from swarmq.scheduler.sync import SchedulerCronSync
+
 logger = structlog.get_logger()
 
 
-# ``SCHEDULER_LOCK_NAME``/``SCHEDULER_LOCK_KEY`` leben seit Plan U18 in
-# ``swarmq.locking`` (KTD6) und bleiben hier importierbar.
+class SchedulerBackend(Protocol):
+    """Struktureller Backend-Ausschnitt des Loops (U11): Schedfire-Dedup
+    über den Vertragsnamen ``claim_unique`` (ResultBackend) plus die
+    Handover-Marker-Aliase der Fassade (KTD10; Vertragsnamen
+    ``set_handover_marker``/``take_handover_marker`` entscheidet U15)."""
+
+    async def claim_unique(
+        self, dedup_hash: str, owner: str, ttl_ms: int, *, op_timeout: float | None = None
+    ) -> str | None: ...
+
+    async def set_schedfire_handover_marker(self, owner_token: str, ttl_ms: int) -> None: ...
+
+    async def get_and_del_schedfire_handover_marker(self) -> bytes | None: ...
 
 _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 """Minimum TTL for the handover marker (5s). The actual TTL used is
@@ -58,212 +53,6 @@ _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 observes the marker on its next election tick — otherwise every
 clean handover would time out before the successor polls and emit
 FAILOVER instead of LEADER (review-finding reliability R-001)."""
-
-
-# ---------------------------------------------------------------------------
-# Schedule metadata
-# ---------------------------------------------------------------------------
-
-
-class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
-    """Persisted schedule metadata.
-
-    Stored JSON-encoded in ``sq:sched:defs`` under the schedule_name.
-    Three source types produce a definition:
-
-    * ``source="static"`` — declared via ``TaskInfo(cron=...)`` in code.
-      The leader-sync may overwrite it on redeploy when the cron-string
-      has changed (Fork 1).
-    * ``source="cli"`` — added via ``swarmq schedule add``. Treated as
-      insert-if-absent; ``TaskInfo``-sync will never overwrite a CLI
-      schedule (CD11).
-    * ``source="cli_unique"`` — one-shot deferred schedule
-      (``Client.schedule(delay=|eta=)``) whose producer already claimed
-      the R3.5 dedup flag at enqueue-time. Scheduler._fire_one skips
-      the pre-publish SETNX for this source and reuses
-      ``dedup_hash`` directly as the message header, partitioning
-      SETNX responsibility between client (deferred) and scheduler
-      (static cron). Origin plan Unit 7 / Risks "Double-SETNX-Race".
-    * One-shot entries (delay/eta) — ``cron=None``, ``schedule_name``
-      is ``"oneshot:<uuid>"``, ``source="cli"`` or ``"cli_unique"``.
-      Discriminated by ``cron is None`` at commit-time: next_fire_ts =
-      -1 signals one-shot, which skips ZADD and triggers HDEL.
-    """
-
-    schedule_name: str
-    task_name: str
-    args: tuple
-    kwargs: dict
-    queue: str
-    cron: str | None
-    fire_ts_ms: int | None
-    source: Literal["static", "cli", "cli_unique"]
-    disabled: bool = False
-    last_fire_at: int | None = None
-    # R3.5 Unit 7: persisted dedup hash for source="cli_unique" entries.
-    # Optional with default None so msgpack/json roundtrip stays
-    # backwards-compatible with pre-R3.5 ScheduleDefinition entries in
-    # sq:sched:defs (new field at the end of the struct).
-    dedup_hash: str | None = None
-    # R3.5 ce-review P1 #5 / ADV-007: persist unique_until alongside
-    # dedup_hash. Previously the scheduler re-resolved unique_until from
-    # TaskInfo at fire-time, which silently flipped release semantics when
-    # TaskInfo changed between enqueue and fire. The client knows the
-    # intended mode at enqueue time; persist it so fire-time is
-    # deterministic. Optional default "completion" matches the producer
-    # default used when the Client sees _MISSING.
-    unique_until: Literal["start", "completion"] = "completion"
-
-
-# ---------------------------------------------------------------------------
-# Schedfire-key (consumer-side dedup identity)
-# ---------------------------------------------------------------------------
-
-
-def make_schedfire_key(schedule_name: str, fire_ts_ms: int) -> str:
-    """Deterministic key for a single scheduled fire event.
-
-    Published as the ``x-swarmq-schedfire`` message header and used as the
-    SETNX identity for consumer-side dedup.
-    """
-    return f"{schedule_name}:{fire_ts_ms}"
-
-
-def parse_schedfire_key(value: str) -> tuple[str, int]:
-    """Inverse of :func:`make_schedfire_key`.
-
-    Uses ``rsplit(":", 1)`` so that schedule_names containing colons
-    (e.g. ``oneshot:<uuid>``) round-trip correctly (P1-4).
-    """
-    if ":" not in value:
-        raise ValueError(f"schedfire key missing ':' separator: {value!r}")
-    name, ts = value.rsplit(":", 1)
-    try:
-        return name, int(ts)
-    except ValueError as exc:
-        raise ValueError(
-            f"schedfire key has non-integer timestamp: {value!r}"
-        ) from exc
-
-
-# ---------------------------------------------------------------------------
-# ScheduleStore — the CRUD + poll/commit wrapper
-# ---------------------------------------------------------------------------
-
-
-class ScheduleStore:
-    """Definitions-Sicht der Scheduler-Persistenz.
-
-    Seit Plan U18 liegt die Valkey-Seite (Lua-Skripte, Keys, Marker) in
-    ``ValkeyBackend.schedules`` (``ValkeyScheduleStore``, Vertrag
-    ``ScheduleStore`` auf ``bytes``); diese Klasse kodiert/dekodiert die
-    ``ScheduleDefinition`` (msgspec) und delegiert. Konstruiert nach dem
-    ``connect()`` des Backends — davor wirft ``backend.schedules``
-    ``BackendConnectionError``.
-
-    Insert semantics encode the plan's Fork-1 decision:
-
-    - :meth:`add_schedule` is insert-if-absent (CD11). CLI writes and
-      static-cron-first-insert both go through this path.
-    - :meth:`update_static_schedule` unconditionally overwrites; the
-      leader sync loop calls this when it detects a static cron-string
-      change between code and stored def.
-    """
-
-    def __init__(self, backend: ValkeyBackend) -> None:
-        self._backend = backend
-        try:
-            self._store = backend.schedules
-        except BackendConnectionError as exc:
-            raise RuntimeError(
-                "ScheduleStore requires a connected ValkeyBackend (backend.connect() must have been awaited first)"
-            ) from exc
-
-    # ---- CRUD -----------------------------------------------------------
-
-    async def add_schedule(self, definition: ScheduleDefinition) -> bool:
-        """Insert a new schedule. Returns True on insert, False on no-op
-        (insert-if-absent via HSETNX, Unit 8 / M-14)."""
-        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
-
-    async def update_static_schedule(self, definition: ScheduleDefinition) -> None:
-        """Unconditionally write a static-sourced definition (Fork 1)."""
-        await self._store.put(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
-
-    async def remove_schedule(self, schedule_name: str) -> bool:
-        """Permanently remove a schedule (ZREM + HDEL). True only when an
-        entry existed (Unit 4 / M-2)."""
-        return await self._store.remove(schedule_name)
-
-    async def disable_schedule(self, schedule_name: str) -> bool:
-        """Mark an existing schedule disabled AND remove it from the
-        due-set. False when no entry was present OR the existing entry was
-        malformed (logged + parked for operator inspection, Unit 5 / M-3).
-        The write-pair runs atomically in ``sched_disable.lua`` (Unit 8 /
-        M-14); the HGET+decode stays in Python because Lua does not share our
-        msgspec encoding."""
-        existing = await self._store.get(schedule_name)
-        if existing is None:
-            return False
-        try:
-            current = msgspec.json.decode(existing, type=ScheduleDefinition)
-        except msgspec.DecodeError as exc:
-            logger.warning(
-                "schedule_def_malformed_skipped",
-                schedule_name=schedule_name,
-                error=str(exc),
-                hint="run 'swarmq schedule remove --permanent <name>' to clear the malformed entry",
-            )
-            return False
-        updated = msgspec.structs.replace(current, disabled=True)
-        return await self._store.disable(schedule_name, msgspec.json.encode(updated))
-
-    async def list_schedules(self) -> list[ScheduleDefinition]:
-        """Every decodable ScheduleDefinition; malformed entries are logged
-        and skipped so one bad row cannot break ``swarmq schedule list``
-        (Unit 5 / M-5)."""
-        raw = await self._store.list_all()
-        result: list[ScheduleDefinition] = []
-        for name, payload in raw.items():
-            try:
-                result.append(msgspec.json.decode(payload, type=ScheduleDefinition))
-            except msgspec.DecodeError as exc:
-                logger.warning("schedule_def_malformed_skipped", schedule_name=name, error=str(exc))
-        return result
-
-    # ---- Poll / commit --------------------------------------------------
-
-    async def poll_due(self, now_ms: int, limit: int = 100) -> list[tuple[str, int, ScheduleDefinition]]:
-        """Schedules whose fire-ts is <= ``now_ms`` as
-        ``(schedule_name, score_ms, ScheduleDefinition)``."""
-        rows = await self._store.poll_due(now_ms, limit=limit)
-        return [(name, score, msgspec.json.decode(payload, type=ScheduleDefinition)) for name, score, payload in rows]
-
-    async def commit_fire(
-        self,
-        schedule_name: str,
-        next_fire_ts_ms: int,
-        updated_def: ScheduleDefinition | None,
-        owner_token: str,
-    ) -> bool:
-        """Atomically commit a fire event. ``next_fire_ts_ms=-1`` +
-        ``updated_def=None`` removes a one-shot entirely. False when the
-        owner-check rejected it (stale leader, P1-2)."""
-        return await self._store.commit_fire(
-            schedule_name,
-            next_fire_ts_ms=None if next_fire_ts_ms < 0 else next_fire_ts_ms,
-            payload=msgspec.json.encode(updated_def) if updated_def is not None else None,
-            owner=owner_token,
-        )
-
-def _decode_bytes(value: bytes | str) -> str:
-    return value.decode() if isinstance(value, bytes) else value
-
-
-# ---------------------------------------------------------------------------
-# SchedulerLoop — leader-election + poll (Unit 10)
-# ---------------------------------------------------------------------------
-
 
 _SchedulerState = Literal["standby", "leader", "stopped"]
 
@@ -281,7 +70,7 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop:
+class SchedulerLoop(SchedulerCronSync):
     """Embedded scheduler — one instance per worker.
 
     Runs two cooperating coroutines:
@@ -309,10 +98,10 @@ class SchedulerLoop:
     def __init__(
         self,
         *,
-        backend: ValkeyBackend,
-        broker: RabbitMQBroker,
+        backend: SchedulerBackend,
+        broker: Publisher,
         config: SwarmQConfig,
-        lock_manager: LockManager,
+        lock_manager: LockStore,
         store: ScheduleStore,
         signal_dispatcher: SignalDispatcher,
         owner_token: str | None = None,
@@ -325,6 +114,11 @@ class SchedulerLoop:
         self._store = store
         self._signals = signal_dispatcher
         self._owner_token = owner_token or _make_owner_token()
+        # LockStore-Vertrag (U11): Token deterministisch aus Name+Owner —
+        # acquire liefert denselben Token, renew/release nehmen ihn.
+        self._lock_token = LockToken(
+            name=SCHEDULER_LOCK_NAME, owner=self._owner_token, max_concurrency=1
+        )
         self._worker_id = worker_id or self._owner_token
 
         self._state: _SchedulerState = "standby"
@@ -409,9 +203,7 @@ class SchedulerLoop:
             self._state = "standby"
             self._stop_event.set()
             try:
-                await self._lock_manager.release(
-                    SCHEDULER_LOCK_NAME, self._owner_token, 1
-                )
+                await self._lock_manager.release(self._lock_token)
             except BackendConnectionError as exc:
                 logger.warning(
                     "scheduler_lock_release_failed", error=str(exc)
@@ -483,8 +275,7 @@ class SchedulerLoop:
         if self._state == "leader":
             try:
                 still_leader = await self._lock_manager.renew(
-                    SCHEDULER_LOCK_NAME,
-                    self._owner_token,
+                    self._lock_token,
                     int(self._config.scheduler_lock_ttl * 1000),
                 )
             except BackendConnectionError as exc:
@@ -527,11 +318,14 @@ class SchedulerLoop:
 
         # state == "standby"
         try:
-            acquired = await self._lock_manager.acquire(
-                SCHEDULER_LOCK_NAME,
-                self._owner_token,
-                int(self._config.scheduler_lock_ttl * 1000),
-                1,  # mutex
+            acquired = (
+                await self._lock_manager.acquire(
+                    SCHEDULER_LOCK_NAME,
+                    owner=self._owner_token,
+                    ttl_ms=int(self._config.scheduler_lock_ttl * 1000),
+                    max_concurrency=1,  # mutex
+                )
+                is not None
             )
         except BackendConnectionError as exc:
             logger.warning("scheduler_acquire_error", error=str(exc))
@@ -678,7 +472,7 @@ class SchedulerLoop:
                     dict(definition.kwargs),
                 )
                 try:
-                    existing = await self._backend.setnx_unique(
+                    existing = await self._backend.claim_unique(
                         dedup_hash, task_id, task_info.unique_for * 1000,
                         op_timeout=self._config.backend_op_timeout,
                     )
@@ -835,134 +629,6 @@ class SchedulerLoop:
 
     # ---- static-cron sync (Fork 1) -------------------------------------
 
-    async def sync_taskinfo_crons(self) -> None:
-        """Reconcile static ``TaskInfo(cron=...)`` declarations into the
-        ``sq:sched:defs`` hash.
-
-        Six resolution branches (in check order):
-
-        1. ``hget_schedule_def`` raises ``BackendConnectionError`` →
-           log and skip this schedule, continue iteration.
-        2. No existing entry → ``add_schedule`` (insert).
-        3. Existing entry fails msgspec decode → best-effort
-           ``update_static_schedule`` overwrite with the valid
-           definition from code.
-        4. Existing ``source="cli"`` entry → no-op with warning log
-           (CD11 — CLI ownership beats code, but the shadow is
-           surfaced so operators can discover it).
-        5. Existing ``source="static"`` entry with the same
-           cron-string → no-op (stable).
-        6. Existing ``source="static"`` entry with a **different**
-           cron-string → ``update_static_schedule`` (Fork 1). The
-           existing ``disabled`` flag is preserved so an operator's
-           ``schedule remove`` is not silently reversed
-           (correctness C-01).
-        """
-        for task_class in Task._registered_tasks:
-            task_info = getattr(task_class, "task_info", None)
-            if task_info is None or not task_info.cron:
-                continue
-
-            schedule_name = task_info.name
-            queue = task_info.queues[0]
-            now = datetime.now(UTC)
-            next_dt = croniter(task_info.cron, now).get_next(datetime)
-            fire_ts_ms = int(next_dt.timestamp() * 1000)
-
-            definition = ScheduleDefinition(
-                schedule_name=schedule_name,
-                task_name=task_info.name,
-                args=(),
-                kwargs={},
-                queue=queue,
-                cron=task_info.cron,
-                fire_ts_ms=fire_ts_ms,
-                source="static",
-            )
-
-            try:
-                existing_raw = await self._backend.hget_schedule_def(
-                    schedule_name
-                )
-            except BackendConnectionError as exc:
-                logger.warning(
-                    "scheduler_sync_hget_failed",
-                    schedule_name=schedule_name,
-                    error=str(exc),
-                )
-                continue
-
-            if existing_raw is None:
-                # New entry — per-schedule error isolation so one
-                # BackendConnectionError does not abort the full sync
-                # (Unit 5 / M-4).
-                try:
-                    await self._store.add_schedule(definition)
-                except BackendConnectionError as exc:
-                    logger.warning(
-                        "scheduler_sync_add_failed",
-                        schedule_name=schedule_name,
-                        error=str(exc),
-                    )
-                continue
-
-            try:
-                existing = msgspec.json.decode(
-                    existing_raw, type=ScheduleDefinition
-                )
-            except msgspec.DecodeError as exc:
-                # Unit 5 / M-3: do NOT silently overwrite on decode
-                # error. We cannot tell if the malformed bytes were
-                # source="cli" (CD11-protected) or source="static"
-                # (overwriteable). Preserve operator intent by
-                # leaving the entry untouched and logging loudly so
-                # operators can investigate + manually remove.
-                logger.error(
-                    "scheduler_sync_decode_error_skipped",
-                    schedule_name=schedule_name,
-                    error=str(exc),
-                    hint=(
-                        "run 'swarmq schedule remove --permanent <name>' "
-                        "to clear the malformed entry, then redeploy"
-                    ),
-                )
-                continue
-
-            if existing.source == "cli":
-                # CD11 protection: CLI ownership beats code. Log so
-                # the silent shadow is discoverable (reliability R-006).
-                logger.warning(
-                    "scheduler_static_cron_shadowed_by_cli",
-                    schedule_name=schedule_name,
-                    static_cron=task_info.cron,
-                    cli_cron=existing.cron,
-                )
-                continue
-            if existing.cron == task_info.cron:
-                continue  # Unchanged static
-            # Static cron changed — propagate (Fork 1).
-            # Preserve the disabled flag from the existing entry so
-            # an operator's `schedule remove` intent is not silently
-            # reversed by the next redeploy (correctness C-01).
-            propagated = msgspec.structs.replace(
-                definition, disabled=existing.disabled
-            )
-            logger.info(
-                "scheduler_static_cron_updated",
-                schedule_name=schedule_name,
-                old_cron=existing.cron,
-                new_cron=task_info.cron,
-                disabled_preserved=existing.disabled,
-            )
-            try:
-                await self._store.update_static_schedule(propagated)
-            except BackendConnectionError as exc:
-                # Per-schedule error isolation (Unit 5 / M-4).
-                logger.warning(
-                    "scheduler_sync_update_failed",
-                    schedule_name=schedule_name,
-                    error=str(exc),
-                )
 
     # ---- helpers --------------------------------------------------------
 

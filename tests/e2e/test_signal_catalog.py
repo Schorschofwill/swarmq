@@ -945,7 +945,6 @@ async def test_signal_scheduler_standby(
     schlägt fehl → STANDBY.
     """
     from swarmq.config import SwarmQConfig
-    from swarmq.locking import LockManager
     from swarmq.scheduler import (
         SCHEDULER_LOCK_KEY,
         SchedulerLoop,
@@ -983,7 +982,7 @@ async def test_signal_scheduler_standby(
             backend=backend,
             broker=broker,
             config=config,
-            lock_manager=LockManager(backend._client),
+            lock_manager=backend.locks,
             store=ScheduleStore(backend),
             signal_dispatcher=dispatcher,
             owner_token=f"standby-test-{uuid.uuid4().hex[:6]}",

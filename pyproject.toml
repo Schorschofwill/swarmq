@@ -155,6 +155,7 @@ module = [
     "swarmq.worker.lifecycle",  # U9: dito (Mixin über dem Worker-Zustand)
     "swarmq.task",
     "swarmq.scheduler",
+    "swarmq.scheduler.*",  # U11: Submodule erben den Monolith-Eintrag bis U12
     "swarmq.cli",
     "swarmq.cli.*",
     "swarmq.app",
