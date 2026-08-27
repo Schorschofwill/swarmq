@@ -9,7 +9,6 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 import uuid
 
@@ -18,7 +17,6 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
 pytestmark = [pytest.mark.timeout(30)]

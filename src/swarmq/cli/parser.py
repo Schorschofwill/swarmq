@@ -38,7 +38,7 @@ def _swarmq_version() -> str:
         return "unknown"
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # Follow-Up 0.2.x
     parser = argparse.ArgumentParser(
         prog="swarmq",
         description=(

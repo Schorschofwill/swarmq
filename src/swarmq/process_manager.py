@@ -32,13 +32,14 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import multiprocessing
-from importlib.machinery import ModuleSpec
 import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, TypedDict
+from importlib.machinery import ModuleSpec
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
@@ -393,9 +394,9 @@ class ProcessManager:
                 # os.environ mutation (e.g., a library flipping
                 # PYTHONPATH) cannot influence the re-exec'd
                 # interpreter's import resolution.
-                os.execvpe(  # noqa: S606
+                os.execvpe(
                     sys.executable,
-                    [sys.executable] + self._startup_argv,
+                    [sys.executable, *self._startup_argv],
                     self._startup_env,
                 )
             except OSError as exc:
@@ -459,7 +460,7 @@ class ProcessManager:
         for _ in range(self.initial_workers):
             self._start_worker()
 
-    def _shutdown_all_workers(self) -> None:
+    def _shutdown_all_workers(self) -> None:  # noqa: C901  # U21 (supervisor.py)
         """Three-phase shutdown: event → SIGTERM → SIGKILL."""
         if not self.workers:
             return
@@ -500,14 +501,14 @@ class ProcessManager:
         for info in self.workers.values():
             try:
                 info.process.join(timeout=2)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def _collect_zombies(self) -> None:
         for info in list(self.workers.values()):
             try:
                 info.process.join(timeout=1)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     # ------------------------------------------------------------------
@@ -584,7 +585,7 @@ class ProcessManager:
             exitcode = info.process.exitcode
             try:
                 info.process.join(timeout=1)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             del self.workers[pid]
 
@@ -680,7 +681,7 @@ class ProcessManager:
 
         try:
             depth = self._queue_depth_fn()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # ce-review SEC-03: sanitize_url strips embedded AMQP
             # credentials before the exception text reaches structlog.
             logger.warning(
@@ -782,8 +783,8 @@ def worker_subprocess_entry(
     existing signal-driven shutdown flow without coupling to its
     private API.
     """
-    import asyncio
     import argparse as _argparse
+    import asyncio
     import logging as _stdlib_logging
     import os
     import signal as _signal
@@ -880,7 +881,7 @@ def _make_queue_depth_sampler(
                 try:
                     async with asyncio.timeout(1.0):
                         await broker.close()
-                except (TimeoutError, Exception):  # noqa: BLE001
+                except (TimeoutError, Exception):
                     pass
 
         return asyncio.run(_run())

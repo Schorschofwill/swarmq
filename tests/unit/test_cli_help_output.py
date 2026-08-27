@@ -59,9 +59,8 @@ def _capture_help(argv_prefix: tuple[str, ...]) -> str:
     parser = _build_parser()
     buf_out = io.StringIO()
     buf_err = io.StringIO()
-    with redirect_stdout(buf_out), redirect_stderr(buf_err):
-        with pytest.raises(SystemExit) as excinfo:
-            parser.parse_args([*argv_prefix, "--help"])
+    with redirect_stdout(buf_out), redirect_stderr(buf_err), pytest.raises(SystemExit) as excinfo:
+        parser.parse_args([*argv_prefix, "--help"])
     assert excinfo.value.code == 0, (
         f"--help for {argv_prefix!r} exited with {excinfo.value.code}, "
         f"stderr={buf_err.getvalue()!r}"

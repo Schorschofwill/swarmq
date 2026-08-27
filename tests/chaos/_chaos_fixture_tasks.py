@@ -30,15 +30,15 @@ _QUEUE = os.environ.get("CLI_TEST_QUEUE", "chaos_test_default")
 
 async def _bump_exec_count(task: Task) -> None:
     """Best-effort per-task execution counter in Valkey."""
-    if task._backend is not None and task._task_id is not None:  # noqa: SLF001
+    if task._backend is not None and task._task_id is not None:
         try:
-            await task._backend._client.incr(  # noqa: SLF001
+            await task._backend._client.incr(
                 f"exec_count:{task._task_id}"
             )
-            await task._backend._client.expire(  # noqa: SLF001
+            await task._backend._client.expire(
                 f"exec_count:{task._task_id}", 300
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -74,7 +74,7 @@ class ChaosMemoryHogTask(Task):
     async def run(self, mb: int, seconds: float) -> str:
         await _bump_exec_count(self)
         # Hold the allocation in scope so it shows up in RSS.
-        _ballast = bytearray(mb * 1024 * 1024)  # noqa: F841
+        _ballast = bytearray(mb * 1024 * 1024)
         await asyncio.sleep(seconds)
         return f"alloc:{mb}"
 

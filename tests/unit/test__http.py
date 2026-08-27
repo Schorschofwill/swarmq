@@ -11,7 +11,6 @@ import pytest
 from swarmq._http import (
     AsyncHttpServer,
     BadRequest,
-    RequestTimeout,
     parse_http_request,
     write_http_response,
 )
@@ -194,7 +193,7 @@ class TestAsyncHttpServer:
             writer.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             await writer.drain()
             # Connection closes without a response line.
-            data = await reader.read(10)
+            await reader.read(10)
             writer.close()
             await writer.wait_closed()
             # Server should still be responsive on the next request.
@@ -203,7 +202,7 @@ class TestAsyncHttpServer:
             )
             writer2.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             await writer2.drain()
-            data = await reader2.read(10)
+            await reader2.read(10)
             writer2.close()
             await writer2.wait_closed()
         finally:

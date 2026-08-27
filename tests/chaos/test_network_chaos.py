@@ -95,7 +95,7 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
     try:
         try:
             await asyncio.wait_for(online.wait(), timeout=10.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker_task
@@ -107,11 +107,11 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
             await worker_task
         try:
             await worker_broker.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         try:
             await worker_backend.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -317,7 +317,7 @@ class TestNetworkChaos:
                 # depends on aio_pika's internal state at the moment;
                 # we broaden to "any exception" and pin the fact that
                 # the call does NOT silently succeed into a void.
-                with pytest.raises(Exception):  # noqa: PT011, BLE001
+                with pytest.raises(Exception):
                     await asyncio.wait_for(
                         client_app.schedule(task_name, 999),
                         timeout=5.0,
@@ -501,7 +501,7 @@ class TestNetworkChaos:
                                 return
                     except asyncio.CancelledError:
                         raise
-                    except BaseException:  # noqa: BLE001
+                    except BaseException:
                         # Backend flapped — swallow and restart.
                         await asyncio.sleep(0.3)
 
@@ -524,7 +524,7 @@ class TestNetworkChaos:
                 )
                 try:
                     await asyncio.wait_for(watch_ready.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pytest.fail(
                         "subscriber never received pre-outage payload — "
                         "watch_progress never bound to the channel"
@@ -549,7 +549,7 @@ class TestNetworkChaos:
                     try:
                         await pub_backend._client.ping()
                         break
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         await asyncio.sleep(0.2)
                 # Wait longer — the resubscribe loop in watch_progress
                 # is paced at 0.5s per cycle with timeout=0.1.
@@ -595,5 +595,5 @@ class TestNetworkChaos:
             for c in (client_backend, pub_backend):
                 try:
                     await c.close()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass

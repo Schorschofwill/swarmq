@@ -30,7 +30,6 @@ from typing import Any
 
 from swarmq.signals import Signal, SignalDispatcher
 
-
 # ---------------------------------------------------------------------------
 # SignalRecorder — connects to a dispatcher, captures emit order + payloads
 # ---------------------------------------------------------------------------
@@ -70,7 +69,7 @@ class SignalRecorder:
         dispatcher: SignalDispatcher,
         *,
         signals: list[Signal] | None = None,
-    ) -> "SignalRecorder":
+    ) -> SignalRecorder:
         """Connect a recorder to ``dispatcher``. If ``signals`` is None,
         attach to every Signal — convenient for combo tests that don't
         know up-front which signals matter."""

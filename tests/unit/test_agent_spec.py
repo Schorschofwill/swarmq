@@ -168,7 +168,7 @@ def test_config_spec_enum_choices_match_validation() -> None:
 
 # === U3: CLI spec ===
 
-import argparse  # noqa: E402 — grouped with the U3 helpers it supports
+import argparse  # noqa: E402
 
 
 def _leaf_commands() -> dict[str, argparse.ArgumentParser]:

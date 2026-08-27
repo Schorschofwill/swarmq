@@ -298,9 +298,8 @@ class Client:
         stays ``schedule() -> str``.
         """
         # --- validation (registry mode only) ---
-        if self._registry is not None:
-            if not self._registry.has(task_name):
-                raise TaskNotFoundError(task_name)
+        if self._registry is not None and not self._registry.has(task_name):
+            raise TaskNotFoundError(task_name)
 
         # --- queue resolution chain + delivery_mode resolution ---
         resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
@@ -457,7 +456,7 @@ class Client:
 
         return final_for, final_until
 
-    async def get_result(
+    async def get_result(  # noqa: C901  # U10 (client/results.py)
         self,
         task_id: str,
         timeout: float = 10,
@@ -470,7 +469,7 @@ class Client:
           2. Pub/Sub wait via backend.subscribe_and_wait
           3. Polling fallback (5ms interval) if Pub/Sub misses
         """
-        _FALLBACK_POLL = 0.005  # 5ms polling for fallback
+        _FALLBACK_POLL = 0.005  # 5ms polling for fallback  # noqa: N806
 
         # --- timeout=0: single GET, no Pub/Sub ---
         if timeout == 0:
@@ -578,7 +577,7 @@ class Client:
         except ValueError:
             return None
 
-    async def watch_progress(
+    async def watch_progress(  # noqa: C901  # U10 (client/results.py)
         self, task_id: str,
     ) -> AsyncIterator[ProgressInfo]:
         """Stream progress updates for *task_id*.
@@ -685,7 +684,7 @@ class Client:
             except Exception:
                 pass
 
-    async def schedule_many(
+    async def schedule_many(  # noqa: C901, PLR0915  # U10 (client/schedule.py)
         self,
         tasks: list[tuple[str, tuple, dict]],
         queue: str | None = None,
@@ -747,7 +746,7 @@ class Client:
         #       "dedup_ttl_ms": int | None,     # SETNX TTL
         #   }
         prepped: list[dict[str, Any]] = []
-        for i, (task_name, args, kwargs) in enumerate(tasks):
+        for i, (task_name, args, kwargs) in enumerate(tasks):  # noqa: B007
             if self._registry is not None and not self._registry.has(task_name):
                 raise TaskNotFoundError(task_name)
             resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
@@ -977,7 +976,7 @@ class Client:
             await asyncio.sleep(poll_interval)
 
         missing = [
-            tid for tid, raw in zip(task_ids, raw_list)
+            tid for tid, raw in zip(task_ids, raw_list)  # noqa: B905  # gleich lang per Konstruktion
             if raw is None
         ]
         raise ResultNotReadyError(

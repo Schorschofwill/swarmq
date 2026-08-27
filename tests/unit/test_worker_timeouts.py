@@ -16,7 +16,6 @@ from swarmq.serialization import decode_result, encode_json
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

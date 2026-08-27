@@ -96,7 +96,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
         payload["error_type"] = "ConfigurationError"
         sys.stdout.write(json.dumps(payload) + "\n")
         return 1
-    except Exception as exc:  # noqa: BLE001 — protect stdout JSON contract
+    except Exception as exc:
         payload["error"] = f"{type(exc).__name__}: {exc}"
         payload["error_type"] = type(exc).__name__
         sys.stdout.write(json.dumps(payload) + "\n")

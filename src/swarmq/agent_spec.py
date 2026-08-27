@@ -238,10 +238,7 @@ def build_config_spec() -> dict[str, Any]:
     dataclass (factories are evaluated)."""
     options: list[dict[str, Any]] = []
     for f in dataclasses.fields(SwarmQConfig):
-        if f.default_factory is not dataclasses.MISSING:
-            default = f.default_factory()
-        else:
-            default = f.default
+        default = f.default_factory() if f.default_factory is not dataclasses.MISSING else f.default
         entry: dict[str, Any] = {
             "name": f.name,
             "type": str(f.type),

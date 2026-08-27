@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import signal as _signal
 import time
 import uuid
@@ -37,7 +36,6 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
-from swarmq.locking import lock_key
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -46,8 +44,6 @@ from ._invariants import (
     SignalRecorder,
     assert_at_least_once_held,
     assert_faf_stage_invariants,
-    assert_no_data_loss,
-    assert_no_deadlock,
     assert_no_reader_leak,
     assert_signal_sequence,
 )
@@ -449,8 +445,8 @@ class TestLockCancelCombo:
                 rabbitmq_url, valkey_url, queue,
                 mirror_to=app._signal_dispatcher,
             ):
-                tid1 = await app.schedule(task_name, "first")
-                tid2 = await app.schedule(task_name, "second")
+                await app.schedule(task_name, "first")
+                await app.schedule(task_name, "second")
                 await asyncio.wait_for(all_done.wait(), timeout=12.0)
 
         assert results == ["first", "second"], (
@@ -600,8 +596,7 @@ class TestLockCancelCombo:
         """
         queue = unique_queue
         fixture_module = "tests.e2e._shutdown_fixture_tasks"
-        task_call_count: list[str] = []
-        completed = asyncio.Event()
+        asyncio.Event()
 
         # Spawn worker A as subprocess so we can SIGKILL it.
         proc_a = spawn_worker(
@@ -1064,7 +1059,6 @@ class TestProgressCancelCombo:
         queue = _uq("pc-stop")
         task_name = _task_name("pc_stop")
         started = asyncio.Event()
-        progress_snapshots: list[int] = []
 
         class LongProgressTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
@@ -1104,7 +1098,7 @@ class TestProgressCancelCombo:
                     await app.get_result(tid, timeout=5)
 
                 # Take a snapshot of progress just after cancel.
-                raw = await backend.get_result(tid)
+                await backend.get_result(tid)
                 # Progress is stored in its own key; result may be None for cancelled.
                 # The main assertion: task did not complete all 20 steps.
 

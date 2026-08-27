@@ -766,7 +766,7 @@ class Worker:
         # don't want shutdown-cleanup to double-release.
         self._active_handler_locks.pop(handler_id, None)
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # noqa: C901, PLR0915  # U9 (worker/lifecycle.py)
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
         await self._backend.connect()
@@ -1029,7 +1029,7 @@ class Worker:
                 # "looks instrumented but isn't" trap P1-3 closed).
                 try:
                     await self._sample_metrics_once()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning(
                         "metrics_sampler_iteration_failed",
                         error=repr(exc),
@@ -1057,7 +1057,7 @@ class Worker:
                 ).set(depth)
                 dlq = await self._broker.get_dlq_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 # Härtung R2 P2: broad on purpose. Catching only
                 # BrokerConnectionError let any other error (Timeout,
                 # ChannelInvalidStateError, decode glitch) propagate and
@@ -1081,7 +1081,7 @@ class Worker:
         await self._broker.close()
         await self._backend.close()
 
-    async def _execute_shutdown(self) -> None:
+    async def _execute_shutdown(self) -> None:  # noqa: C901  # U9 (worker/lifecycle.py)
         """Execute the graceful shutdown sequence."""
         # Härtung R2 P1-9: bounded — a hanging handler must not stall
         # the drain/lock-release/close sequence below.
@@ -1150,7 +1150,7 @@ class Worker:
         # corresponds to a handler whose finally never ran (typically
         # because the task was cancel()ed before reaching it).
         if self._lock_manager is not None and self._active_handler_locks:
-            for handler_id, locks in list(self._active_handler_locks.items()):
+            for handler_id, locks in list(self._active_handler_locks.items()):  # noqa: B007
                 for lock_name, owner_token, max_concurrency in locks:
                     try:
                         await self._lock_manager.release(
@@ -1189,7 +1189,7 @@ class Worker:
         if _di_container is not _MISSING:
             try:
                 await _di_container.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("dishka_container_close_failed")
 
         # 4. Close connections
@@ -1430,7 +1430,7 @@ class Worker:
                 error=str(exc),
             )
 
-    async def _pre_start_cancel_check(
+    async def _pre_start_cancel_check(  # U7 (worker/gates/cancel.py)
         self,
         message,
         task_id: str,
@@ -1523,10 +1523,7 @@ class Worker:
             # result_ttl falls through: task → global → 86400.
             result_ttl = task_info.result_ttl
             if result_ttl is None:
-                if delivery is DeliveryMode.FIRE_AND_FORGET:
-                    result_ttl = 0
-                else:
-                    result_ttl = self._config.result_ttl
+                result_ttl = 0 if delivery is DeliveryMode.FIRE_AND_FORGET else self._config.result_ttl
         except TaskNotFoundError:
             delivery = DeliveryMode.AT_LEAST_ONCE
             result_ttl = self._config.result_ttl
@@ -1711,7 +1708,7 @@ class Worker:
             queue = f"{queue}.{entry.task_info.priority}"
         return queue
 
-    async def _handle_message(self, message) -> None:
+    async def _handle_message(self, message) -> None:  # noqa: C901, PLR0915  # U19 (Runner)
         """Core message handler logic."""
         # Härtung R2 P2: size cap BEFORE the decode. msgspec has a
         # built-in recursion-depth guard but no size guard — a
@@ -2278,10 +2275,7 @@ class Worker:
             # 8. Resolve result_ttl
             result_ttl = task_info.result_ttl
             if result_ttl is None:
-                if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                    result_ttl = 0
-                else:
-                    result_ttl = self._config.result_ttl
+                result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else self._config.result_ttl
             if result_ttl is None:
                 result_ttl = 86400
 
@@ -2629,10 +2623,9 @@ class Worker:
             return True
 
         # 2. Check retry_exceptions filter
-        if task_info.retry_exceptions is not None:
-            if not isinstance(exc, task_info.retry_exceptions):
-                await self._send_to_dlq(message, queue, task_id, task_name, error_message)
-                return True
+        if task_info.retry_exceptions is not None and not isinstance(exc, task_info.retry_exceptions):
+            await self._send_to_dlq(message, queue, task_id, task_name, error_message)
+            return True
 
         # 3. Read retry count from message headers
         retry_count = message.headers.get("x-swarmq-retry-count", 0)

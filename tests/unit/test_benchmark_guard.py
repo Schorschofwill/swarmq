@@ -71,7 +71,7 @@ def test_no_bare_async_for_on_queue_variable() -> None:
             # Valkey's `pubsub.listen()` is a legitimate async-for.
             iter_target = node.iter
             flag = False
-            if isinstance(iter_target, ast.Name):
+            if isinstance(iter_target, ast.Name):  # noqa: SIM102
                 if iter_target.id == "queue" or iter_target.id.endswith("_queue"):
                     flag = True
             if flag and self._iterator_context_depth == 0:
@@ -120,7 +120,7 @@ def test_all_channel_opens_use_bench_channel() -> None:
 
         def visit_Await(self, node: ast.Await) -> None:
             call = node.value
-            if (
+            if (  # noqa: SIM102
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Attribute)
                 and call.func.attr == "channel"

@@ -58,7 +58,6 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.locking import lock_key
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -67,7 +66,6 @@ from ._invariants import (
     assert_at_least_once_held,
     assert_no_deadlock,
     assert_no_reader_leak,
-    assert_signal_sequence,
 )
 from ._subprocess import (
     kill_subprocess,
@@ -709,7 +707,7 @@ class TestGracefulShutdownInflightRetryCombo:
             app = SwarmQ(broker, backend, queues=[queue])
 
             async with app:
-                task_id = await app.schedule("shutdown_always_fail", queue=queue)
+                await app.schedule("shutdown_always_fail", queue=queue)
 
                 # Wait for first failure → retry enters delay queue.
                 await asyncio.sleep(1.2)
@@ -1011,7 +1009,7 @@ class TestBurstModeRetryPendingCombo:
                 # Worker should exit on its own after idle timeout.
                 try:
                     await asyncio.wait_for(worker_task, timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # Still running is fine for happy path
                 result = await app.get_result(tid, timeout=5)
             finally:
@@ -1068,7 +1066,7 @@ class TestBurstModeRetryPendingCombo:
                 # Wait for burst idle exit (1.5s idle timeout + headroom).
                 try:
                     await asyncio.wait_for(worker_task, timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # worker may not exit in all environments
             finally:
                 worker_task.cancel()
@@ -1399,7 +1397,7 @@ class TestSchedulerLeaderFailoverCombo:
         backend = ValkeyBackend(valkey_url)
         app = SwarmQ(broker, backend, queues=[queue])
 
-        recorder = SignalRecorder.attach(
+        SignalRecorder.attach(
             app._signal_dispatcher,
             signals=[Signal.SCHEDULER_LEADER, Signal.TASK_COMPLETED],
         )
@@ -1734,7 +1732,7 @@ class TestProcessManagerWorkerCrashLockCombo:
             app = SwarmQ(broker, backend, queues=[queue])
 
             async with app:
-                tid = await app.schedule("shutdown_sleep", 0.5, queue=queue)
+                await app.schedule("shutdown_sleep", 0.5, queue=queue)
                 await asyncio.sleep(0.2)
 
                 os.kill(proc_a.pid, _signal.SIGKILL)
@@ -2056,7 +2054,7 @@ class TestHotReloadSchedulerLeaderCombo:
             # We accept either — the test verifies no deadlock.
             try:
                 await asyncio.wait_for(new_leader_emitted.wait(), timeout=8.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # If B didn't become leader via SCHEDULER_LEADER, check FAILOVER.
                 pass  # Acceptable if architecture doesn't guarantee this path
 

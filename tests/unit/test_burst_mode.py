@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from swarmq.config import SwarmQConfig
-from swarmq.signals import SignalDispatcher
 from swarmq.worker import Worker, WorkerState
 
 

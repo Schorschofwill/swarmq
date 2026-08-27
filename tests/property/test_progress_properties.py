@@ -18,7 +18,6 @@ from hypothesis import strategies as st
 
 from swarmq.progress import ProgressInfo
 
-
 # ---------------------------------------------------------------------------
 # Strategies
 # ---------------------------------------------------------------------------

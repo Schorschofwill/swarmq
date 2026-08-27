@@ -14,7 +14,7 @@ import pytest
 
 from swarmq.config import SwarmQConfig
 from swarmq.headers import HEADER_ENQUEUED_AT
-from swarmq.signals import Signal, SignalDispatcher
+from swarmq.signals import Signal
 from swarmq.task import TaskInfo
 from swarmq.worker import Worker, WorkerState
 
@@ -123,10 +123,7 @@ class TestCheckMaxAgeExpired:
         call = w._backend.store_result.await_args
         # store_result is called as store_result(task_id, result_dict, ...)
         # via kwargs or positional — support both shapes.
-        if call.args and len(call.args) >= 2:
-            result = call.args[1]
-        else:
-            result = call.kwargs.get("result_dict") or call.args[0]
+        result = call.args[1] if call.args and len(call.args) >= 2 else call.kwargs.get("result_dict") or call.args[0]
         assert result["is_error"] is True
         assert "expired" in result["error_message"].lower()
 

@@ -18,8 +18,7 @@ from swarmq.exceptions import (
 )
 from swarmq.serialization import decode_json, encode_result
 from swarmq.signals import Signal
-from swarmq.task import DeliveryMode, Task, TaskInfo
-
+from swarmq.task import DeliveryMode, TaskInfo
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,7 +97,7 @@ async def test_schedule_explicit_queue_generates_uuid7_publishes_returns_id(
 
 @pytest.mark.asyncio
 async def test_schedule_resolves_queue_from_registry(client, broker, registry):
-    task_id = await client.schedule("add", 1, 2)
+    await client.schedule("add", 1, 2)
 
     call_args = broker.publish.await_args
     assert call_args[0][0] == "math"  # resolved from TaskInfo.queues[0]
@@ -1189,7 +1188,7 @@ class TestClientUniqueSchedule:
     ):
         """No unique_for kwarg + TaskInfo default is None → no SETNX call,
         only R4.4 enqueued-at header (no dedup headers)."""
-        task_id = await client_setnx.schedule("add", 1, 2, queue="math")
+        await client_setnx.schedule("add", 1, 2, queue="math")
         broker.publish.assert_awaited_once()
         backend_setnx.setnx_unique.assert_not_awaited()
         call_kwargs = broker.publish.await_args.kwargs

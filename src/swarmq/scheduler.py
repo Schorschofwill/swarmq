@@ -264,7 +264,7 @@ class ScheduleStore:
                     self._backend._sched_defs_key(), schedule_name
                 )
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise BackendConnectionError(
                 f"hexists failed for {schedule_name!r}: {exc}"
             ) from exc
@@ -316,7 +316,7 @@ class ScheduleStore:
             )
         except BackendConnectionError:
             raise
-        except Exception as exc:  # noqa: BLE001 — wrap at boundary
+        except Exception as exc:
             raise BackendConnectionError(
                 f"sched_disable failed for {schedule_name!r}: {exc}"
             ) from exc
@@ -368,7 +368,7 @@ class ScheduleStore:
             )
         except BackendConnectionError:
             raise
-        except Exception as exc:  # noqa: BLE001 — wrap at boundary
+        except Exception as exc:
             raise BackendConnectionError(
                 f"sched_poll failed: {exc}"
             ) from exc
@@ -414,7 +414,7 @@ class ScheduleStore:
             )
         except BackendConnectionError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise BackendConnectionError(
                 f"sched_commit failed for {schedule_name!r}: {exc}"
             ) from exc
@@ -636,7 +636,7 @@ class SchedulerLoop:
                     await self._election_tick()
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning(
                         "scheduler_election_tick_error", error=str(exc)
                     )
@@ -727,7 +727,7 @@ class SchedulerLoop:
         # Sync static TaskInfo(cron=...) declarations (Fork 1).
         try:
             await self.sync_taskinfo_crons()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "scheduler_sync_taskinfo_crons_failed", error=str(exc)
             )
@@ -743,7 +743,7 @@ class SchedulerLoop:
                         await self._poll_tick()
                     except asyncio.CancelledError:
                         raise
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.warning(
                             "scheduler_poll_tick_error", error=str(exc)
                         )
@@ -878,7 +878,7 @@ class SchedulerLoop:
                 await self._broker.publish(
                     definition.queue, body, headers=headers,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "scheduler_publish_failed",
                     schedule_name=schedule_name,
@@ -955,7 +955,7 @@ class SchedulerLoop:
             )
             self._state = "standby"
 
-    def _resolve_task_info(self, task_name: str) -> "TaskInfo | None":
+    def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).
 
         Scheduler has no direct registry reference — it reuses the same
@@ -991,7 +991,7 @@ class SchedulerLoop:
                 dedup_hash=dedup_hash,
                 source="scheduler.fire",
             )
-        except Exception as exc:  # noqa: BLE001 — never abort on handler
+        except Exception as exc:
             logger.warning(
                 "scheduler_duplicate_signal_dispatch_error",
                 task_name=task_name,
@@ -1145,7 +1145,7 @@ class SchedulerLoop:
             await self._signals.dispatch(
                 signal, worker_id=self._worker_id, **extra
             )
-        except Exception as exc:  # noqa: BLE001 — never abort on handler
+        except Exception as exc:
             logger.warning(
                 "scheduler_signal_dispatch_error",
                 signal=signal.value,

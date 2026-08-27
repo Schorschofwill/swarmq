@@ -50,7 +50,6 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
 from swarmq.serialization import compute_dedup_hash
 from swarmq.task import Task, TaskInfo
-
 from tests.chaos.conftest import ChaosStack
 
 pytestmark = [pytest.mark.timeout(120)]

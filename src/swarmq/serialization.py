@@ -14,7 +14,6 @@ import msgspec.json
 
 from swarmq.exceptions import ResultSerializationError
 
-
 _json_encoder = msgspec.json.Encoder()
 _json_decoder = msgspec.json.Decoder()
 
@@ -47,7 +46,7 @@ def decode_json(data: bytes, type_hint: type | None = None) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _canonicalize(obj: Any) -> Any:
+def _canonicalize(obj: Any) -> Any:  # noqa: C901  # Follow-Up 0.2.x
     """Pre-normalize a value into a form that JSON-encodes deterministically.
 
     Contract: identical semantic inputs produce identical bytes under

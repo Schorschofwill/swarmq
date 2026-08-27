@@ -32,13 +32,13 @@ class MessageContext(TypedDict):
 
 async def _swallow(
     hook_name: str,
-    middleware: "Middleware",
+    middleware: Middleware,
     coro_factory: Callable[[], Awaitable[None]],
 ) -> None:
     """Run a middleware hook coroutine, logging any exception instead of raising."""
     try:
         await coro_factory()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error(
             "middleware_hook_failed",
             hook=hook_name,
@@ -142,8 +142,8 @@ class MiddlewareChain:
 
 
 def coerce_middleware_chain_factory(
-    middleware_chain: "MiddlewareChain | Callable[[], MiddlewareChain] | None",
-) -> Callable[[], "MiddlewareChain"]:
+    middleware_chain: MiddlewareChain | Callable[[], MiddlewareChain] | None,
+) -> Callable[[], MiddlewareChain]:
     """Normalize a Client/Worker ``middleware_chain`` argument to a zero-arg factory.
 
     Accepts three shapes:

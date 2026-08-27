@@ -37,7 +37,7 @@ import contextlib
 import json
 import random
 import uuid
-from typing import Any  # noqa: F401 — used by _make_random_headers return annotation
+from typing import Any
 
 import aio_pika
 import pytest
@@ -49,7 +49,6 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task, TaskInfo
-
 from tests.chaos.conftest import ChaosStack
 
 pytestmark = [pytest.mark.timeout(300)]
@@ -268,7 +267,7 @@ class TestPubsubPayloadFuzz:
 
                 try:
                     info = await asyncio.wait_for(probe_task, timeout=4.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     probe_task.cancel()
                     with contextlib.suppress(Exception):
                         await probe_task

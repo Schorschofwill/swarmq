@@ -682,7 +682,6 @@ class TestQueueDepthSampler:
     """ce-review T-05 + REL-05: sampler success path + timeout bound."""
 
     def test_sums_multi_queue_depth(self, monkeypatch):
-        from unittest.mock import AsyncMock
 
         class FakeBroker:
             def __init__(self, url):
@@ -775,6 +774,7 @@ class TestWorkerConfig:
 
     def test_frozen_prevents_reassignment(self):
         import dataclasses
+
         import pytest
         cfg = _make_test_cfg()
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -1041,7 +1041,8 @@ class TestReloadReentrancy:
         pm._setup_signals()  # installs the real handler
 
         # Mirror the closure that ProcessManager.run() builds.
-        is_busy = lambda: pm._reload_requested
+        def is_busy():
+            return pm._reload_requested
 
         assert is_busy() is False
         _os.kill(_os.getpid(), signal.SIGHUP)
@@ -1187,9 +1188,8 @@ class TestFileWatcherIntegration:
              patch(
                  "swarmq.hot_reload.FileWatcher",
                  return_value=fake_watcher,
-             ):
-            with pytest.raises(RuntimeError, match="monitor bug"):
-                pm.run()
+             ), pytest.raises(RuntimeError, match="monitor bug"):
+            pm.run()
         fake_watcher.stop.assert_called_once()
 
 
@@ -1284,14 +1284,16 @@ class TestReloadRoutingThroughCLI:
         from swarmq.process_manager import run_multi_process_worker
 
         json_spec = importlib.util.find_spec("json")
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager._validate_module_importable",
-                 return_value=json_spec,
-             ), \
-             patch.dict("sys.modules", {"watchfiles": None}):
-            with pytest.raises(ConfigurationError, match=r"swarmq\[reload\]"):
-                run_multi_process_worker(self._args(reload=True))
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager._validate_module_importable",
+                return_value=json_spec,
+            ),
+            patch.dict("sys.modules", {"watchfiles": None}),
+            pytest.raises(ConfigurationError, match=r"swarmq\[reload\]"),
+        ):
+            run_multi_process_worker(self._args(reload=True))
 
     def test_watch_dir_without_reload_logs_warning(self):
         """--watch-dir without --reload must warn (not error)."""

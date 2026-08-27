@@ -46,16 +46,13 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import SoftTimeoutError, TaskCancelledError, TaskError
+from swarmq.exceptions import TaskCancelledError, TaskError
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
 from ._invariants import (
-    FAFStageObservation,
     SignalRecorder,
     assert_at_least_once_held,
-    assert_faf_stage_invariants,
-    assert_no_data_loss,
     assert_signal_sequence,
 )
 
@@ -264,7 +261,7 @@ class TestCronCatchupUniqueCombo:
                 await _inject_cron_fires(valkey_url, task_name, count=1)
 
                 await asyncio.wait_for(done.wait(), timeout=20.0)
-                result = await app.get_result(
+                await app.get_result(
                     await app.schedule(task_name),
                     timeout=5,
                 )
@@ -1777,7 +1774,6 @@ class TestPriorityLockCombo:
         lock_name = f"plk-starve-{uuid.uuid4().hex[:6]}"
         task_name_high = _task_name("plk_starve_high")
         task_name_low = _task_name("plk_starve_low")
-        completed_ids: set[str] = set()
         all_done = asyncio.Event()
 
         class HighStarveTask(Task):
@@ -1969,7 +1965,7 @@ class TestUniqueUntilStartRetryCombo:
         queue = _uq("uus-retry")
         task_name = _task_name("uus_retry")
         first_started = asyncio.Event()
-        retry_released = asyncio.Event()
+        asyncio.Event()
         call_count = 0
         all_done = asyncio.Event()
 

@@ -127,7 +127,7 @@ class HealthChecker:
             logger.info("check_broker_failed", exc_info=exc)
             return False, self._sanitise_error(exc)
 
-    async def check_all(self) -> "ReadinessSnapshot":
+    async def check_all(self) -> ReadinessSnapshot:
         """Return a structured snapshot suitable for JSON serialisation."""
         broker_ok, broker_err = await self.check_broker()
         backend_ok, backend_err = await self.check_backend()

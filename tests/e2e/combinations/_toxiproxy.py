@@ -63,7 +63,7 @@ class ToxiproxyClient:
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "ToxiproxyClient":
+    async def __aenter__(self) -> ToxiproxyClient:
         self._client = httpx.AsyncClient(
             base_url=self._base_url, timeout=self._timeout,
         )

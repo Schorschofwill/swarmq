@@ -52,7 +52,6 @@ from swarmq.client import Client
 from swarmq.exceptions import ResultSerializationError, TaskCancelledError, TaskError
 from swarmq.serialization import decode_json, decode_result
 
-
 # Typed-exception allow-list for the _unpack / decode_result paths.
 # Any exception NOT in this tuple is an unhandled-crash regression.
 _UNPACK_ALLOWED = (
@@ -95,7 +94,7 @@ def test_unpack_byte_fuzz_never_unhandled(raw: bytes) -> None:
         Client._unpack(raw)
     except _UNPACK_ALLOWED:
         return
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         pytest.fail(
             f"Client._unpack raised non-typed {type(exc).__name__}: {exc!r} "
             f"on input {raw!r}"
@@ -121,7 +120,7 @@ def test_decode_result_byte_fuzz_never_unhandled(raw: bytes) -> None:
         decode_result(raw)
     except ResultSerializationError:
         return
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         pytest.fail(
             f"decode_result raised non-typed {type(exc).__name__}: {exc!r} "
             f"on input {raw!r}"
@@ -147,7 +146,7 @@ def test_decode_json_random_bytes_typed_only(raw: bytes) -> None:
         decode_json(raw)
     except _DECODE_JSON_ALLOWED:
         return
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         pytest.fail(
             f"decode_json raised non-typed {type(exc).__name__}: {exc!r} "
             f"on input {raw!r}"
@@ -180,7 +179,7 @@ def test_decode_json_junk_ascii_typed_only(raw: bytes) -> None:
         decode_json(raw)
     except _DECODE_JSON_ALLOWED:
         return
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         pytest.fail(
             f"decode_json raised non-typed {type(exc).__name__}: {exc!r} "
             f"on input {raw!r}"

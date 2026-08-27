@@ -7,9 +7,7 @@ import json
 import socket
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from swarmq.health import HealthChecker, HealthServer, serve_health
+from swarmq.health import HealthChecker, serve_health
 
 
 class TestSanitiseError:
@@ -193,7 +191,7 @@ class TestHealthServer:
         port = _free_port()
         async with serve_health(checker, host="127.0.0.1", port=port):
             await asyncio.sleep(0.05)
-            status, headers, body = await _http_get("127.0.0.1", port, "/health")
+            status, _headers, body = await _http_get("127.0.0.1", port, "/health")
             assert status == 200
             payload = json.loads(body)
             assert payload["status"] == "ok"
@@ -204,7 +202,7 @@ class TestHealthServer:
         port = _free_port()
         async with serve_health(checker, host="127.0.0.1", port=port):
             await asyncio.sleep(0.05)
-            status, headers, body = await _http_get("127.0.0.1", port, "/ready")
+            status, _headers, body = await _http_get("127.0.0.1", port, "/ready")
             assert status == 200
             payload = json.loads(body)
             assert payload["ready"] is True
@@ -214,7 +212,7 @@ class TestHealthServer:
         port = _free_port()
         async with serve_health(checker, host="127.0.0.1", port=port):
             await asyncio.sleep(0.05)
-            status, headers, body = await _http_get("127.0.0.1", port, "/ready")
+            status, _headers, body = await _http_get("127.0.0.1", port, "/ready")
             assert status == 503
             payload = json.loads(body)
             assert payload["ready"] is False

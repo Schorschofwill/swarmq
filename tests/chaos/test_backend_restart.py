@@ -30,7 +30,6 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.client import Client
 from swarmq.progress import ProgressInfo
-
 from tests.chaos.conftest import ChaosStack
 
 pytestmark = [pytest.mark.timeout(120)]
@@ -56,7 +55,7 @@ async def _wait_valkey_reachable(url: str, timeout: float = 30.0) -> None:
                 return
             finally:
                 await client.aclose()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_exc = exc
             await asyncio.sleep(0.3)
     raise RuntimeError(f"valkey not reachable within {timeout}s: {last_exc!r}")
@@ -200,7 +199,7 @@ class TestBackendRestart:
                                 return
                     except asyncio.CancelledError:
                         raise
-                    except BaseException:  # noqa: BLE001
+                    except BaseException:
                         await asyncio.sleep(0.3)
 
             collect_task = asyncio.create_task(collect())

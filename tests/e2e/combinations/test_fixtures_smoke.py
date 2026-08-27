@@ -9,15 +9,11 @@ live in ``test_state_sharing.py`` etc.
 from __future__ import annotations
 
 import inspect
-import subprocess
 
 import pytest
 
-from swarmq.task import Task
-
-from . import _subprocess, _toxiproxy
+from . import _subprocess
 from ._toxiproxy import ProxyConfig, ToxiproxyClient
-
 
 # ---------------------------------------------------------------------------
 # Import / structure
@@ -82,7 +78,7 @@ def test_toxiproxy_client_requires_async_context() -> None:
     return ``None`` from ``_http``."""
     tp = ToxiproxyClient()
     with pytest.raises(RuntimeError, match="async context manager"):
-        _ = tp._http  # noqa: SLF001
+        _ = tp._http
 
 
 # ---------------------------------------------------------------------------

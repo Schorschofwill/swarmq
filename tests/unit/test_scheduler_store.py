@@ -43,7 +43,7 @@ class TestSchedulerLockKey:
         """SCHEDULER_LOCK_KEY must equal lock_key(SCHEDULER_LOCK_NAME).
         This is by construction today — if it ever fails, someone
         hand-typed the constant and bypassed the derivation."""
-        assert SCHEDULER_LOCK_KEY == lock_key(SCHEDULER_LOCK_NAME)
+        assert lock_key(SCHEDULER_LOCK_NAME) == SCHEDULER_LOCK_KEY
 
     def test_expected_format(self):
         """Snapshot of today's key format. Failure here means the
@@ -253,26 +253,26 @@ class TestScheduleStoreRemoveAndDisable:
 
     async def test_remove_schedule_returns_false_when_missing(self):
         """Unit 4 / M-2: missing entry → False so CLI can report no-op."""
-        store, backend = _make_store(hexists_return=0)
+        store, _backend = _make_store(hexists_return=0)
         result = await store.remove_schedule("ghost")
         assert result is False
 
     async def test_disable_schedule_returns_true_when_existed(self):
         import msgspec
         existing = msgspec.json.encode(_def(schedule_name="p", disabled=False))
-        store, backend = _make_store(hget_return=existing)
+        store, _backend = _make_store(hget_return=existing)
         result = await store.disable_schedule("p")
         assert result is True
 
     async def test_disable_schedule_returns_false_when_missing(self):
-        store, backend = _make_store(hget_return=None)
+        store, _backend = _make_store(hget_return=None)
         result = await store.disable_schedule("ghost")
         assert result is False
 
     async def test_disable_schedule_returns_false_on_malformed(self):
         """Malformed-entry branch also returns False — parked for
         operator inspection, no mutation."""
-        store, backend = _make_store(hget_return=b"{not valid json")
+        store, _backend = _make_store(hget_return=b"{not valid json")
         result = await store.disable_schedule("corrupt")
         assert result is False
 

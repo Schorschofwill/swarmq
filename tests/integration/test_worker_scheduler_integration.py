@@ -81,7 +81,7 @@ class TestWorkerSchedulerIntegration:
         leader_evt = asyncio.Event()
 
         @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
-        async def _leader_barrier(**kw) -> None:  # noqa: ARG001
+        async def _leader_barrier(**kw) -> None:
             leader_evt.set()
 
         worker_task = asyncio.create_task(worker.start())

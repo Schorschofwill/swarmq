@@ -18,9 +18,8 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.locking import LockManager
 from swarmq.scheduler import (
-    SCHEDULER_LOCK_NAME,
-    ScheduleStore,
     SchedulerLoop,
+    ScheduleStore,
 )
 from swarmq.signals import Signal, SignalDispatcher
 
@@ -82,11 +81,11 @@ class TestLeaderElectionIntegration:
         b_leader_evt = asyncio.Event()
 
         @d_a.on_signal(Signal.SCHEDULER_LEADER)
-        async def _ae(**kw) -> None:  # noqa: ARG001
+        async def _ae(**kw) -> None:
             a_leader_evt.set()
 
         @d_b.on_signal(Signal.SCHEDULER_LEADER)
-        async def _be(**kw) -> None:  # noqa: ARG001
+        async def _be(**kw) -> None:
             b_leader_evt.set()
 
         try:
@@ -153,13 +152,13 @@ class TestLeaderElectionIntegration:
         a_leader_evt = asyncio.Event()
 
         @d_a.on_signal(Signal.SCHEDULER_LEADER)
-        async def _ae(**kw) -> None:  # noqa: ARG001
+        async def _ae(**kw) -> None:
             a_leader_evt.set()
 
         failover_evt = asyncio.Event()
 
         @d_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
-        async def _fe(**kw) -> None:  # noqa: ARG001
+        async def _fe(**kw) -> None:
             failover_evt.set()
 
         try:
@@ -230,13 +229,13 @@ class TestLeaderElectionIntegration:
         a_leader_evt = asyncio.Event()
 
         @d_a.on_signal(Signal.SCHEDULER_LEADER)
-        async def _ae(**kw) -> None:  # noqa: ARG001
+        async def _ae(**kw) -> None:
             a_leader_evt.set()
 
         b_leader_evt = asyncio.Event()
 
         @d_b.on_signal(Signal.SCHEDULER_LEADER)
-        async def _be(**kw) -> None:  # noqa: ARG001
+        async def _be(**kw) -> None:
             b_leader_evt.set()
 
         try:

@@ -106,57 +106,57 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    # Heavy lazy surface (resolved via __getattr__)
-    "RabbitMQBroker",
-    "ValkeyBackend",
-    # Core API
-    "SwarmQ",
     # Exceptions
     "BackendConnectionError",
     "BrokerConnectionError",
     "ConfigurationError",
+    # Task
+    "DeliveryMode",
+    # Health
+    "HealthChecker",
+    "HealthServer",
+    # Middleware
+    "MessageContext",
+    # Metrics
+    "Metrics",
+    "MetricsServer",
+    "Middleware",
     "NoRetry",
+    # Progress
+    "ProgressInfo",
+    # Heavy lazy surface (resolved via __getattr__)
+    "RabbitMQBroker",
     "ResultExpiredError",
     "ResultNotReadyError",
     "ResultSerializationError",
     "Retry",
-    "SwarmQError",
-    "TaskCancelledError",
-    "TaskError",
-    "TaskNotFoundError",
-    "WorkflowNotFound",
-    "WorkflowResultExpired",
-    "WorkflowValidationError",
-    # Workflow primitives
-    "Signature",
-    "chain",
-    "chord",
-    "group",
-    "sig",
-    "WorkflowHandle",
-    # Health
-    "HealthChecker",
-    "HealthServer",
-    "serve_health",
-    # Metrics
-    "Metrics",
-    "MetricsServer",
-    "install_signal_collectors",
-    "serve_metrics",
-    # Middleware
-    "MessageContext",
-    "Middleware",
-    # Progress
-    "ProgressInfo",
     # Signals
     "Signal",
     "SignalDispatcher",
-    # Task
-    "DeliveryMode",
+    # Workflow primitives
+    "Signature",
+    # Core API
+    "SwarmQ",
+    "SwarmQError",
+    "SwarmQProvider",
     "Task",
+    "TaskCancelledError",
+    "TaskContext",
+    "TaskError",
     "TaskInfo",
+    "TaskNotFoundError",
+    "ValkeyBackend",
+    "WorkflowHandle",
+    "WorkflowNotFound",
+    "WorkflowResultExpired",
+    "WorkflowValidationError",
+    "chain",
+    "chord",
+    "group",
+    "install_signal_collectors",
+    "serve_health",
+    "serve_metrics",
     # Optional Dishka DI
     "setup_dishka",
-    "TaskContext",
-    "SwarmQProvider",
+    "sig",
 ]

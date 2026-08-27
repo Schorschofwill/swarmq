@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from tests.chaos.conftest import (  # noqa: F401 — re-exported fixtures
-    ChaosStack,
-    ToxiproxyClient,
-    chaos_stack,
-    toxiproxy,
+from tests.chaos.conftest import (
+    ChaosStack,  # noqa: F401
+    ToxiproxyClient,  # noqa: F401
+    chaos_stack,  # noqa: F401
+    toxiproxy,  # noqa: F401
 )
 
 

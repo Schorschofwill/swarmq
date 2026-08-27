@@ -152,6 +152,11 @@ module = [
     "swarmq.logging",
     "swarmq.backend.valkey",
     "swarmq.broker.rabbitmq",
+    # Plan U2: bisher in keinem Override und nur auf Default-Niveau geprüft
+    # (16 Fehler). Aufgenommen, damit ``lint-and-types`` blockierend laufen
+    # kann; U21 erbt als ``swarmq.process_manager.*``, U12 räumt beide auf.
+    "swarmq.process_manager",
+    "swarmq.metrics",
 ]
 ignore_errors = true
 
@@ -163,6 +168,9 @@ ignore_missing_imports = true
 [tool.ruff]
 target-version = "py314"
 src = ["src"]
+# Plan U2: erstes blockierendes Lint-Gate (``lint-and-types``). 120 statt 88
+# entspricht der gelebten Zeilenbreite des Bestands (längste Zeile 120).
+line-length = 120
 
 [tool.ruff.lint]
 select = [
@@ -175,7 +183,36 @@ select = [
     "B",   # flake8-bugbear
     "SIM", # flake8-simplify
     "RUF", # ruff-specific rules
+    # 0.2.0-Restrukturierung (Plan U2, KTD7): Funktionsgrößen-Rauchmelder.
+    # Bestandsverstöße tragen ``# noqa`` mit Unit-Verweis (die Unit zerlegt
+    # das Modul) oder ``Follow-Up 0.2.x`` (kein Unit-Scope).
+    "PLR0915", # too many statements
+    "C901",    # too complex
 ]
+
+ignore = [
+    "N818",   # Exception-Namen ohne -Error sind Public API (KTD16); Umbenennung nur über U14-Inventar
+    "SIM105", # ``try/except: pass`` bleibt explizit — best-effort-Pfade der Pipeline sind kommentiert
+    "RUF002", # deutsche Typografie („ “ – ’) in Docstrings ist gewollt
+    "RUF003", # dito in Kommentaren
+]
+
+[tool.ruff.lint.pylint]
+max-statements = 60
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.per-file-ignores]
+# Testfunktionen erzählen Szenarien; die Größen-Limits gelten für src/.
+"tests/**" = [
+    "PLR0915", "C901",
+    "N806", "N802", "N817",  # Test-Namen und Fixture-Aliase folgen Szenario, nicht PEP 8
+    "RUF043",                # pytest.raises(match=…) mit literalem Text ist hier gewollt
+    "B905", "B017",          # zip()-Längen und generische raises sind in Tests bewusst
+]
+# worker.py: Import-Block nach dem _LockEntry-Dataclass; U6 löst die Datei auf.
+"src/swarmq/worker.py" = ["E402"]
 
 # E2E-Hardening Phase 3 U3.10 — mutation testing.
 # Runner scores mutants against the fast unit-test suite.

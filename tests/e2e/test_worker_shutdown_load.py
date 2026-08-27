@@ -24,7 +24,6 @@ import asyncio
 import os
 import signal
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -37,9 +36,17 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
 from tests.e2e.combinations._subprocess import (
     ensure_fixture_registered as _ensure_fixture_registered_base,
+)
+from tests.e2e.combinations._subprocess import (
     kill_subprocess as _kill_subprocess,
+)
+from tests.e2e.combinations._subprocess import (
     port_open as _port_open,
+)
+from tests.e2e.combinations._subprocess import (
     spawn_worker as _spawn_worker_base,
+)
+from tests.e2e.combinations._subprocess import (
     wait_for_worker_started as _wait_for_worker_started,
 )
 

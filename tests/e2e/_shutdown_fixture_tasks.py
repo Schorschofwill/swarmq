@@ -55,7 +55,7 @@ class ShutdownSleepTask(Task):
                 await self._backend._client.expire(
                     f"exec_count:{self._task_id}", 300
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # Best-effort — counter failures must not affect the
                 # shutdown behaviour we're actually measuring.
                 pass

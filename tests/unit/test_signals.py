@@ -9,7 +9,6 @@ import structlog.testing
 
 from swarmq.signals import Signal, SignalDispatcher
 
-
 # ---------------------------------------------------------------------------
 # 1. Signal Enum has all 14 expected values
 # ---------------------------------------------------------------------------

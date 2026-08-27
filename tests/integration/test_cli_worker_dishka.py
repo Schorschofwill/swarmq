@@ -99,7 +99,7 @@ def _wait_for_worker_started(proc: subprocess.Popen, deadline: float) -> None:
 
 async def _schedule_and_get_result(queue: str, value: str) -> str:
     os.environ["CLI_TEST_QUEUE"] = queue
-    import tests.integration._dishka_fixture_tasks  # noqa: F401 (side-effect)
+    import tests.integration._dishka_fixture_tasks  # noqa: F401
 
     broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
     backend = ValkeyBackend("valkey://localhost:6379/0")

@@ -29,7 +29,6 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task, TaskInfo
-
 from tests.chaos.conftest import ChaosStack
 
 pytestmark = [pytest.mark.timeout(180)]
@@ -63,7 +62,7 @@ async def _wait_broker_reachable(url: str, timeout: float = 60.0) -> None:
             conn = await aio_pika.connect(url, timeout=2.0)
             await conn.close()
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_exc = exc
             await asyncio.sleep(0.5)
     raise RuntimeError(f"broker not reachable within {timeout}s: {last_exc!r}")

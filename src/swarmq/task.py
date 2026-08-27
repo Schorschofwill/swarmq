@@ -155,7 +155,7 @@ class TaskInfo:
         object.__setattr__(self, "priority", priority)
         self.__post_init__()
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901  # Follow-Up 0.2.x
         if not self.name:
             raise ValueError("name must not be empty")
         if len(self.name) > 255:
@@ -269,7 +269,7 @@ interval, UNLESS current == total (final-flush always honoured)."""
 
 class Task:
     task_info: TaskInfo
-    _registered_tasks: list[type] = []
+    _registered_tasks: list[type] = []  # noqa: RUF012
 
     # R3.7 progress-tracking state. The worker sets these as instance
     # attrs after constructing the task and before pre_execution.

@@ -52,7 +52,7 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
     online = asyncio.Event()
 
     @worker_app.on_signal(Signal.WORKER_ONLINE)
-    async def _on_online(**_):  # noqa: ARG001
+    async def _on_online(**_):
         online.set()
 
     worker_task = asyncio.create_task(worker_app.start_worker())
@@ -217,7 +217,7 @@ async def test_deeply_nested_dict_roundtrip(
             while isinstance(cur, dict):
                 if "v" in cur:
                     return f"depth={depth} value={cur['v']}"
-                ((key, cur),) = cur.items()
+                ((_key, cur),) = cur.items()
                 depth += 1
             return "no-leaf"
 

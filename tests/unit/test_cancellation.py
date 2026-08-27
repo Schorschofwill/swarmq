@@ -12,7 +12,6 @@ import pytest
 from swarmq.cancellation import (
     CANCEL_REASON_CANCEL,
     CANCEL_REASON_TIMEOUT,
-    CancelReason,
     build_cancel_result_dict,
     build_error_result_dict,
     build_result_dict,

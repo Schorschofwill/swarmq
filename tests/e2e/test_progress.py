@@ -108,7 +108,7 @@ async def test_watch_progress_streams_updates(
             # that landed as the task completed.
             try:
                 await asyncio.wait_for(watch_task, timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 watch_task.cancel()
 
     # Throttling means we get at most ~3 intermediate events across

@@ -102,7 +102,7 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     # interpreter (with its own CLI_TEST_QUEUE pointing at the same
     # queue name).
     os.environ["CLI_TEST_QUEUE"] = queue
-    import tests.integration._cli_fixture_tasks  # noqa: F401  (side-effect import)
+    import tests.integration._cli_fixture_tasks  # noqa: F401
 
     broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
     backend = ValkeyBackend("valkey://localhost:6379/0")

@@ -9,7 +9,6 @@ from __future__ import annotations
 # 4. Log output is JSON when log_json=True
 # 5. Log level filtering works (DEBUG not output at INFO level)
 # 6. contextvars binding: bind task_id, verify it appears in log output
-
 import io
 import json
 import logging
