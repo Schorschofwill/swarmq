@@ -259,17 +259,9 @@ async def serve_metrics(
         await server.stop()
 
 
-def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
+def _install_lifecycle_collectors(
     dispatcher: SignalDispatcher, metrics: Metrics,
 ) -> None:
-    """Register Metrics-updater handlers on the given SignalDispatcher.
-
-    Called once by the worker during start-up. Each registered handler
-    pulls the relevant labels out of the signal kwargs and updates the
-    appropriate counter/gauge/histogram. The signal schema is documented
-    in ``signals.py``; this function is the single place where metric
-    labels are derived from signal payloads.
-    """
     from swarmq.signals import Signal
 
     @dispatcher.on_signal(Signal.TASK_STARTED)
@@ -290,26 +282,6 @@ def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
                 task_name=name, queue=queue,
             ).observe(duration_ms / 1000.0)
 
-    @dispatcher.on_signal(Signal.TASK_FAILED)
-    async def _task_failed(**kw: Any) -> None:
-        queue = kw.get("queue", "")
-        metrics.tasks_active.labels(queue=queue).dec()
-        metrics.tasks_total.labels(
-            task_name=kw.get("task_name", ""),
-            queue=queue,
-            outcome="failed",
-        ).inc()
-
-    @dispatcher.on_signal(Signal.TASK_CANCELLED)
-    async def _task_cancelled(**kw: Any) -> None:
-        queue = kw.get("queue", "")
-        metrics.tasks_active.labels(queue=queue).dec()
-        metrics.tasks_total.labels(
-            task_name=kw.get("task_name", ""),
-            queue=queue,
-            outcome="cancelled",
-        ).inc()
-
     @dispatcher.on_signal(Signal.TASK_RETRYING)
     async def _task_retrying(**kw: Any) -> None:
         metrics.retries_total.labels(
@@ -317,49 +289,49 @@ def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
             queue=kw.get("queue", ""),
         ).inc()
 
-    @dispatcher.on_signal(Signal.TASK_RATE_LIMITED)
-    async def _task_rate_limited(**kw: Any) -> None:
-        metrics.tasks_total.labels(
-            task_name=kw.get("task_name", ""),
-            queue=kw.get("queue", ""),
-            outcome="rate_limited",
-        ).inc()
 
-    @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
-    async def _task_duplicate(**kw: Any) -> None:
-        metrics.tasks_total.labels(
-            task_name=kw.get("task_name", ""),
-            queue=kw.get("queue", ""),
-            outcome="duplicate",
-        ).inc()
+def _install_outcome_counters(
+    dispatcher: SignalDispatcher, metrics: Metrics,
+) -> None:
+    """Ein generischer Zähler-Handler pro Terminal-Outcome.
 
-    @dispatcher.on_signal(Signal.TASK_EXPIRED)
-    async def _task_expired(**kw: Any) -> None:
-        # R4.4 Task Expiry — outcome="expired" label documented in the
-        # module docstring. Without this handler the counter would
-        # never increment.
-        metrics.tasks_total.labels(
-            task_name=kw.get("task_name", ""),
-            queue=kw.get("queue", ""),
-            outcome="expired",
-        ).inc()
+    ``dec_active=True`` für die Outcomes, die einen laufenden Task beenden
+    (failed/cancelled). ``expired`` (R4.4) und ``dlq`` zählen die terminalen
+    Zustände, auf die Operatoren alerten — ``dlq`` dekrementiert nicht,
+    weil der vorangehende TASK_FAILED-Handler das bereits tut.
+    """
+    from swarmq.signals import Signal
 
-    @dispatcher.on_signal(Signal.TASK_DLQ)
-    async def _task_dlq(**kw: Any) -> None:
-        # Terminal dead-lettering was invisible to
-        # Prometheus (outcome="dlq" never incremented). tasks_active is
-        # already decremented by the preceding TASK_FAILED handler, so
-        # this only bumps the terminal counter operators alert on.
-        metrics.tasks_total.labels(
-            task_name=kw.get("task_name", ""),
-            queue=kw.get("queue", ""),
-            outcome="dlq",
-        ).inc()
+    outcomes: list[tuple[Any, str, bool]] = [
+        (Signal.TASK_FAILED, "failed", True),
+        (Signal.TASK_CANCELLED, "cancelled", True),
+        (Signal.TASK_RATE_LIMITED, "rate_limited", False),
+        (Signal.TASK_DUPLICATE_DETECTED, "duplicate", False),
+        (Signal.TASK_EXPIRED, "expired", False),
+        (Signal.TASK_DLQ, "dlq", False),
+    ]
+    for signal, outcome, dec_active in outcomes:
+        def _make(outcome: str = outcome, dec_active: bool = dec_active) -> Any:
+            async def _count(**kw: Any) -> None:
+                queue = kw.get("queue", "")
+                if dec_active:
+                    metrics.tasks_active.labels(queue=queue).dec()
+                metrics.tasks_total.labels(
+                    task_name=kw.get("task_name", ""),
+                    queue=queue,
+                    outcome=outcome,
+                ).inc()
+            return _count
+        dispatcher.on_signal(signal)(_make())
 
-    # Scheduler-leader status was unobservable
-    # despite the SCHEDULER_* signals firing correctly. Map them to a
-    # 0/1 gauge so a split-brain (two leaders) or zero-leader (cron
-    # silently stopped) condition can be alerted on.
+
+def _install_scheduler_gauge(
+    dispatcher: SignalDispatcher, metrics: Metrics,
+) -> None:
+    """Leader-Status als 0/1-Gauge, damit Split-Brain (zwei Leader) und
+    Zero-Leader (Cron still gestoppt) alertbar sind."""
+    from swarmq.signals import Signal
+
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
     async def _scheduler_became_leader(**kw: Any) -> None:
@@ -374,3 +346,19 @@ def install_signal_collectors(  # noqa: C901  # Follow-Up 0.2.x
         metrics.scheduler_leader.labels(
             worker_id=str(kw.get("worker_id", "")),
         ).set(0)
+
+
+def install_signal_collectors(
+    dispatcher: SignalDispatcher, metrics: Metrics,
+) -> None:
+    """Register Metrics-updater handlers on the given SignalDispatcher.
+
+    Called once by the worker during start-up. Each registered handler
+    pulls the relevant labels out of the signal kwargs and updates the
+    appropriate counter/gauge/histogram. The signal schema is documented
+    in ``signals.py``; the three helpers below are the single place where
+    metric labels are derived from signal payloads.
+    """
+    _install_lifecycle_collectors(dispatcher, metrics)
+    _install_outcome_counters(dispatcher, metrics)
+    _install_scheduler_gauge(dispatcher, metrics)

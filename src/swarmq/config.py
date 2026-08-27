@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from swarmq.exceptions import ConfigurationError
 
@@ -127,92 +128,74 @@ class SwarmQConfig:
     # above any sane task payload; raise via env if legitimate.
     max_message_body_bytes: int = 16 * 1024 * 1024
 
-    def __post_init__(self) -> None:  # noqa: C901, PLR0915  # Follow-Up 0.2.x
-        env_broker = os.environ.get("SWARMQ_BROKER_URL", "")
-        if env_broker:
-            self.broker_url = env_broker
+    # (Env-Var, Feldname, Parser) — eine Zeile pro Override statt der
+    # früheren 27 if-Blöcke; ``__post_init__`` wendet sie der Reihe nach an.
+    _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
+        ("SWARMQ_BROKER_URL", "broker_url", "str"),
+        ("SWARMQ_BACKEND_URL", "backend_url", "str"),
+        ("SWARMQ_RESULT_TTL", "result_ttl", "int"),
+        ("SWARMQ_QUEUES", "queues", "csv"),
+        ("SWARMQ_CONCURRENCY", "concurrency", "int"),
+        ("SWARMQ_LOG_LEVEL", "log_level", "str"),
+        ("SWARMQ_LOG_JSON", "log_json", "bool"),
+        ("SWARMQ_RETRY_MAX_DELAY", "retry_max_delay", "float"),
+        ("SWARMQ_SHUTDOWN_TIMEOUT", "shutdown_timeout", "int"),
+        ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
+        ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
+        ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
+        ("SWARMQ_SCHEDULER_POLL_INTERVAL", "scheduler_poll_interval", "float"),
+        ("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "scheduler_heartbeat_interval", "float"),
+        ("SWARMQ_METRICS_SAMPLE_INTERVAL", "metrics_sample_interval", "float"),
+        ("SWARMQ_SCHEDULER_LOCK_TTL", "scheduler_lock_ttl", "float"),
+        ("SWARMQ_SCHEDULER_DEDUP_TTL", "scheduler_dedup_ttl", "float"),
+        ("SWARMQ_SCHEDULER_INFLIGHT_TTL", "scheduler_inflight_ttl", "float"),
+        ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
+        # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
+        # Port-Ranges werden beim Parsen validiert, damit eine kaputte
+        # Env-Var eine ConfigurationError statt eines OSError beim Bind gibt.
+        ("SWARMQ_BURST_MODE", "burst_mode", "bool"),
+        ("SWARMQ_BURST_IDLE_TIMEOUT", "burst_idle_timeout", "float"),
+        ("SWARMQ_PRIORITIES", "priorities", "bool"),
+        ("SWARMQ_METRICS_PORT", "metrics_port", "port"),
+        ("SWARMQ_METRICS_HOST", "metrics_host", "str"),
+        ("SWARMQ_HEALTH_PORT", "health_port", "port"),
+        ("SWARMQ_HEALTH_HOST", "health_host", "str"),
+    )
 
-        env_backend = os.environ.get("SWARMQ_BACKEND_URL", "")
-        if env_backend:
-            self.backend_url = env_backend
+    # Felder mit der gemeinsamen Zusage "> 0" (Meldungsformat identisch).
+    _POSITIVE_FIELDS: ClassVar[tuple[str, ...]] = (
+        "cancel_poll_interval",
+        "backend_op_timeout",
+        "max_message_body_bytes",
+        "scheduler_poll_interval",
+        "scheduler_heartbeat_interval",
+        "metrics_sample_interval",
+        "scheduler_lock_ttl",
+        "scheduler_inflight_ttl",
+        "burst_idle_timeout",
+    )
 
-        env_ttl = os.environ.get("SWARMQ_RESULT_TTL", "")
-        if env_ttl:
-            self.result_ttl = _parse_int(env_ttl, "SWARMQ_RESULT_TTL")
+    def _apply_env_overrides(self) -> None:
+        for env_name, field_name, kind in self._ENV_OVERRIDES:
+            raw = os.environ.get(env_name, "")
+            if not raw:
+                continue
+            value: object
+            if kind == "int":
+                value = _parse_int(raw, env_name)
+            elif kind == "float":
+                value = _parse_float(raw, env_name)
+            elif kind == "bool":
+                value = raw.lower() in ("true", "1", "yes")
+            elif kind == "csv":
+                value = [q.strip() for q in raw.split(",") if q.strip()]
+            elif kind == "port":
+                value = _parse_port(raw, env_name)
+            else:
+                value = raw
+            setattr(self, field_name, value)
 
-        env_queues = os.environ.get("SWARMQ_QUEUES", "")
-        if env_queues:
-            self.queues = [q.strip() for q in env_queues.split(",") if q.strip()]
-
-        env_concurrency = os.environ.get("SWARMQ_CONCURRENCY", "")
-        if env_concurrency:
-            self.concurrency = _parse_int(env_concurrency, "SWARMQ_CONCURRENCY")
-
-        env_log_level = os.environ.get("SWARMQ_LOG_LEVEL", "")
-        if env_log_level:
-            self.log_level = env_log_level
-
-        env_log_json = os.environ.get("SWARMQ_LOG_JSON", "")
-        if env_log_json:
-            self.log_json = env_log_json.lower() in ("true", "1", "yes")
-
-        env_retry_max_delay = os.environ.get("SWARMQ_RETRY_MAX_DELAY", "")
-        if env_retry_max_delay:
-            self.retry_max_delay = _parse_float(env_retry_max_delay, "SWARMQ_RETRY_MAX_DELAY")
-
-        env_shutdown_timeout = os.environ.get("SWARMQ_SHUTDOWN_TIMEOUT", "")
-        if env_shutdown_timeout:
-            self.shutdown_timeout = _parse_int(env_shutdown_timeout, "SWARMQ_SHUTDOWN_TIMEOUT")
-
-        env_queue_type = os.environ.get("SWARMQ_QUEUE_TYPE", "")
-        if env_queue_type:
-            self.queue_type = env_queue_type
-
-        env_cancel_poll = os.environ.get("SWARMQ_CANCEL_POLL_INTERVAL", "")
-        if env_cancel_poll:
-            self.cancel_poll_interval = _parse_float(env_cancel_poll, "SWARMQ_CANCEL_POLL_INTERVAL")
-
-        env_backend_op_timeout = os.environ.get("SWARMQ_BACKEND_OP_TIMEOUT", "")
-        if env_backend_op_timeout:
-            self.backend_op_timeout = _parse_float(env_backend_op_timeout, "SWARMQ_BACKEND_OP_TIMEOUT")
-
-        env_sched_poll = os.environ.get("SWARMQ_SCHEDULER_POLL_INTERVAL", "")
-        if env_sched_poll:
-            self.scheduler_poll_interval = _parse_float(env_sched_poll, "SWARMQ_SCHEDULER_POLL_INTERVAL")
-
-        env_sched_heartbeat = os.environ.get("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "")
-        if env_sched_heartbeat:
-            self.scheduler_heartbeat_interval = _parse_float(env_sched_heartbeat, "SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL")
-
-        env_metrics_sample = os.environ.get("SWARMQ_METRICS_SAMPLE_INTERVAL", "")
-        if env_metrics_sample:
-            self.metrics_sample_interval = _parse_float(env_metrics_sample, "SWARMQ_METRICS_SAMPLE_INTERVAL")
-
-        env_sched_lock_ttl = os.environ.get("SWARMQ_SCHEDULER_LOCK_TTL", "")
-        if env_sched_lock_ttl:
-            self.scheduler_lock_ttl = _parse_float(env_sched_lock_ttl, "SWARMQ_SCHEDULER_LOCK_TTL")
-
-        env_sched_dedup_ttl = os.environ.get("SWARMQ_SCHEDULER_DEDUP_TTL", "")
-        if env_sched_dedup_ttl:
-            self.scheduler_dedup_ttl = _parse_float(env_sched_dedup_ttl, "SWARMQ_SCHEDULER_DEDUP_TTL")
-
-        env_sched_inflight_ttl = os.environ.get("SWARMQ_SCHEDULER_INFLIGHT_TTL", "")
-        if env_sched_inflight_ttl:
-            self.scheduler_inflight_ttl = _parse_float(env_sched_inflight_ttl, "SWARMQ_SCHEDULER_INFLIGHT_TTL")
-
-        env_max_body = os.environ.get("SWARMQ_MAX_MESSAGE_BODY_BYTES", "")
-        if env_max_body:
-            self.max_message_body_bytes = _parse_int(
-                env_max_body, "SWARMQ_MAX_MESSAGE_BODY_BYTES",
-            )
-
-        # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
-        # retry horizon and prevent retried schedule-fires from bypassing
-        # consumer-side SETNX dedup.
-        if self.scheduler_dedup_ttl is None:
-            self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
-
-        # Validation
+    def _validate_core(self) -> None:
         if not self.broker_url:
             msg = "broker_url must not be empty"
             raise ConfigurationError(msg)
@@ -239,50 +222,13 @@ class SwarmQConfig:
             msg = f"queue_type must be one of {sorted(valid_queue_types)}, got {self.queue_type!r}"
             raise ConfigurationError(msg)
 
-        if self.cancel_poll_interval <= 0:
-            msg = f"cancel_poll_interval must be > 0, got {self.cancel_poll_interval}"
-            raise ConfigurationError(msg)
+        for field_name in self._POSITIVE_FIELDS:
+            value = getattr(self, field_name)
+            if value <= 0:
+                msg = f"{field_name} must be > 0, got {value}"
+                raise ConfigurationError(msg)
 
-        if self.backend_op_timeout <= 0:
-            msg = (
-                f"backend_op_timeout must be > 0, got {self.backend_op_timeout}"
-            )
-            raise ConfigurationError(msg)
-
-        if self.max_message_body_bytes <= 0:
-            msg = (
-                "max_message_body_bytes must be > 0, got "
-                f"{self.max_message_body_bytes}"
-            )
-            raise ConfigurationError(msg)
-
-        if self.scheduler_poll_interval <= 0:
-            msg = (
-                "scheduler_poll_interval must be > 0, got "
-                f"{self.scheduler_poll_interval}"
-            )
-            raise ConfigurationError(msg)
-
-        if self.scheduler_heartbeat_interval <= 0:
-            msg = (
-                "scheduler_heartbeat_interval must be > 0, got "
-                f"{self.scheduler_heartbeat_interval}"
-            )
-            raise ConfigurationError(msg)
-
-        if self.metrics_sample_interval <= 0:
-            msg = (
-                "metrics_sample_interval must be > 0, got "
-                f"{self.metrics_sample_interval}"
-            )
-            raise ConfigurationError(msg)
-
-        if self.scheduler_lock_ttl <= 0:
-            msg = (
-                f"scheduler_lock_ttl must be > 0, got {self.scheduler_lock_ttl}"
-            )
-            raise ConfigurationError(msg)
-
+    def _validate_scheduler_relations(self) -> None:
         if self.scheduler_lock_ttl < self.scheduler_heartbeat_interval * 2:
             msg = (
                 "scheduler_lock_ttl must be at least 2x "
@@ -292,7 +238,8 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
-        # scheduler_dedup_ttl is guaranteed non-None here (default filled above).
+        # scheduler_dedup_ttl is guaranteed non-None here (default filled
+        # in __post_init__ before validation).
         assert self.scheduler_dedup_ttl is not None
         if self.scheduler_dedup_ttl <= 0:
             msg = (
@@ -310,51 +257,14 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
-        if self.scheduler_inflight_ttl <= 0:
-            msg = (
-                "scheduler_inflight_ttl must be > 0, got "
-                f"{self.scheduler_inflight_ttl}"
-            )
-            raise ConfigurationError(msg)
+    def __post_init__(self) -> None:
+        self._apply_env_overrides()
 
-        # R4.5 Burst-Mode env-var overrides.
-        env_burst = os.environ.get("SWARMQ_BURST_MODE", "")
-        if env_burst:
-            self.burst_mode = env_burst.lower() in ("true", "1", "yes")
-        env_burst_timeout = os.environ.get("SWARMQ_BURST_IDLE_TIMEOUT", "")
-        if env_burst_timeout:
-            self.burst_idle_timeout = _parse_float(
-                env_burst_timeout, "SWARMQ_BURST_IDLE_TIMEOUT",
-            )
-        if self.burst_idle_timeout <= 0:
-            msg = (
-                "burst_idle_timeout must be > 0, got "
-                f"{self.burst_idle_timeout}"
-            )
-            raise ConfigurationError(msg)
+        # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
+        # retry horizon and prevent retried schedule-fires from bypassing
+        # consumer-side SETNX dedup.
+        if self.scheduler_dedup_ttl is None:
+            self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
 
-        # R4.3 Task Priorities env-var override.
-        env_priorities = os.environ.get("SWARMQ_PRIORITIES", "")
-        if env_priorities:
-            self.priorities = env_priorities.lower() in ("true", "1", "yes")
-
-        # R5.1/R5.2 env-var overrides.
-        # Validate port ranges at config-time
-        # so a bad env var produces a ConfigurationError instead of a
-        # confusing OSError at bind time.
-        env_metrics_port = os.environ.get("SWARMQ_METRICS_PORT", "")
-        if env_metrics_port:
-            self.metrics_port = _parse_port(
-                env_metrics_port, "SWARMQ_METRICS_PORT",
-            )
-        env_metrics_host = os.environ.get("SWARMQ_METRICS_HOST", "")
-        if env_metrics_host:
-            self.metrics_host = env_metrics_host
-        env_health_port = os.environ.get("SWARMQ_HEALTH_PORT", "")
-        if env_health_port:
-            self.health_port = _parse_port(
-                env_health_port, "SWARMQ_HEALTH_PORT",
-            )
-        env_health_host = os.environ.get("SWARMQ_HEALTH_HOST", "")
-        if env_health_host:
-            self.health_host = env_health_host
+        self._validate_core()
+        self._validate_scheduler_relations()

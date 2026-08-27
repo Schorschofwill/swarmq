@@ -365,43 +365,44 @@ class ProcessManager:
         for _ in range(self.initial_workers):
             self._start_worker()
 
-    def _shutdown_all_workers(self) -> None:  # noqa: C901  # U21 (supervisor.py)
+    @staticmethod
+    def _wait_for_exit(candidates: list[WorkerInfo], grace_s: float) -> None:
+        deadline = time.monotonic() + grace_s
+        while time.monotonic() < deadline:
+            if not any(w.process.is_alive() for w in candidates):
+                break
+            time.sleep(0.3)
+
+    def _signal_survivors(self, event: str, action: str) -> list[WorkerInfo]:
+        """SIGTERM/SIGKILL an noch lebende Worker; liefert die Adressaten."""
+        alive = [w for w in self.workers.values() if w.process.is_alive()]
+        if not alive:
+            return []
+        log = logger.warning if action == "terminate" else logger.error
+        log(event, count=len(alive))
+        for info in alive:
+            try:
+                getattr(info.process, action)()
+            except ProcessLookupError:
+                continue
+        return alive
+
+    def _shutdown_all_workers(self) -> None:
         """Three-phase shutdown: event → SIGTERM → SIGKILL."""
         if not self.workers:
             return
         self.shutdown_event.set()
 
         # Phase 1: cooperative exit via shutdown_event.
-        deadline = time.monotonic() + self.shutdown_grace_s
-        while time.monotonic() < deadline:
-            if not any(w.process.is_alive() for w in self.workers.values()):
-                break
-            time.sleep(0.3)
+        self._wait_for_exit(list(self.workers.values()), self.shutdown_grace_s)
 
         # Phase 2: SIGTERM.
-        alive = [w for w in self.workers.values() if w.process.is_alive()]
+        alive = self._signal_survivors("shutdown_sigterm_escalation", "terminate")
         if alive:
-            logger.warning("shutdown_sigterm_escalation", count=len(alive))
-            for info in alive:
-                try:
-                    info.process.terminate()
-                except ProcessLookupError:
-                    continue
-            deadline = time.monotonic() + self.SHUTDOWN_TERM_S
-            while time.monotonic() < deadline:
-                if not any(w.process.is_alive() for w in alive):
-                    break
-                time.sleep(0.3)
+            self._wait_for_exit(alive, self.SHUTDOWN_TERM_S)
 
         # Phase 3: SIGKILL.
-        alive = [w for w in self.workers.values() if w.process.is_alive()]
-        if alive:
-            logger.error("shutdown_sigkill_escalation", count=len(alive))
-            for info in alive:
-                try:
-                    info.process.kill()
-                except ProcessLookupError:
-                    continue
+        self._signal_survivors("shutdown_sigkill_escalation", "kill")
 
         for info in self.workers.values():
             try:

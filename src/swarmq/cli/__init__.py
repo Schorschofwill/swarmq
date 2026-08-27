@@ -16,7 +16,7 @@ from __future__ import annotations
 
 # argparse is part of the frozen surface (tests construct
 # argparse.Namespace directly and dispatch through main()).
-import argparse  # noqa: F401
+import argparse
 
 # tests/unit/test_cli_multiprocess.py:144 does
 # patch("swarmq.cli.asyncio.run", ...). Removing this import breaks
@@ -35,7 +35,7 @@ import traceback
 from collections.abc import Sequence
 from datetime import UTC, datetime  # noqa: F401
 from pathlib import Path  # noqa: F401
-from typing import TYPE_CHECKING, Any  # noqa: F401
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -207,7 +207,121 @@ __all__ = (
 )
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0.2.x
+def _parse_args_for_mode(
+    parser: argparse.ArgumentParser, argv: Sequence[str] | None, check_mode: bool
+) -> argparse.Namespace | int:
+    """Parse argv; im ``--check``-Modus wird ein argparse-Fehler als
+    JSON-Payload (Exit 1) gerendert statt als SystemExit(2)."""
+    if not check_mode:
+        return parser.parse_args(argv)
+    # Redirect argparse's stderr-rendered error into our JSON
+    # payload so a machine-readable caller gets a single,
+    # parseable output stream.
+    import io
+
+    argparse_err = io.StringIO()
+    try:
+        import contextlib as _ctxlib
+
+        with _ctxlib.redirect_stderr(argparse_err):
+            return parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse exits on parse error (code 2) or on --help/--version
+        # (code 0). Only wrap the error path.
+        if exc.code == 0:
+            raise
+        return _emit_argparse_check_error(argparse_err.getvalue())
+
+
+def _run_worker_command(args: argparse.Namespace) -> int | tuple[Any, str]:
+    """Worker-Zweig: ``--check``-Dry-Run, Multi-Process-Supervisor oder
+    (Runner, Fehler-Präfix) für den Single-Process-Pfad."""
+    # R5.3: dry-run validation. Never starts the supervisor or touches
+    # the broker — just checks whether the invocation would get past
+    # pre-flight.
+    if getattr(args, "check", False):
+        return _run_worker_check(args)
+
+    # R4.6/R4.7: when the user opted into multi-process mode, dispatch to
+    # the synchronous supervisor (no asyncio loop — subprocesses run one).
+    # R5.3: --reload requires the ProcessManager supervisor — the
+    # single-process path has no SIGHUP handler and no execvpe pipeline.
+    use_multi = (
+        getattr(args, "processes", 1) > 1
+        or getattr(args, "autoscale", None) is not None
+        or getattr(args, "reload", False)
+    )
+    if use_multi:
+        from swarmq.process_manager.run import run_multi_process_worker
+
+        # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
+        # process_manager importiert keine Broker-Implementierung mehr.
+        def _admin_factory() -> RabbitMQBroker:
+            import os as _os
+
+            from swarmq.broker.rabbitmq import RabbitMQBroker
+
+            return RabbitMQBroker(_os.environ["SWARMQ_BROKER_URL"])
+
+        try:
+            return run_multi_process_worker(args, admin_factory=_admin_factory)
+        except (
+            ConfigurationError,
+            BrokerConnectionError,
+            BackendConnectionError,
+        ) as exc:
+            sys.stderr.write(f"swarmq worker: {exc}\n")
+            if getattr(args, "log_level", "INFO") == "DEBUG":
+                traceback.print_exc(file=sys.stderr)
+            return 1
+    return run_worker_async(args), "swarmq worker"
+
+
+def _startup_error_classes() -> tuple[type[BaseException], ...]:
+    """``ValkeyBackend.get_scheduler_leader`` (KP-5) deliberately propagates
+    raw valkey ConnectionError/TimeoutError so callers can distinguish
+    "no leader elected" from "backend unreachable". Resolved lazily so the
+    import doesn't pull ``valkey.asyncio`` into ``swarmq --help`` (R-1a)."""
+    try:
+        from valkey.exceptions import ConnectionError as _ValkeyConnError
+        from valkey.exceptions import TimeoutError as _ValkeyTimeoutError
+
+        _valkey_errs: tuple[type[BaseException], ...] = (
+            _ValkeyConnError, _ValkeyTimeoutError,
+        )
+    except ImportError:  # pragma: no cover — valkey is a hard dep, defensive only
+        _valkey_errs = ()
+    return (
+        ModuleNotFoundError,
+        ConfigurationError,
+        BrokerConnectionError,
+        BackendConnectionError,
+        *_valkey_errs,
+    )
+
+
+def _run_command(runner: Any, error_prefix: str, args: argparse.Namespace) -> int:
+    """Run the chosen async command handler and map errors to exit codes."""
+    try:
+        asyncio.run(runner)
+    except KeyboardInterrupt:
+        # Ctrl-C before the worker installed its own SIGINT handler;
+        # treat as graceful exit, not a crash.
+        return 0
+    except _DLQNotFound:
+        # dlq inspect / retry <task_id> found no match — distinct exit
+        # code so agent scripts can branch without parsing JSON.
+        # User-facing line was already written by the handler.
+        return _DLQ_NOT_FOUND_EXIT_CODE
+    except _startup_error_classes() as exc:
+        sys.stderr.write(f"{error_prefix}: {exc}\n")
+        if getattr(args, "log_level", "INFO") == "DEBUG":
+            traceback.print_exc(file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Console-script entry point. Returns the process exit code.
 
     Returns 0 on graceful shutdown, 2 on bad arguments (argparse default),
@@ -223,27 +337,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
     failure mode.
     """
     parser = _build_parser()
-    check_mode = _is_check_invocation(argv)
-    if check_mode:
-        # Redirect argparse's stderr-rendered error into our JSON
-        # payload so a machine-readable caller gets a single,
-        # parseable output stream.
-        import io
-
-        argparse_err = io.StringIO()
-        try:
-            import contextlib as _ctxlib
-
-            with _ctxlib.redirect_stderr(argparse_err):
-                args = parser.parse_args(argv)
-        except SystemExit as exc:
-            # argparse exits on parse error (code 2) or on --help/--version
-            # (code 0). Only wrap the error path.
-            if exc.code == 0:
-                raise
-            return _emit_argparse_check_error(argparse_err.getvalue())
-    else:
-        args = parser.parse_args(argv)
+    parsed = _parse_args_for_mode(parser, argv, _is_check_invocation(argv))
+    if isinstance(parsed, int):
+        return parsed
+    args = parsed
 
     # Plan 2026-04-23-001 CLI-04 / Unit 5: resolve the TTY-aware
     # ``--format`` default (+ SWARMQ_DEFAULT_FORMAT escape) centrally
@@ -253,50 +350,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
         args.format = resolve_format(args.format)
 
     if args.command == "worker":
-        # R5.3: dry-run validation. Never starts the
-        # supervisor or touches the broker — just checks whether the
-        # invocation would get past pre-flight.
-        if getattr(args, "check", False):
-            return _run_worker_check(args)
-
-        # R4.6/R4.7: when the user opted into multi-process mode,
-        # dispatch to the synchronous supervisor. The supervisor
-        # itself runs no asyncio loop — subprocesses do.
-        # R5.3: --reload requires the ProcessManager
-        # supervisor — single-process path has no SIGHUP handler and
-        # no execvpe pipeline. Activating multi-process implicitly
-        # keeps the default invocation (`swarmq worker --reload`)
-        # working.
-        use_multi = (
-            getattr(args, "processes", 1) > 1
-            or getattr(args, "autoscale", None) is not None
-            or getattr(args, "reload", False)
-        )
-        if use_multi:
-            from swarmq.process_manager.run import run_multi_process_worker
-
-            # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
-            # process_manager importiert keine Broker-Implementierung mehr.
-            def _admin_factory() -> RabbitMQBroker:
-                import os as _os
-
-                from swarmq.broker.rabbitmq import RabbitMQBroker
-
-                return RabbitMQBroker(_os.environ["SWARMQ_BROKER_URL"])
-
-            try:
-                return run_multi_process_worker(args, admin_factory=_admin_factory)
-            except (
-                ConfigurationError,
-                BrokerConnectionError,
-                BackendConnectionError,
-            ) as exc:
-                sys.stderr.write(f"swarmq worker: {exc}\n")
-                if getattr(args, "log_level", "INFO") == "DEBUG":
-                    traceback.print_exc(file=sys.stderr)
-                return 1
-        runner = run_worker_async(args)
-        error_prefix = "swarmq worker"
+        routed = _run_worker_command(args)
+        if isinstance(routed, int):
+            return routed
+        runner, error_prefix = routed
     elif args.command == "schedule":
         runner = _run_schedule_async(args)
         error_prefix = f"swarmq schedule {args.schedule_command}"
@@ -309,43 +366,4 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901  # Follow-Up 0
     else:  # pragma: no cover — argparse required=True guards this
         parser.error(f"unknown command: {args.command!r}")
 
-    # ``ValkeyBackend.get_scheduler_leader`` (KP-5) deliberately
-    # propagates raw ``valkey.exceptions.ConnectionError`` /
-    # ``TimeoutError`` so callers can distinguish "no leader elected"
-    # from "backend unreachable". Resolve those classes lazily here so
-    # the import doesn't pull ``valkey.asyncio`` into ``swarmq --help``
-    # (R-1a). Falls back to ``()`` when the optional dep is absent so
-    # the except tuple stays valid.
-    try:
-        from valkey.exceptions import ConnectionError as _ValkeyConnError
-        from valkey.exceptions import TimeoutError as _ValkeyTimeoutError
-        _valkey_errs: tuple[type[BaseException], ...] = (
-            _ValkeyConnError, _ValkeyTimeoutError,
-        )
-    except ImportError:  # pragma: no cover — valkey is a hard dep, defensive only
-        _valkey_errs = ()
-
-    try:
-        asyncio.run(runner)
-    except KeyboardInterrupt:
-        # Ctrl-C before the worker installed its own SIGINT handler;
-        # treat as graceful exit, not a crash.
-        return 0
-    except _DLQNotFound:
-        # dlq inspect / retry <task_id> found no match — distinct exit
-        # code so agent scripts can branch without parsing JSON
-        # (R3.10 P3 #19). User-facing line was already written by the
-        # handler; we emit no additional noise here.
-        return _DLQ_NOT_FOUND_EXIT_CODE
-    except (
-        ModuleNotFoundError,
-        ConfigurationError,
-        BrokerConnectionError,
-        BackendConnectionError,
-        *_valkey_errs,
-    ) as exc:  # type: ignore[misc]  # Stern-Entpacken im except-Tupel (Laufzeit ok)
-        sys.stderr.write(f"{error_prefix}: {exc}\n")
-        if getattr(args, "log_level", "INFO") == "DEBUG":
-            traceback.print_exc(file=sys.stderr)
-        return 1
-    return 0
+    return _run_command(runner, error_prefix, args)

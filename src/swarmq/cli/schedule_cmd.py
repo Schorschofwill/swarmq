@@ -90,7 +90,7 @@ async def _run_schedule_list(args: argparse.Namespace) -> None:
         await backend.close()
 
 
-async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PLR0915  # Follow-Up 0.2.x
+def _parse_payload(args: argparse.Namespace) -> tuple[list[Any], dict[str, Any]]:
     try:
         parsed_args = json.loads(args.args)
     except json.JSONDecodeError as exc:
@@ -104,7 +104,11 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PL
         raise ConfigurationError(f"--kwargs is not valid JSON: {exc}") from exc
     if not isinstance(parsed_kwargs, dict):
         raise ConfigurationError("--kwargs must be a JSON object")
+    return parsed_args, parsed_kwargs
 
+
+def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
+    """``--cron`` → (cron, erster Fire-Zeitpunkt); ``--at`` → (None, ts)."""
     if args.cron is not None:
         cron = args.cron
         # Compute first fire via croniter so the zset has a real score.
@@ -115,19 +119,58 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PL
             raise ConfigurationError(
                 f"invalid cron expression: {cron!r} ({exc})"
             ) from exc
-        fire_ts_ms = int(next_dt.timestamp() * 1000)
+        return cron, int(next_dt.timestamp() * 1000)
+    # --at <iso-datetime>
+    try:
+        dt = datetime.fromisoformat(args.at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"invalid --at datetime: {args.at!r} ({exc})"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return None, int(dt.timestamp() * 1000)
+
+
+def _render_add_result(
+    args: argparse.Namespace,
+    *,
+    inserted: bool,
+    existing_owner: str | None,
+    dedup_hash: str | None,
+    unique_for: int | None,
+    unique_until: UniqueUntil,
+) -> None:
+    if args.format == "json":
+        payload: dict[str, Any] = {
+            "inserted": inserted,
+            "name": args.name,
+            "already_exists": not inserted,
+        }
+        if unique_for is not None:
+            payload["dedup_hash"] = dedup_hash
+            payload["unique_until"] = unique_until
+            if existing_owner is not None:
+                payload["duplicate_of"] = existing_owner
+        sys.stdout.write(json.dumps(payload) + "\n")
+    elif inserted:
+        sys.stdout.write(f"added schedule {args.name!r}\n")
+    elif existing_owner is not None:
+        sys.stdout.write(
+            f"schedule {args.name!r} rejected — dedup flag already "
+            f"held by {existing_owner!r} (args duplicate within "
+            f"{unique_for}s TTL)\n"
+        )
     else:
-        # --at <iso-datetime>
-        try:
-            dt = datetime.fromisoformat(args.at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ConfigurationError(
-                f"invalid --at datetime: {args.at!r} ({exc})"
-            ) from exc
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        cron = None
-        fire_ts_ms = int(dt.timestamp() * 1000)
+        sys.stdout.write(
+            f"schedule {args.name!r} already exists; use "
+            f"'schedule remove --permanent' first to replace it\n"
+        )
+
+
+async def _run_schedule_add(args: argparse.Namespace) -> None:
+    parsed_args, parsed_kwargs = _parse_payload(args)
+    cron, fire_ts_ms = _resolve_fire_time(args)
 
     # R3.5: --unique-for claims the dedup flag before
     # the ScheduleStore insert, matching Client._schedule_deferred
@@ -183,31 +226,14 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PL
                         await backend.release_unique(dedup_hash, args.name)
                 raise
 
-        if args.format == "json":
-            payload = {
-                "inserted": inserted,
-                "name": args.name,
-                "already_exists": not inserted,
-            }
-            if unique_for is not None:
-                payload["dedup_hash"] = dedup_hash
-                payload["unique_until"] = unique_until
-                if existing_owner is not None:
-                    payload["duplicate_of"] = existing_owner
-            sys.stdout.write(json.dumps(payload) + "\n")
-        elif inserted:
-            sys.stdout.write(f"added schedule {args.name!r}\n")
-        elif existing_owner is not None:
-            sys.stdout.write(
-                f"schedule {args.name!r} rejected — dedup flag already "
-                f"held by {existing_owner!r} (args duplicate within "
-                f"{unique_for}s TTL)\n"
-            )
-        else:
-            sys.stdout.write(
-                f"schedule {args.name!r} already exists; use "
-                f"'schedule remove --permanent' first to replace it\n"
-            )
+        _render_add_result(
+            args,
+            inserted=inserted,
+            existing_owner=existing_owner,
+            dedup_hash=dedup_hash,
+            unique_for=unique_for,
+            unique_until=unique_until,
+        )
     finally:
         await backend.close()
 
