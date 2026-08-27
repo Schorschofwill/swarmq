@@ -1,73 +1,41 @@
-"""SwarmQ Client API."""
+"""Client-Schedule-Seite (Plan U10) — verbatim aus ``client.py``: schedule,
+schedule_many, Dedup-Claim/-Rollback, deferred (delay/eta) und die
+Queue-/Delivery-Auflösung. ``_MISSING`` lebt hier und wird von der Fassade
+re-exportiert (app.py importiert es unverändert)."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json as _json
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.broker.rabbitmq import RabbitMQBroker
+    pass
 
 from swarmq.exceptions import (
-    ResultNotReadyError,
-    TaskCancelledError,
-    TaskError,
     TaskNotFoundError,
 )
 from swarmq.headers import (
     HEADER_ENQUEUED_AT,
     HEADER_UNIQUE_HASH,
     HEADER_UNIQUE_UNTIL,
-    HEADER_WORKFLOW_ID,
-    HEADER_WORKFLOW_STEP,
 )
 from swarmq.middleware import (
     MessageContext,
-    MiddlewareChain,
-    coerce_middleware_chain_factory,
 )
-from swarmq.progress import ProgressInfo
-from swarmq.registry import TaskRegistry
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import (
     compute_dedup_hash,
-    decode_result,
     encode_json,
 )
-from swarmq.signals import Signal, SignalDispatcher
-from swarmq.workflow import Chain, Chord, Group, Signature
-from swarmq.workflow_orchestration import (
-    STATUS_FAILED,
-    WorkflowHandle,
-    build_initial_workflow_state,
-    initial_frontier,
-    workflow_step_task_id,
-)
+from swarmq.signals import Signal
 
 logger = structlog.get_logger()
 
-
-# Default TTL for the cancel flag. 24h is wide enough to outlive the
-# typical retry-horizon + redelivery window while still self-healing
-# orphaned flags within a day (REV-P3 cleanup). Callers who want a
-# tighter window (e.g. deterministic task_id systems vulnerable to
-# stale-flag-zombie, see Client.cancel docstring) can override.
-_DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
-
-# R4.1 Workflow state TTL. Workflow topology/status must outlive the
-# longest step + retry horizon so reattach (R14) and fan-in (R6) stay
-# resolvable. 24h matches the result-TTL default; app.apply() passes
-# config.result_ttl * 1000 through.
-_DEFAULT_WORKFLOW_TTL_MS = 86_400_000  # 24h
 
 
 # R3.5 Unique Tasks: module-private sentinel that distinguishes
@@ -103,57 +71,9 @@ class _MissingType:
 _MISSING = _MissingType()
 
 
-class Client:
-    """Schedule tasks and retrieve results.
 
-    Operates in two modes:
-    - With registry: validates task names against the registry and resolves
-      queues from TaskInfo.
-    - Without registry (Client-Modus, spec 2.6): skips validation, requires
-      an explicit queue for every schedule() call.
-    """
 
-    def __init__(
-        self,
-        broker: RabbitMQBroker,
-        backend: ValkeyBackend,
-        registry: TaskRegistry | None = None,
-        middleware_chain: MiddlewareChain
-        | Callable[[], MiddlewareChain]
-        | None = None,
-        signal_dispatcher: SignalDispatcher | None = None,
-        backend_op_timeout: float | None = None,
-    ) -> None:
-        self._broker = broker
-        self._backend = backend
-        self._registry = registry
-        # R3.5: bound every Valkey call on the enqueue hot path so a
-        # hung backend cannot wedge Client.schedule. None preserves
-        # pre-R3.5 behavior (no enforcement at the Client layer);
-        # SwarmQ passes config.backend_op_timeout through so app-mode
-        # callers inherit the same guard the Worker already uses.
-        self._backend_op_timeout = backend_op_timeout
-        # Accept either a static MiddlewareChain (backward compat) or a
-        # zero-arg factory callable that returns a fresh chain on each call.
-        # Storing a factory lets us see middleware registered AFTER Client
-        # construction — e.g. when SwarmQ.add_middleware() is called after
-        # the Client has already been built.
-        self._middleware_chain_factory = coerce_middleware_chain_factory(
-            middleware_chain
-        )
-        self._signal_dispatcher = (
-            signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
-        )
-        # Lazy-init (Fork 2 / Review-Finding P2-6). ScheduleStore requires a
-        # connected backend to register its Lua scripts — but Client is
-        # constructed before backend.connect(). We defer the construction to
-        # the first schedule(delay=|eta=) call.
-        self._schedule_store: ScheduleStore | None = None
-
-    def _get_chain(self) -> MiddlewareChain:
-        """Return a live MiddlewareChain for the current schedule() call."""
-        return self._middleware_chain_factory()
-
+class ClientScheduling:
     def _resolve_queue_and_delivery_mode(
         self, task_name: str, queue: str | None
     ) -> tuple[str, str]:
@@ -454,80 +374,6 @@ class Client:
 
         return final_for, final_until
 
-    async def get_result(
-        self,
-        task_id: str,
-        timeout: float = 10,
-        polling: float = 0.2,
-    ) -> Any:
-        """Retrieve a task result, waiting up to *timeout* seconds.
-
-        ``timeout == 0`` is a single GET. Otherwise the wait (Pub/Sub with
-        polling fallback, every GET bound to the remaining deadline —
-        Härtung R2 P1-2) lives in ``ResultBackend.wait_for_result`` since
-        U17; ``polling`` is kept for API compatibility.
-        """
-        if timeout == 0:
-            raw = await self._backend.get_result(task_id)
-        else:
-            raw = await self._backend.wait_for_result(task_id, timeout=timeout)
-        if raw is None:
-            raise ResultNotReadyError(task_id)
-        return self._unpack(raw)
-
-    # ------------------------------------------------------------------
-    # R3.7 Progress tracking — consumer side
-    # ------------------------------------------------------------------
-
-    async def get_progress(self, task_id: str) -> ProgressInfo | None:
-        """Read the current progress HASH for *task_id*.
-
-        Returns ``None`` when no progress has been recorded — either
-        the task never called :meth:`Task.update_progress`, the TTL
-        has expired, or the task_id is unknown. The caller should
-        treat None as "nothing observed yet", not "task complete".
-
-        One-shot read; use :meth:`watch_progress` for a live stream.
-
-        Returns None when the HASH exists but is malformed (missing
-        required fields or non-parseable numerics). A malformed HASH is
-        treated as "nothing observable" rather than surfacing a decode
-        error — callers should never crash on a corrupt payload written
-        by a rogue publisher or a future schema version.
-        """
-        raw = await self._backend.get_progress(task_id)
-        if raw is None:
-            return None
-        try:
-            return ProgressInfo.from_hash(raw)
-        except ValueError:
-            return None
-
-    async def watch_progress(
-        self, task_id: str,
-    ) -> AsyncIterator[ProgressInfo]:
-        """Stream progress updates for *task_id*.
-
-        The Pub/Sub subscription, the initial HASH snapshot, the
-        resubscribe-after-disconnect discipline (2026-04-17 toxiproxy
-        spike) and the setup-failure fallback live in
-        ``ResultBackend.watch_progress`` since U17; it yields JSON payloads
-        of the progress fields. This layer decodes them into
-        :class:`ProgressInfo` and drops malformed payloads silently — the
-        iterator never crashes on a bad publish. It never completes on its
-        own; the caller ``break``s when satisfied.
-        """
-        async for payload in self._backend.watch_progress(task_id):
-            try:
-                fields = _json.loads(payload)
-                info = ProgressInfo.from_hash(fields)
-            except ValueError:
-                # Malformed publish (rogue producer, future schema) — drop
-                # and continue; never crash the iterator on a bad payload.
-                continue
-            if info is not None:
-                yield info
-
     async def schedule_many(  # noqa: C901, PLR0915  # U10 (client/schedule.py)
         self,
         tasks: list[tuple[str, tuple, dict]],
@@ -795,90 +641,6 @@ class Client:
 
         return task_ids
 
-    async def get_results(
-        self,
-        task_ids: list[str],
-        timeout: float = 10,
-        poll_interval: float = 0.005,
-    ) -> list[Any]:
-        """Retrieve results for multiple tasks using MGET-based batch polling.
-
-        Polls every *poll_interval* seconds until all results are available
-        or *timeout* is exceeded.
-        """
-        if not task_ids:
-            return []
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        raw_list: list[bytes | None] = [None] * len(task_ids)
-
-        while loop.time() < deadline:
-            raw_list = await self._backend.get_results_batch(task_ids)
-            if all(r is not None for r in raw_list):
-                return [self._unpack(r) for r in raw_list]
-            await asyncio.sleep(poll_interval)
-
-        missing = [
-            tid for tid, raw in zip(task_ids, raw_list)  # noqa: B905  # gleich lang per Konstruktion
-            if raw is None
-        ]
-        raise ResultNotReadyError(
-            f"Timeout waiting for task_ids: {missing}"
-        )
-
-    async def run(
-        self,
-        task_name: str,
-        *args: Any,
-        queue: str | None = None,
-        timeout: float = 10,
-        polling: float = 0.2,
-        **kwargs: Any,
-    ) -> Any:
-        """Schedule a task and wait for its result."""
-        task_id = await self.schedule(task_name, *args, queue=queue, **kwargs)
-        return await self.get_result(task_id, timeout=timeout, polling=polling)
-
-    async def cancel(
-        self, task_id: str, ttl_ms: int = _DEFAULT_CANCEL_FLAG_TTL_MS,
-    ) -> bool:
-        """Request cancellation of *task_id*.
-
-        Fire-and-forget: sets the Valkey cancel flag (with TTL) and
-        returns immediately.  Does **not** wait for a worker to react.
-
-        Args:
-            task_id: the task to cancel.  Must be a non-empty string;
-                format is not validated otherwise — cancellation for
-                unknown IDs is harmless and self-heals via TTL.
-            ttl_ms: how long the flag lives in Valkey, in milliseconds.
-                Defaults to 24 hours.  The SwarmQ app wrapper passes
-                ``config.result_ttl * 1000`` so the flag outlives a
-                typical retry window.
-
-        Returns:
-            True when the flag was newly set, False when it already
-            existed (i.e. a prior cancel() call is still in flight).
-
-        .. warning::
-
-           **Stale-flag zombie class** (REV-P2-5, accepted limitation).
-           The cancel flag lives for ``ttl_ms`` (24h by default) in
-           Valkey. If the same ``task_id`` is reused within that window
-           (e.g. deterministic IDs, nack-requeue redelivery after a
-           crash before clear_cancel_flag ran), the stale flag will
-           cancel the next delivery too. Two mitigations if you hit
-           this in production: (a) keep ``task_id`` unique per
-           schedule (uuid.uuid7 defaults do this), (b) shorten
-           ``ttl_ms`` to less than your expected redelivery window.
-           A flag-nonce scheme is tracked for a future release if
-           a real caller reports the issue.
-        """
-        if not task_id:
-            raise ValueError("task_id must be a non-empty string")
-        return await self._backend.set_cancel_flag(task_id, ttl_ms)
-
     async def _schedule_deferred(
         self,
         task_name: str,
@@ -966,140 +728,3 @@ class Client:
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         return task_id
-
-    # ------------------------------------------------------------------
-    # R4.1 Workflow primitives — apply / reattach
-    # ------------------------------------------------------------------
-
-    async def apply(
-        self,
-        workflow: Signature | Chain | Group | Chord,
-        *,
-        state_ttl_ms: int = _DEFAULT_WORKFLOW_TTL_MS,
-    ) -> WorkflowHandle:
-        """Start a workflow fire-and-forget; return a reattachable handle (R10).
-
-        Persists the topology + initial state to Valkey, then enqueues the
-        initial frontier (first chain step / all group members / chord
-        header) as ``AT_LEAST_ONCE`` workflow-step messages. The worker
-        advancement seam drives the rest. Returns immediately — the workflow
-        runs independently of this client process.
-
-        State is written BEFORE the frontier is published so a fast-completing
-        first step always finds the topology in Valkey when it advances.
-        """
-        workflow_id = str(uuid.uuid7())
-        frontier = initial_frontier(workflow)  # list[(step_path, Signature)]
-
-        # Generate task ids up front so the persisted state records the
-        # initial step->task_id mapping the worker reads when advancing.
-        enqueue_plan: list[tuple[str, str, Signature, str]] = []
-        step_tasks: dict[str, str] = {}
-        for step_path, signature in frontier:
-            # Deterministic step id (shared scheme with the worker advancer)
-            # so a redelivered step stays idempotent — same id in the chord
-            # SADD set, same result key. See workflow_step_task_id.
-            task_id = workflow_step_task_id(workflow_id, step_path)
-            resolved_queue, _delivery = self._resolve_queue_and_delivery_mode(
-                signature.task_name, None
-            )
-            enqueue_plan.append((step_path, task_id, signature, resolved_queue))
-            step_tasks[step_path] = task_id
-
-        state = build_initial_workflow_state(workflow_id, workflow.to_dict())
-        state["step_tasks"] = step_tasks
-        await self._backend.store_workflow_state(
-            workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
-            op_timeout=self._backend_op_timeout,
-        )
-
-        enqueued_at = int(time.time())
-        try:
-            for step_path, task_id, signature, resolved_queue in enqueue_plan:
-                message = {
-                    "task": {
-                        "id": task_id,
-                        "queue": resolved_queue,
-                        "name": signature.task_name,
-                    },
-                    "args": list(signature.args),
-                    "kwargs": signature.kwargs,
-                }
-                headers = {
-                    HEADER_WORKFLOW_ID: workflow_id,
-                    HEADER_WORKFLOW_STEP: step_path,
-                    HEADER_ENQUEUED_AT: enqueued_at,
-                }
-                await self._broker.publish(
-                    resolved_queue, encode_json(message), headers=headers
-                )
-        except Exception as exc:
-            # Partial-frontier publish failure: members 1..k-1 are enqueued
-            # and the state is already persisted as "running", but the
-            # frontier is incomplete so a group/chord can never reach N and
-            # the workflow would hang until TTL. Best-effort mark it failed so
-            # a reattach sees the failure instead of an orphaned running state.
-            # The already-enqueued members run harmlessly (their advance finds
-            # a terminal workflow and no-ops).
-            with contextlib.suppress(Exception):
-                state["status"] = STATUS_FAILED
-                state["error"] = {
-                    "type": type(exc).__name__,
-                    "message": f"apply() failed to enqueue the initial frontier: {exc}",
-                }
-                await self._backend.store_workflow_state(
-                    workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
-                    op_timeout=self._backend_op_timeout,
-                )
-            raise
-
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_ENQUEUED,
-            task_id=workflow_id,
-            task_name="<workflow>",
-            queue="<workflow>",
-        )
-        return WorkflowHandle(
-            self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms
-        )
-
-    async def workflow(self, workflow_id: str) -> WorkflowHandle:
-        """Reattach to a running/finished workflow by id (R14).
-
-        Raises :class:`WorkflowNotFound` when no state exists for the id
-        (never started, or expired) — never returns a handle over empty
-        state.
-        """
-        raw = await self._backend.get_workflow_state(
-            workflow_id, op_timeout=self._backend_op_timeout
-        )
-        if raw is None:
-            from swarmq.exceptions import WorkflowNotFound
-
-            raise WorkflowNotFound(workflow_id)
-        return WorkflowHandle(
-            self._backend, workflow_id, self._unpack,
-            cancel_ttl_ms=_DEFAULT_WORKFLOW_TTL_MS,
-        )
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _unpack(raw: bytes) -> Any:
-        """Decode a raw result and return the value or raise on cancel/error.
-
-        Priority: is_cancelled > is_error > success. Cancelled results
-        raise :class:`TaskCancelledError` even when ``is_error`` is also
-        set, because cancel bypasses the normal error pipeline and the
-        caller needs to distinguish a user-initiated abort from a task
-        failure.
-        """
-        data = decode_result(raw)
-        if data.get("is_cancelled", False):
-            task_id = data.get("task", {}).get("id")
-            raise TaskCancelledError(task_id)
-        if data.get("is_error"):
-            raise TaskError(data.get("error_message", "unknown error"))
-        return data["result"]
