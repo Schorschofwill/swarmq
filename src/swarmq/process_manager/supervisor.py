@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
@@ -60,7 +60,7 @@ class WorkerInfo:
     C-03 / Unit 5).
     """
 
-    process: multiprocessing.Process
+    process: multiprocessing.process.BaseProcess
     worker_id: int
     expected_shutdown: bool = False  # True when Autoscaler scaled down
     restart_timestamps: list[float] = field(default_factory=list)
@@ -130,7 +130,7 @@ class ProcessManager:
         self,
         num_workers: int,
         worker_entry: Callable[..., None],
-        worker_args: tuple = (),
+        worker_args: tuple[Any, ...] = (),
         *,
         autoscale: tuple[int, int] | None = None,
         queue_depth_fn: QueueDepthFn | None = None,
@@ -329,13 +329,13 @@ class ProcessManager:
         signal.signal(signal.SIGTERM, self._on_shutdown_signal)
         signal.signal(signal.SIGHUP, self._on_reload_signal)
 
-    def _on_shutdown_signal(self, signum: int, _frame) -> None:
+    def _on_shutdown_signal(self, signum: int, _frame: object) -> None:
         sig_name = signal.Signals(signum).name
         logger.info("process_manager_shutdown_signal", signal=sig_name)
         self._shutting_down = True
         self.shutdown_event.set()
 
-    def _on_reload_signal(self, _signum: int, _frame) -> None:
+    def _on_reload_signal(self, _signum: int, _frame: object) -> None:
         logger.info("process_manager_reload_requested")
         self._reload_requested = True
         self._shutting_down = True

@@ -95,6 +95,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "resolve_format",               # internal — TTY+env --format resolver (R-5, CLI-04)
         # --- ambient imports (R-1 compat: frozen to avoid silent breakage) --
         "Any",                          # ambient
+        "TYPE_CHECKING",                # ambient — U12: Typ-Import für die Sampler-Factory
         "BackendConnectionError",       # ambient
         "BrokerConnectionError",        # ambient
         "ConfigurationError",           # ambient

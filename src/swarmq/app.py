@@ -121,7 +121,7 @@ class SwarmQ:
 
     async def schedule_many(
         self,
-        tasks: list[tuple[str, tuple, dict]],
+        tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None = None,
         *,
         unique_for: int | None | _MissingType = _MISSING,
@@ -234,7 +234,7 @@ class SwarmQ:
         # bind to swarmq.worker.Worker and bypass the facade patch.
         from swarmq import app as _app_module
 
-        worker = _app_module.Worker(
+        worker = _app_module.Worker(  # type: ignore[operator]  # PEP-562-Fassaden-Attribut, patchbar
             self.broker,
             self.backend,
             self.registry,

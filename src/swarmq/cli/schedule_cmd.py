@@ -26,6 +26,7 @@ from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import compute_dedup_hash
+from swarmq.task import UniqueUntil
 
 # ``_backend_from_env`` is resolved LAZILY via ``swarmq.cli`` so that
 # a future ``monkeypatch.setattr(cli, "_backend_from_env", fake)`` in
@@ -133,7 +134,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:  # noqa: C901, PL
     # semantics. On duplicate, the insert is skipped and the existing
     # claim's owner is reported so operators can correlate.
     unique_for: int | None = getattr(args, "unique_for", None)
-    unique_until: str = getattr(args, "unique_until", "completion")
+    unique_until: UniqueUntil = getattr(args, "unique_until", "completion")
 
     backend = await _get_backend_factory()()
     dedup_hash: str | None = None

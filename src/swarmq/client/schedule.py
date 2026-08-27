@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 
 if TYPE_CHECKING:
-    pass
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.middleware import MiddlewareChain
+    from swarmq.registry import TaskRegistry
+    from swarmq.signals import SignalDispatcher
 
 from swarmq.exceptions import (
     TaskNotFoundError,
@@ -33,6 +37,7 @@ from swarmq.serialization import (
     encode_json,
 )
 from swarmq.signals import Signal
+from swarmq.task import UniqueUntil
 
 logger = structlog.get_logger()
 
@@ -74,6 +79,17 @@ _MISSING = _MissingType()
 
 
 class ClientScheduling:
+    # Mixin über dem Client-Zustand (U10); die Attribute setzt ``Client.__init__``.
+    _schedule_store: ScheduleStore | None
+    if TYPE_CHECKING:
+        _broker: RabbitMQBroker
+        _backend: ValkeyBackend
+        _registry: TaskRegistry | None
+        _backend_op_timeout: float | None
+        _signal_dispatcher: SignalDispatcher
+
+        def _get_chain(self) -> MiddlewareChain: ...
+
     def _resolve_queue_and_delivery_mode(
         self, task_name: str, queue: str | None
     ) -> tuple[str, str]:
@@ -107,8 +123,8 @@ class ClientScheduling:
     async def _claim_unique_flag(
         self,
         task_name: str,
-        args: tuple,
-        kwargs: dict,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
         task_id: str,
         ttl_ms: int,
         source: str,
@@ -342,7 +358,7 @@ class ClientScheduling:
         task_name: str,
         unique_for: int | None | _MissingType,
         unique_until: Literal["start", "completion"] | _MissingType,
-    ) -> tuple[int | None, str]:
+    ) -> tuple[int | None, UniqueUntil]:
         """Resolve effective unique_for / unique_until for a schedule() call.
 
         Rules (origin CD1):
@@ -354,9 +370,9 @@ class ClientScheduling:
         unique_until follows the same pattern with default "completion".
         """
         final_for: int | None
-        final_until: str = "completion"
+        final_until: UniqueUntil = "completion"
 
-        if unique_for is _MISSING:
+        if isinstance(unique_for, _MissingType):
             final_for = None
             if self._registry is not None and self._registry.has(task_name):
                 entry = self._registry.get_entry(task_name)
@@ -365,18 +381,16 @@ class ClientScheduling:
         else:
             final_for = unique_for
 
-        if unique_until is _MISSING:
-            # Already set from TaskInfo above (or still "completion" default
-            # in Client-Modus).
-            pass
-        else:
+        if not isinstance(unique_until, _MissingType):
             final_until = unique_until
+        # sonst: bereits aus TaskInfo gesetzt (oder "completion"-Default
+        # im Client-Modus).
 
         return final_for, final_until
 
     async def schedule_many(  # noqa: C901, PLR0915  # U10 (client/schedule.py)
         self,
-        tasks: list[tuple[str, tuple, dict]],
+        tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None = None,
         *,
         unique_for: int | None | _MissingType = _MISSING,
@@ -651,7 +665,7 @@ class ClientScheduling:
         delay: float | None,
         eta: datetime | None,
         unique_for: int | None = None,
-        unique_until: str = "completion",
+        unique_until: UniqueUntil = "completion",
     ) -> str:
         """Write a one-shot entry to the ScheduleStore and return task_id.
 

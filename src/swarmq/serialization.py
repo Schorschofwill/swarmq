@@ -32,7 +32,7 @@ def decode_json(data: bytes, type_hint: type | None = None) -> Any:
     """Deserialize JSON bytes."""
     try:
         if type_hint is not None:
-            decoder = msgspec.json.Decoder(type_hint)
+            decoder: msgspec.json.Decoder[Any] = msgspec.json.Decoder(type_hint)
             return decoder.decode(data)
         return _json_decoder.decode(data)
     except (msgspec.DecodeError, msgspec.ValidationError) as exc:
@@ -117,7 +117,7 @@ def _canonicalize(obj: Any) -> Any:  # noqa: C901  # Follow-Up 0.2.x
     )
 
 
-def canonical_encode(args: tuple, kwargs: dict) -> bytes:
+def canonical_encode(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
     """Produce deterministic JSON bytes for (args, kwargs) dedup hashing.
 
     Pre-normalizes values (UUID→str, datetime→iso, Decimal→str, set→sorted list)
@@ -134,7 +134,7 @@ def canonical_encode(args: tuple, kwargs: dict) -> bytes:
     return _json_encoder.encode(canonical)
 
 
-def compute_dedup_hash(task_name: str, args: tuple, kwargs: dict) -> str:
+def compute_dedup_hash(task_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
     """sha256-hex of task_name + canonical_encode(args, kwargs).
 
     Shared helper for R3.5 producer-side SETNX: Client.schedule,
@@ -240,7 +240,7 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
 def encode_result(obj: Any) -> bytes:
     """Serialize obj to msgpack bytes."""
     try:
-        return msgpack.packb(obj, default=_msgpack_default)
+        return msgpack.packb(obj, default=_msgpack_default)  # type: ignore[no-any-return]  # msgpack ist untypisiert
     except (TypeError, ValueError) as exc:
         raise ResultSerializationError(
             f"Failed to msgpack-encode object of type {type(obj).__name__}: {exc}"

@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -39,6 +39,7 @@ from swarmq.locking import LockManager
 # _active_handler_locks registry. Single source of truth for the field
 # ordering so destructuring sites are self-documenting.
 _LockEntry = tuple[str, str, int]
+from swarmq.contracts import PublishReceipt
 from swarmq.exceptions import (
     BackendConnectionError,
     TaskNotFoundError,
@@ -106,7 +107,7 @@ class Worker(WorkerLifecycle):
             signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         )
         self._semaphore = asyncio.Semaphore(config.concurrency)
-        self._active_tasks: set[asyncio.Task] = set()
+        self._active_tasks: set[asyncio.Task[None]] = set()
         self._state = WorkerState.STARTING
         self._shutdown_event = asyncio.Event()
         # RateLimiter needs an already-connected Valkey client; instantiated
@@ -170,17 +171,17 @@ class Worker(WorkerLifecycle):
         # Without this set, the orphaned release would race backend.close
         # and likely fail with BackendConnectionError, leaving the lock
         # held until TTL.
-        self._detached_releases: set[asyncio.Task] = set()
+        self._detached_releases: set[asyncio.Task[None]] = set()
         # R4.5 Burst-Mode state. Initialised at start() time; the
         # monitor coroutine reads it every poll. monotonic() so wall-
         # clock jumps don't trigger a false-idle exit.
         self._last_message_received_at: float = 0.0
-        self._burst_monitor_task: asyncio.Task | None = None
+        self._burst_monitor_task: asyncio.Task[None] | None = None
         # 2026-06-02 audit P1-3: periodic metrics sampler. Populates the
         # queue_depth / dlq_messages / worker_uptime_seconds gauges (which
         # were declared but never .set()) and emits WORKER_HEARTBEAT.
         # Started in start() only when metrics are enabled.
-        self._metrics_sampler_task: asyncio.Task | None = None
+        self._metrics_sampler_task: asyncio.Task[None] | None = None
         self._worker_started_at: float = 0.0
         # Guards the cancel-path teardown (see start()'s finally /
         # _teardown_on_exit) so it is a no-op once _execute_shutdown has run.
@@ -189,7 +190,7 @@ class Worker(WorkerLifecycle):
         # start() when config.metrics_port / config.health_port are set.
         # Proper Optional typing (kieran KP-001 / M-04) — TYPE_CHECKING
         # import keeps the runtime dependency lazy without the
-        # type: ignore suppressions.
+        # type-ignore-Suppressions.
         self._metrics: Metrics | None = None
         self._metrics_server: MetricsServer | None = None
         self._health_server: HealthServer | None = None
@@ -209,6 +210,7 @@ class Worker(WorkerLifecycle):
         problems must not break the worker pipeline. The TTL-recovery
         path is the safety net for any lock that ends up not released.
         """
+        assert self._lock_manager is not None  # Locks existieren nur nach start()
         for lock_name, owner_token, max_concurrency in acquired_locks:
             try:
                 await self._lock_manager.release(
@@ -225,7 +227,7 @@ class Worker(WorkerLifecycle):
         # don't want shutdown-cleanup to double-release.
         self._active_handler_locks.pop(handler_id, None)
 
-    async def _on_message(self, message) -> None:
+    async def _on_message(self, message: Any) -> None:
         """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
         # R4.5 Burst-Mode: every delivered message resets the idle clock.
         # _burst_monitor uses this to decide when 'all queues idle' has
@@ -235,7 +237,7 @@ class Worker(WorkerLifecycle):
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _finalize_schedfire(self, message, *, terminal: bool) -> None:
+    async def _finalize_schedfire(self, message: Any, *, terminal: bool) -> None:
         """Finalize the in-flight schedfire claim for this message.
 
         Called from the ``_handle_message`` finally block (and the
@@ -262,6 +264,7 @@ class Worker(WorkerLifecycle):
             return
         try:
             if terminal:
+                assert self._config.scheduler_dedup_ttl is not None  # Config-Default
                 ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
                 await self._backend.set_schedfire_dedup(schedfire_key, ttl_ms)
             else:
@@ -275,7 +278,7 @@ class Worker(WorkerLifecycle):
             )
 
     @staticmethod
-    def _extract_valid_unique_hash(message) -> str | None:
+    def _extract_valid_unique_hash(message: Any) -> str | None:
         """Read and validate the unique-hash header from an incoming message.
 
         Producer sites emit a sha256 hex digest (64 lowercase hex chars).
@@ -296,7 +299,7 @@ class Worker(WorkerLifecycle):
         return unique_hash
 
     @staticmethod
-    def _extract_valid_workflow_id(message) -> str | None:
+    def _extract_valid_workflow_id(message: Any) -> str | None:
         """Read and validate the workflow-id header from an incoming message.
 
         Workflow ids are minted as ``str(uuid.uuid7())`` (client/worker side)
@@ -319,7 +322,7 @@ class Worker(WorkerLifecycle):
         return wf_id
 
     async def _maybe_release_unique(
-        self, message, task_id: str, task_info: TaskInfo | None = None,
+        self, message: Any, task_id: str, task_info: TaskInfo | None = None,
     ) -> None:
         """Release the R3.5 dedup flag if this message carries one.
 
@@ -360,7 +363,7 @@ class Worker(WorkerLifecycle):
             op_timeout=self._config.backend_op_timeout,
         )
 
-    async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict):
+    async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict[str, Any]) -> PublishReceipt:
         """Publish a next workflow step. Thin adapter so the advancer stays
         broker-agnostic; broker.publish runs on aio_pika's publisher-confirms
         channel, so the awaited call returns only after the broker confirms
@@ -377,7 +380,7 @@ class Worker(WorkerLifecycle):
             queue = f"{queue}.{entry.task_info.priority}"
         return queue
 
-    async def _handle_message(self, message) -> None:  # noqa: C901, PLR0915  # U19 (Runner)
+    async def _handle_message(self, message: Any) -> None:  # noqa: C901, PLR0915  # U19 (Runner)
         """Core message handler logic."""
         # Härtung R2 P2: size cap BEFORE the decode. msgspec has a
         # built-in recursion-depth guard but no size guard — a
@@ -480,8 +483,8 @@ class Worker(WorkerLifecycle):
         # Optional Dishka REQUEST scope. Entered just before the task
         # lifecycle (below) and torn down in the finally via the same
         # detached-shield pattern as lock release. None when DI is inactive.
-        _di_scope: object | None = None
-        _di_token: object | None = None
+        _di_scope: Any = None
+        _di_token: Any = None
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():

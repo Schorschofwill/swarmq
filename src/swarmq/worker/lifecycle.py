@@ -20,17 +20,29 @@ import os
 import signal
 import sys
 import time
+import uuid
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from swarmq.dishka import _MISSING, get_registered_container
+from swarmq.backend.valkey.chords import ChordManager
+from swarmq.dishka import _Missing, get_registered_container
 from swarmq.limits import RateLimiter
 from swarmq.locking import LockManager
 from swarmq.logging import sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
-from swarmq.workflow_orchestration import ChordManager, WorkflowAdvancer, workflow_step_task_id
+from swarmq.workflow_orchestration import WorkflowAdvancer, workflow_step_task_id
+
+if TYPE_CHECKING:
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.config import SwarmQConfig
+    from swarmq.health import HealthServer
+    from swarmq.metrics import Metrics, MetricsServer
+    from swarmq.registry import TaskRegistry
+    from swarmq.signals import SignalDispatcher
 
 logger = structlog.get_logger()
 
@@ -49,6 +61,36 @@ class WorkerState(enum.Enum):
 
 
 class WorkerLifecycle:
+    # Mixin über dem Worker-Zustand (U9); die Attribute setzt
+    # ``Worker.__init__`` (pipeline.py), die Methoden-Stubs zeigen dorthin.
+    if TYPE_CHECKING:
+        _broker: RabbitMQBroker
+        _backend: ValkeyBackend
+        _registry: TaskRegistry
+        _config: SwarmQConfig
+        _signal_dispatcher: SignalDispatcher
+        _shutdown_event: asyncio.Event
+        _active_tasks: set[asyncio.Task[None]]
+        _active_handler_locks: dict[uuid.UUID, list[tuple[str, str, int]]]
+        _detached_releases: set[asyncio.Task[None]]
+        _workflow_advancer: WorkflowAdvancer | None
+        _scheduler: SchedulerLoop | None
+        _rate_limiter: RateLimiter | None
+        _lock_manager: LockManager | None
+        _metrics: Metrics | None
+        _metrics_server: MetricsServer | None
+        _health_server: HealthServer | None
+        _burst_monitor_task: asyncio.Task[None] | None
+        _metrics_sampler_task: asyncio.Task[None] | None
+
+        async def _on_message(self, message: Any) -> None: ...
+
+        async def _publish_workflow_step(
+            self, queue: str, body: bytes, headers: dict[str, Any]
+        ) -> Any: ...
+
+        def _resolve_workflow_queue(self, task_name: str) -> str: ...
+
     async def start(self) -> None:  # noqa: C901, PLR0915  # U9 (worker/lifecycle.py)
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
@@ -328,6 +370,7 @@ class WorkerLifecycle:
         """One metrics-sampler iteration (extracted for testability):
         set the uptime / queue-depth / dlq gauges and emit the heartbeat.
         Per-queue broker errors are logged and skipped."""
+        assert self._metrics is not None  # Sampler startet nur mit Metrics
         worker_id = str(id(self))
         now = time.monotonic()
         uptime = now - self._worker_started_at
@@ -471,7 +514,7 @@ class WorkerLifecycle:
         # APP-scoped resources (connection pools etc.) are torn down here; a
         # close() failure is logged, not raised, so it cannot abort shutdown.
         _di_container = get_registered_container()
-        if _di_container is not _MISSING:
+        if not isinstance(_di_container, _Missing):
             try:
                 await _di_container.close()
             except Exception:

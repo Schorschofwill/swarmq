@@ -7,12 +7,18 @@ from __future__ import annotations
 import asyncio
 import json as _json
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
 if TYPE_CHECKING:
-    pass
+    from datetime import datetime
+
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.client.schedule import _MISSING, _MissingType
+    from swarmq.registry import TaskRegistry
+    from swarmq.signals import SignalDispatcher
 
 from swarmq.exceptions import (
     ResultNotReadyError,
@@ -31,6 +37,31 @@ _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
 
 
 class ClientResults:
+    # Mixin über dem Client-Zustand (U10); Fremd-Methoden-Stubs zeigen auf
+    # die Geschwister-Mixins (schedule → ClientScheduling, _unpack →
+    # ClientWorkflows) — die Signaturen sind dort verbindlich.
+    if TYPE_CHECKING:
+        _broker: RabbitMQBroker
+        _backend: ValkeyBackend
+        _registry: TaskRegistry | None
+        _backend_op_timeout: float | None
+        _signal_dispatcher: SignalDispatcher
+
+        @staticmethod
+        def _unpack(raw: bytes) -> Any: ...
+
+        async def schedule(
+            self,
+            task_name: str,
+            *args: Any,
+            queue: str | None = None,
+            delay: float | None = None,
+            eta: datetime | None = None,
+            unique_for: int | None | _MissingType = _MISSING,
+            unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
+            **kwargs: Any,
+        ) -> str: ...
+
     async def get_result(
         self,
         task_id: str,
@@ -122,7 +153,9 @@ class ClientResults:
         while loop.time() < deadline:
             raw_list = await self._backend.get_results_batch(task_ids)
             if all(r is not None for r in raw_list):
-                return [self._unpack(r) for r in raw_list]
+                # ``all(... is not None)`` schließt None aus; mypy sieht das
+                # Narrowing über die Comprehension-Grenze nicht.
+                return [self._unpack(r) for r in raw_list if r is not None]
             await asyncio.sleep(poll_interval)
 
         missing = [
@@ -183,4 +216,4 @@ class ClientResults:
         """
         if not task_id:
             raise ValueError("task_id must be a non-empty string")
-        return await self._backend.set_cancel_flag(task_id, ttl_ms)
+        return bool(await self._backend.set_cancel_flag(task_id, ttl_ms))

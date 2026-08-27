@@ -44,7 +44,7 @@ class RetryHandler:
         self,
         delivery: Any,
         ctx: GateContext,
-        exc: Exception,
+        exc: BaseException,
         error_message: str,
         message_dict: MessageContext,
         chain: MiddlewareChain,

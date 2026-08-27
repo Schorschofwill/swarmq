@@ -3,6 +3,7 @@ konfigurierte Variante (CLI reicht die Sampler-Factory durch)."""
 
 from __future__ import annotations
 
+import argparse
 import os
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,7 @@ from swarmq.process_manager.supervisor import ProcessManager, QueueDepthFn
 logger = structlog.get_logger()
 
 
-def run_multi_process_worker(args, *, admin_factory: AdminFactory | None = None) -> int:
+def run_multi_process_worker(args: argparse.Namespace, *, admin_factory: AdminFactory | None = None) -> int:
     """CLI entry for ``swarmq worker --processes N`` / ``--autoscale``.
 
     Called from :func:`swarmq.cli.main` when the user opted into the
@@ -53,7 +54,7 @@ def run_multi_process_worker(args, *, admin_factory: AdminFactory | None = None)
         log_listener.stop()
 
 
-def _run_multi_process_worker_configured(args, *, admin_factory: AdminFactory | None = None) -> int:
+def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_factory: AdminFactory | None = None) -> int:
     """Body of :func:`run_multi_process_worker` after logging setup."""
     broker_url = os.environ["SWARMQ_BROKER_URL"]
     backend_url = os.environ["SWARMQ_BACKEND_URL"]

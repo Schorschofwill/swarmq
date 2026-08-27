@@ -12,6 +12,7 @@ import argparse
 import os
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -240,7 +241,7 @@ async def _broker_from_env() -> RabbitMQBroker:
     return broker
 
 
-def _render_table(rows: list[tuple[str, ...]], empty_label: str) -> str:
+def _render_table(rows: Sequence[tuple[str, ...]], empty_label: str) -> str:
     """Render a list of tuples as a two-space-separated, left-aligned table.
 
     The first row is the header; every subsequent row is data. Column

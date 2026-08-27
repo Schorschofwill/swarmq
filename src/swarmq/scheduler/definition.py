@@ -5,13 +5,16 @@ Bytes-Vertrag ``backend.schedules`` delegiert (KTD4, Entscheidung U18)."""
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
 import structlog
 
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key  # noqa: F401  # Re-Export (KTD10)
+
+if TYPE_CHECKING:
+    from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 
 logger = structlog.get_logger()
 
@@ -44,8 +47,8 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
 
     schedule_name: str
     task_name: str
-    args: tuple
-    kwargs: dict
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
     queue: str
     cron: str | None
     fire_ts_ms: int | None
@@ -118,7 +121,7 @@ class ScheduleStore:
         # Fassaden-Vertrag existiert nicht (Reinheits-Guard, KTD7).
         self._backend = backend
         try:
-            self._store = backend.schedules
+            self._store: ContractScheduleStore = backend.schedules
         except BackendConnectionError as exc:
             raise RuntimeError(
                 "ScheduleStore requires a connected ValkeyBackend (backend.connect() must have been awaited first)"

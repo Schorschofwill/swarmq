@@ -4,6 +4,7 @@ Warnung; geänderte Cron behält ``disabled``)."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import msgspec
 import structlog
@@ -11,13 +12,19 @@ from croniter import croniter
 
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key  # noqa: F401  # Re-Export (KTD10)
-from swarmq.scheduler.definition import ScheduleDefinition
+from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
 from swarmq.task import Task
 
 logger = structlog.get_logger()
 
 
 class SchedulerCronSync:
+    # Mixin über dem Loop-Zustand: die Attribute setzt ``SchedulerLoop.__init__``
+    # (``_backend`` trägt dort das ``SchedulerBackend``-Protocol; hier ``Any``,
+    # weil ein Import aus ``loop`` einen Zyklus schüfe).
+    _backend: Any
+    _store: ScheduleStore
+
     async def sync_taskinfo_crons(self) -> None:
         """Reconcile static ``TaskInfo(cron=...)`` declarations into the
         ``sq:sched:defs`` hash.
