@@ -12,23 +12,16 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import SoftTimeoutError, SwarmQError
 from swarmq.registry import TaskRegistry
-from swarmq.serialization import decode_result, encode_json
+from swarmq.serialization import decode_result
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
+from tests.support.messages import make_message
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_message(payload: dict, headers: dict | None = None) -> MagicMock:
-    """Create a mock AMQP message with JSON-encoded body."""
-    msg = MagicMock()
-    msg.body = encode_json(payload)
-    msg.headers = headers or {}
-    msg.ack = AsyncMock()
-    msg.nack = AsyncMock()
-    return msg
 
 
 def _default_payload(
@@ -115,7 +108,7 @@ async def test_soft_timeout_fires_when_run_exceeds_limit(broker, backend, config
     reg.register(SlowTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="slow_soft", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="slow_soft", args=[], kwargs={}))
     await w._handle_message(msg)
 
     # Should store error result with SoftTimeoutError message
@@ -150,7 +143,7 @@ async def test_soft_timeout_triggers_retry(broker, backend, config):
     reg.register(SlowRetryTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="slow_retry", args=[], kwargs={}),
         headers={},
     )
@@ -191,7 +184,7 @@ async def test_hard_timeout_fires_and_retries(broker, backend, config):
     reg.register(SlowHardTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="slow_hard", args=[], kwargs={}),
         headers={},
     )
@@ -225,7 +218,7 @@ async def test_no_timeouts_normal_behavior(broker, backend, config):
     reg.register(NormalTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="normal", args=[10, 20], kwargs={}))
+    msg = make_message(_default_payload(name="normal", args=[10, 20], kwargs={}))
     await w._handle_message(msg)
 
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -259,7 +252,7 @@ async def test_soft_timeout_skips_post_execution(broker, backend, config):
     reg.register(SoftTimeoutPostTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(_default_payload(name="soft_post", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="soft_post", args=[], kwargs={}))
     await w._handle_message(msg)
 
     assert post_called is False
@@ -292,7 +285,7 @@ async def test_hard_timeout_exhausted_retries_sends_to_dlq(broker, backend, conf
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
     # Simulate retry_count=2 (== max_retries) -> exhausted
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="slow_dlq", args=[], kwargs={}),
         headers={"x-swarmq-retry-count": 2},
     )
@@ -331,7 +324,7 @@ async def test_only_hard_timeout_no_soft(broker, backend, config):
     reg.register(HardOnlyTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="hard_only", args=[], kwargs={}),
         headers={},
     )
@@ -371,7 +364,7 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
     reg.register(FnfHardTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    msg = _make_message(
+    msg = make_message(
         _default_payload(name="fnf_hard", args=[], kwargs={}),
         headers={},
     )
@@ -446,7 +439,7 @@ async def test_watchdog_cancelled_when_task_raises_exception(broker, backend, co
     # Snapshot tasks before so we can compute orphans added by _handle_message.
     tasks_before = asyncio.all_tasks()
 
-    msg = _make_message(_default_payload(name="raising", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="raising", args=[], kwargs={}))
     await w._handle_message(msg)
 
     # Let any pending cancellations flush through the loop.
@@ -497,7 +490,7 @@ async def test_watchdog_cancelled_when_task_soft_timeouts(broker, backend, confi
 
     tasks_before = asyncio.all_tasks()
 
-    msg = _make_message(_default_payload(name="soft_and_hard", args=[], kwargs={}))
+    msg = make_message(_default_payload(name="soft_and_hard", args=[], kwargs={}))
     await w._handle_message(msg)
 
     await asyncio.sleep(0)
@@ -542,7 +535,7 @@ async def test_watchdog_cancelled_on_success(broker, backend, config):
 
     tasks_before = asyncio.all_tasks()
 
-    msg = _make_message(_default_payload(name="fast", args=[7, 35], kwargs={}))
+    msg = make_message(_default_payload(name="fast", args=[7, 35], kwargs={}))
     await w._handle_message(msg)
 
     await asyncio.sleep(0)

@@ -167,9 +167,10 @@ class BrokerContract:
         first = await inbox.next()
         with publish_failure(), pytest.raises(BrokerConnectionError):
             await impl.retry_later(first, delay_ms=10, headers=dict(first.headers))
-        await impl.cancel_consume()
-        inbox2 = await consume_into(impl, queue)
-        again = await inbox2.next()
+        # Original ist noch in flight: ein Verb darauf ist weiterhin zulässig
+        # (nach erfolgreichem retry_later wäre es bereits bestätigt).
+        await impl.redeliver(first)
+        again = await inbox.next()
         assert again.body == b"keep"
         await impl.ack(again)
 
@@ -182,9 +183,8 @@ class BrokerContract:
         with publish_failure(), pytest.raises(BrokerConnectionError):
             await impl.dead_letter(first, headers=dict(first.headers))
         assert await dead_letters(queue) == []
-        await impl.cancel_consume()
-        inbox2 = await consume_into(impl, queue)
-        again = await inbox2.next()
+        await impl.redeliver(first)
+        again = await inbox.next()
         assert again.body == b"keep2"
         await impl.ack(again)
 

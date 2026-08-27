@@ -44,7 +44,7 @@ async def _seed_enqueued(driver: Driver) -> None:
     for step_path, _sig in frontier:
         step_tasks[step_path] = f"seed-{step_path}"
     state["step_tasks"] = step_tasks
-    driver.backend.wf_state[driver.wf_id] = encode_json(state)
+    await driver.backend.store_workflow_state(driver.wf_id, encode_json(state), 60_000)
     for step_path, sig in frontier:
         tid = step_tasks[step_path]
         body = encode_json({
@@ -74,7 +74,9 @@ async def _drain_random(driver: Driver, data: st.DataObject) -> list[str]:
         step_path = headers["x-swarmq-workflow-step"]
         order.append(step_path)
         task_id = await driver._run_step(body)
-        result_value = decode_result(driver.backend.results[task_id])["result"]
+        raw = await driver.backend.get_result(task_id)
+        assert raw is not None
+        result_value = decode_result(raw)["result"]
         await driver.advancer.advance(
             driver.wf_id, step_path, task_id, result_value,
         )

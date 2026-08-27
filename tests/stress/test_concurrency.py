@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import math
 import os
-import socket
 import time
 import uuid
 from typing import Any
@@ -30,6 +29,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.limits import RateLimitConfig, RateLimiter
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.services import port_is_open
 
 # Stress tests are slow by design (10 workers × 1000 tasks can take
 # 30-60s). A 120s budget keeps genuine deadlock detection sharp while
@@ -48,18 +48,12 @@ _VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
 _VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6380"))
 
 
-def _port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
 
 
 @pytest.fixture(autouse=True, scope="session")
 def _check_docker():
-    rabbitmq_ok = _port_is_open(_RABBITMQ_HOST, _RABBITMQ_PORT)
-    valkey_ok = _port_is_open(_VALKEY_HOST, _VALKEY_PORT)
+    rabbitmq_ok = port_is_open(_RABBITMQ_HOST, _RABBITMQ_PORT)
+    valkey_ok = port_is_open(_VALKEY_HOST, _VALKEY_PORT)
     if not (rabbitmq_ok and valkey_ok):
         missing = []
         if not rabbitmq_ok:

@@ -662,12 +662,10 @@ class TestSwarmQMiddlewareAndSignals:
                 middleware_chain=lambda: app.middleware_chain,
             )
 
-            from tests.unit.test_worker import (
-                _default_payload,
-                _make_message,
-            )
+            from tests.support.messages import make_message
+            from tests.unit.test_worker import _default_payload
 
-            msg = _make_message(
+            msg = make_message(
                 _default_payload(name="noop", queue="q", args=[])
             )
             await worker._handle_message(msg)
