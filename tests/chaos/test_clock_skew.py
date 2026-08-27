@@ -40,7 +40,6 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.limits import RateLimiter, parse_rate_limit
-from swarmq.locking import LockManager
 from swarmq.scheduler import (
     ScheduleDefinition,
     SchedulerLoop,
@@ -283,7 +282,7 @@ class TestClockSkew:
         # broker path to avoid the declare-arg mismatch.
         await broker.declare_queue(queue)
 
-        lock_manager = LockManager(backend._client)
+        lock_manager = backend.locks  # LockStore-Vertrag (U11)
         store = ScheduleStore(backend)
         dispatcher = SignalDispatcher()
         config = SwarmQConfig(

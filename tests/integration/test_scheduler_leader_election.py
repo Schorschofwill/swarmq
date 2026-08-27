@@ -16,7 +16,6 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
-from swarmq.locking import LockManager
 from swarmq.scheduler import (
     SchedulerLoop,
     ScheduleStore,
@@ -32,7 +31,7 @@ async def _make_loop(rabbitmq_url, valkey_url, *, owner_token,
     await broker.connect()
     backend = ValkeyBackend(valkey_url)
     await backend.connect()
-    lock_manager = LockManager(backend._client)
+    lock_manager = backend.locks  # LockStore-Vertrag (U11)
     store = ScheduleStore(backend)
     config = SwarmQConfig(
         broker_url=rabbitmq_url,

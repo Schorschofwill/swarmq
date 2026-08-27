@@ -38,7 +38,6 @@ _MAX_MODULE_LINES = 800
 
 # Modul → Unit, die es unter das Limit bringt.
 _LOC_EXCEPTIONS: dict[str, str] = {
-    "swarmq.scheduler": "U11",
     "swarmq.process_manager": "U21",
 }
 
@@ -60,11 +59,11 @@ _CYCLE_ALLOWLIST: list[tuple[str, str]] = [
 ]
 
 _CORE_PACKAGES = ("swarmq.contracts", "swarmq.worker", "swarmq.client", "swarmq.scheduler")
-_PURITY_ACTIVE: frozenset[str] = frozenset({"swarmq.contracts"})  # U11: scheduler; U15: client, worker
+_PURITY_ACTIVE: frozenset[str] = frozenset({"swarmq.contracts", "swarmq.scheduler"})  # U15: client, worker
 _PHASE4_COMPLETE = False
 _FORBIDDEN_IN_CORE = ("aio_pika", "valkey", "swarmq.backend.valkey", "swarmq.broker.rabbitmq")
 _ALIAS_MODULES: frozenset[str] = frozenset(
-    {"swarmq.limits", "swarmq.locking", "swarmq.workflow_orchestration", "swarmq.scheduler"}
+    {"swarmq.limits", "swarmq.locking", "swarmq.workflow_orchestration"}
 )  # KTD10-Re-Exports, bis U15
 
 _SPLIT_MODULES: dict[str, list[str]] = {
@@ -72,6 +71,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.backend.valkey": ["connection", "results"],  # U17
     "swarmq.worker": ["outcome", "pipeline", "gates", "execution", "retry", "results", "lifecycle"],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows"],  # U10
+    "swarmq.scheduler": ["definition", "loop", "sync"],  # U11
 }
 
 

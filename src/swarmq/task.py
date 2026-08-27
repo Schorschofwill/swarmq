@@ -19,7 +19,9 @@ from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
 
 if TYPE_CHECKING:
-    from swarmq.backend.valkey import ValkeyBackend
+    # U11 (KTD7): Vertragstyp statt Implementierung — ``task`` liegt in der
+    # Import-Hülle des reinen ``scheduler``-Pakets.
+    from swarmq.contracts import ResultBackend
     from swarmq.workflow import Signature
 
 _progress_logger = structlog.get_logger()
@@ -278,7 +280,7 @@ class Task:
     # lookup falls back to the class dict. All defaults are immutable
     # scalars so there is no shared-state hazard.
     _task_id: str | None = None
-    _backend: ValkeyBackend | None = None
+    _backend: ResultBackend | None = None
     _task_start_time: float | None = None
     _result_ttl_ms: int = 86_400_000  # 24h fallback
     _last_progress_update: float = 0.0  # instance write shadows on first update
