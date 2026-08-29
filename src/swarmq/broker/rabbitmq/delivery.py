@@ -221,15 +221,11 @@ class RabbitMQDelivery(RabbitMQConnection):
                     if current is not None and current.cancelling() > 0:
                         raise
                 last_exc = exc
-                # Drop the potentially broken channel so the next
-                # _ensure_publish_channel recreates it.
-                if self._publish_channel is not None:
-                    try:
-                        if not self._publish_channel.is_closed:
-                            await self._publish_channel.close()
-                    except Exception:
-                        pass
-                    self._publish_channel = None
+                # Den womoeglich kaputten Kanal verwerfen, damit der
+                # naechste _ensure_publish_channel neu oeffnet. Derselbe
+                # Weg wie beim Deadline-Bruch: Identitaetspruefung unter
+                # der Sperre, Schliessen nebenlaeufig.
+                await self._discard_publish_channel(pub)
                 # Skip the backoff sleep on the final attempt — we are
                 # about to raise anyway. Saves up to 800ms latency at
                 # exhaustion.
