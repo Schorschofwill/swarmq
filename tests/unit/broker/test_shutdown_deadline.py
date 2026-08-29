@@ -8,7 +8,7 @@ Publish noch gegen seine deutlich laengere eigene Frist laeuft.
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -67,6 +67,25 @@ class TestEffectiveDeadline:
         broker.set_publish_deadline(None)
 
         assert broker._effective_publish_timeout() == 7.0
+
+
+class TestReconnectClearsAStaleDeadline:
+    async def test_fresh_connect_resets_the_deadline(self):
+        """Ein frischer Verbindungsaufbau darf keine Endfrist aus einem
+        abgeschlossenen Herunterfahren mitschleppen — sonst scheitert jeder
+        Publish auf der neuen Verbindung sofort."""
+        broker = _broker(timeout=9.0)
+        broker._connection = None
+        loop = asyncio.get_running_loop()
+        broker._publish_deadline_at = loop.time() - 100.0
+
+        connection = AsyncMock()
+        connection.channel = AsyncMock(return_value=AsyncMock(is_closed=False))
+        with patch("aio_pika.connect_robust", AsyncMock(return_value=connection)):
+            await broker.connect()
+
+        assert broker._publish_deadline_at is None
+        assert broker._effective_publish_timeout() == 9.0
 
 
 class TestReschedulingRunningPublishes:

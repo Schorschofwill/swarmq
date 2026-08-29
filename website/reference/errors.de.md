@@ -68,7 +68,24 @@ via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
 
 **Wann geraist.** Beim Worker-Start, wenn RabbitMQ innerhalb des
 Connect-Timeouts nicht erreichbar ist, oder bei einem Reconnect-
-Versuch, der das Retry-Budget erschöpft.
+Versuch, der das Retry-Budget erschöpft. Außerdem, wenn ein Publish
+`SWARMQ_PUBLISH_TIMEOUT_S` überschreitet (Default 120 s) — siehe den
+Zustellvorbehalt unten.
+
+!!! warning "Ein Deadline-Fehler heißt nicht, dass nichts gesendet wurde"
+
+    Lautet die Meldung `exceeded the publish deadline`, ist die Zustellung
+    **unbestimmt**: Die Frist reißt beim Warten auf die Bestätigung des
+    Brokers, er kann die Nachricht also bereits haben. Ein Wiederholversuch
+    kann den Task ein zweites Mal ausführen. Das unterscheidet diesen Fall
+    von allen anderen hier genannten Ursachen, bei denen nichts gesendet
+    wurde.
+
+    Auch ein mit `unique_for` eingereihter Task ist nicht geschützt: swarmq
+    gibt die Dedup-Sperre frei, wenn der Publish wirft, der Wiederholversuch
+    läuft also nicht dagegen. Wenn dir Höchstens-einmal wichtiger ist als
+    der Wiederholversuch, behandle diesen Fall gesondert und gleiche ab,
+    statt blind erneut einzureihen.
 
 **Ursache.** Netzwerk-Partition, falsche URL, RabbitMQ läuft nicht,
 TLS-Mismatch, VHost/User nicht autorisiert.

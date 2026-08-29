@@ -185,6 +185,10 @@ class SwarmQConfig:
         "burst_idle_timeout",
         "publish_timeout_s",
     )
+    # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
+    # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
+    # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
+    # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
 
     def _apply_env_overrides(self) -> None:
         for env_name, field_name, kind in self._ENV_OVERRIDES:

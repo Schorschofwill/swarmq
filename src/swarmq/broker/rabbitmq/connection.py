@@ -287,7 +287,25 @@ class RabbitMQConnection:
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
 
+    async def _drain_pending_channel_closes(self) -> None:
+        """Sammelt die nebenlaeufigen close()-Tasks ein, bevor die Verbindung faellt.
+
+        Ohne das laeuft ein noch offener Schliess-Task in eine abgebaute
+        Verbindung und der Event-Loop meldet beim Teardown "Task was destroyed
+        but it is pending" — Rauschen genau im Diagnosefenster, das dieser
+        Plan verbessern soll. Gebunden, damit ein toter Transport ``close()``
+        nicht erneut blockiert; was dann noch laeuft, wird abgebrochen.
+        """
+        pending = tuple(self._pending_channel_closes)
+        if not pending:
+            return
+        await asyncio.wait(pending, timeout=_CHANNEL_CLOSE_TIMEOUT_S)
+        for task in pending:
+            if not task.done():
+                task.cancel()
+
     async def close(self) -> None:
+        await self._drain_pending_channel_closes()
         if self._owns_connection:
             # Owned (URL) path unchanged: closing the connection closes its
             # channels too.
@@ -376,12 +394,28 @@ class RabbitMQConnection:
           durchgesetzt haben. Das Schliessen ist trotzdem noetig: aiormq
           gibt die offene Confirmation-Future erst dabei frei.
         """
-        async with self._channel_lock:
+        try:
+            await asyncio.wait_for(
+                self._channel_lock.acquire(), timeout=_CHANNEL_CLOSE_TIMEOUT_S
+            )
+        except TimeoutError:
+            # Die Sperre ist belegt. Der Aufrufer steht hier bereits AUSSERHALB
+            # seiner Frist — ihn weiter warten zu lassen, waere genau der
+            # Stillstand, den der Deckel beenden soll. Der stehengelassene
+            # Kanal kostet den naechsten Publish hoechstens einen Fehlversuch.
+            logger.warning("publish_channel_discard_skipped", reason="lock_busy")
+            return
+        try:
             current = self._publish_channel
-            if expected is not None and current is not expected:
-                # Parallel neu geoeffnet — nicht unserer, Finger weg.
+            if current is not expected:
+                # Nicht der Kanal dieses Vorgangs — entweder hat eine parallele
+                # Ausfuehrung neu geoeffnet, oder wir kamen nie zu einem
+                # eigenen (``expected is None``). In beiden Faellen gibt es
+                # hier nichts zu verwerfen.
                 return
             self._publish_channel = None
+        finally:
+            self._channel_lock.release()
 
         if current is None:
             return
@@ -397,8 +431,12 @@ class RabbitMQConnection:
             async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
                 if not channel.is_closed:
                     await channel.close()
-        except (TimeoutError, Exception):
-            logger.debug("publish_channel_close_incomplete", exc_info=True)
+        except Exception:
+            # Best effort — nie eskalieren, aber auch nicht verschweigen: Ein
+            # systematischer Fehlschlag bedeutet, dass aiormq die offene
+            # Confirmation-Future nie freigibt, und das waere auf DEBUG genau
+            # im Diagnosefall unsichtbar.
+            logger.warning("publish_channel_close_incomplete", exc_info=True)
 
     async def _ensure_publish_channel(self) -> aio_pika.abc.AbstractChannel:
         """Return a ready publish channel; recreate if dropped.
@@ -456,7 +494,15 @@ class RabbitMQConnection:
                 if attr == "_publish_channel" and self._publish_channel_factory is not None:
                     channel = await self._publish_channel_factory()
                 else:
-                    channel = await self._connection.channel()
+                    # Gebunden, weil dieser Aufruf die Kanalsperre haelt:
+                    # Channel.Open ist ein RPC ohne eigene Schranke und kehrt
+                    # auf einem still toten Transport nie zurueck. Ungebunden
+                    # wartet jeder andere Sperr-Interessent mit — auch der
+                    # Verwurf nach einem Deadline-Bruch, der dadurch seine
+                    # eigene Frist ueberschreiten wuerde.
+                    channel = await asyncio.wait_for(
+                        self._connection.channel(), timeout=_CHANNEL_READY_TIMEOUT_S
+                    )
             except Exception as exc:
                 raise BrokerConnectionError(
                     f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"

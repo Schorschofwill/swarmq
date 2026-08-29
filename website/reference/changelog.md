@@ -6,6 +6,44 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`swarmq worker` refuses multi-process mode with a fixed observability
+  port.** Requesting more than one worker process (`--processes N` with
+  N > 1, or `--autoscale MIN,MAX` with MAX > 1) while a metrics or health
+  port is in effect now fails at startup instead of silently running
+  under-provisioned. Every child bound the same port, so only the first
+  survived while the rest burned their restart budget. The check uses the
+  resolved value, so `SWARMQ_METRICS_PORT` / `SWARMQ_HEALTH_PORT` are
+  refused just like the flags, and `swarmq worker --check` reports the same
+  conflict. Drop the fixed port for multi-process mode, or run a single
+  process with it — a port per child does not exist yet.
+- **`Publisher` gained `set_publish_deadline`.** Custom brokers implementing
+  `swarmq.contracts.Publisher` should add it; the worker calls it through a
+  guard, so an implementation without it still shuts down cleanly but does
+  not get the shutdown-coupled publish deadline.
+
+### Added
+
+- **`SWARMQ_PUBLISH_TIMEOUT_S` / `SwarmQConfig.publish_timeout_s`**
+  (default `120.0`) — an upper bound on a complete publish including its
+  internal retries. Active by default. A publish that exceeds it raises
+  `BrokerConnectionError` with an indeterminate-delivery caveat instead of
+  waiting forever for a confirm the transport will never deliver. During
+  graceful shutdown the shorter of this value and the remaining grace
+  period applies.
+
+### Fixed
+
+- **A publish could hang indefinitely on a silently dead transport.** No
+  exception is raised and the channel still reads as open, so the existing
+  retry path never engaged. In one load-test run a five-second broker stall
+  became a 62-minute standstill that SIGTERM could not end.
+- **Every JSON log line carried its payload twice.** The formatter's own
+  working keys (`_record`, `_from_structlog`) were rendered instead of
+  stripped, doubling log volume and making the output hard to read by hand.
+  The console renderer carried them too and loses them as well.
+
 ## [0.2.0] — 2026-08-27
 
 ### Changed (breaking — 0.2.0)

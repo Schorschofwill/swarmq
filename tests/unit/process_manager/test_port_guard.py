@@ -145,6 +145,62 @@ class TestPreflightCommandAgrees:
         assert payload["ok"] is True
 
 
+class TestRealStartPathEnforcesIt:
+    """Der Guard sitzt in `check_worker_config`, aber der echte Startpfad muss
+    ihn auch aufrufen. Ein Tippfehler in der Weitergabe — ein vergessenes
+    Argument, ein vertauschtes `metrics_host` — bliebe sonst unbemerkt, weil
+    alle uebrigen Tests entweder direkt gegen den Validator laufen oder ueber
+    den `--check`-Zweig.
+    """
+
+    def _args(self, **over):
+        import argparse
+
+        ns = argparse.Namespace(
+            module="json",
+            queues=["default"],
+            concurrency=1,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            processes=1,
+            autoscale=None,
+            reload=False,
+            watch_dir=None,
+        )
+        for k, v in over.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_multi_process_start_is_refused(self, monkeypatch):
+        from swarmq.process_manager.run import run_multi_process_worker
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            run_multi_process_worker(self._args(processes=4, metrics_port=9000))
+
+        assert "--metrics-port" in str(excinfo.value)
+
+    def test_autoscale_start_is_refused(self, monkeypatch):
+        from swarmq.process_manager.run import run_multi_process_worker
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            run_multi_process_worker(
+                self._args(autoscale=(1, 4), health_port=8080), admin_factory=object
+            )
+
+        assert "--health-port" in str(excinfo.value)
+
+
 class TestAllowedCombinations:
     def test_single_process_with_metrics_port(self):
         """Covers AE3."""

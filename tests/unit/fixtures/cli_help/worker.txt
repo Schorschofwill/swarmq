@@ -67,9 +67,11 @@ options:
                         flag, the parent directory of --module's resolved
                         source file is used. Ignored without --reload (a
                         WARNING is logged).
-  --check               Dry-run validation mode. Verify --module is importable
-                        and (with --reload) that 'watchfiles' is installed +
-                        watch-dirs resolve. Prints a JSON summary to stdout,
+  --check               Dry-run validation mode. Verify --module is
+                        importable, (with --reload) that 'watchfiles' is
+                        installed + watch-dirs resolve, and that multi-process
+                        mode is not combined with a fixed --metrics-
+                        port/--health-port. Prints a JSON summary to stdout,
                         exits 0 on success or 1 on any validation error. Does
                         NOT connect to broker or backend.
   --burst-idle-timeout SECONDS

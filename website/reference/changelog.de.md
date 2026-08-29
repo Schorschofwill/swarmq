@@ -6,6 +6,47 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Geändert (breaking)
+
+- **`swarmq worker` verweigert Mehrprozess-Betrieb mit festem
+  Beobachtungs-Port.** Werden mehr als ein Worker-Prozess angefordert
+  (`--processes N` mit N > 1 oder `--autoscale MIN,MAX` mit MAX > 1) und ist
+  zugleich ein Metrik- oder Health-Port wirksam, scheitert jetzt der Start,
+  statt still unterbesetzt weiterzulaufen. Jedes Kind band denselben Port,
+  sodass nur das erste überlebte und die übrigen ihr Restart-Budget
+  aufbrauchten. Geprüft wird der aufgelöste Wert: `SWARMQ_METRICS_PORT` und
+  `SWARMQ_HEALTH_PORT` werden genauso abgelehnt wie die Optionen, und
+  `swarmq worker --check` meldet denselben Konflikt. Entweder den festen
+  Port im Mehrprozess-Betrieb weglassen oder einen einzelnen Prozess damit
+  fahren — einen Port je Kindprozess gibt es noch nicht.
+- **`Publisher` hat `set_publish_deadline` bekommen.** Eigene Broker, die
+  `swarmq.contracts.Publisher` implementieren, sollten die Methode
+  ergänzen; der Worker ruft sie über eine Schutzabfrage, eine
+  Implementierung ohne sie fährt also weiterhin sauber herunter, bekommt
+  aber die an das Herunterfahren gekoppelte Publish-Frist nicht.
+
+### Hinzugefügt
+
+- **`SWARMQ_PUBLISH_TIMEOUT_S` / `SwarmQConfig.publish_timeout_s`**
+  (Default `120.0`) — Obergrenze für einen kompletten Publish inklusive
+  interner Wiederholversuche. Ab Werk aktiv. Wird sie überschritten,
+  scheitert der Publish mit `BrokerConnectionError` und dem ausdrücklichen
+  Vorbehalt, dass die Zustellung unbestimmt ist, statt endlos auf eine
+  Bestätigung zu warten, die der Transport nie liefert. Beim Herunterfahren
+  gilt die kürzere aus diesem Wert und der verbleibenden Gnadenfrist.
+
+### Behoben
+
+- **Ein Publish konnte auf einem still toten Transport unbegrenzt hängen.**
+  Es fliegt keine Ausnahme und der Kanal gilt weiter als offen, der
+  bestehende Wiederholpfad griff also nie. In einem Lasttestlauf wurden aus
+  einer fünfsekündigen Broker-Störung 62 Minuten Stillstand, die sich per
+  SIGTERM nicht beenden ließen.
+- **Jede JSON-Logzeile trug ihren Inhalt zweimal.** Die formatter-internen
+  Arbeitsschlüssel (`_record`, `_from_structlog`) wurden gerendert statt
+  entfernt — doppelte Logmenge und von Hand kaum lesbar. Die Textausgabe
+  trug sie ebenfalls und verliert sie mit.
+
 ## [0.2.0] — 2026-08-27
 
 ### Geändert (Breaking — 0.2.0)

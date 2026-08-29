@@ -218,11 +218,12 @@ def _add_worker_parser(subparsers: Any) -> None:
         "--check",
         action="store_true",
         help=(
-            "Dry-run validation mode. Verify --module is importable and "
+            "Dry-run validation mode. Verify --module is importable, "
             "(with --reload) that 'watchfiles' is installed + watch-dirs "
-            "resolve. Prints a JSON summary to stdout, exits 0 on "
-            "success or 1 on any validation error. Does NOT connect to "
-            "broker or backend."
+            "resolve, and that multi-process mode is not combined with a "
+            "fixed --metrics-port/--health-port. Prints a JSON summary to "
+            "stdout, exits 0 on success or 1 on any validation error. "
+            "Does NOT connect to broker or backend."
         ),
     )
     worker.add_argument(

@@ -67,7 +67,21 @@ via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
 
 **When raised.** Worker startup when RabbitMQ is not reachable within
 the connect timeout, or during a reconnect attempt that exceeds the
-retry budget.
+retry budget. Also when a publish exceeds `SWARMQ_PUBLISH_TIMEOUT_S`
+(default 120s) — see the delivery caveat below.
+
+!!! warning "A publish-deadline failure does not mean the message was not sent"
+
+    When the message reads `exceeded the publish deadline`, delivery is
+    **indeterminate**: the deadline runs out while waiting for the broker's
+    publisher confirm, so the broker may already hold the message. Retrying
+    such a call can execute the task a second time. This is different from
+    every other cause listed here, where nothing was sent.
+
+    A task submitted with `unique_for` is not protected either: swarmq
+    releases the dedup claim when the publish raises, so the retry is not
+    blocked. If at-most-once matters more to you than the retry, catch this
+    case separately and reconcile rather than re-submitting blindly.
 
 **Cause.** Network partition, wrong URL, RabbitMQ not running, TLS
 mismatch, vhost or user not authorized.
