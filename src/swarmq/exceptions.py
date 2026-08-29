@@ -13,6 +13,22 @@ class BrokerConnectionError(SwarmQError):
     pass
 
 
+class PublishIndeterminate(BrokerConnectionError):
+    """Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt.
+
+    Die Frist laeuft waehrend des Wartens auf das Publisher-Confirm ab — der
+    Broker kann die Nachricht also bereits haben. Das unterscheidet diesen
+    Fall von jedem anderen Publish-Fehler, bei dem nichts gesendet wurde.
+
+    Absichtlich eine Unterklasse von :class:`BrokerConnectionError`: Alle
+    bestehenden ``except BrokerConnectionError``-Stellen — insbesondere die
+    eng gefassten Handler im Ablauf-Gate — fangen sie unveraendert weiter.
+    Wer die Unterscheidung braucht, fragt gezielt danach; der Client tut das,
+    um die Dedup-Sperre eines ``unique_for``-Tasks NICHT freizugeben
+    (Plan 2026-08-28-001, R11).
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 

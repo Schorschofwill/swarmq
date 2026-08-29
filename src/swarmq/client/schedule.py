@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
+    PublishIndeterminate,
     TaskNotFoundError,
 )
 from swarmq.headers import (
@@ -351,6 +352,16 @@ class ClientScheduling:
                 encode_json(message),
                 headers=headers if headers else None,
             )
+        except PublishIndeterminate:
+            # Die Frist riss beim Warten auf das Publisher-Confirm — der
+            # Broker kann die Nachricht bereits haben. Die Dedup-Sperre
+            # bleibt darum stehen: Ein Wiederholversuch des Aufrufers laeuft
+            # dagegen und wird abgewiesen, statt den Task ein zweites Mal
+            # auszufuehren. Fuer ein Feature, dessen einziger Zweck
+            # Einmaligkeit ist, ist Blockieren die richtige Richtung; die
+            # Sperre loest sich nach ihrer eigenen Lebensdauer von selbst
+            # (Plan 2026-08-28-001, R11).
+            raise
         except BaseException:
             if dedup_hash is not None:
                 await self._rollback_unique_claim(dedup_hash, task_id)

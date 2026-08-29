@@ -18,6 +18,11 @@ All notable changes to SwarmQ. This project follows
   refused just like the flags, and `swarmq worker --check` reports the same
   conflict. Drop the fixed port for multi-process mode, or run a single
   process with it — a port per child does not exist yet.
+- **New `PublishIndeterminate` exception** (a subclass of
+  `BrokerConnectionError`, so existing handlers are unaffected) for a publish
+  that exceeded its deadline while waiting for the broker's confirm. In this
+  one case a `unique_for` dedup claim is **kept** rather than released, so a
+  retry is refused until the claim expires instead of running the task twice.
 - **`Publisher` gained `set_publish_deadline`.** Custom brokers implementing
   `swarmq.contracts.Publisher` should add it; the worker calls it through a
   guard, so an implementation without it still shuts down cleanly but does

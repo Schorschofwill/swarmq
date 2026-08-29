@@ -19,6 +19,12 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `swarmq worker --check` meldet denselben Konflikt. Entweder den festen
   Port im Mehrprozess-Betrieb weglassen oder einen einzelnen Prozess damit
   fahren — einen Port je Kindprozess gibt es noch nicht.
+- **Neue Ausnahme `PublishIndeterminate`** (Unterklasse von
+  `BrokerConnectionError`, bestehende Handler bleiben unberührt) für einen
+  Publish, dessen Frist beim Warten auf die Broker-Bestätigung riss. In genau
+  diesem Fall bleibt eine `unique_for`-Dedup-Sperre **stehen**, statt
+  freigegeben zu werden: Ein Wiederholversuch wird abgewiesen, bis die Sperre
+  abläuft, statt den Task ein zweites Mal auszuführen.
 - **`Publisher` hat `set_publish_deadline` bekommen.** Eigene Broker, die
   `swarmq.contracts.Publisher` implementieren, sollten die Methode
   ergänzen; der Worker ruft sie über eine Schutzabfrage, eine

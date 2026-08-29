@@ -78,10 +78,14 @@ retry budget. Also when a publish exceeds `SWARMQ_PUBLISH_TIMEOUT_S`
     such a call can execute the task a second time. This is different from
     every other cause listed here, where nothing was sent.
 
-    A task submitted with `unique_for` is not protected either: swarmq
-    releases the dedup claim when the publish raises, so the retry is not
-    blocked. If at-most-once matters more to you than the retry, catch this
-    case separately and reconcile rather than re-submitting blindly.
+    A task submitted with `unique_for` **is** protected: swarmq keeps the
+    dedup claim in this one case instead of releasing it, so a retry is
+    refused until the claim expires rather than running the task twice.
+    Every other publish failure still releases it, because nothing was sent.
+
+    Catch `PublishIndeterminate` (a subclass, so existing
+    `except BrokerConnectionError` handlers keep working) when you need to
+    tell the two apart.
 
 **Cause.** Network partition, wrong URL, RabbitMQ not running, TLS
 mismatch, vhost or user not authorized.

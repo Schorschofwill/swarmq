@@ -81,11 +81,15 @@ Zustellvorbehalt unten.
     von allen anderen hier genannten Ursachen, bei denen nichts gesendet
     wurde.
 
-    Auch ein mit `unique_for` eingereihter Task ist nicht geschützt: swarmq
-    gibt die Dedup-Sperre frei, wenn der Publish wirft, der Wiederholversuch
-    läuft also nicht dagegen. Wenn dir Höchstens-einmal wichtiger ist als
-    der Wiederholversuch, behandle diesen Fall gesondert und gleiche ab,
-    statt blind erneut einzureihen.
+    Ein mit `unique_for` eingereihter Task **ist** geschützt: swarmq lässt
+    die Dedup-Sperre in genau diesem Fall stehen, statt sie freizugeben. Ein
+    Wiederholversuch wird also abgewiesen, bis die Sperre abläuft, statt den
+    Task ein zweites Mal auszuführen. Jeder andere Publish-Fehler gibt sie
+    weiterhin frei, weil dort nichts gesendet wurde.
+
+    Wer die beiden Fälle unterscheiden muss, fängt `PublishIndeterminate` —
+    eine Unterklasse, bestehende `except BrokerConnectionError`-Stellen
+    funktionieren unverändert.
 
 **Ursache.** Netzwerk-Partition, falsche URL, RabbitMQ läuft nicht,
 TLS-Mismatch, VHost/User nicht autorisiert.

@@ -24,7 +24,7 @@ from swarmq.broker.rabbitmq.connection import (
     RabbitMQConnection,
 )
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
 
 logger = structlog.get_logger()
 
@@ -178,7 +178,7 @@ class RabbitMQDelivery(RabbitMQConnection):
                     "the message"
                 ),
             )
-            raise BrokerConnectionError(
+            raise PublishIndeterminate(
                 f"publish to {routing_key!r} exceeded the publish deadline "
                 f"of {timeout_s}s; delivery is indeterminate"
             ) from exc
