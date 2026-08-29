@@ -149,9 +149,48 @@ class RabbitMQDelivery(RabbitMQConnection):
         current_task().cancelling() indicates our task is being
         cancelled.
         """
+        timeout_s = self._effective_publish_timeout()
+        # Pro-Aufruf-Container statt Instanzzustand: bei nebenlaeufigen
+        # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU
+        # dieser Vorgang haengen blieb.
+        in_flight: list[aio_pika.abc.AbstractChannel] = []
+        try:
+            async with asyncio.timeout(timeout_s):
+                return await self._publish_attempts(routing_key, msg, in_flight)
+        except TimeoutError as exc:
+            # Der Deckel ist gerissen. Ohne Verwurf bliebe die tote
+            # Verbindung stehen und jeder Folge-Publish verbrennte erneut
+            # die volle Frist (R10).
+            await self._discard_publish_channel(in_flight[-1] if in_flight else None)
+            logger.warning(
+                "publish_deadline_exceeded",
+                routing_key=routing_key,
+                timeout_s=timeout_s,
+                hint=(
+                    "publish did not complete within the configured budget; "
+                    "delivery is indeterminate — the broker may already hold "
+                    "the message"
+                ),
+            )
+            raise BrokerConnectionError(
+                f"publish to {routing_key!r} exceeded the publish deadline "
+                f"of {timeout_s}s; delivery is indeterminate"
+            ) from exc
+
+    async def _publish_attempts(
+        self,
+        routing_key: str,
+        msg: aio_pika.Message,
+        in_flight: list[aio_pika.abc.AbstractChannel],
+    ) -> None:
+        """Die bounded-retry-Schleife. Der Zeitdeckel liegt beim Aufrufer,
+        damit er den gesamten Vorgang umspannt und nicht den Einzelversuch
+        (KTD1). ``in_flight`` traegt den zuletzt benutzten Kanal nach oben,
+        damit der Verwurf genau ihn trifft."""
         last_exc: BaseException | None = None
         for attempt in range(_PUBLISH_MAX_ATTEMPTS):
             pub = await self._ensure_publish_channel()
+            in_flight.append(pub)
             try:
                 await pub.default_exchange.publish(msg, routing_key=routing_key)
                 return

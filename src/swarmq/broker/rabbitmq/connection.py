@@ -54,6 +54,9 @@ _PUBLISH_MAX_ATTEMPTS = 5
 # Fallback fuer einen ohne App konstruierten Broker; die kanonische Quelle
 # ist ``SwarmQConfig.publish_timeout_s`` (Plan 2026-08-28-001, R3).
 _DEFAULT_PUBLISH_TIMEOUT_S = 120.0
+# Frist fuer das nebenlaeufige Schliessen eines verworfenen Kanals. Kurz:
+# gelingt es nicht, ist der Transport ohnehin tot und der Kanal verwaist.
+_CHANNEL_CLOSE_TIMEOUT_S = 5.0
 
 # Bound for acquiring a connection from an injected
 # pool. aio_pika's Pool.acquire() blocks indefinitely on Queue.get()
@@ -124,6 +127,11 @@ class RabbitMQConnection:
         self._consume_prefetch: int | None = None
         # Guard against two concurrent channel-reopen operations.
         self._channel_lock = asyncio.Lock()
+        # Starke Referenzen auf die nebenlaeufigen close()-Tasks aus
+        # _discard_publish_channel; ohne sie kann der Event-Loop einen
+        # noch laufenden Task einsammeln (asyncio.create_task haelt nur
+        # eine schwache Referenz).
+        self._pending_channel_closes: set[asyncio.Task[None]] = set()
         # Test-Naht (U5, KTD9 „dead_letter/retry_later werfen bei
         # Publish-Fehler"): eine injizierte Factory ersetzt den Publish-Kanal.
         # ``None`` = ``self._connection.channel()``.
@@ -306,6 +314,54 @@ class RabbitMQConnection:
     # ------------------------------------------------------------------
     # Channel-Recreate
     # ------------------------------------------------------------------
+
+    def _effective_publish_timeout(self) -> float:
+        """Frist fuer einen kompletten Publish-Vorgang (Plan
+        2026-08-28-001, R1). U3 verengt sie waehrend des Herunterfahrens
+        auf den Rest bis zur Shutdown-Endfrist."""
+        return self.publish_timeout_s
+
+    async def _discard_publish_channel(
+        self, expected: aio_pika.abc.AbstractChannel | None
+    ) -> None:
+        """Verwirft den Publish-Kanal nach einem Deadline-Bruch (R10, KTD3).
+
+        Zwei Feinheiten, ohne die der Verwurf mehr schadet als nuetzt:
+
+        * **Identitaetspruefung unter der Sperre.** Eine parallele
+          Ausfuehrung kann den Kanal waehrenddessen neu geoeffnet haben;
+          den wegzuwerfen liesse ein offenes, referenzloses Kanalobjekt
+          zurueck — die Leckklasse aus
+          ``docs/solutions/logic-errors/aiormq-reader-leak-and-stale-connection-recovery-2026-04-16.md``.
+        * **Nebenlaeufiges Schliessen.** ``close()`` wartet auf ein
+          Channel.Close-Ok, das ein still toter Transport nie liefert —
+          abgewartet ueberschritte es genau die Frist, die wir gerade
+          durchgesetzt haben. Das Schliessen ist trotzdem noetig: aiormq
+          gibt die offene Confirmation-Future erst dabei frei.
+        """
+        async with self._channel_lock:
+            current = self._publish_channel
+            if expected is not None and current is not expected:
+                # Parallel neu geoeffnet — nicht unserer, Finger weg.
+                return
+            self._publish_channel = None
+
+        if current is None:
+            return
+        task = asyncio.create_task(self._close_channel_detached(current))
+        self._pending_channel_closes.add(task)
+        task.add_done_callback(self._pending_channel_closes.discard)
+
+    async def _close_channel_detached(
+        self, channel: aio_pika.abc.AbstractChannel
+    ) -> None:
+        """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer."""
+        try:
+            async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
+                if not channel.is_closed:
+                    await channel.close()
+        except (TimeoutError, Exception):
+            logger.debug("publish_channel_close_incomplete", exc_info=True)
 
     async def _ensure_publish_channel(self) -> aio_pika.abc.AbstractChannel:
         """Return a ready publish channel; recreate if dropped.
