@@ -50,6 +50,8 @@ class InMemoryBroker:
         self._clock = clock
         self._unreachable = unreachable
         self._connected = False
+        # Zuletzt gesetzte Shutdown-Endfrist (Plan 2026-08-28-001, R12).
+        self.publish_deadline_at: float | None = None
         self._queues: dict[str, deque[_Message]] = {}
         self._delayed: list[tuple[int, str, _Message]] = []
         self._dead: dict[str, list[DeadLetter]] = {}
@@ -101,6 +103,13 @@ class InMemoryBroker:
         self._queues.setdefault(queue, deque()).append(message)
         self._dispatch(queue)
         return PublishReceipt(queue=queue, message_id=message.message_id)
+
+    def set_publish_deadline(self, at: float | None) -> None:
+        """Vertragserfuellung (Plan 2026-08-28-001, R12). Der In-Memory-Broker
+        veroeffentlicht ohne Netzwerk und kann darum nie in eine Frist laufen;
+        der zuletzt gesetzte Wert wird nur festgehalten, damit Tests die
+        Kopplung an das Herunterfahren beobachten koennen."""
+        self.publish_deadline_at = at
 
     # --- Consumer -------------------------------------------------------------
 

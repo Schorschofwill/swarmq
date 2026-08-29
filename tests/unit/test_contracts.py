@@ -22,6 +22,8 @@ class _HasPublisherMembers:
     async def publish(self, queue: str, body: bytes, headers: dict | None = None) -> PublishReceipt:
         return PublishReceipt(queue=queue)
 
+    def set_publish_deadline(self, at: float | None) -> None: ...
+
 
 def test_runtime_checkable_is_true_with_members_and_false_without() -> None:
     assert isinstance(_HasPublisherMembers(), Publisher)

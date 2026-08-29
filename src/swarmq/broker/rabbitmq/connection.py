@@ -132,6 +132,14 @@ class RabbitMQConnection:
         # noch laufenden Task einsammeln (asyncio.create_task haelt nur
         # eine schwache Referenz).
         self._pending_channel_closes: set[asyncio.Task[None]] = set()
+        # Absoluter Zeitpunkt (loop.time-Skala), ab dem kein Publish mehr
+        # laufen darf — vom Worker beim Herunterfahren gesetzt (R12).
+        # ``None`` = nur die konfigurierte Deadline gilt.
+        self._publish_deadline_at: float | None = None
+        # Aktive Publish-Zeitdeckel. Ein einmal gesetzter asyncio-Timeout
+        # verkuerzt sich nicht von selbst; ohne Nachziehen liefe ein vor
+        # dem Shutdown gestarteter Publish weiter gegen die volle Frist.
+        self._active_publish_timeouts: set[asyncio.Timeout] = set()
         # Test-Naht (U5, KTD9 „dead_letter/retry_later werfen bei
         # Publish-Fehler"): eine injizierte Factory ersetzt den Publish-Kanal.
         # ``None`` = ``self._connection.channel()``.
@@ -173,6 +181,9 @@ class RabbitMQConnection:
     async def _connect_owned(self) -> None:
         if self._connection is not None:
             return
+        # Frischer Verbindungsaufbau: eine Endfrist aus einem
+        # abgeschlossenen Shutdown darf nicht weiterwirken (R12).
+        self._publish_deadline_at = None
         try:
             self._connection = await aio_pika.connect_robust(self._url)
             # Channel creation can fail too (vhost misconfigured, per-
@@ -316,10 +327,36 @@ class RabbitMQConnection:
     # ------------------------------------------------------------------
 
     def _effective_publish_timeout(self) -> float:
-        """Frist fuer einen kompletten Publish-Vorgang (Plan
-        2026-08-28-001, R1). U3 verengt sie waehrend des Herunterfahrens
-        auf den Rest bis zur Shutdown-Endfrist."""
-        return self.publish_timeout_s
+        """Frist fuer einen kompletten Publish-Vorgang (R1, R12).
+
+        Ohne gesetzte Shutdown-Endfrist gilt die Konfiguration. Mit gilt
+        die kuerzere von beiden; eine bereits verstrichene Endfrist ergibt
+        0.0 und laesst den Publish sofort scheitern, statt in einen
+        negativen Deckel zu laufen.
+        """
+        if self._publish_deadline_at is None:
+            return self.publish_timeout_s
+        remaining = self._publish_deadline_at - asyncio.get_running_loop().time()
+        return max(0.0, min(self.publish_timeout_s, remaining))
+
+    def set_publish_deadline(self, at: float | None) -> None:
+        """Setzt oder loescht die Shutdown-Endfrist (R12, KTD9).
+
+        Laufende Publishes werden nachgezogen — nur nach vorne: Das
+        Herunterfahren darf eine Frist verkuerzen, nie verlaengern.
+        """
+        self._publish_deadline_at = at
+        if at is None:
+            return
+        for timeout_cm in tuple(self._active_publish_timeouts):
+            current = timeout_cm.when()
+            if current is None or current > at:
+                try:
+                    timeout_cm.reschedule(at)
+                except RuntimeError:
+                    # Der Deckel ist bereits abgelaufen oder verlassen —
+                    # dann braucht er kein Nachziehen mehr.
+                    continue
 
     async def _discard_publish_channel(
         self, expected: aio_pika.abc.AbstractChannel | None

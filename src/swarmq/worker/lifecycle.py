@@ -46,6 +46,14 @@ logger = structlog.get_logger()
 # Lifecycle-Signale (WORKER_ONLINE/HEARTBEAT/SHUTDOWN) laufen mit gedeckeltem
 # Handler-Timeout, damit ein haengender Handler den Shutdown nicht blockiert.
 _LIFECYCLE_DISPATCH_TIMEOUT_S = 10.0
+# Rest der Gnadenfrist, den das Herunterfahren NACH dem Drain noch braucht:
+# Sperren freigeben, Scheduler stoppen, Broker- und Backend-Verbindung
+# schliessen. Ohne diese Reserve faellt die Publish-Endfrist exakt mit der
+# Eskalation des Supervisors zusammen — dessen Gnadenfrist ist derselbe
+# ``shutdown_timeout``, den der Drain bereits als eigenes Limit verbraucht
+# (siehe src/swarmq/process_manager/run.py) — und der Deckel brächte im
+# Herunterfahren gar nichts (Plan 2026-08-28-001, KTD9).
+_SHUTDOWN_PUBLISH_RESERVE_S = 5.0
 
 
 
@@ -527,6 +535,13 @@ class WorkerLifecycle:
             worker_id=str(id(self)),
         )
         await self._stop_http_surfaces()
+        # Ab hier darf kein Publish mehr laenger laufen als die Gnadenfrist
+        # abzueglich der Reserve fuer den Rest dieser Sequenz (R12). Auch
+        # bereits laufende Publishes werden dadurch nachgezogen.
+        self._broker.set_publish_deadline(
+            asyncio.get_running_loop().time()
+            + max(0.0, float(self._config.shutdown_timeout) - _SHUTDOWN_PUBLISH_RESERVE_S)
+        )
         await self._drain_in_flight()
         await self._release_leftover_locks()
         await self._stop_scheduler_and_di()
@@ -534,6 +549,11 @@ class WorkerLifecycle:
         self._state = WorkerState.SHUTTING_DOWN
         await self._broker.close()
         await self._backend.close()
+
+        # Die Endfrist hat ihren Zweck erfuellt. Ein eingebetteter Nutzer,
+        # der ueber dieselbe Instanz weiter Tasks einreiht, soll wieder
+        # gegen die konfigurierte Deadline laufen (R12).
+        self._broker.set_publish_deadline(None)
 
         # 5. STOPPED
         self._state = WorkerState.STOPPED

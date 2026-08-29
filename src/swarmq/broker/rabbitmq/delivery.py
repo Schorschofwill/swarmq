@@ -155,8 +155,14 @@ class RabbitMQDelivery(RabbitMQConnection):
         # dieser Vorgang haengen blieb.
         in_flight: list[aio_pika.abc.AbstractChannel] = []
         try:
-            async with asyncio.timeout(timeout_s):
-                return await self._publish_attempts(routing_key, msg, in_flight)
+            async with asyncio.timeout(timeout_s) as timeout_cm:
+                # Registrieren, damit ein beginnendes Herunterfahren diesen
+                # bereits laufenden Deckel nachziehen kann (R12, KTD9).
+                self._active_publish_timeouts.add(timeout_cm)
+                try:
+                    return await self._publish_attempts(routing_key, msg, in_flight)
+                finally:
+                    self._active_publish_timeouts.discard(timeout_cm)
         except TimeoutError as exc:
             # Der Deckel ist gerissen. Ohne Verwurf bliebe die tote
             # Verbindung stehen und jeder Folge-Publish verbrennte erneut
