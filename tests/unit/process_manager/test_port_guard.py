@@ -1,0 +1,166 @@
+"""Startguard gegen Mehrprozess-Betrieb mit festem Beobachtungs-Port.
+
+Plan 2026-08-28-001, U4 (R5, R6, R7).
+
+Bisher band das erste Kind den Port, die uebrigen scheiterten beim Start
+mit einem Traceback, und der Supervisor startete sie nach — bis das
+Restart-Budget aufgebraucht war. Danach lief der Worker dauerhaft mit
+weniger Prozessen als angefordert weiter: Die angeforderte Topologie wurde
+nie erreicht, ohne dass der Start je scheiterte, und keine Meldung nannte
+die Portkollision als Ursache.
+"""
+
+import pytest
+
+from swarmq.exceptions import ConfigurationError
+from swarmq.process_manager.check import check_worker_config
+
+_MODULE = "swarmq"
+
+
+def _check(**kwargs):
+    defaults = {"module": _MODULE, "reload": False, "watch_dir": None}
+    return check_worker_config(**{**defaults, **kwargs})
+
+
+class TestRejectsMultiProcessWithFixedPort:
+    def test_processes_with_metrics_port_from_cli(self):
+        """Covers AE3."""
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4, metrics_port=9000)
+
+        message = str(excinfo.value)
+        assert "--metrics-port" in message
+        assert "9000" in message
+
+    def test_processes_with_health_port_from_cli(self):
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4, health_port=8080)
+
+        assert "--health-port" in str(excinfo.value)
+
+    def test_both_ports_are_named(self):
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=2, metrics_port=9000, health_port=8080)
+
+        message = str(excinfo.value)
+        assert "--metrics-port" in message
+        assert "--health-port" in message
+
+    def test_metrics_port_from_environment(self, monkeypatch):
+        """Covers AE3. Die Konfiguration uebernimmt den Umgebungswert
+        bedingungslos — ein Guard auf den Kommandozeilenargumenten allein
+        liesse genau diesen Start durch."""
+        monkeypatch.setenv("SWARMQ_METRICS_PORT", "9000")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4)
+
+        message = str(excinfo.value)
+        assert "SWARMQ_METRICS_PORT" in message
+        assert "9000" in message
+
+    def test_health_port_from_environment(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_HEALTH_PORT", "8080")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4)
+
+        assert "SWARMQ_HEALTH_PORT" in str(excinfo.value)
+
+    def test_environment_wins_over_the_flag_in_the_message(self, monkeypatch):
+        """Dieselbe Vorrangregel wie in der Konfiguration: die Umgebung
+        schlaegt die Option, und die Meldung nennt die gewinnende Quelle."""
+        monkeypatch.setenv("SWARMQ_METRICS_PORT", "9100")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4, metrics_port=9000)
+
+        message = str(excinfo.value)
+        assert "SWARMQ_METRICS_PORT" in message
+        assert "9100" in message
+
+    def test_message_names_the_way_out(self):
+        """R7: nicht nur was falsch ist, sondern was stattdessen geht."""
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4, metrics_port=9000)
+
+        message = str(excinfo.value)
+        assert "--processes 1" in message or "einen Prozess" in message.lower()
+
+
+class TestAutoscaleUsesTheUpperBound:
+    def test_range_above_one_is_rejected_even_when_starting_at_one(self):
+        """KTD7: Bei Untergrenze 1 startet der Lauf sauber und kollidiert
+        erst beim ersten Hochskalieren — mitten im Betrieb, wo die Ursache
+        noch schwerer zuzuordnen ist."""
+        with pytest.raises(ConfigurationError):
+            _check(autoscale=(1, 4), metrics_port=9000)
+
+    def test_degenerate_range_of_one_is_allowed(self):
+        result = _check(autoscale=(1, 1), metrics_port=9000)
+        assert result["module"] == _MODULE
+
+
+class TestPreflightCommandAgrees:
+    """``swarmq worker --check`` sagt zu, dass ein erfolgreiches Ergebnis
+    den Pre-Flight des Supervisors impliziert. Meldete es "in Ordnung" fuer
+    eine Kombination, die der Start danach ablehnt, waere diese Zusage
+    gebrochen — und der Operator praeft die Konfiguration vergeblich vor.
+    """
+
+    def _run_check(self, capsys, **overrides):
+        import argparse
+        import json
+
+        from swarmq.cli.check_cmd import _run_worker_check
+
+        fields = {
+            "module": _MODULE,
+            "reload": False,
+            "watch_dir": None,
+            "burst": False,
+            "processes": 1,
+            "autoscale": None,
+            "metrics_port": None,
+            "health_port": None,
+        }
+        fields.update(overrides)
+        args = argparse.Namespace(**fields)
+        code = _run_worker_check(args)
+        return code, json.loads(capsys.readouterr().out.strip())
+
+    def test_reports_the_conflict_instead_of_ok(self, capsys):
+        code, payload = self._run_check(capsys, processes=4, metrics_port=9000)
+
+        assert code != 0
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ConfigurationError"
+        assert "--metrics-port" in payload["error"]
+
+    def test_still_reports_ok_for_a_valid_combination(self, capsys):
+        code, payload = self._run_check(capsys, processes=4)
+
+        assert code == 0
+        assert payload["ok"] is True
+
+
+class TestAllowedCombinations:
+    def test_single_process_with_metrics_port(self):
+        """Covers AE3."""
+        result = _check(processes=1, metrics_port=9000)
+        assert result["module"] == _MODULE
+
+    def test_single_process_with_both_ports(self):
+        result = _check(processes=1, metrics_port=9000, health_port=8080)
+        assert result["module"] == _MODULE
+
+    def test_many_processes_without_any_fixed_port(self):
+        result = _check(processes=8)
+        assert result["module"] == _MODULE
+
+    def test_defaults_are_unchanged_for_existing_callers(self):
+        """Bestehende Aufrufer uebergeben die neuen Argumente nicht."""
+        result = _check()
+        assert result["module"] == _MODULE
+        assert result["warnings"] == []

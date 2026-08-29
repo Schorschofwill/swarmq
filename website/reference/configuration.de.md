@@ -56,6 +56,24 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_HEALTH_PORT` | *ungesetzt* | Wenn gesetzt, serve `/health` und `/ready` auf diesem Port. Muss `1..65535` sein. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind-Adresse für den Health-Server. |
 
+!!! warning "Ein fester Beobachtungs-Port lässt sich nicht auf mehrere Worker-Prozesse aufteilen"
+
+    `swarmq worker` verweigert den Start, wenn mehr als ein Worker-Prozess
+    angefordert wird (`--processes N` mit N > 1 oder `--autoscale MIN,MAX`
+    mit MAX > 1) und zugleich ein Metrik- oder Health-Port wirksam ist.
+    Jedes Kind würde denselben Port binden, sodass nur das erste überlebt;
+    die übrigen Plätze verbrauchen ihr Restart-Budget, und der Lauf
+    arbeitet danach still mit weniger Prozessen als angefordert weiter.
+
+    Geprüft wird der aufgelöste Wert: Ein über `SWARMQ_METRICS_PORT` bzw.
+    `SWARMQ_HEALTH_PORT` gesetzter Port wird genauso abgelehnt wie eine
+    Kommandozeilenoption, und die Meldung nennt die jeweils wirksame
+    Quelle. `swarmq worker --check` meldet denselben Konflikt.
+
+    Entweder den festen Port im Mehrprozess-Betrieb weglassen oder einen
+    einzelnen Prozess damit fahren. Ein Port je Kindprozess existiert
+    noch nicht.
+
 Alle Ports werden zur Config-Zeit validiert: ein Bad Value raist
 `ConfigurationError`, bevor der Worker versucht zu binden.
 

@@ -51,10 +51,26 @@ The CLI prints a descriptive error if either is missing; see the
 
 | Variable | Default | Description |
 |---|---|---|
-| `SWARMQ_METRICS_PORT` | *unset* | If set, serve `/metrics` on this port. Requires `pip install swarmq[metrics]`. Must be `1..65535`. |
+| `SWARMQ_METRICS_PORT` | *unset* | If set, serve `/metrics` on this port. Requires `pip install swarmq[metrics]`. Must be `1..65535`. Cannot be combined with multi-process mode — see the note below. |
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind address for the metrics server. |
-| `SWARMQ_HEALTH_PORT` | *unset* | If set, serve `/health` and `/ready` on this port. Must be `1..65535`. |
+| `SWARMQ_HEALTH_PORT` | *unset* | If set, serve `/health` and `/ready` on this port. Must be `1..65535`. Cannot be combined with multi-process mode — see the note below. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. |
+
+!!! warning "A fixed observability port cannot be shared by several worker processes"
+
+    `swarmq worker` refuses to start when more than one worker process is
+    requested (`--processes N` with N > 1, or `--autoscale MIN,MAX` with
+    MAX > 1) while a metrics or health port is in effect. Every child would
+    bind the same port, so only the first survives; the remaining slots burn
+    their restart budget and the run continues silently under-provisioned.
+
+    The check uses the resolved value, so setting the port through
+    `SWARMQ_METRICS_PORT` / `SWARMQ_HEALTH_PORT` is refused just as a
+    command-line flag is, and the message names whichever source is in
+    effect. `swarmq worker --check` reports the same conflict.
+
+    Either drop the fixed port for multi-process mode, or run a single
+    process with it. A port per child process is not available yet.
 
 All ports are validated at config-time: a bad value raises
 `ConfigurationError` before the worker tries to bind.
