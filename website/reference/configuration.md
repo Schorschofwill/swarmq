@@ -29,6 +29,7 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_RESULT_TTL` | `86400` | Seconds that stored results live in Valkey. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Cap on retry backoff in seconds. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Seconds to let in-flight tasks finish on SIGTERM before hard-killing. |
+| `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Upper bound on a complete publish, including internal retries. A publish that exceeds it fails with a broker connection error instead of waiting indefinitely for a confirm that a silently dead transport will never deliver. During graceful shutdown the shorter of this value and the remaining shutdown grace period applies. |
 | `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Seconds between in-task cancel-flag checks. |
 | `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Upper bound on individual Valkey ops in the cancel / dedup pipeline. |

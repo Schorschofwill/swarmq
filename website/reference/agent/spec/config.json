@@ -65,6 +65,12 @@
       "type": "int"
     },
     {
+      "default": 120.0,
+      "env_var": "SWARMQ_PUBLISH_TIMEOUT_S",
+      "name": "publish_timeout_s",
+      "type": "float"
+    },
+    {
       "choices": [
         "classic",
         "quorum"

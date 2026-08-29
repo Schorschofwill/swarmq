@@ -732,3 +732,18 @@ class TestSwarmQCancel:
 
         result = await app.cancel("task-ghi")
         assert result is False
+
+
+class TestPublishTimeoutWiring:
+    """Plan 2026-08-28-001, U1 / R3: die App reicht die konfigurierte
+    Publish-Deadline an den Broker durch — gleicher Weg wie queue_type."""
+
+    def test_default_timeout_reaches_broker(self, broker, backend):
+        app = SwarmQ(broker, backend)
+        assert broker.publish_timeout_s == 120.0
+        assert app.config.publish_timeout_s == 120.0
+
+    def test_env_timeout_reaches_broker(self, broker, backend, monkeypatch):
+        monkeypatch.setenv("SWARMQ_PUBLISH_TIMEOUT_S", "12.5")
+        SwarmQ(broker, backend)
+        assert broker.publish_timeout_s == 12.5

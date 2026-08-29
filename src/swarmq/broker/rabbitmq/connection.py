@@ -51,6 +51,9 @@ _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     asyncio.CancelledError,
 )
 _PUBLISH_MAX_ATTEMPTS = 5
+# Fallback fuer einen ohne App konstruierten Broker; die kanonische Quelle
+# ist ``SwarmQConfig.publish_timeout_s`` (Plan 2026-08-28-001, R3).
+_DEFAULT_PUBLISH_TIMEOUT_S = 120.0
 
 # Bound for acquiring a connection from an injected
 # pool. aio_pika's Pool.acquire() blocks indefinitely on Queue.get()
@@ -107,6 +110,11 @@ class RabbitMQConnection:
             )
 
         self._queue_type = queue_type
+        # Obergrenze fuer einen kompletten Publish-Vorgang (Plan
+        # 2026-08-28-001, R1/R3). ``SwarmQ.__init__`` ueberschreibt sie aus
+        # der Konfiguration; ein direkt konstruierter Broker behaelt den
+        # Default, damit der Producer-Pfad ohne App weiter funktioniert.
+        self.publish_timeout_s: float = _DEFAULT_PUBLISH_TIMEOUT_S
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
         # list of (queue, consumer_tag)

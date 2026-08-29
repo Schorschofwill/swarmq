@@ -54,6 +54,7 @@ class SwarmQ:
             **config_kwargs,
         )
         self.broker._queue_type = self.config.queue_type
+        self.broker.publish_timeout_s = self.config.publish_timeout_s
         self.registry = TaskRegistry()
         for task_class in Task._registered_tasks:
             self.registry.register(task_class)
