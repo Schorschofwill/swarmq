@@ -74,6 +74,15 @@ class SwarmQConfig:
     log_json: bool = True
     retry_max_delay: float = 3600.0
     shutdown_timeout: int = 30
+    # Obergrenze fuer einen kompletten Publish-Vorgang inklusive aller
+    # internen Wiederholversuche (Plan 2026-08-28-001, R1/R3). Ohne
+    # Deckel wartet ein Publish auf ein Publisher-Confirm, das bei einem
+    # still toten Transport nie eintrifft — im Referenzlauf ein
+    # 62-minuetiger Stillstand aus einer fuenfsekuendigen Stoerung.
+    # 120s liegt weit ueber jedem legitimen Publish und trifft damit
+    # praktisch nur pathologische Faelle. Waehrend des Herunterfahrens
+    # deckelt zusaetzlich die kuerzere Shutdown-Frist (R12).
+    publish_timeout_s: float = 120.0
     queue_type: str = "quorum"
     cancel_poll_interval: float = 1.0
     # Upper bound for individual Valkey operations used by the cancel
@@ -140,6 +149,7 @@ class SwarmQConfig:
         ("SWARMQ_LOG_JSON", "log_json", "bool"),
         ("SWARMQ_RETRY_MAX_DELAY", "retry_max_delay", "float"),
         ("SWARMQ_SHUTDOWN_TIMEOUT", "shutdown_timeout", "int"),
+        ("SWARMQ_PUBLISH_TIMEOUT_S", "publish_timeout_s", "float"),
         ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
@@ -173,7 +183,12 @@ class SwarmQConfig:
         "scheduler_lock_ttl",
         "scheduler_inflight_ttl",
         "burst_idle_timeout",
+        "publish_timeout_s",
     )
+    # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
+    # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
+    # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
+    # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
 
     def _apply_env_overrides(self) -> None:
         for env_name, field_name, kind in self._ENV_OVERRIDES:

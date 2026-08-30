@@ -62,7 +62,7 @@ swarmq worker --module DOTTED.PATH
 | `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
 | `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Ignored without `--reload`. |
-| `--check` | off | Dry-run validation: verify `--module` is importable, and with `--reload` that `watchfiles` is installed + watch-dirs resolve. Prints a JSON summary and exits `0`/`1` without starting the supervisor or touching broker/backend. |
+| `--check` | off | Dry-run validation: verify `--module` is importable, with `--reload` that `watchfiles` is installed + watch-dirs resolve, and that multi-process mode is not combined with a fixed `--metrics-port`/`--health-port`. Prints a JSON summary and exits `0`/`1` without starting the supervisor or touching broker/backend. |
 
 ### Examples
 

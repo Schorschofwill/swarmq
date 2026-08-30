@@ -43,6 +43,20 @@ class Publisher(Protocol):
     ) -> PublishReceipt:
         """Persistente, bestätigte Veröffentlichung; Fehlschlag → ``BrokerConnectionError``."""
 
+    def set_publish_deadline(self, at: float | None) -> None:
+        """Deckelt jeden Publish zusätzlich auf einen absoluten Zeitpunkt.
+
+        ``at`` liegt auf der ``loop.time()``-Skala; ``None`` hebt die
+        Begrenzung auf. Wirksam wird stets die kürzere aus dieser Frist und
+        der konfigurierten Publish-Deadline, und bereits laufende Publishes
+        werden nachgezogen (Plan 2026-08-28-001, R12).
+
+        Der Worker setzt sie zu Beginn des Herunterfahrens, damit ein
+        hängender Publish innerhalb der Gnadenfrist mit Fehler zurückkehrt
+        statt vom Supervisor abgeschossen zu werden. Ein Producer ohne
+        Worker ruft sie nie und läuft immer gegen die Konfiguration.
+        """
+
 
 @runtime_checkable
 class Consumer(Protocol):

@@ -187,6 +187,28 @@ class ToxiproxyClient:
         self._toxics_added.append((proxy, name))
         return name
 
+    async def add_blackhole(self, proxy: str) -> str:
+        """Verschluckt Pakete, ohne die Verbindung zu beenden.
+
+        Der Unterschied zu ``down()`` ist der ganze Punkt: Abschalten
+        schliesst alle offenen Verbindungen, die Gegenseite sieht also ein
+        Verbindungsende und der bestehende Wiederholpfad faengt es ab. Der
+        ``timeout``-Toxic mit ``timeout: 0`` laesst die Verbindung dagegen
+        offen und stoppt nur den Datenfluss — genau der stille Ausfall aus
+        dem Referenzlauf vom 2026-08-28, bei dem ein Publish unbegrenzt auf
+        sein Publisher-Confirm wartete (Plan 2026-08-28-001, U6).
+        """
+        name = f"blackhole-{len(self._toxics_added)}"
+        await self._client.post(
+            f"/proxies/{proxy}/toxics",
+            json={
+                "name": name, "type": "timeout", "stream": "upstream",
+                "attributes": {"timeout": 0},
+            },
+        )
+        self._toxics_added.append((proxy, name))
+        return name
+
     async def add_bandwidth(
         self, proxy: str, *, kbps: int, upstream_only: bool = False,
     ) -> str:

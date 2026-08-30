@@ -46,6 +46,14 @@ logger = structlog.get_logger()
 # Lifecycle-Signale (WORKER_ONLINE/HEARTBEAT/SHUTDOWN) laufen mit gedeckeltem
 # Handler-Timeout, damit ein haengender Handler den Shutdown nicht blockiert.
 _LIFECYCLE_DISPATCH_TIMEOUT_S = 10.0
+# Rest der Gnadenfrist, den das Herunterfahren NACH dem Drain noch braucht:
+# Sperren freigeben, Scheduler stoppen, Broker- und Backend-Verbindung
+# schliessen. Ohne diese Reserve faellt die Publish-Endfrist exakt mit der
+# Eskalation des Supervisors zusammen — dessen Gnadenfrist ist derselbe
+# ``shutdown_timeout``, den der Drain bereits als eigenes Limit verbraucht
+# (siehe src/swarmq/process_manager/run.py) — und der Deckel brächte im
+# Herunterfahren gar nichts (Plan 2026-08-28-001, KTD9).
+_SHUTDOWN_PUBLISH_RESERVE_S = 5.0
 
 
 
@@ -517,23 +525,67 @@ class WorkerLifecycle:
             except Exception:
                 logger.exception("dishka_container_close_failed")
 
+    def _shutdown_publish_budget(self) -> float:
+        """Wieviel Zeit ein Publish im Herunterfahren noch bekommt (R12, KTD9).
+
+        Die Reserve deckt den Rest der Sequenz nach dem Drain: Sperren
+        freigeben, Scheduler stoppen, Verbindungen schliessen. Sie wird
+        gedeckelt auf die Haelfte der Gnadenfrist, damit eine kurz
+        konfigurierte Frist nicht auf ein Nullbudget faellt — dann scheiterte
+        im Drain jeder Retry- und Dead-Letter-Publish rein rechnerisch, und
+        alle laufenden Tasks kaemen als Redelivery zurueck statt sauber
+        verzoegert oder aussortiert zu werden.
+        """
+        grace = max(0.0, float(self._config.shutdown_timeout))
+        reserve = min(_SHUTDOWN_PUBLISH_RESERVE_S, grace / 2.0)
+        return max(0.0, grace - reserve)
+
+    def _set_publish_deadline(self, at: float | None) -> None:
+        """Setzt die Endfrist, sofern der Broker sie kennt.
+
+        ``Publisher.set_publish_deadline`` kam erst mit diesem Plan dazu. Ein
+        vorher geschriebener Fremdbroker wuerde hier sonst mit AttributeError
+        die gesamte Abbausequenz abbrechen — vor Sperrenfreigabe und
+        Verbindungsschluss. Die Frist ist eine Verbesserung, kein Muss.
+        """
+        setter = getattr(self._broker, "set_publish_deadline", None)
+        if setter is None:
+            return
+        setter(at)
+
     async def _execute_shutdown(self) -> None:
         """Execute the graceful shutdown sequence."""
-        # Bounded — a hanging handler must not stall
-        # the drain/lock-release/close sequence below.
-        await self._signal_dispatcher.dispatch(
-            Signal.WORKER_SHUTDOWN,
-            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-            worker_id=str(id(self)),
-        )
-        await self._stop_http_surfaces()
-        await self._drain_in_flight()
-        await self._release_leftover_locks()
-        await self._stop_scheduler_and_di()
-        # 4. Close connections
-        self._state = WorkerState.SHUTTING_DOWN
-        await self._broker.close()
-        await self._backend.close()
+        # Die Uhr des Supervisors laeuft ab SIGTERM, nicht ab hier: Der
+        # Signal-Dispatch (bis zu _LIFECYCLE_DISPATCH_TIMEOUT_S) und das
+        # Stoppen der HTTP-Oberflaechen zaehlen bereits gegen dieselbe
+        # Gnadenfrist. Ohne diesen frueh genommenen Zeitpunkt laege die
+        # Endfrist hinter der Eskalation des Supervisors (R12, KTD9).
+        started_at = asyncio.get_running_loop().time()
+        try:
+            # Bounded — a hanging handler must not stall
+            # the drain/lock-release/close sequence below.
+            await self._signal_dispatcher.dispatch(
+                Signal.WORKER_SHUTDOWN,
+                handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+                worker_id=str(id(self)),
+            )
+            await self._stop_http_surfaces()
+            # Ab hier darf kein Publish mehr laenger laufen als das
+            # verbleibende Budget. Auch bereits laufende werden nachgezogen.
+            self._set_publish_deadline(started_at + self._shutdown_publish_budget())
+            await self._drain_in_flight()
+            await self._release_leftover_locks()
+            await self._stop_scheduler_and_di()
+            # 4. Close connections
+            self._state = WorkerState.SHUTTING_DOWN
+            await self._broker.close()
+            await self._backend.close()
+        finally:
+            # Immer zuruecknehmen, auch wenn oben etwas geworfen hat: Ein
+            # eingebetteter Nutzer darf ueber dieselbe Instanz weiter Tasks
+            # einreihen, und eine liegengebliebene, laengst verstrichene
+            # Endfrist liesse danach jeden Publish sofort scheitern (R12).
+            self._set_publish_deadline(None)
 
         # 5. STOPPED
         self._state = WorkerState.STOPPED

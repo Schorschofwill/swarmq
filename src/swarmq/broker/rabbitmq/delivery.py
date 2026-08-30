@@ -24,7 +24,7 @@ from swarmq.broker.rabbitmq.connection import (
     RabbitMQConnection,
 )
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
 
 logger = structlog.get_logger()
 
@@ -149,9 +149,54 @@ class RabbitMQDelivery(RabbitMQConnection):
         current_task().cancelling() indicates our task is being
         cancelled.
         """
+        timeout_s = self._effective_publish_timeout()
+        # Pro-Aufruf-Container statt Instanzzustand: bei nebenlaeufigen
+        # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU
+        # dieser Vorgang haengen blieb.
+        in_flight: list[aio_pika.abc.AbstractChannel] = []
+        try:
+            async with asyncio.timeout(timeout_s) as timeout_cm:
+                # Registrieren, damit ein beginnendes Herunterfahren diesen
+                # bereits laufenden Deckel nachziehen kann (R12, KTD9).
+                self._active_publish_timeouts.add(timeout_cm)
+                try:
+                    return await self._publish_attempts(routing_key, msg, in_flight)
+                finally:
+                    self._active_publish_timeouts.discard(timeout_cm)
+        except TimeoutError as exc:
+            # Der Deckel ist gerissen. Ohne Verwurf bliebe die tote
+            # Verbindung stehen und jeder Folge-Publish verbrennte erneut
+            # die volle Frist (R10).
+            await self._discard_publish_channel(in_flight[-1] if in_flight else None)
+            logger.warning(
+                "publish_deadline_exceeded",
+                routing_key=routing_key,
+                timeout_s=timeout_s,
+                hint=(
+                    "publish did not complete within the configured budget; "
+                    "delivery is indeterminate — the broker may already hold "
+                    "the message"
+                ),
+            )
+            raise PublishIndeterminate(
+                f"publish to {routing_key!r} exceeded the publish deadline "
+                f"of {timeout_s}s; delivery is indeterminate"
+            ) from exc
+
+    async def _publish_attempts(
+        self,
+        routing_key: str,
+        msg: aio_pika.Message,
+        in_flight: list[aio_pika.abc.AbstractChannel],
+    ) -> None:
+        """Die bounded-retry-Schleife. Der Zeitdeckel liegt beim Aufrufer,
+        damit er den gesamten Vorgang umspannt und nicht den Einzelversuch
+        (KTD1). ``in_flight`` traegt den zuletzt benutzten Kanal nach oben,
+        damit der Verwurf genau ihn trifft."""
         last_exc: BaseException | None = None
         for attempt in range(_PUBLISH_MAX_ATTEMPTS):
             pub = await self._ensure_publish_channel()
+            in_flight.append(pub)
             try:
                 await pub.default_exchange.publish(msg, routing_key=routing_key)
                 return
@@ -176,15 +221,11 @@ class RabbitMQDelivery(RabbitMQConnection):
                     if current is not None and current.cancelling() > 0:
                         raise
                 last_exc = exc
-                # Drop the potentially broken channel so the next
-                # _ensure_publish_channel recreates it.
-                if self._publish_channel is not None:
-                    try:
-                        if not self._publish_channel.is_closed:
-                            await self._publish_channel.close()
-                    except Exception:
-                        pass
-                    self._publish_channel = None
+                # Den womoeglich kaputten Kanal verwerfen, damit der
+                # naechste _ensure_publish_channel neu oeffnet. Derselbe
+                # Weg wie beim Deadline-Bruch: Identitaetspruefung unter
+                # der Sperre, Schliessen nebenlaeufig.
+                await self._discard_publish_channel(pub)
                 # Skip the backoff sleep on the final attempt — we are
                 # about to raise anyway. Saves up to 800ms latency at
                 # exhaustion.

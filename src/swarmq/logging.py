@@ -103,7 +103,17 @@ def setup_logging(
     log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10_000)
 
     formatter = structlog.stdlib.ProcessorFormatter(
-        processors=[renderer],
+        processors=[
+            # Ohne diesen Schritt rendert der Formatter seine eigenen
+            # Arbeitsschluessel mit: ``_record`` traegt den LogRecord, dessen
+            # ``msg`` das komplette Ereignis-Dict ist — die Nutzlast stand
+            # damit zweimal in jeder Zeile. Ueber einen 24h-Lauf die doppelte
+            # Logmenge, und von Hand kaum lesbar genau im Diagnosefall.
+            # Muss VOR dem Renderer stehen; beide Renderer teilen diesen
+            # Formatter, der Fix trifft JSON- und Textausgabe zusammen.
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
         foreign_pre_chain=shared_processors,
     )
 

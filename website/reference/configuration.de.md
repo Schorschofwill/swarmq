@@ -29,6 +29,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_RESULT_TTL` | `86400` | Sekunden, die gespeicherte Ergebnisse in Valkey leben. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Obergrenze des Retry-Backoffs in Sekunden. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Sekunden, in denen In-Flight-Tasks bei SIGTERM beenden dürfen, bevor Hard-Kill. |
+| `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Obergrenze für einen kompletten Publish-Vorgang inklusive interner Wiederholversuche. Wird sie überschritten, scheitert der Publish mit einem Broker-Verbindungsfehler, statt unbegrenzt auf eine Bestätigung zu warten, die ein still toter Transport nie liefert. Beim Herunterfahren gilt die kürzere aus diesem Wert und der verbleibenden Gnadenfrist. |
 | `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (empfohlen) oder `classic` RabbitMQ-Queue-Typ. |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Sekunden zwischen In-Task-Cancel-Flag-Checks. |
 | `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze einzelner Valkey-Operationen in der Cancel-/Dedup-Pipeline. |
@@ -54,6 +55,24 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind-Adresse für den Metrics-Server. |
 | `SWARMQ_HEALTH_PORT` | *ungesetzt* | Wenn gesetzt, serve `/health` und `/ready` auf diesem Port. Muss `1..65535` sein. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind-Adresse für den Health-Server. |
+
+!!! warning "Ein fester Beobachtungs-Port lässt sich nicht auf mehrere Worker-Prozesse aufteilen"
+
+    `swarmq worker` verweigert den Start, wenn mehr als ein Worker-Prozess
+    angefordert wird (`--processes N` mit N > 1 oder `--autoscale MIN,MAX`
+    mit MAX > 1) und zugleich ein Metrik- oder Health-Port wirksam ist.
+    Jedes Kind würde denselben Port binden, sodass nur das erste überlebt;
+    die übrigen Plätze verbrauchen ihr Restart-Budget, und der Lauf
+    arbeitet danach still mit weniger Prozessen als angefordert weiter.
+
+    Geprüft wird der aufgelöste Wert: Ein über `SWARMQ_METRICS_PORT` bzw.
+    `SWARMQ_HEALTH_PORT` gesetzter Port wird genauso abgelehnt wie eine
+    Kommandozeilenoption, und die Meldung nennt die jeweils wirksame
+    Quelle. `swarmq worker --check` meldet denselben Konflikt.
+
+    Entweder den festen Port im Mehrprozess-Betrieb weglassen oder einen
+    einzelnen Prozess damit fahren. Ein Port je Kindprozess existiert
+    noch nicht.
 
 Alle Ports werden zur Config-Zeit validiert: ein Bad Value raist
 `ConfigurationError`, bevor der Worker versucht zu binden.

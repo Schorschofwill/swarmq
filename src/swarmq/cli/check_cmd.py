@@ -81,6 +81,14 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             reload=payload["reload"],
             watch_dir=getattr(args, "watch_dir", None),
             burst=bool(getattr(args, "burst", False)),
+            # Ohne diese Argumente meldete --check "in Ordnung" fuer genau
+            # die Kombination, die der Start danach ablehnt — und braeche
+            # damit die Zusage, dass ein erfolgreiches Ergebnis den
+            # Pre-Flight des Supervisors impliziert (R5).
+            processes=int(getattr(args, "processes", 1) or 1),
+            autoscale=getattr(args, "autoscale", None),
+            metrics_port=getattr(args, "metrics_port", None),
+            health_port=getattr(args, "health_port", None),
         )
         payload.update(
             ok=True,

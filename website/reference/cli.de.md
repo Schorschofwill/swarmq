@@ -64,7 +64,7 @@ swarmq worker --module DOTTED.PATH
 | `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. |
 | `--reload` | aus | Beobachtet Task-Module und triggert SIGHUP-Reload bei Änderung. Nur Developer. Braucht `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | Elternverzeichnis der `--module`-Quelle | Zu überwachendes Verzeichnis (wiederholbar). Ohne `--reload` ignoriert. |
-| `--check` | aus | Dry-Run-Validierung: prüft, ob `--module` importierbar ist und — mit `--reload` — dass `watchfiles` installiert ist und Watch-Dirs auflösbar sind. Druckt eine JSON-Zusammenfassung und exited `0`/`1` ohne Supervisor-Start oder Broker/Backend-Kontakt. |
+| `--check` | aus | Dry-Run-Validierung: prüft, ob `--module` importierbar ist, mit `--reload` dass `watchfiles` installiert ist und Watch-Dirs auflösbar sind, und dass Mehrprozess-Betrieb nicht mit einem festen `--metrics-port`/`--health-port` kombiniert wird. Druckt eine JSON-Zusammenfassung und exited `0`/`1` ohne Supervisor-Start oder Broker/Backend-Kontakt. |
 
 ### Beispiele
 

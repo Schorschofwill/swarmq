@@ -81,6 +81,12 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         reload=reload_enabled,
         watch_dir=list(watch_dirs_raw) or None,
         burst=bool(getattr(args, "burst", False)),
+        # Der Port-Guard (R5) braucht die angeforderte Topologie; ohne diese
+        # Argumente liefe er mit seinen Defaults und griffe nie.
+        processes=int(getattr(args, "processes", 1) or 1),
+        autoscale=args.autoscale,
+        metrics_port=args.metrics_port,
+        health_port=args.health_port,
     )
     for warning in check_result["warnings"] or []:
         logger.warning("worker_config_warning", warning=warning)

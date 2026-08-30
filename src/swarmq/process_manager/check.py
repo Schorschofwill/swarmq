@@ -89,12 +89,84 @@ class WorkerConfigCheckResult(TypedDict):
     warnings: list[str]
 
 
+def _effective_port(
+    cli_value: int | None, env_name: str, cli_flag: str
+) -> tuple[int | None, str] | None:
+    """Aufgeloester Port samt Herkunft, oder ``None`` wenn keiner wirkt.
+
+    Bildet die Vorrangregel der Konfiguration nach: ``_apply_env_overrides``
+    schreibt den Umgebungswert bedingungslos ueber den uebergebenen — die
+    Umgebung schlaegt also die Option. Ein Guard auf den Kommandozeilen-
+    argumenten allein liesse ``SWARMQ_METRICS_PORT=9000 swarmq worker
+    --processes 4`` durch, also genau den Fall, den er abfangen soll
+    (Plan 2026-08-28-001, R5).
+    """
+    import os
+
+    from swarmq.config import _parse_port
+
+    raw = os.environ.get(env_name, "")
+    if raw:
+        return _parse_port(raw, env_name), env_name
+    if cli_value is not None:
+        return cli_value, cli_flag
+    return None
+
+
+def _validate_observability_ports(
+    *,
+    processes: int,
+    autoscale: tuple[int, int] | None,
+    metrics_port: int | None,
+    health_port: int | None,
+) -> None:
+    """Lehnt Mehrprozess-Betrieb mit festem Beobachtungs-Port ab (R5-R7).
+
+    Derselbe Port geht heute an alle Kindprozesse und wird dort fest
+    gebunden. Das erste Kind bindet, die uebrigen scheitern, der Supervisor
+    startet sie bis zum Restart-Budget nach — danach laeuft der Worker
+    dauerhaft unterbesetzt weiter, ohne dass eine Meldung die Portkollision
+    nennt.
+
+    Der Autoskalierungsbereich zaehlt mit seiner OBERGRENZE: Bei
+    ``--autoscale 1,4`` startet der Lauf sonst sauber und kollidiert erst
+    beim ersten Hochskalieren mitten im Betrieb (KTD7).
+    """
+    upper = max(processes, autoscale[1] if autoscale is not None else 1)
+    if upper <= 1:
+        return
+
+    conflicts = [
+        found
+        for found in (
+            _effective_port(metrics_port, "SWARMQ_METRICS_PORT", "--metrics-port"),
+            _effective_port(health_port, "SWARMQ_HEALTH_PORT", "--health-port"),
+        )
+        if found is not None
+    ]
+    if not conflicts:
+        return
+
+    named = ", ".join(f"{source}={port}" for port, source in conflicts)
+    raise ConfigurationError(
+        f"a fixed observability port cannot be shared by {upper} worker "
+        f"processes ({named}): every child would bind the same port, so only "
+        "the first survives and the run ends up silently under-provisioned. "
+        "Either drop the fixed port for multi-process mode, or run a single "
+        "process with it (--processes 1)."
+    )
+
+
 def check_worker_config(
     *,
     module: str,
     reload: bool,
     watch_dir: list[str] | tuple[str, ...] | None,
     burst: bool = False,
+    processes: int = 1,
+    autoscale: tuple[int, int] | None = None,
+    metrics_port: int | None = None,
+    health_port: int | None = None,
 ) -> WorkerConfigCheckResult:
     """Run the pre-flight validation for ``swarmq worker`` and return
     a machine-readable summary dict.
@@ -130,6 +202,15 @@ def check_worker_config(
     )
 
     warnings: list[str] = []
+
+    # Vor dem teuren Modul-Import: eine Portkollision ist ohne Dateisystem-
+    # oder Import-Arbeit entscheidbar.
+    _validate_observability_ports(
+        processes=processes,
+        autoscale=autoscale,
+        metrics_port=metrics_port,
+        health_port=health_port,
+    )
 
     # Protect JSON-on-stdout callers against
     # module-init print() contaminating the payload. Side-effects

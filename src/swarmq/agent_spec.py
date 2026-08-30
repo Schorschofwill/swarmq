@@ -85,6 +85,14 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "PublishIndeterminate": dict(
+        # Absichtlich NICHT retriable: Die Frist riss beim Warten auf das
+        # Publisher-Confirm, der Broker kann die Nachricht also bereits
+        # haben. Ein blindes Wiederholen fuehrt den Task moeglicherweise
+        # ein zweites Mal aus (Plan 2026-08-28-001, R11).
+        origin="library", when=["schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "BackendConnectionError": dict(
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",

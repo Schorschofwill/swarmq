@@ -549,3 +549,41 @@ def test_numeric_env_garbage_raises_configuration_error(monkeypatch, env_var):
     monkeypatch.setenv(env_var, "abc")
     with pytest.raises(ConfigurationError, match=env_var):
         SwarmQConfig(broker_url="x", backend_url="x")
+
+
+# --- Publish-Deadline (Plan 2026-08-28-001, U1 / R3) ---
+
+
+def test_config_publish_timeout_default_120():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.publish_timeout_s == 120.0
+
+
+def test_config_publish_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_PUBLISH_TIMEOUT_S", "45.5")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.publish_timeout_s == 45.5
+
+
+def test_config_publish_timeout_non_numeric_env_raises(monkeypatch):
+    monkeypatch.setenv("SWARMQ_PUBLISH_TIMEOUT_S", "soon")
+    with pytest.raises(ConfigurationError, match="must be a number"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+
+
+def test_config_publish_timeout_zero_raises():
+    with pytest.raises(ConfigurationError, match="publish_timeout_s must be > 0"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            publish_timeout_s=0.0,
+        )
+
+
+def test_config_publish_timeout_negative_raises():
+    with pytest.raises(ConfigurationError, match="publish_timeout_s must be > 0"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            publish_timeout_s=-1.0,
+        )
