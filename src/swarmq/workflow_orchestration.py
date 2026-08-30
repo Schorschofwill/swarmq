@@ -676,6 +676,16 @@ class WorkflowAdvancer:
         Die Liste wurde damit still kuerzer, als die Gruppe Glieder hat: B10.
         Die Kennung wird deshalb aus der Topologie abgeleitet, statt an einer
         Stelle gesucht, an der sie fuer die halbe Knotenwelt nie stand.
+
+        Und eine trotzdem unvollstaendige Liste ist ein **Fehler**, kein
+        Ergebnis. Das wortlose Ueberspringen war die eigentliche Ursache von
+        B10: Ein Aufrufer kann eine gekuerzte Liste von einer vollstaendigen
+        nicht unterscheiden, der Fehler wandert also unbemerkt in die
+        nachgelagerte Rechnung -- und beim Chord-Header sogar in den Body
+        hinein, statt in einen pruefbaren Rueckgabewert. Der Guard gilt fuer
+        **jede** Gruppe, auch die flache: Er schliesst die Fehlerklasse, nicht
+        nur den einen bekannten Weg hinein. Wer ihn wegvereinfacht, stellt den
+        stillen Rechenfehler wieder her.
         """
         step_tasks: dict[str, str] = state["step_tasks"]
         out: list[str] = []
@@ -685,6 +695,15 @@ class WorkflowAdvancer:
             )
             if task_id is not None:
                 out.append(task_id)
+        expected_n = len(group.members)
+        if len(out) != expected_n:
+            raise WorkflowValidationError(
+                f"group at {group_path!r} resolved {len(out)} of {expected_n} "
+                "member results; refusing to deliver a truncated list. A member "
+                "step marker is missing from the workflow state (most likely a "
+                "step lost in the publish-then-mark window, or a workflow that "
+                "straddled an upgrade)"
+            )
         return out
 
     async def _gather_results(self, task_ids: list[str]) -> list[Any]:

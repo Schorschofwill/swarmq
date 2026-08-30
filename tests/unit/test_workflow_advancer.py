@@ -383,6 +383,97 @@ async def test_expired_aggregate_of_composite_member_raises():
             await d.advancer.advance(d.wf_id, step_path, task_id, list(sig.args))
 
 
+# --------------------------------------------------------------------------
+# B10 — Vollstaendigkeitsguard (Plan 2026-08-30-002, U3)
+#
+# Eine kuerzere Liste als die Gruppe Glieder hat ist ein Fehler, kein
+# Ergebnis — und zwar fuer JEDE Gruppe, nicht nur die verschachtelte.
+# --------------------------------------------------------------------------
+
+
+async def _seed_results(d, frontier, step_tasks):
+    for step_path, sig in frontier:
+        task_id = step_tasks[step_path]
+        await d.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": {"id": task_id, "queue": "default", "name": sig.task_name},
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": list(sig.args),
+                }
+            ),
+            60_000,
+        )
+
+
+async def _drop_step_marker(d, drop_path):
+    state = await d.state()
+    state["step_tasks"] = {
+        k: v for k, v in state["step_tasks"].items() if k != drop_path
+    }
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+
+
+async def test_guard_rejects_truncated_list_for_flat_group():
+    # R5, AE10 — der Guard sitzt an der gemeinsamen Stelle und wirkt auch
+    # dort, wo B10 nie zuschlagen konnte.
+    from swarmq.exceptions import WorkflowValidationError
+
+    d = Driver(group(Echo.s("a"), Echo.s("b")))
+    frontier = initial_frontier(d.workflow)
+    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
+    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+    await _seed_results(d, frontier, state["step_tasks"])
+
+    await d.advancer.advance(d.wf_id, "/g0", state["step_tasks"]["/g0"], ["a"])
+    await _drop_step_marker(d, "/g0")
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await d.advancer.advance(d.wf_id, "/g1", state["step_tasks"]["/g1"], ["b"])
+    assert "1 of 2" in str(exc.value)
+
+
+async def test_guard_fires_before_chord_body_is_enqueued():
+    # R5 — beim Chord-Header waere die gekuerzte Liste die EINGABE des Bodys,
+    # nicht sein Rueckgabewert. Der Guard muss davor sitzen.
+    from swarmq.exceptions import WorkflowValidationError
+
+    d = Driver(chord(group(Echo.s("a"), Echo.s("b")), Echo.s()))
+    frontier = initial_frontier(d.workflow)
+    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
+    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+    await _seed_results(d, frontier, state["step_tasks"])
+
+    await d.advancer.advance(d.wf_id, "/h/g0", state["step_tasks"]["/h/g0"], ["a"])
+    await _drop_step_marker(d, "/h/g0")
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await d.advancer.advance(
+            d.wf_id, "/h/g1", state["step_tasks"]["/h/g1"], ["b"]
+        )
+    assert "'/h'" in str(exc.value)
+    assert d.published == [], "Body wurde trotz unvollstaendiger Eingabe eingereiht"
+
+
+async def test_guard_catches_lost_marker_of_composite_member():
+    # R5 — der realitaetsnaechste Fall: der Abschlussschritt eines
+    # Kettenglieds verliert seinen Marker (publish-then-mark-Fenster).
+    from swarmq.exceptions import WorkflowValidationError
+
+    d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
+    await d.seed()
+    await _drop_step_marker(d, "/g1/1")
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await d.drain()
+    assert "1 of 2" in str(exc.value)
+
+
 async def test_expired_member_result_raises_workflow_result_expired():
     # R6: a chord fan-in where one (completed) member's result has expired
     # must raise WorkflowResultExpired, not silently pass None to the body.
