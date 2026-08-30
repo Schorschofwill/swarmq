@@ -131,12 +131,31 @@ meldet statt auszuliefern — für **jede** Gruppe, auch die flache.
 **Achtung beim Abgleich:** Der Fix ist **noch nicht veröffentlicht**. Für
 jeden PyPI-Nutzer ist B10 in 0.2.0 und 0.3.0 weiterhin offen.
 
+**Aus dem Code-Review offen geblieben** (alle vorbestehend, keiner von diesem
+Plan verursacht):
+
+- **Die Fehlermarkierung kann selbst still scheitern.** Wirft der Guard, faengt
+  `worker/results.py` das ab und markiert den Workflow als gescheitert.
+  Scheitert diese Schreibung ihrerseits (Backend-Stoerung), wird sie nur
+  geloggt und die Nachricht trotzdem acked — der Workflow bleibt fuer immer
+  `RUNNING`, `handle.get()` haengt bis zum TTL. Der Guard macht diesen Pfad
+  erreichbarer, hat ihn aber nicht geschaffen.
+- **`_refresh_step_tasks` liest den frischen Status und verwirft ihn.** Ein von
+  einem anderen Advancer bereits als gescheitert oder abgebrochen markierter
+  Workflow wird weitergefahren und der Status ueberschrieben.
+- **`workflow_orchestration.py` steht mit 805 Zeilen ueber dem 800er-Limit** und
+  traegt seit diesem Fix den einzigen Eintrag in `_LOC_EXCEPTIONS`, einer Liste,
+  die das Restrukturierungsprogramm auf leer gebracht hatte. Aufloesung: die
+  reinen Pfad- und Topologie-Helfer in ein eigenes Modul ziehen.
+
 **Neu offen geblieben (KTD5):** `advance()` ist ein Read-Modify-Write ohne
 CAS, `store_workflow_state` überschreibt das ganze Dokument blind. Zwei
 nebenläufige Advances können einander Schritt-Marker löschen — vorbestehend,
 bisher nur in `children()` sichtbar, durch den neuen Guard jetzt
 betriebsrelevant. Ein strikter `xfail` in `tests/unit/test_workflow_advancer.py`
-hält die Lücke fest. Die Behebung braucht einen eigenen Plan.
+hält die Lücke fest. Die Behebung braucht einen eigenen Plan — und sollte nach
+dem Vorbild des Projekts strukturell greifen (wie der `PublishReceipt`-Zwang
+auf `mark_enqueued`), nicht durch weiteres Verkleinern des Fensters.
 
 **Dateien:** `src/swarmq/workflow_orchestration.py`, `workflow.py`,
 `tests/unit/test_workflow_advancer.py`,

@@ -272,7 +272,7 @@
     },
     {
       "dlq_on_uncaught": "n/a",
-      "doc": "Raised at workflow construction when a topology violates the\nflat-DAG depth limit, the group-size limit, or embeds a\nFIRE_AND_FORGET task as a step (R8, R9).",
+      "doc": "Raised at workflow construction when a topology violates the\nflat-DAG depth limit, the group-size limit, or embeds a\nFIRE_AND_FORGET task as a step (R8, R9).\n\nAlso raised at **run time**, during group/chord fan-in, when the member\nresult list cannot be assembled completely — a member step marker is\nmissing from the workflow state. Delivering a shorter list than the group\nhas members would be an undetectable wrong answer, so the workflow fails\ninstead. The worker seam marks the workflow failed and ``handle.get()``\nraises.",
       "exception_class": "swarmq.exceptions.WorkflowValidationError",
       "exit_code_on_cli": null,
       "init_params": [],
@@ -283,7 +283,8 @@
       "retriable": "no",
       "transport_field": "raised to caller",
       "when": [
-        "schedule"
+        "schedule",
+        "run"
       ]
     }
   ]

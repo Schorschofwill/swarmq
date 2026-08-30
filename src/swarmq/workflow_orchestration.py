@@ -317,14 +317,13 @@ def workflow_step_task_id(wf_id: str, step_path: str) -> str:
 
 def aggregate_result_id(wf_id: str, node_path: str) -> str:
     """Deterministische Kennung des Ergebnisses, das ein zusammengesetzter
-    Knoten an *node_path* als Ganzes produziert, wenn es keinen einzelnen
-    Schritt gibt, dem es gehoert (eine Gruppe: ihr Ergebnis ist die Liste).
+    Knoten an *node_path* als Ganzes produziert, wenn kein einzelner Schritt
+    es besitzt (eine Gruppe: ihr Ergebnis ist die Liste).
 
-    Die eine Definition, auf die sich Schreiber und Leser stuetzen:
-    :meth:`WorkflowAdvancer._materialise` legt das Ergebnis darunter ab,
-    :meth:`WorkflowAdvancer._terminal_result_id` findet es darueber wieder.
-    Beide muessen dieselbe Kennung meinen -- deshalb steht sie hier einmal
-    und nicht zweimal als Formatstring (B10).
+    Die eine Definition fuer Schreiber und Leser --
+    :meth:`WorkflowAdvancer._materialise` legt darunter ab,
+    :meth:`WorkflowAdvancer._terminal_result_id` findet darueber wieder.
+    Zwei Formatstrings waeren der stille Weg zurueck in B10.
     """
     return f"{wf_id}:agg:{node_path}"
 
@@ -614,20 +613,15 @@ class WorkflowAdvancer:
     async def _refresh_step_tasks(self, wf_id: str, state: dict[str, Any]) -> None:
         """Die zuletzt persistierten Schritt-Kennungen in *state* nachziehen.
 
-        ``advance()`` liest den Zustand genau einmal beim Eintritt; bis der
-        Fan-in laeuft, koennen nebenlaeufige Advances weitere Schritte markiert
-        haben. Ohne dieses Nachziehen baut die Zusammenstellung auf einem
-        veralteten Schnappschuss auf und sieht Glieder nicht, die laengst
-        fertig sind.
-
-        Vereinigt wird rein additiv: ``step_tasks``-Eintraege werden nirgends
-        geloescht und die Kennungen sind deterministisch, ein Konflikt kann
-        also nicht entstehen. Der lokale Stand gewinnt bei Gleichstand.
+        ``advance()`` liest den Zustand einmal beim Eintritt; bis der Fan-in
+        laeuft, koennen nebenlaeufige Advances weitere Schritte markiert haben.
+        Vereinigt wird rein additiv -- ``step_tasks`` wird nirgends geloescht
+        und die Kennungen sind deterministisch, ein Konflikt kann also nicht
+        entstehen.
 
         Das schliesst das verlorene Zustands-Update **nicht**
-        (``store_workflow_state`` ueberschreibt das ganze Dokument blind,
-        ``advance`` ist ein Read-Modify-Write ohne CAS) -- es verkleinert das
-        Fenster und zieht den zurueckgeschriebenen Stand wieder zusammen.
+        (``store_workflow_state`` ueberschreibt blind, ``advance`` ist ein
+        Read-Modify-Write ohne CAS) -- es verkleinert nur das Fenster.
         """
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
@@ -638,30 +632,49 @@ class WorkflowAdvancer:
             step_tasks.setdefault(path, task_id)
 
     def _terminal_result_id(
-        self, wf_id: str, node: WorkflowNode, path: str, step_tasks: dict[str, str]
+        self,
+        wf_id: str,
+        node: WorkflowNode,
+        path: str,
+        step_tasks: dict[str, str],
+        member_path: str | None = None,
     ) -> str | None:
         """Kennung des Ergebnisses, das *node* an *path* als Ganzes liefert.
 
         Spiegelt die beiden Zweige von :meth:`_materialise`: ein Blatt, eine
         Kette und ein Chord laufen auf die **echte** Schritt-Kennung ihres
-        Abschlussschritts hinaus, eine Gruppe auf die Aggregatkennung, die
-        ``_materialise`` unter demselben Pfad ablegt (beide ueber
-        :func:`aggregate_result_id`, damit sie nicht auseinanderdriften).
+        Abschlussschritts hinaus, eine Gruppe auf die Aggregatkennung (beide
+        ueber :func:`aggregate_result_id`, damit sie nicht auseinanderdriften).
 
-        Rein lesend und rekursiv, also tiefenunabhaengig; die Obergrenze setzt
-        ``_validate`` schon bei der Konstruktion (``DEFAULT_MAX_WORKFLOW_DEPTH``).
+        ``member_path`` ist der Pfad des GLIEDS, mit dem die Rekursion begann;
+        sie reicht ihn unveraendert durch. Das ist load-bearing:
+        ``_materialise`` laeuft genau einmal je Glied, im ``Group``-Zweig von
+        :meth:`_on_container_complete` und mit dem GLIEDPFAD --
+        ``result_task_id=None`` wandert aus einer inneren Gruppe durch die
+        Ketten- und Chord-Ebenen nach oben, ohne unterwegs etwas abzulegen.
+        ``chain(a, group(b, c))`` hat sein Aggregat deshalb unter
+        ``<gruppe>/g<i>``, nicht unter dem tiefsten Pfad. Der erste Anlauf
+        nahm den tiefsten Pfad und lief in ein ``WorkflowResultExpired``, das
+        faelschlich die TTL beschuldigte.
+
+        Rein lesend und rekursiv; die Tiefengrenze setzt ``_validate`` schon
+        bei der Konstruktion (``DEFAULT_MAX_WORKFLOW_DEPTH``).
         """
+        if member_path is None:
+            member_path = path
         if isinstance(node, Signature):
             return step_tasks.get(path)
         if isinstance(node, Chain):
             last = len(node.steps) - 1
             return self._terminal_result_id(
-                wf_id, node.steps[last], f"{path}/{last}", step_tasks
+                wf_id, node.steps[last], f"{path}/{last}", step_tasks, member_path
             )
         if isinstance(node, Chord):
-            return self._terminal_result_id(wf_id, node.body, f"{path}/b", step_tasks)
+            return self._terminal_result_id(
+                wf_id, node.body, f"{path}/b", step_tasks, member_path
+            )
         if isinstance(node, Group):
-            return aggregate_result_id(wf_id, path)
+            return aggregate_result_id(wf_id, member_path)
         raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
     def _ordered_member_ids(
@@ -670,22 +683,17 @@ class WorkflowAdvancer:
         """Gliedkennungen in Definitionsreihenfolge (R5).
 
         Bis 0.3.0 wurde hier stur ``<gruppe>/g<i>`` in ``step_tasks``
-        nachgeschlagen. Ein **zusammengesetztes** Glied legt dort aber nie
-        einen Schluessel an -- ``_frontier`` rekursiert direkt auf seine
-        Blaetter --, und der fehlende Schluessel wurde wortlos uebersprungen.
-        Die Liste wurde damit still kuerzer, als die Gruppe Glieder hat: B10.
-        Die Kennung wird deshalb aus der Topologie abgeleitet, statt an einer
-        Stelle gesucht, an der sie fuer die halbe Knotenwelt nie stand.
-
-        Und eine trotzdem unvollstaendige Liste ist ein **Fehler**, kein
-        Ergebnis. Das wortlose Ueberspringen war die eigentliche Ursache von
-        B10: Ein Aufrufer kann eine gekuerzte Liste von einer vollstaendigen
-        nicht unterscheiden, der Fehler wandert also unbemerkt in die
-        nachgelagerte Rechnung -- und beim Chord-Header sogar in den Body
-        hinein, statt in einen pruefbaren Rueckgabewert. Der Guard gilt fuer
-        **jede** Gruppe, auch die flache: Er schliesst die Fehlerklasse, nicht
-        nur den einen bekannten Weg hinein. Wer ihn wegvereinfacht, stellt den
-        stillen Rechenfehler wieder her.
+        nachgeschlagen und ein fehlender Schluessel **wortlos uebersprungen**.
+        Ein zusammengesetztes Glied legt dort nie einen Schluessel an, sodass
+        die Liste still kuerzer wurde, als die Gruppe Glieder hat: B10.
+        Deshalb Ableitung (:meth:`_terminal_result_id`) statt Nachschlagen --
+        und eine trotzdem unvollstaendige Liste ist ein **Fehler**, kein
+        Ergebnis: Ein Aufrufer kann sie nicht von einer vollstaendigen
+        unterscheiden, beim Chord-Header wandert sie in die Rechnung des Bodys
+        statt in einen pruefbaren Rueckgabewert. Der Guard gilt fuer **jede**
+        Gruppe, auch die flache -- er schliesst die Fehlerklasse, nicht nur
+        den bekannten Weg hinein. Wer ihn wegvereinfacht, stellt den stillen
+        Rechenfehler wieder her.
         """
         step_tasks: dict[str, str] = state["step_tasks"]
         out: list[str] = []

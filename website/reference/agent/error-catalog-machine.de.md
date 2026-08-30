@@ -37,7 +37,7 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.Retry` | `SwarmQError` | task_code | run | yes (verbraucht Budget) | no | n/a | Control Flow |
 | `swarmq.exceptions.NoRetry` | `SwarmQError` | task_code | run | no | yes (sofort) | n/a | Control Flow |
 | `swarmq.exceptions.SoftTimeoutError` | `SwarmQError` | library | run | controlled | yes | n/a | `error_message`, `is_error=true` |
-| `swarmq.exceptions.WorkflowValidationError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.WorkflowValidationError` | `SwarmQError` | library | schedule, run | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 

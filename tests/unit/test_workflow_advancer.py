@@ -287,20 +287,31 @@ async def test_group_nested_two_levels_deep():
     assert await d.final_value() == [["a"], [["b"], [["c"]]]]
 
 
-async def test_derived_member_id_resolves_to_that_members_result():
+async def test_every_member_result_lives_where_the_contract_says():
     """Deckungstest der tragenden Annahme (Plan KTD1 / Assumptions).
 
-    Fuer jede Knotenart muss die abgeleitete Kennung genau das Ergebnis
-    treffen, das dieses Glied als Ganzes produziert hat. Driften Ableitung
-    und ``_materialise`` auseinander, bricht die Zusammenstellung still —
-    dieser Test ist die Bremse davor.
+    Der Test schreibt die Kennung je Gliedform **unabhaengig** vor, statt die
+    Ableitung des Codes zu befragen: Ein Blatt liegt unter seinem
+    Schritt-Schluessel, eine Kette unter dem ihres letzten Schritts, ein Chord
+    unter dem seines Bodys — und alles, was als Gruppe endet, unter der
+    Aggregatkennung des GLIEDPFADS, weil `_materialise` genau dort und nur
+    dort ablegt.
+
+    Die letzten beiden Zeilen sind der Kern: Ein Glied, dessen Abschlussknoten
+    eine Gruppe hinter einer Ketten- oder Chord-Ebene ist, hat sein Aggregat
+    am Gliedpfad liegen, nicht am tiefsten Pfad. Genau das ging beim ersten
+    Anlauf schief und blieb unbemerkt, weil kein Test diese Form baute.
     """
+    from swarmq.workflow_orchestration import aggregate_result_id
+
     d = Driver(
         group(
-            Echo.s("a"),
-            chain(Echo.s("b"), Echo.s()),
-            group(Echo.s("c"), Echo.s("d")),
-            chord(group(Echo.s("e")), Echo.s()),
+            Echo.s("a"),                                            # /g0 Blatt
+            chain(Echo.s("b"), Echo.s()),                           # /g1 Kette
+            group(Echo.s("c"), Echo.s("d")),                        # /g2 Gruppe
+            chord(group(Echo.s("e")), Echo.s()),                    # /g3 Chord
+            chain(Echo.s("f"), group(Echo.si("g"), Echo.si("h"))),  # /g4 Kette->Gruppe
+            chord(group(Echo.si("i")), group(Echo.si("j"), Echo.si("k"))),  # /g5 Chord->Gruppe
         )
     )
     await d.seed()
@@ -308,18 +319,69 @@ async def test_derived_member_id_resolves_to_that_members_result():
     st = await d.state()
     assert st["status"] == STATUS_COMPLETED
 
-    expected = [["a"], [["b"]], [["c"], ["d"]], [[["e"]]]]
+    expected = [
+        ["a"],
+        [["b"]],
+        [["c"], ["d"]],
+        [[["e"]]],
+        [["g"], ["h"]],
+        [["j"], ["k"]],
+    ]
     assert await d.final_value() == expected
 
     step_tasks = st["step_tasks"]
-    for i, member in enumerate(d.workflow.members):
-        task_id = d.advancer._terminal_result_id(
-            d.wf_id, member, f"/g{i}", step_tasks
-        )
-        assert task_id is not None, f"Glied {i} ohne ableitbare Kennung"
+    where = [
+        step_tasks["/g0"],                        # Blatt
+        step_tasks["/g1/1"],                      # letzter Kettenschritt
+        aggregate_result_id(d.wf_id, "/g2"),      # Gruppe am Gliedpfad
+        step_tasks["/g3/b"],                      # Chord-Body (Blatt)
+        aggregate_result_id(d.wf_id, "/g4"),      # Kette, die als Gruppe endet
+        aggregate_result_id(d.wf_id, "/g5"),      # Chord mit Gruppen-Body
+    ]
+    for i, task_id in enumerate(where):
         raw = await d.backend.get_result(task_id)
-        assert raw is not None, f"Glied {i}: Kennung zeigt auf kein Ergebnis"
-        assert decode_result(raw)["result"] == expected[i]
+        assert raw is not None, f"Glied {i}: kein Ergebnis unter {task_id}"
+        assert decode_result(raw)["result"] == expected[i], f"Glied {i}"
+
+
+async def test_group_member_ending_in_group_behind_a_chain():
+    # Plan-AE5 in seiner urspruenglichen Form: eine Kette, deren letzter
+    # Schritt eine Gruppe ist. Das Aggregat liegt am Gliedpfad /g1, nicht am
+    # tiefsten Pfad /g1/1 — der erste Anlauf griff daneben und meldete
+    # faelschlich eine abgelaufene TTL.
+    d = Driver(
+        group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c"))))
+    )
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["x"], [["b"], ["c"]]]
+
+
+async def test_group_member_is_chord_whose_body_is_a_group():
+    d = Driver(
+        group(
+            Echo.s("x"),
+            chord(group(Echo.si("h")), group(Echo.si("b1"), Echo.si("b2"))),
+        )
+    )
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["x"], [["b1"], ["b2"]]]
+
+
+async def test_chord_header_member_ending_in_group_behind_a_chain():
+    d = Driver(
+        chord(
+            group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c")))),
+            Echo.s(),
+        )
+    )
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [[["x"], [["b"], ["c"]]]]
 
 
 async def test_composite_member_redelivery_leaves_result_intact():
@@ -597,30 +659,42 @@ async def test_children_reports_only_enqueued_steps():
     reason=(
         "KTD5 des Plans 2026-08-30-002: `advance()` ist ein Read-Modify-Write "
         "ohne CAS und `store_workflow_state` ueberschreibt das ganze Dokument "
-        "blind, sodass zwei nebenlaeufige Advances einander Schritt-Marker "
-        "loeschen koennen. Vorbestehend und bewusst nicht in diesem Plan "
-        "behoben; der Guard aus U3 macht den Verlust jetzt sichtbar, statt ihn "
-        "still zu kuerzen. Schlaegt dieser Test um, ist KTD5 behoben — dann "
-        "gehoert er umgeschrieben, nicht geloescht."
+        "blind. Geht ein Advancer von einem veralteten Schnappschuss aus, "
+        "loescht sein Rueckschreiben den Schritt-Marker des anderen; der Guard "
+        "aus U3 macht daraus einen laut gescheiterten Workflow statt einer "
+        "still gekuerzten Liste. Vorbestehend und bewusst nicht in diesem Plan "
+        "behoben. Schlaegt dieser Test um, ist das verlorene Zustands-Update "
+        "geschlossen — dann gehoert er zu einem echten Regressionstest "
+        "umgeschrieben, nicht geloescht."
     ),
 )
 async def test_lost_state_update_still_truncates_group():
     m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
     state = await m.seed()
-    stale_step_tasks = dict(state["step_tasks"])
+    stale_raw = encode_json(state)
 
     # Advancer 1 schaltet die erste Kette weiter und markiert /g0/1.
-    await m.advancer().advance(m.wf_id, "/g0/0", stale_step_tasks["/g0/0"], ["a"])
+    await m.advancer().advance(m.wf_id, "/g0/0", state["step_tasks"]["/g0/0"], ["a"])
 
-    # Advancer 2 ist von DEMSELBEN Schnappschuss ausgegangen und schreibt ihn
-    # blind zurueck — der Marker /g0/1 ist damit verloren.
-    clobbered = await m.state()
-    clobbered["step_tasks"] = {
-        **stale_step_tasks,
-        "/g1/1": workflow_step_task_id(m.wf_id, "/g1/1"),
-    }
-    await m.backend.store_workflow_state(m.wf_id, encode_json(clobbered), 60_000)
-    await m.advancer().advance(m.wf_id, "/g1/0", stale_step_tasks["/g1/0"], ["c"])
+    # Advancer 2 liest beim Eintritt noch den ALTEN Schnappschuss — genau das
+    # Fenster, das ohne CAS offen steht — und schreibt ihn blind zurueck.
+    # Kein kuenstlicher Marker: der Verlust entsteht auf dem normalen Weg.
+    real_get = m.backend.get_workflow_state
+    calls = {"n": 0}
+
+    async def stale_once(wf_id, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return stale_raw
+        return await real_get(wf_id, *args, **kwargs)
+
+    m.backend.get_workflow_state = stale_once  # type: ignore[method-assign]
+    try:
+        await m.advancer().advance(
+            m.wf_id, "/g1/0", state["step_tasks"]["/g1/0"], ["c"]
+        )
+    finally:
+        m.backend.get_workflow_state = real_get  # type: ignore[method-assign]
 
     while m.published:
         await m.run_next()

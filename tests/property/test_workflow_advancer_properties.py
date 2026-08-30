@@ -164,7 +164,9 @@ def test_standalone_group_aggregates_in_definition_order(n_members, data):
 
 @given(
     shapes=st.lists(
-        st.sampled_from(["leaf", "chain", "group", "chord"]),
+        st.sampled_from(
+            ["leaf", "chain", "group", "chord", "chain-group", "chord-group"]
+        ),
         min_size=2,
         max_size=4,
     ),
@@ -193,9 +195,20 @@ def test_group_with_composite_members_aggregates_in_definition_order(shapes, dat
             elif shape == "group":
                 members.append(group(Echo.s(i), Echo.s(-i)))
                 expected.append([[i], [-i]])
-            else:
+            elif shape == "chord":
                 members.append(chord(group(Echo.s(i)), Echo.s()))
                 expected.append([[[i]]])
+            elif shape == "chain-group":
+                # Glied, dessen ABSCHLUSSKNOTEN eine Gruppe hinter einer
+                # Kettenebene ist — das Aggregat liegt am Gliedpfad.
+                members.append(chain(Echo.s(i), group(Echo.si(i), Echo.si(-i))))
+                expected.append([[i], [-i]])
+            else:
+                # dasselbe hinter einer Chord-Ebene (Body ist eine Gruppe).
+                members.append(
+                    chord(group(Echo.si(i)), group(Echo.si(-i), Echo.si(i)))
+                )
+                expected.append([[-i], [i]])
 
         driver = Driver(group(*members))
         await _seed_enqueued(driver)
