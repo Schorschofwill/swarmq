@@ -135,3 +135,53 @@ async def test_op_timeout_wraps_as_backend_error(backend):
         await backend.store_workflow_state(
             _wf_id(), b"x", ttl_ms=1000, op_timeout=0.0
         )
+
+
+# --------------------------------------------------------------------------
+# B10 — verschachtelte Topologie im Zustand (Plan 2026-08-30-002, U4)
+# --------------------------------------------------------------------------
+
+
+async def test_nested_topology_state_roundtrips_unchanged(backend):
+    """Die Korrektur leitet die Gliedkennung aus der Topologie ab — also muss
+    die Topologie den Weg durch Serialisierung und Speicher unveraendert
+    ueberstehen, auch mit zusammengesetzten Gliedern.
+
+    Prueft zugleich R9: das Zustandsdokument traegt weiterhin genau die Felder
+    aus ``build_initial_workflow_state``, kein zusaetzliches Aggregat-Feld.
+    Ein Entwurf mit eigenem Zustandseintrag haette hier ein weiteres Feld
+    hinterlassen — und die Golden-Fixture gebrochen.
+    """
+    from swarmq.serialization import decode_json, encode_json
+    from swarmq.task import Task, TaskInfo
+    from swarmq.workflow import chain, chord, group
+    from swarmq.workflow_orchestration import build_initial_workflow_state
+
+    class Noop(Task):
+        task_info = TaskInfo(name="noop_nested", queues=["default"])
+
+        async def run(self, *args) -> None:
+            return None
+
+    wf_id = _wf_id()
+    topology = group(
+        Noop.s("a"),
+        chain(Noop.s("b"), Noop.s("c")),
+        group(Noop.s("d"), chain(Noop.s("e"), Noop.s("f"))),
+        chord(group(Noop.s("g")), Noop.s()),
+    )
+    state = build_initial_workflow_state(wf_id, topology.to_dict())
+    assert set(state) == {
+        "v",
+        "workflow_id",
+        "status",
+        "topology",
+        "final_result_task_id",
+        "error",
+        "step_tasks",
+    }
+
+    await backend.store_workflow_state(wf_id, encode_json(state), ttl_ms=60_000)
+    raw = await backend.get_workflow_state(wf_id)
+    assert raw is not None
+    assert decode_json(raw)["topology"] == topology.to_dict()

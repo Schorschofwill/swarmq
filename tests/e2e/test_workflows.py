@@ -253,3 +253,80 @@ async def test_chord_header_failure_does_not_fire_body(rabbitmq_url, valkey_url)
             # never reach N=3 and the body is never enqueued — assertable
             # immediately, no wait needed.
             assert not body_ran.is_set()
+
+
+# --------------------------------------------------------------------------
+# B10 — zusammengesetzte Gruppenglieder (Plan 2026-08-30-002, U4)
+#
+# Die Nutzersicht: was `handle.get()` zurueckgibt. Bis 0.3.0 fehlte hier das
+# zusammengesetzte Glied stillschweigend.
+# --------------------------------------------------------------------------
+
+
+async def test_group_with_composite_member_roundtrip(rabbitmq_url, valkey_url):
+    queue = _q()
+
+    class Double(Task):
+        task_info = TaskInfo(name=f"double_{queue}", queues=[queue])
+
+        async def run(self, n: int) -> int:
+            return n * 2
+
+    class AddOne(Task):
+        task_info = TaskInfo(name=f"addone_{queue}", queues=[queue])
+
+        async def run(self, n: int) -> int:
+            return n + 1
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        async with _worker(rabbitmq_url, valkey_url, queue):
+            handle = await app.apply(
+                group(Double.s(1), chain(Double.s(2), AddOne.s()))
+            )
+            result = await handle.get(timeout=20)
+            # Glied 0: 1*2 = 2. Glied 1: 2*2 = 4, dann +1 = 5.
+            # Bis 0.3.0 kam hier [2] zurueck — das Kettenglied fehlte.
+            assert result == [2, 5]
+
+
+async def test_chord_over_composite_header_member_roundtrip(rabbitmq_url, valkey_url):
+    queue = _q()
+
+    class Double(Task):
+        task_info = TaskInfo(name=f"cdouble_{queue}", queues=[queue])
+
+        async def run(self, n: int) -> int:
+            return n * 2
+
+    class AddOne(Task):
+        task_info = TaskInfo(name=f"caddone_{queue}", queues=[queue])
+
+        async def run(self, n: int) -> int:
+            return n + 1
+
+    class Total(Task):
+        task_info = TaskInfo(name=f"ctotal_{queue}", queues=[queue])
+
+        async def run(self, results: list) -> int:
+            return sum(results)
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        async with _worker(rabbitmq_url, valkey_url, queue):
+            handle = await app.apply(
+                chord(
+                    group(Double.s(1), chain(Double.s(2), AddOne.s())),
+                    Total.s(),
+                )
+            )
+            result = await handle.get(timeout=20)
+            # Der gefaehrlichere Fall: die gekuerzte Liste waere die EINGABE
+            # des Bodys gewesen. Bis 0.3.0 haette Total([2]) = 2 gerechnet.
+            assert result == 7

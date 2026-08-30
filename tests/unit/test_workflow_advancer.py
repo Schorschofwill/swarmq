@@ -474,6 +474,160 @@ async def test_guard_catches_lost_marker_of_composite_member():
     assert "1 of 2" in str(exc.value)
 
 
+# --------------------------------------------------------------------------
+# B10 — mehrere Advancer auf gemeinsamem Zustand (Plan 2026-08-30-002, U4)
+# --------------------------------------------------------------------------
+
+
+class MultiDriver:
+    """Wie Driver, aber jeder Schritt laeuft auf einer EIGENEN Advancer-Instanz
+    ueber demselben Backend — der Mehrprozess-Fall, in dem kein Advancer den
+    Zustand eines anderen im Arbeitsspeicher sieht."""
+
+    def __init__(self, workflow):
+        self.backend = _connected_backend()
+        self.published: list[tuple[str, bytes, dict]] = []
+        self.wf_id = "wf-multi"
+        self.workflow = workflow
+        self.advancer_count = 0
+
+    def advancer(self) -> WorkflowAdvancer:
+        self.advancer_count += 1
+        return WorkflowAdvancer(
+            self.backend,
+            self.backend.chords,
+            publish=self._publish,
+            resolve_queue=lambda name: "default",
+            make_task_id=workflow_step_task_id,
+            unpack=_unpack,
+            ttl_ms=60_000,
+        )
+
+    async def _publish(self, queue, body, headers):
+        self.published.append((queue, body, headers))
+        return PublishReceipt(queue=queue)
+
+    async def _store(self, task_id, name, value):
+        await self.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": {"id": task_id, "queue": "default", "name": name},
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": value,
+                }
+            ),
+            60_000,
+        )
+
+    async def seed(self) -> dict:
+        state = build_initial_workflow_state(self.wf_id, self.workflow.to_dict())
+        frontier = initial_frontier(self.workflow)
+        state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+        await self.backend.store_workflow_state(
+            self.wf_id, encode_json(state), 60_000
+        )
+        for step_path, sig in frontier:
+            await self._store(
+                state["step_tasks"][step_path], sig.task_name, list(sig.args)
+            )
+        return state
+
+    async def run_next(self) -> None:
+        """Eine veroeffentlichte Nachricht auf einer frischen Advancer-Instanz."""
+        _queue, body, headers = self.published.pop(0)
+        step_path = headers["x-swarmq-workflow-step"]
+        msg = decode_json(body)
+        task_id = msg["task"]["id"]
+        value = list(msg["args"])
+        await self._store(task_id, msg["task"]["name"], value)
+        await self.advancer().advance(self.wf_id, step_path, task_id, value)
+
+    async def state(self) -> dict:
+        raw = await self.backend.get_workflow_state(self.wf_id)
+        assert raw is not None
+        return decode_json(raw)
+
+    async def final_value(self):
+        fid = (await self.state())["final_result_task_id"]
+        raw = await self.backend.get_result(fid)
+        assert raw is not None
+        return decode_result(raw)["result"]
+
+
+async def test_composite_members_across_separate_advancers():
+    """AE7 — jeder Schritt auf einer eigenen Advancer-Instanz.
+
+    Kein Advancer traegt Zustand im Arbeitsspeicher weiter; alles laeuft ueber
+    das gemeinsame Backend. Genau der Fall, an dem ein Entwurf zerbricht, der
+    die Aggregatkennung im Prozess haelt statt sie abzuleiten.
+    """
+    m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
+    state = await m.seed()
+    for step_path, sig in initial_frontier(m.workflow):
+        await m.advancer().advance(
+            m.wf_id, step_path, state["step_tasks"][step_path], list(sig.args)
+        )
+    while m.published:
+        await m.run_next()
+
+    assert m.advancer_count >= 4, "Test soll mehrere Advancer-Instanzen benutzen"
+    assert (await m.state())["status"] == STATUS_COMPLETED
+    assert await m.final_value() == [[["a"]], [["c"]]]
+
+
+async def test_children_reports_only_enqueued_steps():
+    """R8 — `children()` bleibt eine Abbildung der eingereihten SCHRITTE.
+
+    Die Aggregatkennung eines zusammengesetzten Glieds taucht dort nicht auf;
+    sie wird abgeleitet und nicht im Zustand gefuehrt. Haette die Korrektur ein
+    Zustandsfeld eingefuehrt, waere das hier sichtbar geworden.
+    """
+    d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert set(st["step_tasks"]) == {"/g0", "/g1/0", "/g1/1"}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KTD5 des Plans 2026-08-30-002: `advance()` ist ein Read-Modify-Write "
+        "ohne CAS und `store_workflow_state` ueberschreibt das ganze Dokument "
+        "blind, sodass zwei nebenlaeufige Advances einander Schritt-Marker "
+        "loeschen koennen. Vorbestehend und bewusst nicht in diesem Plan "
+        "behoben; der Guard aus U3 macht den Verlust jetzt sichtbar, statt ihn "
+        "still zu kuerzen. Schlaegt dieser Test um, ist KTD5 behoben — dann "
+        "gehoert er umgeschrieben, nicht geloescht."
+    ),
+)
+async def test_lost_state_update_still_truncates_group():
+    m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
+    state = await m.seed()
+    stale_step_tasks = dict(state["step_tasks"])
+
+    # Advancer 1 schaltet die erste Kette weiter und markiert /g0/1.
+    await m.advancer().advance(m.wf_id, "/g0/0", stale_step_tasks["/g0/0"], ["a"])
+
+    # Advancer 2 ist von DEMSELBEN Schnappschuss ausgegangen und schreibt ihn
+    # blind zurueck — der Marker /g0/1 ist damit verloren.
+    clobbered = await m.state()
+    clobbered["step_tasks"] = {
+        **stale_step_tasks,
+        "/g1/1": workflow_step_task_id(m.wf_id, "/g1/1"),
+    }
+    await m.backend.store_workflow_state(m.wf_id, encode_json(clobbered), 60_000)
+    await m.advancer().advance(m.wf_id, "/g1/0", stale_step_tasks["/g1/0"], ["c"])
+
+    while m.published:
+        await m.run_next()
+
+    assert await m.final_value() == [[["a"]], [["c"]]]
+
+
 async def test_expired_member_result_raises_workflow_result_expired():
     # R6: a chord fan-in where one (completed) member's result has expired
     # must raise WorkflowResultExpired, not silently pass None to the body.
