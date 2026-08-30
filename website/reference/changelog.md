@@ -6,6 +6,39 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A group whose member is itself a `chain`, `group` or `chord` no longer
+  returns a truncated result list.** Since 0.2.0 such a member was dropped
+  from the list without any error — `group(a, chain(b, c))` returned a
+  one-element list, and `handle.children()` reported every step complete at
+  the same time. The same code builds the input a chord body receives, so a
+  chord over such a header computed on a short list rather than returning
+  one.
+
+  **Affected versions: 0.2.0 and 0.3.0.** A truncated list cannot be told
+  apart from a complete one after the fact — stored results give you no
+  signal. The only answer is the workflow *definition*: **a run was affected
+  if its topology contains a `group`, or a chord header, with a member that
+  is itself a `chain`, `group` or `chord`.** If you have such workflows,
+  their past results may be wrong and anything computed from them with them.
+
+- **An incomplete member list is now an error, for every group.** Where the
+  aggregation previously skipped a missing member in silence, it now raises
+  `WorkflowValidationError` naming the group path and both counts. This
+  guard sits at the shared fan-in for *all* groups and chord headers, flat
+  ones included — so a member step marker lost for any other reason (a step
+  lost in the publish-then-mark window, for instance) now fails loudly where
+  it previously produced a result. That is the point: a wrong answer you
+  cannot detect is worse than a visible failure.
+
+- **Drain nested workflows before upgrading.** A workflow already running
+  across the upgrade will hit the new guard and fail instead of returning
+  its (wrong) truncated result. This applies per fleet, not per process:
+  until every worker runs the new version, an old worker can still truncate
+  silently.
+
+
 ## [0.3.0] — 2026-08-30
 
 ### Changed (breaking)

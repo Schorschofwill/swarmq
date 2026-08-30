@@ -160,7 +160,15 @@ class Chain:
 
 class Group:
     """Parallel composition; result is the ordered list of member results
-    in definition order, not completion order (R5)."""
+    in definition order, not completion order (R5).
+
+    A member may itself be a ``Chain``, ``Group`` or ``Chord``. Its entry in
+    the result list is then whatever that member produces as a whole — a
+    chain's last step, a nested group's own list, a chord's body. The list
+    always has exactly ``len(members)`` entries; a shorter one is an error,
+    never a result. (In 0.2.0 and 0.3.0 a composite member was silently
+    dropped from the list — see the changelog.)
+    """
 
     __slots__ = ("members",)
 

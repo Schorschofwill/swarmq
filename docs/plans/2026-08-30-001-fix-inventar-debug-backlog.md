@@ -1,6 +1,6 @@
 # Fix-Inventar: Debug-Feature-Backlog der Lasttest-Suite
 
-**Stand:** 2026-08-30 (2. Abgleich) · **Zweck:** Abgleichsgrundlage für neu
+**Stand:** 2026-08-30 (3. Abgleich) · **Zweck:** Abgleichsgrundlage für neu
 gemeldete Probleme.
 
 Quelle der Einträge: `docs/debug-feature-backlog.md` im Repo `swarmq-loadsuite`.
@@ -77,7 +77,7 @@ mit.
 
 ---
 
-## Neu gemeldet — nicht von 0.3.0 berührt
+## Behoben nach 0.3.0 (noch nicht veröffentlicht)
 
 ### B10 — `group` verliert zusammengesetzte Glieder
 
@@ -119,6 +119,30 @@ Chord-Set, die Gruppe feuert also zum richtigen Zeitpunkt und mit der richtigen
 Zahl. Kaputt ist ausschließlich die Ergebnis-Zusammenstellung — das erklärt die
 Beobachtung, dass `children()` gleichzeitig Vollständigkeit meldet.
 
+**Jetzt behoben.** Die Gliedkennung wird beim Fan-in aus der Topologie
+abgeleitet, statt an einer Stelle gesucht, an der sie für die halbe
+Knotenwelt nie stand: `Signature` → `step_tasks`, `Chain` → rekursiv der
+letzte Schritt, `Chord` → rekursiv der Body, `Group` →
+`aggregate_result_id`. Der Eingriff liegt vollständig auf der Leseseite; das
+Zustandsformat ist unverändert, die Golden-Fixture musste nicht neu erzeugt
+werden. Dazu ein Guard, der eine unvollständige Gliederliste als Fehler
+meldet statt auszuliefern — für **jede** Gruppe, auch die flache.
+
+**Achtung beim Abgleich:** Der Fix ist **noch nicht veröffentlicht**. Für
+jeden PyPI-Nutzer ist B10 in 0.2.0 und 0.3.0 weiterhin offen.
+
+**Neu offen geblieben (KTD5):** `advance()` ist ein Read-Modify-Write ohne
+CAS, `store_workflow_state` überschreibt das ganze Dokument blind. Zwei
+nebenläufige Advances können einander Schritt-Marker löschen — vorbestehend,
+bisher nur in `children()` sichtbar, durch den neuen Guard jetzt
+betriebsrelevant. Ein strikter `xfail` in `tests/unit/test_workflow_advancer.py`
+hält die Lücke fest. Die Behebung braucht einen eigenen Plan.
+
+**Dateien:** `src/swarmq/workflow_orchestration.py`, `workflow.py`,
+`tests/unit/test_workflow_advancer.py`,
+`tests/integration/test_workflow_backend.py`, `tests/e2e/test_workflows.py`,
+`tests/property/test_workflow_advancer_properties.py`
+
 **Plan:** `docs/plans/2026-08-30-002-fix-workflow-group-composite-members-plan.md`
 
 ---
@@ -134,7 +158,6 @@ Beobachtung, dass `children()` gleichzeitig Vollständigkeit meldet.
 | B5 | Konfigurierbares `x-delivery-limit` | Weiterhin hart auf 20 in `broker/rabbitmq/delivery.py`. **Rückt durch 0.3.0 näher:** Jede von einer gerissenen Frist erzwungene erneute Zustellung zehrt an diesem Budget. |
 | B7 | Signal für broker-seitiges Dead-Lettering | `TASK_DLQ` feuert weiterhin nur bei swarmq-eigener Übergabe. |
 | B9 | Workflow-Folgeschritte umgehen Middleware und `TASK_ENQUEUED` | Während der 0.3.0-Arbeit neu in den Backlog gekommen, nie bearbeitet. |
-| B10 | `group` verliert zusammengesetzte Glieder | Neu, von 0.3.0 nicht berührt. Eigener Abschnitt oben — es ist ein Korrektheitsfehler, keine Lücke. |
 
 ---
 
@@ -169,5 +192,10 @@ exakt einen der drei behobenen Fälle trifft. Häufige Verwechslungen:
   jetzt. Ohne Unique-Sperre bleibt die Zustellung nach einem Fristbruch
   unbestimmt — das ist der dokumentierte Preis, kein Fehler.
 - *„Logs zu groß"* → behoben, sowohl JSON als auch Text.
-- *„Workflow-Ergebnis unvollständig / Glied fehlt"* → **nicht** behoben,
-  das ist B10. 0.3.0 hat den Workflow-Pfad nicht angefasst.
+- *„Workflow-Ergebnis unvollständig / Glied fehlt"* → das ist B10. Im Code
+  behoben, **aber in 0.2.0 und 0.3.0 weiterhin ausgeliefert** — bis der Fix
+  veröffentlicht ist, ist eine solche Meldung berechtigt.
+- *„Workflow scheitert mit `WorkflowValidationError` beim Fan-in"* → **neu**
+  und gewollt: der Guard aus dem B10-Fix. Er trifft auch flache Gruppen und
+  macht einen bisher stillen Verlust sichtbar. Wahrscheinlichster Auslöser
+  ist KTD5 oder ein Upgrade mitten im Lauf.
