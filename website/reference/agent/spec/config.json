@@ -81,6 +81,12 @@
       "type": "str"
     },
     {
+      "default": 20,
+      "env_var": "SWARMQ_DELIVERY_LIMIT",
+      "name": "delivery_limit",
+      "type": "int"
+    },
+    {
       "default": 1.0,
       "env_var": "SWARMQ_CANCEL_POLL_INTERVAL",
       "name": "cancel_poll_interval",

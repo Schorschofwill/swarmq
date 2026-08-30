@@ -1,6 +1,6 @@
 # Fix-Inventar: Debug-Feature-Backlog der Lasttest-Suite
 
-**Stand:** 2026-08-30 (3. Abgleich) · **Zweck:** Abgleichsgrundlage für neu
+**Stand:** 2026-08-30 (4. Abgleich) · **Zweck:** Abgleichsgrundlage für neu
 gemeldete Probleme.
 
 Quelle der Einträge: `docs/debug-feature-backlog.md` im Repo `swarmq-loadsuite`.
@@ -10,6 +10,9 @@ Plan: `docs/plans/2026-08-28-001-fix-publish-deadline-port-guard-logfix-plan.md`
 ---
 
 ## Behoben in 0.3.0
+
+**0.3.0 wurde nie veröffentlicht** (es trug noch B10). Bei den Nutzern kamen
+diese drei Korrekturen deshalb erst mit **0.4.0** an.
 
 ### B8 — `schedule` hatte kein Publish-Timeout
 
@@ -77,7 +80,7 @@ mit.
 
 ---
 
-## Behoben nach 0.3.0 (noch nicht veröffentlicht)
+## Behoben in 0.4.0 (auf PyPI seit 2026-08-30)
 
 ### B10 — `group` verliert zusammengesetzte Glieder
 
@@ -128,8 +131,9 @@ Zustandsformat ist unverändert, die Golden-Fixture musste nicht neu erzeugt
 werden. Dazu ein Guard, der eine unvollständige Gliederliste als Fehler
 meldet statt auszuliefern — für **jede** Gruppe, auch die flache.
 
-**Achtung beim Abgleich:** Der Fix ist **noch nicht veröffentlicht**. Für
-jeden PyPI-Nutzer ist B10 in 0.2.0 und 0.3.0 weiterhin offen.
+**Achtung beim Abgleich:** In **0.2.0 ist B10 weiterhin enthalten**, und
+0.3.0 wurde deswegen nie veröffentlicht. Erst ab **0.4.0** ist der Defekt für
+Nutzer behoben — eine Meldung von einem älteren Stand ist berechtigt.
 
 **Aus dem Code-Review offen geblieben** (alle vorbestehend, keiner von diesem
 Plan verursacht):
@@ -166,6 +170,39 @@ auf `mark_enqueued`), nicht durch weiteres Verkleinern des Fensters.
 
 ---
 
+---
+
+## Behoben, noch nicht veröffentlicht
+
+### B5 — `x-delivery-limit` ist konfigurierbar
+
+**War:** Der Wert stand hart auf 20 in `broker/rabbitmq/delivery.py`. Das Budget
+war für eine Verhaltenswelt ohne Publish-Deckel gerechnet — „drei bis vier
+fachliche Wiederholungen je Zustellung plus Puffer für Broker-Schluckauf".
+
+**Jetzt:** `SWARMQ_DELIVERY_LIMIT` / `SwarmQConfig.delivery_limit`, Default
+unverändert 20, über dieselbe Naht wie `queue_type` und `publish_timeout_s` an
+den Broker durchgereicht. Nur die Hauptqueue bekommt das Argument; Delay- und
+Dead-Letter-Queue nicht, klassische Queues gar nicht.
+
+**Warum es dringlicher wurde:** Der Publish-Deckel aus 0.3.0 bricht einen
+hängenden Publish nach seiner Frist ab. Passiert das im Worker, wird die
+bearbeitete Nachricht **neu zugestellt statt bestätigt** — jede Runde kostet
+eine der Zustellungen. Vorher hing der Publish unbegrenzt und verbrauchte
+keine. Der Puffer, auf den die 20 kalkuliert waren, ist damit schmaler
+geworden, ohne dass jemand die Zahl angefasst hätte.
+
+**Anschlussrisiko bleibt (B7):** Erschöpft eine Nachricht ihr Budget, wirft der
+**Broker** sie dead-letter — und dabei feuert swarmq weiterhin kein `TASK_DLQ`.
+Aus swarmqs Sicht verschwindet der Task spurlos. Konfigurierbarkeit verschiebt
+die Schwelle, sie schließt die Beobachtungslücke nicht.
+
+**Dateien:** `src/swarmq/config.py`, `app.py`,
+`broker/rabbitmq/{connection,delivery}.py`, beide Konfigurations-Referenzseiten,
+generierte Konfigurationsspezifikation
+
+---
+
 ## Nicht behoben — weiterhin offen
 
 | # | Thema | Warum offen |
@@ -174,7 +211,6 @@ auf `mark_enqueued`), nicht durch weiteres Verkleinern des Fensters.
 | B2 | Signal-Hook im CLI-Worker | `swarmq worker` baut die App weiterhin selbst und exponiert sie nicht. |
 | B3 (2. Hälfte) | Port je Kindprozess | Teilt den fehlenden Unterbau mit B1. |
 | B4 | Natives CPU-Offloading | Kein `run_in_executor`/`to_thread` im gesamten `src/`. Eigenständige Produktentscheidung. |
-| B5 | Konfigurierbares `x-delivery-limit` | Weiterhin hart auf 20 in `broker/rabbitmq/delivery.py`. **Rückt durch 0.3.0 näher:** Jede von einer gerissenen Frist erzwungene erneute Zustellung zehrt an diesem Budget. |
 | B7 | Signal für broker-seitiges Dead-Lettering | `TASK_DLQ` feuert weiterhin nur bei swarmq-eigener Übergabe. |
 | B9 | Workflow-Folgeschritte umgehen Middleware und `TASK_ENQUEUED` | Während der 0.3.0-Arbeit neu in den Backlog gekommen, nie bearbeitet. |
 
@@ -211,6 +247,9 @@ exakt einen der drei behobenen Fälle trifft. Häufige Verwechslungen:
   jetzt. Ohne Unique-Sperre bleibt die Zustellung nach einem Fristbruch
   unbestimmt — das ist der dokumentierte Preis, kein Fehler.
 - *„Logs zu groß"* → behoben, sowohl JSON als auch Text.
+- *„Tasks verschwinden nach einer Broker-Störung, ohne DLQ-Signal"* →
+  **nicht** behoben, das ist B7. B5 macht nur die Schwelle einstellbar, ab
+  der der Broker selbst dead-lettert.
 - *„Workflow-Ergebnis unvollständig / Glied fehlt"* → das ist B10. Im Code
   behoben, **aber in 0.2.0 und 0.3.0 weiterhin ausgeliefert** — bis der Fix
   veröffentlicht ist, ist eine solche Meldung berechtigt.

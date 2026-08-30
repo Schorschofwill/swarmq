@@ -6,6 +6,25 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Hinzugefügt
+
+- **`SWARMQ_DELIVERY_LIMIT` / `SwarmQConfig.delivery_limit`** (Default `20`,
+  unverändertes Verhalten) — das Zustellbudget, mit dem Quorum-Queues
+  deklariert werden (`x-delivery-limit`). Ist eine Nachricht so oft zugestellt
+  worden, wirft der Broker sie selbst in die Dead-Letter-Queue; das Budget ist
+  das Sicherheitsnetz gegen einen Task, der den Prozess zuverlässig abschießt
+  (SIGSEGV/OOM) und deshalb ewig neu zugestellt würde, ohne je `max_retries`
+  zu erreichen.
+
+  Der Default deckt drei bis vier fachliche Wiederholungen je Zustellung plus
+  Puffer für Broker-Schluckauf. Dieser Puffer ist mit dem Publish-Deckel aus
+  0.3.0 schmaler geworden: Bricht ein Publish im Worker an seiner Frist ab,
+  wird die bearbeitete Nachricht neu zugestellt statt bestätigt — eine längere
+  Broker-Störung verbraucht damit Zustellungen, die sie vorher nicht
+  verbraucht hat. Höher setzen, wer längere Störungen aussitzen muss; niedriger,
+  wer ein engeres Zustellfenster erzwingen will. Klassische Queues ignorieren
+  die Einstellung, sie kennen das Argument nicht.
+
 ## [0.4.0] — 2026-08-30
 
 ### Geändert (breaking)

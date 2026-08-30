@@ -70,14 +70,17 @@ class RabbitMQDelivery(RabbitMQConnection):
         queue_name: str,
         main_args: dict[str, Any],
     ) -> None:
-        # Quorum-queue safety net (U2.1 skip): without
-        # x-delivery-limit a deterministically-crashing task
-        # (SIGSEGV/OOM) is redelivered forever by the broker, never
-        # reaching max_retries. 20 covers ~3-4 task-level retries per
-        # delivery plus generous broker-hiccup headroom while still
-        # providing a terminal DLQ path.
+        # Quorum-queue safety net (U2.1 skip): without x-delivery-limit a
+        # deterministically-crashing task (SIGSEGV/OOM) is redelivered
+        # forever by the broker, never reaching max_retries. The budget is
+        # configurable since B5 (``SWARMQ_DELIVERY_LIMIT``), default 20 —
+        # ~3-4 task-level retries per delivery plus broker-hiccup headroom,
+        # while still providing a terminal DLQ path. That headroom is
+        # narrower since the publish deadline: a publish that breaks its
+        # deadline inside the worker redelivers the in-flight message
+        # instead of acking it, and each round costs one delivery.
         if self._queue_type == "quorum":
-            main_args["x-delivery-limit"] = 20
+            main_args["x-delivery-limit"] = self.delivery_limit
         await pub.declare_queue(queue_name, durable=True, arguments=main_args)
         # Delay queue — DLX points back to main queue
         await pub.declare_queue(

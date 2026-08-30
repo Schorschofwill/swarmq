@@ -587,3 +587,44 @@ def test_config_publish_timeout_negative_raises():
             backend_url="redis://localhost",
             publish_timeout_s=-1.0,
         )
+
+
+# --- Zustellbudget der Quorum-Queues (B5) ---
+
+
+def test_config_delivery_limit_default_20():
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.delivery_limit == 20
+
+
+def test_config_delivery_limit_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_DELIVERY_LIMIT", "50")
+    cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+    assert cfg.delivery_limit == 50
+
+
+def test_config_delivery_limit_non_numeric_env_raises(monkeypatch):
+    monkeypatch.setenv("SWARMQ_DELIVERY_LIMIT", "viele")
+    with pytest.raises(ConfigurationError, match="must be a number|must be an integer"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+
+
+def test_config_delivery_limit_zero_raises():
+    # 0 bedeutet nicht "kein Limit" — es waere ein Budget, das keine einzige
+    # Zustellung erlaubt. Wer das Sicherheitsnetz abschalten will, faehrt
+    # klassische Queues; dort kennt der Broker das Argument nicht.
+    with pytest.raises(ConfigurationError, match="delivery_limit must be > 0"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            delivery_limit=0,
+        )
+
+
+def test_config_delivery_limit_negative_raises():
+    with pytest.raises(ConfigurationError, match="delivery_limit must be > 0"):
+        SwarmQConfig(
+            broker_url="redis://localhost",
+            backend_url="redis://localhost",
+            delivery_limit=-1,
+        )

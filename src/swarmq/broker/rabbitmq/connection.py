@@ -54,6 +54,7 @@ _PUBLISH_MAX_ATTEMPTS = 5
 # Fallback fuer einen ohne App konstruierten Broker; die kanonische Quelle
 # ist ``SwarmQConfig.publish_timeout_s`` (Plan 2026-08-28-001, R3).
 _DEFAULT_PUBLISH_TIMEOUT_S = 120.0
+_DEFAULT_DELIVERY_LIMIT = 20
 # Frist fuer das nebenlaeufige Schliessen eines verworfenen Kanals. Kurz:
 # gelingt es nicht, ist der Transport ohnehin tot und der Kanal verwaist.
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
@@ -118,6 +119,10 @@ class RabbitMQConnection:
         # der Konfiguration; ein direkt konstruierter Broker behaelt den
         # Default, damit der Producer-Pfad ohne App weiter funktioniert.
         self.publish_timeout_s: float = _DEFAULT_PUBLISH_TIMEOUT_S
+        # Zustellbudget der Quorum-Queues (B5). Wie oben: ``SwarmQ.__init__``
+        # ueberschreibt aus der Konfiguration, ein direkt konstruierter
+        # Broker behaelt den Default.
+        self.delivery_limit: int = _DEFAULT_DELIVERY_LIMIT
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
         # list of (queue, consumer_tag)

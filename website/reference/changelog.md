@@ -6,6 +6,23 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`SWARMQ_DELIVERY_LIMIT` / `SwarmQConfig.delivery_limit`** (default `20`,
+  unchanged behaviour) — the delivery budget quorum queues are declared with
+  (`x-delivery-limit`). Once a message has been delivered that many times the
+  broker itself dead-letters it; the budget is the safety net that stops a task
+  which reliably kills the process (SIGSEGV/OOM) from being redelivered forever
+  without ever reaching `max_retries`.
+
+  The default covers three to four task-level retries per delivery plus headroom
+  for broker hiccups. That headroom got narrower with the publish deadline
+  introduced in 0.3.0: a publish that breaks its deadline inside the worker
+  redelivers the in-flight message instead of acking it, so a prolonged broker
+  outage now spends deliveries it previously did not. Raise the value to ride
+  out longer outages, lower it to force a tighter delivery window. Classic
+  queues ignore the setting — they do not know the argument.
+
 ## [0.4.0] — 2026-08-30
 
 ### Changed (breaking)
