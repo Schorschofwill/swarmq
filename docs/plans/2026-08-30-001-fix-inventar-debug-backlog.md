@@ -1,6 +1,7 @@
 # Fix-Inventar: Debug-Feature-Backlog der Lasttest-Suite
 
-**Stand:** 2026-08-30 · **Zweck:** Abgleichsgrundlage für neu gemeldete Probleme.
+**Stand:** 2026-08-30 (2. Abgleich) · **Zweck:** Abgleichsgrundlage für neu
+gemeldete Probleme.
 
 Quelle der Einträge: `docs/debug-feature-backlog.md` im Repo `swarmq-loadsuite`.
 Umsetzung: MR !39 (`fix/publish-deadline-port-guard-logfix`), Release 0.3.0.
@@ -76,6 +77,52 @@ mit.
 
 ---
 
+## Neu gemeldet — nicht von 0.3.0 berührt
+
+### B10 — `group` verliert zusammengesetzte Glieder
+
+Kam mit `576279f` (Loadsuite, 2026-08-29) zusammen mit B9 in den Backlog; beide
+fielen beim Bau der Konformitätsstufe auf, wo zum ersten Mal Workflows durch den
+Stack laufen. Der Commit hat ausschließlich hinzugefügt — B1–B8 sind
+textlich unverändert.
+
+**Klasse:** Anders als B1–B7 und B9 ist das keine Fähigkeitslücke, sondern ein
+**stiller Korrektheitsfehler**. Der Aufrufer bekommt eine Ergebnisliste, die wie
+ein vollständiges Ergebnis aussieht, und kann sie von einer vollständigen nicht
+unterscheiden. Dieselbe Klasse wie B8, nur ohne den Stillstand, der einen darauf
+stößt.
+
+**Am Code bestätigt** (`src/swarmq/workflow_orchestration.py`, Stand 0.3.0):
+
+- `_frontier` legt für ein zusammengesetztes Glied **keinen** Schlüssel
+  `<gruppe>/g<i>` an, sondern rekursiert direkt auf dessen Blätter — aus
+  `group(sig(a), chain(sig(b), sig(c)))` werden die Schlüssel `/g0` und `/g1/0`,
+  ein `/g1` entsteht nie (`:287`).
+- `_materialise` erzeugt für das fertige Glied zwar eine synthetische Kennung,
+  schreibt sie aber **nie** nach `step_tasks` (`:642`).
+- `_ordered_member_ids` sucht `<gruppe>/g<i>` und überspringt den fehlenden
+  Schlüssel wortlos (`:605`).
+
+**Zwei Verschärfungen, die der Backlog-Eintrag nicht nennt:**
+
+1. **Der Chord-Header ist genauso betroffen — und schlimmer.** Dieselbe Methode
+   baut die Liste, die als `inject` in den Chord-Body wandert. Ein `chord`, dessen
+   Header eine `group` mit zusammengesetztem Glied ist, füttert den Body mit einer
+   stillschweigend gekürzten Eingabe. Der Fehler steckt dann nicht im
+   Rückgabewert, sondern in der nachgelagerten Rechnung selbst.
+2. **Es gibt dafür keinerlei Testabdeckung.** Kein Test im Repo konstruiert eine
+   Gruppe mit zusammengesetztem Glied — weder Unit noch Integration, Property
+   oder Ende-zu-Ende. Deshalb ist der Defekt durch alle Härtungsrunden gekommen.
+
+Die Einreihung selbst ist korrekt: Die synthetische Kennung landet im
+Chord-Set, die Gruppe feuert also zum richtigen Zeitpunkt und mit der richtigen
+Zahl. Kaputt ist ausschließlich die Ergebnis-Zusammenstellung — das erklärt die
+Beobachtung, dass `children()` gleichzeitig Vollständigkeit meldet.
+
+**Plan:** `docs/plans/2026-08-30-002-fix-workflow-group-composite-members-plan.md`
+
+---
+
 ## Nicht behoben — weiterhin offen
 
 | # | Thema | Warum offen |
@@ -87,6 +134,7 @@ mit.
 | B5 | Konfigurierbares `x-delivery-limit` | Weiterhin hart auf 20 in `broker/rabbitmq/delivery.py`. **Rückt durch 0.3.0 näher:** Jede von einer gerissenen Frist erzwungene erneute Zustellung zehrt an diesem Budget. |
 | B7 | Signal für broker-seitiges Dead-Lettering | `TASK_DLQ` feuert weiterhin nur bei swarmq-eigener Übergabe. |
 | B9 | Workflow-Folgeschritte umgehen Middleware und `TASK_ENQUEUED` | Während der 0.3.0-Arbeit neu in den Backlog gekommen, nie bearbeitet. |
+| B10 | `group` verliert zusammengesetzte Glieder | Neu, von 0.3.0 nicht berührt. Eigener Abschnitt oben — es ist ein Korrektheitsfehler, keine Lücke. |
 
 ---
 
@@ -121,3 +169,5 @@ exakt einen der drei behobenen Fälle trifft. Häufige Verwechslungen:
   jetzt. Ohne Unique-Sperre bleibt die Zustellung nach einem Fristbruch
   unbestimmt — das ist der dokumentierte Preis, kein Fehler.
 - *„Logs zu groß"* → behoben, sowohl JSON als auch Text.
+- *„Workflow-Ergebnis unvollständig / Glied fehlt"* → **nicht** behoben,
+  das ist B10. 0.3.0 hat den Workflow-Pfad nicht angefasst.
