@@ -223,6 +223,42 @@ async def test_standalone_group_completes_with_aggregate():
     assert final == [["x"], ["y"]]
 
 
+# --------------------------------------------------------------------------
+# B10 — zusammengesetzte Gruppenglieder (Plan 2026-08-30-002, U1)
+#
+# Reproduktion des Defekts: `_frontier` legt fuer ein zusammengesetztes Glied
+# keinen Schluessel `<gruppe>/g<i>` an, `_materialise` schreibt die
+# Aggregatkennung nie nach `step_tasks`, und `_ordered_member_ids` ueberspringt
+# den fehlenden Schluessel wortlos. Am ungefixten Stand liefern beide Tests
+# eine um das zusammengesetzte Glied gekuerzte Liste.
+# --------------------------------------------------------------------------
+
+
+async def test_group_with_chain_member_keeps_all_members():
+    # R1/R2, AE1. Ungefixt: einelementige Liste [["a"]] — das Kettenglied fehlt.
+    d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert st["status"] == STATUS_COMPLETED
+    final = await d.final_value()
+    assert final == [["a"], [["b"]]]
+
+
+async def test_chord_header_with_chain_member_injects_all_members():
+    # R3, AE4. Ungefixt bekommt der Body eine einelementige Header-Liste —
+    # der Fehler landet damit in der Rechnung des Bodys, nicht im Rueckgabewert.
+    d = Driver(
+        chord(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())), Echo.s())
+    )
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert st["status"] == STATUS_COMPLETED
+    final = await d.final_value()
+    assert final == [[["a"], [["b"]]]]
+
+
 async def test_expired_member_result_raises_workflow_result_expired():
     # R6: a chord fan-in where one (completed) member's result has expired
     # must raise WorkflowResultExpired, not silently pass None to the body.
