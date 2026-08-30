@@ -259,6 +259,130 @@ async def test_chord_header_with_chain_member_injects_all_members():
     assert final == [[["a"], [["b"]]]]
 
 
+async def test_group_with_group_member_keeps_all_members():
+    # R2, AE2 — zusammengesetztes Glied ist selbst eine Gruppe.
+    d = Driver(group(Echo.s("a"), group(Echo.s("b"), Echo.s("c"))))
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["a"], [["b"], ["c"]]]
+
+
+async def test_group_of_only_composite_members():
+    # AE3 — kein einziges einfaches Glied; die Liste ist trotzdem vollstaendig
+    # und in Definitions-, nicht Abschlussreihenfolge.
+    d = Driver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
+    await d.seed()
+    await d.drain()
+    assert await d.final_value() == [[["a"]], [["c"]]]
+
+
+async def test_group_nested_two_levels_deep():
+    # R4, AE5 — die Ableitung ist rekursiv, nicht auf eine Ebene beschraenkt.
+    d = Driver(
+        group(Echo.s("a"), group(Echo.s("b"), chain(Echo.s("c"), Echo.s())))
+    )
+    await d.seed()
+    await d.drain()
+    assert await d.final_value() == [["a"], [["b"], [["c"]]]]
+
+
+async def test_derived_member_id_resolves_to_that_members_result():
+    """Deckungstest der tragenden Annahme (Plan KTD1 / Assumptions).
+
+    Fuer jede Knotenart muss die abgeleitete Kennung genau das Ergebnis
+    treffen, das dieses Glied als Ganzes produziert hat. Driften Ableitung
+    und ``_materialise`` auseinander, bricht die Zusammenstellung still —
+    dieser Test ist die Bremse davor.
+    """
+    d = Driver(
+        group(
+            Echo.s("a"),
+            chain(Echo.s("b"), Echo.s()),
+            group(Echo.s("c"), Echo.s("d")),
+            chord(group(Echo.s("e")), Echo.s()),
+        )
+    )
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert st["status"] == STATUS_COMPLETED
+
+    expected = [["a"], [["b"]], [["c"], ["d"]], [[["e"]]]]
+    assert await d.final_value() == expected
+
+    step_tasks = st["step_tasks"]
+    for i, member in enumerate(d.workflow.members):
+        task_id = d.advancer._terminal_result_id(
+            d.wf_id, member, f"/g{i}", step_tasks
+        )
+        assert task_id is not None, f"Glied {i} ohne ableitbare Kennung"
+        raw = await d.backend.get_result(task_id)
+        assert raw is not None, f"Glied {i}: Kennung zeigt auf kein Ergebnis"
+        assert decode_result(raw)["result"] == expected[i]
+
+
+async def test_composite_member_redelivery_leaves_result_intact():
+    # R10, AE8 — erneute Zustellung eines zusammengesetzten Gliedabschlusses.
+    # Nebenbei: das einfache Glied schliesst hier VOR dem Kettenglied ab, die
+    # Liste steht trotzdem in Definitionsreihenfolge.
+    d = Driver(group(chain(Echo.s("b"), Echo.s()), Echo.s("a")))
+    await d.seed()
+    assert len(d.published) == 1
+    _queue, body, headers = d.published.pop(0)
+    step_path = headers["x-swarmq-workflow-step"]
+    task_id = await d._run_step(body)
+    raw = await d.backend.get_result(task_id)
+    assert raw is not None
+    value = decode_result(raw)["result"]
+
+    await d.advancer.advance(d.wf_id, step_path, task_id, value)
+    await d.advancer.advance(d.wf_id, step_path, task_id, value)
+
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [[["b"]], ["a"]]
+
+
+async def test_expired_aggregate_of_composite_member_raises():
+    # R7, AE9 — laeuft das Aggregat eines zusammengesetzten Glieds vor dem
+    # Fan-in ab, gilt derselbe Vertrag wie fuer jedes andere Gliedergebnis:
+    # WorkflowResultExpired, kein stilles Loch und keine kuerzere Liste.
+    from swarmq.exceptions import WorkflowResultExpired
+    from swarmq.workflow_orchestration import aggregate_result_id
+
+    d = Driver(group(group(Echo.s("b"), Echo.s("c")), Echo.s("a")))
+    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
+    frontier = initial_frontier(d.workflow)
+    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+
+    for step_path, sig in frontier:
+        task_id = state["step_tasks"][step_path]
+        await d.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": {"id": task_id, "queue": "default", "name": sig.task_name},
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": list(sig.args),
+                }
+            ),
+            60_000,
+        )
+        if step_path == "/g1":
+            # Die innere Gruppe ist fertig, ihr Aggregat liegt gespeichert vor.
+            # Jetzt laeuft es ab, bevor die aeussere Gruppe es einsammelt.
+            await d.backend.delete_result(aggregate_result_id(d.wf_id, "/g0"))
+            with pytest.raises(WorkflowResultExpired):
+                await d.advancer.advance(
+                    d.wf_id, step_path, task_id, list(sig.args)
+                )
+        else:
+            await d.advancer.advance(d.wf_id, step_path, task_id, list(sig.args))
+
+
 async def test_expired_member_result_raises_workflow_result_expired():
     # R6: a chord fan-in where one (completed) member's result has expired
     # must raise WorkflowResultExpired, not silently pass None to the body.
