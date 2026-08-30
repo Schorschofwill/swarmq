@@ -6,6 +6,8 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-30
+
 ### Changed (breaking)
 
 - **A group whose member is itself a `chain`, `group` or `chord` no longer
@@ -40,6 +42,11 @@ All notable changes to SwarmQ. This project follows
 
 
 ## [0.3.0] — 2026-08-30
+
+**Never published to PyPI.** Tagged, but it still
+carried the silently truncated `group` result list fixed in 0.4.0 — shipping
+it would have meant knowingly releasing a wrong-answer bug. The entry stays
+for the record; upgrade from 0.2.0 straight to 0.4.0 and read both sections.
 
 ### Changed (breaking)
 
