@@ -332,6 +332,35 @@ class TestRabbitMQBrokerDeclareQueue:
         dlq_args = dlq_call.kwargs["arguments"]
         assert dlq_args["x-queue-type"] == "quorum"
 
+        # Zustellbudget (B5): ab Werk 20, nur auf der Hauptqueue.
+        assert main_args["x-delivery-limit"] == 20
+
+    async def test_declare_queue_uses_configured_delivery_limit(self, connected_broker):
+        # B5: der konfigurierte Wert landet im x-delivery-limit der
+        # Hauptqueue. Delay- und Dead-Letter-Queue bekommen ihn nicht --
+        # dort waere ein Zustellbudget sinnlos bis schaedlich.
+        broker = connected_broker
+        broker.delivery_limit = 7
+
+        await broker.declare_queue("tasks")
+
+        calls = broker._publish_channel.declare_queue.call_args_list
+        assert calls[0].kwargs["arguments"]["x-delivery-limit"] == 7
+        assert "x-delivery-limit" not in calls[1].kwargs["arguments"]
+        assert "x-delivery-limit" not in calls[2].kwargs["arguments"]
+
+    async def test_classic_queues_get_no_delivery_limit(self, connected_broker):
+        # Klassische Queues kennen das Argument nicht -- es zu setzen waere
+        # ein Deklarationsfehler beim Broker.
+        broker = connected_broker
+        broker._queue_type = "classic"
+        broker.delivery_limit = 7
+
+        await broker.declare_queue("tasks")
+
+        for call in broker._publish_channel.declare_queue.call_args_list:
+            assert "x-delivery-limit" not in call.kwargs["arguments"]
+
     async def test_declare_queue_wraps_amqp_channel_error(self, connected_broker):
         """ce-review REL-05 / T-02: pre-existing queue with mismatched
         args raises aio_pika AMQPChannelError → we wrap it in

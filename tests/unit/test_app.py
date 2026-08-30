@@ -747,3 +747,18 @@ class TestPublishTimeoutWiring:
         monkeypatch.setenv("SWARMQ_PUBLISH_TIMEOUT_S", "12.5")
         SwarmQ(broker, backend)
         assert broker.publish_timeout_s == 12.5
+
+
+class TestDeliveryLimitWiring:
+    """B5: die App reicht das konfigurierte Zustellbudget an den Broker
+    durch — gleicher Weg wie queue_type und publish_timeout_s."""
+
+    def test_default_limit_reaches_broker(self, broker, backend):
+        app = SwarmQ(broker, backend)
+        assert broker.delivery_limit == 20
+        assert app.config.delivery_limit == 20
+
+    def test_env_limit_reaches_broker(self, broker, backend, monkeypatch):
+        monkeypatch.setenv("SWARMQ_DELIVERY_LIMIT", "7")
+        SwarmQ(broker, backend)
+        assert broker.delivery_limit == 7

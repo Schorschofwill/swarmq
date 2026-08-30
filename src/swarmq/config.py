@@ -84,6 +84,23 @@ class SwarmQConfig:
     # deckelt zusaetzlich die kuerzere Shutdown-Frist (R12).
     publish_timeout_s: float = 120.0
     queue_type: str = "quorum"
+    # Zustellbudget einer Quorum-Queue (``x-delivery-limit``, B5). Ohne
+    # Deckel stellt der Broker einen Task, der den Prozess deterministisch
+    # abschiesst (SIGSEGV/OOM), ewig neu zu — er erreicht ``max_retries``
+    # nie, weil der Worker vor dem Zaehlen stirbt. Nach dem Budget wirft
+    # der Broker die Nachricht selbst in die Dead-Letter-Queue.
+    #
+    # 20 deckt drei bis vier fachliche Wiederholungen je Zustellung plus
+    # Puffer fuer Broker-Schluckauf. Dieser Puffer ist seit dem
+    # Publish-Deckel (``publish_timeout_s``) schmaler: Bricht ein Publish
+    # im Worker an seiner Frist ab, wird die bearbeitete Nachricht neu
+    # zugestellt statt bestaetigt, und jede Runde kostet eine Zustellung.
+    # Wer laengere Broker-Stoerungen fahren muss, hebt den Wert; wer ein
+    # engeres Zustellfenster erzwingen will, senkt ihn.
+    #
+    # Gilt nur fuer ``queue_type = "quorum"`` — klassische Queues kennen
+    # das Argument nicht.
+    delivery_limit: int = 20
     cancel_poll_interval: float = 1.0
     # Upper bound for individual Valkey operations used by the cancel
     # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
@@ -150,6 +167,7 @@ class SwarmQConfig:
         ("SWARMQ_RETRY_MAX_DELAY", "retry_max_delay", "float"),
         ("SWARMQ_SHUTDOWN_TIMEOUT", "shutdown_timeout", "int"),
         ("SWARMQ_PUBLISH_TIMEOUT_S", "publish_timeout_s", "float"),
+        ("SWARMQ_DELIVERY_LIMIT", "delivery_limit", "int"),
         ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
@@ -184,6 +202,7 @@ class SwarmQConfig:
         "scheduler_inflight_ttl",
         "burst_idle_timeout",
         "publish_timeout_s",
+        "delivery_limit",
     )
     # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
     # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
