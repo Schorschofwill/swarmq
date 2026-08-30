@@ -1,6 +1,7 @@
 # Fix-Inventar: Debug-Feature-Backlog der Lasttest-Suite
 
-**Stand:** 2026-08-30 · **Zweck:** Abgleichsgrundlage für neu gemeldete Probleme.
+**Stand:** 2026-08-30 (3. Abgleich) · **Zweck:** Abgleichsgrundlage für neu
+gemeldete Probleme.
 
 Quelle der Einträge: `docs/debug-feature-backlog.md` im Repo `swarmq-loadsuite`.
 Umsetzung: MR !39 (`fix/publish-deadline-port-guard-logfix`), Release 0.3.0.
@@ -76,6 +77,95 @@ mit.
 
 ---
 
+## Behoben nach 0.3.0 (noch nicht veröffentlicht)
+
+### B10 — `group` verliert zusammengesetzte Glieder
+
+Kam mit `576279f` (Loadsuite, 2026-08-29) zusammen mit B9 in den Backlog; beide
+fielen beim Bau der Konformitätsstufe auf, wo zum ersten Mal Workflows durch den
+Stack laufen. Der Commit hat ausschließlich hinzugefügt — B1–B8 sind
+textlich unverändert.
+
+**Klasse:** Anders als B1–B7 und B9 ist das keine Fähigkeitslücke, sondern ein
+**stiller Korrektheitsfehler**. Der Aufrufer bekommt eine Ergebnisliste, die wie
+ein vollständiges Ergebnis aussieht, und kann sie von einer vollständigen nicht
+unterscheiden. Dieselbe Klasse wie B8, nur ohne den Stillstand, der einen darauf
+stößt.
+
+**Am Code bestätigt** (`src/swarmq/workflow_orchestration.py`, Stand 0.3.0):
+
+- `_frontier` legt für ein zusammengesetztes Glied **keinen** Schlüssel
+  `<gruppe>/g<i>` an, sondern rekursiert direkt auf dessen Blätter — aus
+  `group(sig(a), chain(sig(b), sig(c)))` werden die Schlüssel `/g0` und `/g1/0`,
+  ein `/g1` entsteht nie (`:287`).
+- `_materialise` erzeugt für das fertige Glied zwar eine synthetische Kennung,
+  schreibt sie aber **nie** nach `step_tasks` (`:642`).
+- `_ordered_member_ids` sucht `<gruppe>/g<i>` und überspringt den fehlenden
+  Schlüssel wortlos (`:605`).
+
+**Zwei Verschärfungen, die der Backlog-Eintrag nicht nennt:**
+
+1. **Der Chord-Header ist genauso betroffen — und schlimmer.** Dieselbe Methode
+   baut die Liste, die als `inject` in den Chord-Body wandert. Ein `chord`, dessen
+   Header eine `group` mit zusammengesetztem Glied ist, füttert den Body mit einer
+   stillschweigend gekürzten Eingabe. Der Fehler steckt dann nicht im
+   Rückgabewert, sondern in der nachgelagerten Rechnung selbst.
+2. **Es gibt dafür keinerlei Testabdeckung.** Kein Test im Repo konstruiert eine
+   Gruppe mit zusammengesetztem Glied — weder Unit noch Integration, Property
+   oder Ende-zu-Ende. Deshalb ist der Defekt durch alle Härtungsrunden gekommen.
+
+Die Einreihung selbst ist korrekt: Die synthetische Kennung landet im
+Chord-Set, die Gruppe feuert also zum richtigen Zeitpunkt und mit der richtigen
+Zahl. Kaputt ist ausschließlich die Ergebnis-Zusammenstellung — das erklärt die
+Beobachtung, dass `children()` gleichzeitig Vollständigkeit meldet.
+
+**Jetzt behoben.** Die Gliedkennung wird beim Fan-in aus der Topologie
+abgeleitet, statt an einer Stelle gesucht, an der sie für die halbe
+Knotenwelt nie stand: `Signature` → `step_tasks`, `Chain` → rekursiv der
+letzte Schritt, `Chord` → rekursiv der Body, `Group` →
+`aggregate_result_id`. Der Eingriff liegt vollständig auf der Leseseite; das
+Zustandsformat ist unverändert, die Golden-Fixture musste nicht neu erzeugt
+werden. Dazu ein Guard, der eine unvollständige Gliederliste als Fehler
+meldet statt auszuliefern — für **jede** Gruppe, auch die flache.
+
+**Achtung beim Abgleich:** Der Fix ist **noch nicht veröffentlicht**. Für
+jeden PyPI-Nutzer ist B10 in 0.2.0 und 0.3.0 weiterhin offen.
+
+**Aus dem Code-Review offen geblieben** (alle vorbestehend, keiner von diesem
+Plan verursacht):
+
+- **Die Fehlermarkierung kann selbst still scheitern.** Wirft der Guard, faengt
+  `worker/results.py` das ab und markiert den Workflow als gescheitert.
+  Scheitert diese Schreibung ihrerseits (Backend-Stoerung), wird sie nur
+  geloggt und die Nachricht trotzdem acked — der Workflow bleibt fuer immer
+  `RUNNING`, `handle.get()` haengt bis zum TTL. Der Guard macht diesen Pfad
+  erreichbarer, hat ihn aber nicht geschaffen.
+- **`_refresh_step_tasks` liest den frischen Status und verwirft ihn.** Ein von
+  einem anderen Advancer bereits als gescheitert oder abgebrochen markierter
+  Workflow wird weitergefahren und der Status ueberschrieben.
+- **`workflow_orchestration.py` steht mit 805 Zeilen ueber dem 800er-Limit** und
+  traegt seit diesem Fix den einzigen Eintrag in `_LOC_EXCEPTIONS`, einer Liste,
+  die das Restrukturierungsprogramm auf leer gebracht hatte. Aufloesung: die
+  reinen Pfad- und Topologie-Helfer in ein eigenes Modul ziehen.
+
+**Neu offen geblieben (KTD5):** `advance()` ist ein Read-Modify-Write ohne
+CAS, `store_workflow_state` überschreibt das ganze Dokument blind. Zwei
+nebenläufige Advances können einander Schritt-Marker löschen — vorbestehend,
+bisher nur in `children()` sichtbar, durch den neuen Guard jetzt
+betriebsrelevant. Ein strikter `xfail` in `tests/unit/test_workflow_advancer.py`
+hält die Lücke fest. Die Behebung braucht einen eigenen Plan — und sollte nach
+dem Vorbild des Projekts strukturell greifen (wie der `PublishReceipt`-Zwang
+auf `mark_enqueued`), nicht durch weiteres Verkleinern des Fensters.
+
+**Dateien:** `src/swarmq/workflow_orchestration.py`, `workflow.py`,
+`tests/unit/test_workflow_advancer.py`,
+`tests/integration/test_workflow_backend.py`, `tests/e2e/test_workflows.py`,
+`tests/property/test_workflow_advancer_properties.py`
+
+**Plan:** `docs/plans/2026-08-30-002-fix-workflow-group-composite-members-plan.md`
+
+---
+
 ## Nicht behoben — weiterhin offen
 
 | # | Thema | Warum offen |
@@ -121,3 +211,10 @@ exakt einen der drei behobenen Fälle trifft. Häufige Verwechslungen:
   jetzt. Ohne Unique-Sperre bleibt die Zustellung nach einem Fristbruch
   unbestimmt — das ist der dokumentierte Preis, kein Fehler.
 - *„Logs zu groß"* → behoben, sowohl JSON als auch Text.
+- *„Workflow-Ergebnis unvollständig / Glied fehlt"* → das ist B10. Im Code
+  behoben, **aber in 0.2.0 und 0.3.0 weiterhin ausgeliefert** — bis der Fix
+  veröffentlicht ist, ist eine solche Meldung berechtigt.
+- *„Workflow scheitert mit `WorkflowValidationError` beim Fan-in"* → **neu**
+  und gewollt: der Guard aus dem B10-Fix. Er trifft auch flache Gruppen und
+  macht einen bisher stillen Verlust sichtbar. Wahrscheinlichster Auslöser
+  ist KTD5 oder ein Upgrade mitten im Lauf.

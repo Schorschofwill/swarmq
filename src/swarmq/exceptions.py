@@ -55,7 +55,14 @@ class ResultNotReadyError(SwarmQError):
 class WorkflowValidationError(SwarmQError):
     """Raised at workflow construction when a topology violates the
     flat-DAG depth limit, the group-size limit, or embeds a
-    FIRE_AND_FORGET task as a step (R8, R9)."""
+    FIRE_AND_FORGET task as a step (R8, R9).
+
+    Also raised at **run time**, during group/chord fan-in, when the member
+    result list cannot be assembled completely — a member step marker is
+    missing from the workflow state. Delivering a shorter list than the group
+    has members would be an undetectable wrong answer, so the workflow fails
+    instead. The worker seam marks the workflow failed and ``handle.get()``
+    raises."""
 
 
 class WorkflowNotFound(SwarmQError):

@@ -143,7 +143,7 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
     # Workflow primitives (R4.1) — absent from the original markdown table;
     # surfaced + classified by the R5.5 sync test.
     "WorkflowValidationError": dict(
-        origin="library", when=["schedule"], retriable="no",
+        origin="library", when=["schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=None,
         transport_field="raised to caller",
     ),

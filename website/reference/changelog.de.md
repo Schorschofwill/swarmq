@@ -6,6 +6,41 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Geändert (breaking)
+
+- **Eine `group`, deren Glied selbst eine `chain`, `group` oder ein `chord`
+  ist, liefert keine gekürzte Ergebnisliste mehr.** Seit 0.2.0 fiel ein
+  solches Glied ohne jede Fehlermeldung aus der Liste — `group(a, chain(b,
+  c))` gab eine einelementige Liste zurück, während `handle.children()`
+  gleichzeitig alle Schritte als abgeschlossen meldete. Derselbe Code baut
+  die Eingabe eines Chord-Bodys, ein Chord über einem solchen Header hat
+  also auf einer gekürzten Liste gerechnet, statt eine zurückzugeben.
+
+  **Betroffene Versionen: 0.2.0 und 0.3.0.** Eine gekürzte Liste ist im
+  Nachhinein von einer vollständigen nicht zu unterscheiden — die
+  gespeicherten Ergebnisse geben das nicht her. Beantwortbar ist nur die
+  Frage nach der Workflow-*Definition*: **betroffen ist jeder Lauf, dessen
+  Topologie eine `group` oder einen Chord-Header mit einem Glied enthält,
+  das selbst `chain`, `group` oder `chord` ist.** Wer solche Workflows
+  einsetzt, muss davon ausgehen, dass frühere Ergebnisse falsch waren — und
+  alles, was daraus gerechnet wurde.
+
+- **Eine unvollständige Gliederliste ist jetzt ein Fehler, für jede Gruppe.**
+  Wo die Zusammenstellung ein fehlendes Glied bisher wortlos übersprang,
+  wirft sie nun `WorkflowValidationError` mit Gruppenpfad und beiden Zahlen.
+  Der Guard sitzt am gemeinsamen Fan-in **aller** Gruppen und Chord-Header,
+  auch der flachen — ein aus anderem Grund verlorener Schritt-Marker (etwa
+  im publish-then-mark-Fenster) scheitert damit laut, wo er vorher ein
+  Ergebnis lieferte. Genau das ist die Absicht: Ein falsches Ergebnis, das
+  man nicht erkennen kann, ist teurer als ein sichtbarer Fehler.
+
+- **Verschachtelte Workflows vor dem Upgrade leerfahren.** Ein Workflow, der
+  über das Upgrade hinweg läuft, trifft auf den neuen Guard und scheitert,
+  statt sein (falsches) gekürztes Ergebnis zu liefern. Das gilt je Fleet,
+  nicht je Prozess: Solange nicht jeder Worker die neue Version fährt, kann
+  ein alter Worker weiterhin still kürzen.
+
+
 ## [0.3.0] — 2026-08-30
 
 ### Geändert (breaking)

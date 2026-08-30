@@ -160,3 +160,65 @@ def test_standalone_group_aggregates_in_definition_order(n_members, data):
         assert await driver.final_value() == [[i] for i in range(n_members)]
 
     asyncio.run(_run())
+
+
+@given(
+    shapes=st.lists(
+        st.sampled_from(
+            ["leaf", "chain", "group", "chord", "chain-group", "chord-group"]
+        ),
+        min_size=2,
+        max_size=4,
+    ),
+    data=st.data(),
+)
+def test_group_with_composite_members_aggregates_in_definition_order(shapes, data):
+    """B10 (Plan 2026-08-30-002, U4): Gruppen mit ZUSAMMENGESETZTEN Gliedern.
+
+    Bis 0.3.0 erzeugte diese Stufe ausschliesslich flache Topologien —
+    genau deshalb ist der Defekt zwei Releases lang unentdeckt geblieben.
+    Die Generierung mischt jetzt alle vier Knotenarten als Glieder und
+    faehrt sie in zufaelliger Abschlussreihenfolge mit zufaelligen
+    Wiederholzustellungen.
+    """
+
+    async def _run() -> None:
+        members = []
+        expected = []
+        for i, shape in enumerate(shapes):
+            if shape == "leaf":
+                members.append(Echo.s(i))
+                expected.append([i])
+            elif shape == "chain":
+                members.append(chain(Echo.s(i), Echo.s()))
+                expected.append([[i]])
+            elif shape == "group":
+                members.append(group(Echo.s(i), Echo.s(-i)))
+                expected.append([[i], [-i]])
+            elif shape == "chord":
+                members.append(chord(group(Echo.s(i)), Echo.s()))
+                expected.append([[[i]]])
+            elif shape == "chain-group":
+                # Glied, dessen ABSCHLUSSKNOTEN eine Gruppe hinter einer
+                # Kettenebene ist — das Aggregat liegt am Gliedpfad.
+                members.append(chain(Echo.s(i), group(Echo.si(i), Echo.si(-i))))
+                expected.append([[i], [-i]])
+            else:
+                # dasselbe hinter einer Chord-Ebene (Body ist eine Gruppe).
+                members.append(
+                    chord(group(Echo.si(i)), group(Echo.si(-i), Echo.si(i)))
+                )
+                expected.append([[-i], [i]])
+
+        driver = Driver(group(*members))
+        await _seed_enqueued(driver)
+        order = await _drain_random(driver, data)
+
+        st_dict = await driver.state()
+        assert st_dict["status"] == STATUS_COMPLETED
+        # Jeder Schritt genau einmal ausgefuehrt (Wiederholzustellung ist no-op).
+        assert len(order) == len(set(order))
+        # Definitionsreihenfolge, nicht Abschlussreihenfolge — und vollstaendig.
+        assert await driver.final_value() == expected
+
+    asyncio.run(_run())

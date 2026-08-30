@@ -315,6 +315,19 @@ def workflow_step_task_id(wf_id: str, step_path: str) -> str:
     return f"{wf_id}#{step_path}"
 
 
+def aggregate_result_id(wf_id: str, node_path: str) -> str:
+    """Deterministische Kennung des Ergebnisses, das ein zusammengesetzter
+    Knoten an *node_path* als Ganzes produziert, wenn kein einzelner Schritt
+    es besitzt (eine Gruppe: ihr Ergebnis ist die Liste).
+
+    Die eine Definition fuer Schreiber und Leser --
+    :meth:`WorkflowAdvancer._materialise` legt darunter ab,
+    :meth:`WorkflowAdvancer._terminal_result_id` findet darueber wieder.
+    Zwei Formatstrings waeren der stille Weg zurueck in B10.
+    """
+    return f"{wf_id}:agg:{node_path}"
+
+
 def split_path(path: str) -> tuple[str, str]:
     """Return ``(parent_path, last_segment)`` for a topology path. The root
     (``""``) has no parent — returns ``("", "")``."""
@@ -456,9 +469,11 @@ class WorkflowAdvancer:
         )
         if not fired:
             return  # not the last member (or a redelivery) — nothing to do
-        # Group complete: gather member results in DEFINITION order from the
-        # recorded ordered task-id list (not the unordered chord set), R5.
-        member_task_ids = self._ordered_member_ids(state, group_path, expected_n)
+        # Group complete: gather member results in DEFINITION order (not the
+        # unordered chord set), R5. Der Zustand stammt vom Eintritt in
+        # advance() und kann veraltet sein -- vor dem Bau der Liste nachziehen.
+        await self._refresh_step_tasks(wf_id, state)
+        member_task_ids = self._ordered_member_ids(wf_id, state, group, group_path)
         ordered_results = await self._gather_results(member_task_ids)
 
         # Is this group a chord header? Then enqueue the chord body with the
@@ -595,16 +610,108 @@ class WorkflowAdvancer:
             )
         state["step_tasks"][step_path] = task_id
 
+    async def _refresh_step_tasks(self, wf_id: str, state: dict[str, Any]) -> None:
+        """Die zuletzt persistierten Schritt-Kennungen in *state* nachziehen.
+
+        ``advance()`` liest den Zustand einmal beim Eintritt; bis der Fan-in
+        laeuft, koennen nebenlaeufige Advances weitere Schritte markiert haben.
+        Vereinigt wird rein additiv -- ``step_tasks`` wird nirgends geloescht
+        und die Kennungen sind deterministisch, ein Konflikt kann also nicht
+        entstehen.
+
+        Das schliesst das verlorene Zustands-Update **nicht**
+        (``store_workflow_state`` ueberschreibt blind, ``advance`` ist ein
+        Read-Modify-Write ohne CAS) -- es verkleinert nur das Fenster.
+        """
+        raw = await self._backend.get_workflow_state(wf_id)
+        if raw is None:
+            return
+        persisted: dict[str, Any] = decode_json(raw)
+        step_tasks: dict[str, str] = state["step_tasks"]
+        for path, task_id in persisted.get("step_tasks", {}).items():
+            step_tasks.setdefault(path, task_id)
+
+    def _terminal_result_id(
+        self,
+        wf_id: str,
+        node: WorkflowNode,
+        path: str,
+        step_tasks: dict[str, str],
+        member_path: str | None = None,
+    ) -> str | None:
+        """Kennung des Ergebnisses, das *node* an *path* als Ganzes liefert.
+
+        Spiegelt die beiden Zweige von :meth:`_materialise`: ein Blatt, eine
+        Kette und ein Chord laufen auf die **echte** Schritt-Kennung ihres
+        Abschlussschritts hinaus, eine Gruppe auf die Aggregatkennung (beide
+        ueber :func:`aggregate_result_id`, damit sie nicht auseinanderdriften).
+
+        ``member_path`` ist der Pfad des GLIEDS, mit dem die Rekursion begann;
+        sie reicht ihn unveraendert durch. Das ist load-bearing:
+        ``_materialise`` laeuft genau einmal je Glied, im ``Group``-Zweig von
+        :meth:`_on_container_complete` und mit dem GLIEDPFAD --
+        ``result_task_id=None`` wandert aus einer inneren Gruppe durch die
+        Ketten- und Chord-Ebenen nach oben, ohne unterwegs etwas abzulegen.
+        ``chain(a, group(b, c))`` hat sein Aggregat deshalb unter
+        ``<gruppe>/g<i>``, nicht unter dem tiefsten Pfad. Der erste Anlauf
+        nahm den tiefsten Pfad und lief in ein ``WorkflowResultExpired``, das
+        faelschlich die TTL beschuldigte.
+
+        Rein lesend und rekursiv; die Tiefengrenze setzt ``_validate`` schon
+        bei der Konstruktion (``DEFAULT_MAX_WORKFLOW_DEPTH``).
+        """
+        if member_path is None:
+            member_path = path
+        if isinstance(node, Signature):
+            return step_tasks.get(path)
+        if isinstance(node, Chain):
+            last = len(node.steps) - 1
+            return self._terminal_result_id(
+                wf_id, node.steps[last], f"{path}/{last}", step_tasks, member_path
+            )
+        if isinstance(node, Chord):
+            return self._terminal_result_id(
+                wf_id, node.body, f"{path}/b", step_tasks, member_path
+            )
+        if isinstance(node, Group):
+            return aggregate_result_id(wf_id, member_path)
+        raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
+
     def _ordered_member_ids(
-        self, state: dict[str, Any], group_path: str, expected_n: int
+        self, wf_id: str, state: dict[str, Any], group: Group, group_path: str
     ) -> list[str]:
-        """Member task ids in definition order from step_tasks (R5)."""
+        """Gliedkennungen in Definitionsreihenfolge (R5).
+
+        Bis 0.3.0 wurde hier stur ``<gruppe>/g<i>`` in ``step_tasks``
+        nachgeschlagen und ein fehlender Schluessel **wortlos uebersprungen**.
+        Ein zusammengesetztes Glied legt dort nie einen Schluessel an, sodass
+        die Liste still kuerzer wurde, als die Gruppe Glieder hat: B10.
+        Deshalb Ableitung (:meth:`_terminal_result_id`) statt Nachschlagen --
+        und eine trotzdem unvollstaendige Liste ist ein **Fehler**, kein
+        Ergebnis: Ein Aufrufer kann sie nicht von einer vollstaendigen
+        unterscheiden, beim Chord-Header wandert sie in die Rechnung des Bodys
+        statt in einen pruefbaren Rueckgabewert. Der Guard gilt fuer **jede**
+        Gruppe, auch die flache -- er schliesst die Fehlerklasse, nicht nur
+        den bekannten Weg hinein. Wer ihn wegvereinfacht, stellt den stillen
+        Rechenfehler wieder her.
+        """
+        step_tasks: dict[str, str] = state["step_tasks"]
         out: list[str] = []
-        for i in range(expected_n):
-            key = f"{group_path}/g{i}"
-            tid = state["step_tasks"].get(key)
-            if tid is not None:
-                out.append(tid)
+        for i, member in enumerate(group.members):
+            task_id = self._terminal_result_id(
+                wf_id, member, f"{group_path}/g{i}", step_tasks
+            )
+            if task_id is not None:
+                out.append(task_id)
+        expected_n = len(group.members)
+        if len(out) != expected_n:
+            raise WorkflowValidationError(
+                f"group at {group_path!r} resolved {len(out)} of {expected_n} "
+                "member results; refusing to deliver a truncated list. A member "
+                "step marker is missing from the workflow state (most likely a "
+                "step lost in the publish-then-mark window, or a workflow that "
+                "straddled an upgrade)"
+            )
         return out
 
     async def _gather_results(self, task_ids: list[str]) -> list[Any]:
@@ -647,7 +754,7 @@ class WorkflowAdvancer:
         of composite group members has a single id to track."""
         if result_task_id is not None:
             return result_task_id
-        synthetic_id = f"{wf_id}:agg:{node_path}"
+        synthetic_id = aggregate_result_id(wf_id, node_path)
         result_dict = {
             "task": {"id": synthetic_id, "queue": "<workflow>", "name": "<aggregate>"},
             "is_error": False,

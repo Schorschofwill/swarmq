@@ -223,6 +223,485 @@ async def test_standalone_group_completes_with_aggregate():
     assert final == [["x"], ["y"]]
 
 
+# --------------------------------------------------------------------------
+# B10 — zusammengesetzte Gruppenglieder (Plan 2026-08-30-002, U1)
+#
+# Reproduktion des Defekts: `_frontier` legt fuer ein zusammengesetztes Glied
+# keinen Schluessel `<gruppe>/g<i>` an, `_materialise` schreibt die
+# Aggregatkennung nie nach `step_tasks`, und `_ordered_member_ids` ueberspringt
+# den fehlenden Schluessel wortlos. Am ungefixten Stand liefern beide Tests
+# eine um das zusammengesetzte Glied gekuerzte Liste.
+# --------------------------------------------------------------------------
+
+
+async def test_group_with_chain_member_keeps_all_members():
+    # R1/R2, AE1. Ungefixt: einelementige Liste [["a"]] — das Kettenglied fehlt.
+    d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert st["status"] == STATUS_COMPLETED
+    final = await d.final_value()
+    assert final == [["a"], [["b"]]]
+
+
+async def test_chord_header_with_chain_member_injects_all_members():
+    # R3, AE4. Ungefixt bekommt der Body eine einelementige Header-Liste —
+    # der Fehler landet damit in der Rechnung des Bodys, nicht im Rueckgabewert.
+    d = Driver(
+        chord(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())), Echo.s())
+    )
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert st["status"] == STATUS_COMPLETED
+    final = await d.final_value()
+    assert final == [[["a"], [["b"]]]]
+
+
+async def test_group_with_group_member_keeps_all_members():
+    # R2, AE2 — zusammengesetztes Glied ist selbst eine Gruppe.
+    d = Driver(group(Echo.s("a"), group(Echo.s("b"), Echo.s("c"))))
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["a"], [["b"], ["c"]]]
+
+
+async def test_group_of_only_composite_members():
+    # AE3 — kein einziges einfaches Glied; die Liste ist trotzdem vollstaendig
+    # und in Definitions-, nicht Abschlussreihenfolge.
+    d = Driver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
+    await d.seed()
+    await d.drain()
+    assert await d.final_value() == [[["a"]], [["c"]]]
+
+
+async def test_group_nested_two_levels_deep():
+    # R4, AE5 — die Ableitung ist rekursiv, nicht auf eine Ebene beschraenkt.
+    d = Driver(
+        group(Echo.s("a"), group(Echo.s("b"), chain(Echo.s("c"), Echo.s())))
+    )
+    await d.seed()
+    await d.drain()
+    assert await d.final_value() == [["a"], [["b"], [["c"]]]]
+
+
+async def test_every_member_result_lives_where_the_contract_says():
+    """Deckungstest der tragenden Annahme (Plan KTD1 / Assumptions).
+
+    Der Test schreibt die Kennung je Gliedform **unabhaengig** vor, statt die
+    Ableitung des Codes zu befragen: Ein Blatt liegt unter seinem
+    Schritt-Schluessel, eine Kette unter dem ihres letzten Schritts, ein Chord
+    unter dem seines Bodys — und alles, was als Gruppe endet, unter der
+    Aggregatkennung des GLIEDPFADS, weil `_materialise` genau dort und nur
+    dort ablegt.
+
+    Die letzten beiden Zeilen sind der Kern: Ein Glied, dessen Abschlussknoten
+    eine Gruppe hinter einer Ketten- oder Chord-Ebene ist, hat sein Aggregat
+    am Gliedpfad liegen, nicht am tiefsten Pfad. Genau das ging beim ersten
+    Anlauf schief und blieb unbemerkt, weil kein Test diese Form baute.
+    """
+    from swarmq.workflow_orchestration import aggregate_result_id
+
+    d = Driver(
+        group(
+            Echo.s("a"),                                            # /g0 Blatt
+            chain(Echo.s("b"), Echo.s()),                           # /g1 Kette
+            group(Echo.s("c"), Echo.s("d")),                        # /g2 Gruppe
+            chord(group(Echo.s("e")), Echo.s()),                    # /g3 Chord
+            chain(Echo.s("f"), group(Echo.si("g"), Echo.si("h"))),  # /g4 Kette->Gruppe
+            chord(group(Echo.si("i")), group(Echo.si("j"), Echo.si("k"))),  # /g5 Chord->Gruppe
+        )
+    )
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert st["status"] == STATUS_COMPLETED
+
+    expected = [
+        ["a"],
+        [["b"]],
+        [["c"], ["d"]],
+        [[["e"]]],
+        [["g"], ["h"]],
+        [["j"], ["k"]],
+    ]
+    assert await d.final_value() == expected
+
+    step_tasks = st["step_tasks"]
+    where = [
+        step_tasks["/g0"],                        # Blatt
+        step_tasks["/g1/1"],                      # letzter Kettenschritt
+        aggregate_result_id(d.wf_id, "/g2"),      # Gruppe am Gliedpfad
+        step_tasks["/g3/b"],                      # Chord-Body (Blatt)
+        aggregate_result_id(d.wf_id, "/g4"),      # Kette, die als Gruppe endet
+        aggregate_result_id(d.wf_id, "/g5"),      # Chord mit Gruppen-Body
+    ]
+    for i, task_id in enumerate(where):
+        raw = await d.backend.get_result(task_id)
+        assert raw is not None, f"Glied {i}: kein Ergebnis unter {task_id}"
+        assert decode_result(raw)["result"] == expected[i], f"Glied {i}"
+
+
+async def test_group_member_ending_in_group_behind_a_chain():
+    # Plan-AE5 in seiner urspruenglichen Form: eine Kette, deren letzter
+    # Schritt eine Gruppe ist. Das Aggregat liegt am Gliedpfad /g1, nicht am
+    # tiefsten Pfad /g1/1 — der erste Anlauf griff daneben und meldete
+    # faelschlich eine abgelaufene TTL.
+    d = Driver(
+        group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c"))))
+    )
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["x"], [["b"], ["c"]]]
+
+
+async def test_group_member_is_chord_whose_body_is_a_group():
+    d = Driver(
+        group(
+            Echo.s("x"),
+            chord(group(Echo.si("h")), group(Echo.si("b1"), Echo.si("b2"))),
+        )
+    )
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["x"], [["b1"], ["b2"]]]
+
+
+async def test_chord_header_member_ending_in_group_behind_a_chain():
+    d = Driver(
+        chord(
+            group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c")))),
+            Echo.s(),
+        )
+    )
+    await d.seed()
+    await d.drain()
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [[["x"], [["b"], ["c"]]]]
+
+
+async def test_composite_member_redelivery_leaves_result_intact():
+    # R10, AE8 — erneute Zustellung eines zusammengesetzten Gliedabschlusses.
+    # Nebenbei: das einfache Glied schliesst hier VOR dem Kettenglied ab, die
+    # Liste steht trotzdem in Definitionsreihenfolge.
+    d = Driver(group(chain(Echo.s("b"), Echo.s()), Echo.s("a")))
+    await d.seed()
+    assert len(d.published) == 1
+    _queue, body, headers = d.published.pop(0)
+    step_path = headers["x-swarmq-workflow-step"]
+    task_id = await d._run_step(body)
+    raw = await d.backend.get_result(task_id)
+    assert raw is not None
+    value = decode_result(raw)["result"]
+
+    await d.advancer.advance(d.wf_id, step_path, task_id, value)
+    await d.advancer.advance(d.wf_id, step_path, task_id, value)
+
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [[["b"]], ["a"]]
+
+
+async def test_expired_aggregate_of_composite_member_raises():
+    # R7, AE9 — laeuft das Aggregat eines zusammengesetzten Glieds vor dem
+    # Fan-in ab, gilt derselbe Vertrag wie fuer jedes andere Gliedergebnis:
+    # WorkflowResultExpired, kein stilles Loch und keine kuerzere Liste.
+    from swarmq.exceptions import WorkflowResultExpired
+    from swarmq.workflow_orchestration import aggregate_result_id
+
+    d = Driver(group(group(Echo.s("b"), Echo.s("c")), Echo.s("a")))
+    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
+    frontier = initial_frontier(d.workflow)
+    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+
+    for step_path, sig in frontier:
+        task_id = state["step_tasks"][step_path]
+        await d.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": {"id": task_id, "queue": "default", "name": sig.task_name},
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": list(sig.args),
+                }
+            ),
+            60_000,
+        )
+        if step_path == "/g1":
+            # Die innere Gruppe ist fertig, ihr Aggregat liegt gespeichert vor.
+            # Jetzt laeuft es ab, bevor die aeussere Gruppe es einsammelt.
+            await d.backend.delete_result(aggregate_result_id(d.wf_id, "/g0"))
+            with pytest.raises(WorkflowResultExpired):
+                await d.advancer.advance(
+                    d.wf_id, step_path, task_id, list(sig.args)
+                )
+        else:
+            await d.advancer.advance(d.wf_id, step_path, task_id, list(sig.args))
+
+
+# --------------------------------------------------------------------------
+# B10 — Vollstaendigkeitsguard (Plan 2026-08-30-002, U3)
+#
+# Eine kuerzere Liste als die Gruppe Glieder hat ist ein Fehler, kein
+# Ergebnis — und zwar fuer JEDE Gruppe, nicht nur die verschachtelte.
+# --------------------------------------------------------------------------
+
+
+async def _seed_results(d, frontier, step_tasks):
+    for step_path, sig in frontier:
+        task_id = step_tasks[step_path]
+        await d.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": {"id": task_id, "queue": "default", "name": sig.task_name},
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": list(sig.args),
+                }
+            ),
+            60_000,
+        )
+
+
+async def _drop_step_marker(d, drop_path):
+    state = await d.state()
+    state["step_tasks"] = {
+        k: v for k, v in state["step_tasks"].items() if k != drop_path
+    }
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+
+
+async def test_guard_rejects_truncated_list_for_flat_group():
+    # R5, AE10 — der Guard sitzt an der gemeinsamen Stelle und wirkt auch
+    # dort, wo B10 nie zuschlagen konnte.
+    from swarmq.exceptions import WorkflowValidationError
+
+    d = Driver(group(Echo.s("a"), Echo.s("b")))
+    frontier = initial_frontier(d.workflow)
+    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
+    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+    await _seed_results(d, frontier, state["step_tasks"])
+
+    await d.advancer.advance(d.wf_id, "/g0", state["step_tasks"]["/g0"], ["a"])
+    await _drop_step_marker(d, "/g0")
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await d.advancer.advance(d.wf_id, "/g1", state["step_tasks"]["/g1"], ["b"])
+    assert "1 of 2" in str(exc.value)
+
+
+async def test_guard_fires_before_chord_body_is_enqueued():
+    # R5 — beim Chord-Header waere die gekuerzte Liste die EINGABE des Bodys,
+    # nicht sein Rueckgabewert. Der Guard muss davor sitzen.
+    from swarmq.exceptions import WorkflowValidationError
+
+    d = Driver(chord(group(Echo.s("a"), Echo.s("b")), Echo.s()))
+    frontier = initial_frontier(d.workflow)
+    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
+    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+    await _seed_results(d, frontier, state["step_tasks"])
+
+    await d.advancer.advance(d.wf_id, "/h/g0", state["step_tasks"]["/h/g0"], ["a"])
+    await _drop_step_marker(d, "/h/g0")
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await d.advancer.advance(
+            d.wf_id, "/h/g1", state["step_tasks"]["/h/g1"], ["b"]
+        )
+    assert "'/h'" in str(exc.value)
+    assert d.published == [], "Body wurde trotz unvollstaendiger Eingabe eingereiht"
+
+
+async def test_guard_catches_lost_marker_of_composite_member():
+    # R5 — der realitaetsnaechste Fall: der Abschlussschritt eines
+    # Kettenglieds verliert seinen Marker (publish-then-mark-Fenster).
+    from swarmq.exceptions import WorkflowValidationError
+
+    d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
+    await d.seed()
+    await _drop_step_marker(d, "/g1/1")
+
+    with pytest.raises(WorkflowValidationError) as exc:
+        await d.drain()
+    assert "1 of 2" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# B10 — mehrere Advancer auf gemeinsamem Zustand (Plan 2026-08-30-002, U4)
+# --------------------------------------------------------------------------
+
+
+class MultiDriver:
+    """Wie Driver, aber jeder Schritt laeuft auf einer EIGENEN Advancer-Instanz
+    ueber demselben Backend — der Mehrprozess-Fall, in dem kein Advancer den
+    Zustand eines anderen im Arbeitsspeicher sieht."""
+
+    def __init__(self, workflow):
+        self.backend = _connected_backend()
+        self.published: list[tuple[str, bytes, dict]] = []
+        self.wf_id = "wf-multi"
+        self.workflow = workflow
+        self.advancer_count = 0
+
+    def advancer(self) -> WorkflowAdvancer:
+        self.advancer_count += 1
+        return WorkflowAdvancer(
+            self.backend,
+            self.backend.chords,
+            publish=self._publish,
+            resolve_queue=lambda name: "default",
+            make_task_id=workflow_step_task_id,
+            unpack=_unpack,
+            ttl_ms=60_000,
+        )
+
+    async def _publish(self, queue, body, headers):
+        self.published.append((queue, body, headers))
+        return PublishReceipt(queue=queue)
+
+    async def _store(self, task_id, name, value):
+        await self.backend.store_result(
+            task_id,
+            encode_result(
+                {
+                    "task": {"id": task_id, "queue": "default", "name": name},
+                    "is_error": False,
+                    "is_cancelled": False,
+                    "error_message": "",
+                    "result": value,
+                }
+            ),
+            60_000,
+        )
+
+    async def seed(self) -> dict:
+        state = build_initial_workflow_state(self.wf_id, self.workflow.to_dict())
+        frontier = initial_frontier(self.workflow)
+        state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+        await self.backend.store_workflow_state(
+            self.wf_id, encode_json(state), 60_000
+        )
+        for step_path, sig in frontier:
+            await self._store(
+                state["step_tasks"][step_path], sig.task_name, list(sig.args)
+            )
+        return state
+
+    async def run_next(self) -> None:
+        """Eine veroeffentlichte Nachricht auf einer frischen Advancer-Instanz."""
+        _queue, body, headers = self.published.pop(0)
+        step_path = headers["x-swarmq-workflow-step"]
+        msg = decode_json(body)
+        task_id = msg["task"]["id"]
+        value = list(msg["args"])
+        await self._store(task_id, msg["task"]["name"], value)
+        await self.advancer().advance(self.wf_id, step_path, task_id, value)
+
+    async def state(self) -> dict:
+        raw = await self.backend.get_workflow_state(self.wf_id)
+        assert raw is not None
+        return decode_json(raw)
+
+    async def final_value(self):
+        fid = (await self.state())["final_result_task_id"]
+        raw = await self.backend.get_result(fid)
+        assert raw is not None
+        return decode_result(raw)["result"]
+
+
+async def test_composite_members_across_separate_advancers():
+    """AE7 — jeder Schritt auf einer eigenen Advancer-Instanz.
+
+    Kein Advancer traegt Zustand im Arbeitsspeicher weiter; alles laeuft ueber
+    das gemeinsame Backend. Genau der Fall, an dem ein Entwurf zerbricht, der
+    die Aggregatkennung im Prozess haelt statt sie abzuleiten.
+    """
+    m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
+    state = await m.seed()
+    for step_path, sig in initial_frontier(m.workflow):
+        await m.advancer().advance(
+            m.wf_id, step_path, state["step_tasks"][step_path], list(sig.args)
+        )
+    while m.published:
+        await m.run_next()
+
+    assert m.advancer_count >= 4, "Test soll mehrere Advancer-Instanzen benutzen"
+    assert (await m.state())["status"] == STATUS_COMPLETED
+    assert await m.final_value() == [[["a"]], [["c"]]]
+
+
+async def test_children_reports_only_enqueued_steps():
+    """R8 — `children()` bleibt eine Abbildung der eingereihten SCHRITTE.
+
+    Die Aggregatkennung eines zusammengesetzten Glieds taucht dort nicht auf;
+    sie wird abgeleitet und nicht im Zustand gefuehrt. Haette die Korrektur ein
+    Zustandsfeld eingefuehrt, waere das hier sichtbar geworden.
+    """
+    d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
+    await d.seed()
+    await d.drain()
+    st = await d.state()
+    assert set(st["step_tasks"]) == {"/g0", "/g1/0", "/g1/1"}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KTD5 des Plans 2026-08-30-002: `advance()` ist ein Read-Modify-Write "
+        "ohne CAS und `store_workflow_state` ueberschreibt das ganze Dokument "
+        "blind. Geht ein Advancer von einem veralteten Schnappschuss aus, "
+        "loescht sein Rueckschreiben den Schritt-Marker des anderen; der Guard "
+        "aus U3 macht daraus einen laut gescheiterten Workflow statt einer "
+        "still gekuerzten Liste. Vorbestehend und bewusst nicht in diesem Plan "
+        "behoben. Schlaegt dieser Test um, ist das verlorene Zustands-Update "
+        "geschlossen — dann gehoert er zu einem echten Regressionstest "
+        "umgeschrieben, nicht geloescht."
+    ),
+)
+async def test_lost_state_update_still_truncates_group():
+    m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
+    state = await m.seed()
+    stale_raw = encode_json(state)
+
+    # Advancer 1 schaltet die erste Kette weiter und markiert /g0/1.
+    await m.advancer().advance(m.wf_id, "/g0/0", state["step_tasks"]["/g0/0"], ["a"])
+
+    # Advancer 2 liest beim Eintritt noch den ALTEN Schnappschuss — genau das
+    # Fenster, das ohne CAS offen steht — und schreibt ihn blind zurueck.
+    # Kein kuenstlicher Marker: der Verlust entsteht auf dem normalen Weg.
+    real_get = m.backend.get_workflow_state
+    calls = {"n": 0}
+
+    async def stale_once(wf_id, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return stale_raw
+        return await real_get(wf_id, *args, **kwargs)
+
+    m.backend.get_workflow_state = stale_once  # type: ignore[method-assign]
+    try:
+        await m.advancer().advance(
+            m.wf_id, "/g1/0", state["step_tasks"]["/g1/0"], ["c"]
+        )
+    finally:
+        m.backend.get_workflow_state = real_get  # type: ignore[method-assign]
+
+    while m.published:
+        await m.run_next()
+
+    assert await m.final_value() == [[["a"]], [["c"]]]
+
+
 async def test_expired_member_result_raises_workflow_result_expired():
     # R6: a chord fan-in where one (completed) member's result has expired
     # must raise WorkflowResultExpired, not silently pass None to the body.

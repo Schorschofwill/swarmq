@@ -36,7 +36,7 @@ Every row has the following columns:
 | `swarmq.exceptions.Retry` | `SwarmQError` | task_code | run | yes (consumes budget) | no | n/a | control flow |
 | `swarmq.exceptions.NoRetry` | `SwarmQError` | task_code | run | no | yes (immediate) | n/a | control flow |
 | `swarmq.exceptions.SoftTimeoutError` | `SwarmQError` | library | run | controlled | yes | n/a | `error_message`, `is_error=true` |
-| `swarmq.exceptions.WorkflowValidationError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.WorkflowValidationError` | `SwarmQError` | library | schedule, run | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 
