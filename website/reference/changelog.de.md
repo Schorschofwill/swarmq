@@ -6,6 +6,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-30
+
 ### Geändert (breaking)
 
 - **Eine `group`, deren Glied selbst eine `chain`, `group` oder ein `chord`
@@ -42,6 +44,12 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 
 ## [0.3.0] — 2026-08-30
+
+**Nie auf PyPI veröffentlicht.** Getaggt, trug aber
+noch die stillschweigend gekürzte `group`-Ergebnisliste, die 0.4.0 behebt —
+die Veröffentlichung hätte einen wissentlich falsch rechnenden Stand
+ausgeliefert. Der Eintrag bleibt fürs Protokoll; von 0.2.0 direkt auf 0.4.0
+gehen und beide Abschnitte lesen.
 
 ### Geändert (breaking)
 
