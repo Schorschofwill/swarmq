@@ -6,6 +6,8 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-30
+
 ### Changed (breaking)
 
 - **`swarmq worker` refuses multi-process mode with a fixed observability

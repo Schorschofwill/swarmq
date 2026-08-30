@@ -6,6 +6,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-30
+
 ### Geändert (breaking)
 
 - **`swarmq worker` verweigert Mehrprozess-Betrieb mit festem
