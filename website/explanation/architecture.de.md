@@ -180,6 +180,18 @@ API, schwererer Ops-Footprint), Postgres nur für Ergebnisse
 (`LISTEN/NOTIFY` fügt Latenz hinzu und bietet keine Lua-Atomizität
 für Rate-Limiting).
 
+## Prozess-Topologie seit 0.5.0
+
+Jeder `swarmq worker` läuft unter dem **Supervisor** (`ProcessManager`), auch
+mit einem einzelnen Worker: Er startet Abstürze innerhalb eines Budgets neu,
+ersetzt einen Worker ohne Lebenszeichen, bestätigt die Recycling-Absicht eines
+Workers (rollierender Ersatz, kein verlorener Slot) und endet sauber, wenn ein
+`--burst`-Worker leergelaufen ist. Im **CPU-Modus** (`--pool cpu`) wird der
+Worker zum Loop-Prozess, der nie rechnet: Task-Körper laufen in Rechenkindern
+aus einem vorgewärmten `forkserver`, ein `hard_timeout` wird zum echten Kill,
+und kein Leak überlebt einen Task. Gates, Middleware, Signale und der Ack
+bleiben im Loop-Prozess. Siehe [CPU-Modus](../guides/cpu-mode.md).
+
 ## Fehlerdomänen
 
 | Fehler | Radius | Recovery |

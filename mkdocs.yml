@@ -152,6 +152,7 @@ plugins:
             Locking and deduplication: Locking und Deduplizierung
             Dead letter queues: Dead-Letter-Queues
             Hot reload (dev-only): Hot Reload (nur Dev)
+            CPU mode: CPU-Modus
             Testing tasks: Tasks testen
             Reference: Referenz
             API: API
@@ -184,6 +185,7 @@ nav:
       - Locking and deduplication: guides/locking-and-dedup.md
       - Dead letter queues: guides/dead-letter-queues.md
       - Hot reload (dev-only): guides/hot-reload.md
+      - CPU mode: guides/cpu-mode.md
       - Testing tasks: guides/testing-tasks.md
   - Reference:
       - reference/index.md

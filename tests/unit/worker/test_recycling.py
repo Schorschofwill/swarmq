@@ -99,7 +99,7 @@ async def test_without_supervisor_recycling_is_a_graceful_exit_with_warning(work
 
 @pytest.mark.timeout(10)
 async def test_rss_threshold_wins_over_task_count(worker, channel, monkeypatch):
-    monkeypatch.setattr("swarmq.worker.compute.child.rss_mb", lambda *_a, **_k: 320.0)
+    monkeypatch.setattr(recycling, "rss_mb", lambda *_a, **_k: 320.0)
     events = _arm(worker, recycle_rss_mb=300, recycle_max_tasks=1000)
     worker._start_recycle_monitor()
     channel.acknowledge_replacement()

@@ -20,6 +20,7 @@ import structlog
 
 from swarmq.signals import Signal
 from swarmq.supervision import current_channel
+from swarmq.worker.compute.child import rss_mb
 
 logger = structlog.get_logger(__name__)
 
@@ -58,8 +59,6 @@ def start_recycle_monitor(worker: Any) -> None:
 
 async def recycle_monitor(worker: Any) -> None:
     """Nach jedem Taskende RSS und Taskzahl gegen die Schwellen pruefen (R22)."""
-    from swarmq.worker.compute.child import rss_mb
-
     cfg = worker._config
     last_seen = 0
     while not worker._shutdown_event.is_set():

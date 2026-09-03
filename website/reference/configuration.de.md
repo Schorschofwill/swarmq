@@ -31,7 +31,16 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Sekunden, in denen In-Flight-Tasks bei SIGTERM beenden dürfen, bevor Hard-Kill. |
 | `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Obergrenze für einen kompletten Publish-Vorgang inklusive interner Wiederholversuche. Wird sie überschritten, scheitert der Publish mit einem Broker-Verbindungsfehler, statt unbegrenzt auf eine Bestätigung zu warten, die ein still toter Transport nie liefert. Beim Herunterfahren gilt die kürzere aus diesem Wert und der verbleibenden Gnadenfrist. |
 | `SWARMQ_DELIVERY_LIMIT` | `20` | Zustellbudget für Quorum-Queues (`x-delivery-limit`); bei klassischen Queues ohne Wirkung. Ist eine Nachricht so oft zugestellt worden, wirft der Broker sie selbst in die Dead-Letter-Queue — das Sicherheitsnetz gegen einen Task, der den Prozess zuverlässig abschießt (SIGSEGV/OOM) und deshalb ewig neu zugestellt würde, ohne je `max_retries` zu erreichen. Der Default deckt drei bis vier fachliche Wiederholungen je Zustellung plus Puffer für Broker-Schluckauf. Dieser Puffer ist seit dem Publish-Deckel schmaler: Bricht ein Publish im Worker an seiner Frist ab, wird die bearbeitete Nachricht neu zugestellt statt bestätigt, und jede Runde kostet eine Zustellung. Höher setzen, wer längere Broker-Störungen aussitzen muss; niedriger, wer ein engeres Zustellfenster erzwingen will. |
-| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (empfohlen) oder `classic` RabbitMQ-Queue-Typ. |
+| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (empfohlen) oder `classic` RabbitMQ-Queue-Typ. Nur Quorum-Queues tragen `x-delivery-limit`; ohne wird eine Nachricht, die Worker zum Hängen bringt, unbegrenzt erneut zugestellt (der Worker warnt beim Start). |
+| `SWARMQ_POOL` | `io` | `io` oder `cpu` — siehe [CPU-Modus](../guides/cpu-mode.md). |
+| `SWARMQ_RECYCLE_RSS_MB` | ungesetzt (`250` im CPU-Modus) | Prozess nach einem Task recyceln, sobald sein RSS diese MB überschreitet. IO-Worker: Opt-in-Selbst-Recycling; CPU-Modus: Schwelle für wiederverwendete DI-Kinder. |
+| `SWARMQ_RECYCLE_MAX_TASKS` | ungesetzt (`1000` im CPU-Modus) | Prozess nach so vielen Tasks recyceln (zweite Linie hinter der RSS-Schwelle). |
+| `SWARMQ_HEARTBEAT_INTERVAL_S` | `5` | Wie oft der Worker seinen Lebenszeichen-Zeitstempel für den Supervisor schreibt. |
+| `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | Nach so langer Zeit ohne Lebenszeichen ersetzt der Supervisor den Worker (SIGTERM, dann SIGKILL). Muss über dem Intervall und jeder legitimen Loop-Blockade liegen; unter RabbitMQs Heartbeat-Erkennung bleiben. |
+| `SWARMQ_CONSUMER_TIMEOUT_S` | `1800` | `consumer_timeout` des Brokers; der Worker warnt, wenn ein `hard_timeout` darüber liegt. |
+| `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` für Rechenkinder (glibc-Wachstum). |
+| `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
+| `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads je Rechenkind (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Sekunden zwischen In-Task-Cancel-Flag-Checks. |
 | `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze einzelner Valkey-Operationen in der Cancel-/Dedup-Pipeline. |
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |

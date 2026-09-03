@@ -52,7 +52,8 @@ swarmq worker --module DOTTED.PATH
 |---|---|---|
 | `--module DOTTED.PATH` | *pflicht* | Python-Modul mit zu registrierenden `Task`-Subklassen (z. B. `myapp.tasks`). Muss vom aktuellen `PYTHONPATH` importierbar sein. |
 | `--queues A,B,C` | `default` | Komma-separierte Queue-Namen zum Konsumieren. Env-Var: `SWARMQ_QUEUES`. |
-| `--concurrency N` | `10` | Maximal parallel ausgeführte Tasks. Env-Var: `SWARMQ_CONCURRENCY`. |
+| `--concurrency N` | `10` (io) / zugeteilte CPUs (cpu) | Maximal parallel ausgeführte Tasks. Mit `--pool cpu` die Zahl der Rechenslots; Voreinstellung sind die dem Worker zugeteilten CPUs (Affinität und cgroup-Quote) geteilt durch `--processes`. Env-Var: `SWARMQ_CONCURRENCY`. |
+| `--pool {io,cpu}` | `io` | Ausführungspool. `cpu` führt jeden Task-Körper in einem Rechenkind aus einem vorgewärmten Forkserver aus: der Loop-Prozess rechnet nie, `hard_timeout` und Cancel töten das Kind. Nur POSIX; nicht mit `--autoscale` kombinierbar. Siehe [CPU-Modus](../guides/cpu-mode.md). |
 | `--log-level LEVEL` | `INFO` | Einer aus `DEBUG`, `INFO`, `WARNING`, `ERROR`. Env-Var: `SWARMQ_LOG_LEVEL`. |
 | `--log-format FORMAT` | `human` | `human` oder `json`. JSON passt zu Loki, Datadog, CloudWatch. Env-Var: `SWARMQ_LOG_JSON`. |
 | `--burst` | aus | Exited sauber, sobald alle Queues `--burst-idle-timeout` Sekunden Idle waren. Env-Var: `SWARMQ_BURST_MODE`. |
@@ -60,7 +61,7 @@ swarmq worker --module DOTTED.PATH
 | `--priorities` | aus | Auto-Deklaration und Konsum des `{queue}.high`/`.normal`/`.low`-Triplets für jede Queue. Env-Var: `SWARMQ_PRIORITIES`. |
 | `--metrics-port PORT` | ungesetzt | Serviert Prometheus `/metrics` auf diesem Port. Braucht `pip install 'swarmq[metrics]'`. Bind-Host: `SWARMQ_METRICS_HOST` (Default `127.0.0.1`). |
 | `--health-port PORT` | ungesetzt | Serviert `/health` + `/ready` auf diesem Port. Bind-Host: `SWARMQ_HEALTH_HOST` (Default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Lässt N Subprozesse unter einem Supervisor laufen. Der Supervisor startet gecrashte Worker neu (max 5 pro Stunde) und reloaded auf `SIGHUP` via `os.execvp()`. |
+| `--processes N`, `-p N` | `1` | Lässt N Worker-Subprozesse laufen. Seit 0.5.0 läuft jeder `swarmq worker` unter dem Supervisor, auch mit `N = 1`: Er startet gecrashte Worker neu (max 5 pro Stunde), ersetzt Worker ohne Lebenszeichen, reloaded auf `SIGHUP` via `os.execvp()` und endet mit 0, sobald alle Worker sauber beendet sind (`--burst`). Ein Konfigurationsfehler beendet den Lauf nach genau einem Versuch (Exit 1). |
 | `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. |
 | `--reload` | aus | Beobachtet Task-Module und triggert SIGHUP-Reload bei Änderung. Nur Developer. Braucht `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | Elternverzeichnis der `--module`-Quelle | Zu überwachendes Verzeichnis (wiederholbar). Ohne `--reload` ignoriert. |

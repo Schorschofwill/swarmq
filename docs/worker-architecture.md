@@ -595,3 +595,21 @@ def worker_entry(worker_id, shutdown_event, config):
 - Graceful Shutdowns with asyncio (roguelynn.com)
 - Signal handling with async multiprocesses (Medium)
 - uvloop SIGCHLD Issue #409
+
+## 7. Supervisor als Standard, Lebenszeichen, Recycling (0.5.0)
+
+Seit Plan `docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md` (R20–R23,
+R29–R31) laeuft jeder `swarmq worker` unter dem ProcessManager, auch mit einem
+Prozess. Der Kanal zwischen Worker und Supervisor (`swarmq/supervision.py`)
+besteht aus drei `multiprocessing.Value` je Worker mit je genau einem
+Schreiber: `heartbeat` (monotone Zeit, aus dem Event-Loop alle
+`heartbeat_interval_s`), `intent` (draining / Recycling, Worker) und `ack`
+(Ersatz gestartet, Supervisor). Ohne Lebenszeichen ueber
+`heartbeat_timeout_s` (im Drain: `shutdown_grace_s + SHUTDOWN_TERM_S`) setzt
+der Supervisor `expected_shutdown`, startet den Ersatz, sendet SIGTERM und
+nach `SHUTDOWN_TERM_S` SIGKILL; das zaehlt gegen ein eigenes Budget von
+2 x Delivery-Limit je Stunde, nicht gegen `MAX_RESTARTS`. Eine
+Recycling-Absicht wird genauso beantwortet, ohne Kill; der Worker drainiert
+danach selbst. Exit 0 ohne `expected_shutdown` (Burst) wird nicht
+nachgefuellt; Exit 78 (Konfigurationsfehler) beendet den Supervisor mit 1;
+Exit 75 (Recycling ohne Bestaetigung) nimmt den normalen Restart-Pfad.
