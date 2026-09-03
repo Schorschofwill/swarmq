@@ -958,3 +958,106 @@ class TestCleanExitIsNotRefilled:
         pm._clean_exits = 1
         pm.workers = {}
         assert pm._monitor_loop() == 1
+
+
+class TestHeartbeatReplacement:
+    """R21/R30 (Plan 2026-09-03-001, KTD10): hängende Worker werden ersetzt,
+    begrenzt durch ein eigenes Budget; SIGTERM eskaliert zu SIGKILL."""
+
+    def _pm(self, **kw) -> ProcessManager:
+        pm = ProcessManager(
+            num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),),
+            heartbeat_timeout_s=kw.pop("timeout", 10.0), delivery_limit=kw.pop("delivery_limit", 2), **kw,
+        )
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        return pm
+
+    def _channel(self, last_beat: float | None, intent: int = 0):
+        import multiprocessing
+
+        from swarmq.supervision import SupervisorChannel
+
+        ch = SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        if last_beat is not None:
+            ch.heartbeat.value = last_beat
+        ch.intent.value = intent
+        return ch
+
+    def test_start_worker_attaches_a_channel(self):
+        pm = self._pm()
+        info = pm._start_worker()
+        assert info.channel is not None
+        args = pm._ctx.Process.call_args.kwargs["args"]
+        assert args[-1] is info.channel  # als letztes Argument an den Entry
+
+    def test_stale_heartbeat_replaces_worker_and_marks_expected_shutdown(self):
+        import time
+
+        pm = self._pm(timeout=10.0)
+        hung = _fake_process(pid=5)
+        ch = self._channel(time.monotonic() - 61)
+        pm.workers = {5: WorkerInfo(process=hung, worker_id=0, channel=ch)}
+        pm._check_heartbeats()
+        assert pm.workers[5].expected_shutdown is True
+        hung.terminate.assert_called_once()
+        assert 500 in pm.workers  # Ersatz gestartet
+        assert pm._exhausted_slots == 0 and len(pm._hang_timestamps) == 1
+        # SIGKILL erst nach der Frist
+        pm._escalate_terminating()
+        hung.kill.assert_not_called()
+        pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
+        pm._escalate_terminating()
+        hung.kill.assert_called_once()
+
+    def test_fresh_heartbeat_and_startup_grace_do_nothing(self):
+        import time
+
+        pm = self._pm(timeout=10.0)
+        fresh = WorkerInfo(process=_fake_process(pid=5), worker_id=0, channel=self._channel(time.monotonic()))
+        just_spawned = WorkerInfo(process=_fake_process(pid=6), worker_id=1, channel=self._channel(None))
+        pm.workers = {5: fresh, 6: just_spawned}
+        pm._check_heartbeats()
+        assert not fresh.expected_shutdown and not just_spawned.expected_shutdown
+        pm._ctx.Process.assert_not_called()
+
+    def test_draining_worker_gets_the_longer_deadline(self):
+        import time
+
+        from swarmq.supervision import INTENT_DRAINING
+
+        pm = self._pm(timeout=1.0, shutdown_grace_s=30.0)
+        draining = WorkerInfo(
+            process=_fake_process(pid=5), worker_id=0, channel=self._channel(time.monotonic() - 5, INTENT_DRAINING)
+        )
+        pm.workers = {5: draining}
+        pm._check_heartbeats()
+        assert draining.expected_shutdown is False  # 5 s < 30 s + 5 s
+        draining.channel.heartbeat.value = time.monotonic() - 40
+        pm._check_heartbeats()
+        assert draining.expected_shutdown is True
+
+    def test_hang_budget_is_separate_from_max_restarts(self):
+        import time
+
+        pm = self._pm(timeout=1.0, delivery_limit=1)  # Budget = 2 Ersatzungen je Stunde
+        for pid in (5, 6, 7):
+            info = WorkerInfo(
+                process=_fake_process(pid=pid), worker_id=pid, channel=self._channel(time.monotonic() - 9)
+            )
+            pm.workers = {pid: info}
+            pm._check_heartbeats()
+        assert pm._ctx.Process.call_count == 2  # dritter Haenger: Budget erschoepft
+        assert pm._exhausted_slots == 1
+
+    def test_expected_shutdown_is_not_replaced_on_dead(self):
+        import time
+
+        pm = self._pm(timeout=1.0)
+        hung = _fake_process(pid=5)
+        pm.workers = {5: WorkerInfo(process=hung, worker_id=0, channel=self._channel(time.monotonic() - 9))}
+        pm._check_heartbeats()
+        hung.is_alive.return_value = False
+        hung.exitcode = -9
+        pm._check_dead_workers()
+        assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit

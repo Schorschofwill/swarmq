@@ -137,5 +137,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         shutdown_grace_s=shutdown_grace_s,
         reload=reload_enabled,
         watch_dirs=resolved_watch_dirs,
+        heartbeat_timeout_s=sq_config.heartbeat_timeout_s,
+        delivery_limit=sq_config.delivery_limit,
     )
     return pm.run()

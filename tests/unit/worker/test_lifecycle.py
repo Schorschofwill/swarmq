@@ -822,3 +822,21 @@ class TestConfigAutoWireDefaults:
         assert cfg.metrics_host == "127.0.0.1"
         assert cfg.health_port is None
         assert cfg.health_host == "127.0.0.1"
+
+
+@pytest.mark.timeout(5)
+async def test_request_shutdown_marks_draining_on_supervisor_channel(worker):
+    """R21/KTD10: im Drain gilt beim Supervisor die laengere Lebenszeichen-Frist."""
+    import multiprocessing
+
+    from swarmq import supervision as sv
+    from swarmq.worker.lifecycle import WorkerState
+
+    ch = sv.SupervisorChannel.create(multiprocessing.get_context("spawn"))
+    sv.set_current_channel(ch)
+    try:
+        worker._state = WorkerState.RUNNING
+        worker._request_shutdown()
+    finally:
+        sv.set_current_channel(None)
+    assert ch.intent_value() == sv.INTENT_DRAINING

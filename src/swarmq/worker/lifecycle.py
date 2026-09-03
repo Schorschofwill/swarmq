@@ -30,6 +30,7 @@ from swarmq.logging import sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
+from swarmq.supervision import current_channel
 from swarmq.workflow_orchestration import WorkflowAdvancer, workflow_step_task_id
 
 if TYPE_CHECKING:
@@ -228,6 +229,19 @@ class WorkerLifecycle:
 
         return lambda: forkserver_ready(self)
 
+    def _warn_without_delivery_limit(self) -> None:
+        """R21: ohne Quorum-Queue gibt es kein Delivery-Limit — eine Giftnachricht
+        koennte Worker endlos ersetzen."""
+        if self._config.queue_type != "quorum":
+            logger.warning(
+                "no_delivery_limit_for_queue_type",
+                queue_type=self._config.queue_type,
+                hint=(
+                    "x-delivery-limit exists only on quorum queues; with the supervisor "
+                    "replacing hung workers, a blocking message is redelivered without bound"
+                ),
+            )
+
     def _warn_priority_tasks_without_routing(self) -> None:
         # Warn when a registered task declares
         # priority != "normal" but the worker is not configured for
@@ -315,6 +329,7 @@ class WorkerLifecycle:
         await self._start_observability()
         self._warn_priority_tasks_without_routing()
         self._warn_hard_timeout_over_consumer_timeout()
+        self._warn_without_delivery_limit()
         await self._start_executor()
         await self._declare_and_consume_queues()
         self._state = WorkerState.RUNNING
@@ -692,5 +707,8 @@ class WorkerLifecycle:
         if self._state is not WorkerState.RUNNING:
             return
         self._state = WorkerState.DRAINING
+        channel = current_channel()
+        if channel is not None:
+            channel.mark_draining()  # R21/KTD10: laengere Lebenszeichen-Frist im Drain
         self._shutdown_event.set()
 

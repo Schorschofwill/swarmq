@@ -128,3 +128,37 @@ class TestConfigErrorExitCode:
             worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
         assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE == 78
         assert "never inject" in capsys.readouterr().err
+
+
+class TestHeartbeatWriter:
+    """R21/KTD10: der Entry schreibt das Lebenszeichen aus dem Event-Loop."""
+
+    def test_channel_receives_beats_and_is_exposed(self, monkeypatch):
+        import asyncio
+        import multiprocessing
+
+        from swarmq import supervision as sv
+
+        ch = sv.SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        seen: list[object] = []
+
+        async def fake_run(ns):
+            seen.append(sv.current_channel())
+            await asyncio.sleep(0.05)
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg(heartbeat_interval_s=0.01), ch)
+        assert ch.last_beat() > 0.0
+        assert seen == [ch]
+
+    def test_without_channel_nothing_is_written(self, monkeypatch):
+        from swarmq import supervision as sv
+
+        async def fake_run(ns):
+            return None
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert sv.current_channel() is None

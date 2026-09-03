@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
@@ -15,6 +16,7 @@ import structlog
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.process_manager.config import WorkerConfig
+from swarmq.supervision import SupervisorChannel, set_current_channel
 
 logger = structlog.get_logger()
 
@@ -29,6 +31,7 @@ def worker_subprocess_entry(
     worker_id: int,
     shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
     cfg: WorkerConfig,
+    channel: SupervisorChannel | None = None,
 ) -> None:
     """Run a single worker inside a spawned subprocess.
 
@@ -76,12 +79,24 @@ def worker_subprocess_entry(
     kwargs.pop("watch_dirs", None)
     ns = _argparse.Namespace(**kwargs)
 
+    set_current_channel(channel)
+    beat_interval = float(cfg.heartbeat_interval_s or 5.0)
+
     async def _run() -> None:
         async def _watch_shutdown() -> None:
             # Poll the cross-process event; when set, raise SIGTERM
             # on ourselves so the Worker's R2.5 graceful-shutdown
             # handler fires naturally.
+            # R21/KTD10: das Lebenszeichen kommt aus demselben Tick — ein
+            # blockierter Loop schreibt nicht mehr, genau das erkennt der
+            # Supervisor. Geschrieben wird alle ``heartbeat_interval_s``,
+            # auch waehrend des Drains.
+            next_beat = 0.0
             while True:
+                now = time.monotonic()
+                if channel is not None and now >= next_beat:
+                    channel.beat()
+                    next_beat = now + beat_interval
                 if shutdown_event.is_set():
                     os.kill(os.getpid(), _signal.SIGTERM)
                     return

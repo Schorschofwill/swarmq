@@ -56,6 +56,7 @@ from swarmq.worker.gates import (
     route_via_dlx,
 )
 from swarmq.worker.gates.cancel import CancelGate
+from swarmq.worker.gates.delivery_count import DeliveryCountGate
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
     LOCK_CONFLICT_BACKOFF_BASE_MS,
@@ -159,6 +160,8 @@ class Worker(WorkerLifecycle):
         self._expiry_gate = ExpiryGate(gate_deps)
         self._rate_limit_gate = RateLimitGate(gate_deps)
         self._lock_gate = LockGate(gate_deps)
+        self._delivery_count_gate = DeliveryCountGate(
+            gate_deps, dead_letter=lambda d, c, m: self._retry_handler.dead_letter(d, c, m))
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
@@ -527,18 +530,15 @@ class Worker(WorkerLifecycle):
             return None
 
     async def _pre_pipeline_gates(self, message: Any, ctx: GateContext) -> bool:
-        """Ack-sichere Prä-Pipeline-Stufen VOR Semaphore und try/finally.
-
-        2a: Consumer-seitiges Schedfire-Dedup (Phase 3c Unit 8) läuft ZUERST
-        — ein doppelter Scheduled-Fire betritt keine weitere Stufe und
-        kostet nur den SETNX. 2b: Pre-Start-Cancel-Check (Phase 3b.3) —
-        vor dem Semaphore-Acquire (kein Slot für stornierte Arbeit), vor
-        Rate-Limit/Lock und vor dem FIRE_AND_FORGET-Früh-Ack; die Gates
-        räumen ihren structlog-Kontext auf den behandelten Zweigen selbst
-        auf (der Haupt-finally wird dort nie erreicht)."""
-        if await self._schedfire_gate.apply(message, ctx) is not Continue:
-            return False
-        return await self._cancel_gate.apply(message, ctx) is Continue
+        """Ack-sichere Prä-Pipeline-Stufen VOR Semaphore und try/finally:
+        2a Schedfire-Dedup (nur ein SETNX), 2b Pre-Start-Cancel, 2c Delivery-
+        Count (Plan 2026-09-03-001, KTD10) — alle vor Semaphore, Rate-Limit/
+        Lock und dem FIRE_AND_FORGET-Früh-Ack; die Gates räumen ihren
+        structlog-Kontext auf den behandelten Zweigen selbst auf."""
+        for gate in (self._schedfire_gate, self._cancel_gate, self._delivery_count_gate):
+            if await gate.apply(message, ctx) is not Continue:
+                return False
+        return True
 
     async def _lookup_task_or_route(self, message: Any, task_name: str) -> type[Task] | None:
         """Registry-Lookup; unbekannte Tasks gehen über den DLX-Fallback
