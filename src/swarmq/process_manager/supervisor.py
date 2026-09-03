@@ -19,6 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.logging import sanitize_url
+from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 
 logger = structlog.get_logger()
 
@@ -182,6 +183,9 @@ class ProcessManager:
         # supervisor exits non-zero so systemd/k8s take over with their
         # own backoff policy.
         self._exhausted_slots = 0
+        # R29 (Plan 2026-09-03-001): ein Worker endete mit
+        # CONFIG_ERROR_EXIT_CODE — kein Neustart, der Supervisor endet mit 1.
+        self._config_error = False
 
         # Autoscale state. Initialised to -inf ("never sampled / never
         # scaled") rather than 0.0 so the FIRST tick always samples and the
@@ -425,6 +429,9 @@ class ProcessManager:
         """Check worker health, backfill to target count, autoscale."""
         while not self._shutting_down:
             self._check_dead_workers()
+            if self._config_error:
+                self._shutdown_all_workers()
+                return 1
 
             # All restart budgets burned and no live
             # worker left → exit non-zero instead of spinning (or, pre-
@@ -510,6 +517,18 @@ class ProcessManager:
                 continue
             if exitcode == 0:
                 # Clean exit (burst-drain, etc.): also no restart.
+                continue
+            if exitcode == CONFIG_ERROR_EXIT_CODE:
+                # R29: Konfigurationsfehler — ein Neustart wuerde denselben
+                # Fehler reproduzieren. Genau ein Startversuch.
+                logger.error(
+                    "worker_config_error",
+                    worker_id=info.worker_id,
+                    pid=pid,
+                    exitcode=exitcode,
+                    hint="fix the configuration and start again; no restart attempted",
+                )
+                self._config_error = True
                 continue
             self._maybe_restart(info)
 

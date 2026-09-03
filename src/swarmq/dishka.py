@@ -21,6 +21,7 @@ Design (see ``docs/plans/2026-05-31-001-feat-dishka-di-tasks-plan.md``):
 from __future__ import annotations
 
 import contextvars
+import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
@@ -153,6 +154,29 @@ def _key_resolvable(container: object, key: object) -> bool:
         return True
 
 
+def _reject_ineffective_fromdishka(
+    registered_tasks: list[type], error_cls: type[Exception]
+) -> None:
+    """R18: eine ``FromDishka``-Annotation ohne DependencyKey ist ein Startfehler.
+
+    ``FromDishka[X] | None = None`` ergibt keinen Key; die Injektion faellt
+    lautlos aus und der Parameter bleibt ``None``. Gilt in allen Worker-Modi.
+    """
+    offenders = [
+        f"{t.task_info.name}: {', '.join(params)}"  # type: ignore[attr-defined]
+        for t in registered_tasks
+        if (params := getattr(t, "_dishka_ineffective_fromdishka", None))
+    ]
+    if offenders:
+        raise error_cls(
+            "FromDishka annotation(s) that never inject: "
+            + "; ".join(offenders)
+            + ". Declare the parameter as `name: FromDishka[Type]` without "
+            "`| None` / `Optional` and without a default — otherwise dishka "
+            "derives no dependency key and silently passes None."
+        )
+
+
 def validate_registered_tasks(registered_tasks: list[type]) -> None:
     """Worker-start validation for DI tasks (plan R3b).
 
@@ -165,13 +189,14 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
     if not _HAVE_DISHKA:
         return
 
+    from swarmq.exceptions import ConfigurationError
+
+    _reject_ineffective_fromdishka(registered_tasks, ConfigurationError)
     di_tasks = [
         t for t in registered_tasks if getattr(t, "_dishka_injected_keys", None)
     ]
     if not di_tasks:
         return
-
-    from swarmq.exceptions import ConfigurationError
 
     container = get_registered_container()
     if container is _MISSING:
@@ -214,6 +239,51 @@ def _get_request_container(
         ) from None
 
 
+def _collect_method_keys(
+    name: str,
+    sig: inspect.Signature,
+    hints: dict[str, object],
+    raw_annotations: dict[str, object],
+) -> tuple[list[object], list[str]]:
+    """DependencyKeys einer Lifecycle-Methode plus wirkungslose Annotationen.
+
+    R18 (Plan 2026-09-03-001): nennt eine Annotation FromDishka, ergibt aber
+    keinen Key — typisch ``FromDishka[X] | None = None`` — fiele die Injektion
+    lautlos aus. Solche Parameter landen als ``"<methode>.<param>"`` in der
+    zweiten Liste; ``validate_registered_tasks`` meldet sie beim Start.
+    """
+    from dishka.integrations.base import default_parse_dependency
+
+    keys: list[object] = []
+    silent: list[str] = []
+    for pname, param in sig.parameters.items():
+        hint = hints.get(pname)
+        dep = default_parse_dependency(param, hint) if hint is not None else None
+        if dep is not None:
+            keys.append(dep)
+        elif _annotation_mentions_fromdishka(raw_annotations.get(pname)) or (
+            isinstance(raw_annotations.get(pname), str)
+            and "FromDishka" in str(raw_annotations.get(pname))
+        ):
+            silent.append(f"{name}.{pname}")
+    return keys, silent
+
+
+def _annotation_mentions_fromdishka(raw: object) -> bool:
+    """Strukturelle Suche nach dem FromDishka-Marker in ausgewerteten Annotationen.
+
+    Steigt durch ``Optional``/``Union``/Generics ab und prueft ``Annotated``-
+    Metadaten auf dishkas ``FromComponent``-Marker.
+    """
+    from typing import Annotated, get_args, get_origin
+
+    if get_origin(raw) is Annotated:
+        metadata = getattr(raw, "__metadata__", ())
+        if any("FromComponent" in type(marker).__name__ for marker in metadata):
+            return True
+    return any(_annotation_mentions_fromdishka(arg) for arg in get_args(raw))
+
+
 def maybe_wrap_task(cls: type) -> None:
     """Auto-wrap a Task subclass's lifecycle methods for FromDishka injection.
 
@@ -245,9 +315,14 @@ def maybe_wrap_task(cls: type) -> None:
         # users pay the cost and get the strict error.
         if isinstance(raw, str):
             return "FromDishka" in raw
-        return default_parse_dependency(param, raw) is not None
+        if default_parse_dependency(param, raw) is not None:
+            return True
+        # R18: ``FromDishka[X] | None`` ergibt keinen Key, nennt FromDishka
+        # aber strukturell — nur so faellt die wirkungslose Annotation auf.
+        return _annotation_mentions_fromdishka(raw)
 
     collected: list[object] = []
+    ineffective: list[str] = []
     for name in _LIFECYCLE_METHODS:
         func = cls.__dict__.get(name)
         if func is None or is_dishka_injected(func):
@@ -274,12 +349,8 @@ def maybe_wrap_task(cls: type) -> None:
                 f"(no TYPE_CHECKING-only or forward-reference types)."
             ) from exc
 
-        method_keys = [
-            dep
-            for pname, param in sig.parameters.items()
-            if (hint := hints.get(pname)) is not None
-            and (dep := default_parse_dependency(param, hint)) is not None
-        ]
+        method_keys, silent = _collect_method_keys(name, sig, hints, raw_annotations)
+        ineffective.extend(silent)
         if not method_keys:
             continue
 
@@ -297,6 +368,8 @@ def maybe_wrap_task(cls: type) -> None:
 
     if collected:
         cls._dishka_injected_keys = collected  # type: ignore[attr-defined]
+    if ineffective:
+        cls._dishka_ineffective_fromdishka = ineffective  # type: ignore[attr-defined]
 
 
 if _HAVE_DISHKA:

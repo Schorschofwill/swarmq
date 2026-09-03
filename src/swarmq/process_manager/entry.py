@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
@@ -12,9 +13,16 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
+from swarmq.exceptions import ConfigurationError
 from swarmq.process_manager.config import WorkerConfig
 
 logger = structlog.get_logger()
+
+
+#: Exit-Code fuer Konfigurationsfehler im Worker-Subprozess (R29, KTD8).
+#: Entspricht ``EX_CONFIG`` aus sysexits.h; der Supervisor startet einen so
+#: beendeten Worker nicht neu, sondern endet selbst mit 1.
+CONFIG_ERROR_EXIT_CODE = 78
 
 
 def worker_subprocess_entry(
@@ -89,3 +97,9 @@ def worker_subprocess_entry(
         asyncio.run(_run())
     except KeyboardInterrupt:
         return
+    except ConfigurationError as exc:
+        # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
+        # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code
+        # und der Supervisor beendet den Lauf statt fuenfmal neu zu starten.
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None

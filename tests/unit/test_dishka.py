@@ -370,3 +370,78 @@ class TestDoubleSetupWarning:
                 gl.return_value.warning.assert_not_called()
         finally:
             _reset_container()
+
+
+# --- R18 (Plan 2026-09-03-001): wirkungslose FromDishka-Annotationen ---
+
+
+def test_optional_fromdishka_annotation_is_recorded_and_rejected_at_start():
+    """``FromDishka[X] | None = None`` ergibt keinen Key: heute lautlos ``None``,
+    ab 0.5.0 ein ConfigurationError beim Worker-Start (AE8)."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.exceptions import ConfigurationError
+    from swarmq.task import Task, TaskInfo
+
+    class Db:
+        pass
+
+    class SilentTask(Task):
+        task_info = TaskInfo(name="silent_task", queues=["q"])
+
+        async def run(self, db: FromDishka[Db] | None = None) -> None:  # type: ignore[valid-type]
+            pass
+
+    assert SilentTask._dishka_ineffective_fromdishka == ["run.db"]  # type: ignore[attr-defined]
+    assert not getattr(SilentTask, "_dishka_injected_keys", None)
+    with pytest.raises(ConfigurationError, match="silent_task: run.db"):
+        di.validate_registered_tasks([SilentTask])
+
+
+def test_mixed_effective_and_ineffective_params_still_rejected():
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.exceptions import ConfigurationError
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class MixedTask(Task):
+        task_info = TaskInfo(name="mixed_task", queues=["q"])
+
+        async def pre_execution(self, dep: FromDishka[Dep], other: FromDishka[Dep] | None = None) -> None:  # type: ignore[valid-type]
+            pass
+
+    assert MixedTask._dishka_ineffective_fromdishka == ["pre_execution.other"]  # type: ignore[attr-defined]
+    assert MixedTask._dishka_injected_keys  # type: ignore[attr-defined]
+    with pytest.raises(ConfigurationError, match="mixed_task: pre_execution.other"):
+        di.validate_registered_tasks([MixedTask])
+
+
+def test_correct_fromdishka_annotation_records_nothing_ineffective():
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.task import Task, TaskInfo
+
+    class Dep:
+        pass
+
+    class GoodTask(Task):
+        task_info = TaskInfo(name="good_task", queues=["q"])
+
+        async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            pass
+
+    assert not hasattr(GoodTask, "_dishka_ineffective_fromdishka")
+
+
+def test_ineffective_check_is_noop_without_dishka():
+    class Marked:
+        _dishka_ineffective_fromdishka = ("run.db",)
+
+    with patch.object(di, "_HAVE_DISHKA", False):
+        di.validate_registered_tasks([Marked])  # kein Fehler

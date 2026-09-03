@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from swarmq.process_manager import (
     worker_subprocess_entry,
 )
@@ -108,3 +110,21 @@ class TestWorkerSubprocessEntry:
         assert not hasattr(ns, "watch_dirs"), (
             "watch_dirs leaked to worker Namespace"
         )
+
+
+class TestConfigErrorExitCode:
+    """R29 (Plan 2026-09-03-001): Konfigurationsfehler enden mit Exit 78."""
+
+    def test_configuration_error_exits_with_config_code(self, monkeypatch, capsys):
+        from swarmq.exceptions import ConfigurationError
+        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+
+        async def boom(ns):
+            raise ConfigurationError("FromDishka annotation(s) that never inject: t: run.db")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE == 78
+        assert "never inject" in capsys.readouterr().err

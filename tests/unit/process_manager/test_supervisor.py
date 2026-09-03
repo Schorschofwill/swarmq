@@ -13,7 +13,12 @@ from swarmq.process_manager import (
     ProcessManager,
     WorkerInfo,
 )
-from tests.unit.process_manager._helpers import _entry_stub, _fake_process, _instant_crash_entry
+from tests.unit.process_manager._helpers import (
+    _entry_stub,
+    _fake_process,
+    _instant_crash_entry,
+    _make_test_cfg,
+)
 
 
 class TestProcessManagerCore:
@@ -862,3 +867,44 @@ class TestFileWatcherIntegration:
              ), pytest.raises(RuntimeError, match="monitor bug"):
             pm.run()
         fake_watcher.stop.assert_called_once()
+
+
+class TestConfigErrorNoRestart:
+    """R29 (Plan 2026-09-03-001): Exit 78 wird nicht neu gestartet; der
+    Supervisor beendet den Lauf mit 1 statt das Restart-Budget zu verbrennen."""
+
+    def _pm(self):
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
+        pm._ctx = MagicMock()
+        return pm
+
+    def test_config_error_exit_is_not_restarted(self):
+        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        pm._check_dead_workers()
+        assert pm.workers == {}
+        assert pm._config_error is True
+        pm._ctx.Process.assert_not_called()
+
+    def test_monitor_loop_exits_one_after_config_error(self, monkeypatch):
+        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+
+        pm = self._pm()
+        dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        monkeypatch.setattr(pm, "_shutdown_all_workers", MagicMock())
+        assert pm._monitor_loop() == 1
+        pm._shutdown_all_workers.assert_called_once()
+
+    def test_ordinary_crash_still_restarts(self):
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=1, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        pm._check_dead_workers()
+        assert 500 in pm.workers
+        assert pm._config_error is False
