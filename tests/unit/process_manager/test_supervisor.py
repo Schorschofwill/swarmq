@@ -908,3 +908,53 @@ class TestConfigErrorNoRestart:
         pm._check_dead_workers()
         assert 500 in pm.workers
         assert pm._config_error is False
+
+
+class TestCleanExitIsNotRefilled:
+    """R20/KTD9 (Plan 2026-09-03-001): Exit 0 ohne expected_shutdown zieht den
+    Slot aus dem Ziel; sind alle so beendet, endet der Supervisor mit 0."""
+
+    def _pm(self, n: int = 1) -> ProcessManager:
+        pm = ProcessManager(num_workers=n, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
+        pm._ctx = MagicMock()
+        return pm
+
+    def test_clean_exit_reduces_target_and_is_not_respawned(self):
+        pm = self._pm(n=2)
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=0, pid=5)
+        pm.workers = {
+            5: WorkerInfo(process=dead, worker_id=0),
+            6: WorkerInfo(process=_fake_process(pid=6), worker_id=1),
+        }
+        pm._check_dead_workers()
+        assert pm._clean_exits == 1
+        assert pm._current_target() == 1
+        assert list(pm.workers) == [6]
+        pm._ctx.Process.assert_not_called()
+
+    def test_expected_shutdown_does_not_count_as_clean_exit(self):
+        pm = self._pm(n=2)
+        dead = _fake_process(alive=False, exitcode=0, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0, expected_shutdown=True)}
+        pm._check_dead_workers()
+        assert pm._clean_exits == 0
+        assert pm._current_target() == 2
+
+    def test_monitor_loop_exits_zero_when_all_workers_ended_clean(self):
+        pm = self._pm(n=2)
+        pm.MONITOR_INTERVAL = 0.01
+        pm.workers = {
+            5: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=5), worker_id=0),
+            6: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=6), worker_id=1),
+        }
+        assert pm._monitor_loop() == 0
+        pm._ctx.Process.assert_not_called()
+
+    def test_monitor_loop_exits_one_when_mixed_clean_and_exhausted(self):
+        pm = self._pm(n=2)
+        pm.MONITOR_INTERVAL = 0.01
+        pm._exhausted_slots = 1
+        pm._clean_exits = 1
+        pm.workers = {}
+        assert pm._monitor_loop() == 1

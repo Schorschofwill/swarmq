@@ -250,16 +250,11 @@ def _run_worker_command(args: argparse.Namespace) -> int | tuple[Any, str]:
         sys.stderr.write(f"swarmq worker: {exc}\n")
         return 1
 
-    # R4.6/R4.7: when the user opted into multi-process mode, dispatch to
-    # the synchronous supervisor (no asyncio loop — subprocesses run one).
-    # R5.3: --reload requires the ProcessManager supervisor — the
-    # single-process path has no SIGHUP handler and no execvpe pipeline.
-    use_multi = (
-        getattr(args, "processes", 1) > 1
-        or getattr(args, "autoscale", None) is not None
-        or getattr(args, "reload", False)
-    )
-    if use_multi:
+    # R20 (Plan 2026-09-03-001): der Supervisor ist Standard — auch bei
+    # --processes 1. Lebenszeichen, Recycling und Neustart funktionieren so
+    # ueberall gleich; der frueher bedingte Single-Process-Pfad entfaellt.
+    # (R4.6/R4.7 Multi-Process, R5.3 --reload liefen schon immer hier.)
+    if True:
         from swarmq.process_manager.run import run_multi_process_worker
 
         # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
@@ -273,11 +268,16 @@ def _run_worker_command(args: argparse.Namespace) -> int | tuple[Any, str]:
 
         try:
             return run_multi_process_worker(args, admin_factory=_admin_factory)
+        except KeyboardInterrupt:
+            return 0
         except (
+            ModuleNotFoundError,
             ConfigurationError,
             BrokerConnectionError,
             BackendConnectionError,
         ) as exc:
+            # Eine Zeile statt Traceback — wie frueher im Single-Process-Pfad;
+            # DEBUG haengt den Traceback an.
             sys.stderr.write(f"swarmq worker: {exc}\n")
             if getattr(args, "log_level", "INFO") == "DEBUG":
                 traceback.print_exc(file=sys.stderr)

@@ -131,19 +131,15 @@ class TestMainRouting:
             "SWARMQ_BACKEND_URL": "valkey://x",
         }
 
-    def test_single_process_path_unchanged(self):
-        """--processes=1 must not reach run_multi_process_worker."""
-        def _consume_coro(coro):
-            # Consume the coroutine object so it's not leaked as
-            # "never awaited". We don't actually run it.
-            coro.close()
-            return None
-
+    def test_default_routes_to_supervisor(self):
+        """R20 (Plan 2026-09-03-001): auch --processes 1 laeuft unter dem Supervisor."""
         with patch.dict(os.environ, self._env(), clear=False), \
-             patch("swarmq.process_manager.run.run_multi_process_worker") as rmp, \
-             patch("swarmq.cli.asyncio.run", side_effect=_consume_coro):
+             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp:
             rc = main(["worker", "--module=ignore.me"])
-            rmp.assert_not_called()
+            rmp.assert_called_once()
+            ns = rmp.call_args[0][0]
+            assert ns.processes == 1
+            assert ns.concurrency == 10  # aufgeloest, nicht None
             assert rc == 0
 
     def test_processes_gt_one_routes_to_supervisor(self):

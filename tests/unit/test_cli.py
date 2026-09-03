@@ -232,8 +232,11 @@ class TestMainErrorRendering:
         side_effect: BaseException,
         capsys,
     ) -> tuple[int, str]:
-        with patch.object(cli, "run_worker_async", new_callable=AsyncMock) as mock:
-            mock.side_effect = side_effect
+        # Seit R20 (Plan 2026-09-03-001) laeuft ``worker`` immer ueber den
+        # Supervisor; gemockt wird deshalb dessen Einstieg.
+        with patch(
+            "swarmq.process_manager.run.run_multi_process_worker", side_effect=side_effect
+        ):
             rc = cli.main(
                 [
                     "worker",
@@ -287,8 +290,9 @@ class TestMainErrorRendering:
         assert "Traceback" in err
 
     def test_keyboard_interrupt_exits_zero(self, capsys):
-        with patch.object(cli, "run_worker_async", new_callable=AsyncMock) as mock:
-            mock.side_effect = KeyboardInterrupt()
+        with patch(
+            "swarmq.process_manager.run.run_multi_process_worker", side_effect=KeyboardInterrupt()
+        ):
             rc = cli.main(["worker", "--module", "myapp"])
         assert rc == 0
 
@@ -768,7 +772,7 @@ class TestDlqHandlerOrchestration:
     @pytest.fixture
     def mock_broker(self, monkeypatch):
         """Patch _broker_from_env to return a MagicMock-backed broker."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         broker = MagicMock()
         broker.close = AsyncMock()

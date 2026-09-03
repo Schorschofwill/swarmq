@@ -183,6 +183,10 @@ class ProcessManager:
         # supervisor exits non-zero so systemd/k8s take over with their
         # own backoff policy.
         self._exhausted_slots = 0
+        # R20/KTD9 (Plan 2026-09-03-001): sauber beendete Worker (Exit 0 ohne
+        # expected_shutdown, z. B. --burst) werden nicht nachgefuellt; sind
+        # alle so beendet, endet der Supervisor mit 0.
+        self._clean_exits = 0
         # R29 (Plan 2026-09-03-001): ein Worker endete mit
         # CONFIG_ERROR_EXIT_CODE — kein Neustart, der Supervisor endet mit 1.
         self._config_error = False
@@ -440,7 +444,19 @@ class ProcessManager:
             # outage from the orchestrator.
             if (
                 self._autoscale is None
-                and self._exhausted_slots >= self.initial_workers
+                and not self.workers
+                and self._exhausted_slots + self._clean_exits >= self.initial_workers
+                and self._exhausted_slots == 0
+            ):
+                logger.info(
+                    "all_workers_exited_clean",
+                    initial_workers=self.initial_workers,
+                    hint="every worker ended with exit code 0 (burst drain); exiting 0",
+                )
+                return 0
+            if (
+                self._autoscale is None
+                and self._exhausted_slots + self._clean_exits >= self.initial_workers
                 and not self.workers
             ):
                 logger.error(
@@ -484,7 +500,7 @@ class ProcessManager:
         deliberately).
         """
         if self._autoscale is None:
-            return max(0, self.initial_workers - self._exhausted_slots)
+            return max(0, self.initial_workers - self._exhausted_slots - self._clean_exits)
         return len(self.workers)
 
     def _check_dead_workers(self) -> None:
@@ -516,7 +532,9 @@ class ProcessManager:
                 # Autoscaler scaled this worker down — do not restart.
                 continue
             if exitcode == 0:
-                # Clean exit (burst-drain, etc.): also no restart.
+                # Clean exit (burst-drain, etc.): also no restart, and the
+                # slot is retired so the backfill does not respawn it (KTD9).
+                self._clean_exits += 1
                 continue
             if exitcode == CONFIG_ERROR_EXIT_CODE:
                 # R29: Konfigurationsfehler — ein Neustart wuerde denselben
