@@ -125,6 +125,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         health_port=args.health_port,
         reload=reload_enabled,
         watch_dirs=resolved_watch_dirs,
+        pool=getattr(args, "pool", "io") or "io",
     )
 
     pm = ProcessManager(

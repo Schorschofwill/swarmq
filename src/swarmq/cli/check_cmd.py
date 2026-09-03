@@ -29,6 +29,8 @@ _WORKER_CHECK_PAYLOAD_KEYS = (
     "warnings",
     "error",
     "error_type",
+    "pool",
+    "slots",
 )
 
 
@@ -48,6 +50,8 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
         "warnings": [],
         "error": None,
         "error_type": None,
+        "pool": getattr(args, "pool", "io") or "io",
+        "slots": None,
     }
 
 
@@ -89,11 +93,15 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             autoscale=getattr(args, "autoscale", None),
             metrics_port=getattr(args, "metrics_port", None),
             health_port=getattr(args, "health_port", None),
+            pool=getattr(args, "pool", "io") or "io",
+            concurrency=getattr(args, "concurrency", None),
         )
         payload.update(
             ok=True,
             module_origin=result["module_origin"],
             watch_dirs=result["watch_dirs"],
+            pool=result["pool"],
+            slots=result["slots"],
             warnings=result["warnings"],
         )
         sys.stdout.write(json.dumps(payload) + "\n")

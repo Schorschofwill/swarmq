@@ -1,5 +1,5 @@
 usage: swarmq worker [-h] --module DOTTED.PATH [--queues A,B,C]
-                     [--concurrency N]
+                     [--concurrency N] [--pool {io,cpu}]
                      [--log-level {DEBUG,INFO,WARNING,ERROR}]
                      [--log-format {human,json}] [--burst]
                      [--metrics-port PORT] [--health-port PORT] [--priorities]
@@ -19,7 +19,17 @@ options:
                         current Python path.
   --queues A,B,C        Comma-separated queue names to consume from (default:
                         default).
-  --concurrency N       Maximum tasks executed in parallel (default: 10).
+  --concurrency N       Maximum tasks executed in parallel (default: 10). With
+                        --pool cpu this is the number of compute slots; the
+                        default is then the number of CPUs assigned to the
+                        worker (affinity and cgroup quota), divided by
+                        --processes.
+  --pool {io,cpu}       Execution pool (default: io). 'cpu' runs every task
+                        body in a compute child forked from a pre-warmed
+                        forkserver: the loop process never computes,
+                        hard_timeout and cancel kill the child, --concurrency
+                        means compute slots. POSIX only; not combinable with
+                        --autoscale.
   --log-level {DEBUG,INFO,WARNING,ERROR}
                         Log verbosity (default: INFO). DEBUG also surfaces
                         full tracebacks on CLI errors.

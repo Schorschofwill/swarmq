@@ -66,3 +66,17 @@ class TestWorkerConfig:
         """R5.3 Unit 2: watch_dirs must be tuple, not list."""
         with pytest.raises(TypeError, match="pickle-safe"):
             _make_test_cfg(watch_dirs=["/tmp/x"])
+
+
+def test_worker_config_pool_fields_default_and_pickle_roundtrip():
+    """Plan 2026-09-03-001: neue Felder sind optional und pickle-sicher."""
+    import pickle
+
+    cfg = WorkerConfig(
+        module="m", queues=("q",), concurrency=2, log_level="INFO", log_format="json",
+        burst=False, burst_idle_timeout=1.0, priorities=False, metrics_port=None,
+        health_port=None, pool="cpu", recycle_rss_mb=300,
+    )
+    assert cfg.pool == "cpu"
+    assert cfg.recycle_max_tasks is None
+    assert pickle.loads(pickle.dumps(cfg)) == cfg

@@ -83,6 +83,7 @@ from swarmq.cli.dlq_cmd import (
 )
 from swarmq.cli.inspect_cmd import _format_inspect_table, _run_inspect_async
 from swarmq.cli.parser import _build_parser, _swarmq_version
+from swarmq.cli.pool import prepare_pool_args
 from swarmq.cli.schedule_cmd import (
     _format_schedule_table,
     _run_schedule_add,
@@ -241,6 +242,13 @@ def _run_worker_command(args: argparse.Namespace) -> int | tuple[Any, str]:
     # pre-flight.
     if getattr(args, "check", False):
         return _run_worker_check(args)
+    # Plan 2026-09-03-001 (R1, R3, R4): Pool-Modus pruefen und --concurrency
+    # aufloesen, bevor irgendein Pfad den Wert liest.
+    try:
+        prepare_pool_args(args)
+    except ConfigurationError as exc:
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        return 1
 
     # R4.6/R4.7: when the user opted into multi-process mode, dispatch to
     # the synchronous supervisor (no asyncio loop — subprocesses run one).

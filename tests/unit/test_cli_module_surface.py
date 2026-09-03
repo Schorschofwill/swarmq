@@ -63,6 +63,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_VALID_LOG_LEVELS",            # internal
         "_WORKER_CHECK_PAYLOAD_KEYS",   # internal
         "_autoscale_range",             # internal — test_cli_multiprocess.py
+        "prepare_pool_args",            # internal — Pool-Modus + --concurrency Aufloesung (Plan 2026-09-03-001)
         "_backend_from_env",            # internal
         "_parse_args_for_mode",         # internal — main()-Zerlegung (Follow-Up 0.2.x)
         "_run_command",                 # internal — dito
@@ -137,6 +138,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "dlq_cmd",                      # package — dlq subcommand
         "inspect_cmd",                  # package — inspect subcommand
         "parser",                       # package — argparse tree
+        "pool",                         # package — --pool / --concurrency Aufloesung (Plan 2026-09-03-001)
         "schedule_cmd",                 # package — schedule subcommand
         "worker_cmd",                   # package — worker command
     }

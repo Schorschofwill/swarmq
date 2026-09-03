@@ -14,6 +14,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
+from swarmq.slots import effective_concurrency, validate_pool_mode
 
 logger = structlog.get_logger()
 
@@ -87,6 +88,8 @@ class WorkerConfigCheckResult(TypedDict):
     reload: bool
     watch_dirs: list[str] | None
     warnings: list[str]
+    pool: str
+    slots: int
 
 
 def _effective_port(
@@ -167,6 +170,8 @@ def check_worker_config(
     autoscale: tuple[int, int] | None = None,
     metrics_port: int | None = None,
     health_port: int | None = None,
+    pool: str = "io",
+    concurrency: int | None = None,
 ) -> WorkerConfigCheckResult:
     """Run the pre-flight validation for ``swarmq worker`` and return
     a machine-readable summary dict.
@@ -202,6 +207,8 @@ def check_worker_config(
     )
 
     warnings: list[str] = []
+    validate_pool_mode(pool=pool, autoscale=autoscale)
+    slots = effective_concurrency(concurrency, pool, processes)
 
     # Vor dem teuren Modul-Import: eine Portkollision ist ohne Dateisystem-
     # oder Import-Arbeit entscheidbar.
@@ -248,4 +255,6 @@ def check_worker_config(
         "reload": reload,
         "watch_dirs": watch_dirs_result,
         "warnings": warnings,
+        "pool": pool,
+        "slots": slots.count,
     }

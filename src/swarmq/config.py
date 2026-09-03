@@ -154,6 +154,20 @@ class SwarmQConfig:
     # above any sane task payload; raise via env if legitimate.
     max_message_body_bytes: int = 16 * 1024 * 1024
 
+    # CPU-Modus (Plan 2026-09-03-001, R1/R3/R15/R16/R28) und IO-Worker-Schutz
+    # (R21/R22). ``recycle_*`` ist Opt-in; im CPU-Modus bekommen DI-Kinder
+    # die Voreinstellungen aus der H-Serie (250 MB / 1000 Tasks), siehe
+    # ``_apply_pool_defaults``.
+    pool: str = "io"
+    recycle_rss_mb: int | None = None
+    recycle_max_tasks: int | None = None
+    heartbeat_interval_s: float = 5.0
+    heartbeat_timeout_s: float = 60.0
+    consumer_timeout_s: float = 1800.0
+    malloc_trim_threshold: int = 131072
+    malloc_arena_max: int = 2
+    compute_thread_limit: int = 1
+
     # (Env-Var, Feldname, Parser) — eine Zeile pro Override statt der
     # früheren 27 if-Blöcke; ``__post_init__`` wendet sie der Reihe nach an.
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
@@ -188,6 +202,15 @@ class SwarmQConfig:
         ("SWARMQ_METRICS_HOST", "metrics_host", "str"),
         ("SWARMQ_HEALTH_PORT", "health_port", "port"),
         ("SWARMQ_HEALTH_HOST", "health_host", "str"),
+        ("SWARMQ_POOL", "pool", "str"),
+        ("SWARMQ_RECYCLE_RSS_MB", "recycle_rss_mb", "int"),
+        ("SWARMQ_RECYCLE_MAX_TASKS", "recycle_max_tasks", "int"),
+        ("SWARMQ_HEARTBEAT_INTERVAL_S", "heartbeat_interval_s", "float"),
+        ("SWARMQ_HEARTBEAT_TIMEOUT_S", "heartbeat_timeout_s", "float"),
+        ("SWARMQ_CONSUMER_TIMEOUT_S", "consumer_timeout_s", "float"),
+        ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
+        ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
+        ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
     )
 
     # Felder mit der gemeinsamen Zusage "> 0" (Meldungsformat identisch).
@@ -203,7 +226,41 @@ class SwarmQConfig:
         "burst_idle_timeout",
         "publish_timeout_s",
         "delivery_limit",
+        "heartbeat_interval_s",
+        "heartbeat_timeout_s",
+        "consumer_timeout_s",
+        "malloc_trim_threshold",
+        "malloc_arena_max",
+        "compute_thread_limit",
     )
+    _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
+    # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
+    CPU_DEFAULT_RECYCLE_RSS_MB: ClassVar[int] = 250
+    CPU_DEFAULT_RECYCLE_MAX_TASKS: ClassVar[int] = 1000
+
+    def _apply_pool_defaults(self) -> None:
+        if self.pool != "cpu":
+            return
+        if self.recycle_rss_mb is None:
+            self.recycle_rss_mb = self.CPU_DEFAULT_RECYCLE_RSS_MB
+        if self.recycle_max_tasks is None:
+            self.recycle_max_tasks = self.CPU_DEFAULT_RECYCLE_MAX_TASKS
+
+    def _validate_pool(self) -> None:
+        if self.pool not in self._VALID_POOLS:
+            msg = f"pool must be one of {sorted(self._VALID_POOLS)}, got {self.pool!r}"
+            raise ConfigurationError(msg)
+        for field_name in ("recycle_rss_mb", "recycle_max_tasks"):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                msg = f"{field_name} must be > 0 or unset, got {value}"
+                raise ConfigurationError(msg)
+        if self.heartbeat_timeout_s <= self.heartbeat_interval_s:
+            msg = (
+                "heartbeat_timeout_s must be greater than heartbeat_interval_s, "
+                f"got {self.heartbeat_timeout_s} <= {self.heartbeat_interval_s}"
+            )
+            raise ConfigurationError(msg)
     # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
     # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
     # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
@@ -230,6 +287,8 @@ class SwarmQConfig:
             setattr(self, field_name, value)
 
     def _validate_core(self) -> None:
+        self._apply_pool_defaults()
+        self._validate_pool()
         if not self.broker_url:
             msg = "broker_url must not be empty"
             raise ConfigurationError(msg)

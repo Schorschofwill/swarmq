@@ -181,6 +181,60 @@
       "env_var": "SWARMQ_MAX_MESSAGE_BODY_BYTES",
       "name": "max_message_body_bytes",
       "type": "int"
+    },
+    {
+      "default": "io",
+      "env_var": "SWARMQ_POOL",
+      "name": "pool",
+      "type": "str"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_RECYCLE_RSS_MB",
+      "name": "recycle_rss_mb",
+      "type": "int | None"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_RECYCLE_MAX_TASKS",
+      "name": "recycle_max_tasks",
+      "type": "int | None"
+    },
+    {
+      "default": 5.0,
+      "env_var": "SWARMQ_HEARTBEAT_INTERVAL_S",
+      "name": "heartbeat_interval_s",
+      "type": "float"
+    },
+    {
+      "default": 60.0,
+      "env_var": "SWARMQ_HEARTBEAT_TIMEOUT_S",
+      "name": "heartbeat_timeout_s",
+      "type": "float"
+    },
+    {
+      "default": 1800.0,
+      "env_var": "SWARMQ_CONSUMER_TIMEOUT_S",
+      "name": "consumer_timeout_s",
+      "type": "float"
+    },
+    {
+      "default": 131072,
+      "env_var": "SWARMQ_MALLOC_TRIM_THRESHOLD",
+      "name": "malloc_trim_threshold",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "env_var": "SWARMQ_MALLOC_ARENA_MAX",
+      "name": "malloc_arena_max",
+      "type": "int"
+    },
+    {
+      "default": 1,
+      "env_var": "SWARMQ_COMPUTE_THREAD_LIMIT",
+      "name": "compute_thread_limit",
+      "type": "int"
     }
   ]
 }

@@ -137,7 +137,10 @@ class TestBuildParser:
         assert ns.command == "worker"
         assert ns.module == "myapp.tasks"
         assert ns.queues == ["default"]
-        assert ns.concurrency == 10
+        # Plan 2026-09-03-001 (R3): der Parser laesst --concurrency offen,
+        # die Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt danach.
+        assert ns.concurrency is None
+        assert ns.pool == "io"
         assert ns.log_level == "INFO"
         assert ns.log_format == "human"
 
@@ -162,6 +165,13 @@ class TestBuildParser:
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["worker"])
+
+    def test_pool_cpu_is_accepted_and_invalid_pool_rejected(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["worker", "--module", "m", "--pool", "cpu"])
+        assert ns.pool == "cpu"
+        with pytest.raises(SystemExit):
+            parser.parse_args(["worker", "--module", "m", "--pool", "gpu"])
 
     def test_concurrency_zero_is_rejected(self):
         parser = cli._build_parser()

@@ -220,3 +220,64 @@ class TestAllowedCombinations:
         result = _check()
         assert result["module"] == _MODULE
         assert result["warnings"] == []
+
+
+class TestPoolModePreflightAgrees:
+    """``--check`` und der echte Start lehnen ``--pool cpu --autoscale``
+    mit derselben Meldung ab (R4); ``--check --pool cpu`` meldet die
+    aufgeloeste Slotzahl (R3)."""
+
+    def _run_check(self, capsys, **overrides):
+        import argparse
+        import json
+
+        from swarmq.cli.check_cmd import _run_worker_check
+
+        fields = {
+            "module": _MODULE,
+            "reload": False,
+            "watch_dir": None,
+            "burst": False,
+            "processes": 1,
+            "autoscale": None,
+            "metrics_port": None,
+            "health_port": None,
+            "pool": "io",
+            "concurrency": None,
+        }
+        fields.update(overrides)
+        code = _run_worker_check(argparse.Namespace(**fields))
+        return code, json.loads(capsys.readouterr().out.strip())
+
+    def test_cpu_pool_with_autoscale_is_rejected(self, capsys):
+        code, payload = self._run_check(capsys, pool="cpu", autoscale=(2, 8))
+        assert code == 1
+        assert payload["ok"] is False
+        assert "--autoscale" in payload["error"]
+        assert payload["error_type"] == "ConfigurationError"
+
+    def test_real_start_rejects_the_same_combination(self, capsys):
+        import argparse
+
+        from swarmq.cli import _run_worker_command
+
+        args = argparse.Namespace(
+            module=_MODULE, pool="cpu", autoscale=(2, 8), processes=1,
+            concurrency=None, check=False, reload=False, log_level="INFO",
+        )
+        assert _run_worker_command(args) == 1
+        assert "--autoscale" in capsys.readouterr().err
+
+    def test_check_reports_resolved_slots(self, capsys, monkeypatch):
+        from swarmq import slots
+
+        monkeypatch.setattr(slots, "resolve_default_slots", lambda *_a, **_k: slots.SlotDecision(4, "cgroup"))
+        code, payload = self._run_check(capsys, pool="cpu")
+        assert code == 0
+        assert payload["pool"] == "cpu"
+        assert payload["slots"] == 4
+
+    def test_io_pool_reports_default_ten(self, capsys):
+        code, payload = self._run_check(capsys)
+        assert code == 0
+        assert payload["slots"] == 10

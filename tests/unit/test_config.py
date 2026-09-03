@@ -628,3 +628,64 @@ def test_config_delivery_limit_negative_raises():
             backend_url="redis://localhost",
             delivery_limit=-1,
         )
+
+
+# --- Plan 2026-09-03-001: Pool-Modus, Recycling-Schwellen, Lebenszeichen ---
+
+
+def _cfg(**kwargs):
+    return SwarmQConfig(broker_url="amqp://rabbit", backend_url="redis://cache", **kwargs)
+
+
+def test_pool_defaults_to_io_with_recycling_off():
+    cfg = _cfg()
+    assert cfg.pool == "io"
+    assert cfg.recycle_rss_mb is None
+    assert cfg.recycle_max_tasks is None
+    assert cfg.heartbeat_interval_s == 5.0
+    assert cfg.heartbeat_timeout_s == 60.0
+    assert cfg.consumer_timeout_s == 1800.0
+
+
+def test_cpu_pool_applies_h_series_recycling_defaults():
+    cfg = _cfg(pool="cpu")
+    assert cfg.recycle_rss_mb == 250
+    assert cfg.recycle_max_tasks == 1000
+
+
+def test_cpu_pool_keeps_explicit_recycling_thresholds():
+    cfg = _cfg(pool="cpu", recycle_rss_mb=300, recycle_max_tasks=50)
+    assert (cfg.recycle_rss_mb, cfg.recycle_max_tasks) == (300, 50)
+
+
+def test_invalid_pool_raises():
+    with pytest.raises(ConfigurationError, match="pool must be one of"):
+        _cfg(pool="gpu")
+
+
+@pytest.mark.parametrize("field", ["recycle_rss_mb", "recycle_max_tasks"])
+def test_non_positive_recycling_threshold_raises(field):
+    with pytest.raises(ConfigurationError, match=f"{field} must be > 0"):
+        _cfg(**{field: 0})
+
+
+def test_heartbeat_timeout_must_exceed_interval():
+    with pytest.raises(ConfigurationError, match="heartbeat_timeout_s must be greater"):
+        _cfg(heartbeat_interval_s=10.0, heartbeat_timeout_s=10.0)
+
+
+def test_env_overrides_for_pool_fields(monkeypatch):
+    monkeypatch.setenv("SWARMQ_POOL", "cpu")
+    monkeypatch.setenv("SWARMQ_RECYCLE_RSS_MB", "300")
+    monkeypatch.setenv("SWARMQ_CONSUMER_TIMEOUT_S", "900")
+    cfg = _cfg()
+    assert cfg.pool == "cpu"
+    assert cfg.recycle_rss_mb == 300
+    assert cfg.recycle_max_tasks == 1000
+    assert cfg.consumer_timeout_s == 900.0
+
+
+def test_invalid_env_recycling_threshold_raises(monkeypatch):
+    monkeypatch.setenv("SWARMQ_RECYCLE_MAX_TASKS", "viele")
+    with pytest.raises(ConfigurationError):
+        _cfg()
