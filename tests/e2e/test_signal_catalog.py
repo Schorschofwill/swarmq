@@ -1003,3 +1003,14 @@ async def test_signal_scheduler_standby(
     finally:
         await broker.close()
         await backend.close()
+
+
+async def test_signal_worker_recycling_reference():
+    """WORKER_RECYCLING (Plan 2026-09-03-001, R7/R23) is covered in
+    tests/e2e/test_cpu_mode.py::test_di_child_is_reused_and_recycled_with_signal
+    (compute-child recycling by task count). Thin reference so the
+    signal catalog stays complete without a second forkserver setup."""
+    from tests.e2e import test_cpu_mode
+
+    assert hasattr(test_cpu_mode, "test_di_child_is_reused_and_recycled_with_signal")
+    assert Signal.WORKER_RECYCLING.value == "worker_recycling"

@@ -121,6 +121,9 @@ class SlotPool:
         self._background: set[asyncio.Task[None]] = set()
         self.stats = PoolStats()
 
+    def set_progress_sink(self, sink: ProgressSink) -> None:
+        self._progress_sink = sink
+
     # ------------------------------------------------------------------ Start/Ende
 
     async def start(self) -> None:

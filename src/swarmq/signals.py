@@ -67,6 +67,11 @@ class Signal(enum.Enum):
       * WORKER_HEARTBEAT:          worker_id, uptime_seconds (periodic
                                    liveness tick emitted by the worker's
                                    metrics sampler)
+      * WORKER_RECYCLING:          worker_id, kind ("compute_child" |
+                                   "worker"), slot (int | None), reason
+                                   ("rss" | "tasks" | "forced"), value
+                                   (measured MB or task count) — one event
+                                   per recycling, Plan 2026-09-03-001 R7/R23
       * SCHEDULER_LEADER:          worker_id (this worker just became leader,
                                    either first-time or via clean handover)
       * SCHEDULER_STANDBY:         worker_id (this worker did not acquire
@@ -105,6 +110,7 @@ class Signal(enum.Enum):
     WORKER_ONLINE = "worker_online"
     WORKER_SHUTDOWN = "worker_shutdown"
     WORKER_HEARTBEAT = "worker_heartbeat"
+    WORKER_RECYCLING = "worker_recycling"
 
     # Scheduler lifecycle
     SCHEDULER_LEADER = "scheduler_leader"

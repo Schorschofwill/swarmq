@@ -87,6 +87,8 @@ class WorkerLifecycle:
         _health_server: HealthServer | None
         _burst_monitor_task: asyncio.Task[None] | None
         _metrics_sampler_task: asyncio.Task[None] | None
+        _executor: Any
+        _gate_deps: Any
 
         async def _on_message(self, message: Any) -> None: ...
 
@@ -170,7 +172,9 @@ class WorkerLifecycle:
                 await self._metrics_server.start()
             if self._config.health_port is not None:
                 from swarmq.health import HealthChecker, HealthServer
-                checker = HealthChecker(self._broker, self._backend)
+                checker = HealthChecker(
+                    self._broker, self._backend, compute_check=self._compute_readiness_check(),
+                )
                 self._health_server = HealthServer(
                     checker,
                     host=self._config.health_host,
@@ -198,6 +202,31 @@ class WorkerLifecycle:
                 except Exception:
                     logger.exception("rollback_scheduler_stop_failed")
             raise
+
+    # ---- CPU-Modus (Plan 2026-09-03-001, U7): Verdrahtung lebt in compute.wiring,
+    # damit dieses Modul und pipeline.py unter dem 800-Zeilen-Guard bleiben.
+
+    async def _start_executor(self) -> None:
+        from swarmq.worker.compute.wiring import start_compute_executor
+
+        await start_compute_executor(self)
+
+    async def _close_executor(self) -> None:
+        from swarmq.worker.compute.wiring import close_compute_executor
+
+        await close_compute_executor(self)
+
+    def _warn_hard_timeout_over_consumer_timeout(self) -> None:
+        from swarmq.worker.compute.wiring import warn_hard_timeout_over_consumer_timeout
+
+        warn_hard_timeout_over_consumer_timeout(self._registry, self._config.consumer_timeout_s)
+
+    def _compute_readiness_check(self) -> Any:
+        if self._config.pool != "cpu":
+            return None
+        from swarmq.worker.compute.wiring import forkserver_ready
+
+        return lambda: forkserver_ready(self)
 
     def _warn_priority_tasks_without_routing(self) -> None:
         # Warn when a registered task declares
@@ -285,6 +314,8 @@ class WorkerLifecycle:
         await self._wire_coordination()
         await self._start_observability()
         self._warn_priority_tasks_without_routing()
+        self._warn_hard_timeout_over_consumer_timeout()
+        await self._start_executor()
         await self._declare_and_consume_queues()
         self._state = WorkerState.RUNNING
 
@@ -574,6 +605,7 @@ class WorkerLifecycle:
             # verbleibende Budget. Auch bereits laufende werden nachgezogen.
             self._set_publish_deadline(started_at + self._shutdown_publish_budget())
             await self._drain_in_flight()
+            await self._close_executor()
             await self._release_leftover_locks()
             await self._stop_scheduler_and_di()
             # 4. Close connections

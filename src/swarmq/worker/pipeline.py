@@ -159,6 +159,7 @@ class Worker(WorkerLifecycle):
         self._expiry_gate = ExpiryGate(gate_deps)
         self._rate_limit_gate = RateLimitGate(gate_deps)
         self._lock_gate = LockGate(gate_deps)
+        self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)

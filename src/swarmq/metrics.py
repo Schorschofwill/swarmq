@@ -159,6 +159,12 @@ class Metrics:
                 labelnames=("task_name", "queue"),
                 registry=self.registry,
             )
+            self.recyclings_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_recyclings_total",
+                "Process recyclings (compute children and workers) by reason",
+                labelnames=("kind", "reason"),
+                registry=self.registry,
+            )
             self.dlq_messages: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_dlq_messages",
                 "Dead-letter-queue live message count",
@@ -180,6 +186,7 @@ class Metrics:
             self.queue_depth = noop
             self.worker_uptime_seconds = noop
             self.retries_total = noop
+            self.recyclings_total = noop
             self.dlq_messages = noop
             self.scheduler_leader = noop
 
@@ -290,6 +297,18 @@ def _install_lifecycle_collectors(
         ).inc()
 
 
+def _install_recycling_counter(dispatcher: SignalDispatcher, metrics: Metrics) -> None:
+    """Plan 2026-09-03-001 (R7/R23): jedes Recycling mit Grund als Zaehler."""
+    from swarmq.signals import Signal
+
+    async def _count(**kw: Any) -> None:
+        metrics.recyclings_total.labels(
+            kind=str(kw.get("kind", "")), reason=str(kw.get("reason", "")),
+        ).inc()
+
+    dispatcher.on_signal(Signal.WORKER_RECYCLING)(_count)
+
+
 def _install_outcome_counters(
     dispatcher: SignalDispatcher, metrics: Metrics,
 ) -> None:
@@ -361,4 +380,5 @@ def install_signal_collectors(
     """
     _install_lifecycle_collectors(dispatcher, metrics)
     _install_outcome_counters(dispatcher, metrics)
+    _install_recycling_counter(dispatcher, metrics)
     _install_scheduler_gauge(dispatcher, metrics)
