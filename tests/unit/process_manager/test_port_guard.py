@@ -281,3 +281,23 @@ class TestPoolModePreflightAgrees:
         code, payload = self._run_check(capsys)
         assert code == 0
         assert payload["slots"] == 10
+
+
+class TestRecyclingPortWarning:
+    """KTD15: Recycling mit festem Port ist eine Warnung (Ersatz bindet mit Wiederholung)."""
+
+    def test_check_warns_when_recycling_and_fixed_port(self, capsys, monkeypatch):
+        monkeypatch.setenv("SWARMQ_RECYCLE_MAX_TASKS", "500")
+        import argparse
+        import json
+
+        from swarmq.cli.check_cmd import _run_worker_check
+
+        args = argparse.Namespace(
+            module=_MODULE, reload=False, watch_dir=None, burst=False, processes=1, autoscale=None,
+            metrics_port=9100, health_port=None, pool="io", concurrency=None,
+        )
+        code = _run_worker_check(args)
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert code == 0 and payload["ok"] is True
+        assert any(w.startswith("recycling_with_fixed_port") for w in payload["warnings"])

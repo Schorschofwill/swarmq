@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from typing import Any
@@ -95,6 +96,9 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             health_port=getattr(args, "health_port", None),
             pool=getattr(args, "pool", "io") or "io",
             concurrency=getattr(args, "concurrency", None),
+            recycling=bool(
+                os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")
+            ),
         )
         payload.update(
             ok=True,

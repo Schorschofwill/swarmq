@@ -581,6 +581,17 @@ class ProcessManager:
             channel = info.channel
             if channel is None or info.expected_shutdown or not info.process.is_alive():
                 continue
+            if channel.intent_value() == INTENT_RECYCLE:
+                # KTD11: Absicht → expected_shutdown zuerst, dann Ersatz, dann ack.
+                # Zaehlt weder gegen MAX_RESTARTS noch als sauberes Ende.
+                info.expected_shutdown = True
+                replacement = self._start_worker()
+                channel.acknowledge_replacement()
+                logger.info(
+                    "worker_recycling_replacement",
+                    worker_id=info.worker_id, pid=info.process.pid, replacement_pid=replacement.process.pid,
+                )
+                continue
             last = channel.last_beat() or info.spawned_at
             stale = now - last
             if stale <= self._heartbeat_deadline(info):

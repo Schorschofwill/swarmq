@@ -16,7 +16,12 @@ import structlog
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.process_manager.config import WorkerConfig
-from swarmq.supervision import SupervisorChannel, set_current_channel
+from swarmq.supervision import (
+    RECYCLE_NOACK_EXIT_CODE,
+    RecycleAckTimeout,
+    SupervisorChannel,
+    set_current_channel,
+)
 
 logger = structlog.get_logger()
 
@@ -112,6 +117,9 @@ def worker_subprocess_entry(
         asyncio.run(_run())
     except KeyboardInterrupt:
         return
+    except RecycleAckTimeout as exc:
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        raise SystemExit(RECYCLE_NOACK_EXIT_CODE) from None
     except ConfigurationError as exc:
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
         # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code

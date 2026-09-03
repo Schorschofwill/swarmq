@@ -85,6 +85,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         # Argumente liefe er mit seinen Defaults und griffe nie.
         processes=int(getattr(args, "processes", 1) or 1),
         autoscale=args.autoscale,
+        recycling=bool(os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")),
         metrics_port=args.metrics_port,
         health_port=args.health_port,
     )

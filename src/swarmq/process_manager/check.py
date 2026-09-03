@@ -172,6 +172,7 @@ def check_worker_config(
     health_port: int | None = None,
     pool: str = "io",
     concurrency: int | None = None,
+    recycling: bool = False,
 ) -> WorkerConfigCheckResult:
     """Run the pre-flight validation for ``swarmq worker`` and return
     a machine-readable summary dict.
@@ -207,6 +208,12 @@ def check_worker_config(
     )
 
     warnings: list[str] = []
+    if recycling and (metrics_port is not None or health_port is not None):
+        warnings.append(
+            "recycling_with_fixed_port: recycle thresholds replace the worker while "
+            "the old one still drains; the replacement retries the fixed observability "
+            "port for up to 5 s (KTD15). Keep shutdown_timeout short or drop the fixed port."
+        )
     validate_pool_mode(pool=pool, autoscale=autoscale)
     slots = effective_concurrency(concurrency, pool, processes)
 

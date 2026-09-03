@@ -162,3 +162,18 @@ class TestHeartbeatWriter:
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
         assert sv.current_channel() is None
+
+
+class TestRecycleAckTimeoutExitCode:
+    def test_missing_ack_exits_with_tempfail_code(self, monkeypatch, capsys):
+        from swarmq.supervision import RECYCLE_NOACK_EXIT_CODE, RecycleAckTimeout
+
+        async def boom(ns):
+            raise RecycleAckTimeout("no ack")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert exc_info.value.code == RECYCLE_NOACK_EXIT_CODE == 75
+        assert "no ack" in capsys.readouterr().err

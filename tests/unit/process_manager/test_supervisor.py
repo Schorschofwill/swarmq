@@ -1061,3 +1061,31 @@ class TestHeartbeatReplacement:
         hung.exitcode = -9
         pm._check_dead_workers()
         assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
+
+
+class TestRecycleIntent:
+    """KTD11: Recycling-Absicht → expected_shutdown, Ersatz, ack; zaehlt nirgends."""
+
+    def test_recycle_intent_spawns_replacement_and_acknowledges(self):
+        import multiprocessing
+
+        from swarmq.supervision import SupervisorChannel
+
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        ch = SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        ch.request_recycle()
+        old = _fake_process(pid=5)
+        pm.workers = {5: WorkerInfo(process=old, worker_id=0, channel=ch)}
+        pm._check_heartbeats()
+        assert pm.workers[5].expected_shutdown is True
+        assert ch.replacement_acknowledged()
+        assert 500 in pm.workers
+        old.terminate.assert_not_called()  # der Worker drainiert selbst
+        # sauberes Ende des alten Workers: weder Neustart noch sauberes-Ende-Zaehler
+        old.is_alive.return_value = False
+        old.exitcode = 0
+        pm._check_dead_workers()
+        assert pm._clean_exits == 0 and pm._ctx.Process.call_count == 1
+        assert pm._current_target() == 1

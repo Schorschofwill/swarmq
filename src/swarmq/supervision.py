@@ -58,6 +58,16 @@ class SupervisorChannel:
         self.ack.value = ACK_REPLACEMENT_STARTED
 
 
+#: Exit-Code eines Workers, dessen Recycling-Absicht der Supervisor nicht
+#: bestaetigt hat (KTD11): ungleich 0 und ungleich 78, damit der bestehende
+#: Restart-Pfad greift statt eines stillen Verschwindens.
+RECYCLE_NOACK_EXIT_CODE = 75  # EX_TEMPFAIL
+
+
+class RecycleAckTimeout(RuntimeError):
+    """Der Worker wollte recyceln, der Supervisor hat den Ersatz nicht bestaetigt."""
+
+
 _current: SupervisorChannel | None = None
 
 
@@ -77,6 +87,8 @@ __all__ = [
     "INTENT_DRAINING",
     "INTENT_NONE",
     "INTENT_RECYCLE",
+    "RECYCLE_NOACK_EXIT_CODE",
+    "RecycleAckTimeout",
     "SupervisorChannel",
     "current_channel",
     "set_current_channel",
