@@ -41,7 +41,7 @@ Die Machbarkeit ist mit 52 Messpunkten aus sieben Serien belegt. Der tragende Fu
 - **Aktivierung per Worker-Flag.** Ein Worker läuft komplett im CPU-Modus; der Betreiber trennt CPU-Last per Queue-Bindung. (session-settled: user-directed — chosen over Task-Marker in `TaskInfo` und Queue-Eigenschaft in der Konfiguration: Prefetch, Ack-Reihenfolge und Slot-Zahl sind Eigenschaften des Worker-Prozesses, nicht eines Tasks.) Governs R1.
 - **`--processes` kombinierbar, `--concurrency` bedeutet Slots, `--autoscale` abgelehnt.** Kein neues Flag für die Slot-Zahl; Autoscaling-Schwellwerte sind auf IO-Worker zugeschnitten. (session-settled: user-directed — chosen over Exklusivität mit genau einem Loop-Prozess, Autoscale auf Slots und voller Orthogonalität: der Supervisor ist ohnehin Teil der Topologie, Autoscale braucht eigene Schwellwerte.) Governs R3, R4.
 - **`hard_timeout` und Cancel töten das Rechenkind; der Task folgt dem Fehlerpfad wie heute.** Das ist die Killbarkeit, die der Modus verspricht. Auflage 5 der Machbarkeitsdoku (kein harter Kill mitten in der Rechnung) gilt für Recycling-Kills, nicht für deklarierte Timeouts. (session-settled: user-directed — chosen over reines Soft-Verhalten in Stufe 1 und Kill mit direkter DLQ-Zustellung: ein deklarierter Timeout ist eine Entscheidung des Task-Autors, und Retry-Semantik bleibt einheitlich.) Governs R8, R9.
-- **Frisches Kind je Task ohne DI, wiederverwendetes Kind mit Recycling bei DI.** Maximale Isolation, wo sie nichts kostet; Amortisation des Verbindungsaufbaus, wo sie zählt. (session-settled: user-approved — chosen over einheitlicher Wiederverwendung: bei 6 ms Kindstart ist Isolation je Task kostenlos, nur DI-Verbindungen rechtfertigen Wiederverwendung.) Governs R6, R7.
+- **Frisches Kind je Task ohne DI, wiederverwendetes Kind mit Recycling bei DI.** Maximale Isolation, wo sie nichts kostet; Amortisation des Verbindungsaufbaus, wo sie zählt. (session-settled: user-approved — chosen over einheitlicher Wiederverwendung: bei 6 ms Kindstart ist Isolation je Task kostenlos, nur DI-Verbindungen rechtfertigen Wiederverwendung.) Governs R6, R7, R26.
 - **Supervisor wird Standard, auch bei einem Prozess.** Lebenszeichen, Recycling und Restart funktionieren überall gleich. (session-settled: user-directed — chosen over Recycling nur unter Supervisor und Exit-Code-Recycling für systemd: Schutz soll kein Opt-in sein, und der Supervisor-Pfad existiert bereits für `--reload`.) Governs R20.
 - **Lebenszeichen standardmäßig an, Recycling-Schwellen Opt-in.** Kein stiller Verhaltenswechsel für Bestandsnutzer durch ungefragte Neustarts. (session-settled: user-approved — chosen over aktiven Recycling-Voreinstellungen: Schwellen hängen vom Workload ab und gehören dem Betreiber.) Governs R21, R22.
 - **Beide Phasen als 0.5.0.** Ein Release, eine Ankündigung, keine Halbversion in Produktion. (session-settled: user-directed — chosen over getrennten Minors je Phase: die Phasen teilen die Recycling-Mechanik und sollen zusammen ankommen.) Governs R24.
@@ -52,7 +52,7 @@ Die Machbarkeit ist mit 52 Messpunkten aus sieben Serien belegt. Der tragende Fu
 <!-- ce-section: work-relationships -->
 ### How This Work Fits Together
 
-Dieser Plan besitzt zwei Phasen, die getrennt lieferbar sind und im selben Release erscheinen: Phase 1 ist der CPU-Betriebsmodus (R1 bis R19), Phase 2 der Schutz des IO-Workers (R20 bis R23). Die Aufteilung darüber hinaus ist der heutige Stand, keine festgelegte Roadmap.
+Dieser Plan besitzt zwei Phasen, die getrennt lieferbar sind und im selben Release erscheinen: Phase 1 ist der CPU-Betriebsmodus (R1 bis R19 und R26), Phase 2 der Schutz des IO-Workers (R20 bis R23). Die Aufteilung darüber hinaus ist der heutige Stand, keine festgelegte Roadmap.
 
 - **Phase 2 — IO-Worker-Schutz.** Shares die Recycling-Mechanik mit Phase 1 (R23). Can proceed independently of Phase 1; ist ohne Phase 1 lieferbar.
 - **Task-Marker für Offload je Task (Ansatz A).** Depends on Phase 1. Still to decide: ob ein Mischbetrieb in einem Worker den zweiten Bedeutungsraum für `--concurrency` und Prefetch rechtfertigt.
@@ -89,6 +89,7 @@ Dieser Plan besitzt zwei Phasen, die getrennt lieferbar sind und im selben Relea
 - R11. Der Loop-Prozess hält höchstens so viele Nachrichten unbestätigt, wie er Rechenslots hat.
 - R12. Expiry, Rate-Limit, Lock und `max_concurrency` greifen im Loop-Prozess vor dem Offload, unverändert zum IO-Worker. Middleware-Hooks und Signale laufen im Loop-Prozess um den Offload. Der Task-Körper umfasst `pre_execution`, `run` und `post_execution`; alle drei laufen im Rechenkind, weil ihre `FromDishka`-Injektion den REQUEST-Container des Kindes braucht. `update_progress()` läuft über den Rückkanal vom Kind zum Loop-Prozess, der nach Valkey schreibt. Cancel erkennt der Loop-Prozess wie heute per Valkey-Poll und tötet das Kind (per R8).
 - R13. Für den Task-Autor bleiben Signatur, Rückgabewert, Retry-, Lock- und Rate-Limit-Semantik unverändert. Drei Verhaltensänderungen sind dokumentiert: APP-scoped DI-Singletons leben nur so lange wie ihr Rechenkind, N Slots bedeuten N Verbindungspools, und bei `hard_timeout`, Cancel oder Kindtod laufen keine REQUEST-Scope-Finalizer, also kein Rollback durch yield-Provider; der Task-Autor legt Transaktionen so an, dass ein abgebrochener Prozess sie nicht halb festschreibt.
+- R26. Das Rechenkind baut den REQUEST-Scope des DI-Containers selbst ab, bei normalem Ende ohne Fehler und bei einer Exception mit dieser Exception, bevor es das Ergebnis oder den Fehler an den Loop-Prozess meldet. yield-Provider erhalten damit Commit und Rollback wie heute; nur ein Kill nach R8 oder ein Kindtod nach R9 überspringt den Abbau (per R13).
 
 **Startbedingungen des Forkservers (Phase 1)**
 
@@ -122,8 +123,8 @@ Dieser Plan besitzt zwei Phasen, die getrennt lieferbar sind und im selben Relea
 - F2. Task mit DI, Kind-Wiederverwendung und Recycling
   - **Trigger:** Ein Task mit `FromDishka`-Abhängigkeit trifft auf einen Slot mit warmem Kind.
   - **Actors:** A4, A5
-  - **Steps:** Task an das Kind des Slots übergeben; Kind löst DI auf und führt aus; Ergebnis über den Rückkanal; Loop-Prozess misst RSS des Kindes nach Taskende; liegt es über der Schwelle oder ist die Taskzahl erreicht, startet das Ersatzkind, dann erhält das alte Kind das Ende-Signal; Recycling wird mit Grund und Messwert geloggt und gemessen.
-  - **Covered by:** R6, R7, R12, R13
+  - **Steps:** Task an das Kind des Slots übergeben; Kind löst DI auf, führt aus und baut den REQUEST-Scope ab (R26); Ergebnis über den Rückkanal; Loop-Prozess misst RSS des Kindes nach Taskende; liegt es über der Schwelle oder ist die Taskzahl erreicht, startet das Ersatzkind, dann erhält das alte Kind das Ende-Signal; Recycling wird mit Grund und Messwert geloggt und gemessen.
+  - **Covered by:** R6, R7, R12, R13, R26
 
 - F3. `hard_timeout` oder Cancel im CPU-Modus
   - **Trigger:** Ein Task überschreitet seinen `hard_timeout`, oder ein Cancel für seine Task-ID liegt vor.
@@ -170,6 +171,7 @@ Dieser Plan besitzt zwei Phasen, die getrennt lieferbar sind und im selben Relea
 - AE11. **Covers R21.** Given ein IO-Worker, dessen Event-Loop durch einen synchronen Aufruf blockiert ist, when die Lebenszeichen-Frist verstreicht, then ersetzt der Supervisor den Worker, und die unbestätigten Nachrichten werden an einen anderen Worker zugestellt. Blockiert dieselbe Nachricht auch den Ersatz-Worker, landet sie nach dem Delivery-Limit der Queue in der DLQ, statt weitere Worker zu ersetzen.
 - AE12. **Covers R22.** Given `swarmq worker` ohne gesetzte Recycling-Schwellen, when der Worker 10.000 Tasks ausführt, then wurde er kein einziges Mal recycelt.
 - AE13. **Covers R8.** Given ein Task mit `hard_timeout=5`, der ImageMagick als Subprozess startet und 60 Sekunden rechnet, when der Timeout greift, then sind Rechenkind und ImageMagick-Prozess tot, und kein Prozess aus der Prozessgruppe des Kindes lebt weiter.
+- AE14. **Covers R26, R13.** Given ein Task mit einem REQUEST-scoped yield-Provider, der bei Erfolg committet und bei Exception zurückrollt, when der Task im Rechenkind eine Exception wirft, then läuft der Rollback im Kind, bevor der Loop-Prozess den Fehlerpfad entscheidet, und der Task landet nach `max_retries` in der DLQ. Wird derselbe Task stattdessen per `hard_timeout` gekillt, läuft kein Rollback, und die Dokumentation nennt genau diesen Fall.
 
 ### Success Criteria
 
