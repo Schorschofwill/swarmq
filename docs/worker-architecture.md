@@ -96,10 +96,31 @@ process = ctx.Process(target=worker_entry, args=(shutdown_event,), daemon=False)
 process.start()
 ```
 
-**Warum `spawn` und nicht `forkserver`:**
+**Warum `spawn` und nicht `forkserver` — fuer Worker:**
 - Komplett frischer Interpreter — kein korrupter State moeglich
 - Worker starten selten (nur bei Start/Restart) — Startup-Overhead irrelevant
 - Keine Probleme mit nicht-picklebaren globalen Objekten
+
+**Wo diese Begruendung nicht mehr traegt:** Sie steht und faellt mit
+„starten selten". Fuer den CPU-Worker-Modus (`docs/cpu-worker-machbarkeit.md`)
+gilt das Gegenteil — dort entsteht **ein Rechenkind je Task**, und der
+Startup-Overhead ist die entscheidende Groesse. Gemessen am 2026-08-31:
+
+| Variante | Kindstart (Median) |
+|---|---|
+| `spawn`, ohne Import | 34 ms |
+| `spawn`, mit swarmq-Import | 114 ms |
+| **`forkserver` + Preload** | **6 ms** |
+
+Bei 6 ms wird das Recycling-Problem gegenstandslos statt geloest: man nimmt
+fuer jeden Task ein frisches Kind, und kein Leak ueberlebt je einen Task.
+Bei 114 ms waere das unbezahlbar. Der Sicherheitseinwand aus 2.2 bleibt
+dabei gewahrt, weil der Forkserver **nur importiert und nie rechnet** — er
+hatte im Test 1 Thread, obwohl numpy und Pillow vorgeladen waren. Genau
+diese Bedingung muss die Implementierung erzwingen.
+
+Fuer Worker-Subprozesse bleibt `spawn` die Wahl; fuer Rechenkinder ist es
+`forkserver`.
 
 **Warum `daemon=False`:**
 - Daemon-Prozesse werden sofort getoetet wenn Parent endet — kein Graceful Shutdown
