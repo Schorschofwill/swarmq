@@ -22,6 +22,7 @@ class FakePool:
     def __init__(self) -> None:
         self.behaviour: Any = success_envelope("t1", 42, slot=0)
         self.kills: list[tuple[int, str]] = []
+        self.cancelled = 0  # SlotPool.run toetet das Kind selbst im Cancel-Pfad
         self.started = self.closed = False
 
     async def start(self) -> None:
@@ -36,7 +37,11 @@ class FakePool:
         self.job, self.use_di = job, use_di
         b = self.behaviour
         if b == "hang":
-            await asyncio.sleep(30)
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                raise
         if isinstance(b, BaseException):
             raise b
         return b
@@ -132,7 +137,7 @@ async def test_hard_timeout_kills_child_and_fails_like_watchdog(setup):
     res = await ex.execute(_ctx(hard_timeout=0.05), {"retry_count": 0}, MiddlewareChain([]))
     assert res.is_error and not res.is_cancelled
     assert isinstance(res.task_exception, RuntimeError) and "hard timeout after 0.05s" in res.error_message
-    assert pool.kills == [(0, "timeout")]
+    assert pool.cancelled == 1 and pool.kills == []  # der Pool toetet im Cancel-Pfad, nicht der Executor
 
 
 @pytest.mark.timeout(5)
@@ -142,7 +147,7 @@ async def test_cancel_flag_kills_child_and_takes_cancel_path(setup):
     deps.backend.is_cancelled = AsyncMock(return_value=True)
     res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
     assert res.is_cancelled and not res.is_error
-    assert pool.kills == [(0, "cancel")]
+    assert pool.cancelled == 1
     assert [c.args[0].name for c in deps.signals.dispatch.await_args_list][-1] == "TASK_CANCELLED"
 
 
@@ -155,7 +160,7 @@ async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(se
     handler.cancel()
     res = await handler  # KTD2: kein propagierter CancelledError
     assert res.is_error and "drain" in res.error_message
-    assert pool.kills == [(0, "drain")]
+    assert pool.cancelled == 1
 
 
 @pytest.mark.timeout(5)

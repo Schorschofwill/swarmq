@@ -32,12 +32,16 @@ from tests.e2e import _cpu_fixture_tasks as fixture  # noqa: E402  (QUEUE brauch
 @pytest.fixture
 def _register_fixture_tasks():
     """Die Fixture-Klassen erneut registrieren — andere Tests leeren die Registry."""
-    for cls in (fixture.CpuEcho, fixture.CpuFail, fixture.CpuHang, fixture.CpuSubprocess, fixture.CpuSlowOnce):
+    for cls in (
+        fixture.CpuEcho, fixture.CpuFail, fixture.CpuHang, fixture.CpuSubprocess, fixture.CpuSlowOnce,
+        fixture.CpuWeirdError, fixture.CpuBig,
+    ):
         if cls not in Task._registered_tasks:
             Task._registered_tasks.append(cls)
-    di = getattr(fixture, "CpuDi", None)
-    if di is not None and di not in Task._registered_tasks:
-        Task._registered_tasks.append(di)
+    for name in ("CpuDi", "CpuDiLock"):
+        di = getattr(fixture, name, None)
+        if di is not None and di not in Task._registered_tasks:
+            Task._registered_tasks.append(di)
     yield
     Task._clear_registered_tasks()
 
@@ -179,3 +183,47 @@ async def test_chaos_child_sigkill_is_a_typed_failure_and_the_slot_stays_usable(
     assert "exited without result" in message
     echo_result = (await _results(rabbitmq_url, valkey_url, [echo]))[0]
     assert echo_result == {"value": 10, "pid": echo_result["pid"]}
+
+
+async def test_large_results_and_small_bursts_never_lose_a_result(rabbitmq_url, valkey_url, _register_fixture_tasks):
+    """P0 #3 (Sentinel-Wettlauf): das frische Kind endet direkt nach dem Schreiben —
+    kein Ergebnis darf als Kindtod enden, weder bei 20 MB noch bei vielen kleinen."""
+    app = _app(rabbitmq_url, valkey_url, concurrency=2, burst_idle_timeout=3.0)
+    async with app:
+        await app.broker.declare_queue(_QUEUE)
+        big = [await app.schedule("cpu_big", 20) for _ in range(6)]
+        small = [await app.schedule("cpu_echo", i) for i in range(40)]
+        await _run_burst(app, timeout=120.0)
+    results = await _results(rabbitmq_url, valkey_url, big + small)
+    assert all(len(r) == 20 * 1024 * 1024 for r in results[:6])
+    assert [r["value"] for r in results[6:]] == [i * 2 for i in range(40)]
+
+
+async def test_exception_that_does_not_unpickle_in_the_parent_is_a_typed_failure(
+    rabbitmq_url, valkey_url, _register_fixture_tasks
+):
+    """P0 #1: eine Exception mit eigener __init__-Signatur darf den Pool nicht taub machen."""
+    app = _app(rabbitmq_url, valkey_url, concurrency=1, burst_idle_timeout=3.0)
+    async with app:
+        await app.broker.declare_queue(_QUEUE)
+        weird = await app.schedule("cpu_weird_error")
+        after = await app.schedule("cpu_echo", 7)
+        await _run_burst(app)
+    message = await _error_message(rabbitmq_url, valkey_url, weird)
+    assert "left/right" in message
+    assert (await _results(rabbitmq_url, valkey_url, [after]))[0]["value"] == 14
+
+
+async def test_di_child_keeps_one_event_loop_for_loop_bound_app_resources(
+    rabbitmq_url, valkey_url, _register_fixture_tasks
+):
+    """P1 #4: ein asyncio.Lock aus dem APP-Scope muss ueber mehrere Jobs desselben Kindes gueltig bleiben."""
+    if not hasattr(fixture, "CpuDiLock"):
+        pytest.skip("dishka nicht installiert")
+    app = _app(rabbitmq_url, valkey_url, concurrency=1, burst_idle_timeout=3.0)
+    async with app:
+        await app.broker.declare_queue(_QUEUE)
+        tids = [await app.schedule("cpu_di_lock") for _ in range(4)]
+        await _run_burst(app)
+    pids = await _results(rabbitmq_url, valkey_url, tids)
+    assert len(set(pids)) == 1, pids  # ein Kind, vier Jobs, ein Loop

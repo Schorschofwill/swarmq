@@ -108,16 +108,13 @@ class ComputeExecutor(TaskExecutor):
 
         job = self._build_job(ctx, message_dict)
         use_di = bool(getattr(ctx.task_class, "_dishka_injected_keys", None))
-        slot_box: list[int | None] = [None]
         cancel_reason: list[CancelReason | None] = [None]
 
         def set_reason_if_unset(reason: CancelReason) -> None:
             if cancel_reason[0] is None:
                 cancel_reason[0] = reason
 
-        run_task: asyncio.Task[ResultEnvelope] = asyncio.create_task(
-            self._pool.run(job, use_di=use_di, on_slot=lambda index: slot_box.__setitem__(0, index))
-        )
+        run_task: asyncio.Task[ResultEnvelope] = asyncio.create_task(self._pool.run(job, use_di=use_di))
         watchdog: asyncio.Task[Any] | None = None
         if task_info.hard_timeout is not None:
             watchdog = asyncio.create_task(
@@ -125,7 +122,7 @@ class ComputeExecutor(TaskExecutor):
             )
         monitor = asyncio.create_task(self._cancel_monitor(ctx.task_id, run_task, set_reason_if_unset))
         try:
-            await self._await_envelope(run_task, task_info, result, _fail, slot_box, cancel_reason)
+            await self._await_envelope(run_task, task_info, result, _fail, cancel_reason)
         finally:
             await self._cancel_guard(watchdog)
             await self._cancel_guard(monitor)
@@ -139,20 +136,19 @@ class ComputeExecutor(TaskExecutor):
         task_info: Any,
         result: ExecutionResult,
         fail: Callable[[BaseException, str], None],
-        slot_box: list[int | None],
         cancel_reason: list[CancelReason | None],
     ) -> None:
         """Envelope abwarten und jeden Ausgang als ``ExecutionResult`` abbilden (KTD2)."""
         try:
             envelope = await run_task
         except asyncio.CancelledError:
-            # Watchdog, Cancel-Monitor oder Drain-Ende (Outer-Cancel): Kind toeten,
-            # Tod bestaetigen, dann abbilden — nie propagieren.
+            # Watchdog, Cancel-Monitor oder Drain-Ende (Outer-Cancel): ``SlotPool.run``
+            # toetet das Kind selbst im Cancel-Pfad und kehrt erst nach dessen Tod
+            # zurueck — hier nur abwarten und abbilden, nie propagieren.
             if not run_task.done():
                 run_task.cancel()
                 with contextlib.suppress(BaseException):
                     await run_task
-            await self._kill_current(slot_box, cancel_reason[0])
             if cancel_reason[0] == CANCEL_REASON_CANCEL:
                 result.is_cancelled = True
             else:
@@ -174,11 +170,6 @@ class ComputeExecutor(TaskExecutor):
             fail(exc, f"compute pool failure: {exc}")
             return
         self._apply_envelope(envelope, result, fail)
-
-    async def _kill_current(self, slot_box: list[int | None], reason: CancelReason | None) -> None:
-        if slot_box[0] is None:
-            return
-        await self._pool.kill_slot(slot_box[0], reason=str(reason or "drain"))
 
     @staticmethod
     def _apply_envelope(

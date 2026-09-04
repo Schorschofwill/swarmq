@@ -7,6 +7,7 @@ in Testfunktionen definierte Klassen existieren im Kind nicht.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import time
@@ -67,6 +68,30 @@ class CpuSlowOnce(Task):
         return "first"
 
 
+class TwoArgError(Exception):
+    """Pickelt im Kind, scheitert aber beim Entpickeln: ``__init__`` braucht zwei Argumente."""
+
+    def __init__(self, a: str, b: str) -> None:
+        super().__init__(f"{a}/{b}")
+        self.a, self.b = a, b
+
+
+class CpuWeirdError(Task):
+    task_info = TaskInfo(name="cpu_weird_error", queues=[QUEUE], max_retries=0)
+
+    async def run(self) -> None:
+        raise TwoArgError("left", "right")
+
+
+class CpuBig(Task):
+    """Grosses Ergebnis: das Kind endet direkt nach dem Schreiben (Sentinel-vs-Ergebnis)."""
+
+    task_info = TaskInfo(name="cpu_big", queues=[QUEUE], max_retries=0)
+
+    async def run(self, size_mb: int) -> bytes:
+        return b"x" * (size_mb * 1024 * 1024)
+
+
 try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
     from dishka import FromDishka, Provider, Scope, make_async_container, provide
 
@@ -81,6 +106,10 @@ try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
         def holder(self) -> PidHolder:
             return PidHolder()
 
+        @provide(scope=Scope.APP)
+        def lock(self) -> asyncio.Lock:
+            return asyncio.Lock()  # loop-gebunden: bricht, wenn jeder Job einen neuen Loop bekommt
+
     setup_dishka(make_async_container(_Prov(), SwarmQProvider()))
 
     class CpuDi(Task):
@@ -88,6 +117,14 @@ try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
 
         async def run(self, holder: FromDishka[PidHolder]) -> dict[str, int]:  # type: ignore[valid-type]
             return {"app_pid": holder.pid, "pid": os.getpid()}
+
+    class CpuDiLock(Task):
+        task_info = TaskInfo(name="cpu_di_lock", queues=[QUEUE], max_retries=0)
+
+        async def run(self, lock: FromDishka[asyncio.Lock]) -> int:  # type: ignore[valid-type]
+            async with lock:
+                await asyncio.sleep(0.01)
+            return os.getpid()
 
 except ImportError:  # pragma: no cover - ohne dishka keine DI-Tasks
     pass

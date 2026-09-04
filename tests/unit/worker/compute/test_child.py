@@ -3,6 +3,7 @@
 
 import asyncio
 import queue as _queue
+from typing import Any
 
 import pytest
 
@@ -82,7 +83,14 @@ async def test_run_job_unknown_task_is_an_error_envelope():
 
 @pytest.mark.timeout(5)
 async def test_progress_goes_through_the_shim_queue():
-    progress: _queue.Queue = _queue.Queue()
+    class _Channel:
+        def __init__(self) -> None:
+            self.sent: list[tuple[Any, ...]] = []
+
+        def send(self, msg: tuple[Any, ...]) -> None:
+            self.sent.append(msg)
+
+    progress = _Channel()
 
     class Reporting(Task):
         task_info = TaskInfo(name="reporting", queues=["q"])
@@ -94,7 +102,7 @@ async def test_progress_goes_through_the_shim_queue():
 
     env = await child.run_job(_job("reporting"), progress)
     assert env.ok
-    kinds = [progress.get_nowait()[0] for _ in range(progress.qsize())]
+    kinds = [msg[0] for msg in progress.sent]
     assert kinds and set(kinds) <= {"progress", "publish"}
 
 

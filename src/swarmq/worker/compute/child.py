@@ -31,14 +31,14 @@ _PR_SET_PDEATHSIG = 1
 class ProgressBackend:
     """Rueckkanal-Shim: die zwei Methoden, die ``Task.update_progress`` braucht."""
 
-    def __init__(self, queue: Any) -> None:
-        self._queue = queue
+    def __init__(self, channel: Any) -> None:
+        self._channel = channel
 
     async def set_progress(self, task_id: str, fields: dict[str, str], ttl_ms: int) -> None:
-        self._queue.put(("progress", task_id, dict(fields), ttl_ms))
+        self._channel.send(("progress", task_id, dict(fields), ttl_ms))
 
     async def publish_progress(self, task_id: str, payload: bytes) -> None:
-        self._queue.put(("publish", task_id, bytes(payload)))
+        self._channel.send(("publish", task_id, bytes(payload)))
 
 
 def rss_mb(proc_root: Path = Path("/proc")) -> float | None:
@@ -113,7 +113,7 @@ def _uses_di(task_class: type) -> bool:
     return bool(getattr(task_class, "_dishka_injected_keys", None))
 
 
-async def run_job(job: ComputeJob, progress_queue: Any, *, slot: int | None = None) -> ResultEnvelope:
+async def run_job(job: ComputeJob, channel: Any, *, slot: int | None = None) -> ResultEnvelope:
     """Einen Task-Koerper im Kind ausfuehren und als Envelope verpacken.
 
     Spiegelt ``TaskExecutor``: REQUEST-Scope nur bei DI-Keys (KTD6),
@@ -132,7 +132,7 @@ async def run_job(job: ComputeJob, progress_queue: Any, *, slot: int | None = No
     task_info = task_class.task_info  # type: ignore[attr-defined]
     instance: Any = task_class()
     instance._task_id = job.task_id
-    instance._backend = ProgressBackend(progress_queue)
+    instance._backend = ProgressBackend(channel)
     instance._task_start_time = time.monotonic()
     instance._result_ttl_ms = job.result_ttl_ms
 
@@ -188,16 +188,17 @@ async def run_job(job: ComputeJob, progress_queue: Any, *, slot: int | None = No
     return envelope
 
 
-def _run_job_with_sigterm(job: ComputeJob, progress_queue: Any, slot: int | None) -> ResultEnvelope:
+def _run_job_with_sigterm(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnvelope:
     """``run_job`` unter einem Event-Loop, dessen SIGTERM den Task abbricht.
 
     So bekommt der REQUEST-Teardown die Gnadenfrist aus KTD3, bevor der
-    Loop-Prozess SIGKILL schickt.
+    Loop-Prozess SIGKILL schickt. Nur fuer das frische Kind (``child_once``);
+    das wiederverwendete Kind haelt EINEN Loop ueber alle Jobs (``_serve_jobs``).
     """
 
     async def _main() -> ResultEnvelope:
         loop = asyncio.get_running_loop()
-        task = asyncio.ensure_future(run_job(job, progress_queue, slot=slot))
+        task = asyncio.ensure_future(run_job(job, channel, slot=slot))
         try:
             loop.add_signal_handler(signal.SIGTERM, task.cancel)
         except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
@@ -214,52 +215,129 @@ def _run_job_with_sigterm(job: ComputeJob, progress_queue: Any, slot: int | None
 
 
 def _configure_child_logging(job: ComputeJob) -> Any:
-    import structlog
-
     from swarmq.logging import setup_logging
 
     listener = setup_logging(job.log_level, job.log_json)
+    _bind_job_context(job)
+    return listener
+
+
+def _bind_job_context(job: ComputeJob) -> None:
+    """Log-Kontext je Job — im wiederverwendeten Kind vor jedem Job neu."""
+    import structlog
+
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(
         task_id=job.task_id, task_name=job.task_name, queue=job.queue,
         worker_id=job.worker_id, compute_child=os.getpid(),
     )
-    return listener
 
 
-def child_once(job: ComputeJob, result_queue: Any, progress_queue: Any, slot: int | None = None) -> None:
+def child_once(job: ComputeJob, channel: Any, slot: int | None = None) -> None:
     """Frisches Kind je Task (R6): binden, Ready melden, rechnen, Envelope, Ende."""
     pdeath = bind_child_process()
-    result_queue.put(("ready", slot, os.getpid(), pdeath))
+    channel.send(("ready", slot, os.getpid(), pdeath))
     listener = _configure_child_logging(job)
     try:
         try:
-            envelope = _run_job_with_sigterm(job, progress_queue, slot)
+            envelope = _run_job_with_sigterm(job, channel, slot)
         except asyncio.CancelledError:
             return
-        result_queue.put(("result", envelope))
+        channel.send(("result", envelope))
     finally:
         listener.stop()
 
 
-def child_loop(slot: int, job_queue: Any, result_queue: Any, progress_queue: Any) -> None:
-    """Wiederverwendetes Slot-Kind (R6): Jobs bis zum Ende-Signal ``None``."""
+def child_loop(slot: int, job_conn: Any, channel: Any) -> None:
+    """Wiederverwendetes Slot-Kind (R6): Jobs bis zum Ende-Signal ``None``.
+
+    EIN Event-Loop fuer alle Jobs: APP-Scope-Ressourcen des DI-Containers
+    (Sessions, Pools, Locks) sind an den Loop gebunden und muessen ueber
+    Jobgrenzen hinweg gueltig bleiben.
+    """
     pdeath = bind_child_process()
-    result_queue.put(("ready", slot, os.getpid(), pdeath))
-    listener: Any = None
-    while True:
+    channel.send(("ready", slot, os.getpid(), pdeath))
+    asyncio.run(_serve_jobs(slot, job_conn, channel))
+
+
+async def _recv_job(job_conn: Any, stop: asyncio.Event) -> ComputeJob | None:
+    """Naechsten Job lesen; ``None`` bei Ende-Signal, EOF oder Stop (SIGTERM im Leerlauf)."""
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[Any] = loop.create_future()
+
+    def _readable() -> None:
+        loop.remove_reader(job_conn.fileno())
+        if fut.done():
+            return
         try:
-            job = job_queue.get()
+            fut.set_result(job_conn.recv())
         except (EOFError, OSError):
-            break  # Job-Pipe tot: der Loop-Prozess ist weg (R27, Rueckfallebene)
-        if job is None:
-            break
-        if listener is None:
-            listener = _configure_child_logging(job)
-        try:
-            envelope = _run_job_with_sigterm(job, progress_queue, slot)
-        except asyncio.CancelledError:
-            break
-        result_queue.put(("result", envelope))
-    if listener is not None:
-        listener.stop()
+            fut.set_result(None)  # Job-Pipe tot: der Loop-Prozess ist weg (R27, Rueckfallebene)
+
+    loop.add_reader(job_conn.fileno(), _readable)
+    stopper = asyncio.ensure_future(stop.wait())
+    try:
+        await asyncio.wait({fut, stopper}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stopper.cancel()
+        with contextlib.suppress(Exception):
+            loop.remove_reader(job_conn.fileno())
+    if not fut.done():
+        fut.cancel()
+        return None
+    job = fut.result()
+    return job if isinstance(job, ComputeJob) else None
+
+
+async def _serve_jobs(slot: int, job_conn: Any, channel: Any) -> None:
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    current: list[asyncio.Task[ResultEnvelope] | None] = [None]
+
+    def _on_sigterm() -> None:
+        task = current[0]
+        if task is not None and not task.done():
+            task.cancel()  # laufender Job: Cancel, REQUEST-Teardown in der Gnadenfrist (KTD3)
+        else:
+            stop.set()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
+    except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
+        pass
+    listener: Any = None
+    try:
+        while True:
+            job = await _recv_job(job_conn, stop)
+            if job is None:
+                break
+            if listener is None:
+                listener = _configure_child_logging(job)
+            else:
+                _bind_job_context(job)
+            task = asyncio.ensure_future(run_job(job, channel, slot=slot))
+            current[0] = task
+            try:
+                envelope = await task
+            except asyncio.CancelledError:
+                break
+            finally:
+                current[0] = None
+            channel.send(("result", envelope))
+    finally:
+        await _close_app_container()
+        if listener is not None:
+            listener.stop()
+
+
+async def _close_app_container() -> None:
+    """APP-Scope des DI-Containers am Kind-Ende schliessen (best effort)."""
+    try:
+        from swarmq.dishka import _MISSING, get_registered_container
+    except ImportError:  # pragma: no cover - ohne dishka
+        return
+    container: Any = get_registered_container()
+    if container is _MISSING:
+        return
+    with contextlib.suppress(Exception):
+        await container.close()

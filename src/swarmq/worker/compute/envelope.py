@@ -93,8 +93,10 @@ class ResultEnvelope:
 
 
 def _is_picklable(obj: object) -> bool:
+    """Hin- UND Rueckweg pruefen: eine Exception mit eigener ``__init__``-Signatur
+    pickelt zwar, scheitert aber beim ``loads`` im Elternprozess."""
     try:
-        pickle.dumps(obj)
+        pickle.loads(pickle.dumps(obj))
     except Exception:
         return False
     return True

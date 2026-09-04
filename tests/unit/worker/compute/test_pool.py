@@ -1,11 +1,19 @@
-"""Tests fuer swarmq.worker.compute.pool — Slot-Pool gegen gefaelschte Prozesse (U5)."""
+"""Tests fuer swarmq.worker.compute.pool mit gefaelschtem Prozess-Kontext (U5).
+
+Die Fakes bilden die Kanalsemantik nach: je Kind eine Pipe (Kindseite ``send``,
+Elternseite ``recv_bytes`` mit Pickle-Rahmen und EOF beim Schliessen), ein
+Sentinel als Pipe-Leseende, Signale per gepatchtem ``os.kill``/``os.killpg``.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import os
+import pickle
 import queue as _queue
 import signal
+import threading
 from typing import Any, ClassVar
 
 import pytest
@@ -14,20 +22,85 @@ from swarmq.worker.compute import pool as poolmod
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
 from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable
 
-_PIDS = iter(range(1000, 9999))
+_PIDS = itertools.count(40000)
+_EOF = object()
+
+
+class _FakePipeEnd:
+    """Beide Enden einer Pipe-Attrappe teilen sich eine Thread-Queue."""
+
+    def __init__(self, q: _queue.Queue, *, readable: bool) -> None:
+        self._q = q
+        self._readable = readable
+        self.closed = False
+        self.child_side = False  # vom FakeProcess markiert: Eltern-``close`` ist Dup-Semantik
+
+    # Kindseite
+    def send(self, obj: Any) -> None:
+        if self.closed:
+            raise OSError("closed")
+        self._q.put(pickle.dumps(obj))
+
+    def send_raw(self, raw: bytes) -> None:
+        self._q.put(raw)
+
+    # Elternseite
+    def recv_bytes(self) -> bytes:
+        while True:
+            item = self._q.get()
+            if item is _EOF or self.closed:
+                raise EOFError
+            return item
+
+    def recv(self, timeout: float | None = None) -> Any:
+        item = self._q.get(timeout=timeout)
+        if item is _EOF:
+            raise EOFError
+        return pickle.loads(item)
+
+    def fileno(self) -> int:
+        return -1
+
+    def eof(self) -> None:
+        """Kindseite: das Kind ist weg, kein Schreibende mehr offen."""
+        self._q.put(_EOF)
+
+    def close(self) -> None:
+        # Elternseite: Ende schliessen (EOF fuer die Gegenseite). Ein Ende, das dem
+        # Kind gehoert, schliesst der Elternprozess nur als eigene Kopie (Dup-Semantik).
+        if self.child_side or self.closed:
+            return
+        self.closed = True
+        self._q.put(_EOF)
 
 
 class FakeProcess:
-    """Kind-Attrappe: Sentinel ist das Leseende einer Pipe, ``die()`` schliesst das Schreibende."""
+    """Kind-Attrappe: Sentinel ist das Leseende einer Pipe, ``die()`` schliesst
+    Sentinel und (standardmaessig) den Rueckkanal."""
 
     def __init__(self, target: Any, args: tuple[Any, ...], name: str = "") -> None:
         self.target, self.args, self.name = target, args, name
+        for end in args:
+            if isinstance(end, _FakePipeEnd):
+                end.child_side = True
         self.pid: int | None = None
         self._r, self._w = os.pipe()
         self.sentinel = self._r
         self._alive = False
         self.behaviour = "cooperative"  # cooperative | stubborn | immortal
         self.started = 0
+
+    @property
+    def channel(self) -> _FakePipeEnd:
+        """Kindseite des Rueckkanals (child_once: args[1], child_loop: args[2])."""
+        end: _FakePipeEnd = self.args[1] if self.target is poolmod.child_once else self.args[2]
+        return end
+
+    @property
+    def job_conn(self) -> _FakePipeEnd:
+        assert self.target is poolmod.child_loop
+        end: _FakePipeEnd = self.args[1]
+        return end
 
     def start(self) -> None:
         self.pid = next(_PIDS)
@@ -41,17 +114,20 @@ class FakeProcess:
     def join(self, timeout: float | None = None) -> None:
         return None
 
-    def die(self) -> None:
+    def die(self, *, eof: bool = True) -> None:
         if self._alive:
             self._alive = False
             os.close(self._w)
+            if eof:
+                self.channel.eof()
 
 
 class FakeCtx:
     started: ClassVar[list[FakeProcess]] = []
 
-    def Queue(self) -> _queue.Queue:
-        return _queue.Queue()
+    def Pipe(self, duplex: bool = True) -> tuple[_FakePipeEnd, _FakePipeEnd]:
+        q: _queue.Queue = _queue.Queue()
+        return _FakePipeEnd(q, readable=True), _FakePipeEnd(q, readable=False)
 
     def Process(self, target: Any, args: tuple[Any, ...], name: str = "") -> FakeProcess:
         return FakeProcess(target, args, name)
@@ -96,8 +172,26 @@ async def _started(n: int) -> FakeProcess:
 
 
 async def _ready(p: SlotPool, proc: FakeProcess, slot: int, pdeath: bool = True) -> None:
-    p._result_queue.put(("ready", slot, proc.pid, pdeath))
+    proc.channel.send(("ready", slot, proc.pid, pdeath))
     await asyncio.sleep(0.02)
+
+
+async def _next_job(proc: FakeProcess, timeout: float = 2.0) -> Any:
+    """Job von der Kindseite lesen, ohne den Loop zu blockieren (die Uebergabe laeuft im Executor)."""
+    for _ in range(int(timeout / 0.01)):
+        try:
+            return proc.job_conn.recv(timeout=0.0)
+        except _queue.Empty:
+            await asyncio.sleep(0.01)
+    raise AssertionError("no job arrived")
+
+
+async def _settle(pred, timeout: float = 2.0) -> None:
+    for _ in range(int(timeout / 0.01)):
+        if pred():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not reached")
 
 
 def _result(tid: str, slot: int, rss: float | None = 100.0, value: Any = "ok") -> ResultEnvelope:
@@ -111,6 +205,7 @@ async def _make_pool(ctx: FakeCtx, slots: int = 2, **kw: Any) -> SlotPool:
     kw.setdefault("end_grace_s", 0.2)
     kw.setdefault("kill_grace_s", 0.05)
     kw.setdefault("reap_timeout_s", 0.05)
+    kw.setdefault("eof_grace_s", 0.2)
     p = SlotPool(ctx, slots, **kw)
     await p.start()
     return p
@@ -123,8 +218,9 @@ async def test_fresh_child_runs_one_job_and_frees_the_slot(ctx, signals):
     task = asyncio.create_task(p.run(_job(), use_di=False, on_slot=slots_seen.append))
     proc = await _started(1)
     assert proc.target is poolmod.child_once
+    assert proc.args[0].task_id == "t1"
     await _ready(p, proc, slots_seen[0])
-    p._result_queue.put(("result", _result("t1", slots_seen[0])))
+    proc.channel.send(("result", _result("t1", slots_seen[0])))
     env = await task
     assert env.value == "ok"
     assert p._free.qsize() == 2
@@ -139,14 +235,12 @@ async def test_reuse_child_serves_consecutive_di_jobs(ctx, signals):
     proc = await _started(1)
     assert proc.target is poolmod.child_loop
     await _ready(p, proc, 0)
-    job_q = proc.args[1]
-    assert job_q.get(timeout=1).task_id == "a"
-    p._result_queue.put(("result", _result("a", 0)))
+    assert (await _next_job(proc)).task_id == "a"
+    proc.channel.send(("result", _result("a", 0)))
     await t1
     t2 = asyncio.create_task(p.run(_job("b"), use_di=True))
-    await asyncio.sleep(0.02)
-    assert job_q.get(timeout=1).task_id == "b"
-    p._result_queue.put(("result", _result("b", 0)))
+    assert (await _next_job(proc)).task_id == "b"
+    proc.channel.send(("result", _result("b", 0)))
     await t2
     assert len(FakeCtx.started) == 1
     await p.aclose()
@@ -163,19 +257,21 @@ async def test_rss_threshold_recycles_rolling_with_signal(ctx, signals):
     t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
     old = await _started(1)
     await _ready(p, old, 0)
-    old.args[1].get(timeout=1)
+    (await _next_job(old))
 
     async def replacement_ready() -> None:
         new = await _started(2)
         await _ready(p, new, 0)
 
     bg = asyncio.create_task(replacement_ready())
-    p._result_queue.put(("result", _result("a", 0, rss=320.0)))
-    await t1
+    old.channel.send(("result", _result("a", 0, rss=320.0)))
+    env = await t1  # das Ergebnis ist da, BEVOR das Recycling laeuft
+    assert env.value == "ok"
     await bg
+    await _settle(lambda: p.stats.recycled == 1)
     assert recycled == [(0, "rss", 320.0)]
-    assert old.args[1].get(timeout=1) is None  # Ende-Signal an das alte Kind
-    assert p.stats.recycled == 1 and len(FakeCtx.started) == 2
+    assert (await _next_job(old)) is None  # Ende-Signal an das alte Kind
+    assert len(FakeCtx.started) == 2
     old.die()
     await p.aclose()
 
@@ -192,10 +288,31 @@ async def test_task_count_threshold_recycles(ctx, signals):
         await _ready(p, new, 0)
 
     bg = asyncio.create_task(replacement_ready())
-    p._result_queue.put(("result", _result("a", 0, rss=10.0)))
+    old.channel.send(("result", _result("a", 0, rss=10.0)))
     await t1
     await bg
-    assert p.stats.recycled == 1
+    await _settle(lambda: p.stats.recycled == 1)
+    old.die()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_next_dispatch_waits_for_a_running_replacement(ctx, signals):
+    """Waehrend das Recycling im Hintergrund laeuft, spawnt der naechste Job kein zweites Ersatzkind."""
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    old.channel.send(("result", _result("a", 0)))
+    await t1
+    t2 = asyncio.create_task(p.run(_job("b"), use_di=True))
+    new = await _started(2)
+    await asyncio.sleep(0.05)
+    assert len(FakeCtx.started) == 2  # kein drittes Kind
+    await _ready(p, new, 0)
+    assert (await _next_job(new)).task_id == "b"
+    new.channel.send(("result", _result("b", 0)))
+    assert (await t2).value == "ok"
     old.die()
     await p.aclose()
 
@@ -213,8 +330,90 @@ async def test_child_death_without_result_raises_child_died_and_slot_stays_usabl
     t2 = asyncio.create_task(p.run(_job("b"), use_di=True))
     new = await _started(2)  # lazy Ersatz beim naechsten Dispatch
     await _ready(p, new, 0)
-    p._result_queue.put(("result", _result("b", 0)))
+    new.channel.send(("result", _result("b", 0)))
     assert (await t2).value == "ok"
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_result_before_eof_wins_even_if_the_sentinel_fires_first(ctx, signals):
+    """P0 #3: der Sentinel darf ein Ergebnis nicht ueberholen — das EOF des Kanals
+    steht hinter dem letzten Ergebnis, der Sentinel gewaehrt nur eine Gnadenfrist."""
+    p = await _make_pool(ctx, slots=1, eof_grace_s=1.0)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.die(eof=False)  # Prozess tot laut Sentinel, Kanal noch offen (z. B. Enkel haelt das fd)
+    await asyncio.sleep(0.05)
+    assert not t1.done()
+    proc.channel.send(("result", _result("a", 0, value=42)))
+    proc.channel.eof()
+    assert (await t1).value == 42
+    assert p.stats.died == 0
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_sentinel_without_eof_ends_in_child_died_after_the_grace(ctx, signals):
+    p = await _make_pool(ctx, slots=1, eof_grace_s=0.05)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.die(eof=False)
+    with pytest.raises(ChildDied):
+        await t1
+    assert p.stats.died == 1
+    proc.channel.eof()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_undecodable_result_fails_only_this_task_and_the_pool_stays_alive(ctx, signals):
+    """P0 #1: ein im Elternprozess nicht entpickelbares Ergebnis darf den Pool nicht taub machen."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    (await _next_job(proc))
+    proc.channel.send_raw(b"\x80\x05not a pickle at all")
+    with pytest.raises(ChildDied, match="undecodable"):
+        await t1
+    assert p.stats.undecodable == 1
+    t2 = asyncio.create_task(p.run(_job("b"), use_di=True))  # dasselbe Kind lebt noch
+    assert (await _next_job(proc)).task_id == "b"
+    proc.channel.send(("result", _result("b", 0)))
+    assert (await t2).value == "ok"
+    assert len(FakeCtx.started) == 1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_result_with_foreign_task_id_is_dropped(ctx, signals):
+    """P0 #2 (Routing): ein Envelope fuer einen anderen Task resolvt den laufenden Job nicht."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("b"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("result", _result("a", 0, value="stale")))
+    await asyncio.sleep(0.05)
+    assert not t1.done()
+    proc.channel.send(("result", _result("b", 0, value="mine")))
+    assert (await t1).value == "mine"
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_during_handshake_kills_the_started_child(ctx, signals):
+    """P0 #2 (Cancel-Fenster): ein Abbruch vor dem Ready-Handshake laesst kein Kind verwaist rechnen."""
+    p = await _make_pool(ctx, slots=1, handshake_timeout_s=5.0)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    t1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t1
+    assert signals and signals[0][0] == "kill"  # vor Ready: per PID
+    assert not proc.is_alive()
+    assert p._free.qsize() == 1
     await p.aclose()
 
 
@@ -282,12 +481,14 @@ async def test_progress_messages_reach_the_sink(ctx, signals):
         seen.append(msg)
 
     p = await _make_pool(ctx, slots=1, progress_sink=sink)
-    p._progress_queue.put(("progress", "t1", {"current": "1"}, 1000))
-    for _ in range(50):
-        if seen:
-            break
-        await asyncio.sleep(0.01)
-    assert seen == [("progress", "t1", {"current": "1"}, 1000)]
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+    await _settle(lambda: bool(seen))
+    assert seen == [("progress", "a", {"current": "1"}, 1000)]
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
     await p.aclose()
 
 
@@ -309,3 +510,19 @@ async def test_cancelled_run_kills_the_child_before_the_slot_is_freed(ctx, signa
     assert not proc.is_alive()
     assert p._free.qsize() == 1
     await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_reader_threads_end_with_their_children(ctx, signals):
+    before = {t.name for t in threading.enumerate()}
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    new_threads = {t.name for t in threading.enumerate()} - before
+    assert any(name.startswith("swarmq-compute-reader") for name in new_threads)
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    proc.die()
+    await p.aclose()
+    await _settle(lambda: not (new_threads & {t.name for t in threading.enumerate()}))
