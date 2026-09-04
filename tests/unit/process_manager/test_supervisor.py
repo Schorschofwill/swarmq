@@ -1089,3 +1089,37 @@ class TestRecycleIntent:
         pm._check_dead_workers()
         assert pm._clean_exits == 0 and pm._ctx.Process.call_count == 1
         assert pm._current_target() == 1
+
+
+    def test_acknowledged_recycler_that_freezes_in_drain_is_killed_not_replaced(self):
+        """Review #13: nach dem ack war der Recycler von jeder Heartbeat-Pruefung ausgeschlossen
+        und hielt sein Prefetch bis zum Supervisor-Ende."""
+        import multiprocessing
+        import time
+
+        from swarmq.supervision import SupervisorChannel
+
+        pm = ProcessManager(
+            num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),), heartbeat_timeout_s=1.0,
+        )
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        ch = SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        ch.request_recycle()
+        old = _fake_process(pid=5)
+        pm.workers = {5: WorkerInfo(process=old, worker_id=0, channel=ch)}
+        pm._check_heartbeats()  # Absicht -> Ersatz + ack
+        assert pm._ctx.Process.call_count == 1 and old.terminate.call_count == 0
+        fresh = SupervisorChannel.create(multiprocessing.get_context("spawn"))  # der Ersatz schlaegt
+        fresh.heartbeat.value = time.monotonic()
+        pm.workers[500].channel = fresh
+        ch.heartbeat.value = time.monotonic() - 120  # der Drain des alten Workers friert ein
+        pm._check_heartbeats()
+        old.terminate.assert_called_once()
+        assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz
+        assert any(info.process is old for info, _ in pm._terminating)
+        pm._check_heartbeats()
+        old.terminate.assert_called_once()  # in _terminating: nicht noch einmal
+        pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
+        pm._escalate_terminating()
+        old.kill.assert_called_once()

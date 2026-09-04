@@ -112,7 +112,7 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--pool",
         choices=("io", "cpu"),
-        default="io",
+        default=None,  # aufgeloest in cli.pool.resolve_pool: Flag > SWARMQ_POOL > io
         help=(
             "Execution pool (default: io). 'cpu' runs every task body in a "
             "compute child forked from a pre-warmed forkserver: the loop "

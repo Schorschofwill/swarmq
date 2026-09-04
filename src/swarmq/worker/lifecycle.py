@@ -41,7 +41,8 @@ if TYPE_CHECKING:
     from swarmq.metrics import Metrics, MetricsServer
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
-    from swarmq.worker.gates import WorkerBackend, WorkerBroker
+    from swarmq.worker.execution import TaskExecutor
+    from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
 
 logger = structlog.get_logger()
 
@@ -93,8 +94,8 @@ class WorkerLifecycle:
         _recycle_ack_missing: bool
         _drain_timeout_override: float | None
         _metrics_sampler_task: asyncio.Task[None] | None
-        _executor: Any
-        _gate_deps: Any
+        _executor: TaskExecutor
+        _gate_deps: GateDeps
 
         async def _on_message(self, message: Any) -> None: ...
 
@@ -719,6 +720,12 @@ class WorkerLifecycle:
             recycle_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await recycle_task
+        # Der Compute-Pool gehoert dem Worker: seine Kinder duerfen einen
+        # abgebrochenen start_worker() nicht ueberleben (Tests, --reload,
+        # eingebettet). Im IO-Modus ein No-op. Siehe
+        # docs/solutions/patterns/worker-cancel-safe-teardown-detached-tasks-2026-06-01.md
+        with contextlib.suppress(Exception):
+            await self._close_executor()
 
         if (
             self._metrics_sampler_task is not None

@@ -526,3 +526,22 @@ async def test_reader_threads_end_with_their_children(ctx, signals):
     proc.die()
     await p.aclose()
     await _settle(lambda: not (new_threads & {t.name for t in threading.enumerate()}))
+
+
+@pytest.mark.timeout(5)
+async def test_repeated_handshake_failures_mark_the_pool_unhealthy_until_a_ready(ctx, signals):
+    """Review #17: dauerhafte SlotUnavailable-Fehler duerfen nicht still jede Nachricht bis
+    zum Delivery-Limit requeuen — der Pool meldet sich ueber /ready als ungesund."""
+    p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
+    assert p.healthy and p.unhealthy_after == 3
+    for _ in range(3):
+        with pytest.raises(SlotUnavailable):
+            await p.run(_job("a"), use_di=False)
+    assert not p.healthy and p.consecutive_unavailable == 3
+    t = asyncio.create_task(p.run(_job("b"), use_di=False))
+    proc = await _started(4)
+    await _ready(p, proc, 0)
+    assert p.healthy  # ein erfolgreicher Handshake setzt zurueck
+    proc.channel.send(("result", _result("b", 0)))
+    await t
+    await p.aclose()

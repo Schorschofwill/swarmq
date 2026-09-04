@@ -140,7 +140,7 @@ class TestBuildParser:
         # Plan 2026-09-03-001 (R3): der Parser laesst --concurrency offen,
         # die Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt danach.
         assert ns.concurrency is None
-        assert ns.pool == "io"
+        assert ns.pool is None  # aufgeloest in cli.pool.resolve_pool (Flag > SWARMQ_POOL > io)
         assert ns.log_level == "INFO"
         assert ns.log_format == "human"
 

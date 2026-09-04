@@ -105,6 +105,10 @@ async def forkserver_ready(worker: Any, proc_root: Path = Path("/proc")) -> tupl
     handle = getattr(worker, "_compute_handle", None)
     if handle is None:
         return False, "compute pool not started"
+    executor = getattr(worker, "_executor", None)
+    pool = getattr(executor, "_pool", None)
+    if pool is not None and not getattr(pool, "healthy", True):
+        return False, "compute pool unhealthy: repeated ready-handshake failures"
     pid = forkserver_pid()
     if pid is None:
         return True, None  # nicht pruefbar (KTD14) — nicht als Ausfall melden

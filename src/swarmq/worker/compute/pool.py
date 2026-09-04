@@ -133,6 +133,15 @@ class SlotPool:
         self._closing = False
         self._background: set[asyncio.Task[None]] = set()
         self.stats = PoolStats()
+        self.consecutive_unavailable = 0  # Handshake-Fehler in Folge; 0 nach jedem Ready
+        self.unhealthy_after = 3 * slots
+
+    @property
+    def healthy(self) -> bool:
+        """``False``, wenn der Handshake dauerhaft ausbleibt (toter Forkserver o. ae.):
+        ``/ready`` meldet den Pool dann als Ausfall, statt dass jede Nachricht bis
+        zum Delivery-Limit requeued wird."""
+        return self.consecutive_unavailable < self.unhealthy_after
 
     def set_progress_sink(self, sink: ProgressSink) -> None:
         self._progress_sink = sink
@@ -288,6 +297,12 @@ class SlotPool:
             await asyncio.wait_for(asyncio.shield(child.ready), timeout=self.handshake_timeout_s)
         except (TimeoutError, ChildDied) as exc:
             self.stats.unavailable += 1
+            self.consecutive_unavailable += 1
+            if self.consecutive_unavailable == self.unhealthy_after:
+                logger.error(
+                    "compute_pool_unhealthy", failures=self.consecutive_unavailable,
+                    hint="no compute child completed the ready handshake; /ready reports the pool down",
+                )
             await self._kill_child(child, reason="handshake", by_pid_only=True)
             raise SlotUnavailable(f"compute child for slot {slot.index} sent no ready signal") from exc
         except asyncio.CancelledError:
@@ -320,6 +335,7 @@ class SlotPool:
         if kind == "ready":
             _, _slot_index, pid, pdeath = msg
             child.pgid_ready = True
+            self.consecutive_unavailable = 0
             if child.ready is not None and not child.ready.done():
                 child.ready.set_result(None)
             if not pdeath:

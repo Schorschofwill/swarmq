@@ -298,3 +298,27 @@ class TestRunMultiProcessWorker:
             assert isinstance(worker_args[0], WorkerConfig)
             assert worker_args[0].module == "swarmq.cli"
             assert worker_args[0].queues == ("default",)
+
+
+class TestHeartbeatIntervalPassThrough:
+    """Review #8: SWARMQ_HEARTBEAT_INTERVAL_S wurde geparst, kam aber nie in der WorkerConfig an —
+    der Worker schlug immer alle 5 s, ein Timeout unter 5 s ersetzte jeden gesunden Worker."""
+
+    def test_worker_config_carries_the_configured_interval(self):
+        from swarmq.process_manager import run_multi_process_worker
+
+        args = TestReloadRoutingThroughCLI()._args()
+        env = {
+            **TestReloadRoutingThroughCLI()._env(),
+            "SWARMQ_HEARTBEAT_INTERVAL_S": "2",
+            "SWARMQ_HEARTBEAT_TIMEOUT_S": "9",
+        }
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
+             patch("swarmq.process_manager.check._validate_module_importable"):
+            assert run_multi_process_worker(args) == 0
+        cfg = PM.call_args.kwargs["worker_args"][0]
+        assert cfg.heartbeat_interval_s == 2.0
+        assert PM.call_args.kwargs["heartbeat_timeout_s"] == 9.0

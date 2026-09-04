@@ -44,8 +44,8 @@ class DeliveryCountGate:
             return Continue
         message = (
             f"WorkerHungError: delivered {count} times without acknowledgement "
-            f"(delivery limit {limit}); the consuming worker was replaced while "
-            "processing this message"
+            f"(delivery limit {limit}); no consumer completed this message "
+            "(hung worker, killed compute child or unavailable compute slot)"
         )
         logger.error(
             "delivery_limit_reached_dead_letter",

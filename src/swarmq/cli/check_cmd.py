@@ -15,6 +15,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+from swarmq.cli.pool import resolve_pool
 from swarmq.exceptions import ConfigurationError
 
 #: Keys that ``--check`` always emits on its JSON payload, regardless of
@@ -51,7 +52,7 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
         "warnings": [],
         "error": None,
         "error_type": None,
-        "pool": getattr(args, "pool", "io") or "io",
+        "pool": resolve_pool(args),
         "slots": None,
     }
 
@@ -94,7 +95,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             autoscale=getattr(args, "autoscale", None),
             metrics_port=getattr(args, "metrics_port", None),
             health_port=getattr(args, "health_port", None),
-            pool=getattr(args, "pool", "io") or "io",
+            pool=resolve_pool(args),
             concurrency=getattr(args, "concurrency", None),
             recycling=bool(
                 os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")

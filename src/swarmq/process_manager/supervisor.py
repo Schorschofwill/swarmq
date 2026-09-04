@@ -577,11 +577,12 @@ class ProcessManager:
         if self._shutting_down:
             return
         now = time.monotonic()
+        terminating = {id(info) for info, _ in self._terminating}
         for info in list(self.workers.values()):
             channel = info.channel
-            if channel is None or info.expected_shutdown or not info.process.is_alive():
+            if channel is None or not info.process.is_alive() or id(info) in terminating:
                 continue
-            if channel.intent_value() == INTENT_RECYCLE:
+            if not info.expected_shutdown and channel.intent_value() == INTENT_RECYCLE:
                 # KTD11: Absicht → expected_shutdown zuerst, dann Ersatz, dann ack.
                 # Zaehlt weder gegen MAX_RESTARTS noch als sauberes Ende.
                 info.expected_shutdown = True
@@ -596,7 +597,22 @@ class ProcessManager:
             stale = now - last
             if stale <= self._heartbeat_deadline(info):
                 continue
-            self._replace_hung_worker(info, stale)
+            if info.expected_shutdown:  # Recycler/Scale-down im Drain eingefroren: toeten, kein Ersatz
+                logger.warning(
+                    "worker_hung_during_drain", worker_id=info.worker_id, pid=info.process.pid,
+                    stale_s=round(stale, 1), deadline_s=self._heartbeat_deadline(info),
+                )
+                self._terminate_worker(info)
+            else:
+                self._replace_hung_worker(info, stale)
+
+    def _terminate_worker(self, info: WorkerInfo) -> None:
+        """SIGTERM jetzt, SIGKILL nach ``SHUTDOWN_TERM_S`` (``_escalate_terminating``)."""
+        try:
+            info.process.terminate()
+        except ProcessLookupError:
+            pass
+        self._terminating.append((info, time.monotonic() + self.SHUTDOWN_TERM_S))
 
     def _replace_hung_worker(self, info: WorkerInfo, stale_s: float) -> None:
         now = time.monotonic()
@@ -617,11 +633,7 @@ class ProcessManager:
         else:
             self._hang_timestamps.append(now)
             self._start_worker()
-        try:
-            info.process.terminate()
-        except ProcessLookupError:
-            pass
-        self._terminating.append((info, now + self.SHUTDOWN_TERM_S))
+        self._terminate_worker(info)
 
     def _escalate_terminating(self) -> None:
         """SIGKILL fuer ersetzte Worker, die SIGTERM ueberlebt haben."""

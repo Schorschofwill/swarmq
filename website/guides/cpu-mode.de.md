@@ -63,6 +63,18 @@ Signal `WORKER_RECYCLING` aus.
 - `FromDishka[X] | None = None` hat nie injiziert; seit 0.5.0 verweigert der
   Worker mit solcher Annotation den Start (`ConfigurationError`), in jedem Modus.
 
+### Fire-and-forget und ein nicht verfügbarer Rechenslot
+
+Eine Fire-and-forget-Nachricht wird bestätigt, bevor der Task-Körper
+übergeben wird. Schließt das Rechenkind für diese Nachricht seinen
+Ready-Handshake nie ab (etwa weil der Forkserver gestorben ist), gibt es
+keine Nachricht mehr, die erneut zugestellt werden könnte: Der Worker
+protokolliert `compute_slot_unavailable_fire_and_forget_dropped`, die
+Nachricht ist verloren. At-least-once-Nachrichten werden stattdessen erneut
+zugestellt. Wiederholte Handshake-Fehler markieren den Pool als ungesund;
+`/ready` meldet dann `compute pool unhealthy`, damit Supervisor oder
+Orchestrierung den Worker ersetzen können.
+
 ## Umgebung und Startprüfungen
 
 - `MALLOC_TRIM_THRESHOLD_` (131072) und `MALLOC_ARENA_MAX` (2) werden für die

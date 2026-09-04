@@ -127,6 +127,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         reload=reload_enabled,
         watch_dirs=resolved_watch_dirs,
         pool=getattr(args, "pool", "io") or "io",
+        heartbeat_interval_s=sq_config.heartbeat_interval_s,
     )
 
     pm = ProcessManager(

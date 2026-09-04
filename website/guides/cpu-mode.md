@@ -62,6 +62,17 @@ emits the `WORKER_RECYCLING` signal.
 - `FromDishka[X] | None = None` never injected anything; since 0.5.0 the worker
   refuses to start with such an annotation (`ConfigurationError`) in every mode.
 
+### Fire-and-forget and an unavailable compute slot
+
+A fire-and-forget message is acknowledged before the task body is dispatched.
+If the compute child for that message never completes its ready handshake
+(for example because the forkserver died), there is no message left to
+redeliver: the worker logs `compute_slot_unavailable_fire_and_forget_dropped`
+and the message is lost. At-least-once messages are redelivered instead.
+Repeated handshake failures mark the pool unhealthy; `/ready` then reports
+`compute pool unhealthy` so the supervisor or orchestrator can replace the
+worker.
+
 ## Environment and startup checks
 
 - `MALLOC_TRIM_THRESHOLD_` (131072) and `MALLOC_ARENA_MAX` (2) are set for the

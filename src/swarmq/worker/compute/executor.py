@@ -103,7 +103,17 @@ class ComputeExecutor(TaskExecutor):
             result.is_error = True
             result.error_message = message
             result.task_exception = exc
-            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+            if task_info.delivery is not DeliveryMode.FIRE_AND_FORGET:
+                return
+            if result.slot_unavailable:
+                # Bereits bestaetigt, kein Redelivery moeglich: Infrastrukturfehler,
+                # kein Task-Fehler — eigene Meldung, damit er nicht als solcher untergeht.
+                logger.error(
+                    "compute_slot_unavailable_fire_and_forget_dropped", task_id=ctx.task_id,
+                    error=message, hint="fire-and-forget messages are acked before dispatch; "
+                    "the message is lost — check the forkserver and /ready",
+                )
+            else:
                 logger.error("fire_and_forget_error", error=message)
 
         job = self._build_job(ctx, message_dict)
