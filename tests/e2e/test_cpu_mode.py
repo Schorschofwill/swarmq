@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import uuid
 
 import pytest
@@ -31,7 +32,7 @@ from tests.e2e import _cpu_fixture_tasks as fixture  # noqa: E402  (QUEUE brauch
 @pytest.fixture
 def _register_fixture_tasks():
     """Die Fixture-Klassen erneut registrieren — andere Tests leeren die Registry."""
-    for cls in (fixture.CpuEcho, fixture.CpuFail, fixture.CpuHang, fixture.CpuSubprocess):
+    for cls in (fixture.CpuEcho, fixture.CpuFail, fixture.CpuHang, fixture.CpuSubprocess, fixture.CpuSlowOnce):
         if cls not in Task._registered_tasks:
             Task._registered_tasks.append(cls)
     di = getattr(fixture, "CpuDi", None)
@@ -62,7 +63,7 @@ async def _error_message(rabbitmq_url: str, valkey_url: str, tid: str) -> str:
 def _app(rabbitmq_url: str, valkey_url: str, **cfg) -> SwarmQ:
     return SwarmQ(
         RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
-        queues=[_QUEUE], pool="cpu", burst_mode=True, burst_idle_timeout=2.0, **cfg,
+        queues=[_QUEUE], pool="cpu", burst_mode=True, **{"burst_idle_timeout": 2.0, **cfg},
     )
 
 
@@ -147,3 +148,34 @@ async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_
     pids = [r["pid"] for r in results]
     assert len(set(pids)) >= 2 and len(set(pids)) <= 3  # Wiederverwendung + Recycling
     assert recyclings and all(r["kind"] == "compute_child" and r["reason"] == "tasks" for r in recyclings)
+
+
+async def _wait_for_pid(pid_file, timeout: float = 20.0) -> int:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not pid_file.exists():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("compute child never wrote its pid")
+        await asyncio.sleep(0.05)
+    return int(pid_file.read_text(encoding="ascii"))
+
+
+async def test_chaos_child_sigkill_is_a_typed_failure_and_the_slot_stays_usable(
+    rabbitmq_url, valkey_url, _register_fixture_tasks, tmp_path
+):
+    """Chaos (R8/KTD2): stirbt das Rechenkind hart, wird der Task als Fehler
+    abgeschlossen (kein Haenger, keine Exception in der Pipeline), und der
+    Slot nimmt sofort den naechsten Task an."""
+    pid_file = tmp_path / "child.pid"
+    app = _app(rabbitmq_url, valkey_url, concurrency=1, burst_idle_timeout=3.0)
+    async with app:
+        await app.broker.declare_queue(_QUEUE)
+        slow = await app.schedule("cpu_slow_once", str(pid_file), 60.0)
+        echo = await app.schedule("cpu_echo", 5)
+        worker = asyncio.create_task(app.start_worker())
+        child_pid = await _wait_for_pid(pid_file)
+        os.kill(child_pid, signal.SIGKILL)
+        await asyncio.wait_for(worker, timeout=40.0)
+    message = await _error_message(rabbitmq_url, valkey_url, slow)
+    assert "exited without result" in message
+    echo_result = (await _results(rabbitmq_url, valkey_url, [echo]))[0]
+    assert echo_result == {"value": 10, "pid": echo_result["pid"]}

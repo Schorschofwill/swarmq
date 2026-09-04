@@ -10,6 +10,7 @@ Slot-Kind bis zum Ende-Signal.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import os
 import signal
@@ -55,12 +56,36 @@ def rss_mb(proc_root: Path = Path("/proc")) -> float | None:
     return None
 
 
+def release_forkserver_alive_fd() -> None:
+    """Das geerbte Schreibende der Forkserver-Alive-Pipe schliessen (KTD3).
+
+    Der Forkserver reicht jedem Kind ``_forkserver_alive_fd`` weiter, damit es
+    selbst ueber ihn spawnen koennte. Der Forkserver beendet sich aber erst,
+    wenn ALLE Schreibenden zu sind — ein lebendes Kind hielte ihn also nach dem
+    Tod des Loop-Prozesses am Leben, und das Parent-Death-Signal, das das Kind
+    toeten soll, koennte nie feuern. Rechenkinder spawnen nicht per
+    Forkserver, das fd wird nicht gebraucht.
+    """
+    try:
+        from multiprocessing import forkserver as _fs
+    except ImportError:  # pragma: no cover - Nicht-POSIX
+        return
+    server: Any = _fs._forkserver  # privates Attribut, nicht typisiert
+    fd = getattr(server, "_forkserver_alive_fd", None)
+    if fd is None:
+        return
+    with contextlib.suppress(OSError):
+        os.close(fd)
+    server._forkserver_alive_fd = None
+
+
 def bind_child_process() -> bool:
     """KTD3: eigene Prozessgruppe plus Parent-Death-Signal (Linux).
 
     Liefert ``True``, wenn das Parent-Death-Signal gesetzt werden konnte.
     Ohne ``prctl`` (macOS) bleibt das EOF der Job-Pipe die Rueckfallebene.
     """
+    release_forkserver_alive_fd()
     try:
         os.setpgid(0, 0)
     except OSError:

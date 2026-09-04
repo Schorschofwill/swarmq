@@ -52,6 +52,21 @@ class CpuSubprocess(Task):
         time.sleep(30)
 
 
+class CpuSlowOnce(Task):
+    """Chaos-Fixture: die erste Zustellung schreibt die Kind-PID und rechnet lange;
+    eine Wiederzustellung (PID-Datei vorhanden) endet sofort."""
+
+    task_info = TaskInfo(name="cpu_slow_once", queues=[QUEUE], max_retries=0)
+
+    async def run(self, pid_file: str, seconds: float = 30.0) -> str:
+        path = Path(pid_file)
+        if path.exists():
+            return "redelivered"
+        path.write_text(str(os.getpid()), encoding="ascii")
+        time.sleep(seconds)
+        return "first"
+
+
 try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
     from dishka import FromDishka, Provider, Scope, make_async_container, provide
 

@@ -150,3 +150,24 @@ def test_rss_reads_vmrss(tmp_path):
     (tmp_path / "self" / "status").write_text("VmRSS:\t204800 kB\n", encoding="ascii")
     assert child.rss_mb(tmp_path) == 200.0
     assert child.rss_mb(tmp_path / "missing") is None
+
+
+def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch):
+    """KTD3: das Kind darf den Forkserver nicht am Leben halten — sonst feuert das
+    Parent-Death-Signal nach dem Tod des Loop-Prozesses nie."""
+    import os
+    from multiprocessing import forkserver as fs
+
+    from swarmq.worker.compute import child as childmod
+
+    r, w = os.pipe()
+    monkeypatch.setattr(fs._forkserver, "_forkserver_alive_fd", w, raising=False)
+    try:
+        childmod.release_forkserver_alive_fd()
+        assert fs._forkserver._forkserver_alive_fd is None
+        with pytest.raises(OSError):
+            os.fstat(w)
+        assert os.read(r, 1) == b""  # EOF: kein Schreibende mehr offen
+        childmod.release_forkserver_alive_fd()  # idempotent
+    finally:
+        os.close(r)
