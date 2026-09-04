@@ -197,6 +197,12 @@ class SlotPool:
                 child.job_queue.put(job)
             try:
                 envelope = await fut
+            except asyncio.CancelledError:
+                # KTD3/KTD4: Watchdog, Cancel-Monitor und Drain brechen ``run`` ab.
+                # Das Kind muss sterben, BEVOR der Slot frei wird — sonst rechnet es
+                # (samt Enkeln) weiter und der naechste Job landet auf demselben Slot.
+                await self._kill_child_uninterruptible(child, reason="cancelled")
+                raise
             finally:
                 child.pending = None
             child.tasks_done += 1
@@ -208,6 +214,21 @@ class SlotPool:
             slot.active = None
             if not slot.blocked and not self._closing:
                 self._free.put_nowait(index)
+
+    async def _kill_child_uninterruptible(self, child: _Child, *, reason: str) -> None:
+        """``_kill_child`` zu Ende fuehren, auch wenn weitere Cancels eintreffen.
+
+        Der Kill ist durch ``kill_grace_s`` + ``reap_timeout_s`` begrenzt; ein
+        waehrenddessen eintreffender Cancel wird erst danach weitergereicht.
+        """
+        kill = asyncio.ensure_future(self._kill_child(child, reason=reason))
+        while True:
+            try:
+                await asyncio.shield(kill)
+                return
+            except asyncio.CancelledError:
+                if kill.done():
+                    raise
 
     async def kill_slot(self, slot_index: int, *, reason: str) -> None:
         """Zweistufiger, synchroner Kill des aktiven Kindes eines Slots (KTD3)."""

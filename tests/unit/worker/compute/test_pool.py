@@ -289,3 +289,23 @@ async def test_progress_messages_reach_the_sink(ctx, signals):
         await asyncio.sleep(0.01)
     assert seen == [("progress", "t1", {"current": "1"}, 1000)]
     await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_cancelled_run_kills_the_child_before_the_slot_is_freed(ctx, signals):
+    """KTD3/KTD4: Watchdog/Cancel brechen ``run`` ab — das Kind (samt Prozessgruppe)
+    stirbt synchron, ehe der Slot wieder frei wird; der Enkel ueberlebt nicht."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    proc.behaviour = "stubborn"
+    await _ready(p, proc, 0)
+    assert p._free.qsize() == 0
+    t1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t1
+    assert [s[2] for s in signals] == [signal.SIGTERM, signal.SIGKILL]
+    assert all(s[0] == "killpg" for s in signals)
+    assert not proc.is_alive()
+    assert p._free.qsize() == 1
+    await p.aclose()
