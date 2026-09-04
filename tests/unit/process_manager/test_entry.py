@@ -177,3 +177,23 @@ class TestRecycleAckTimeoutExitCode:
             worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
         assert exc_info.value.code == RECYCLE_NOACK_EXIT_CODE == 75
         assert "no ack" in capsys.readouterr().err
+
+
+class TestInheritedSignalMask:
+    def test_entry_unblocks_sigterm_inherited_from_supervisor(self, monkeypatch):
+        """Der Supervisor blockiert SIGTERM waehrend des Spawns; das Kind muss die
+        Maske aufheben, sonst kommt sein eigenes SIGTERM nie an."""
+        import signal
+
+        async def fake_run(ns):
+            return None
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        before = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        try:
+            assert signal.SIGTERM in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+            shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+            assert signal.SIGTERM not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, before)

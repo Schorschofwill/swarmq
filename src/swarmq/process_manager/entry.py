@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import signal as _signal
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,20 @@ logger = structlog.get_logger()
 CONFIG_ERROR_EXIT_CODE = 78
 
 
+def _unblock_inherited_signals() -> None:
+    """Die vom Supervisor geerbte Signalblockade aufheben.
+
+    Der Supervisor blockiert SIGINT/SIGTERM/SIGHUP, waehrend er Worker startet
+    (Signal-Race, ``docs/worker-architecture.md`` 3.4); ``spawn`` vererbt die
+    Maske. Bliebe sie stehen, laege das SIGTERM, das der Watcher auf die eigene
+    PID schickt, fuer immer nur an, und der Worker endete erst per SIGKILL.
+    """
+    try:
+        _signal.pthread_sigmask(_signal.SIG_UNBLOCK, {_signal.SIGINT, _signal.SIGTERM, _signal.SIGHUP})
+    except (AttributeError, OSError):  # pragma: no cover - Nicht-POSIX
+        pass
+
+
 def worker_subprocess_entry(
     worker_id: int,
     shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
@@ -54,7 +69,6 @@ def worker_subprocess_entry(
     import argparse as _argparse
     import asyncio
     import logging as _stdlib_logging
-    import signal as _signal
 
     # Import a public symbol so a rename in
     # cli.py is detectable via tests rather than a silent subprocess
@@ -86,6 +100,7 @@ def worker_subprocess_entry(
 
     set_current_channel(channel)
     beat_interval = float(cfg.heartbeat_interval_s or 5.0)
+    _unblock_inherited_signals()
 
     async def _run() -> None:
         async def _watch_shutdown() -> None:
