@@ -179,3 +179,76 @@ def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch)
         childmod.release_forkserver_alive_fd()  # idempotent
     finally:
         os.close(r)
+
+
+# --------------------------------------------------------------------------- Job-Loop (Zweit-Review #8, #9)
+
+
+class _Listener:
+    def stop(self) -> None:
+        return None
+
+
+@pytest.fixture
+def _quiet_child_logging(monkeypatch):
+    monkeypatch.setattr(child, "_configure_child_logging", lambda job: _Listener())
+    monkeypatch.setattr(child, "_bind_job_context", lambda job: None)
+
+
+@pytest.mark.timeout(5)
+async def test_recv_job_delivers_jobs_then_none_on_end_signal_and_eof():
+    import multiprocessing as mp
+
+    r, w = mp.Pipe(duplex=False)
+    stop = asyncio.Event()
+    w.send(_job("plain", 1))
+    assert (await child._recv_job(r, stop)).task_name == "plain"
+    w.send(None)
+    assert await child._recv_job(r, stop) is None
+    w.close()
+    assert await child._recv_job(r, stop) is None  # EOF: der Loop-Prozess ist weg
+    r.close()
+
+
+@pytest.mark.timeout(5)
+async def test_recv_job_returns_none_on_stop_and_on_an_unreadable_frame():
+    import multiprocessing as mp
+
+    r, w = mp.Pipe(duplex=False)
+    stop = asyncio.Event()
+    stop.set()
+    assert await child._recv_job(r, stop) is None  # SIGTERM im Leerlauf
+    stop.clear()
+    w.send_bytes(b"\x80\x05definitely not a pickle")
+    assert await child._recv_job(r, stop) is None  # Zweit-Review #9: kein ewig offenes Future
+    r.close()
+    w.close()
+
+
+@pytest.mark.timeout(5)
+async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none(_quiet_child_logging):
+    import multiprocessing as mp
+
+    seen_loops: list[int] = []
+
+    class LoopWitness(Task):
+        task_info = TaskInfo(name="loop_witness", queues=["q"])
+
+        async def run(self, x: int) -> int:
+            seen_loops.append(id(asyncio.get_running_loop()))
+            return x + 1
+
+    job_r, job_w = mp.Pipe(duplex=False)
+    chan_r, chan_w = mp.Pipe(duplex=False)
+    server = asyncio.create_task(child._serve_jobs(0, job_r, chan_w))
+    job_w.send(ComputeJob(task_id="j1", task_name="loop_witness", queue="q", args=(1,), kwargs={}))
+    job_w.send(ComputeJob(task_id="j2", task_name="loop_witness", queue="q", args=(2,), kwargs={}))
+    first = await asyncio.to_thread(chan_r.recv)
+    second = await asyncio.to_thread(chan_r.recv)
+    assert [m[1].value for m in (first, second)] == [2, 3]
+    assert [m[1].task_id for m in (first, second)] == ["j1", "j2"]
+    assert len(set(seen_loops)) == 1  # ein Loop fuer alle Jobs (Erst-Review #4)
+    job_w.send(None)
+    await asyncio.wait_for(server, timeout=2.0)
+    for c in (job_r, job_w, chan_r, chan_w):
+        c.close()

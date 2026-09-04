@@ -47,6 +47,11 @@ class ComputeExecutor(TaskExecutor):
     async def aclose(self) -> None:
         await self._pool.aclose()
 
+    @property
+    def pool_healthy(self) -> bool:
+        """``/ready``: der Pool nimmt noch Kinder an (Handshakes gelingen, Slots frei)."""
+        return self._pool.healthy
+
     # ------------------------------------------------------------------ Rueckkanal
 
     async def progress_sink(self, msg: tuple[Any, ...]) -> None:

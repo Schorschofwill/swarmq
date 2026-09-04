@@ -52,7 +52,9 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
         "warnings": [],
         "error": None,
         "error_type": None,
-        "pool": resolve_pool(args),
+        # Ohne Validierung: ein ungueltiger Wert wird im try von _run_worker_check
+        # (resolve_pool) zum JSON-Fehler, nicht zum Traceback.
+        "pool": getattr(args, "pool", None) or os.environ.get("SWARMQ_POOL", "").strip() or "io",
         "slots": None,
     }
 

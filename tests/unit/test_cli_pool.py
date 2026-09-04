@@ -75,3 +75,19 @@ class TestPreparePoolArgs:
         prepare_pool_args(one)
         prepare_pool_args(many)
         assert many.concurrency == 1 and one.concurrency >= many.concurrency
+
+
+class TestCheckWithInvalidPool:
+    def test_check_reports_invalid_environment_pool_as_json_error(self, monkeypatch, capsys):
+        """Zweit-Review #1: ``--check`` haelt seinen JSON-Vertrag auch bei ungueltigem SWARMQ_POOL."""
+        import json
+
+        from swarmq.cli import main
+
+        monkeypatch.setenv("SWARMQ_POOL", "gpu")
+        rc = main(["worker", "--check", "--module", "json"])
+        out = capsys.readouterr().out.strip().splitlines()
+        payload = json.loads(out[-1])
+        assert rc == 1
+        assert payload["ok"] is False and payload["error_type"] == "ConfigurationError"
+        assert "SWARMQ_POOL" in payload["error"] and payload["pool"] == "gpu"

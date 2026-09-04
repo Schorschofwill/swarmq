@@ -271,8 +271,10 @@ async def _recv_job(job_conn: Any, stop: asyncio.Event) -> ComputeJob | None:
             return
         try:
             fut.set_result(job_conn.recv())
-        except (EOFError, OSError):
-            fut.set_result(None)  # Job-Pipe tot: der Loop-Prozess ist weg (R27, Rueckfallebene)
+        except Exception:
+            # EOF/OSError: der Loop-Prozess ist weg (R27, Rueckfallebene). Alles andere
+            # (unlesbarer Rahmen): ebenfalls beenden — ein offenes Future hinge fuer immer.
+            fut.set_result(None)
 
     loop.add_reader(job_conn.fileno(), _readable)
     stopper = asyncio.ensure_future(stop.wait())

@@ -103,6 +103,9 @@ class FakeProcess:
         return end
 
     def start(self) -> None:
+        if FakeCtx.fail_next_start:
+            FakeCtx.fail_next_start = False
+            raise OSError("forkserver unreachable")
         self.pid = next(_PIDS)
         self._alive = True
         self.started += 1
@@ -124,6 +127,7 @@ class FakeProcess:
 
 class FakeCtx:
     started: ClassVar[list[FakeProcess]] = []
+    fail_next_start: ClassVar[bool] = False
 
     def Pipe(self, duplex: bool = True) -> tuple[_FakePipeEnd, _FakePipeEnd]:
         q: _queue.Queue = _queue.Queue()
@@ -136,6 +140,7 @@ class FakeCtx:
 @pytest.fixture
 def ctx() -> FakeCtx:
     FakeCtx.started = []
+    FakeCtx.fail_next_start = False
     return FakeCtx()
 
 
@@ -214,13 +219,13 @@ async def _make_pool(ctx: FakeCtx, slots: int = 2, **kw: Any) -> SlotPool:
 @pytest.mark.timeout(5)
 async def test_fresh_child_runs_one_job_and_frees_the_slot(ctx, signals):
     p = await _make_pool(ctx)
-    slots_seen: list[int] = []
-    task = asyncio.create_task(p.run(_job(), use_di=False, on_slot=slots_seen.append))
+    task = asyncio.create_task(p.run(_job(), use_di=False))
     proc = await _started(1)
     assert proc.target is poolmod.child_once
     assert proc.args[0].task_id == "t1"
-    await _ready(p, proc, slots_seen[0])
-    proc.channel.send(("result", _result("t1", slots_seen[0])))
+    slot = proc.args[2]
+    await _ready(p, proc, slot)
+    proc.channel.send(("result", _result("t1", slot)))
     env = await task
     assert env.value == "ok"
     assert p._free.qsize() == 2
@@ -434,7 +439,7 @@ async def test_kill_slot_is_two_stage_and_waits_for_death(ctx, signals):
     proc = await _started(1)
     proc.behaviour = "stubborn"
     await _ready(p, proc, 0)
-    await p.kill_slot(0, reason="hard_timeout")
+    await p._kill_child(p._slots[0].active, reason="hard_timeout")
     assert [s[2] for s in signals] == [signal.SIGTERM, signal.SIGKILL]
     assert all(s[0] == "killpg" for s in signals)
     assert not proc.is_alive()
@@ -449,7 +454,7 @@ async def test_cooperative_child_needs_only_sigterm(ctx, signals):
     t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
     proc = await _started(1)
     await _ready(p, proc, 0)
-    await p.kill_slot(0, reason="cancel")
+    await p._kill_child(p._slots[0].active, reason="cancel")
     assert [s[2] for s in signals] == [signal.SIGTERM]
     with pytest.raises(ChildDied):
         await t1
@@ -463,12 +468,12 @@ async def test_immortal_child_blocks_the_slot(ctx, signals):
     proc = await _started(1)
     proc.behaviour = "immortal"
     await _ready(p, proc, 0)
-    await p.kill_slot(0, reason="hard_timeout")
+    await p._kill_child(p._slots[0].active, reason="hard_timeout")
     assert p.stats.blocked_slots == {0}
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert p._free.qsize() == 0  # blockierter Slot kommt nicht zurueck
+    assert not p.healthy and all(i < 0 for i in p._free._queue)  # blockierter Slot kommt nicht zurueck, nur Poison
     proc.die()
     await p.aclose()
 
@@ -545,3 +550,118 @@ async def test_repeated_handshake_failures_mark_the_pool_unhealthy_until_a_ready
     proc.channel.send(("result", _result("b", 0)))
     await t
     await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_fresh_child_result_right_after_ready_is_honored(ctx, signals):
+    """Zweit-Review #2: ``ready`` und ``result`` stehen hintereinander in der Loop-Queue,
+    bevor run() nach dem Handshake weiterlaeuft — ``pending`` muss vor dem Start stehen."""
+    p = await _make_pool(ctx, slots=1)
+    t = asyncio.create_task(p.run(_job("fast"), use_di=False))
+    proc = await _started(1)
+    proc.channel.send(("ready", 0, proc.pid, True))
+    proc.channel.send(("result", _result("fast", 0, value="quick")))
+    proc.die()
+    assert (await t).value == "quick"
+    assert p.stats.died == 0
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_next_dispatch_waits_only_for_the_replacement_not_the_old_childs_exit(ctx, signals):
+    """Zweit-Review #12: das alte Kind darf bis end_grace_s weiterleben, der naechste Job
+    geht trotzdem sofort an das bereite Ersatzkind (rollierend, R7)."""
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, end_grace_s=0.3)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    old.behaviour = "stubborn"  # ignoriert Ende-Signal und SIGTERM: lebt noch die ganze Gnadenfrist
+    await _ready(p, old, 0)
+    old.channel.send(("result", _result("a", 0)))
+    await t1
+    t2 = asyncio.create_task(p.run(_job("b"), use_di=True))
+    new = await _started(2)
+    await _ready(p, new, 0)
+    assert (await _next_job(new, timeout=1.0)).task_id == "b"  # ohne auf das alte Kind zu warten
+    new.channel.send(("result", _result("b", 0)))
+    assert (await t2).value == "ok"
+    assert old.is_alive()
+    old.die()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_recycle_spawn_error_still_ends_the_old_child_and_spares_the_next_dispatch(ctx, signals):
+    """Zweit-Review #15: ein OSError beim Spawn des Ersatzkinds darf weder das alte Kind
+    verwaisen noch in den naechsten Dispatch durchschlagen."""
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    assert (await _next_job(old)).task_id == "a"
+    FakeCtx.fail_next_start = True
+    old.channel.send(("result", _result("a", 0)))
+    await t1
+    assert (await _next_job(old)) is None  # Ende-Signal kam trotz Spawn-Fehler
+    t2 = asyncio.create_task(p.run(_job("b"), use_di=True))
+    new = await _started(2)  # dritter Startversuch gelingt
+    await _ready(p, new, 0)
+    assert (await _next_job(new)).task_id == "b"
+    new.channel.send(("result", _result("b", 0)))
+    assert (await t2).value == "ok"
+    old.die()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_process_start_failure_is_slot_unavailable_and_counts_against_health(ctx, signals):
+    """Zweit-Review #13: ein Fehler aus process.start() ist ein SlotUnavailable (Redelivery),
+    schliesst die Pipe-Enden und zaehlt gegen die Pool-Gesundheit."""
+    p = await _make_pool(ctx, slots=1)
+    FakeCtx.fail_next_start = True
+    with pytest.raises(SlotUnavailable, match="could not start"):
+        await p.run(_job("a"), use_di=False)
+    assert p.stats.unavailable == 1 and p.consecutive_unavailable == 1
+    assert FakeCtx.started == []
+    assert p._free.qsize() == 1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_all_slots_blocked_fails_fast_and_marks_the_pool_unhealthy(ctx, signals):
+    """Zweit-Review #10: ohne nutzbaren Slot darf run() nicht ewig warten, /ready wird rot."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    proc.behaviour = "immortal"
+    await _ready(p, proc, 0)
+    waiter = asyncio.create_task(p.run(_job("b"), use_di=False))  # wartet auf den einzigen Slot
+    await asyncio.sleep(0.02)
+    t1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t1
+    assert p.stats.blocked_slots == {0} and not p.healthy
+    with pytest.raises(SlotUnavailable):
+        await waiter
+    with pytest.raises(SlotUnavailable):
+        await p.run(_job("c"), use_di=False)
+    proc.die()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_aclose_is_not_held_hostage_by_a_hanging_recycle_hook(ctx, signals):
+    """Zweit-Review #16: ein blockierender WORKER_RECYCLING-Handler darf aclose nur end_grace_s kosten."""
+
+    async def hook(slot: int, reason: str, value: float) -> None:
+        await asyncio.sleep(60)
+
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, on_recycle=hook, end_grace_s=0.1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    old.channel.send(("result", _result("a", 0)))
+    await t1
+    new = await _started(2)
+    await _ready(p, new, 0)
+    await asyncio.wait_for(p.aclose(), timeout=2.0)
+    assert not old.is_alive() and not new.is_alive()

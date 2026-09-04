@@ -20,6 +20,8 @@ from swarmq.worker.compute.pool import SlotPool
 
 logger = structlog.get_logger(__name__)
 
+_RECYCLE_DISPATCH_TIMEOUT_S = 5.0  # wie worker.recycling fuer WORKER_RECYCLING des IO-Workers
+
 
 def preload_modules(registry: Any) -> list[str]:
     """R17: die Module der registrierten Tasks sind der Forkserver-Preload."""
@@ -45,6 +47,7 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
         await worker._signal_dispatcher.dispatch(
             Signal.WORKER_RECYCLING,
             worker_id=worker_id, kind="compute_child", slot=slot, reason=reason, value=value,
+            handler_timeout=_RECYCLE_DISPATCH_TIMEOUT_S,  # ein haengender Handler darf den Pool nicht aufhalten
         )
 
     pool = SlotPool(
@@ -105,10 +108,8 @@ async def forkserver_ready(worker: Any, proc_root: Path = Path("/proc")) -> tupl
     handle = getattr(worker, "_compute_handle", None)
     if handle is None:
         return False, "compute pool not started"
-    executor = getattr(worker, "_executor", None)
-    pool = getattr(executor, "_pool", None)
-    if pool is not None and not getattr(pool, "healthy", True):
-        return False, "compute pool unhealthy: repeated ready-handshake failures"
+    if not getattr(getattr(worker, "_executor", None), "pool_healthy", True):
+        return False, "compute pool unhealthy: repeated ready-handshake failures or every slot blocked"
     pid = forkserver_pid()
     if pid is None:
         return True, None  # nicht pruefbar (KTD14) — nicht als Ausfall melden

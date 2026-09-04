@@ -107,8 +107,8 @@ async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path)
     from swarmq.worker.compute import wiring
 
     monkeypatch.setattr(wiring, "forkserver_pid", lambda: None)
-    worker = SimpleNamespace(_compute_handle=object(), _executor=SimpleNamespace(_pool=SimpleNamespace(healthy=False)))
+    worker = SimpleNamespace(_compute_handle=object(), _executor=SimpleNamespace(pool_healthy=False))
     ok, reason = await wiring.forkserver_ready(worker, proc_root=tmp_path)
     assert ok is False and "unhealthy" in (reason or "")
-    worker._executor._pool.healthy = True
+    worker._executor.pool_healthy = True
     assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)

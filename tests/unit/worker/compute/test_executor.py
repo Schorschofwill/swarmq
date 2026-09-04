@@ -11,7 +11,7 @@ import pytest
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import NoRetry, SoftTimeoutError
 from swarmq.middleware import MiddlewareChain
-from swarmq.task import Task, TaskInfo
+from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker.compute.envelope import error_envelope, success_envelope
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.pool import ChildDied, SlotUnavailable
@@ -21,7 +21,6 @@ from swarmq.worker.gates import GateContext, GateDeps
 class FakePool:
     def __init__(self) -> None:
         self.behaviour: Any = success_envelope("t1", 42, slot=0)
-        self.kills: list[tuple[int, str]] = []
         self.cancelled = 0  # SlotPool.run toetet das Kind selbst im Cancel-Pfad
         self.started = self.closed = False
 
@@ -31,9 +30,7 @@ class FakePool:
     async def aclose(self) -> None:
         self.closed = True
 
-    async def run(self, job, *, use_di, on_slot=None):
-        if on_slot:
-            on_slot(0)
+    async def run(self, job, *, use_di):
         self.job, self.use_di = job, use_di
         b = self.behaviour
         if b == "hang":
@@ -45,9 +42,6 @@ class FakePool:
         if isinstance(b, BaseException):
             raise b
         return b
-
-    async def kill_slot(self, index: int, *, reason: str) -> None:
-        self.kills.append((index, reason))
 
 
 class Plain(Task):
@@ -137,7 +131,7 @@ async def test_hard_timeout_kills_child_and_fails_like_watchdog(setup):
     res = await ex.execute(_ctx(hard_timeout=0.05), {"retry_count": 0}, MiddlewareChain([]))
     assert res.is_error and not res.is_cancelled
     assert isinstance(res.task_exception, RuntimeError) and "hard timeout after 0.05s" in res.error_message
-    assert pool.cancelled == 1 and pool.kills == []  # der Pool toetet im Cancel-Pfad, nicht der Executor
+    assert pool.cancelled == 1  # der Pool toetet im Cancel-Pfad, nicht der Executor
 
 
 @pytest.mark.timeout(5)
@@ -194,3 +188,33 @@ async def test_start_and_aclose_delegate_to_pool(setup):
     await ex.start()
     await ex.aclose()
     assert pool.started and pool.closed
+
+
+class ComputeFireAndForget(Task):
+    task_info = TaskInfo(name="compute_faf", queues=["q"], delivery=DeliveryMode.FIRE_AND_FORGET)
+
+    async def run(self) -> int:
+        return 1
+
+
+@pytest.mark.timeout(5)
+async def test_slot_unavailable_on_fire_and_forget_logs_the_dedicated_loss_message(setup):
+    """Zweit-Review #4 / Erst-Review #14: die Nachricht ist bereits bestaetigt und verloren —
+    eigene Meldung statt eines generischen Task-Fehlers."""
+    from swarmq.worker.compute import executor as executor_module
+
+    _, pool, ex = setup
+    pool.behaviour = SlotUnavailable("compute child for slot 0 sent no ready signal")
+    fake_logger = MagicMock()
+    monkeypatch_target = executor_module.logger
+    executor_module.logger = fake_logger
+    try:
+        res = await ex.execute(
+            _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+        )
+    finally:
+        executor_module.logger = monkeypatch_target
+    assert res.is_error and res.slot_unavailable
+    events = [call.args[0] for call in fake_logger.error.call_args_list]
+    assert "compute_slot_unavailable_fire_and_forget_dropped" in events
+    assert "fire_and_forget_error" not in events
