@@ -16,6 +16,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.exceptions import TaskError
 from swarmq.signals import Signal
 from swarmq.task import Task
 
@@ -44,6 +45,20 @@ async def _run_burst(app: SwarmQ, timeout: float = 40.0) -> None:
     await asyncio.wait_for(app.start_worker(), timeout=timeout)
 
 
+async def _results(rabbitmq_url: str, valkey_url: str, tids: list[str]) -> list[object]:
+    """Der Worker schliesst beim Ende seine Verbindungen — Ergebnisse mit frischer App lesen."""
+    reader = SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[_QUEUE])
+    async with reader:
+        return [await reader.get_result(t, timeout=10.0) for t in tids]
+
+
+async def _error_message(rabbitmq_url: str, valkey_url: str, tid: str) -> str:
+    """Fehlerergebnisse kommen als ``TaskError`` an — den Text zurueckgeben."""
+    with pytest.raises(TaskError) as excinfo:
+        await _results(rabbitmq_url, valkey_url, [tid])
+    return str(excinfo.value)
+
+
 def _app(rabbitmq_url: str, valkey_url: str, **cfg) -> SwarmQ:
     return SwarmQ(
         RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
@@ -58,7 +73,7 @@ async def test_fresh_child_per_task_and_results_round_trip(rabbitmq_url, valkey_
         await app.broker.declare_queue(_QUEUE)
         tids = [await app.schedule("cpu_echo", i) for i in range(6)]
         await _run_burst(app)
-        results = [await app.get_result(t, timeout=10.0) for t in tids]
+    results = await _results(rabbitmq_url, valkey_url, tids)
     values = sorted(r["value"] for r in results)
     assert values == [0, 2, 4, 6, 8, 10]
     pids = {r["pid"] for r in results}
@@ -75,9 +90,8 @@ async def test_hard_timeout_kills_blocking_child_and_dead_letters(rabbitmq_url, 
         await app.broker.declare_queue(_QUEUE)
         tid = await app.schedule("cpu_hang", 30.0)
         await _run_burst(app)
-        result = await app.get_result(tid, timeout=10.0)
-    assert result["is_error"] is True
-    assert "hard timeout" in result["error_message"]
+    message = await _error_message(rabbitmq_url, valkey_url, tid)
+    assert "hard timeout" in message
 
 
 async def test_kill_takes_the_grandchild_with_it(rabbitmq_url, valkey_url, _register_fixture_tasks, tmp_path):
@@ -88,8 +102,7 @@ async def test_kill_takes_the_grandchild_with_it(rabbitmq_url, valkey_url, _regi
         await app.broker.declare_queue(_QUEUE)
         tid = await app.schedule("cpu_subprocess", str(pid_file))
         await _run_burst(app)
-        result = await app.get_result(tid, timeout=10.0)
-    assert result["is_error"] is True
+    await _error_message(rabbitmq_url, valkey_url, tid)
     grandchild = int(pid_file.read_text(encoding="ascii"))
     for _ in range(50):
         try:
@@ -109,9 +122,8 @@ async def test_exception_in_child_reaches_error_path_typed(rabbitmq_url, valkey_
         await app.broker.declare_queue(_QUEUE)
         tid = await app.schedule("cpu_fail")
         await _run_burst(app)
-        result = await app.get_result(tid, timeout=10.0)
-    assert result["is_error"] is True
-    assert "deterministic failure" in result["error_message"]
+    message = await _error_message(rabbitmq_url, valkey_url, tid)
+    assert "deterministic failure" in message
 
 
 async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_url, _register_fixture_tasks):
@@ -129,7 +141,7 @@ async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_
         await app.broker.declare_queue(_QUEUE)
         tids = [await app.schedule("cpu_di") for _ in range(5)]
         await _run_burst(app)
-        results = [await app.get_result(t, timeout=10.0) for t in tids]
+    results = await _results(rabbitmq_url, valkey_url, tids)
     for r in results:
         assert r["app_pid"] == r["pid"]  # APP-Singleton lebt im Kind, nicht im Loop
     pids = [r["pid"] for r in results]

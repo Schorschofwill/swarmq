@@ -28,6 +28,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+from tests.support.fixture_modules import ensure_fixture_registered  # noqa: E402
 from tests.support.services import (  # noqa: E402  # nach den Konstanten-Docs
     RABBITMQ_HOST,
     RABBITMQ_PORT,
@@ -106,7 +107,7 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     # interpreter (with its own CLI_TEST_QUEUE pointing at the same
     # queue name).
     os.environ["CLI_TEST_QUEUE"] = queue
-    import tests.integration._cli_fixture_tasks  # noqa: F401
+    ensure_fixture_registered("tests.integration._cli_fixture_tasks", "cli_echo")
 
     broker = RabbitMQBroker(rabbitmq_amqp_url())
     backend = ValkeyBackend(valkey_db_url())

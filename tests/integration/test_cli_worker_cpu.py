@@ -18,7 +18,8 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from tests.support.services import missing_services, rabbitmq_url, valkey_url
+from tests.support.fixture_modules import ensure_fixture_registered
+from tests.support.services import missing_services, rabbitmq_amqp_url, valkey_db_url
 
 pytestmark = [
     pytest.mark.timeout(120),
@@ -28,8 +29,8 @@ pytestmark = [
 
 def _spawn_cpu_worker(queue: str) -> subprocess.Popen[str]:
     env = dict(os.environ)
-    env["SWARMQ_BROKER_URL"] = rabbitmq_url()
-    env["SWARMQ_BACKEND_URL"] = valkey_url()
+    env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
+    env["SWARMQ_BACKEND_URL"] = valkey_db_url()
     env["CPU_FIXTURE_QUEUE"] = queue
     env["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
@@ -45,16 +46,16 @@ def _spawn_cpu_worker(queue: str) -> subprocess.Popen[str]:
 
 async def _enqueue(queue: str) -> str:
     os.environ["CPU_FIXTURE_QUEUE"] = queue
-    from tests.e2e import _cpu_fixture_tasks  # noqa: F401  registriert die Tasks fuer den Client
+    ensure_fixture_registered("tests.e2e._cpu_fixture_tasks", "cpu_echo")
 
-    app = SwarmQ(RabbitMQBroker(rabbitmq_url()), ValkeyBackend(valkey_url()), queues=[queue])
+    app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         await app.broker.declare_queue(queue)
-        return await app.schedule("cpu_echo", 21)
+        return await app.schedule("cpu_echo", 21, queue=queue)
 
 
 async def _fetch(queue: str, tid: str) -> dict:
-    app = SwarmQ(RabbitMQBroker(rabbitmq_url()), ValkeyBackend(valkey_url()), queues=[queue])
+    app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         return await app.get_result(tid, timeout=10.0)
 
@@ -74,4 +75,4 @@ def test_cpu_pool_worker_processes_a_task_and_exits_clean():
     assert "compute_pool_started" in output
     assert '"slots": 2' in output or "slots=2" in output
     result = asyncio.run(_fetch(queue, tid))
-    assert result["result"]["value"] == 42
+    assert result["value"] == 42
