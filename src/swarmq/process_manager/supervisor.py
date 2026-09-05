@@ -19,6 +19,8 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.logging import sanitize_url
+from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+from swarmq.supervision import INTENT_DRAINING, INTENT_RECYCLE, SupervisorChannel
 
 logger = structlog.get_logger()
 
@@ -64,6 +66,8 @@ class WorkerInfo:
     expected_shutdown: bool = False  # True when Autoscaler scaled down
     restart_timestamps: list[float] = field(default_factory=list)
     spawned_at: float = field(default_factory=time.monotonic)
+    # Plan 2026-09-03-001 (R21/R22): Lebenszeichen-/Absichts-/Bestaetigungskanal.
+    channel: SupervisorChannel | None = None
 
 
 QueueDepthFn = Callable[[], int]
@@ -135,6 +139,8 @@ class ProcessManager:
         shutdown_grace_s: float | None = None,
         reload: bool = False,
         watch_dirs: tuple[str, ...] = (),
+        heartbeat_timeout_s: float = 60.0,
+        delivery_limit: int = 20,
     ) -> None:
         if autoscale is not None:
             min_w, max_w = autoscale
@@ -182,6 +188,19 @@ class ProcessManager:
         # supervisor exits non-zero so systemd/k8s take over with their
         # own backoff policy.
         self._exhausted_slots = 0
+        # R20/KTD9 (Plan 2026-09-03-001): sauber beendete Worker (Exit 0 ohne
+        # expected_shutdown, z. B. --burst) werden nicht nachgefuellt; sind
+        # alle so beendet, endet der Supervisor mit 0.
+        self._clean_exits = 0
+        # R21/R30 (Plan 2026-09-03-001): Lebenszeichen-Frist und eigenes
+        # Ersatz-Budget (2 x Delivery-Limit je Stunde), getrennt von MAX_RESTARTS.
+        self.heartbeat_timeout_s = float(heartbeat_timeout_s)
+        self.hang_replacement_limit = 2 * int(delivery_limit)
+        self._hang_timestamps: list[float] = []
+        self._terminating: list[tuple[WorkerInfo, float]] = []
+        # R29 (Plan 2026-09-03-001): ein Worker endete mit
+        # CONFIG_ERROR_EXIT_CODE — kein Neustart, der Supervisor endet mit 1.
+        self._config_error = False
 
         # Autoscale state. Initialised to -inf ("never sampled / never
         # scaled") rather than 0.0 so the FIRST tick always samples and the
@@ -348,14 +367,15 @@ class ProcessManager:
         wid = self._next_worker_id
         self._next_worker_id += 1
 
+        channel = SupervisorChannel.create(self._ctx)
         p = self._ctx.Process(
             target=self._worker_entry,
-            args=(wid, self.shutdown_event, *self._worker_args),
+            args=(wid, self.shutdown_event, *self._worker_args, channel),
             name=f"swarmq-worker-{wid}",
             daemon=False,
         )
         p.start()
-        info = WorkerInfo(process=p, worker_id=wid)
+        info = WorkerInfo(process=p, worker_id=wid, channel=channel, spawned_at=time.monotonic())
         # dict key is PID — unique across restarts within a session.
         self.workers[p.pid or wid] = info
         logger.info("worker_spawned", worker_id=wid, pid=p.pid)
@@ -424,7 +444,12 @@ class ProcessManager:
     def _monitor_loop(self) -> int:
         """Check worker health, backfill to target count, autoscale."""
         while not self._shutting_down:
+            self._check_heartbeats()
+            self._escalate_terminating()
             self._check_dead_workers()
+            if self._config_error:
+                self._shutdown_all_workers()
+                return 1
 
             # All restart budgets burned and no live
             # worker left → exit non-zero instead of spinning (or, pre-
@@ -433,7 +458,19 @@ class ProcessManager:
             # outage from the orchestrator.
             if (
                 self._autoscale is None
-                and self._exhausted_slots >= self.initial_workers
+                and not self.workers
+                and self._exhausted_slots + self._clean_exits >= self.initial_workers
+                and self._exhausted_slots == 0
+            ):
+                logger.info(
+                    "all_workers_exited_clean",
+                    initial_workers=self.initial_workers,
+                    hint="every worker ended with exit code 0 (burst drain); exiting 0",
+                )
+                return 0
+            if (
+                self._autoscale is None
+                and self._exhausted_slots + self._clean_exits >= self.initial_workers
                 and not self.workers
             ):
                 logger.error(
@@ -477,7 +514,7 @@ class ProcessManager:
         deliberately).
         """
         if self._autoscale is None:
-            return max(0, self.initial_workers - self._exhausted_slots)
+            return max(0, self.initial_workers - self._exhausted_slots - self._clean_exits)
         return len(self.workers)
 
     def _check_dead_workers(self) -> None:
@@ -509,9 +546,111 @@ class ProcessManager:
                 # Autoscaler scaled this worker down — do not restart.
                 continue
             if exitcode == 0:
-                # Clean exit (burst-drain, etc.): also no restart.
+                # Clean exit (burst-drain, etc.): also no restart, and the
+                # slot is retired so the backfill does not respawn it (KTD9).
+                self._clean_exits += 1
+                continue
+            if exitcode == CONFIG_ERROR_EXIT_CODE:
+                # R29: Konfigurationsfehler — ein Neustart wuerde denselben
+                # Fehler reproduzieren. Genau ein Startversuch.
+                logger.error(
+                    "worker_config_error",
+                    worker_id=info.worker_id,
+                    pid=pid,
+                    exitcode=exitcode,
+                    hint="fix the configuration and start again; no restart attempted",
+                )
+                self._config_error = True
                 continue
             self._maybe_restart(info)
+
+    # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)
+
+    def _heartbeat_deadline(self, info: WorkerInfo) -> float:
+        """Frist: normal ``heartbeat_timeout_s``; im Drain die Shutdown-Gnade plus SIGTERM-Frist."""
+        if info.channel is not None and info.channel.intent_value() in (INTENT_DRAINING, INTENT_RECYCLE):
+            return self.shutdown_grace_s + self.SHUTDOWN_TERM_S
+        return self.heartbeat_timeout_s
+
+    def _check_heartbeats(self) -> None:
+        """Worker ohne frisches Lebenszeichen ersetzen (SIGTERM, spaeter SIGKILL)."""
+        if self._shutting_down:
+            return
+        now = time.monotonic()
+        terminating = {id(info) for info, _ in self._terminating}
+        for info in list(self.workers.values()):
+            channel = info.channel
+            if channel is None or not info.process.is_alive() or id(info) in terminating:
+                continue
+            if not info.expected_shutdown and channel.intent_value() == INTENT_RECYCLE:
+                # KTD11: Absicht → expected_shutdown zuerst, dann Ersatz, dann ack.
+                # Zaehlt weder gegen MAX_RESTARTS noch als sauberes Ende.
+                info.expected_shutdown = True
+                replacement = self._start_worker()
+                channel.acknowledge_replacement()
+                logger.info(
+                    "worker_recycling_replacement",
+                    worker_id=info.worker_id, pid=info.process.pid, replacement_pid=replacement.process.pid,
+                )
+                continue
+            last = channel.last_beat() or info.spawned_at
+            stale = now - last
+            if stale <= self._heartbeat_deadline(info):
+                continue
+            if info.expected_shutdown:  # Recycler/Scale-down im Drain eingefroren: toeten, kein Ersatz
+                logger.warning(
+                    "worker_hung_during_drain", worker_id=info.worker_id, pid=info.process.pid,
+                    stale_s=round(stale, 1), deadline_s=self._heartbeat_deadline(info),
+                )
+                self._terminate_worker(info)
+            else:
+                self._replace_hung_worker(info, stale)
+
+    def _terminate_worker(self, info: WorkerInfo) -> None:
+        """SIGTERM jetzt, SIGKILL nach ``SHUTDOWN_TERM_S`` (``_escalate_terminating``)."""
+        try:
+            info.process.terminate()
+        except ProcessLookupError:
+            pass
+        self._terminating.append((info, time.monotonic() + self.SHUTDOWN_TERM_S))
+
+    def _replace_hung_worker(self, info: WorkerInfo, stale_s: float) -> None:
+        now = time.monotonic()
+        info.expected_shutdown = True  # der SIGKILL-Exit darf keinen zweiten Ersatz ausloesen
+        self._hang_timestamps = [t for t in self._hang_timestamps if now - t <= self.RESTART_WINDOW]
+        logger.warning(
+            "worker_hung",
+            worker_id=info.worker_id, pid=info.process.pid, stale_s=round(stale_s, 1),
+            deadline_s=self._heartbeat_deadline(info),
+        )
+        if len(self._hang_timestamps) >= self.hang_replacement_limit:
+            self._exhausted_slots += 1
+            logger.error(
+                "hang_replacement_budget_exhausted",
+                limit=self.hang_replacement_limit, window_s=self.RESTART_WINDOW,
+                hint="a poison message keeps hanging workers; check the DLQ and the delivery limit",
+            )
+        else:
+            self._hang_timestamps.append(now)
+            self._start_worker()
+        self._terminate_worker(info)
+
+    def _escalate_terminating(self) -> None:
+        """SIGKILL fuer ersetzte Worker, die SIGTERM ueberlebt haben."""
+        now = time.monotonic()
+        remaining: list[tuple[WorkerInfo, float]] = []
+        for info, deadline in self._terminating:
+            if not info.process.is_alive():
+                continue
+            if now >= deadline:
+                logger.error("worker_hung_killed", worker_id=info.worker_id, pid=info.process.pid)
+                try:
+                    info.process.kill()
+                except ProcessLookupError:
+                    pass
+                continue
+            remaining.append((info, deadline))
+        self._terminating = remaining
 
     def _maybe_restart(self, old: WorkerInfo) -> None:
         """Restart ``old`` respecting the rolling-window rate limit.

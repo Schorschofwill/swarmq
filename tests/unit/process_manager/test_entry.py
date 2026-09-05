@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from swarmq.process_manager import (
     worker_subprocess_entry,
 )
@@ -108,3 +110,90 @@ class TestWorkerSubprocessEntry:
         assert not hasattr(ns, "watch_dirs"), (
             "watch_dirs leaked to worker Namespace"
         )
+
+
+class TestConfigErrorExitCode:
+    """R29 (Plan 2026-09-03-001): Konfigurationsfehler enden mit Exit 78."""
+
+    def test_configuration_error_exits_with_config_code(self, monkeypatch, capsys):
+        from swarmq.exceptions import ConfigurationError
+        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+
+        async def boom(ns):
+            raise ConfigurationError("FromDishka annotation(s) that never inject: t: run.db")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE == 78
+        assert "never inject" in capsys.readouterr().err
+
+
+class TestHeartbeatWriter:
+    """R21/KTD10: der Entry schreibt das Lebenszeichen aus dem Event-Loop."""
+
+    def test_channel_receives_beats_and_is_exposed(self, monkeypatch):
+        import asyncio
+        import multiprocessing
+
+        from swarmq import supervision as sv
+
+        ch = sv.SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        seen: list[object] = []
+
+        async def fake_run(ns):
+            seen.append(sv.current_channel())
+            await asyncio.sleep(0.05)
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg(heartbeat_interval_s=0.01), ch)
+        assert ch.last_beat() > 0.0
+        assert seen == [ch]
+
+    def test_without_channel_nothing_is_written(self, monkeypatch):
+        from swarmq import supervision as sv
+
+        async def fake_run(ns):
+            return None
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert sv.current_channel() is None
+
+
+class TestRecycleAckTimeoutExitCode:
+    def test_missing_ack_exits_with_tempfail_code(self, monkeypatch, capsys):
+        from swarmq.supervision import RECYCLE_NOACK_EXIT_CODE, RecycleAckTimeout
+
+        async def boom(ns):
+            raise RecycleAckTimeout("no ack")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert exc_info.value.code == RECYCLE_NOACK_EXIT_CODE == 75
+        assert "no ack" in capsys.readouterr().err
+
+
+class TestInheritedSignalMask:
+    def test_entry_unblocks_sigterm_inherited_from_supervisor(self, monkeypatch):
+        """Der Supervisor blockiert SIGTERM waehrend des Spawns; das Kind muss die
+        Maske aufheben, sonst kommt sein eigenes SIGTERM nie an."""
+        import signal
+
+        async def fake_run(ns):
+            return None
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        before = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        try:
+            assert signal.SIGTERM in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+            shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+            assert signal.SIGTERM not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, before)

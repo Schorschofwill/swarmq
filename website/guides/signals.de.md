@@ -48,6 +48,7 @@ dispatched wurde — keine separate Event-Loop, kein Worker-Thread.
 | `TASK_RATE_LIMITED` | Wenn Rate-Limiter eine Nachricht aufschiebt | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | Wenn Unique-Task-SETNX das Race verliert | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | Worker-Lifecycle | `worker_id` |
+| `WORKER_RECYCLING` | Ein Rechenkind (`kind="compute_child"`) oder der Worker selbst (`kind="worker"`) wird nach RSS oder Taskzahl recycelt | `worker_id`, `kind`, `slot`, `reason` (`rss`/`tasks`/`forced`), `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler-Leader-Übergänge | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader-Swap-Quellen | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up nach Downtime hat Cron-Termine übersprungen | `worker_id`, `schedule_name`, `skipped_count` |

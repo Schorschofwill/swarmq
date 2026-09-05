@@ -6,6 +6,52 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-03
+
+### Changed (breaking)
+
+- **The supervisor is the default.** `swarmq worker` always starts a
+  `ProcessManager` with the worker as a subprocess, also with `--processes 1`.
+  Two processes instead of one; `SIGHUP` now means reload (as it did with
+  `--processes`); a crashing worker is restarted internally within the budget
+  (5 per hour) before the process exits, so alert on the `worker_died` log
+  event rather than on container restarts. `--burst` still exits 0 once every
+  worker drained.
+- **Startup check for ineffective `FromDishka` annotations.** A parameter such
+  as `db: FromDishka[Db] | None = None` never injected anything and silently
+  stayed `None`; the worker now refuses to start with a `ConfigurationError`
+  naming task and parameter — in every pool mode. Declare
+  `db: FromDishka[Db]` without `| None` and without a default.
+- **Configuration errors end the run after one attempt.** A worker subprocess
+  that fails its startup checks exits with code 78; the supervisor does not
+  restart it and exits 1 instead of burning the restart budget.
+
+### Added
+
+- **CPU mode** (`--pool cpu`, `SWARMQ_POOL`): task bodies run in compute
+  children forked from a pre-warmed `forkserver`; the loop process never
+  computes. `hard_timeout` and cancel kill the child's process group;
+  `--concurrency` means compute slots and defaults to the CPUs assigned to the
+  worker (affinity and cgroup quota) divided by `--processes`. Fresh child per
+  task without DI, reused child with RSS/task-count recycling for `FromDishka`
+  tasks. See the [CPU mode guide](../guides/cpu-mode.md).
+- **Heartbeat to the supervisor**: a worker whose event loop stops writing its
+  liveness timestamp for `SWARMQ_HEARTBEAT_TIMEOUT_S` (default 60 s) is
+  replaced (SIGTERM, then SIGKILL), with its own budget of 2 × delivery limit
+  per hour. A message that keeps hanging workers is dead-lettered by the worker
+  from the penultimate delivery on (`x-delivery-count`), with an error result,
+  workflow failure, unique release and `TASK_DLQ` — not silently by the broker.
+- **Self-recycling of the IO worker** (`SWARMQ_RECYCLE_RSS_MB`,
+  `SWARMQ_RECYCLE_MAX_TASKS`, opt-in): after a task the worker asks the
+  supervisor for a replacement, waits for the acknowledgement and drains
+  without forced cancellation.
+- Signal `WORKER_RECYCLING` and metric `swarmq_recyclings_total{kind,reason}`.
+- New settings: `SWARMQ_HEARTBEAT_INTERVAL_S`, `SWARMQ_HEARTBEAT_TIMEOUT_S`,
+  `SWARMQ_CONSUMER_TIMEOUT_S` (startup warning when a `hard_timeout` exceeds
+  it), `SWARMQ_MALLOC_TRIM_THRESHOLD`, `SWARMQ_MALLOC_ARENA_MAX`,
+  `SWARMQ_COMPUTE_THREAD_LIMIT`. `/ready` reports the forkserver in CPU mode;
+  startup warns when `queue_type` is not `quorum` (no delivery limit).
+
 ## [0.4.1] — 2026-08-30
 
 ### Added

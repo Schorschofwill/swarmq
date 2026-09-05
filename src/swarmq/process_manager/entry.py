@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import signal as _signal
+import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
@@ -12,15 +15,43 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
+from swarmq.exceptions import ConfigurationError
 from swarmq.process_manager.config import WorkerConfig
+from swarmq.supervision import (
+    RECYCLE_NOACK_EXIT_CODE,
+    RecycleAckTimeout,
+    SupervisorChannel,
+    set_current_channel,
+)
 
 logger = structlog.get_logger()
+
+
+#: Exit-Code fuer Konfigurationsfehler im Worker-Subprozess (R29, KTD8).
+#: Entspricht ``EX_CONFIG`` aus sysexits.h; der Supervisor startet einen so
+#: beendeten Worker nicht neu, sondern endet selbst mit 1.
+CONFIG_ERROR_EXIT_CODE = 78
+
+
+def _unblock_inherited_signals() -> None:
+    """Die vom Supervisor geerbte Signalblockade aufheben.
+
+    Der Supervisor blockiert SIGINT/SIGTERM/SIGHUP, waehrend er Worker startet
+    (Signal-Race, ``docs/worker-architecture.md`` 3.4); ``spawn`` vererbt die
+    Maske. Bliebe sie stehen, laege das SIGTERM, das der Watcher auf die eigene
+    PID schickt, fuer immer nur an, und der Worker endete erst per SIGKILL.
+    """
+    try:
+        _signal.pthread_sigmask(_signal.SIG_UNBLOCK, {_signal.SIGINT, _signal.SIGTERM, _signal.SIGHUP})
+    except (AttributeError, OSError):  # pragma: no cover - Nicht-POSIX
+        pass
 
 
 def worker_subprocess_entry(
     worker_id: int,
     shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
     cfg: WorkerConfig,
+    channel: SupervisorChannel | None = None,
 ) -> None:
     """Run a single worker inside a spawned subprocess.
 
@@ -38,7 +69,6 @@ def worker_subprocess_entry(
     import argparse as _argparse
     import asyncio
     import logging as _stdlib_logging
-    import signal as _signal
 
     # Import a public symbol so a rename in
     # cli.py is detectable via tests rather than a silent subprocess
@@ -68,12 +98,25 @@ def worker_subprocess_entry(
     kwargs.pop("watch_dirs", None)
     ns = _argparse.Namespace(**kwargs)
 
+    set_current_channel(channel)
+    beat_interval = float(cfg.heartbeat_interval_s or 5.0)
+    _unblock_inherited_signals()
+
     async def _run() -> None:
         async def _watch_shutdown() -> None:
             # Poll the cross-process event; when set, raise SIGTERM
             # on ourselves so the Worker's R2.5 graceful-shutdown
             # handler fires naturally.
+            # R21/KTD10: das Lebenszeichen kommt aus demselben Tick — ein
+            # blockierter Loop schreibt nicht mehr, genau das erkennt der
+            # Supervisor. Geschrieben wird alle ``heartbeat_interval_s``,
+            # auch waehrend des Drains.
+            next_beat = 0.0
             while True:
+                now = time.monotonic()
+                if channel is not None and now >= next_beat:
+                    channel.beat()
+                    next_beat = now + beat_interval
                 if shutdown_event.is_set():
                     os.kill(os.getpid(), _signal.SIGTERM)
                     return
@@ -89,3 +132,12 @@ def worker_subprocess_entry(
         asyncio.run(_run())
     except KeyboardInterrupt:
         return
+    except RecycleAckTimeout as exc:
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        raise SystemExit(RECYCLE_NOACK_EXIT_CODE) from None
+    except ConfigurationError as exc:
+        # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
+        # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code
+        # und der Supervisor beendet den Lauf statt fuenfmal neu zu starten.
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None

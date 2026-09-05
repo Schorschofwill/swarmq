@@ -100,9 +100,26 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--concurrency",
         type=_positive_int,
-        default=10,
+        default=None,
         metavar="N",
-        help="Maximum tasks executed in parallel (default: 10).",
+        help=(
+            "Maximum tasks executed in parallel (default: 10). With "
+            "--pool cpu this is the number of compute slots; the default "
+            "is then the number of CPUs assigned to the worker (affinity "
+            "and cgroup quota), divided by --processes."
+        ),
+    )
+    worker.add_argument(
+        "--pool",
+        choices=("io", "cpu"),
+        default=None,  # aufgeloest in cli.pool.resolve_pool: Flag > SWARMQ_POOL > io
+        help=(
+            "Execution pool (default: io). 'cpu' runs every task body in a "
+            "compute child forked from a pre-warmed forkserver: the loop "
+            "process never computes, hard_timeout and cancel kill the child, "
+            "--concurrency means compute slots. POSIX only; not combinable "
+            "with --autoscale."
+        ),
     )
     worker.add_argument(
         "--log-level",

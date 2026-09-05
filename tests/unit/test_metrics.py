@@ -247,3 +247,19 @@ class TestMetricsServer:
             assert status_line.startswith(b"HTTP/1.1 405"), status_line
             writer.close()
             await writer.wait_closed()
+
+
+async def test_recycling_signal_increments_recyclings_total():
+    """Plan 2026-09-03-001 (R7/R23): jedes Recycling zaehlt mit Grund und Art."""
+    from swarmq.metrics import Metrics, install_signal_collectors
+    from swarmq.signals import Signal, SignalDispatcher
+
+    m = Metrics()
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+    await disp.dispatch(Signal.WORKER_RECYCLING, worker_id="w", kind="compute_child", slot=0, reason="rss", value=320.0)
+    await disp.dispatch(Signal.WORKER_RECYCLING, worker_id="w", kind="worker", slot=None, reason="tasks", value=500.0)
+    if m.enabled:
+        body = m.render().decode()
+        assert 'swarmq_recyclings_total{kind="compute_child",reason="rss"} 1.0' in body
+        assert 'swarmq_recyclings_total{kind="worker",reason="tasks"} 1.0' in body

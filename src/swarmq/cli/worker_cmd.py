@@ -85,11 +85,27 @@ async def run_worker_async(args: argparse.Namespace) -> None:
 
     broker = RabbitMQBroker(broker_url)
     backend = ValkeyBackend(backend_url)
+    pool_kwargs = {
+        name: value
+        for name in (
+            "pool",
+            "recycle_rss_mb",
+            "recycle_max_tasks",
+            "heartbeat_interval_s",
+            "heartbeat_timeout_s",
+            "consumer_timeout_s",
+            "malloc_trim_threshold",
+            "malloc_arena_max",
+            "compute_thread_limit",
+        )
+        if (value := getattr(args, name, None)) is not None
+    }
     app = SwarmQ(
         broker,
         backend,
         queues=args.queues,
         concurrency=args.concurrency,
+        **pool_kwargs,
         log_level=args.log_level,
         log_json=(args.log_format == "json"),
         burst_mode=args.burst,

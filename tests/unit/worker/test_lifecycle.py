@@ -822,3 +822,40 @@ class TestConfigAutoWireDefaults:
         assert cfg.metrics_host == "127.0.0.1"
         assert cfg.health_port is None
         assert cfg.health_host == "127.0.0.1"
+
+
+@pytest.mark.timeout(5)
+async def test_request_shutdown_marks_draining_on_supervisor_channel(worker):
+    """R21/KTD10: im Drain gilt beim Supervisor die laengere Lebenszeichen-Frist."""
+    import multiprocessing
+
+    from swarmq import supervision as sv
+    from swarmq.worker.lifecycle import WorkerState
+
+    ch = sv.SupervisorChannel.create(multiprocessing.get_context("spawn"))
+    sv.set_current_channel(ch)
+    try:
+        worker._state = WorkerState.RUNNING
+        worker._request_shutdown()
+    finally:
+        sv.set_current_channel(None)
+    assert ch.intent_value() == sv.INTENT_DRAINING
+
+
+class TestAbortTeardownClosesComputePool:
+    """Review #6 / docs/solutions/patterns/worker-cancel-safe-teardown-detached-tasks-2026-06-01.md:
+    ein abgebrochener start_worker() darf im CPU-Modus keine Rechenkinder zuruecklassen."""
+
+    async def test_abort_teardown_closes_the_compute_executor(self, worker):
+        from swarmq.worker.compute.executor import ComputeExecutor
+
+        executor = ComputeExecutor.__new__(ComputeExecutor)
+        executor.aclose = AsyncMock()  # type: ignore[method-assign]
+        worker._executor = executor
+        await worker._abort_teardown()
+        executor.aclose.assert_awaited_once()
+
+    async def test_abort_teardown_is_a_noop_for_the_io_executor(self, worker):
+        before = worker._executor
+        await worker._abort_teardown()
+        assert worker._executor is before

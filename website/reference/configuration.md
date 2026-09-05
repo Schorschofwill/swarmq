@@ -31,7 +31,16 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Seconds to let in-flight tasks finish on SIGTERM before hard-killing. |
 | `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Upper bound on a complete publish, including internal retries. A publish that exceeds it fails with a broker connection error instead of waiting indefinitely for a confirm that a silently dead transport will never deliver. During graceful shutdown the shorter of this value and the remaining shutdown grace period applies. |
 | `SWARMQ_DELIVERY_LIMIT` | `20` | Delivery budget for quorum queues (`x-delivery-limit`); ignored for classic queues. Once a message has been delivered this many times, the broker itself dead-letters it — the safety net that stops a task which reliably kills the process (SIGSEGV/OOM) from being redelivered forever without ever reaching `max_retries`. The default covers three to four task-level retries per delivery plus headroom for broker hiccups. That headroom is narrower since the publish deadline: a publish that breaks its deadline inside the worker redelivers the in-flight message instead of acking it, and each round costs one delivery. Raise it if you must ride out longer broker outages; lower it to force a tighter delivery window. |
-| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. |
+| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. Only quorum queues carry `x-delivery-limit`; without it a message that keeps hanging workers is redelivered without bound (the worker warns at startup). |
+| `SWARMQ_POOL` | `io` | `io` or `cpu` — see the [CPU mode guide](../guides/cpu-mode.md). |
+| `SWARMQ_RECYCLE_RSS_MB` | unset (`250` in CPU mode) | Recycle a process after a task once its RSS exceeds this many MB. IO worker: opt-in self-recycling; CPU mode: threshold for reused DI children. |
+| `SWARMQ_RECYCLE_MAX_TASKS` | unset (`1000` in CPU mode) | Recycle a process after this many tasks (second line behind the RSS threshold). |
+| `SWARMQ_HEARTBEAT_INTERVAL_S` | `5` | How often the worker writes its liveness timestamp for the supervisor. |
+| `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | After this long without a heartbeat the supervisor replaces the worker (SIGTERM, then SIGKILL). Must exceed the interval and every legitimate loop stall; keep it below RabbitMQ's heartbeat detection. |
+| `SWARMQ_CONSUMER_TIMEOUT_S` | `1800` | The broker's `consumer_timeout`; the worker warns when a task's `hard_timeout` exceeds it. |
+| `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` for compute children (glibc growth). |
+| `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
+| `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads per compute child (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Seconds between in-task cancel-flag checks. |
 | `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Upper bound on individual Valkey ops in the cancel / dedup pipeline. |
 | `SWARMQ_BURST_MODE` | `false` | If `true`, worker exits after `SWARMQ_BURST_IDLE_TIMEOUT` seconds of queue silence. |

@@ -35,6 +35,9 @@ Listen siehe die [Referenz](../reference/index.md).
 
 - [Dead-Letter-Queues](dead-letter-queues.md) — DLQ'te Nachrichten
   mit `swarmq dlq` inspizieren, retryen und purgen.
+- [CPU-Modus](cpu-mode.md) — `--pool cpu` führt Task-Körper in
+  Rechenkindern mit echter Killbarkeit aus; Dimensionierung, Recycling
+  und der Supervisor, der jetzt für jeden Worker Standard ist.
 - [Hot Reload (nur Dev)](hot-reload.md) — `--reload` für den
   lokalen Developer-Loop; niemals für Produktion.
 - [Tasks testen](testing-tasks.md) — `Task.run()` unit-testen ohne

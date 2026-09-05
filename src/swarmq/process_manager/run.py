@@ -85,6 +85,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         # Argumente liefe er mit seinen Defaults und griffe nie.
         processes=int(getattr(args, "processes", 1) or 1),
         autoscale=args.autoscale,
+        recycling=bool(os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")),
         metrics_port=args.metrics_port,
         health_port=args.health_port,
     )
@@ -125,6 +126,8 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         health_port=args.health_port,
         reload=reload_enabled,
         watch_dirs=resolved_watch_dirs,
+        pool=getattr(args, "pool", "io") or "io",
+        heartbeat_interval_s=sq_config.heartbeat_interval_s,
     )
 
     pm = ProcessManager(
@@ -136,5 +139,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         shutdown_grace_s=shutdown_grace_s,
         reload=reload_enabled,
         watch_dirs=resolved_watch_dirs,
+        heartbeat_timeout_s=sq_config.heartbeat_timeout_s,
+        delivery_limit=sq_config.delivery_limit,
     )
     return pm.run()

@@ -170,6 +170,18 @@ Alternatives considered: a full Redis cluster (same API, heavier ops
 footprint), Postgres for results only (`LISTEN/NOTIFY` adds latency
 and does not give you Lua atomicity on rate limiting).
 
+## Process topology since 0.5.0
+
+Every `swarmq worker` runs under the **supervisor** (`ProcessManager`), also
+with a single worker: it restarts crashes within a budget, replaces a worker
+whose heartbeat stops, acknowledges a worker's own recycling request (rolling
+replacement, no lost slot) and exits cleanly when a `--burst` worker drains.
+In **CPU mode** (`--pool cpu`) the worker becomes a loop process that never
+computes: task bodies run in compute children forked from a pre-warmed
+`forkserver`, so a `hard_timeout` becomes a real kill and a leak never
+survives a task. Gates, middleware, signals and the ack stay in the loop
+process. See the [CPU mode guide](../guides/cpu-mode.md).
+
 ## Failure domains
 
 | Failure | Blast radius | Recovery |

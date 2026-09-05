@@ -47,6 +47,7 @@ dispatched — no separate event loop, no worker thread.
 | `TASK_RATE_LIMITED` | When the rate limiter defers a message | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | When a unique-task SETNX loses the race | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | Worker lifecycle | `worker_id` |
+| `WORKER_RECYCLING` | A compute child (`kind="compute_child"`) or the worker itself (`kind="worker"`) is recycled by RSS or task count | `worker_id`, `kind`, `slot`, `reason` (`rss`/`tasks`/`forced`), `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler leader transitions | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader swap sources | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up after downtime skipped cron occurrences | `worker_id`, `schedule_name`, `skipped_count` |

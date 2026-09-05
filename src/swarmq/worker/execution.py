@@ -38,6 +38,9 @@ class ExecutionResult:
     # Dishka-REQUEST-Scope: der Runner schließt ihn im finally (Detached-Shield).
     di_scope: Any = None
     di_token: Any = None
+    # CPU-Modus (KTD4): der Ready-Handshake blieb vor der Job-Uebergabe aus —
+    # kein Kindtod, die Nachricht wird ohne Retry-Zaehler erneut zugestellt.
+    slot_unavailable: bool = False
 
 
 class TaskExecutor:

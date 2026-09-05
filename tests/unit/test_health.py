@@ -197,3 +197,37 @@ class TestHealthServer:
             await asyncio.sleep(0.05)
             status, _, _ = await _http_get("127.0.0.1", port, "/oops")
             assert status == 404
+
+
+class TestComputeReadiness:
+    """Plan 2026-09-03-001 (U7): der Forkserver zaehlt zur Bereitschaft."""
+
+    async def _stubs(self):
+        clock = FakeClock()
+        broker = InMemoryBroker(clock)
+        backend = InMemoryBackend(clock)
+        await broker.connect()
+        await backend.connect()
+        return broker, backend
+
+    async def test_compute_check_failure_makes_worker_not_ready(self):
+        broker, backend = await self._stubs()
+
+        async def dead():
+            return False, "forkserver not running"
+
+        snapshot = await HealthChecker(broker, backend, compute_check=dead).check_all()
+        assert snapshot["ready"] is False
+        assert snapshot["compute"] == {"ok": False, "error": "forkserver not running"}
+        assert snapshot["broker"]["ok"] and snapshot["backend"]["ok"]
+
+    async def test_compute_check_success_and_absence(self):
+        broker, backend = await self._stubs()
+
+        async def alive():
+            return True, None
+
+        ok = await HealthChecker(broker, backend, compute_check=alive).check_all()
+        assert ok["ready"] is True and ok["compute"] == {"ok": True, "error": None}
+        plain = await HealthChecker(broker, backend).check_all()
+        assert "compute" not in plain

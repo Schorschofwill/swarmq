@@ -1,0 +1,114 @@
+"""Tests fuer swarmq.worker.compute.wiring (U7)."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+import structlog
+
+from swarmq.config import SwarmQConfig
+from swarmq.signals import Signal
+from swarmq.task import TaskInfo
+from swarmq.worker.compute import wiring
+from swarmq.worker.compute.executor import ComputeExecutor
+from swarmq.worker.compute.forkserver import ForkserverHandle
+
+
+class _T:
+    task_info = TaskInfo(name="t", queues=["q"], hard_timeout=3600)
+
+
+class _Registry:
+    def __init__(self, classes: dict[str, type]) -> None:
+        self._c = classes
+
+    def get_all(self) -> dict[str, type]:
+        return self._c
+
+
+def _worker(pool: str = "cpu", **cfg):
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="redis://x", pool=pool, concurrency=2, **cfg)
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock()
+    return SimpleNamespace(
+        _config=config, _registry=_Registry({"t": _T}), _gate_deps=MagicMock(),
+        _signal_dispatcher=dispatcher, _executor="original",
+    )
+
+
+def test_preload_modules_are_the_task_modules():
+    assert wiring.preload_modules(_Registry({"t": _T})) == [__name__]
+
+
+@pytest.mark.timeout(5)
+async def test_io_pool_leaves_executor_untouched():
+    w = _worker(pool="io")
+    assert await wiring.start_compute_executor(w) is None
+    assert w._executor == "original"
+
+
+@pytest.mark.timeout(5)
+async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch):
+    w = _worker()
+    handle = ForkserverHandle(context=MagicMock(), preload=(__name__,), pid=42, threads=1)
+    seen: dict[str, object] = {}
+
+    def fake_start(preload, **kw):
+        seen["preload"], seen["kw"] = preload, kw
+        return handle
+
+    monkeypatch.setattr(wiring, "start_forkserver", fake_start)
+    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(wiring.SlotPool, "aclose", AsyncMock())
+    executor = await wiring.start_compute_executor(w)
+    assert isinstance(executor, ComputeExecutor) and w._executor is executor
+    assert seen["preload"] == [__name__]
+    assert seen["kw"] == {"thread_limit": 1, "malloc_trim_threshold": 131072, "malloc_arena_max": 2}
+    assert w._compute_handle is handle
+    pool = executor._pool
+    assert pool.recycle_rss_mb == 250 and pool.recycle_max_tasks == 1000  # R28-Voreinstellung
+    await pool._on_recycle(1, "rss", 320.0)
+    w._signal_dispatcher.dispatch.assert_awaited_once()
+    args, kwargs = w._signal_dispatcher.dispatch.await_args
+    assert args[0] is Signal.WORKER_RECYCLING
+    assert kwargs["kind"] == "compute_child" and kwargs["slot"] == 1 and kwargs["reason"] == "rss"
+    await wiring.close_compute_executor(w)
+    wiring.SlotPool.aclose.assert_awaited_once()
+
+
+def test_hard_timeout_over_consumer_timeout_warns():
+    with structlog.testing.capture_logs() as logs:
+        wiring.warn_hard_timeout_over_consumer_timeout(_Registry({"t": _T}), consumer_timeout_s=1800)
+        wiring.warn_hard_timeout_over_consumer_timeout(_Registry({"t": _T}), consumer_timeout_s=7200)
+    events = [entry["event"] for entry in logs]
+    assert events == ["hard_timeout_exceeds_consumer_timeout"]
+    assert logs[0]["tasks"] == ["t(3600s)"]
+
+
+@pytest.mark.timeout(5)
+async def test_forkserver_ready_reports_running_and_dead(monkeypatch, tmp_path):
+    w = SimpleNamespace()
+    assert await wiring.forkserver_ready(w) == (False, "compute pool not started")
+    w._compute_handle = ForkserverHandle(context=None, preload=(), pid=42, threads=1)
+    monkeypatch.setattr(wiring, "forkserver_pid", lambda: 42)
+    (tmp_path / "42").mkdir()
+    assert await wiring.forkserver_ready(w, proc_root=tmp_path) == (True, None)
+    monkeypatch.setattr(wiring, "forkserver_pid", lambda: 43)
+    assert await wiring.forkserver_ready(w, proc_root=tmp_path) == (False, "forkserver not running")
+    monkeypatch.setattr(wiring, "forkserver_pid", lambda: None)
+    assert await wiring.forkserver_ready(w, proc_root=tmp_path) == (True, None)
+
+
+async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from swarmq.worker.compute import wiring
+
+    monkeypatch.setattr(wiring, "forkserver_pid", lambda: None)
+    worker = SimpleNamespace(_compute_handle=object(), _executor=SimpleNamespace(pool_healthy=False))
+    ok, reason = await wiring.forkserver_ready(worker, proc_root=tmp_path)
+    assert ok is False and "unhealthy" in (reason or "")
+    worker._executor.pool_healthy = True
+    assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)

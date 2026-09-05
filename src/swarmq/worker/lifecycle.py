@@ -21,6 +21,7 @@ import signal
 import sys
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -30,6 +31,7 @@ from swarmq.logging import sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
+from swarmq.supervision import RecycleAckTimeout, current_channel
 from swarmq.workflow_orchestration import WorkflowAdvancer, workflow_step_task_id
 
 if TYPE_CHECKING:
@@ -39,7 +41,8 @@ if TYPE_CHECKING:
     from swarmq.metrics import Metrics, MetricsServer
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
-    from swarmq.worker.gates import WorkerBackend, WorkerBroker
+    from swarmq.worker.execution import TaskExecutor
+    from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
 
 logger = structlog.get_logger()
 
@@ -86,7 +89,13 @@ class WorkerLifecycle:
         _metrics_server: MetricsServer | None
         _health_server: HealthServer | None
         _burst_monitor_task: asyncio.Task[None] | None
+        _recycle_monitor_task: asyncio.Task[None] | None
+        _tasks_done: int
+        _recycle_ack_missing: bool
+        _drain_timeout_override: float | None
         _metrics_sampler_task: asyncio.Task[None] | None
+        _executor: TaskExecutor
+        _gate_deps: GateDeps
 
         async def _on_message(self, message: Any) -> None: ...
 
@@ -167,16 +176,18 @@ class WorkerLifecycle:
                     host=self._config.metrics_host,
                     port=self._config.metrics_port,
                 )
-                await self._metrics_server.start()
+                await self._start_with_bind_retry(self._metrics_server.start)
             if self._config.health_port is not None:
                 from swarmq.health import HealthChecker, HealthServer
-                checker = HealthChecker(self._broker, self._backend)
+                checker = HealthChecker(
+                    self._broker, self._backend, compute_check=self._compute_readiness_check(),
+                )
                 self._health_server = HealthServer(
                     checker,
                     host=self._config.health_host,
                     port=self._config.health_port,
                 )
-                await self._health_server.start()
+                await self._start_with_bind_retry(self._health_server.start)
         except Exception:
             # The scheduler has already started; its
             # leader-election + poll tasks would leak as "Task was
@@ -198,6 +209,62 @@ class WorkerLifecycle:
                 except Exception:
                     logger.exception("rollback_scheduler_stop_failed")
             raise
+
+    # ---- CPU-Modus (Plan 2026-09-03-001, U7): Verdrahtung lebt in compute.wiring,
+    # damit dieses Modul und pipeline.py unter dem 800-Zeilen-Guard bleiben.
+
+    async def _start_executor(self) -> None:
+        from swarmq.worker.compute.wiring import start_compute_executor
+
+        await start_compute_executor(self)
+
+    async def _close_executor(self) -> None:
+        from swarmq.worker.compute.wiring import close_compute_executor
+
+        await close_compute_executor(self)
+
+    def _warn_hard_timeout_over_consumer_timeout(self) -> None:
+        from swarmq.worker.compute.wiring import warn_hard_timeout_over_consumer_timeout
+
+        warn_hard_timeout_over_consumer_timeout(self._registry, self._config.consumer_timeout_s)
+
+    def _compute_readiness_check(self) -> Any:
+        if self._config.pool != "cpu":
+            return None
+        from swarmq.worker.compute.wiring import forkserver_ready
+
+        return lambda: forkserver_ready(self)
+
+    # ---- Selbst-Recycling des IO-Workers (Plan 2026-09-03-001, R22/R31, KTD11):
+    # Logik in worker/recycling.py, damit dieses Modul unter dem 800-Zeilen-Guard bleibt.
+
+    def _start_recycle_monitor(self) -> None:
+        from swarmq.worker.recycling import start_recycle_monitor
+
+        start_recycle_monitor(self)
+
+    async def _request_recycle(self, reason: str, value: float) -> None:
+        from swarmq.worker.recycling import request_recycle
+
+        await request_recycle(self, reason, value)
+
+    async def _start_with_bind_retry(self, start: Callable[[], Awaitable[None]]) -> None:
+        from swarmq.worker.recycling import start_with_bind_retry
+
+        await start_with_bind_retry(start)
+
+    def _warn_without_delivery_limit(self) -> None:
+        """R21: ohne Quorum-Queue gibt es kein Delivery-Limit — eine Giftnachricht
+        koennte Worker endlos ersetzen."""
+        if self._config.queue_type != "quorum":
+            logger.warning(
+                "no_delivery_limit_for_queue_type",
+                queue_type=self._config.queue_type,
+                hint=(
+                    "x-delivery-limit exists only on quorum queues; with the supervisor "
+                    "replacing hung workers, a blocking message is redelivered without bound"
+                ),
+            )
 
     def _warn_priority_tasks_without_routing(self) -> None:
         # Warn when a registered task declares
@@ -259,6 +326,7 @@ class WorkerLifecycle:
                 )
 
     def _start_background_monitors(self) -> None:
+        self._start_recycle_monitor()
         # R4.5 Burst-Mode: launch the idle monitor only when burst is
         # enabled. The monitor sets _shutdown_event after the queues
         # have been silent for burst_idle_timeout seconds, exiting the
@@ -285,6 +353,9 @@ class WorkerLifecycle:
         await self._wire_coordination()
         await self._start_observability()
         self._warn_priority_tasks_without_routing()
+        self._warn_hard_timeout_over_consumer_timeout()
+        self._warn_without_delivery_limit()
+        await self._start_executor()
         await self._declare_and_consume_queues()
         self._state = WorkerState.RUNNING
 
@@ -317,6 +388,10 @@ class WorkerLifecycle:
         try:
             await self._shutdown_event.wait()
             await self._execute_shutdown()
+            if getattr(self, "_recycle_ack_missing", False):
+                # KTD11: ohne Bestaetigung Exit != 0, damit der Supervisor den
+                # bestehenden Restart-Pfad nimmt statt den Slot zu verlieren.
+                raise RecycleAckTimeout("supervisor did not acknowledge the recycle request")
         finally:
             await self._teardown_on_exit()
 
@@ -451,9 +526,13 @@ class WorkerLifecycle:
         # 2. Wait for in-flight tasks to complete
         tasks_snapshot = set(self._active_tasks)
         if tasks_snapshot:
+            # KTD11/R22: ein Recycling-Drain wartet ohne erzwungenen Abbruch
+            # (Frist aus dem groessten hard_timeout), damit ein gesunder
+            # Langlaeufer keinen Retry verliert; SIGTERM behaelt shutdown_timeout.
+            drain_timeout = getattr(self, "_drain_timeout_override", None) or self._config.shutdown_timeout
             _done, pending = await asyncio.wait(
                 tasks_snapshot,
-                timeout=self._config.shutdown_timeout,
+                timeout=drain_timeout,
             )
 
             # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
@@ -574,6 +653,7 @@ class WorkerLifecycle:
             # verbleibende Budget. Auch bereits laufende werden nachgezogen.
             self._set_publish_deadline(started_at + self._shutdown_publish_budget())
             await self._drain_in_flight()
+            await self._close_executor()
             await self._release_leftover_locks()
             await self._stop_scheduler_and_di()
             # 4. Close connections
@@ -635,6 +715,17 @@ class WorkerLifecycle:
             self._burst_monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._burst_monitor_task
+        recycle_task = getattr(self, "_recycle_monitor_task", None)
+        if recycle_task is not None and not recycle_task.done():
+            recycle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await recycle_task
+        # Der Compute-Pool gehoert dem Worker: seine Kinder duerfen einen
+        # abgebrochenen start_worker() nicht ueberleben (Tests, --reload,
+        # eingebettet). Im IO-Modus ein No-op. Siehe
+        # docs/solutions/patterns/worker-cancel-safe-teardown-detached-tasks-2026-06-01.md
+        with contextlib.suppress(Exception):
+            await self._close_executor()
 
         if (
             self._metrics_sampler_task is not None
@@ -660,5 +751,8 @@ class WorkerLifecycle:
         if self._state is not WorkerState.RUNNING:
             return
         self._state = WorkerState.DRAINING
+        channel = current_channel()
+        if channel is not None:
+            channel.mark_draining()  # R21/KTD10: laengere Lebenszeichen-Frist im Drain
         self._shutdown_event.set()
 

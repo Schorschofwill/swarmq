@@ -502,11 +502,11 @@
           "type": "bool"
         },
         {
-          "default": 10,
+          "default": null,
           "flags": [
             "--concurrency"
           ],
-          "help": "Maximum tasks executed in parallel (default: 10).",
+          "help": "Maximum tasks executed in parallel (default: 10). With --pool cpu this is the number of compute slots; the default is then the number of CPUs assigned to the worker (affinity and cgroup quota), divided by --processes.",
           "name": "--concurrency",
           "positional": false,
           "required": false,
@@ -576,6 +576,21 @@
           "positional": false,
           "required": true,
           "type": "dotted_module_name"
+        },
+        {
+          "choices": [
+            "io",
+            "cpu"
+          ],
+          "default": null,
+          "flags": [
+            "--pool"
+          ],
+          "help": "Execution pool (default: io). 'cpu' runs every task body in a compute child forked from a pre-warmed forkserver: the loop process never computes, hard_timeout and cancel kill the child, --concurrency means compute slots. POSIX only; not combinable with --autoscale.",
+          "name": "--pool",
+          "positional": false,
+          "required": false,
+          "type": "str"
         },
         {
           "default": false,

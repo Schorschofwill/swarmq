@@ -83,6 +83,7 @@ from swarmq.cli.dlq_cmd import (
 )
 from swarmq.cli.inspect_cmd import _format_inspect_table, _run_inspect_async
 from swarmq.cli.parser import _build_parser, _swarmq_version
+from swarmq.cli.pool import prepare_pool_args
 from swarmq.cli.schedule_cmd import (
     _format_schedule_table,
     _run_schedule_add,
@@ -233,48 +234,51 @@ def _parse_args_for_mode(
         return _emit_argparse_check_error(argparse_err.getvalue())
 
 
-def _run_worker_command(args: argparse.Namespace) -> int | tuple[Any, str]:
-    """Worker-Zweig: ``--check``-Dry-Run, Multi-Process-Supervisor oder
-    (Runner, Fehler-Präfix) für den Single-Process-Pfad."""
+def _run_worker_command(args: argparse.Namespace) -> int:
+    """Worker-Zweig: ``--check``-Dry-Run oder Supervisor; liefert den Exit-Code."""
     # R5.3: dry-run validation. Never starts the supervisor or touches
     # the broker — just checks whether the invocation would get past
     # pre-flight.
     if getattr(args, "check", False):
         return _run_worker_check(args)
+    # Plan 2026-09-03-001 (R1, R3, R4): Pool-Modus pruefen und --concurrency
+    # aufloesen, bevor irgendein Pfad den Wert liest.
+    try:
+        prepare_pool_args(args)
+    except ConfigurationError as exc:
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        return 1
 
-    # R4.6/R4.7: when the user opted into multi-process mode, dispatch to
-    # the synchronous supervisor (no asyncio loop — subprocesses run one).
-    # R5.3: --reload requires the ProcessManager supervisor — the
-    # single-process path has no SIGHUP handler and no execvpe pipeline.
-    use_multi = (
-        getattr(args, "processes", 1) > 1
-        or getattr(args, "autoscale", None) is not None
-        or getattr(args, "reload", False)
-    )
-    if use_multi:
-        from swarmq.process_manager.run import run_multi_process_worker
+    # R20 (Plan 2026-09-03-001): der Supervisor ist Standard — auch bei
+    # --processes 1. Lebenszeichen, Recycling und Neustart funktionieren so
+    # ueberall gleich; einen Single-Process-Pfad gibt es nicht mehr.
+    from swarmq.process_manager.run import run_multi_process_worker
 
-        # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
-        # process_manager importiert keine Broker-Implementierung mehr.
-        def _admin_factory() -> RabbitMQBroker:
-            import os as _os
+    # U21 (KTD6): die CLI baut die BrokerAdmin-Factory aus der URL;
+    # process_manager importiert keine Broker-Implementierung mehr.
+    def _admin_factory() -> RabbitMQBroker:
+        import os as _os
 
-            from swarmq.broker.rabbitmq import RabbitMQBroker
+        from swarmq.broker.rabbitmq import RabbitMQBroker
 
-            return RabbitMQBroker(_os.environ["SWARMQ_BROKER_URL"])
+        return RabbitMQBroker(_os.environ["SWARMQ_BROKER_URL"])
 
-        try:
-            return run_multi_process_worker(args, admin_factory=_admin_factory)
-        except (
-            ConfigurationError,
-            BrokerConnectionError,
-            BackendConnectionError,
-        ) as exc:
-            sys.stderr.write(f"swarmq worker: {exc}\n")
-            if getattr(args, "log_level", "INFO") == "DEBUG":
-                traceback.print_exc(file=sys.stderr)
-            return 1
-    return run_worker_async(args), "swarmq worker"
+    try:
+        return run_multi_process_worker(args, admin_factory=_admin_factory)
+    except KeyboardInterrupt:
+        return 0
+    except (
+        ModuleNotFoundError,
+        ConfigurationError,
+        BrokerConnectionError,
+        BackendConnectionError,
+    ) as exc:
+        # Eine Zeile statt Traceback — wie frueher im Single-Process-Pfad;
+        # DEBUG haengt den Traceback an.
+        sys.stderr.write(f"swarmq worker: {exc}\n")
+        if getattr(args, "log_level", "INFO") == "DEBUG":
+            traceback.print_exc(file=sys.stderr)
+        return 1
 
 
 def _startup_error_classes() -> tuple[type[BaseException], ...]:
@@ -350,11 +354,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.format = resolve_format(args.format)
 
     if args.command == "worker":
-        routed = _run_worker_command(args)
-        if isinstance(routed, int):
-            return routed
-        runner, error_prefix = routed
-    elif args.command == "schedule":
+        return _run_worker_command(args)
+    if args.command == "schedule":
         runner = _run_schedule_async(args)
         error_prefix = f"swarmq schedule {args.schedule_command}"
     elif args.command == "dlq":

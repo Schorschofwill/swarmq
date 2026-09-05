@@ -59,6 +59,17 @@ class WorkerConfig:
     # avoids the supervisor-only-flag drift that R4.6-H Unit 1 removed.
     reload: bool = False
     watch_dirs: tuple[str, ...] = ()
+    # Plan 2026-09-03-001: Pool-Modus und Schwellen; ``None`` heisst
+    # "SwarmQConfig-Voreinstellung", damit Bestandsaufrufer unveraendert bleiben.
+    pool: str = "io"
+    recycle_rss_mb: int | None = None
+    recycle_max_tasks: int | None = None
+    heartbeat_interval_s: float | None = None
+    heartbeat_timeout_s: float | None = None
+    consumer_timeout_s: float | None = None
+    malloc_trim_threshold: int | None = None
+    malloc_arena_max: int | None = None
+    compute_thread_limit: int | None = None
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):

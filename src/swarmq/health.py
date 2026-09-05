@@ -26,9 +26,9 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from swarmq.contracts import Publisher, ResultBackend
@@ -51,6 +51,7 @@ class ReadinessSnapshot(TypedDict):
     ready: bool
     broker: _DependencyState
     backend: _DependencyState
+    compute: NotRequired[_DependencyState]
 
 
 class HealthChecker:
@@ -69,10 +70,14 @@ class HealthChecker:
         backend: ResultBackend,
         *,
         timeout_s: float = 2.0,
+        compute_check: Callable[[], Awaitable[tuple[bool, str | None]]] | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._timeout = timeout_s
+        # Plan 2026-09-03-001 (U7): im CPU-Modus zaehlt der Forkserver zur
+        # Bereitschaft — tot bedeutet, kein Task kann mehr rechnen.
+        self._compute_check = compute_check
 
     @staticmethod
     def _sanitise_error(exc: BaseException) -> str:
@@ -124,11 +129,21 @@ class HealthChecker:
         """Return a structured snapshot suitable for JSON serialisation."""
         broker_ok, broker_err = await self.check_broker()
         backend_ok, backend_err = await self.check_backend()
-        return ReadinessSnapshot(
+        snapshot = ReadinessSnapshot(
             ready=broker_ok and backend_ok,
             broker=_DependencyState(ok=broker_ok, error=broker_err),
             backend=_DependencyState(ok=backend_ok, error=backend_err),
         )
+        if self._compute_check is not None:
+            try:
+                compute_ok, compute_err = await asyncio.wait_for(
+                    self._compute_check(), timeout=self._timeout
+                )
+            except Exception as exc:
+                compute_ok, compute_err = False, self._sanitise_error(exc)
+            snapshot["compute"] = _DependencyState(ok=compute_ok, error=compute_err)
+            snapshot["ready"] = snapshot["ready"] and compute_ok
+        return snapshot
 
 
 class HealthServer:

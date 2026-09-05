@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from typing import Any
 
+from swarmq.cli.pool import resolve_pool
 from swarmq.exceptions import ConfigurationError
 
 #: Keys that ``--check`` always emits on its JSON payload, regardless of
@@ -29,6 +31,8 @@ _WORKER_CHECK_PAYLOAD_KEYS = (
     "warnings",
     "error",
     "error_type",
+    "pool",
+    "slots",
 )
 
 
@@ -48,6 +52,10 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
         "warnings": [],
         "error": None,
         "error_type": None,
+        # Ohne Validierung: ein ungueltiger Wert wird im try von _run_worker_check
+        # (resolve_pool) zum JSON-Fehler, nicht zum Traceback.
+        "pool": getattr(args, "pool", None) or os.environ.get("SWARMQ_POOL", "").strip() or "io",
+        "slots": None,
     }
 
 
@@ -89,11 +97,18 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             autoscale=getattr(args, "autoscale", None),
             metrics_port=getattr(args, "metrics_port", None),
             health_port=getattr(args, "health_port", None),
+            pool=resolve_pool(args),
+            concurrency=getattr(args, "concurrency", None),
+            recycling=bool(
+                os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")
+            ),
         )
         payload.update(
             ok=True,
             module_origin=result["module_origin"],
             watch_dirs=result["watch_dirs"],
+            pool=result["pool"],
+            slots=result["slots"],
             warnings=result["warnings"],
         )
         sys.stdout.write(json.dumps(payload) + "\n")

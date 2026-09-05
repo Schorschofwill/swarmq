@@ -25,6 +25,7 @@ from swarmq.exceptions import NoRetry, Retry, TaskNotFoundError
 from swarmq.headers import HEADER_WORKFLOW_ID
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
+from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
@@ -59,6 +60,16 @@ class RetryHandler:
         task_info = ctx.task_info
         assert task_info is not None
         deps = self._deps
+
+        # 0. Slot-Fehler vor Job-Uebergabe (KTD4, Plan 2026-09-03-001): der
+        # Ready-Handshake des Rechenkinds blieb aus — kein Taskfehler.
+        # Redelivery ohne Retry-Zaehler; das Delivery-Limit begrenzt die Schleife.
+        if isinstance(exc, SlotUnavailable):
+            logger.warning(
+                "compute_slot_unavailable_redeliver", task_id=ctx.task_id, error=error_message,
+            )
+            await deps.broker.redeliver(delivery)
+            return Redelivered
 
         # 1. NoRetry -> direct DLQ
         if isinstance(exc, NoRetry):

@@ -13,7 +13,12 @@ from swarmq.process_manager import (
     ProcessManager,
     WorkerInfo,
 )
-from tests.unit.process_manager._helpers import _entry_stub, _fake_process, _instant_crash_entry
+from tests.unit.process_manager._helpers import (
+    _entry_stub,
+    _fake_process,
+    _instant_crash_entry,
+    _make_test_cfg,
+)
 
 
 class TestProcessManagerCore:
@@ -862,3 +867,259 @@ class TestFileWatcherIntegration:
              ), pytest.raises(RuntimeError, match="monitor bug"):
             pm.run()
         fake_watcher.stop.assert_called_once()
+
+
+class TestConfigErrorNoRestart:
+    """R29 (Plan 2026-09-03-001): Exit 78 wird nicht neu gestartet; der
+    Supervisor beendet den Lauf mit 1 statt das Restart-Budget zu verbrennen."""
+
+    def _pm(self):
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
+        pm._ctx = MagicMock()
+        return pm
+
+    def test_config_error_exit_is_not_restarted(self):
+        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        pm._check_dead_workers()
+        assert pm.workers == {}
+        assert pm._config_error is True
+        pm._ctx.Process.assert_not_called()
+
+    def test_monitor_loop_exits_one_after_config_error(self, monkeypatch):
+        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+
+        pm = self._pm()
+        dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        monkeypatch.setattr(pm, "_shutdown_all_workers", MagicMock())
+        assert pm._monitor_loop() == 1
+        pm._shutdown_all_workers.assert_called_once()
+
+    def test_ordinary_crash_still_restarts(self):
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=1, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        pm._check_dead_workers()
+        assert 500 in pm.workers
+        assert pm._config_error is False
+
+
+class TestCleanExitIsNotRefilled:
+    """R20/KTD9 (Plan 2026-09-03-001): Exit 0 ohne expected_shutdown zieht den
+    Slot aus dem Ziel; sind alle so beendet, endet der Supervisor mit 0."""
+
+    def _pm(self, n: int = 1) -> ProcessManager:
+        pm = ProcessManager(num_workers=n, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
+        pm._ctx = MagicMock()
+        return pm
+
+    def test_clean_exit_reduces_target_and_is_not_respawned(self):
+        pm = self._pm(n=2)
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=0, pid=5)
+        pm.workers = {
+            5: WorkerInfo(process=dead, worker_id=0),
+            6: WorkerInfo(process=_fake_process(pid=6), worker_id=1),
+        }
+        pm._check_dead_workers()
+        assert pm._clean_exits == 1
+        assert pm._current_target() == 1
+        assert list(pm.workers) == [6]
+        pm._ctx.Process.assert_not_called()
+
+    def test_expected_shutdown_does_not_count_as_clean_exit(self):
+        pm = self._pm(n=2)
+        dead = _fake_process(alive=False, exitcode=0, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0, expected_shutdown=True)}
+        pm._check_dead_workers()
+        assert pm._clean_exits == 0
+        assert pm._current_target() == 2
+
+    def test_monitor_loop_exits_zero_when_all_workers_ended_clean(self):
+        pm = self._pm(n=2)
+        pm.MONITOR_INTERVAL = 0.01
+        pm.workers = {
+            5: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=5), worker_id=0),
+            6: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=6), worker_id=1),
+        }
+        assert pm._monitor_loop() == 0
+        pm._ctx.Process.assert_not_called()
+
+    def test_monitor_loop_exits_one_when_mixed_clean_and_exhausted(self):
+        pm = self._pm(n=2)
+        pm.MONITOR_INTERVAL = 0.01
+        pm._exhausted_slots = 1
+        pm._clean_exits = 1
+        pm.workers = {}
+        assert pm._monitor_loop() == 1
+
+
+class TestHeartbeatReplacement:
+    """R21/R30 (Plan 2026-09-03-001, KTD10): hängende Worker werden ersetzt,
+    begrenzt durch ein eigenes Budget; SIGTERM eskaliert zu SIGKILL."""
+
+    def _pm(self, **kw) -> ProcessManager:
+        pm = ProcessManager(
+            num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),),
+            heartbeat_timeout_s=kw.pop("timeout", 10.0), delivery_limit=kw.pop("delivery_limit", 2), **kw,
+        )
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        return pm
+
+    def _channel(self, last_beat: float | None, intent: int = 0):
+        import multiprocessing
+
+        from swarmq.supervision import SupervisorChannel
+
+        ch = SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        if last_beat is not None:
+            ch.heartbeat.value = last_beat
+        ch.intent.value = intent
+        return ch
+
+    def test_start_worker_attaches_a_channel(self):
+        pm = self._pm()
+        info = pm._start_worker()
+        assert info.channel is not None
+        args = pm._ctx.Process.call_args.kwargs["args"]
+        assert args[-1] is info.channel  # als letztes Argument an den Entry
+
+    def test_stale_heartbeat_replaces_worker_and_marks_expected_shutdown(self):
+        import time
+
+        pm = self._pm(timeout=10.0)
+        hung = _fake_process(pid=5)
+        ch = self._channel(time.monotonic() - 61)
+        pm.workers = {5: WorkerInfo(process=hung, worker_id=0, channel=ch)}
+        pm._check_heartbeats()
+        assert pm.workers[5].expected_shutdown is True
+        hung.terminate.assert_called_once()
+        assert 500 in pm.workers  # Ersatz gestartet
+        assert pm._exhausted_slots == 0 and len(pm._hang_timestamps) == 1
+        # SIGKILL erst nach der Frist
+        pm._escalate_terminating()
+        hung.kill.assert_not_called()
+        pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
+        pm._escalate_terminating()
+        hung.kill.assert_called_once()
+
+    def test_fresh_heartbeat_and_startup_grace_do_nothing(self):
+        import time
+
+        pm = self._pm(timeout=10.0)
+        fresh = WorkerInfo(process=_fake_process(pid=5), worker_id=0, channel=self._channel(time.monotonic()))
+        just_spawned = WorkerInfo(process=_fake_process(pid=6), worker_id=1, channel=self._channel(None))
+        pm.workers = {5: fresh, 6: just_spawned}
+        pm._check_heartbeats()
+        assert not fresh.expected_shutdown and not just_spawned.expected_shutdown
+        pm._ctx.Process.assert_not_called()
+
+    def test_draining_worker_gets_the_longer_deadline(self):
+        import time
+
+        from swarmq.supervision import INTENT_DRAINING
+
+        pm = self._pm(timeout=1.0, shutdown_grace_s=30.0)
+        draining = WorkerInfo(
+            process=_fake_process(pid=5), worker_id=0, channel=self._channel(time.monotonic() - 5, INTENT_DRAINING)
+        )
+        pm.workers = {5: draining}
+        pm._check_heartbeats()
+        assert draining.expected_shutdown is False  # 5 s < 30 s + 5 s
+        draining.channel.heartbeat.value = time.monotonic() - 40
+        pm._check_heartbeats()
+        assert draining.expected_shutdown is True
+
+    def test_hang_budget_is_separate_from_max_restarts(self):
+        import time
+
+        pm = self._pm(timeout=1.0, delivery_limit=1)  # Budget = 2 Ersatzungen je Stunde
+        for pid in (5, 6, 7):
+            info = WorkerInfo(
+                process=_fake_process(pid=pid), worker_id=pid, channel=self._channel(time.monotonic() - 9)
+            )
+            pm.workers = {pid: info}
+            pm._check_heartbeats()
+        assert pm._ctx.Process.call_count == 2  # dritter Haenger: Budget erschoepft
+        assert pm._exhausted_slots == 1
+
+    def test_expected_shutdown_is_not_replaced_on_dead(self):
+        import time
+
+        pm = self._pm(timeout=1.0)
+        hung = _fake_process(pid=5)
+        pm.workers = {5: WorkerInfo(process=hung, worker_id=0, channel=self._channel(time.monotonic() - 9))}
+        pm._check_heartbeats()
+        hung.is_alive.return_value = False
+        hung.exitcode = -9
+        pm._check_dead_workers()
+        assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
+
+
+class TestRecycleIntent:
+    """KTD11: Recycling-Absicht → expected_shutdown, Ersatz, ack; zaehlt nirgends."""
+
+    def test_recycle_intent_spawns_replacement_and_acknowledges(self):
+        import multiprocessing
+
+        from swarmq.supervision import SupervisorChannel
+
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        ch = SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        ch.request_recycle()
+        old = _fake_process(pid=5)
+        pm.workers = {5: WorkerInfo(process=old, worker_id=0, channel=ch)}
+        pm._check_heartbeats()
+        assert pm.workers[5].expected_shutdown is True
+        assert ch.replacement_acknowledged()
+        assert 500 in pm.workers
+        old.terminate.assert_not_called()  # der Worker drainiert selbst
+        # sauberes Ende des alten Workers: weder Neustart noch sauberes-Ende-Zaehler
+        old.is_alive.return_value = False
+        old.exitcode = 0
+        pm._check_dead_workers()
+        assert pm._clean_exits == 0 and pm._ctx.Process.call_count == 1
+        assert pm._current_target() == 1
+
+
+    def test_acknowledged_recycler_that_freezes_in_drain_is_killed_not_replaced(self):
+        """Review #13: nach dem ack war der Recycler von jeder Heartbeat-Pruefung ausgeschlossen
+        und hielt sein Prefetch bis zum Supervisor-Ende."""
+        import multiprocessing
+        import time
+
+        from swarmq.supervision import SupervisorChannel
+
+        pm = ProcessManager(
+            num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),), heartbeat_timeout_s=1.0,
+        )
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        ch = SupervisorChannel.create(multiprocessing.get_context("spawn"))
+        ch.request_recycle()
+        old = _fake_process(pid=5)
+        pm.workers = {5: WorkerInfo(process=old, worker_id=0, channel=ch)}
+        pm._check_heartbeats()  # Absicht -> Ersatz + ack
+        assert pm._ctx.Process.call_count == 1 and old.terminate.call_count == 0
+        fresh = SupervisorChannel.create(multiprocessing.get_context("spawn"))  # der Ersatz schlaegt
+        fresh.heartbeat.value = time.monotonic()
+        pm.workers[500].channel = fresh
+        ch.heartbeat.value = time.monotonic() - 120  # der Drain des alten Workers friert ein
+        pm._check_heartbeats()
+        old.terminate.assert_called_once()
+        assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz
+        assert any(info.process is old for info, _ in pm._terminating)
+        pm._check_heartbeats()
+        old.terminate.assert_called_once()  # in _terminating: nicht noch einmal
+        pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
+        pm._escalate_terminating()
+        old.kill.assert_called_once()

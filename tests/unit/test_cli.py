@@ -137,7 +137,10 @@ class TestBuildParser:
         assert ns.command == "worker"
         assert ns.module == "myapp.tasks"
         assert ns.queues == ["default"]
-        assert ns.concurrency == 10
+        # Plan 2026-09-03-001 (R3): der Parser laesst --concurrency offen,
+        # die Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt danach.
+        assert ns.concurrency is None
+        assert ns.pool is None  # aufgeloest in cli.pool.resolve_pool (Flag > SWARMQ_POOL > io)
         assert ns.log_level == "INFO"
         assert ns.log_format == "human"
 
@@ -162,6 +165,13 @@ class TestBuildParser:
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["worker"])
+
+    def test_pool_cpu_is_accepted_and_invalid_pool_rejected(self):
+        parser = cli._build_parser()
+        ns = parser.parse_args(["worker", "--module", "m", "--pool", "cpu"])
+        assert ns.pool == "cpu"
+        with pytest.raises(SystemExit):
+            parser.parse_args(["worker", "--module", "m", "--pool", "gpu"])
 
     def test_concurrency_zero_is_rejected(self):
         parser = cli._build_parser()
@@ -222,8 +232,11 @@ class TestMainErrorRendering:
         side_effect: BaseException,
         capsys,
     ) -> tuple[int, str]:
-        with patch.object(cli, "run_worker_async", new_callable=AsyncMock) as mock:
-            mock.side_effect = side_effect
+        # Seit R20 (Plan 2026-09-03-001) laeuft ``worker`` immer ueber den
+        # Supervisor; gemockt wird deshalb dessen Einstieg.
+        with patch(
+            "swarmq.process_manager.run.run_multi_process_worker", side_effect=side_effect
+        ):
             rc = cli.main(
                 [
                     "worker",
@@ -277,8 +290,9 @@ class TestMainErrorRendering:
         assert "Traceback" in err
 
     def test_keyboard_interrupt_exits_zero(self, capsys):
-        with patch.object(cli, "run_worker_async", new_callable=AsyncMock) as mock:
-            mock.side_effect = KeyboardInterrupt()
+        with patch(
+            "swarmq.process_manager.run.run_multi_process_worker", side_effect=KeyboardInterrupt()
+        ):
             rc = cli.main(["worker", "--module", "myapp"])
         assert rc == 0
 
@@ -758,7 +772,7 @@ class TestDlqHandlerOrchestration:
     @pytest.fixture
     def mock_broker(self, monkeypatch):
         """Patch _broker_from_env to return a MagicMock-backed broker."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         broker = MagicMock()
         broker.close = AsyncMock()

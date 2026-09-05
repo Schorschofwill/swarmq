@@ -63,6 +63,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_VALID_LOG_LEVELS",            # internal
         "_WORKER_CHECK_PAYLOAD_KEYS",   # internal
         "_autoscale_range",             # internal — test_cli_multiprocess.py
+        "prepare_pool_args",            # internal — Pool-Modus + --concurrency Aufloesung (Plan 2026-09-03-001)
         "_backend_from_env",            # internal
         "_parse_args_for_mode",         # internal — main()-Zerlegung (Follow-Up 0.2.x)
         "_run_command",                 # internal — dito
@@ -137,6 +138,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "dlq_cmd",                      # package — dlq subcommand
         "inspect_cmd",                  # package — inspect subcommand
         "parser",                       # package — argparse tree
+        "pool",                         # package — --pool / --concurrency Aufloesung (Plan 2026-09-03-001)
         "schedule_cmd",                 # package — schedule subcommand
         "worker_cmd",                   # package — worker command
     }
@@ -197,26 +199,26 @@ class TestLivePatchThrough:
     "patch where it is used" trap.
     """
 
-    def test_patch_swarmq_cli_run_worker_async_is_called_by_main(self) -> None:
+    def test_patch_swarmq_cli_run_worker_async_is_called_by_worker_entry(self) -> None:
+        """Seit R20 (Plan 2026-09-03-001) ruft nicht mehr main(), sondern der
+        Worker-Subprozess ``run_worker_async`` — weiterhin ueber den
+        ``swarmq.cli``-Namensraum, damit ``patch('swarmq.cli.run_worker_async')``
+        den Aufruf abfaengt (Target-Structure-Note im Refactor-Plan
+        docs/plans/2026-04-22-001-refactor-cli-split-plan.md)."""
+        from swarmq.process_manager.entry import worker_subprocess_entry
+        from tests.unit.process_manager._helpers import _make_test_cfg
+
         async def _noop(_args):  # AsyncMock-compatible stand-in
             return None
 
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         with patch("swarmq.cli.run_worker_async", side_effect=_noop) as mock:
-            rc = swarmq.cli.main(
-                [
-                    "worker",
-                    "--module",
-                    "swarmq",  # any importable module; run is patched
-                ]
-            )
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
         assert mock.call_count == 1, (
-            "patch('swarmq.cli.run_worker_async') did not intercept the "
-            "call from main(). main() must resolve run_worker_async via "
-            "the swarmq.cli namespace, not via a private import in a "
-            "submodule. See the Target Structure note in the refactor "
-            "plan (docs/plans/2026-04-22-001-refactor-cli-split-plan.md)."
+            "patch('swarmq.cli.run_worker_async') did not intercept the call "
+            "from worker_subprocess_entry(); the entry must resolve "
+            "run_worker_async via the swarmq.cli namespace."
         )
-        assert rc == 0
 
     # ------------------------------------------------------------------
     # Plan 2026-04-23-001 Unit 6 / RR-2: the same live-patch guarantee

@@ -224,7 +224,10 @@ def test_cli_spec_worker_argument_details() -> None:
     by_path = {c["path"]: c for c in build_cli_spec()["commands"]}
     args = {a["name"]: a for a in by_path["worker"]["arguments"]}
     assert args["--module"]["required"] is True
-    assert args["--concurrency"]["default"] == 10
+    # Plan 2026-09-03-001 (R3): der Parser laesst --concurrency offen; die
+    # Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt nach dem Parsen.
+    assert args["--concurrency"]["default"] is None
+    assert args["--pool"]["choices"] == ["io", "cpu"]
     assert args["--log-format"]["choices"] == list(_VALID_LOG_FORMATS)
     assert args["--burst"]["type"] == "bool"  # store_true flag
 
