@@ -39,7 +39,10 @@ def _worker(pool: str = "cpu", **cfg):
 
 
 def test_preload_modules_are_the_task_modules():
-    assert wiring.preload_modules(_Registry({"t": _T})) == [__name__]
+    # Unter pytest ist __main__ ein Konsolenskript (per Pfad geladen) -> "__main__".
+    assert wiring.preload_modules(_Registry({"t": _T})) == [
+        "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+    ]
 
 
 @pytest.mark.timeout(5)
@@ -64,7 +67,7 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     monkeypatch.setattr(wiring.SlotPool, "aclose", AsyncMock())
     executor = await wiring.start_compute_executor(w)
     assert isinstance(executor, ComputeExecutor) and w._executor is executor
-    assert seen["preload"] == [__name__]
+    assert seen["preload"] == ["__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__]
     assert seen["kw"] == {"thread_limit": 1, "malloc_trim_threshold": 131072, "malloc_arena_max": 2}
     assert w._compute_handle is handle
     pool = executor._pool
@@ -112,3 +115,19 @@ async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path)
     assert ok is False and "unhealthy" in (reason or "")
     worker._executor.pool_healthy = True
     assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)
+
+
+def test_preload_includes_the_child_runtime_modules():
+    """Messnachweis M0: ohne Preload importiert jedes frische Kind child.py und swarmq.logging
+    selbst — Spawn->Ready 33 ms statt 8 ms. Der Forkserver laedt sie deshalb vorab (R17)."""
+    from types import SimpleNamespace
+
+    from swarmq.worker.compute.wiring import preload_modules
+
+    class Demo:
+        __module__ = "tests.demo_tasks"
+
+    registry = SimpleNamespace(get_all=lambda: {"demo": Demo})
+    preload = preload_modules(registry)
+    assert preload[:3] == ["__main__", "swarmq.logging", "swarmq.worker.compute.child"]
+    assert preload.count("__main__") == 1 and "tests.demo_tasks" in preload

@@ -13,6 +13,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   gewöhnlicher Task-Fehler und folgt dem Retry-/DLQ-Pfad. Bisher entkam die
   Exception dem Nachrichten-Handler, die Zustellung blieb unbestätigt, bis der
   Kanal geschlossen wurde.
+- CPU-Modus: Der Forkserver-Preload enthält jetzt das Hauptmodul des
+  Loop-Prozesses und die Laufzeit des Rechenkinds. Ohne sie importierte jedes
+  frische Kind beides neu (etwa 60 ms je Task); der Kindstart liegt wieder bei
+  etwa 5 ms wie in der Machbarkeitsstudie gemessen. `SlotPool.recent_spawn_ms`
+  zeichnet Spawn- und Handshake-Zeiten zur Diagnose auf.
 
 ## [0.5.0] — 2026-09-03
 

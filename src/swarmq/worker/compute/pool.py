@@ -30,6 +30,7 @@ import pickle
 import signal
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -134,6 +135,8 @@ class SlotPool:
         self._background: set[asyncio.Task[None]] = set()
         self.stats = PoolStats()
         self.consecutive_unavailable = 0  # Handshake-Fehler in Folge; 0 nach jedem Ready
+        # Diagnose (Messnachweis M0): (Dauer process.start(), Zeit bis Ready) je Spawn in ms.
+        self.recent_spawn_ms: deque[tuple[float, float]] = deque(maxlen=256)
         self.unhealthy_after = 3 * slots
 
     @property
@@ -306,6 +309,7 @@ class SlotPool:
             process=process, slot=slot.index, conn=conn, job_conn=job_conn, ready=loop.create_future(),
             pending=pending, current_task_id=task_id,
         )
+        spawn_t0 = time.monotonic()
         try:
             process.start()
         except Exception as exc:
@@ -316,6 +320,7 @@ class SlotPool:
                         c.close()
             self._note_unavailable()
             raise SlotUnavailable(f"compute child for slot {slot.index} could not start: {exc}") from exc
+        spawn_ms = (time.monotonic() - spawn_t0) * 1000
         for c in child_side:  # Kindseiten schliessen, sonst kommt nie ein EOF
             with contextlib.suppress(Exception):
                 c.close()
@@ -331,6 +336,7 @@ class SlotPool:
         try:
             assert child.ready is not None
             await asyncio.wait_for(asyncio.shield(child.ready), timeout=self.handshake_timeout_s)
+            self.recent_spawn_ms.append((spawn_ms, (time.monotonic() - spawn_t0) * 1000))
         except (TimeoutError, ChildDied) as exc:
             self._note_unavailable()
             await self._kill_child(child, reason="handshake", by_pid_only=True)

@@ -12,6 +12,11 @@ All notable changes to SwarmQ. This project follows
   or a `run()` that is not a coroutine — is now an ordinary task error and
   follows the retry/DLQ path. Previously the exception escaped the message
   handler and the delivery stayed unacknowledged until the channel closed.
+- CPU mode: the forkserver preload now includes the loop process's main
+  module and the compute-child runtime. Without them every fresh compute
+  child re-imported both (about 60 ms per task); child start is back to
+  about 5 ms as measured in the feasibility study. `SlotPool.recent_spawn_ms`
+  records spawn and handshake timings for diagnostics.
 
 ## [0.5.0] — 2026-09-03
 

@@ -665,3 +665,17 @@ async def test_aclose_is_not_held_hostage_by_a_hanging_recycle_hook(ctx, signals
     await _ready(p, new, 0)
     await asyncio.wait_for(p.aclose(), timeout=2.0)
     assert not old.is_alive() and not new.is_alive()
+
+
+@pytest.mark.timeout(5)
+async def test_spawn_timings_are_recorded_for_diagnostics(ctx, signals):
+    p = await _make_pool(ctx, slots=1)
+    t = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("result", _result("a", 0)))
+    await t
+    assert len(p.recent_spawn_ms) == 1
+    spawn_ms, ready_ms = p.recent_spawn_ms[0]
+    assert 0 <= spawn_ms <= ready_ms
+    await p.aclose()
