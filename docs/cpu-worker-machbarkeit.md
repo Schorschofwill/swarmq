@@ -573,3 +573,39 @@ eine **eigene, unabhaengig lieferbare Phase im selben Plan**. Beide
 Phasen teilen die Recycling-Mechanik (RSS-Messung nach Taskende,
 rollierender Ersatz), die die H-Serie gemessen hat; ein Dokument haelt
 die Begrifflichkeit zusammen, die Umsetzung bleibt trennbar.
+
+## Nachmessung gegen die Implementierung (2026-09-05, swarmq 0.5.0)
+
+Die I-Serie und die Startlatenz wurden nach dem Merge von MR !47 gegen die
+echte Implementierung nachgefahren — `SwarmQ(pool="cpu")` am lokalen
+RabbitMQ 4 mit Quorum-Queue, Valkey 8, Skript
+`prototypes/cpu_worker_measure.py` (manuell, nicht Teil der Testsuite).
+
+| | Befund |
+|---|---|
+| M0 | Startlatenz Dispatch → `run()` im frischen Kind, n=40: **median 5,3 ms**, p95 5,9 ms, max 6,3 ms; davon `process.start()` 1,1 ms, Spawn bis Ready 4,2 ms; 40 verschiedene Kind-PIDs |
+| I1 | SIGTERM bei 4 rechnenden Kindern (8 geplant, 4 Slots): Drain 2,01 s, 4/8 im ersten Lauf fertig, 8/8 nach dem zweiten Lauf, keine Retries, keine Fehler |
+| I2 | Kind vor dem Ack per SIGKILL getoetet: 2 Versuche, 1 Retry-Signal, Ergebnis des zweiten Versuchs — **kein Verlust** |
+| I3 | 20 s reine Rechenzeit im Kind: Loop-Jitter waehrenddessen median 0,11 ms, p99 0,85 ms, max 2,2 ms |
+| I4 | 24 Tasks auf 4 Slots: hoechstens **4 gleichzeitig angenommen**, 24/24 Ergebnisse |
+| I5 | `ValueError` im Kind mit `max_retries=2`: 3 Fehlversuche, 2 Retries, 1 DLQ-Signal, Fehlertext **typerhaltend** |
+
+Alle fuenf I-Punkte bestaetigen die Machbarkeitsmessung. **M0 tat es zunaechst
+nicht:** die erste Messung lag bei 57–67 ms je Kind statt im einstelligen
+Millisekundenbereich. Die Zerlegung (Spawn bis Ready 55 ms, `process.start()`
+1 ms, Ready bis `run()` 1 ms) zeigte, dass die Zeit im Kind zwischen Fork und
+Ready-Meldung verging — in Importen. Zwei Ursachen, beide im Preload des
+Forkservers:
+
+1. `set_forkserver_preload()` **ersetzt** die multiprocessing-Standardliste
+   `["__main__"]`. Ohne `__main__` importiert jedes frische Kind das
+   Hauptmodul des Loop-Prozesses samt aio_pika und valkey neu (~45 ms). Bei
+   `python -m paket.modul` laedt multiprocessing das Hauptmodul zudem ueber
+   seinen *Namen* nach, weshalb der Preload den echten Modulnamen tragen muss.
+2. Die Kind-Laufzeit selbst (`swarmq.worker.compute.child`, `envelope`,
+   `swarmq.logging`) war nicht im Preload und wurde je Kind importiert (~25 ms).
+
+Mit beidem im Preload (`wiring.preload_modules`) liegt die Startlatenz bei
+5 ms. Der Befund ist ein Beispiel fuer die Lehre der F-Serie: Der Prototyp
+hatte ein winziges Hauptmodul und konnte den Effekt nicht zeigen; erst die
+Messung gegen den echten Loop-Prozess machte ihn sichtbar.

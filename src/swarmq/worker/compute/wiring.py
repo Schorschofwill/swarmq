@@ -8,6 +8,7 @@ vor dem Broker-Close) und die ``consumer_timeout``-Startwarnung.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,36 @@ logger = structlog.get_logger(__name__)
 _RECYCLE_DISPATCH_TIMEOUT_S = 5.0  # wie worker.recycling fuer WORKER_RECYCLING des IO-Workers
 
 
+# ``set_forkserver_preload`` ERSETZT die Standardliste ``["__main__"]`` von multiprocessing.
+# Fehlt ``__main__``, importiert jedes frische Kind das Hauptmodul des Loop-Prozesses samt
+# aio_pika/valkey neu (gemessen ~45 ms je Kind); fehlt die Kind-Laufzeit, kommen child.py,
+# envelope.py und swarmq.logging je Kind dazu (~25 ms). Mit beidem im Preload liegt Spawn
+# bis Ready bei ~8 ms (Messnachweis M0, docs/cpu-worker-machbarkeit.md). ``__main__`` wird
+# wie bei multiprocessing ueblich als ``__mp_main__`` importiert, der ``if __name__``-Guard
+# des Hauptmoduls greift; alle Module rechnen beim Import nichts (R14/R17).
+_RUNTIME_PRELOAD = ("swarmq.logging", "swarmq.worker.compute.child")
+
+
+def _main_module_name() -> str:
+    """Name, unter dem der Forkserver das Hauptmodul vorab laedt.
+
+    Ein per Datei gestartetes Programm (Konsolenskript, Supervisor-Kind) kommt als
+    ``"__main__"`` und wird ueber den Pfad importiert. Bei ``python -m paket.modul``
+    laedt jedes Kind das Hauptmodul dagegen ueber seinen Namen nach — also den
+    echten Namen vorab laden. ``paket.__main__`` laedt multiprocessing nie nach.
+    """
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    name = getattr(spec, "name", None)
+    if not name or name == "__main__" or name.endswith(".__main__"):
+        return "__main__"
+    return str(name)
+
+
 def preload_modules(registry: Any) -> list[str]:
-    """R17: die Module der registrierten Tasks sind der Forkserver-Preload."""
+    """R17: Hauptmodul, Kind-Laufzeit und die Module der registrierten Tasks sind der Forkserver-Preload."""
+    fixed = (_main_module_name(), *_RUNTIME_PRELOAD)
     modules = {cls.__module__ for cls in registry.get_all().values()}
-    return sorted(m for m in modules if m and m != "__main__")
+    return [*fixed, *sorted(m for m in modules if m and m != "__main__" and m not in fixed)]
 
 
 async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
