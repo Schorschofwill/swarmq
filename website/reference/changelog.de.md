@@ -6,6 +6,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Behoben
+
+- Ein Fehler beim *Aufruf* von `run()` eines Tasks — falsche Argumente
+  (`TypeError`) oder ein `run()`, das keine Coroutine ist — ist jetzt ein
+  gewöhnlicher Task-Fehler und folgt dem Retry-/DLQ-Pfad. Bisher entkam die
+  Exception dem Nachrichten-Handler, die Zustellung blieb unbestätigt, bis der
+  Kanal geschlossen wurde.
+
 ## [0.5.0] — 2026-09-03
 
 ### Geändert (breaking)

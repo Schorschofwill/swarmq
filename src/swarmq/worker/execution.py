@@ -106,11 +106,17 @@ class TaskExecutor:
         """``run()`` unter Soft-/Hard-Timeout und Cancel-Monitor ausführen."""
         task_info = ctx.task_info
         assert task_info is not None
-        run_coro = task_instance.run(*ctx.args, **ctx.kwargs)
-        if task_info.soft_timeout is not None:
-            run_coro = asyncio.wait_for(run_coro, timeout=task_info.soft_timeout)
-
-        run_task = asyncio.create_task(run_coro)
+        try:
+            # Der AUFRUF selbst kann scheitern (falsche Argumente, ``run`` kein Coroutine):
+            # auch das ist ein Task-Fehler und darf die Pipeline nicht verlassen — sonst
+            # bliebe die Nachricht unbestaetigt haengen.
+            run_coro = task_instance.run(*ctx.args, **ctx.kwargs)
+            if task_info.soft_timeout is not None:
+                run_coro = asyncio.wait_for(run_coro, timeout=task_info.soft_timeout)
+            run_task = asyncio.create_task(run_coro)
+        except Exception as exc:
+            fail(exc, str(exc))
+            return
 
         # Per-handler cancel-reason box (Phase 3b.3). Both the hard-timeout
         # watchdog and the cancel monitor write via set_reason_if_unset —
