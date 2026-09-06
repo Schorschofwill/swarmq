@@ -6,6 +6,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-06
+
 ### Behoben
 
 - Ein Fehler beim *Aufruf* von `run()` eines Tasks — falsche Argumente
