@@ -6,6 +6,8 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-06
+
 ### Fixed
 
 - A failure while *calling* a task's `run()` — wrong arguments (`TypeError`),
