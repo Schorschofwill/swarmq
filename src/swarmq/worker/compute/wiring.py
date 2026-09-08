@@ -8,6 +8,7 @@ vor dem Broker-Close) und die ``consumer_timeout``-Startwarnung.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,12 @@ _RECYCLE_DISPATCH_TIMEOUT_S = 5.0  # wie worker.recycling fuer WORKER_RECYCLING 
 # des Hauptmoduls greift; alle Module rechnen beim Import nichts (R14/R17).
 _RUNTIME_PRELOAD = ("swarmq.logging", "swarmq.worker.compute.child")
 
+# U8 (R28, KTD10): erstes Preload-Modul. Registriert im Forkserver das per ``python -m``
+# gestartete Hauptmodul (Name aus ``SWARMQ_MAIN_MODULE``) als ``sys.modules["__main__"]``,
+# damit ``spawn._fixup_main_from_name`` es nicht je Kind erneut ausfuehrt (B13).
+_PRELOAD_MODULE = "swarmq.worker.compute.preload"
+_MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"  # gelesen von preload.py im Forkserver
+
 
 def _main_module_name() -> str:
     """Name, unter dem der Forkserver das Hauptmodul vorab laedt.
@@ -50,8 +57,12 @@ def _main_module_name() -> str:
 
 
 def preload_modules(registry: Any) -> list[str]:
-    """R17: Hauptmodul, Kind-Laufzeit und die Module der registrierten Tasks sind der Forkserver-Preload."""
-    fixed = (_main_module_name(), *_RUNTIME_PRELOAD)
+    """R17: Hauptmodul, Kind-Laufzeit und die Module der registrierten Tasks sind der Forkserver-Preload.
+
+    U8: das Preload-Modul steht zuerst; den Hauptmodulnamen erhaelt es ueber
+    ``SWARMQ_MAIN_MODULE`` (gesetzt in ``start_compute_executor``).
+    """
+    fixed = (_PRELOAD_MODULE, _main_module_name(), *_RUNTIME_PRELOAD)
     modules = {cls.__module__ for cls in registry.get_all().values()}
     return [*fixed, *sorted(m for m in modules if m and m != "__main__" and m not in fixed)]
 
@@ -62,6 +73,9 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
     if cfg.pool != "cpu":
         return None
     preload = preload_modules(worker._registry)
+    # U8 (KTD10): die Umgebung ist der einzige Weg in den Forkserver — preload.py liest
+    # den Namen beim Import und registriert das Modul dort einmal als ``__main__``.
+    os.environ[_MAIN_MODULE_ENV] = _main_module_name()
     handle: ForkserverHandle = start_forkserver(
         preload,
         thread_limit=cfg.compute_thread_limit,

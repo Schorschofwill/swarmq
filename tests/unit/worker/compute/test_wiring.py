@@ -40,8 +40,9 @@ def _worker(pool: str = "cpu", **cfg):
 
 def test_preload_modules_are_the_task_modules():
     # Unter pytest ist __main__ ein Konsolenskript (per Pfad geladen) -> "__main__".
+    # U8 (KTD10): das Preload-Modul kommt zuerst, das Hauptmodul bleibt enthalten.
     assert wiring.preload_modules(_Registry({"t": _T})) == [
-        "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
     ]
 
 
@@ -67,7 +68,9 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     monkeypatch.setattr(wiring.SlotPool, "aclose", AsyncMock())
     executor = await wiring.start_compute_executor(w)
     assert isinstance(executor, ComputeExecutor) and w._executor is executor
-    assert seen["preload"] == ["__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__]
+    assert seen["preload"] == [
+        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+    ]
     assert seen["kw"] == {"thread_limit": 1, "malloc_trim_threshold": 131072, "malloc_arena_max": 2}
     assert w._compute_handle is handle
     pool = executor._pool
@@ -129,5 +132,32 @@ def test_preload_includes_the_child_runtime_modules():
 
     registry = SimpleNamespace(get_all=lambda: {"demo": Demo})
     preload = preload_modules(registry)
-    assert preload[:3] == ["__main__", "swarmq.logging", "swarmq.worker.compute.child"]
+    assert preload[:4] == [
+        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child",
+    ]
     assert preload.count("__main__") == 1 and "tests.demo_tasks" in preload
+
+
+@pytest.mark.timeout(5)
+async def test_cpu_pool_sets_main_module_env_before_forkserver_start(monkeypatch):
+    """U8 (KTD10): der Forkserver-Preload liest den Hauptmodulnamen aus ``SWARMQ_MAIN_MODULE``."""
+    import importlib.machinery
+    import os
+    import sys
+    from types import ModuleType
+
+    fake_main = ModuleType("pkg.mod")
+    fake_main.__spec__ = importlib.machinery.ModuleSpec("pkg.mod", None)
+    monkeypatch.setitem(sys.modules, "__main__", fake_main)  # wie bei ``python -m pkg.mod``
+    monkeypatch.delenv("SWARMQ_MAIN_MODULE", raising=False)
+    seen: dict[str, object] = {}
+
+    def fake_start(preload, **kw):
+        seen["env"], seen["preload"] = os.environ.get("SWARMQ_MAIN_MODULE"), preload
+        return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
+
+    monkeypatch.setattr(wiring, "start_forkserver", fake_start)
+    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    await wiring.start_compute_executor(_worker())
+    assert seen["env"] == "pkg.mod"
+    assert seen["preload"][:2] == ["swarmq.worker.compute.preload", "pkg.mod"]
