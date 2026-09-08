@@ -44,3 +44,10 @@ def _entry_stub(worker_id, shutdown_event, *args):
 def _instant_crash_entry(worker_id, shutdown_event, *args):
     """Real-subprocess entry that crashes immediately (exitcode 3)."""
     os._exit(3)
+
+
+def _register(pm, *infos) -> None:
+    """Worker wie ``_start_worker`` eintragen: ``pm.workers[pid]`` plus Slot-Zustand (KTD1)."""
+    for info in infos:
+        pm.workers[info.process.pid] = info
+        pm._refresh_slot(info.worker_id)

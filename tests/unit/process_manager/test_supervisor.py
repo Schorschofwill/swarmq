@@ -3,6 +3,7 @@ Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 
 from __future__ import annotations
 
+import multiprocessing
 import signal
 import time
 from unittest.mock import MagicMock, patch
@@ -13,11 +14,13 @@ from swarmq.process_manager import (
     ProcessManager,
     WorkerInfo,
 )
+from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import (
     _entry_stub,
     _fake_process,
     _instant_crash_entry,
     _make_test_cfg,
+    _register,
 )
 
 
@@ -59,7 +62,7 @@ class TestProcessManagerCore:
         fake = _fake_process(pid=9001)
         pm._ctx = MagicMock()
         pm._ctx.Process = MagicMock(return_value=fake)
-        info = pm._start_worker()
+        info = pm._start_worker(0)
         assert info.worker_id == 0
         assert 9001 in pm.workers
         fake.start.assert_called_once()
@@ -280,12 +283,14 @@ class TestCrashLoopExhaustion:
 
     def test_current_target_excludes_exhausted_slots(self):
         pm = self._pm(n=3)
-        pm._exhausted_slots = 2
+        pm._slots.lock(1)
+        pm._slots.lock(2)
         assert pm._current_target() == 1
 
     def test_current_target_never_negative(self):
         pm = self._pm(n=1)
-        pm._exhausted_slots = 5
+        pm._slots.lock(0)
+        pm._clean_exits = 1
         assert pm._current_target() == 0
 
     def test_autoscale_target_unaffected_by_exhausted_slots(self):
@@ -296,14 +301,15 @@ class TestCrashLoopExhaustion:
             autoscale=(1, 3), queue_depth_fn=lambda: 0,
         )
         pm._ctx = MagicMock()
-        pm._exhausted_slots = 1
-        pm.workers = {1: WorkerInfo(process=_fake_process(), worker_id=0)}
+        pm._slots.lock(2)
+        _register(pm, WorkerInfo(process=_fake_process(pid=1), worker_id=0))
         assert pm._current_target() == 1
 
     def test_monitor_loop_exits_nonzero_when_all_slots_exhausted(self):
         pm = self._pm(n=2)
         pm.MONITOR_INTERVAL = 0.01
-        pm._exhausted_slots = 2
+        pm._slots.lock(0)
+        pm._slots.lock(1)
         pm.workers = {}
         rc = pm._monitor_loop()
         assert rc != 0
@@ -313,8 +319,8 @@ class TestCrashLoopExhaustion:
         Loop läuft weiter (degraded), kein Exit, kein Backfill."""
         pm = self._pm(n=2)
         pm.MONITOR_INTERVAL = 0.01
-        pm._exhausted_slots = 1
-        pm.workers = {1: WorkerInfo(process=_fake_process(), worker_id=0)}
+        pm._slots.lock(1)
+        _register(pm, WorkerInfo(process=_fake_process(pid=1), worker_id=0))
 
         import threading
 
@@ -344,6 +350,14 @@ class TestCrashLoopExhaustion:
         )
         pm.MAX_RESTARTS = 2
         pm.MONITOR_INTERVAL = 0.05
+        spawned_slots: list[int] = []
+        real_start = pm._start_worker
+
+        def counting_start(slot: int) -> WorkerInfo:
+            spawned_slots.append(slot)
+            return real_start(slot)
+
+        pm._start_worker = counting_start  # type: ignore[method-assign]
         pm._start_all_workers()
 
         result: dict = {}
@@ -358,12 +372,15 @@ class TestCrashLoopExhaustion:
             t.join(timeout=5)
             pytest.fail(
                 "monitor loop did not exit after slot exhaustion "
-                f"(spawned {pm._next_worker_id} workers)",
+                f"(spawned {len(spawned_slots)} workers)",
             )
         try:
             assert result["rc"] != 0
             # initial (1) + MAX_RESTARTS Ersatz-Spawns — kein Sturm.
-            assert pm._next_worker_id <= 1 + pm.MAX_RESTARTS
+            assert len(spawned_slots) <= 1 + pm.MAX_RESTARTS
+            # U1: jeder Ersatz traegt den Slot des Vorgaengers, der am Ende gesperrt ist.
+            assert set(spawned_slots) == {0}
+            assert pm.slot_state(0) is SlotState.LOCKED
         finally:
             pm._shutdown_all_workers()
             pm._collect_zombies()
@@ -395,10 +412,11 @@ class TestProcessManagerAutoscale:
         pm = self._pm(depth_values=[500], min_w=1, max_w=5)
         pm._ctx.Process = MagicMock(return_value=_fake_process(pid=10))
         # Two existing workers; threshold 50/each → 100. Depth 500 > 100.
-        pm.workers = {
-            1: WorkerInfo(process=_fake_process(pid=1), worker_id=0),
-            2: WorkerInfo(process=_fake_process(pid=2), worker_id=1),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=_fake_process(pid=1), worker_id=0),
+            WorkerInfo(process=_fake_process(pid=2), worker_id=1),
+        )
         pm._autoscale_tick()
         assert 10 in pm.workers
         assert len(pm.workers) == 3
@@ -406,10 +424,11 @@ class TestProcessManagerAutoscale:
     def test_scale_up_blocked_at_max(self):
         pm = self._pm(depth_values=[500], min_w=1, max_w=2)
         pm._ctx.Process = MagicMock()
-        pm.workers = {
-            1: WorkerInfo(process=_fake_process(pid=1), worker_id=0),
-            2: WorkerInfo(process=_fake_process(pid=2), worker_id=1),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=_fake_process(pid=1), worker_id=0),
+            WorkerInfo(process=_fake_process(pid=2), worker_id=1),
+        )
         pm._autoscale_tick()
         pm._ctx.Process.assert_not_called()
 
@@ -417,10 +436,11 @@ class TestProcessManagerAutoscale:
         pm = self._pm(depth_values=[0, 0], min_w=1, max_w=5)
         p1 = _fake_process(pid=1)
         p2 = _fake_process(pid=2)
-        pm.workers = {
-            1: WorkerInfo(process=p1, worker_id=0),
-            2: WorkerInfo(process=p2, worker_id=1),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=p1, worker_id=0),
+            WorkerInfo(process=p2, worker_id=1),
+        )
         # First tick: sets idle_since.
         pm._autoscale_tick()
         # Second tick: idle window elapsed (0.0) → terminate youngest.
@@ -433,10 +453,11 @@ class TestProcessManagerAutoscale:
         pm = self._pm(depth_values=[0, 0], min_w=2, max_w=5)
         p1 = _fake_process(pid=1)
         p2 = _fake_process(pid=2)
-        pm.workers = {
-            1: WorkerInfo(process=p1, worker_id=0),
-            2: WorkerInfo(process=p2, worker_id=1),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=p1, worker_id=0),
+            WorkerInfo(process=p2, worker_id=1),
+        )
         pm._autoscale_tick()
         pm._autoscale_tick()
         p1.terminate.assert_not_called()
@@ -465,9 +486,10 @@ class TestProcessManagerAutoscale:
             side_effect=[_fake_process(pid=10), _fake_process(pid=11)],
         )
         pm.SCALE_COOLDOWN_S = 999.0  # effectively forbid second scale
-        pm.workers = {
-            1: WorkerInfo(process=_fake_process(pid=1), worker_id=0),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=_fake_process(pid=1), worker_id=0),
+        )
         pm._autoscale_tick()  # scales up, records decision time
         assert len(pm.workers) == 2
         pm._autoscale_tick()  # cooldown blocks
@@ -483,9 +505,10 @@ class TestProcessManagerAutoscale:
         )
         pm.AUTOSCALE_SAMPLE_INTERVAL = 0.0
         pm._ctx = MagicMock()
-        pm.workers = {
-            1: WorkerInfo(process=_fake_process(pid=1), worker_id=0),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=_fake_process(pid=1), worker_id=0),
+        )
         # Should not raise.
         pm._autoscale_tick()
 
@@ -501,10 +524,11 @@ class TestProcessManagerAutoscale:
         pm.SCALE_DOWN_IDLE_S = 999.0  # long idle requirement
         pm._ctx = MagicMock()
         p2 = _fake_process(pid=2)
-        pm.workers = {
-            1: WorkerInfo(process=_fake_process(pid=1), worker_id=0),
-            2: WorkerInfo(process=p2, worker_id=1),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=_fake_process(pid=1), worker_id=0),
+            WorkerInfo(process=p2, worker_id=1),
+        )
         pm._autoscale_tick()  # idle → sets idle_since
         assert pm._idle_since is not None
         pm._autoscale_tick()  # load → resets
@@ -654,10 +678,11 @@ class TestScaleDownMinAge:
         # All spawned <1s ago
         p1 = _fake_process(pid=1)
         p2 = _fake_process(pid=2)
-        pm.workers = {
-            1: WorkerInfo(process=p1, worker_id=0, spawned_at=now - 0.5),
-            2: WorkerInfo(process=p2, worker_id=1, spawned_at=now - 0.2),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=p1, worker_id=0, spawned_at=now - 0.5),
+            WorkerInfo(process=p2, worker_id=1, spawned_at=now - 0.2),
+        )
         pm._scale_down_one()
         p1.terminate.assert_not_called()
         p2.terminate.assert_not_called()
@@ -666,25 +691,27 @@ class TestScaleDownMinAge:
         pm = self._pm_with_age(min_age_s=30.0)
         now = time.monotonic()
         p1 = _fake_process(pid=1)
-        pm.workers = {
-            1: WorkerInfo(process=p1, worker_id=0, spawned_at=now - 120.0),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=p1, worker_id=0, spawned_at=now - 120.0),
+        )
         pm._scale_down_one()
         p1.terminate.assert_called_once()
 
     def test_mix_selects_old_youngest_eligible(self):
-        """2 old + 1 young; youngest of the eligible set wins (highest
-        worker_id among ages >= threshold)."""
+        """2 old + 1 young; youngest of the eligible set wins (latest
+        spawned_at among ages >= threshold, U1)."""
         pm = self._pm_with_age(min_age_s=30.0)
         now = time.monotonic()
         p_old1 = _fake_process(pid=1)   # worker_id=0, age 120s
         p_old2 = _fake_process(pid=2)   # worker_id=1, age 60s
         p_young = _fake_process(pid=3)  # worker_id=2, age 5s
-        pm.workers = {
-            1: WorkerInfo(process=p_old1, worker_id=0, spawned_at=now - 120.0),
-            2: WorkerInfo(process=p_old2, worker_id=1, spawned_at=now - 60.0),
-            3: WorkerInfo(process=p_young, worker_id=2, spawned_at=now - 5.0),
-        }
+        _register(
+            pm,
+            WorkerInfo(process=p_old1, worker_id=0, spawned_at=now - 120.0),
+            WorkerInfo(process=p_old2, worker_id=1, spawned_at=now - 60.0),
+            WorkerInfo(process=p_young, worker_id=2, spawned_at=now - 5.0),
+        )
         pm._scale_down_one()
         # Expect worker_id=1 (highest id among eligible) — NOT the young one.
         p_old1.terminate.assert_not_called()
@@ -954,7 +981,7 @@ class TestCleanExitIsNotRefilled:
     def test_monitor_loop_exits_one_when_mixed_clean_and_exhausted(self):
         pm = self._pm(n=2)
         pm.MONITOR_INTERVAL = 0.01
-        pm._exhausted_slots = 1
+        pm._slots.lock(0)
         pm._clean_exits = 1
         pm.workers = {}
         assert pm._monitor_loop() == 1
@@ -986,7 +1013,7 @@ class TestHeartbeatReplacement:
 
     def test_start_worker_attaches_a_channel(self):
         pm = self._pm()
-        info = pm._start_worker()
+        info = pm._start_worker(0)
         assert info.channel is not None
         args = pm._ctx.Process.call_args.kwargs["args"]
         assert args[-1] is info.channel  # als letztes Argument an den Entry
@@ -1041,9 +1068,9 @@ class TestHeartbeatReplacement:
         import time
 
         pm = self._pm(timeout=1.0, delivery_limit=1)  # Budget = 2 Ersatzungen je Stunde
-        for pid in (5, 6, 7):
+        for pid in (5, 6, 7):  # drei Generationen desselben Slots 0
             info = WorkerInfo(
-                process=_fake_process(pid=pid), worker_id=pid, channel=self._channel(time.monotonic() - 9)
+                process=_fake_process(pid=pid), worker_id=0, channel=self._channel(time.monotonic() - 9)
             )
             pm.workers = {pid: info}
             pm._check_heartbeats()
@@ -1123,3 +1150,243 @@ class TestRecycleIntent:
         pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
         pm._escalate_terminating()
         old.kill.assert_called_once()
+
+
+class TestSlotTable:
+    """U1/KTD1 (Plan 2026-09-08-001): Slots ``0..N-1`` statt monotoner IDs.
+
+    Test-Liste:
+    - [x] Start vergibt 0..N-1; Crash von Slot 1 → Ersatz trägt Slot 1 (AE1)
+    - [x] Autoscale-Obergrenze ergibt freie Slots (slot_state)
+    - [x] Budget erschöpft → Slot gesperrt, Backfill füllt ihn nicht
+    - [x] Recycling: zwei Prozesse in Slot 1 = Übergang; Vorgänger tot → aktiv, kein zweiter Ersatz
+    - [x] Hang-Ersatz: Übergang bis der Vorgänger nach SIGKILL tot ist
+    - [x] Ersatz stirbt vor dem Vorgänger → bleibt Übergang, weiterer Ersatz
+    - [x] Hang-Budget erschöpft → gesperrt trotz lebendem Vorgänger
+    - [x] Backfill füllt den frei gewordenen Slot; Scale-Up nimmt den kleinsten freien Slot
+    - [x] Scale-Down wählt den jüngsten per spawned_at; Gleichstand → höchster Slot
+    - [x] Übergang zählt im Autoscaler einmal; Scale-Down wählt nie den frischen Ersatz
+    - [x] Burst-Exit 0 gibt den Slot frei ohne Backfill; restart_timestamps wandern zum Ersatz
+    """
+
+    def _pm(self, n: int = 3, **kw) -> ProcessManager:
+        pm = ProcessManager(num_workers=n, worker_entry=_entry_stub, **kw)
+        pm._ctx = MagicMock()
+        # PID = 100 + Slot des ersten Prozesses; Ersatzprozesse bekommen 200 + Slot, 300 + Slot, ...
+        generations: dict[int, int] = {}
+
+        def spawn(**kwargs):
+            slot = kwargs["args"][0]
+            generations[slot] = generations.get(slot, 0) + 1
+            return _fake_process(pid=100 * generations[slot] + slot)
+
+        pm._ctx.Process = MagicMock(side_effect=spawn)
+        pm._ctx.Value = multiprocessing.get_context("spawn").Value  # echte Kanaele: Lebenszeichen frisch
+        return pm
+
+    def _kill(self, pm: ProcessManager, pid: int, exitcode: int = -9) -> None:
+        proc = pm.workers[pid].process
+        proc.is_alive.return_value = False
+        proc.exitcode = exitcode
+
+    def test_crashed_slot_is_refilled_with_the_same_slot(self):
+        """Covers AE1: --processes 3 vergibt 0, 1, 2; der Ersatz für Slot 1 trägt Slot 1."""
+        pm = self._pm(n=3)
+        pm._start_all_workers()
+        assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
+        self._kill(pm, 101)
+        pm._check_dead_workers()
+        assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
+        kwargs = pm._ctx.Process.call_args.kwargs
+        assert kwargs["args"][0] == 1 and kwargs["name"] == "swarmq-worker-1"
+
+    def test_autoscale_upper_bound_defines_the_slot_table(self):
+        pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
+        pm._start_all_workers()
+        assert [pm.slot_state(s) for s in range(4)] == [
+            SlotState.ACTIVE, SlotState.ACTIVE, SlotState.FREE, SlotState.FREE,
+        ]
+
+    def _run_monitor_briefly(self, pm: ProcessManager) -> None:
+        import threading
+
+        pm.MONITOR_INTERVAL = 0.01
+        t = threading.Thread(target=pm._monitor_loop, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        pm._shutting_down = True
+        t.join(timeout=2)
+        assert not t.is_alive()
+
+    def test_exhausted_budget_locks_the_slot_and_backfill_skips_it(self):
+        pm = self._pm(n=3)
+        pm._start_all_workers()
+        pm.workers[102].restart_timestamps = [time.monotonic() - 1.0] * pm.MAX_RESTARTS
+        self._kill(pm, 102)
+        pm._check_dead_workers()
+        assert pm.slot_state(2) is SlotState.LOCKED
+        assert pm._exhausted_slots == 1
+        assert pm._current_target() == 2
+        self._run_monitor_briefly(pm)
+        assert pm._ctx.Process.call_count == 3  # kein Backfill fuer Slot 2
+        assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
+
+    def test_recycling_replacement_shares_the_slot_until_the_predecessor_exits(self):
+        pm = self._pm(n=2)
+        pm._start_all_workers()
+        pm.workers[101].channel.request_recycle()
+        pm._check_heartbeats()
+        assert [w.worker_id for w in pm.workers.values()] == [0, 1, 1]
+        assert pm.slot_state(1) is SlotState.TRANSITION
+        self._kill(pm, 101, exitcode=0)
+        pm._check_dead_workers()
+        assert pm.slot_state(1) is SlotState.ACTIVE
+        assert pm._ctx.Process.call_count == 3  # kein zweiter Ersatz
+        assert pm._current_target() == 2 and pm._clean_exits == 0
+
+    def test_hang_replacement_keeps_the_slot_in_transition_until_the_kill_lands(self):
+        pm = self._pm(n=1, heartbeat_timeout_s=10.0)
+        pm._start_all_workers()
+        hung = pm.workers[100]
+        hung.channel.heartbeat.value = time.monotonic() - 61
+        pm._check_heartbeats()
+        assert [w.worker_id for w in pm.workers.values()] == [0, 0]
+        assert pm.slot_state(0) is SlotState.TRANSITION
+        pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
+        pm._escalate_terminating()
+        hung.process.kill.assert_called_once()
+        assert pm.slot_state(0) is SlotState.TRANSITION  # der Vorgaenger lebt noch
+        self._kill(pm, 100)
+        pm._check_dead_workers()
+        assert pm.slot_state(0) is SlotState.ACTIVE
+        assert pm._ctx.Process.call_count == 2
+
+    def test_replacement_dying_before_the_predecessor_keeps_transition_and_respawns(self):
+        pm = self._pm(n=1)
+        pm._start_all_workers()
+        pm.workers[100].channel.request_recycle()
+        pm._check_heartbeats()  # Ersatz pid 200 teilt Slot 0 mit dem drainenden Vorgaenger
+        self._kill(pm, 200, exitcode=-11)
+        pm._check_dead_workers()
+        assert pm.slot_state(0) is SlotState.TRANSITION
+        assert sorted(pm.workers) == [100, 300]  # Vorgaenger + weiterer Ersatz
+        assert pm._ctx.Process.call_count == 3
+        assert pm.workers[300].restart_timestamps and pm.workers[300].worker_id == 0
+
+    def test_exhausted_hang_budget_locks_the_slot_while_the_predecessor_lives(self):
+        pm = self._pm(n=1, heartbeat_timeout_s=10.0, delivery_limit=1)  # Budget 2
+        pm._start_all_workers()
+        pm._hang_timestamps = [time.monotonic()] * 2
+        pm.workers[100].channel.heartbeat.value = time.monotonic() - 61
+        pm._check_heartbeats()
+        assert pm.workers[100].process.is_alive()
+        assert pm.slot_state(0) is SlotState.LOCKED
+        assert pm._current_target() == 0 and pm._ctx.Process.call_count == 1
+        self._kill(pm, 100)
+        pm._check_dead_workers()
+        assert pm.slot_state(0) is SlotState.LOCKED and not pm.workers
+
+    def test_autoscale_target_counts_occupied_slots_not_processes(self):
+        pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
+        pm._start_all_workers()
+        pm.workers[101].channel.request_recycle()
+        pm._check_heartbeats()
+        assert len(pm.workers) == 3
+        assert pm._current_target() == 2  # Slot 1 im Uebergang zaehlt einmal
+
+    def test_backfill_refills_the_freed_slot(self):
+        pm = self._pm(n=2)
+        pm._start_all_workers()
+        pm.workers[101].expected_shutdown = True  # Ende ohne Ersatz: Slot 1 wird frei
+        self._kill(pm, 101, exitcode=0)
+        pm._check_dead_workers()
+        assert pm.slot_state(1) is SlotState.FREE and pm._current_target() == 2
+        self._run_monitor_briefly(pm)
+        assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
+        assert pm._ctx.Process.call_count == 3
+        assert pm.slot_state(1) is SlotState.ACTIVE
+
+    def _autoscale_pm(self, depth: int, n: int = 1, bounds: tuple[int, int] = (1, 4)) -> ProcessManager:
+        pm = self._pm(n=n, autoscale=bounds, queue_depth_fn=lambda: depth)
+        pm.AUTOSCALE_SAMPLE_INTERVAL = 0.0
+        pm.SCALE_COOLDOWN_S = 0.0
+        pm.SCALE_DOWN_IDLE_S = 0.0
+        pm.SCALE_MIN_AGE_S = 0.0
+        return pm
+
+    def test_scale_up_takes_the_smallest_free_slot(self):
+        pm = self._autoscale_pm(depth=500)
+        pm._start_all_workers()
+        pm._start_worker(2)
+        pm._autoscale_tick()
+        assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
+        assert pm.slot_state(1) is SlotState.ACTIVE
+
+    def test_scale_down_picks_the_youngest_by_spawn_time_not_by_slot(self):
+        pm = self._autoscale_pm(depth=0, n=2)
+        pm._start_all_workers()
+        now = time.monotonic()
+        pm.workers[100].spawned_at = now - 10.0  # Slot 0 traegt den juengeren Prozess
+        pm.workers[101].spawned_at = now - 100.0
+        pm._autoscale_tick()  # idle_since
+        pm._autoscale_tick()
+        pm.workers[100].process.terminate.assert_called_once()
+        pm.workers[101].process.terminate.assert_not_called()
+        assert pm.workers[100].expected_shutdown is True
+
+    def test_scale_down_tie_on_spawn_time_frees_the_highest_slot(self):
+        pm = self._autoscale_pm(depth=0, n=3)
+        pm._start_all_workers()
+        for info in pm.workers.values():
+            info.spawned_at = 1000.0
+        pm._autoscale_tick()
+        pm._autoscale_tick()
+        pm.workers[102].process.terminate.assert_called_once()
+        pm.workers[100].process.terminate.assert_not_called()
+        pm.workers[101].process.terminate.assert_not_called()
+
+    def test_slot_in_transition_counts_once_for_the_autoscaler(self):
+        pm = self._autoscale_pm(depth=0, n=2, bounds=(2, 4))
+        pm._start_all_workers()
+        pm.workers[101].channel.request_recycle()
+        pm._check_heartbeats()
+        assert len(pm.workers) == 3
+        pm._autoscale_tick()
+        pm._autoscale_tick()
+        for info in pm.workers.values():  # 2 belegte Slots == min: kein Scale-Down
+            info.process.terminate.assert_not_called()
+
+    def test_scale_down_never_picks_the_fresh_replacement_of_a_transition(self):
+        pm = self._autoscale_pm(depth=0, n=2)
+        pm._start_all_workers()
+        now = time.monotonic()
+        pm.workers[100].spawned_at = now - 100.0
+        pm.workers[101].spawned_at = now - 50.0
+        pm.workers[100].channel.request_recycle()
+        pm._check_heartbeats()  # Ersatz pid 200 ist der juengste Prozess, Slot 0 im Uebergang
+        pm._autoscale_tick()
+        pm._autoscale_tick()
+        pm.workers[101].process.terminate.assert_called_once()
+        pm.workers[200].process.terminate.assert_not_called()
+        pm.workers[100].process.terminate.assert_not_called()
+
+    def test_burst_exit_frees_the_slot_without_backfill(self):
+        pm = self._pm(n=2)
+        pm._start_all_workers()
+        self._kill(pm, 100, exitcode=0)
+        pm._check_dead_workers()
+        assert pm.slot_state(0) is SlotState.FREE
+        assert pm._clean_exits == 1 and pm._current_target() == 1
+        self._run_monitor_briefly(pm)
+        assert pm._ctx.Process.call_count == 2 and list(pm.workers) == [101]
+
+    def test_restart_timestamps_travel_to_the_replacement_in_the_same_slot(self):
+        pm = self._pm(n=2)
+        pm._start_all_workers()
+        pm.workers[101].restart_timestamps = [time.monotonic() - 5.0]
+        self._kill(pm, 101)
+        pm._check_dead_workers()
+        replacement = pm.workers[201]
+        assert replacement.worker_id == 1
+        assert len(replacement.restart_timestamps) == 2
+        assert pm.slot_state(1) is SlotState.ACTIVE
