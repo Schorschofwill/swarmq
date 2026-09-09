@@ -17,6 +17,9 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError, TaskError
+from swarmq.middleware import Middleware
+from swarmq.serialization import decode_json
+from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain, chord, group
 
@@ -28,14 +31,22 @@ def _q() -> str:
 
 
 @contextlib.asynccontextmanager
-async def _worker(rabbitmq_url, valkey_url, queue):
-    """Run a worker consuming *queue* for the duration of the context."""
+async def _worker(rabbitmq_url, valkey_url, queue, *, middleware=None, on_signal=None):
+    """Run a worker consuming *queue* for the duration of the context.
+
+    ``middleware``/``on_signal`` (U11) haengen die Enqueue-Beobachtung des
+    Workers an: Folgeschritte laufen durch dieselbe Kette und dieselben
+    Signale wie ``Client.schedule``."""
     wb = RabbitMQBroker(rabbitmq_url)
     wbk = ValkeyBackend(valkey_url)
     wapp = SwarmQ(wb, wbk, queues=[queue])
+    for mw in middleware or []:
+        wapp.add_middleware(mw)
+    for signal, handler in (on_signal or {}).items():
+        wapp.on_signal(signal)(handler)
     task = asyncio.create_task(wapp.start_worker())
     try:
-        yield
+        yield wapp
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -330,3 +341,117 @@ async def test_chord_over_composite_header_member_roundtrip(rabbitmq_url, valkey
             # Der gefaehrlichere Fall: die gekuerzte Liste waere die EINGABE
             # des Bodys gewesen. Bis 0.3.0 haette Total([2]) = 2 gerechnet.
             assert result == 7
+
+
+async def test_workflow_steps_run_through_middleware_and_signals(rabbitmq_url, valkey_url):
+    """AE6 (R15, R16): Eine Kette aus drei Tasks — die zaehlende Middleware des
+    WORKERS sieht die beiden Folgeschritte in ``pre_enqueue``, und
+    ``WORKFLOW_STEP_ENQUEUED`` feuert mit ihren Schrittpfaden. Vor U11 lief
+    kein Folgeschritt durch die Kette und kein Signal trug den Schrittpfad."""
+    queue = _q()
+
+    class M1(Task):
+        task_info = TaskInfo(name=f"m1_{queue}", queues=[queue])
+
+        async def run(self, seed: str) -> str:
+            return f"{seed}-1"
+
+    class M2(Task):
+        task_info = TaskInfo(name=f"m2_{queue}", queues=[queue])
+
+        async def run(self, prev: str) -> str:
+            return f"{prev}-2"
+
+    class M3(Task):
+        task_info = TaskInfo(name=f"m3_{queue}", queues=[queue])
+
+        async def run(self, prev: str) -> str:
+            return f"{prev}-3"
+
+    pre_seen: list[tuple[str, str]] = []
+    post_seen: list[str] = []
+    step_signals: list[tuple[str, str]] = []
+    task_enqueued: list[str] = []
+
+    class Counting(Middleware):
+        async def pre_enqueue(self, message) -> None:
+            pre_seen.append((message["step_path"], message["delivery_mode"]))
+
+        async def post_enqueue(self, message) -> None:
+            post_seen.append(message["step_path"])
+
+    async def _on_step(**kwargs) -> None:
+        step_signals.append((kwargs["step_path"], kwargs["task_name"]))
+
+    async def _on_enqueued(**kwargs) -> None:
+        task_enqueued.append(kwargs["task_name"])
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        async with _worker(
+            rabbitmq_url, valkey_url, queue,
+            middleware=[Counting()],
+            on_signal={
+                Signal.WORKFLOW_STEP_ENQUEUED: _on_step,
+                Signal.TASK_ENQUEUED: _on_enqueued,
+            },
+        ):
+            handle = await app.apply(chain(M1.s("seed"), M2.s(), M3.s()))
+            assert await handle.get(timeout=20) == "seed-1-2-3"
+
+    # Die Anfangsfront (/0) laeuft ueber den Client, die Folgeschritte /1 und
+    # /2 ueber den Advancer im Worker.
+    assert [p for p, _ in pre_seen] == ["/1", "/2"]
+    assert {mode for _, mode in pre_seen} == {"at_least_once"}
+    assert post_seen == ["/1", "/2"]
+    assert step_signals == [("/1", f"m2_{queue}"), ("/2", f"m3_{queue}")]
+    assert task_enqueued == [f"m2_{queue}", f"m3_{queue}"]
+
+
+async def test_middleware_rejecting_a_group_member_fails_the_workflow(rabbitmq_url, valkey_url):
+    """AE7 (R15, R17): Lehnt die Middleware des Workers das zweite Glied einer
+    Gruppen-Front ab, wird kein Glied publiziert, der Workflow ist ``FAILED``
+    mit ``error.type``, ``handle.get()`` wirft schnell statt in den Timeout zu
+    laufen, und die Nachricht des Vorgaengers ist bestaetigt."""
+    queue = _q()
+
+    class Head(Task):
+        task_info = TaskInfo(name=f"head_{queue}", queues=[queue])
+
+        async def run(self, seed: str) -> str:
+            return seed
+
+    class Leg(Task):
+        task_info = TaskInfo(name=f"leg_{queue}", queues=[queue])
+
+        async def run(self, prev: str) -> str:
+            return f"{prev}-leg"
+
+    published: list[str] = []
+
+    class RejectSecond(Middleware):
+        async def pre_enqueue(self, message) -> None:
+            published.append(message["step_path"])
+            if message["step_path"].endswith("g1"):
+                raise PermissionError("quota exceeded")
+
+    broker = RabbitMQBroker(rabbitmq_url)
+    backend = ValkeyBackend(valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    async with app:
+        await broker.declare_queue(queue)
+        async with _worker(rabbitmq_url, valkey_url, queue, middleware=[RejectSecond()]):
+            handle = await app.apply(chain(Head.s("seed"), group(Leg.s(), Leg.s())))
+            with pytest.raises(TaskError, match="quota exceeded"):
+                await handle.get(timeout=10)
+            assert await handle.status() == "failed"
+            raw = await backend.get_workflow_state(handle.workflow_id)
+            assert decode_json(raw)["error"]["type"] == "PermissionError"
+            # Kein Glied der abgelehnten Front hat einen Schritt-Marker.
+            assert not [p for p in await handle.children() if p.startswith("/1/")]
+        # Der Vorgaenger wurde bestaetigt: die Queue ist leer, die Nachricht
+        # dreht nicht bis zum Delivery-Limit.
+        assert await broker.queue_depth(queue) == 0

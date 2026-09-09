@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
 
 from swarmq.contracts import PublishReceipt
 from swarmq.contracts.coordination import ChordStore
@@ -30,7 +31,9 @@ from swarmq.headers import (
     HEADER_WORKFLOW_ID,
     HEADER_WORKFLOW_STEP,
 )
+from swarmq.middleware import MessageContext, workflow_step_message_context
 from swarmq.serialization import decode_json, encode_json, encode_result
+from swarmq.signals import Signal
 from swarmq.workflow import (
     Chain,
     Chord,
@@ -368,6 +371,123 @@ def inject_result(signature: Signature, result: Any) -> Signature:
     )
 
 
+@dataclass(frozen=True)
+class WorkflowStep:
+    """Ein zu veröffentlichender Workflow-Schritt (U11, KTD7).
+
+    Der Advancer reicht Nachrichten-Felder, nicht Bytes: der Adapter baut
+    daraus den Broker-Body *und* den ``MessageContext`` der Middleware, ohne
+    den Body wieder zu dekodieren.
+    """
+
+    workflow_id: str
+    step_path: str
+    task_id: str
+    task_name: str
+    queue: str
+    args: list[Any] = field(default_factory=list)
+    kwargs: dict[str, Any] = field(default_factory=dict)
+    headers: dict[str, Any] = field(default_factory=dict)
+
+    def to_message(self) -> dict[str, Any]:
+        """Die Wire-Form des Schritts — eine Quelle für Worker und Client,
+        damit die beiden Enqueue-Pfade nicht auseinanderlaufen."""
+        return {
+            "task": {"id": self.task_id, "queue": self.queue, "name": self.task_name},
+            "args": list(self.args),
+            "kwargs": self.kwargs,
+        }
+
+
+class WorkflowStepPublisher(Protocol):
+    """Enqueue-Seam des Advancers (KTD7). ``pre_enqueue`` ist ein Gate über
+    die ganze Front: wirft es, wird kein Schritt der Front publiziert.
+    ``publish`` veröffentlicht einen Schritt und feuert danach
+    ``post_enqueue`` sowie die Signale — der Advancer markiert erst nach dem
+    ``PublishReceipt`` (publish-then-mark, AE5)."""
+
+    async def pre_enqueue(self, steps: Sequence[WorkflowStep]) -> None: ...
+
+    async def publish(self, step: WorkflowStep) -> PublishReceipt: ...
+
+
+class WorkflowStepEnqueuer:
+    """Enqueue-Adapter für Workflow-Schritte (U11, KTD7) — von Worker und
+    Client geteilt, damit beide Wege dieselbe Behandlung geben.
+
+    Ein Schritt läuft durch dieselbe Middleware-Kette wie ``Client.schedule``
+    (``pre_enqueue`` → Publish → ``post_enqueue``) und löst danach
+    ``TASK_ENQUEUED`` mit unverändertem Payload sowie
+    ``WORKFLOW_STEP_ENQUEUED`` mit der Workflow-Identität aus.
+
+    Der ``MessageContext`` einer Front wird zwischen ``pre_enqueue`` und
+    ``publish`` behalten: eine Middleware, die dort ein Feld ergänzt, sieht es
+    in ``post_enqueue`` wieder (dieselbe Eigenschaft wie im Client, wo beide
+    Hooks dasselbe Dict sehen). Eingetragen wird erst, wenn ``pre_enqueue``
+    durchlief, und beim Publish wieder entnommen — ein abgelehnter oder
+    scheiternder Schritt lässt nichts zurück.
+    """
+
+    def __init__(
+        self,
+        *,
+        publish: Callable[[str, bytes, dict[str, Any]], Awaitable[PublishReceipt]],
+        dispatch: Callable[..., Awaitable[Any]],
+        get_chain: Callable[[], Any],
+    ) -> None:
+        self._publish = publish
+        self._dispatch = dispatch
+        self._get_chain = get_chain
+        self._contexts: dict[tuple[str, str], MessageContext] = {}
+
+    @staticmethod
+    def _context(step: WorkflowStep) -> MessageContext:
+        return workflow_step_message_context(
+            task_id=step.task_id,
+            task_name=step.task_name,
+            queue=step.queue,
+            args=list(step.args),
+            kwargs=step.kwargs,
+            workflow_id=step.workflow_id,
+            step_path=step.step_path,
+        )
+
+    async def pre_enqueue(self, steps: Sequence[WorkflowStep]) -> None:
+        chain = self._get_chain()
+        contexts = [(step, self._context(step)) for step in steps]
+        for _step, ctx in contexts:
+            # Wirft ein Hook, propagiert die Ausnahme, bevor irgendetwas
+            # publiziert oder gemerkt ist (R15/R17).
+            await chain.run_pre_enqueue(ctx)
+        for step, ctx in contexts:
+            self._contexts[(step.workflow_id, step.step_path)] = ctx
+
+    async def publish(self, step: WorkflowStep) -> PublishReceipt:
+        ctx = self._contexts.pop(
+            (step.workflow_id, step.step_path), None
+        ) or self._context(step)
+        receipt = await self._publish(
+            step.queue, encode_json(step.to_message()), step.headers
+        )
+        chain = self._get_chain()
+        await chain.run_post_enqueue(ctx)
+        await self._dispatch(
+            Signal.TASK_ENQUEUED,
+            task_id=step.task_id,
+            task_name=step.task_name,
+            queue=step.queue,
+        )
+        await self._dispatch(
+            Signal.WORKFLOW_STEP_ENQUEUED,
+            task_id=step.task_id,
+            task_name=step.task_name,
+            queue=step.queue,
+            workflow_id=step.workflow_id,
+            step_path=step.step_path,
+        )
+        return receipt
+
+
 class WorkflowAdvancer:
     """Worker-side workflow advancement (U5). Called at the success seam
     after a workflow-step's result is stored. Drives the topology forward:
@@ -375,7 +495,8 @@ class WorkflowAdvancer:
     atomic ``ChordStore``, and terminal completion.
 
     Collaborators are injected so the DAG logic is unit-testable with fakes.
-    ``publish`` is the broker publish coroutine, ``resolve_queue`` maps a
+    ``publisher`` is the enqueue seam (:class:`WorkflowStepPublisher` —
+    Middleware-Kette und Signale liegen dort, U11), ``resolve_queue`` maps a
     task name to its queue, ``make_task_id`` mints a DETERMINISTIC task id
     from ``(workflow_id, step_path)`` (see :func:`workflow_step_task_id` —
     determinism keeps redelivered steps idempotent), ``unpack`` decodes a
@@ -387,7 +508,7 @@ class WorkflowAdvancer:
         backend: ResultBackend,
         chord_manager: ChordStore,
         *,
-        publish: Callable[[str, bytes, dict[str, Any]], Awaitable[PublishReceipt]],
+        publisher: WorkflowStepPublisher,
         resolve_queue: Callable[[str], str],
         make_task_id: Callable[[str, str], str],
         unpack: Callable[[bytes], Any],
@@ -395,7 +516,7 @@ class WorkflowAdvancer:
     ) -> None:
         self._backend = backend
         self._chord = chord_manager
-        self._publish = publish
+        self._publisher = publisher
         self._resolve_queue = resolve_queue
         self._make_task_id = make_task_id
         self._unpack = unpack
@@ -634,6 +755,7 @@ class WorkflowAdvancer:
         Reihenfolge strukturell erzwungen: :meth:`mark_enqueued` verlangt den
         ``PublishReceipt`` aus ``Publisher.publish`` (AE5)."""
         enqueued_at = int(time.time())
+        steps: list[WorkflowStep] = []
         for step_path, signature in _frontier(node, node_path):
             # next-enqueued marker (publish-then-mark): skip if already done.
             if step_path in state["step_tasks"]:
@@ -641,18 +763,30 @@ class WorkflowAdvancer:
             injected = inject_result(signature, inject)
             task_id = self._make_task_id(wf_id, step_path)
             queue = self._resolve_queue(injected.task_name)
-            message = {
-                "task": {"id": task_id, "queue": queue, "name": injected.task_name},
-                "args": list(injected.args),
-                "kwargs": injected.kwargs,
-            }
-            headers = {
-                HEADER_WORKFLOW_ID: wf_id,
-                HEADER_WORKFLOW_STEP: step_path,
-                HEADER_ENQUEUED_AT: enqueued_at,
-            }
-            receipt = await self._publish(queue, encode_json(message), headers)
-            self.mark_enqueued(state, step_path, task_id, receipt)
+            steps.append(WorkflowStep(
+                workflow_id=wf_id,
+                step_path=step_path,
+                task_id=task_id,
+                task_name=injected.task_name,
+                queue=queue,
+                args=list(injected.args),
+                kwargs=injected.kwargs,
+                headers={
+                    HEADER_WORKFLOW_ID: wf_id,
+                    HEADER_WORKFLOW_STEP: step_path,
+                    HEADER_ENQUEUED_AT: enqueued_at,
+                },
+            ))
+        if not steps:
+            return
+        # R15: ``pre_enqueue`` ist ein Gate ueber die GANZE Front. Liefe es je
+        # Schritt, koennte eine ablehnende Middleware eine Gruppe halb
+        # eingereiht hinterlassen — der Fan-in erreichte N nie und der
+        # Workflow haengte bis zum TTL.
+        await self._publisher.pre_enqueue(steps)
+        for step in steps:
+            receipt = await self._publisher.publish(step)
+            self.mark_enqueued(state, step.step_path, step.task_id, receipt)
 
     def mark_enqueued(
         self, state: dict[str, Any], step_path: str, task_id: str, receipt: PublishReceipt

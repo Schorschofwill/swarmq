@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from swarmq.client import Client
+from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, encode_json
 from swarmq.task import Task, TaskInfo
@@ -29,10 +30,13 @@ class WfA(Task):
         return x
 
 
-def _client(broker, backend) -> Client:
+def _client(broker, backend, middleware=None) -> Client:
     registry = TaskRegistry()
     registry.register(WfA)
-    return Client(broker=broker, backend=backend, registry=registry)
+    chain = MiddlewareChain(list(middleware or []))
+    return Client(
+        broker=broker, backend=backend, registry=registry, middleware_chain=chain
+    )
 
 
 def _record_cas(backend, results: list[bool]) -> tuple[AsyncMock, list[bytes]]:
@@ -122,3 +126,76 @@ async def test_apply_frontier_failure_fail_mark_is_best_effort(broker, backend):
     client = _client(broker, backend)
     with pytest.raises(RuntimeError, match="publish nacked"):
         await client.apply(group(WfA.s("a"), WfA.s("b")))
+
+
+class _EnqueueSpy(Middleware):
+    """Protokolliert den Enqueue-Pfad der Anfangsfront (U11, R18)."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def pre_enqueue(self, message) -> None:
+        self.calls.append(f"pre:{message['step_path']}:{message['delivery_mode']}")
+
+    async def post_enqueue(self, message) -> None:
+        self.calls.append(f"post:{message['step_path']}")
+
+
+async def test_apply_runs_pre_enqueue_for_the_whole_frontier_before_persisting(broker, backend):
+    """R18: ``pre_enqueue`` laeuft fuer JEDEN Schritt der Anfangsfront, bevor
+    der Zustand persistiert wird — lehnt eine Middleware ab, gibt es keinen
+    verwaisten ``running``-Zustand und keine Nachricht."""
+    calls: list[str] = []
+    backend.store_workflow_state = AsyncMock(side_effect=lambda *a, **k: calls.append("store"))
+    broker.publish = AsyncMock(side_effect=lambda *a, **k: calls.append("publish"))
+    client = _client(broker, backend, [_EnqueueSpy(calls)])
+
+    await client.apply(group(WfA.s("a"), WfA.s("b")))
+
+    assert calls[:3] == ["pre:/g0", "pre:/g1", "store"] or calls[:3] == [
+        "pre:/g0:at_least_once", "pre:/g1:at_least_once", "store",
+    ]
+
+
+async def test_apply_emits_both_signals_per_step_and_no_pseudo_event(broker, backend):
+    """R16/R18: Je Frontschritt feuern ``TASK_ENQUEUED`` (unveraenderter
+    Payload) und ``WORKFLOW_STEP_ENQUEUED`` (mit Workflow-Identitaet). Das
+    Pseudo-Ereignis mit ``task_name="<workflow>"`` entfaellt — es trug eine
+    Workflow-Kennung im ``task_id``-Feld und keinen echten Task."""
+    events: list[tuple[str, str, str]] = []
+    backend.store_workflow_state = AsyncMock()
+    broker.publish = AsyncMock()
+    client = _client(broker, backend)
+
+    async def _dispatch(signal, **kwargs):
+        events.append((signal.value, kwargs.get("task_name", "-"), kwargs.get("step_path", "-")))
+
+    client._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+
+    await client.apply(group(WfA.s("a"), WfA.s("b")))
+
+    assert events == [
+        ("task_enqueued", "wf-a", "-"),
+        ("workflow_step_enqueued", "wf-a", "/g0"),
+        ("task_enqueued", "wf-a", "-"),
+        ("workflow_step_enqueued", "wf-a", "/g1"),
+    ]
+
+
+async def test_apply_rejected_by_middleware_persists_nothing(broker, backend):
+    """R18: Wirft ``pre_enqueue``, ist der Workflow nie entstanden — kein
+    Zustand, keine Nachricht, die Ausnahme erreicht den Aufrufer."""
+
+    class Rejecting(Middleware):
+        async def pre_enqueue(self, message) -> None:
+            raise PermissionError("quota exceeded")
+
+    backend.store_workflow_state = AsyncMock()
+    broker.publish = AsyncMock()
+    client = _client(broker, backend, [Rejecting()])
+
+    with pytest.raises(PermissionError, match="quota exceeded"):
+        await client.apply(group(WfA.s("a"), WfA.s("b")))
+
+    backend.store_workflow_state.assert_not_awaited()
+    broker.publish.assert_not_awaited()

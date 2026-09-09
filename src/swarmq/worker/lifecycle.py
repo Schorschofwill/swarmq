@@ -32,13 +32,18 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
 from swarmq.supervision import RecycleAckTimeout, current_channel
-from swarmq.workflow_orchestration import WorkflowAdvancer, workflow_step_task_id
+from swarmq.workflow_orchestration import (
+    WorkflowAdvancer,
+    WorkflowStepEnqueuer,
+    workflow_step_task_id,
+)
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
     from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
+    from swarmq.middleware import MiddlewareChain
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
     from swarmq.worker.execution import TaskExecutor
@@ -105,6 +110,8 @@ class WorkerLifecycle:
 
         def _resolve_workflow_queue(self, task_name: str) -> str: ...
 
+        def _get_chain(self) -> MiddlewareChain: ...
+
     async def _wire_coordination(self) -> None:
         """Verträge/Advancer/Scheduler nach ``connect()`` verdrahten."""
         # Die Koordinations-Verträge kommen seit U15 von der Fassade —
@@ -115,10 +122,19 @@ class WorkerLifecycle:
 
         # R4.1 workflow advancer (U5) — der ChordStore-Vertrag kommt
         # ebenfalls von der Fassade (chord_complete.lua, lebender Client).
+        # U11 (KTD7): Publisher-Seam des Advancers — Folgeschritte laufen
+        # durch dieselbe Middleware-Kette und dieselben Signale wie
+        # ``Client.schedule``. Die Kette wird je Front frisch geholt, damit
+        # spaeter registrierte Middleware sichtbar bleibt.
+        publisher = WorkflowStepEnqueuer(
+            publish=self._publish_workflow_step,
+            dispatch=self._signal_dispatcher.dispatch,
+            get_chain=self._get_chain,
+        )
         self._workflow_advancer = WorkflowAdvancer(
             self._backend,
             self._backend.chords,
-            publish=self._publish_workflow_step,
+            publisher=publisher,
             resolve_queue=self._resolve_workflow_queue,
             make_task_id=workflow_step_task_id,
             unpack=lambda raw: decode_result(raw)["result"],

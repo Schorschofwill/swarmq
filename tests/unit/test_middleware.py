@@ -12,6 +12,8 @@ from __future__ import annotations
 # 7. Error in post_execute-hook -> logged, next hook still runs
 # 8. Error in pre_enqueue -> propagates (raises)
 # 9. Integration: mock middleware with Counter tracks calls to verify order
+# 10. U11: workflow_step_message_context liefert einen MessageContext mit
+#     festem delivery_mode="at_least_once" und den Workflow-Schluesseln
 import inspect
 
 import pytest
@@ -261,6 +263,8 @@ async def test_error_in_pre_enqueue_propagates():
 
 # ---------------------------------------------------------------------------
 # 9. Integration: mock middleware with Counter tracks calls to verify order
+# 10. U11: workflow_step_message_context liefert einen MessageContext mit
+#     festem delivery_mode="at_least_once" und den Workflow-Schluesseln
 # ---------------------------------------------------------------------------
 
 async def test_integration_counter_tracks_full_hook_lifecycle():
@@ -311,3 +315,24 @@ async def test_integration_counter_tracks_full_hook_lifecycle():
     for hook in ("post_enqueue", "post_execute", "on_error", "on_retry"):
         order = [c[0] for c in calls if c[1] == hook]
         assert order == ["C", "B", "A"], f"{hook} should run in reverse"
+
+
+async def test_workflow_step_message_context_pins_delivery_mode_and_workflow_keys():
+    """R15/R16 (U11): Ein Workflow-Schritt laeuft immer als at-least-once, auch
+    wenn der Task selbst FIRE_AND_FORGET deklariert — sonst gaebe es keinen
+    Advance-Seam und der Workflow haengte. ``workflow_id``/``step_path`` sind
+    zusaetzliche, optionale Schluessel: Handler mit fester Signatur bleiben
+    funktionsfaehig."""
+    from swarmq.middleware import workflow_step_message_context
+
+    ctx = workflow_step_message_context(
+        task_id="t1", task_name="echo", queue="default",
+        args=[1, 2], kwargs={"k": "v"},
+        workflow_id="wf-1", step_path="/1/g0",
+    )
+    assert ctx["delivery_mode"] == "at_least_once"
+    assert ctx["task_id"] == "t1"
+    assert ctx["args"] == [1, 2]
+    assert ctx["kwargs"] == {"k": "v"}
+    assert ctx["workflow_id"] == "wf-1"
+    assert ctx["step_path"] == "/1/g0"
