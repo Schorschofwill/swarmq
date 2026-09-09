@@ -222,3 +222,151 @@ def test_group_with_composite_members_aggregates_in_definition_order(shapes, dat
         assert await driver.final_value() == expected
 
     asyncio.run(_run())
+
+
+# --------------------------------------------------------------------------
+# Compare-and-Set unter nebenlaeufigen Advancern (Plan 2026-09-08-001, U9)
+# --------------------------------------------------------------------------
+
+
+async def _drain_in_concurrent_batches(driver: Driver, data: st.DataObject) -> list[str]:
+    """Wie ``_drain_random``, aber die naechsten Schritte laufen in zufaelligen
+    NEBENLAEUFIGEN Buendeln: alle Advancer eines Buendels lesen beim Eintritt
+    denselben Schnappschuss (die Verschraenkung „beide lesen, dann schreiben
+    beide"), erst dann schreibt einer nach dem anderen -- jeder ausser dem
+    ersten verliert sein Compare-and-Set und muss mergen. Nachlesungen
+    (Fan-in, Konflikt) sehen das Backend frisch. Wiederholzustellungen laufen
+    ausserhalb der Buendel mit frischem Zustand."""
+    order: list[str] = []
+    real_get = driver.backend.get_workflow_state
+    for _ in range(10_000):
+        if not driver.published:
+            return order
+        size = data.draw(st.integers(min_value=1, max_value=len(driver.published)), label="batch")
+        batch = []
+        for _i in range(size):
+            idx = data.draw(st.integers(min_value=0, max_value=len(driver.published) - 1), label="pick")
+            batch.append(driver.published.pop(idx))
+        snapshot = await real_get(driver.wf_id)
+        for _queue, body, headers in batch:
+            step_path = headers["x-swarmq-workflow-step"]
+            order.append(step_path)
+            task_id = await driver._run_step(body)
+            raw = await driver.backend.get_result(task_id)
+            assert raw is not None
+            result_value = decode_result(raw)["result"]
+            driver.backend.get_workflow_state = _entry_snapshot(real_get, snapshot)  # type: ignore[method-assign]
+            try:
+                await driver.advancer.advance(driver.wf_id, step_path, task_id, result_value)
+            finally:
+                driver.backend.get_workflow_state = real_get  # type: ignore[method-assign]
+            if data.draw(st.booleans(), label="redeliver"):
+                await driver.advancer.advance(driver.wf_id, step_path, task_id, result_value)
+    raise AssertionError("advancer kept re-publishing steps (runaway)")
+
+
+def _entry_snapshot(real_get, snapshot: bytes | None):
+    """``get_workflow_state``-Ersatz: die ERSTE Lesung (Eintritt in ``advance``)
+    liefert den veralteten Buendel-Schnappschuss, jede weitere das Backend."""
+    pending = True
+
+    async def snapshot_first(wf_id, *args, **kwargs):
+        nonlocal pending
+        if pending:
+            pending = False
+            return snapshot
+        return await real_get(wf_id, *args, **kwargs)
+
+    return snapshot_first
+
+
+def _count_cas(driver: Driver) -> dict[str, int]:
+    counts = {"calls": 0, "conflicts": 0}
+    real_cas = driver.backend.compare_and_store_workflow_state
+
+    async def counting(*args, **kwargs):
+        counts["calls"] += 1
+        ok = await real_cas(*args, **kwargs)
+        if not ok:
+            counts["conflicts"] += 1
+        return ok
+
+    driver.backend.compare_and_store_workflow_state = counting  # type: ignore[method-assign]
+    return counts
+
+
+@given(
+    n_chains=st.integers(min_value=10, max_value=14),
+    depth=st.integers(min_value=2, max_value=3),
+    as_chord=st.booleans(),
+    data=st.data(),
+)
+def test_concurrent_advancers_never_truncate_group_of_parallel_chains(n_chains, depth, as_chord, data):
+    """R22-R24 / AE10: Gruppen (und Chords) aus mindestens zehn parallelen
+    Ketten, deren Zweige gleichzeitig enden. Ohne CAS verlor der letzte
+    Schreiber eines Buendels die Marker der anderen -- der Guard machte daraus
+    einen gescheiterten Workflow. Mit CAS endet jeder Lauf vollstaendig, jeder
+    Schritt genau einmal, und kein Advance ueberschreitet die Konfliktgrenze
+    (die Ausnahme ``WorkflowStateConflict`` wuerde den Lauf abbrechen)."""
+
+    async def _run() -> None:
+        chains = [chain(Echo.s(i), *(Echo.s() for _ in range(depth - 1))) for i in range(n_chains)]
+        wf = chord(group(*chains), Echo.s()) if as_chord else group(*chains)
+        driver = Driver(wf)
+        counts = _count_cas(driver)
+        await _seed_enqueued(driver)
+        order = await _drain_in_concurrent_batches(driver, data)
+
+        st_dict = await driver.state()
+        assert st_dict["status"] == STATUS_COMPLETED
+        assert len(order) == len(set(order)), f"duplicate publish: {order}"
+        # Jeder Zweig ist n_chains-mal in einer Kettentiefe eingewickelt.
+        expected_members = []
+        for i in range(n_chains):
+            value: list = [i]
+            for _ in range(depth - 1):
+                value = [value]
+            expected_members.append(value)
+        expected = [expected_members] if as_chord else expected_members
+        assert await driver.final_value() == expected
+        # Alle Marker persistiert, keiner verloren.
+        assert len(st_dict["step_tasks"]) == n_chains * depth + (1 if as_chord else 0)
+        assert counts["conflicts"] < counts["calls"]
+
+    asyncio.run(_run())
+
+
+@given(
+    shapes=st.lists(st.sampled_from(["leaf", "chain", "group", "chord"]), min_size=2, max_size=5),
+    data=st.data(),
+)
+def test_concurrent_advancers_on_mixed_group_members_complete(shapes, data):
+    """Zufaellige Verschraenkung auf Gruppen mit gemischten Gliedern (Blatt,
+    Kette, Gruppe, Chord): vollstaendig oder terminal, nie gekuerzt."""
+
+    async def _run() -> None:
+        members = []
+        expected = []
+        for i, shape in enumerate(shapes):
+            if shape == "leaf":
+                members.append(Echo.s(i))
+                expected.append([i])
+            elif shape == "chain":
+                members.append(chain(Echo.s(i), Echo.s()))
+                expected.append([[i]])
+            elif shape == "group":
+                members.append(group(Echo.s(i), Echo.s(-i)))
+                expected.append([[i], [-i]])
+            else:
+                members.append(chord(group(Echo.s(i)), Echo.s()))
+                expected.append([[[i]]])
+        driver = Driver(group(*members))
+        await _seed_enqueued(driver)
+        order = await _drain_in_concurrent_batches(driver, data)
+
+        st_dict = await driver.state()
+        assert st_dict["status"] == STATUS_COMPLETED
+        assert len(order) == len(set(order))
+        assert await driver.final_value() == expected
+
+    asyncio.run(_run())

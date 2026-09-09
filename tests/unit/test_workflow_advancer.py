@@ -10,18 +10,23 @@ stores the result, and calls advance() with the step's path.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from swarmq.contracts import PublishReceipt
+from swarmq.exceptions import SwarmQError, WorkflowStateConflict
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
 from swarmq.task import Task, TaskInfo
-from swarmq.workflow import chain, chord, group
+from swarmq.workflow import _node_from_dict, chain, chord, group
 from swarmq.workflow_orchestration import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
+    STATUS_FAILED,
     WorkflowAdvancer,
+    WorkflowHandle,
+    aggregate_result_id,
     build_initial_workflow_state,
     initial_frontier,
     workflow_step_task_id,
@@ -654,21 +659,17 @@ async def test_children_reports_only_enqueued_steps():
     assert set(st["step_tasks"]) == {"/g0", "/g1/0", "/g1/1"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KTD5 des Plans 2026-08-30-002: `advance()` ist ein Read-Modify-Write "
-        "ohne CAS und `store_workflow_state` ueberschreibt das ganze Dokument "
-        "blind. Geht ein Advancer von einem veralteten Schnappschuss aus, "
-        "loescht sein Rueckschreiben den Schritt-Marker des anderen; der Guard "
-        "aus U3 macht daraus einen laut gescheiterten Workflow statt einer "
-        "still gekuerzten Liste. Vorbestehend und bewusst nicht in diesem Plan "
-        "behoben. Schlaegt dieser Test um, ist das verlorene Zustands-Update "
-        "geschlossen — dann gehoert er zu einem echten Regressionstest "
-        "umgeschrieben, nicht geloescht."
-    ),
-)
-async def test_lost_state_update_still_truncates_group():
+async def test_stale_snapshot_keeps_both_step_markers():
+    """AE10 / R22-R24 (Plan 2026-09-08-001, U9): Regressionstest des frueheren
+    strikten xfail ``test_lost_state_update_still_truncates_group``.
+
+    Zwei Advancer auf demselben Backend; der zweite hat beim Eintritt einen
+    VERALTETEN Schnappschuss gelesen. Ohne Compare-and-Set loeschte sein
+    Rueckschreiben den Schritt-Marker des ersten (verlorenes Zustands-Update,
+    KTD5 des Plans 2026-08-30-002). Mit CAS scheitert die Schreibung, der
+    Advancer merged seine Marker in den frischen Zustand -- beide Marker sind
+    persistiert und das Gruppenergebnis vollstaendig.
+    """
     m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
     state = await m.seed()
     stale_raw = encode_json(state)
@@ -696,10 +697,216 @@ async def test_lost_state_update_still_truncates_group():
     finally:
         m.backend.get_workflow_state = real_get  # type: ignore[method-assign]
 
+    # Beide Marker persistiert -- der Merge hat keinen verloren.
+    assert set((await m.state())["step_tasks"]) >= {"/g0/1", "/g1/1"}
+
     while m.published:
         await m.run_next()
 
+    assert (await m.state())["status"] == STATUS_COMPLETED
     assert await m.final_value() == [[["a"]], [["c"]]]
+
+
+def _race_before_first_cas(m: MultiDriver, race):
+    """Vor dem ERSTEN Compare-and-Set des Backends laeuft *race* -- ein
+    nebenlaeufiger Schreiber, der den Zustand zwischen Lesen und Schreiben des
+    Advancers veraendert. Zaehlt alle CAS-Aufrufe in ``m.cas_calls``."""
+    real_cas = m.backend.compare_and_store_workflow_state
+    m.cas_calls = 0
+
+    async def racing_cas(wf_id, data, ttl_ms, *, expected_version, **kwargs):
+        m.cas_calls += 1
+        if m.cas_calls == 1:
+            await race()
+        return await real_cas(wf_id, data, ttl_ms, expected_version=expected_version, **kwargs)
+
+    m.backend.compare_and_store_workflow_state = racing_cas  # type: ignore[method-assign]
+
+
+async def test_conflict_with_fresh_failed_state_writes_nothing():
+    """R23: ist der frische Zustand nach einem Konflikt terminal, endet der
+    Advance ohne Schreibung und ohne Fehler."""
+    m = MultiDriver(chain(Echo.s("a"), Echo.s()))
+    state = await m.seed()
+
+    async def fail_concurrently():
+        await m.advancer().fail(m.wf_id, "TaskError", "boom")
+
+    _race_before_first_cas(m, fail_concurrently)
+    await m.advancer().advance(m.wf_id, "/0", state["step_tasks"]["/0"], ["a"])
+
+    fresh = await m.state()
+    assert fresh["status"] == STATUS_FAILED
+    assert fresh["error"] == {"type": "TaskError", "message": "boom"}
+    # Der Marker des verlierenden Advancers wurde NICHT nachgetragen.
+    assert "/1" not in fresh["step_tasks"]
+    assert m.cas_calls == 2  # fail() + der gescheiterte Advance; kein Retry
+
+
+async def _bump_with_marker(m: MultiDriver, path: str, task_id: str) -> None:
+    """Nebenlaeufiger Schreiber: traegt einen Marker nach und erhoeht die Version
+    -- der Zustand bleibt laufend."""
+    fresh = await m.state()
+    fresh["step_tasks"][path] = task_id
+    fresh["version"] = fresh.get("version", 0) + 1
+    await m.backend.store_workflow_state(m.wf_id, encode_json(fresh), 60_000)
+
+
+async def test_conflict_on_terminal_write_merges_terminal_fields():
+    """AE10 / R23: verliert der ABSCHLIESSENDE Advancer das CAS gegen einen
+    laufenden Schreiber, traegt der Merge ``status``, ``final_result_task_id``
+    und ``error`` -- und ``handle.get()`` liefert das Ergebnis, nicht ``None``."""
+    m = MultiDriver(Echo.s("a"))
+    state = await m.seed()
+    _race_before_first_cas(m, lambda: _bump_with_marker(m, "/other", "other-task"))
+
+    await m.advancer().advance(m.wf_id, "", state["step_tasks"][""], ["a"])
+
+    fresh = await m.state()
+    assert fresh["status"] == STATUS_COMPLETED
+    assert fresh["final_result_task_id"] == state["step_tasks"][""]
+    assert fresh["error"] is None
+    assert fresh["step_tasks"]["/other"] == "other-task"  # Bestand ueberlebt den Merge
+    assert m.cas_calls == 2
+    handle = WorkflowHandle(m.backend, m.wf_id, _unpack, cancel_ttl_ms=60_000)
+    assert await handle.get(timeout=1.0) == ["a"]
+
+
+async def test_twenty_five_conflicts_raise_workflow_state_conflict():
+    """R23: die Konfliktgrenze liegt bei 25 Runden. Verliert ein Advancer jede
+    davon, gilt die Nachricht als nicht abgeschlossen -- ``WorkflowStateConflict``
+    (``worker/results.py`` bildet sie in U10 auf eine Redelivery ab)."""
+    m = MultiDriver(chain(Echo.s("a"), Echo.s()))
+    state = await m.seed()
+    cas = AsyncMock(return_value=False)
+    m.backend.compare_and_store_workflow_state = cas  # type: ignore[method-assign]
+
+    with pytest.raises(WorkflowStateConflict):
+        await m.advancer().advance(m.wf_id, "/0", state["step_tasks"]["/0"], ["a"])
+
+    assert cas.await_count == 25
+    assert issubclass(WorkflowStateConflict, SwarmQError)
+
+
+async def test_twenty_four_conflicts_then_success_completes_the_write():
+    m = MultiDriver(chain(Echo.s("a"), Echo.s()))
+    state = await m.seed()
+    real_cas = m.backend.compare_and_store_workflow_state
+    calls = {"n": 0}
+
+    async def flaky_cas(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 25:
+            return False
+        return await real_cas(*args, **kwargs)
+
+    m.backend.compare_and_store_workflow_state = flaky_cas  # type: ignore[method-assign]
+    await m.advancer().advance(m.wf_id, "/0", state["step_tasks"]["/0"], ["a"])
+
+    assert calls["n"] == 25
+    assert "/1" in (await m.state())["step_tasks"]
+
+
+async def test_fail_merges_into_concurrently_advanced_state():
+    """R22/R23: auch ``fail()`` schreibt per CAS; verliert es gegen einen
+    laufenden Advancer, traegt der Merge FAILED + ``error`` in den frischen
+    Zustand, dessen Marker bleiben erhalten."""
+    m = MultiDriver(chain(Echo.s("a"), Echo.s()))
+    await m.seed()
+    _race_before_first_cas(m, lambda: _bump_with_marker(m, "/1", "wf-multi#/1"))
+
+    await m.advancer().fail(m.wf_id, "TaskError", "boom")
+
+    fresh = await m.state()
+    assert fresh["status"] == STATUS_FAILED
+    assert fresh["error"] == {"type": "TaskError", "message": "boom"}
+    assert fresh["step_tasks"]["/1"] == "wf-multi#/1"
+    assert m.cas_calls == 2
+
+
+async def test_refresh_before_fan_in_honours_terminal_status():
+    """R24: die frische Lesung vor dem Fan-in bleibt (Publish-vor-Persistenz-
+    Fenster) und honoriert einen frischen Terminalstatus -- der Advance endet
+    ohne Schreibung: kein CAS, kein Aggregat, kein Fehler."""
+    m = MultiDriver(group(Echo.s("a"), Echo.s("b")))
+    state = await m.seed()
+    await m.advancer().advance(m.wf_id, "/g0", state["step_tasks"]["/g0"], ["a"])
+
+    real_record = m.backend.chords.record_member
+
+    async def record_then_fail(*args, **kwargs):
+        fired = await real_record(*args, **kwargs)
+        if fired:
+            # Zwischen Fan-in-Zaehler und Lesung schlaegt ein anderer Worker fehl.
+            await m.advancer().fail(m.wf_id, "TaskError", "boom")
+        return fired
+
+    m.backend.chords.record_member = record_then_fail  # type: ignore[method-assign]
+    _race_before_first_cas(m, _noop)
+    await m.advancer().advance(m.wf_id, "/g1", state["step_tasks"]["/g1"], ["b"])
+
+    fresh = await m.state()
+    assert fresh["status"] == STATUS_FAILED
+    assert fresh["final_result_task_id"] is None
+    assert m.cas_calls == 1, "nur fail() hat geschrieben; der Fan-in-Advance nicht"
+    assert await m.backend.get_result(aggregate_result_id(m.wf_id, "")) is None
+
+
+async def test_refresh_before_fan_in_adopts_fresh_version():
+    """Die frische Lesung zieht neben ``step_tasks`` auch die ``version`` nach:
+    der abschliessende Fan-in-Advancer mit veraltetem Eintritts-Schnappschuss
+    schreibt in EINER CAS-Runde, statt erst zu verlieren und zu mergen."""
+    m = MultiDriver(group(Echo.s("a"), Echo.s("b")))
+    state = await m.seed()
+    stale_raw = encode_json(state)
+    await m.advancer().advance(m.wf_id, "/g0", state["step_tasks"]["/g0"], ["a"])
+    await _bump_with_marker(m, "/other", "other-task")
+
+    real_get = m.backend.get_workflow_state
+    calls = {"n": 0}
+
+    async def stale_once(wf_id, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return stale_raw
+        return await real_get(wf_id, *args, **kwargs)
+
+    m.backend.get_workflow_state = stale_once  # type: ignore[method-assign]
+    _race_before_first_cas(m, _noop)
+    try:
+        await m.advancer().advance(m.wf_id, "/g1", state["step_tasks"]["/g1"], ["b"])
+    finally:
+        m.backend.get_workflow_state = real_get  # type: ignore[method-assign]
+
+    fresh = await m.state()
+    assert fresh["status"] == STATUS_COMPLETED
+    assert fresh["step_tasks"]["/other"] == "other-task"
+    assert fresh["version"] == 2
+    assert m.cas_calls == 1
+
+
+async def test_golden_state_without_version_decodes_and_first_write_is_version_one():
+    """R22: Dokumente aus 0.5.x (die Golden-Fixture) tragen keine ``version``;
+    sie gelten als 0 und werden beim ersten Schreiben 1. Die Fixture bleibt
+    unveraendert -- ein Bruch hier ist Stop-Condition (b) des Plans."""
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "integration" / "backend" / "golden" / "values" / "workflow_state.json"
+    ).read_bytes()
+    golden = decode_json(fixture)
+    assert "version" not in golden
+    m = MultiDriver(_node_from_dict(golden["topology"]))
+    m.wf_id = golden["workflow_id"]
+    seeded = dict(golden, step_tasks={"/0": "seed-/0"})
+    await m.backend.store_workflow_state(m.wf_id, encode_json(seeded), 60_000)
+    await m._store("seed-/0", "golden.a", [1])
+
+    await m.advancer().advance(m.wf_id, "/0", "seed-/0", [1])
+
+    fresh = await m.state()
+    assert fresh["version"] == 1
+    assert set(fresh["step_tasks"]) == {"/0", "/1/h/g0", "/1/h/g1"}
+    assert fresh["v"] == golden["v"] and fresh["topology"] == golden["topology"]
 
 
 async def test_expired_member_result_raises_workflow_result_expired():

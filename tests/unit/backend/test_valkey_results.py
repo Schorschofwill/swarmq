@@ -232,3 +232,37 @@ class TestPingAndTimeouts:
         client.set = AsyncMock(side_effect=_slow)
         with pytest.raises(BackendConnectionError, match="store_result timed out after 0.01s"):
             await backend.store_result("t", b"x", 1000, op_timeout=0.01)
+
+
+class TestCompareAndStoreWorkflowState:
+    """KTD11 (Plan 2026-09-08-001, U9): ``workflow_state_cas.lua`` lazy
+    registriert, Aufruf mit Schluessel und (Version, Payload, TTL)."""
+
+    def _backend(self, results: list[int]) -> tuple[ValkeyBackend, Mock, AsyncMock]:
+        client = AsyncMock()
+        script = AsyncMock(side_effect=results)
+        client.register_script = Mock(return_value=script)
+        return ValkeyBackend(client=client), client, script
+
+    async def test_calls_script_with_key_version_payload_ttl(self) -> None:
+        backend, _client, script = self._backend([1])
+        stored = await backend.compare_and_store_workflow_state(
+            "wf-1", b'{"version": 3}', ttl_ms=5_000, expected_version=2
+        )
+        assert stored is True
+        script.assert_awaited_once_with(keys=["sq:wf:wf-1"], args=[2, b'{"version": 3}', 5_000])
+
+    async def test_zero_means_conflict_and_script_is_registered_once(self) -> None:
+        backend, client, _script = self._backend([1, 0])
+        assert await backend.compare_and_store_workflow_state(
+            "wf-1", b"{}", ttl_ms=5_000, expected_version=0
+        ) is True
+        assert await backend.compare_and_store_workflow_state(
+            "wf-1", b"{}", ttl_ms=5_000, expected_version=0
+        ) is False
+        client.register_script.assert_called_once()
+
+    async def test_before_connect_raises_backend_error(self) -> None:
+        backend = ValkeyBackend("valkey://127.0.0.1:1/0")
+        with pytest.raises(BackendConnectionError):
+            await backend.compare_and_store_workflow_state("wf-1", b"{}", ttl_ms=5_000, expected_version=0)

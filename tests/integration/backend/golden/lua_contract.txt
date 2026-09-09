@@ -7,6 +7,7 @@ sched_disable	KEYS=2	ARGV=2
 sched_poll	KEYS=2	ARGV=2
 sliding_window_counter	KEYS=2	ARGV=3
 unique_release	KEYS=1	ARGV=1
+workflow_state_cas	KEYS=1	ARGV=3
 sched_commit	slots=equal	sq:{sched}:zset sq:{sched}:defs sq:lock:{sched}:leader
 sched_disable	slots=equal	sq:{sched}:defs sq:{sched}:zset
 sched_poll	slots=equal	sq:{sched}:zset sq:{sched}:defs

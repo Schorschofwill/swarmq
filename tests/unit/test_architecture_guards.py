@@ -42,13 +42,15 @@ _LOC_EXCEPTIONS: dict[str, str] = {
     # der Gliedkennung, der Vollstaendigkeitsguard und das Nachziehen der
     # Schritt-Kennungen bringen die Begruendungen mit, die der Code-Review
     # als tragend erwiesen hat -- sie wegzukuerzen waere der stille Weg
-    # zurueck in den Defekt. Aufloesung: die reinen Pfad- und Topologie-
-    # Helfer (workflow_step_task_id, aggregate_result_id, split_path,
-    # node_at_path, initial_frontier/_frontier, inject_result) in ein
-    # eigenes Modul ziehen -- eine koherente Grenze (Adressierung statt
-    # Fortschaltung), die das Modul auf rund 715 Zeilen bringt. Beim
-    # Streichen dieses Eintrags ist die Extraktion erledigt.
-    "swarmq.workflow_orchestration": "B10-Fix; Aufloesung: Pfad-Helfer extrahieren",
+    # zurueck in den Defekt. Compare-and-Set (Plan 2026-09-08-001, U9/KTD11):
+    # 805 -> ~885 Zeilen fuer CAS-Persistenz, Konflikt-Merge und die
+    # Terminalpruefung der frischen Lesung. Aufloesung (U12 desselben Plans):
+    # die reinen Pfad- und Topologie-Helfer (workflow_step_task_id,
+    # aggregate_result_id, split_path, node_at_path, initial_frontier/
+    # _frontier, inject_result) in ein eigenes Modul ziehen -- eine koherente
+    # Grenze (Adressierung statt Fortschaltung). Beim Streichen dieses
+    # Eintrags ist die Extraktion erledigt.
+    "swarmq.workflow_orchestration": "B10-Fix + CAS (U9); Aufloesung: Pfad-Helfer extrahieren (U12)",
 }
 
 # (Quelle, Ziel) auf Paketebene; Wurzel ``swarmq`` matcht nur exakt.

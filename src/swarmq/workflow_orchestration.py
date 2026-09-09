@@ -22,6 +22,7 @@ from swarmq.exceptions import (
     TaskError,
     WorkflowNotFound,
     WorkflowResultExpired,
+    WorkflowStateConflict,
     WorkflowValidationError,
 )
 from swarmq.headers import (
@@ -56,6 +57,22 @@ STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 
 _TERMINAL_STATUSES = frozenset({STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED})
+
+# R23: Konfliktgrenze des Compare-and-Set. Jede Runde gewinnt mindestens ein
+# Schreiber, ein Advancer verliert also hoechstens so oft, wie parallele
+# Zweige schreiben. Darueber: WorkflowStateConflict -> Redelivery.
+WORKFLOW_CAS_MAX_ROUNDS = 25
+
+
+class _StaleWorkflowState(Exception):
+    """Intern (KTD11): der lokale Schnappschuss ist gegenueber dem Backend
+    veraltet -- ein Compare-and-Set schlug fehl. ``advance()`` faengt sie und
+    merged die lokalen Aenderungen in den frischen Zustand (R23)."""
+
+
+class _WorkflowAlreadyTerminal(Exception):
+    """Intern (R24): die frische Lesung vor dem Fan-in fand einen terminalen
+    Zustand. ``advance()`` faengt sie und endet ohne Schreibung."""
 
 
 def build_initial_workflow_state(
@@ -397,13 +414,53 @@ class WorkflowAdvancer:
         state: dict[str, Any] = decode_json(raw)
         if state["status"] != STATUS_RUNNING:
             return  # already terminal
-        if await self._backend.is_workflow_cancelled(wf_id):
-            await self._mark_terminal(wf_id, state, STATUS_CANCELLED, None, None)
+        try:
+            if await self._backend.is_workflow_cancelled(wf_id):
+                await self._mark_terminal(wf_id, state, STATUS_CANCELLED, None, None)
+                return
+
+            topology = _node_from_dict(state["topology"])
+            await self._on_leaf_complete(
+                wf_id, state, topology, completed_path, completed_task_id, result
+            )
+        except _StaleWorkflowState:
+            await self._reconcile(wf_id, state)
+        except _WorkflowAlreadyTerminal:
             return
 
-        topology = _node_from_dict(state["topology"])
-        await self._on_leaf_complete(
-            wf_id, state, topology, completed_path, completed_task_id, result
+    async def _reconcile(self, wf_id: str, local: dict[str, Any]) -> None:
+        """Konfliktbehandlung (R23): den frischen Zustand lesen und die lokalen
+        Aenderungen hineinmergen statt den Advance zu wiederholen -- publiziert
+        und den Chord-Zaehler bewegt hat dieser Advance bereits.
+        ``step_tasks`` wird additiv vereinigt (Bestand gewinnt); ein lokaler
+        Terminalstatus bringt ``status``, ``final_result_task_id`` und
+        ``error`` mit. Ist der frische Zustand terminal, endet der Advance
+        ohne Schreibung. Nach ``WORKFLOW_CAS_MAX_ROUNDS`` verlorenen Runden
+        (die erste zaehlt mit): :class:`WorkflowStateConflict`."""
+        local_terminal = local["status"] in _TERMINAL_STATUSES
+        for _round in range(WORKFLOW_CAS_MAX_ROUNDS - 1):
+            raw = await self._backend.get_workflow_state(wf_id)
+            if raw is None:
+                return
+            fresh: dict[str, Any] = decode_json(raw)
+            if fresh["status"] in _TERMINAL_STATUSES:
+                return
+            for path, task_id in local["step_tasks"].items():
+                fresh["step_tasks"].setdefault(path, task_id)
+            if local_terminal:
+                fresh["status"] = local["status"]
+                fresh["final_result_task_id"] = local.get("final_result_task_id")
+                fresh["error"] = local.get("error")
+            try:
+                await self._persist(wf_id, fresh)
+            except _StaleWorkflowState:
+                continue
+            if local_terminal:
+                await self._backend.notify_workflow(wf_id)
+            return
+        raise WorkflowStateConflict(
+            f"workflow {wf_id}: state compare-and-set lost {WORKFLOW_CAS_MAX_ROUNDS} "
+            "rounds in a row; the step is not finished and must be redelivered"
         )
 
     # --- core recursion -----------------------------------------------------
@@ -619,17 +676,27 @@ class WorkflowAdvancer:
         und die Kennungen sind deterministisch, ein Konflikt kann also nicht
         entstehen.
 
-        Das schliesst das verlorene Zustands-Update **nicht**
-        (``store_workflow_state`` ueberschreibt blind, ``advance`` ist ein
-        Read-Modify-Write ohne CAS) -- es verkleinert nur das Fenster.
+        Seit KTD11 schliesst das Compare-and-Set in :meth:`_persist` das
+        verlorene Zustands-Update; diese Lesung bleibt als Schutz gegen das
+        Publish-vor-Persistenz-Fenster: ein Schritt wird publiziert, BEVOR sein
+        Marker persistiert ist, und kann schneller enden als die Persistenz.
+        Sie honoriert einen frischen Terminalstatus (R24): dann endet der
+        Advance ohne Schreibung (:class:`_WorkflowAlreadyTerminal`).
         """
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
             return
         persisted: dict[str, Any] = decode_json(raw)
+        if persisted["status"] in _TERMINAL_STATUSES:
+            raise _WorkflowAlreadyTerminal(wf_id)
         step_tasks: dict[str, str] = state["step_tasks"]
         for path, task_id in persisted.get("step_tasks", {}).items():
             step_tasks.setdefault(path, task_id)
+        # Bis hierher hat dieser Advance nichts Lokales veraendert (der Fan-in
+        # publiziert erst danach), der lokale Zustand ist also nach dem
+        # Nachziehen dem persistierten gleich -- dessen Version darf das CAS
+        # in _persist als Erwartung nehmen.
+        state["version"] = int(persisted.get("version", 0))
 
     def _terminal_result_id(
         self,
@@ -795,11 +862,22 @@ class WorkflowAdvancer:
             return
         state["status"] = STATUS_FAILED
         state["error"] = {"type": error_type, "message": error_message}
-        await self._persist(wf_id, state)
+        try:
+            await self._persist(wf_id, state)
+        except _StaleWorkflowState:
+            await self._reconcile(wf_id, state)
+            return
         await self._backend.notify_workflow(wf_id)
 
     async def _persist(self, wf_id: str, state: dict[str, Any]) -> None:
-        await self._backend.store_workflow_state(
-            wf_id, encode_json(state), ttl_ms=self._ttl_ms
+        """Compare-and-Set gegen die gelesene ``version`` (R22; fehlend = 0,
+        Dokumente aus 0.5.x). Bei Konflikt :class:`_StaleWorkflowState`."""
+        expected = int(state.get("version", 0))
+        state["version"] = expected + 1
+        stored = await self._backend.compare_and_store_workflow_state(
+            wf_id, encode_json(state), ttl_ms=self._ttl_ms, expected_version=expected
         )
+        if not stored:
+            state["version"] = expected
+            raise _StaleWorkflowState(wf_id)
 

@@ -157,6 +157,11 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         dlq_on_uncaught="n/a", exit_code_on_cli=None,
         transport_field="raised to caller",
     ),
+    "WorkflowStateConflict": dict(
+        origin="library", when=["run"], retriable="yes",
+        dlq_on_uncaught="no", exit_code_on_cli=None,
+        transport_field="redelivery of the step message",
+    ),
 }
 
 

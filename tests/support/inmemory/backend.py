@@ -9,6 +9,7 @@ wie die ``ValkeyBackend``-Fassade ab U18.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING
@@ -198,6 +199,17 @@ class InMemoryBackend:
         self, wf_id: str, data: bytes, ttl_ms: int, *, op_timeout: float | None = None
     ) -> None:
         self._wf_state.set(wf_id, data, ttl_ms)
+
+    async def compare_and_store_workflow_state(
+        self, wf_id: str, data: bytes, ttl_ms: int, *, expected_version: int, op_timeout: float | None = None
+    ) -> bool:
+        current = self._wf_state.get(wf_id)
+        if current is None:
+            return False
+        if int(json.loads(current).get("version", 0)) != expected_version:
+            return False
+        self._wf_state.set(wf_id, data, ttl_ms)
+        return True
 
     async def get_workflow_state(self, wf_id: str, *, op_timeout: float | None = None) -> bytes | None:
         return self._wf_state.get(wf_id)

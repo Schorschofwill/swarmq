@@ -24,6 +24,7 @@ from swarmq.headers import (
     HEADER_WORKFLOW_STEP,
 )
 from swarmq.serialization import (
+    decode_json,
     decode_result,
     encode_json,
 )
@@ -31,6 +32,7 @@ from swarmq.signals import Signal
 from swarmq.workflow import Chain, Chord, Group, Signature
 from swarmq.workflow_orchestration import (
     STATUS_FAILED,
+    STATUS_RUNNING,
     WorkflowHandle,
     build_initial_workflow_state,
     initial_frontier,
@@ -98,6 +100,9 @@ class ClientWorkflows:
 
         state = build_initial_workflow_state(workflow_id, workflow.to_dict())
         state["step_tasks"] = step_tasks
+        # KTD11: Erstanlage mit Version 0; jede spaetere Schreibung ist ein
+        # Compare-and-Set gegen die gelesene Version.
+        state["version"] = 0
         await self._backend.store_workflow_state(
             workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
             op_timeout=self._backend_op_timeout,
@@ -132,15 +137,7 @@ class ClientWorkflows:
             # The already-enqueued members run harmlessly (their advance finds
             # a terminal workflow and no-ops).
             with contextlib.suppress(Exception):
-                state["status"] = STATUS_FAILED
-                state["error"] = {
-                    "type": type(exc).__name__,
-                    "message": f"apply() failed to enqueue the initial frontier: {exc}",
-                }
-                await self._backend.store_workflow_state(
-                    workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
-                    op_timeout=self._backend_op_timeout,
-                )
+                await self._mark_apply_failed(workflow_id, state, exc, state_ttl_ms)
             raise
 
         await self._signal_dispatcher.dispatch(
@@ -152,6 +149,35 @@ class ClientWorkflows:
         return WorkflowHandle(
             self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms
         )
+
+    async def _mark_apply_failed(
+        self, workflow_id: str, state: dict[str, Any], exc: Exception, state_ttl_ms: int
+    ) -> None:
+        """Fehlermarkierung per Compare-and-Set gegen die Erstanlage (R24,
+        KTD11). War ein Advancer eines schon publizierten Glieds schneller,
+        wird der frische Zustand gelesen und nur ein noch LAUFENDER Zustand
+        erneut markiert -- ein terminaler bleibt unangetastet."""
+        error = {
+            "type": type(exc).__name__,
+            "message": f"apply() failed to enqueue the initial frontier: {exc}",
+        }
+        for candidate in (state, None):
+            if candidate is None:
+                raw = await self._backend.get_workflow_state(
+                    workflow_id, op_timeout=self._backend_op_timeout
+                )
+                if raw is None:
+                    return
+                candidate = decode_json(raw)
+                if candidate["status"] != STATUS_RUNNING:
+                    return
+            expected = int(candidate.get("version", 0))
+            failed = dict(candidate, status=STATUS_FAILED, error=error, version=expected + 1)
+            if await self._backend.compare_and_store_workflow_state(
+                workflow_id, encode_json(failed), ttl_ms=state_ttl_ms,
+                expected_version=expected, op_timeout=self._backend_op_timeout,
+            ):
+                return
 
     async def workflow(self, workflow_id: str) -> WorkflowHandle:
         """Reattach to a running/finished workflow by id (R14).

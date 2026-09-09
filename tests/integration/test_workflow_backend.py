@@ -185,3 +185,37 @@ async def test_nested_topology_state_roundtrips_unchanged(backend):
     raw = await backend.get_workflow_state(wf_id)
     assert raw is not None
     assert decode_json(raw)["topology"] == topology.to_dict()
+
+
+# --------------------------------------------------------------------------
+# Compare-and-Set des Workflow-Zustands — KTD11 (Plan 2026-09-08-001, U9)
+# --------------------------------------------------------------------------
+
+
+async def test_compare_and_store_writes_payload_byte_for_byte(backend):
+    """Das Lua-Skript dekodiert nur die Version und schreibt die Payload
+    byteweise: Fliesskommazahlen in Task-Argumenten der Topologie kommen
+    unveraendert zurueck (``cjson.encode`` wuerde 0.1 und 1e300 verfaelschen)."""
+    wf_id = _wf_id()
+    await backend.store_workflow_state(wf_id, b'{"version": 0}', ttl_ms=60_000)
+    payload = b'{"version":1,"topology":{"args":[0.1,1e300,2.5e-7,12345678901234567890,-0.0]},"s":"\xc3\xbc"}'
+
+    assert await backend.compare_and_store_workflow_state(wf_id, payload, ttl_ms=60_000, expected_version=0) is True
+
+    assert await backend.get_workflow_state(wf_id) == payload
+    ttl = await backend._require_client().pttl(f"sq:wf:{wf_id}")
+    assert 0 < ttl <= 60_000
+
+
+async def test_compare_and_store_conflict_keeps_existing_document_and_ttl(backend):
+    wf_id = _wf_id()
+    await backend.store_workflow_state(wf_id, b'{"version": 5, "keep": true}', ttl_ms=60_000)
+
+    stored = await backend.compare_and_store_workflow_state(
+        wf_id, b'{"version": 6}', ttl_ms=500, expected_version=4
+    )
+    assert stored is False
+
+    assert await backend.get_workflow_state(wf_id) == b'{"version": 5, "keep": true}'
+    ttl = await backend._require_client().pttl(f"sq:wf:{wf_id}")
+    assert ttl > 1_000  # die kurze TTL des abgelehnten Schreibers wurde nicht angewandt

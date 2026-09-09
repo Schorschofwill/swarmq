@@ -167,6 +167,66 @@ class ResultBackendContract:
         await impl.store_workflow_state(wf, b'{"v": 2}', ttl_ms=60_000)
         assert await impl.get_workflow_state(wf) == b'{"v": 2}'
 
+    # --- Workflow-Zustand: Compare-and-Set (KTD11, R22) ------------------------
+    #
+    # Testliste: Treffer -> True + neuer Wert; Fehlversion -> False + alter Wert;
+    # fehlende ``version`` im Bestand zaehlt als 0; fehlender Schluessel -> False;
+    # TTL gilt fuer den neuen Wert.
+
+    async def test_compare_and_store_workflow_state_matching_version(self, impl: ResultBackend) -> None:
+        wf = _id("wf")
+        await impl.store_workflow_state(wf, b'{"version": 0, "x": 1}', ttl_ms=60_000)
+        stored = await impl.compare_and_store_workflow_state(
+            wf, b'{"version": 1, "x": 2}', ttl_ms=60_000, expected_version=0
+        )
+        assert stored is True
+        assert await impl.get_workflow_state(wf) == b'{"version": 1, "x": 2}'
+
+    async def test_compare_and_store_workflow_state_rejects_stale_version(self, impl: ResultBackend) -> None:
+        wf = _id("wf")
+        await impl.store_workflow_state(wf, b'{"version": 2, "x": 1}', ttl_ms=60_000)
+        stored = await impl.compare_and_store_workflow_state(
+            wf, b'{"version": 2, "x": 9}', ttl_ms=60_000, expected_version=1
+        )
+        assert stored is False
+        assert await impl.get_workflow_state(wf) == b'{"version": 2, "x": 1}'
+
+    async def test_compare_and_store_workflow_state_missing_version_counts_as_zero(
+        self, impl: ResultBackend
+    ) -> None:
+        """Dokumente aus 0.5.x tragen keine ``version`` -- sie gelten als 0."""
+        wf = _id("wf")
+        await impl.store_workflow_state(wf, b'{"x": 1}', ttl_ms=60_000)
+        assert (
+            await impl.compare_and_store_workflow_state(wf, b'{"version": 1}', ttl_ms=60_000, expected_version=1)
+            is False
+        )
+        assert (
+            await impl.compare_and_store_workflow_state(wf, b'{"version": 1}', ttl_ms=60_000, expected_version=0)
+            is True
+        )
+        assert await impl.get_workflow_state(wf) == b'{"version": 1}'
+
+    async def test_compare_and_store_workflow_state_missing_key_is_rejected(self, impl: ResultBackend) -> None:
+        """Kein Bestand -> keine Schreibung; die Erstanlage ist ``store_workflow_state``."""
+        wf = _id("wf")
+        assert (
+            await impl.compare_and_store_workflow_state(wf, b'{"version": 1}', ttl_ms=60_000, expected_version=0)
+            is False
+        )
+        assert await impl.get_workflow_state(wf) is None
+
+    async def test_compare_and_store_workflow_state_applies_ttl(self, impl: ResultBackend, clock: Clock) -> None:
+        wf = _id("wf")
+        await impl.store_workflow_state(wf, b'{"version": 0}', ttl_ms=60_000)
+        assert (
+            await impl.compare_and_store_workflow_state(wf, b'{"version": 1}', ttl_ms=500, expected_version=0)
+            is True
+        )
+        assert await impl.get_workflow_state(wf) == b'{"version": 1}'
+        await clock.advance(1.0)
+        assert await impl.get_workflow_state(wf) is None
+
     async def test_workflow_cancel_flag(self, impl: ResultBackend) -> None:
         wf = _id("wf")
         assert await impl.is_workflow_cancelled(wf) is False
