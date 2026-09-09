@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import uuid
 
@@ -12,7 +13,7 @@ from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.limits import parse_rate_limit
 
 VALKEY_HOST = "localhost"
-VALKEY_PORT = 6379
+VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
 VALKEY_URL = f"valkey://{VALKEY_HOST}:{VALKEY_PORT}/0"
 
 
