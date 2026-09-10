@@ -92,6 +92,10 @@ class WorkerConfigCheckResult(TypedDict):
     slots: int
     # U5 (R11): der gepruefte ``MODULE:CALLABLE``-String, oder ``None``.
     configure: str | None
+    # U3 (R7): die belegten Portbereiche ``[erster, letzter]``, oder ``None``
+    # ohne Basisport. Der Betreiber liest daraus seine Prometheus-Targets.
+    metrics_ports: list[int] | None
+    health_ports: list[int] | None
 
 
 def _effective_port(
@@ -124,42 +128,63 @@ def _validate_observability_ports(
     autoscale: tuple[int, int] | None,
     metrics_port: int | None,
     health_port: int | None,
-) -> None:
-    """Lehnt Mehrprozess-Betrieb mit festem Beobachtungs-Port ab (R5-R7).
+) -> tuple[list[int] | None, list[int] | None]:
+    """Prueft die Portbereiche und gibt sie zurueck (R5, R6).
 
-    Derselbe Port geht heute an alle Kindprozesse und wird dort fest
-    gebunden. Das erste Kind bindet, die uebrigen scheitern, der Supervisor
-    startet sie bis zum Restart-Budget nach — danach laeuft der Worker
-    dauerhaft unterbesetzt weiter, ohne dass eine Meldung die Portkollision
-    nennt.
+    Seit U3 (Plan 2026-09-08-001) ist ein fester Port kein Fehler mehr,
+    sondern der Basisport: Slot s bindet ``basis + s``. Abgelehnt wird nur
+    noch, was auch mit Versatz nicht aufgeht — ein Bereich ueber 65535
+    hinaus, oder zwei Bereiche, die sich ueberschneiden (dann wollten zwei
+    Slots denselben Port binden).
 
-    Der Autoskalierungsbereich zaehlt mit seiner OBERGRENZE: Bei
-    ``--autoscale 1,4`` startet der Lauf sonst sauber und kollidiert erst
-    beim ersten Hochskalieren mitten im Betrieb (KTD7).
+    Der Autoskalierungsbereich zaehlt mit seiner OBERGRENZE: sonst startet
+    der Lauf sauber und kollidiert erst beim ersten Hochskalieren mitten im
+    Betrieb (KTD7).
     """
+    from swarmq.config import observability_port_ranges
+
     upper = max(processes, autoscale[1] if autoscale is not None else 1)
-    if upper <= 1:
-        return
+    found: dict[str, tuple[int | None, str] | None] = {
+        "--metrics-port": _effective_port(metrics_port, "SWARMQ_METRICS_PORT", "--metrics-port"),
+        "--health-port": _effective_port(health_port, "SWARMQ_HEALTH_PORT", "--health-port"),
+    }
 
-    conflicts = [
-        found
-        for found in (
-            _effective_port(metrics_port, "SWARMQ_METRICS_PORT", "--metrics-port"),
-            _effective_port(health_port, "SWARMQ_HEALTH_PORT", "--health-port"),
+    def _base(flag: str) -> int | None:
+        entry = found[flag]
+        return entry[0] if entry is not None else None
+
+    def _source(flag: str) -> str:
+        entry = found[flag]
+        return entry[1] if entry is not None else flag
+
+    base_metrics = _base("--metrics-port")
+    base_health = _base("--health-port")
+    metrics_range, health_range = observability_port_ranges(base_metrics, base_health, upper)
+
+    for flag, rng in (("--metrics-port", metrics_range), ("--health-port", health_range)):
+        if rng is None or rng[1] <= 65535:
+            continue
+        source = _source(flag)
+        raise ConfigurationError(
+            f"{upper} worker processes need the port range {rng[0]}-{rng[1]} "
+            f"({source}={rng[0]}), which runs past the upper port bound 65535. "
+            f"Lower the base port or run fewer processes."
         )
-        if found is not None
-    ]
-    if not conflicts:
-        return
 
-    named = ", ".join(f"{source}={port}" for port, source in conflicts)
-    raise ConfigurationError(
-        f"a fixed observability port cannot be shared by {upper} worker "
-        f"processes ({named}): every child would bind the same port, so only "
-        "the first survives and the run ends up silently under-provisioned. "
-        "Either drop the fixed port for multi-process mode, or run a single "
-        "process with it (--processes 1)."
-    )
+    if metrics_range and health_range:
+        overlap = metrics_range[0] <= health_range[1] and health_range[0] <= metrics_range[1]
+        if overlap:
+            metrics_source = _source("--metrics-port")
+            health_source = _source("--health-port")
+            raise ConfigurationError(
+                f"the observability port ranges overlap for {upper} worker "
+                f"processes: {metrics_source} covers "
+                f"{metrics_range[0]}-{metrics_range[1]} and {health_source} covers "
+                f"{health_range[0]}-{health_range[1]}, so two slots would bind the "
+                f"same port. Move one base port at least {upper} ports away."
+            )
+
+    return metrics_range, health_range
 
 
 def _validate_configure_spec(spec: str) -> None:
@@ -221,19 +246,16 @@ def check_worker_config(
         resolve_watch_dirs,
     )
 
+    # Die Warnung ``recycling_with_fixed_port`` entfaellt mit U3: das
+    # Bind-Budget des Ersatzes leitet sich jetzt aus beiden Freigabefristen
+    # ab (KTD4), statt fest 5 s zu betragen.
     warnings: list[str] = []
-    if recycling and (metrics_port is not None or health_port is not None):
-        warnings.append(
-            "recycling_with_fixed_port: recycle thresholds replace the worker while "
-            "the old one still drains; the replacement retries the fixed observability "
-            "port for up to 5 s (KTD15). Keep shutdown_timeout short or drop the fixed port."
-        )
     validate_pool_mode(pool=pool, autoscale=autoscale)
     slots = effective_concurrency(concurrency, pool, processes)
 
     # Vor dem teuren Modul-Import: eine Portkollision ist ohne Dateisystem-
     # oder Import-Arbeit entscheidbar.
-    _validate_observability_ports(
+    metrics_ports, health_ports = _validate_observability_ports(
         processes=processes,
         autoscale=autoscale,
         metrics_port=metrics_port,
@@ -285,4 +307,6 @@ def check_worker_config(
         "pool": pool,
         "slots": slots.count,
         "configure": configure,
+        "metrics_ports": metrics_ports,
+        "health_ports": health_ports,
     }

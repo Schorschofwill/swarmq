@@ -7,6 +7,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -77,3 +78,79 @@ def test_worker_recycles_by_task_count_without_losing_tasks():
     assert '"expected": true' in output, output[-4000:]
     assert "recycle_ack_missing" not in output
     assert asyncio.run(_all_done(queue, tids)) == _N
+
+
+def _drain(proc: subprocess.Popen, sink: list[str]) -> None:
+    """Liest den Worker-Ausgabestrom nebenlaeufig mit, damit der Test auf eine
+    Logzeile warten kann, ohne den Prozess vorher zu beenden."""
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sink.append(line)
+
+
+def _wait_for_line(sink: list[str], needle: str, timeout: float = 60.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(needle in line for line in sink):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _metrics_ok(port: int, timeout: float = 20.0) -> bool:
+    """Wartet, bis ``/metrics`` auf *port* antwortet."""
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=1.0) as resp:
+                if resp.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.2)
+    return False
+
+
+def test_two_processes_bind_their_own_metrics_port_across_a_recycle():
+    """AE3 (U3, R5/R8): Basisport 9190 → Slot 0 bindet 9190, Slot 1 bindet
+    9191, und nach einem Recycling bindet der Ersatz denselben Port wieder.
+
+    Vor U3 lehnte der Startguard diese Kombination rundheraus ab: ein fester
+    Port bei mehreren Prozessen war ein Konfigurationsfehler.
+    """
+    queue = f"cli-ports-{uuid.uuid4().hex[:8]}"
+    tids = asyncio.run(_enqueue(queue))
+    env = dict(
+        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1", SWARMQ_RECYCLE_MAX_TASKS="20",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._cli_fixture_tasks",
+         "--queues", queue, "--processes", "2", "--log-format", "json",
+         "--metrics-port", "9190"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    lines: list[str] = []
+    reader = threading.Thread(target=_drain, args=(proc, lines), daemon=True)
+    reader.start()
+    try:
+        assert _metrics_ok(9190), "Slot 0 hat den Basisport nicht gebunden"
+        assert _metrics_ok(9191), "Slot 1 hat basis+1 nicht gebunden"
+        # Die 120 eingereihten Tasks loesen bei Schwelle 20 Ersetzungen aus.
+        assert asyncio.run(_all_done(queue, tids)) == _N
+        # Erst wenn ein Ersatz tatsaechlich gelaufen ist, sagt die erneute
+        # Portpruefung etwas ueber R8 aus.
+        assert _wait_for_line(lines, "worker_recycling_replacement"), "kein Ersatz beobachtet"
+        assert _metrics_ok(9190, timeout=30.0), "Slot 0 hat den Port nach dem Ersatz nicht wieder gebunden"
+        assert _metrics_ok(9191, timeout=30.0), "Slot 1 hat den Port nach dem Ersatz nicht wieder gebunden"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        reader.join(timeout=5)
+    output = "".join(lines)
+    assert "bind failed" not in output, output[-4000:]

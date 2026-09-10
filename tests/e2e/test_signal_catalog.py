@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 import uuid
 from typing import Any
@@ -31,6 +32,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.serialization import encode_json
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from swarmq.workflow import chain
 
 # Liveness safety-net for "wait for an async signal/event" below — generous so
 # a loaded/cold CI runner never turns a slow signal round-trip into a false
@@ -41,6 +43,12 @@ _EVENT_TIMEOUT = 20.0
 
 # Per-test backstop, generous above the worst-case sum of inner waits + sleeps.
 pytestmark = [pytest.mark.timeout(75)]
+
+
+# U2 (Plan 2026-09-08-001, R3/AE1): ``<basis>:<slot>`` unter dem Supervisor,
+# ``<basis>:p<pid>`` eingebettet. Ein blosses ``isinstance(str)`` liess die
+# frühere Speicheradresse als Kennung durchgehen.
+_WORKER_ID_FORMAT = re.compile(r"^[^:]+:p?\d+$")
 
 
 def _unique_queue() -> str:
@@ -158,7 +166,7 @@ async def test_signal_worker_online(
 
     assert len(online_kwargs) == 1
     assert "worker_id" in online_kwargs[0]
-    assert isinstance(online_kwargs[0]["worker_id"], str)
+    assert _WORKER_ID_FORMAT.match(online_kwargs[0]["worker_id"])
 
 
 async def test_signal_worker_shutdown(
@@ -204,8 +212,7 @@ async def test_signal_worker_shutdown(
                     await task
 
     assert len(captured) == 1
-    assert "worker_id" in captured[0]
-    assert isinstance(captured[0]["worker_id"], str)
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_worker_heartbeat(
@@ -260,7 +267,7 @@ async def test_signal_worker_heartbeat(
                     await task
 
     assert len(captured) >= 1
-    assert isinstance(captured[0]["worker_id"], str)
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
     assert captured[0]["uptime_seconds"] >= 0
 
 
@@ -809,7 +816,7 @@ async def test_signal_scheduler_leader(
                 await worker_task
 
     assert len(captured) >= 1
-    assert "worker_id" in captured[0]
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_scheduler_leader_failover_reference():
@@ -890,7 +897,7 @@ async def test_signal_scheduler_leader_handover(
                     await task
 
     assert len(captured) >= 1
-    assert "worker_id" in captured[0]
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_scheduler_heartbeat(
@@ -931,7 +938,7 @@ async def test_signal_scheduler_heartbeat(
                 await worker_task
 
     assert len(captured) >= 1
-    assert "worker_id" in captured[0]
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_scheduler_standby(
@@ -979,6 +986,7 @@ async def test_signal_scheduler_standby(
             scheduler_heartbeat_interval=0.2,
             scheduler_lock_ttl=2.0,
         )
+        owner_token = f"standby-test-{uuid.uuid4().hex[:6]}"
         loop = SchedulerLoop(
             backend=backend,
             broker=broker,
@@ -986,7 +994,7 @@ async def test_signal_scheduler_standby(
             lock_manager=backend.locks,
             store=ScheduleStore(backend),
             signal_dispatcher=dispatcher,
-            owner_token=f"standby-test-{uuid.uuid4().hex[:6]}",
+            owner_token=owner_token,
         )
         await loop.start()
         try:
@@ -999,7 +1007,10 @@ async def test_signal_scheduler_standby(
             await loop.abort()
 
         assert len(standby_captured) >= 1
-        assert "worker_id" in standby_captured[0]
+        # Hier baut der Test den ``SchedulerLoop`` ohne Worker und ohne
+        # ``worker_id``; er faellt auf sein Owner-Token zurueck. Geprueft wird
+        # die Durchreichung, nicht das Format aus R3.
+        assert standby_captured[0]["worker_id"] == owner_token
         assert loop.state == "stopped"
     finally:
         await broker.close()
@@ -1015,6 +1026,58 @@ async def test_signal_worker_recycling_reference():
 
     assert hasattr(test_cpu_mode, "test_di_child_is_reused_and_recycled_with_signal")
     assert Signal.WORKER_RECYCLING.value == "worker_recycling"
+
+
+async def test_signal_workflow_step_enqueued(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """WORKFLOW_STEP_ENQUEUED feuert je Workflow-Schritt — im Client fuer die
+    Anfangsfront, im Worker fuer jeden Folgeschritt (U11, R16)."""
+    queue = _unique_queue()
+    first = _task_name("wfstep1")
+    second = _task_name("wfstep2")
+
+    class First(Task):
+        task_info = TaskInfo(name=first, queues=[queue])
+
+        async def run(self) -> str:
+            return "one"
+
+    class Second(Task):
+        task_info = TaskInfo(name=second, queues=[queue])
+
+        async def run(self, prev: str) -> str:
+            return f"{prev}-two"
+
+    captured: list[dict[str, Any]] = []
+    seen = asyncio.Event()
+
+    async def _handler(**kwargs: Any) -> None:
+        captured.append(kwargs)
+        if len(captured) >= 2:
+            seen.set()
+
+    client_app = SwarmQ(
+        RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue],
+    )
+    client_app.on_signal(Signal.WORKFLOW_STEP_ENQUEUED)(_handler)
+
+    async with client_app:
+        await client_app.broker.declare_queue(queue)
+        async with _running_worker(
+            rabbitmq_url, valkey_url, queue,
+            register_signals={Signal.WORKFLOW_STEP_ENQUEUED: _handler},
+        ):
+            handle = await client_app.apply(chain(First.s(), Second.s()))
+            assert await handle.get(timeout=_EVENT_TIMEOUT) == "one-two"
+            await asyncio.wait_for(seen.wait(), timeout=_EVENT_TIMEOUT)
+
+    # Erster Eintrag aus dem Client (Anfangsfront), zweiter aus dem Worker.
+    assert [c["step_path"] for c in captured] == ["/0", "/1"]
+    assert [c["task_name"] for c in captured] == [first, second]
+    assert {c["queue"] for c in captured} == {queue}
+    assert {c["workflow_id"] for c in captured} == {handle.workflow_id}
+    assert all(c["task_id"] for c in captured)
 
 
 async def test_signal_task_rejected(

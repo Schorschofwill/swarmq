@@ -112,22 +112,93 @@ class TestWorkerSubprocessEntry:
         )
 
 
+    def test_slot_reaches_the_worker_namespace(self, monkeypatch):
+        """U2 (R3/KTD2): Der Supervisor kennt den Slot bereits und uebergibt
+        ihn dem Kind — das Kind verwarf ihn bisher und nannte sich nach seiner
+        Speicheradresse."""
+        import threading
+
+        captured: dict = {}
+
+        async def capture_ns(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
+
+        worker_subprocess_entry(
+            worker_id=2,
+            shutdown_event=threading.Event(),
+            cfg=_make_test_cfg(),
+        )
+
+        assert captured["ns"].worker_slot == 2
+
+
+def _capture_entry_logs(monkeypatch) -> list[dict]:
+    """Faengt die Logsaetze des Entry ab.
+
+    ``structlog.testing.capture_logs`` hilft hier nicht: das Entry ruft
+    ``setup_logging`` und konfiguriert structlog dabei neu, womit die
+    Capture-Kette wieder verschwindet. Das Format prueft stattdessen der
+    Integrationstest mit echtem Subprozess (AE8/AE9).
+    """
+    from swarmq.process_manager import entry as entry_module
+
+    events: list[dict] = []
+
+    class _Recorder:
+        def error(self, event, **kwargs):
+            events.append({"event": event, **kwargs})
+
+        def __getattr__(self, _name):
+            return lambda *a, **kw: None
+
+    monkeypatch.setattr(entry_module, "logger", _Recorder())
+    return events
+
+
 class TestConfigErrorExitCode:
     """R29 (Plan 2026-09-03-001): Konfigurationsfehler enden mit Exit 78."""
 
-    def test_configuration_error_exits_with_config_code(self, monkeypatch, capsys):
+    def test_configuration_error_exits_with_config_code(self, monkeypatch):
+        """Bewusst geaenderter Test (U4/R21): der Fehlertext erscheint als
+        strukturierter Logsatz ``worker_config_error`` im konfigurierten
+        Format, nicht als rohe stderr-Zeile. Eine rohe Zeile war in einer
+        JSON-Logpipeline eine kaputte Zeile -- gerade im Fehlerfall, wo sie
+        gelesen werden muss."""
         from swarmq.exceptions import ConfigurationError
-        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
         async def boom(ns):
             raise ConfigurationError("FromDishka annotation(s) that never inject: t: run.db")
 
         monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        events = _capture_entry_logs(monkeypatch)
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         with pytest.raises(SystemExit) as exc_info:
             worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
         assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE == 78
-        assert "never inject" in capsys.readouterr().err
+        entry = next(e for e in events if e["event"] == "worker_config_error")
+        assert entry["source"] == "worker"
+        assert "never inject" in entry["error"]
+
+    def test_import_error_in_the_child_is_a_configuration_error(self, monkeypatch):
+        """R19: Eine fehlende Abhaengigkeit im Task-Modul endete mit Traceback
+        und fuenf Neustarts -- der Supervisor sah einen Absturz, nicht einen
+        Konfigurationsfehler."""
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        async def boom(ns):
+            raise ModuleNotFoundError("No module named 'pandas'", name="pandas")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        events = _capture_entry_logs(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
+        entry = next(e for e in events if e["event"] == "worker_config_error")
+        assert "pandas" in entry["error"]
 
 
 class TestHeartbeatWriter:

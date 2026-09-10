@@ -13,7 +13,6 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import setup_logging
 from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
@@ -37,21 +36,12 @@ def run_multi_process_worker(args: argparse.Namespace, *, admin_factory: AdminFa
             "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set",
         )
 
-    # The supervisor parent previously never called
-    # setup_logging() — only the worker subprocesses did (via
-    # SwarmQ.__init__). Result: worker_died / restart_limit_exceeded /
-    # autoscale events rendered in structlog's unconfigured console
-    # default regardless of --log-format json, blinding any JSON-only
-    # log pipeline to the entire supervisor layer. Configure the same
-    # renderer as the workers and stop the listener on exit
-    # (flush-on-exit).
-    log_listener = setup_logging(
-        args.log_level, log_json=(args.log_format == "json"),
-    )
-    try:
-        return _run_multi_process_worker_configured(args, admin_factory=admin_factory)
-    finally:
-        log_listener.stop()
+    # Das Logging konfiguriert seit U4 der Worker-Zweig der CLI, bevor
+    # irgendetwas den Fehler werfen kann (KTD8) -- und er flusht es auch.
+    # Vorher stoppte diese Funktion ihren Listener im ``finally``: ein
+    # Konfigurationsfehler, den der Aufrufer danach loggte, blieb in der
+    # Queue eines gestoppten Listeners liegen und erreichte niemanden.
+    return _run_multi_process_worker_configured(args, admin_factory=admin_factory)
 
 
 def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_factory: AdminFactory | None = None) -> int:

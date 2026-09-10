@@ -37,19 +37,7 @@ _PKG = "swarmq"
 _MAX_MODULE_LINES = 800
 
 # Modul → Unit, die es unter das Limit bringt. Seit U21 leer (KTD7).
-_LOC_EXCEPTIONS: dict[str, str] = {
-    # B10-Korrektur (Plan 2026-08-30-002): 698 -> 805 Zeilen. Die Ableitung
-    # der Gliedkennung, der Vollstaendigkeitsguard und das Nachziehen der
-    # Schritt-Kennungen bringen die Begruendungen mit, die der Code-Review
-    # als tragend erwiesen hat -- sie wegzukuerzen waere der stille Weg
-    # zurueck in den Defekt. Aufloesung: die reinen Pfad- und Topologie-
-    # Helfer (workflow_step_task_id, aggregate_result_id, split_path,
-    # node_at_path, initial_frontier/_frontier, inject_result) in ein
-    # eigenes Modul ziehen -- eine koherente Grenze (Adressierung statt
-    # Fortschaltung), die das Modul auf rund 715 Zeilen bringt. Beim
-    # Streichen dieses Eintrags ist die Extraktion erledigt.
-    "swarmq.workflow_orchestration": "B10-Fix; Aufloesung: Pfad-Helfer extrahieren",
-}
+_LOC_EXCEPTIONS: dict[str, str] = {}
 
 # (Quelle, Ziel) auf Paketebene; Wurzel ``swarmq`` matcht nur exakt.
 _CYCLE_ALLOWLIST: list[tuple[str, str]] = [

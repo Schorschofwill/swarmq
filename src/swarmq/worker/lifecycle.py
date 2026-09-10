@@ -32,13 +32,18 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
 from swarmq.supervision import RecycleAckTimeout, current_channel
-from swarmq.workflow_orchestration import WorkflowAdvancer, workflow_step_task_id
+from swarmq.workflow_orchestration import (
+    WorkflowAdvancer,
+    WorkflowStepEnqueuer,
+    workflow_step_task_id,
+)
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
     from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
+    from swarmq.middleware import MiddlewareChain
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
     from swarmq.worker.execution import TaskExecutor
@@ -105,6 +110,8 @@ class WorkerLifecycle:
 
         def _resolve_workflow_queue(self, task_name: str) -> str: ...
 
+        def _get_chain(self) -> MiddlewareChain: ...
+
     async def _wire_coordination(self) -> None:
         """Verträge/Advancer/Scheduler nach ``connect()`` verdrahten."""
         # Die Koordinations-Verträge kommen seit U15 von der Fassade —
@@ -115,10 +122,19 @@ class WorkerLifecycle:
 
         # R4.1 workflow advancer (U5) — der ChordStore-Vertrag kommt
         # ebenfalls von der Fassade (chord_complete.lua, lebender Client).
+        # U11 (KTD7): Publisher-Seam des Advancers — Folgeschritte laufen
+        # durch dieselbe Middleware-Kette und dieselben Signale wie
+        # ``Client.schedule``. Die Kette wird je Front frisch geholt, damit
+        # spaeter registrierte Middleware sichtbar bleibt.
+        publisher = WorkflowStepEnqueuer(
+            publish=self._publish_workflow_step,
+            dispatch=self._signal_dispatcher.dispatch,
+            get_chain=self._get_chain,
+        )
         self._workflow_advancer = WorkflowAdvancer(
             self._backend,
             self._backend.chords,
-            publish=self._publish_workflow_step,
+            publisher=publisher,
             resolve_queue=self._resolve_workflow_queue,
             make_task_id=workflow_step_task_id,
             unpack=lambda raw: decode_result(raw)["result"],
@@ -140,7 +156,7 @@ class WorkerLifecycle:
             lock_manager=self._backend.locks,
             store=schedule_store,
             signal_dispatcher=self._signal_dispatcher,
-            worker_id=str(id(self)),
+            worker_id=self._config.worker_identity,
         )
         await self._scheduler.start()
 
@@ -249,9 +265,14 @@ class WorkerLifecycle:
         await request_recycle(self, reason, value)
 
     async def _start_with_bind_retry(self, start: Callable[[], Awaitable[None]]) -> None:
-        from swarmq.worker.recycling import start_with_bind_retry
+        from swarmq.worker import recycling
 
-        await start_with_bind_retry(start)
+        # KTD4: das Budget kommt aus der Konfiguration — das Entry leitet es
+        # aus beiden Freigabefristen ab, damit ein Ersatz nicht in einen
+        # Bind-Fehler und damit ins Neustart-Budget laeuft.
+        await recycling.start_with_bind_retry(
+            start, budget_s=self._config.bind_retry_budget_s
+        )
 
     def _warn_without_delivery_limit(self) -> None:
         """R21: ohne Quorum-Queue gibt es kein Delivery-Limit — eine Giftnachricht
@@ -378,7 +399,7 @@ class WorkerLifecycle:
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_ONLINE,
             handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-            worker_id=str(id(self)),
+            worker_id=self._config.worker_identity,
         )
         self._start_background_monitors()
         # Block until shutdown is requested. The try/finally makes the cancel
@@ -459,7 +480,7 @@ class WorkerLifecycle:
         set the uptime / queue-depth / dlq gauges and emit the heartbeat.
         Per-queue broker errors are logged and skipped."""
         assert self._metrics is not None  # Sampler startet nur mit Metrics
-        worker_id = str(id(self))
+        worker_id = self._config.worker_identity
         now = time.monotonic()
         uptime = now - self._worker_started_at
         self._metrics.worker_uptime_seconds.labels(
@@ -646,7 +667,7 @@ class WorkerLifecycle:
             await self._signal_dispatcher.dispatch(
                 Signal.WORKER_SHUTDOWN,
                 handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-                worker_id=str(id(self)),
+                worker_id=self._config.worker_identity,
             )
             await self._stop_http_surfaces()
             # Ab hier darf kein Publish mehr laenger laufen als das

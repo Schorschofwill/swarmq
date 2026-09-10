@@ -70,6 +70,15 @@ class WorkflowNotFound(SwarmQError):
     exists for the id (never started, or expired) — R14."""
 
 
+class WorkflowStateConflict(SwarmQError):
+    """Raised when a workflow-state Compare-and-Set lost every one of its
+    conflict rounds (KTD11, R23) — the advance is not finished and the step
+    message must be redelivered. Each round is won by at least one writer,
+    so this needs more concurrently writing branches than the limit
+    (``WORKFLOW_CAS_MAX_ROUNDS``) allows; the redelivery may re-publish
+    deterministic step ids, which step idempotency absorbs."""
+
+
 class WorkflowResultExpired(SwarmQError):
     """Raised when a member/step result needed for fan-in or final
     retrieval has expired before the workflow completed — R6. Distinct

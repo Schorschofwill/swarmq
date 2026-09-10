@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from swarmq.contracts import PublishReceipt
@@ -22,6 +22,7 @@ from swarmq.exceptions import (
     TaskError,
     WorkflowNotFound,
     WorkflowResultExpired,
+    WorkflowStateConflict,
     WorkflowValidationError,
 )
 from swarmq.headers import (
@@ -39,53 +40,36 @@ from swarmq.workflow import (
     _node_from_dict,
 )
 
+# U12 (KTD13): Adressierung (``workflow_topology``) und Enqueue-Seam
+# (``workflow_enqueue``) liegen in eigenen Modulen. Die ``X as X``-Form ist
+# der ausdrueckliche Re-Export (PEP 484): bestehende Importwege
+# (``client/workflows.py``, ``worker/*``, ``app.py``, ``__init__.py``)
+# bleiben unveraendert, und kein Linter haelt sie fuer toten Import.
+from swarmq.workflow_enqueue import WorkflowStep as WorkflowStep
+from swarmq.workflow_enqueue import WorkflowStepEnqueuer as WorkflowStepEnqueuer
+from swarmq.workflow_enqueue import WorkflowStepPublisher as WorkflowStepPublisher
+from swarmq.workflow_state import (
+    _TERMINAL_STATUSES,
+    _StaleWorkflowState,
+    _WorkflowAlreadyTerminal,
+)
+from swarmq.workflow_state import STATUS_CANCELLED as STATUS_CANCELLED
+from swarmq.workflow_state import STATUS_COMPLETED as STATUS_COMPLETED
+from swarmq.workflow_state import STATUS_FAILED as STATUS_FAILED
+from swarmq.workflow_state import STATUS_RUNNING as STATUS_RUNNING
+from swarmq.workflow_state import WORKFLOW_CAS_MAX_ROUNDS as WORKFLOW_CAS_MAX_ROUNDS
+from swarmq.workflow_state import WORKFLOW_STATE_VERSION as WORKFLOW_STATE_VERSION
+from swarmq.workflow_state import build_initial_workflow_state as build_initial_workflow_state
+from swarmq.workflow_topology import _frontier
+from swarmq.workflow_topology import aggregate_result_id as aggregate_result_id
+from swarmq.workflow_topology import initial_frontier as initial_frontier
+from swarmq.workflow_topology import inject_result as inject_result
+from swarmq.workflow_topology import node_at_path as node_at_path
+from swarmq.workflow_topology import split_path as split_path
+from swarmq.workflow_topology import workflow_step_task_id as workflow_step_task_id
+
 if TYPE_CHECKING:
     from swarmq.contracts import ResultBackend
-
-
-# --------------------------------------------------------------------------
-# Workflow state schema (pinned contract — shared by U4 apply, U5 advance,
-# U6 fail-mark). Persisted JSON under sq:wf:{workflow_id}.
-# --------------------------------------------------------------------------
-
-WORKFLOW_STATE_VERSION = 1
-
-STATUS_RUNNING = "running"
-STATUS_COMPLETED = "completed"
-STATUS_FAILED = "failed"
-STATUS_CANCELLED = "cancelled"
-
-_TERMINAL_STATUSES = frozenset({STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED})
-
-
-def build_initial_workflow_state(
-    workflow_id: str, topology: dict[str, Any]
-) -> dict[str, Any]:
-    """The state dict written at apply() time.
-
-    Fields:
-      * ``status`` — running -> completed/failed/cancelled (terminal).
-      * ``topology`` — the full ``node.to_dict()`` DAG, so any worker can
-        navigate it without the client.
-      * ``final_result_task_id`` — set by the worker (U5) when the terminal
-        step's result is stored; ``handle.get()`` resolves the value from it.
-      * ``error`` — ``{"type", "message"}`` set by the fail path (U6).
-
-    Per-member introspection (R15, ``handle.children()``) is reconstructed at
-    read time from ``step_tasks`` + result existence — there is no separate
-    ``members`` field to keep transactionally in sync.
-    """
-    return {
-        "v": WORKFLOW_STATE_VERSION,
-        "workflow_id": workflow_id,
-        "status": STATUS_RUNNING,
-        "topology": topology,
-        "final_result_task_id": None,
-        "error": None,
-        # step path -> task_id for every enqueued step. apply() seeds the
-        # initial frontier; the worker (U5) appends as it advances.
-        "step_tasks": {},
-    }
 
 
 class WorkflowHandle:
@@ -241,116 +225,6 @@ class WorkflowHandle:
 # worker can navigate the topology to decide what to enqueue next.
 
 
-def node_at_path(root: WorkflowNode, path: str) -> WorkflowNode:
-    """Resolve the node addressed by *path* within *root*. Empty string is
-    the root itself. Raises WorkflowValidationError on an invalid path."""
-    node: WorkflowNode = root
-    for seg in [s for s in path.split("/") if s]:
-        if seg.startswith("g") and seg[1:].isdigit():
-            idx = int(seg[1:])
-            if not isinstance(node, Group):
-                raise WorkflowValidationError(f"path segment {seg!r} expects a group")
-            node = node.members[idx]
-        elif seg == "h":
-            if not isinstance(node, Chord):
-                raise WorkflowValidationError("path segment 'h' expects a chord")
-            node = node.header
-        elif seg == "b":
-            if not isinstance(node, Chord):
-                raise WorkflowValidationError("path segment 'b' expects a chord")
-            node = node.body
-        elif seg.isdigit():
-            if not isinstance(node, Chain):
-                raise WorkflowValidationError(f"path segment {seg!r} expects a chain")
-            node = node.steps[int(seg)]
-        else:
-            raise WorkflowValidationError(f"unknown path segment {seg!r}")
-    return node
-
-
-def initial_frontier(root: WorkflowNode) -> list[tuple[str, Signature]]:
-    """Leaf signatures to enqueue first, each with its topology path.
-
-    The frontier is the set of steps that can run immediately at apply()
-    time: the first step of a chain (recursing into an embedded group/chord),
-    every member of a group, and the header of a chord. The chord body and
-    later chain steps are enqueued later by the worker advancement seam (U5).
-    """
-    return _frontier(root, "")
-
-
-def _frontier(node: WorkflowNode, prefix: str) -> list[tuple[str, Signature]]:
-    if isinstance(node, Signature):
-        return [(prefix or "", node)]
-    if isinstance(node, Chain):
-        return _frontier(node.steps[0], f"{prefix}/0")
-    if isinstance(node, Group):
-        out: list[tuple[str, Signature]] = []
-        for i, member in enumerate(node.members):
-            out.extend(_frontier(member, f"{prefix}/g{i}"))
-        return out
-    if isinstance(node, Chord):
-        return _frontier(node.header, f"{prefix}/h")
-    raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
-
-
-# ``chord_set_key`` und ``ChordManager`` leben seit Plan U18 in
-# ``swarmq.backend.valkey.chords`` (U15 hat die KTD10-Re-Exports entfernt).
-
-
-def workflow_step_task_id(wf_id: str, step_path: str) -> str:
-    """Deterministic task id for a workflow step, derived from
-    ``(workflow_id, step_path)``.
-
-    Determinism is load-bearing for idempotency: if a step is published but
-    its ``step_tasks`` marker is lost before persist (crash in the
-    publish→mark window), a redelivery re-enqueues the SAME id rather than a
-    fresh one. The successor's result key is shared (a double-enqueue is
-    absorbed), and crucially a re-enqueued chord/group MEMBER lands the same
-    id in the ``chord_complete.lua`` SADD set, so the distinct-member count
-    cannot be inflated past N (which would fire the chord body early on
-    incomplete results). ``apply()`` and the worker advancer MUST mint step
-    ids through this one function so the schemes never diverge.
-    """
-    return f"{wf_id}#{step_path}"
-
-
-def aggregate_result_id(wf_id: str, node_path: str) -> str:
-    """Deterministische Kennung des Ergebnisses, das ein zusammengesetzter
-    Knoten an *node_path* als Ganzes produziert, wenn kein einzelner Schritt
-    es besitzt (eine Gruppe: ihr Ergebnis ist die Liste).
-
-    Die eine Definition fuer Schreiber und Leser --
-    :meth:`WorkflowAdvancer._materialise` legt darunter ab,
-    :meth:`WorkflowAdvancer._terminal_result_id` findet darueber wieder.
-    Zwei Formatstrings waeren der stille Weg zurueck in B10.
-    """
-    return f"{wf_id}:agg:{node_path}"
-
-
-def split_path(path: str) -> tuple[str, str]:
-    """Return ``(parent_path, last_segment)`` for a topology path. The root
-    (``""``) has no parent — returns ``("", "")``."""
-    if not path:
-        return "", ""
-    idx = path.rfind("/")
-    return path[:idx], path[idx + 1 :]
-
-
-def inject_result(signature: Signature, result: Any) -> Signature:
-    """Return a copy of *signature* with *result* prepended as the first
-    positional arg, unless the signature is immutable (R3/R4)."""
-    if signature.immutable:
-        return signature
-    return Signature(
-        signature.task_name,
-        (result, *signature.args),
-        signature.kwargs,
-        immutable=signature.immutable,
-        _is_fire_and_forget=signature._is_fire_and_forget,
-    )
-
-
 class WorkflowAdvancer:
     """Worker-side workflow advancement (U5). Called at the success seam
     after a workflow-step's result is stored. Drives the topology forward:
@@ -358,7 +232,8 @@ class WorkflowAdvancer:
     atomic ``ChordStore``, and terminal completion.
 
     Collaborators are injected so the DAG logic is unit-testable with fakes.
-    ``publish`` is the broker publish coroutine, ``resolve_queue`` maps a
+    ``publisher`` is the enqueue seam (:class:`WorkflowStepPublisher` —
+    Middleware-Kette und Signale liegen dort, U11), ``resolve_queue`` maps a
     task name to its queue, ``make_task_id`` mints a DETERMINISTIC task id
     from ``(workflow_id, step_path)`` (see :func:`workflow_step_task_id` —
     determinism keeps redelivered steps idempotent), ``unpack`` decodes a
@@ -370,7 +245,7 @@ class WorkflowAdvancer:
         backend: ResultBackend,
         chord_manager: ChordStore,
         *,
-        publish: Callable[[str, bytes, dict[str, Any]], Awaitable[PublishReceipt]],
+        publisher: WorkflowStepPublisher,
         resolve_queue: Callable[[str], str],
         make_task_id: Callable[[str, str], str],
         unpack: Callable[[bytes], Any],
@@ -378,7 +253,7 @@ class WorkflowAdvancer:
     ) -> None:
         self._backend = backend
         self._chord = chord_manager
-        self._publish = publish
+        self._publisher = publisher
         self._resolve_queue = resolve_queue
         self._make_task_id = make_task_id
         self._unpack = unpack
@@ -397,13 +272,53 @@ class WorkflowAdvancer:
         state: dict[str, Any] = decode_json(raw)
         if state["status"] != STATUS_RUNNING:
             return  # already terminal
-        if await self._backend.is_workflow_cancelled(wf_id):
-            await self._mark_terminal(wf_id, state, STATUS_CANCELLED, None, None)
+        try:
+            if await self._backend.is_workflow_cancelled(wf_id):
+                await self._mark_terminal(wf_id, state, STATUS_CANCELLED, None, None)
+                return
+
+            topology = _node_from_dict(state["topology"])
+            await self._on_leaf_complete(
+                wf_id, state, topology, completed_path, completed_task_id, result
+            )
+        except _StaleWorkflowState:
+            await self._reconcile(wf_id, state)
+        except _WorkflowAlreadyTerminal:
             return
 
-        topology = _node_from_dict(state["topology"])
-        await self._on_leaf_complete(
-            wf_id, state, topology, completed_path, completed_task_id, result
+    async def _reconcile(self, wf_id: str, local: dict[str, Any]) -> None:
+        """Konfliktbehandlung (R23): den frischen Zustand lesen und die lokalen
+        Aenderungen hineinmergen statt den Advance zu wiederholen -- publiziert
+        und den Chord-Zaehler bewegt hat dieser Advance bereits.
+        ``step_tasks`` wird additiv vereinigt (Bestand gewinnt); ein lokaler
+        Terminalstatus bringt ``status``, ``final_result_task_id`` und
+        ``error`` mit. Ist der frische Zustand terminal, endet der Advance
+        ohne Schreibung. Nach ``WORKFLOW_CAS_MAX_ROUNDS`` verlorenen Runden
+        (die erste zaehlt mit): :class:`WorkflowStateConflict`."""
+        local_terminal = local["status"] in _TERMINAL_STATUSES
+        for _round in range(WORKFLOW_CAS_MAX_ROUNDS - 1):
+            raw = await self._backend.get_workflow_state(wf_id)
+            if raw is None:
+                return
+            fresh: dict[str, Any] = decode_json(raw)
+            if fresh["status"] in _TERMINAL_STATUSES:
+                return
+            for path, task_id in local["step_tasks"].items():
+                fresh["step_tasks"].setdefault(path, task_id)
+            if local_terminal:
+                fresh["status"] = local["status"]
+                fresh["final_result_task_id"] = local.get("final_result_task_id")
+                fresh["error"] = local.get("error")
+            try:
+                await self._persist(wf_id, fresh)
+            except _StaleWorkflowState:
+                continue
+            if local_terminal:
+                await self._backend.notify_workflow(wf_id)
+            return
+        raise WorkflowStateConflict(
+            f"workflow {wf_id}: state compare-and-set lost {WORKFLOW_CAS_MAX_ROUNDS} "
+            "rounds in a row; the step is not finished and must be redelivered"
         )
 
     # --- core recursion -----------------------------------------------------
@@ -577,6 +492,7 @@ class WorkflowAdvancer:
         Reihenfolge strukturell erzwungen: :meth:`mark_enqueued` verlangt den
         ``PublishReceipt`` aus ``Publisher.publish`` (AE5)."""
         enqueued_at = int(time.time())
+        steps: list[WorkflowStep] = []
         for step_path, signature in _frontier(node, node_path):
             # next-enqueued marker (publish-then-mark): skip if already done.
             if step_path in state["step_tasks"]:
@@ -584,18 +500,30 @@ class WorkflowAdvancer:
             injected = inject_result(signature, inject)
             task_id = self._make_task_id(wf_id, step_path)
             queue = self._resolve_queue(injected.task_name)
-            message = {
-                "task": {"id": task_id, "queue": queue, "name": injected.task_name},
-                "args": list(injected.args),
-                "kwargs": injected.kwargs,
-            }
-            headers = {
-                HEADER_WORKFLOW_ID: wf_id,
-                HEADER_WORKFLOW_STEP: step_path,
-                HEADER_ENQUEUED_AT: enqueued_at,
-            }
-            receipt = await self._publish(queue, encode_json(message), headers)
-            self.mark_enqueued(state, step_path, task_id, receipt)
+            steps.append(WorkflowStep(
+                workflow_id=wf_id,
+                step_path=step_path,
+                task_id=task_id,
+                task_name=injected.task_name,
+                queue=queue,
+                args=list(injected.args),
+                kwargs=injected.kwargs,
+                headers={
+                    HEADER_WORKFLOW_ID: wf_id,
+                    HEADER_WORKFLOW_STEP: step_path,
+                    HEADER_ENQUEUED_AT: enqueued_at,
+                },
+            ))
+        if not steps:
+            return
+        # R15: ``pre_enqueue`` ist ein Gate ueber die GANZE Front. Liefe es je
+        # Schritt, koennte eine ablehnende Middleware eine Gruppe halb
+        # eingereiht hinterlassen — der Fan-in erreichte N nie und der
+        # Workflow haengte bis zum TTL.
+        await self._publisher.pre_enqueue(steps)
+        for step in steps:
+            receipt = await self._publisher.publish(step)
+            self.mark_enqueued(state, step.step_path, step.task_id, receipt)
 
     def mark_enqueued(
         self, state: dict[str, Any], step_path: str, task_id: str, receipt: PublishReceipt
@@ -619,17 +547,27 @@ class WorkflowAdvancer:
         und die Kennungen sind deterministisch, ein Konflikt kann also nicht
         entstehen.
 
-        Das schliesst das verlorene Zustands-Update **nicht**
-        (``store_workflow_state`` ueberschreibt blind, ``advance`` ist ein
-        Read-Modify-Write ohne CAS) -- es verkleinert nur das Fenster.
+        Seit KTD11 schliesst das Compare-and-Set in :meth:`_persist` das
+        verlorene Zustands-Update; diese Lesung bleibt als Schutz gegen das
+        Publish-vor-Persistenz-Fenster: ein Schritt wird publiziert, BEVOR sein
+        Marker persistiert ist, und kann schneller enden als die Persistenz.
+        Sie honoriert einen frischen Terminalstatus (R24): dann endet der
+        Advance ohne Schreibung (:class:`_WorkflowAlreadyTerminal`).
         """
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
             return
         persisted: dict[str, Any] = decode_json(raw)
+        if persisted["status"] in _TERMINAL_STATUSES:
+            raise _WorkflowAlreadyTerminal(wf_id)
         step_tasks: dict[str, str] = state["step_tasks"]
         for path, task_id in persisted.get("step_tasks", {}).items():
             step_tasks.setdefault(path, task_id)
+        # Bis hierher hat dieser Advance nichts Lokales veraendert (der Fan-in
+        # publiziert erst danach), der lokale Zustand ist also nach dem
+        # Nachziehen dem persistierten gleich -- dessen Version darf das CAS
+        # in _persist als Erwartung nehmen.
+        state["version"] = int(persisted.get("version", 0))
 
     def _terminal_result_id(
         self,
@@ -795,11 +733,22 @@ class WorkflowAdvancer:
             return
         state["status"] = STATUS_FAILED
         state["error"] = {"type": error_type, "message": error_message}
-        await self._persist(wf_id, state)
+        try:
+            await self._persist(wf_id, state)
+        except _StaleWorkflowState:
+            await self._reconcile(wf_id, state)
+            return
         await self._backend.notify_workflow(wf_id)
 
     async def _persist(self, wf_id: str, state: dict[str, Any]) -> None:
-        await self._backend.store_workflow_state(
-            wf_id, encode_json(state), ttl_ms=self._ttl_ms
+        """Compare-and-Set gegen die gelesene ``version`` (R22; fehlend = 0,
+        Dokumente aus 0.5.x). Bei Konflikt :class:`_StaleWorkflowState`."""
+        expected = int(state.get("version", 0))
+        state["version"] = expected + 1
+        stored = await self._backend.compare_and_store_workflow_state(
+            wf_id, encode_json(state), ttl_ms=self._ttl_ms, expected_version=expected
         )
+        if not stored:
+            state["version"] = expected
+            raise _StaleWorkflowState(wf_id)
 

@@ -466,7 +466,7 @@ class TestMetricsSampler:
         assert m.dlq_messages.labels(queue="default")._value.get() == 3
         assert (
             m.worker_uptime_seconds.labels(
-                worker_id=str(id(worker))
+                worker_id=worker._config.worker_identity
             )._value.get()
             >= 5
         )
@@ -859,3 +859,37 @@ class TestAbortTeardownClosesComputePool:
         before = worker._executor
         await worker._abort_teardown()
         assert worker._executor is before
+
+
+class TestWorkerIdentityInSignalsAndMetrics:
+    """U2 (R3): dieselbe stabile Kennung in Signalen, Metrik-Labels und
+    Logkontext — ``str(id(self))`` wechselte bei jedem Prozess und war fuer
+    ein Dashboard wertlos."""
+
+    async def test_heartbeat_and_uptime_label_use_the_config_identity(self, worker, broker):
+        import time as _time
+
+        from swarmq.metrics import Metrics
+        from swarmq.signals import Signal
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._config.worker_slot = 3
+        worker._config.worker_id = "phx"
+        worker._metrics = m
+        worker._worker_started_at = _time.monotonic() - 5
+        broker.queue_depth = AsyncMock(return_value=0)
+        broker.dead_letter_depth = AsyncMock(return_value=0)
+
+        captured: list[dict] = []
+        worker._signal_dispatcher.connect(Signal.WORKER_HEARTBEAT, lambda **kw: _collect(captured, kw))
+
+        await worker._sample_metrics_once()
+
+        assert captured[0]["worker_id"] == "phx:3"
+        assert m.worker_uptime_seconds.labels(worker_id="phx:3")._value.get() >= 5
+
+
+async def _collect(sink: list[dict], kwargs: dict) -> None:
+    sink.append(kwargs)

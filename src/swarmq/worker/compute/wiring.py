@@ -82,7 +82,7 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
         malloc_trim_threshold=cfg.malloc_trim_threshold,
         malloc_arena_max=cfg.malloc_arena_max,
     )
-    worker_id = str(id(worker))
+    worker_id = cfg.worker_identity
 
     async def on_recycle(slot: int, reason: str, value: float) -> None:
         await worker._signal_dispatcher.dispatch(
