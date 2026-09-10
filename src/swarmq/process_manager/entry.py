@@ -96,6 +96,10 @@ def worker_subprocess_entry(
     # inside run_worker_async cannot silently regress.
     kwargs.pop("reload", None)
     kwargs.pop("watch_dirs", None)
+    # KTD2: der Slot ist das Einzige, was dieses Kind von seinen Geschwistern
+    # unterscheidet — er reist ueber die Namespace in die ``SwarmQConfig``.
+    # ``WorkerConfig`` bleibt das geteilte, slot-unabhaengige Objekt.
+    kwargs["worker_slot"] = worker_id
     ns = _argparse.Namespace(**kwargs)
 
     set_current_channel(channel)

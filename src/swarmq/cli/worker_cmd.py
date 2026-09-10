@@ -85,9 +85,13 @@ async def run_worker_async(args: argparse.Namespace) -> None:
 
     broker = RabbitMQBroker(broker_url)
     backend = ValkeyBackend(backend_url)
-    pool_kwargs = {
+    optional_kwargs = {
         name: value
         for name in (
+            # KTD2: der Slot kommt nur aus dem Supervisor-Entry; im
+            # eingebetteten Betrieb fehlt er und die Kennung faellt auf den
+            # PID zurueck.
+            "worker_slot",
             "pool",
             "recycle_rss_mb",
             "recycle_max_tasks",
@@ -105,7 +109,7 @@ async def run_worker_async(args: argparse.Namespace) -> None:
         backend,
         queues=args.queues,
         concurrency=args.concurrency,
-        **pool_kwargs,
+        **optional_kwargs,
         log_level=args.log_level,
         log_json=(args.log_format == "json"),
         burst_mode=args.burst,

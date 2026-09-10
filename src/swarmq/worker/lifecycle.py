@@ -140,7 +140,7 @@ class WorkerLifecycle:
             lock_manager=self._backend.locks,
             store=schedule_store,
             signal_dispatcher=self._signal_dispatcher,
-            worker_id=str(id(self)),
+            worker_id=self._config.worker_identity,
         )
         await self._scheduler.start()
 
@@ -378,7 +378,7 @@ class WorkerLifecycle:
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_ONLINE,
             handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-            worker_id=str(id(self)),
+            worker_id=self._config.worker_identity,
         )
         self._start_background_monitors()
         # Block until shutdown is requested. The try/finally makes the cancel
@@ -459,7 +459,7 @@ class WorkerLifecycle:
         set the uptime / queue-depth / dlq gauges and emit the heartbeat.
         Per-queue broker errors are logged and skipped."""
         assert self._metrics is not None  # Sampler startet nur mit Metrics
-        worker_id = str(id(self))
+        worker_id = self._config.worker_identity
         now = time.monotonic()
         uptime = now - self._worker_started_at
         self._metrics.worker_uptime_seconds.labels(
@@ -646,7 +646,7 @@ class WorkerLifecycle:
             await self._signal_dispatcher.dispatch(
                 Signal.WORKER_SHUTDOWN,
                 handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-                worker_id=str(id(self)),
+                worker_id=self._config.worker_identity,
             )
             await self._stop_http_surfaces()
             # Ab hier darf kein Publish mehr laenger laufen als das

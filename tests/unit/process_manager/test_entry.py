@@ -112,6 +112,28 @@ class TestWorkerSubprocessEntry:
         )
 
 
+    def test_slot_reaches_the_worker_namespace(self, monkeypatch):
+        """U2 (R3/KTD2): Der Supervisor kennt den Slot bereits und uebergibt
+        ihn dem Kind — das Kind verwarf ihn bisher und nannte sich nach seiner
+        Speicheradresse."""
+        import threading
+
+        captured: dict = {}
+
+        async def capture_ns(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
+
+        worker_subprocess_entry(
+            worker_id=2,
+            shutdown_event=threading.Event(),
+            cfg=_make_test_cfg(),
+        )
+
+        assert captured["ns"].worker_slot == 2
+
+
 class TestConfigErrorExitCode:
     """R29 (Plan 2026-09-03-001): Konfigurationsfehler enden mit Exit 78."""
 

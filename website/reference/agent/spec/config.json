@@ -235,6 +235,18 @@
       "env_var": "SWARMQ_COMPUTE_THREAD_LIMIT",
       "name": "compute_thread_limit",
       "type": "int"
+    },
+    {
+      "default": null,
+      "env_var": null,
+      "name": "worker_slot",
+      "type": "int | None"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_WORKER_ID",
+      "name": "worker_id",
+      "type": "str | None"
     }
   ]
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -168,6 +169,12 @@ class SwarmQConfig:
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
 
+    # Worker-Identitaet (Plan 2026-09-08-001, R3/KTD2). ``worker_slot`` reicht
+    # der Supervisor durch (kein Env — er allein vergibt Slots);
+    # ``worker_id`` ist die Basis, die ein Betreiber setzen kann.
+    worker_slot: int | None = None
+    worker_id: str | None = None
+
     # (Env-Var, Feldname, Parser) — eine Zeile pro Override statt der
     # früheren 27 if-Blöcke; ``__post_init__`` wendet sie der Reihe nach an.
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
@@ -211,6 +218,7 @@ class SwarmQConfig:
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
+        ("SWARMQ_WORKER_ID", "worker_id", "str"),
     )
 
     # Felder mit der gemeinsamen Zusage "> 0" (Meldungsformat identisch).
@@ -265,6 +273,22 @@ class SwarmQConfig:
     # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
     # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
     # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+
+    @property
+    def worker_identity(self) -> str:
+        """Stabile Kennung dieses Workers fuer Signale, Metrik-Labels und den
+        Logkontext (R3).
+
+        ``<basis>:<slot>`` unter dem Supervisor, ``<basis>:p<pid>`` im
+        eingebetteten Betrieb. Der Slot ueberlebt den Respawn — genau darum
+        geht es: eine Zeitreihe je Worker-Platz statt einer je Prozess. Das
+        ``p`` haelt die beiden Formen auseinander, denn ohne Praefix waere
+        ``host:7`` mal ein Slot und mal ein Prozess.
+        """
+        base = self.worker_id or socket.gethostname()
+        if self.worker_slot is None:
+            return f"{base}:p{os.getpid()}"
+        return f"{base}:{self.worker_slot}"
 
     def _apply_env_overrides(self) -> None:
         for env_name, field_name, kind in self._ENV_OVERRIDES:

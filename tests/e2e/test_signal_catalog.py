@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 import uuid
 from typing import Any
@@ -40,6 +41,12 @@ _EVENT_TIMEOUT = 20.0
 
 # Per-test backstop, generous above the worst-case sum of inner waits + sleeps.
 pytestmark = [pytest.mark.timeout(75)]
+
+
+# U2 (Plan 2026-09-08-001, R3/AE1): ``<basis>:<slot>`` unter dem Supervisor,
+# ``<basis>:p<pid>`` eingebettet. Ein blosses ``isinstance(str)`` liess die
+# frühere Speicheradresse als Kennung durchgehen.
+_WORKER_ID_FORMAT = re.compile(r"^[^:]+:p?\d+$")
 
 
 def _unique_queue() -> str:
@@ -157,7 +164,7 @@ async def test_signal_worker_online(
 
     assert len(online_kwargs) == 1
     assert "worker_id" in online_kwargs[0]
-    assert isinstance(online_kwargs[0]["worker_id"], str)
+    assert _WORKER_ID_FORMAT.match(online_kwargs[0]["worker_id"])
 
 
 async def test_signal_worker_shutdown(
@@ -203,8 +210,7 @@ async def test_signal_worker_shutdown(
                     await task
 
     assert len(captured) == 1
-    assert "worker_id" in captured[0]
-    assert isinstance(captured[0]["worker_id"], str)
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_worker_heartbeat(
@@ -259,7 +265,7 @@ async def test_signal_worker_heartbeat(
                     await task
 
     assert len(captured) >= 1
-    assert isinstance(captured[0]["worker_id"], str)
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
     assert captured[0]["uptime_seconds"] >= 0
 
 
@@ -808,7 +814,7 @@ async def test_signal_scheduler_leader(
                 await worker_task
 
     assert len(captured) >= 1
-    assert "worker_id" in captured[0]
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_scheduler_leader_failover_reference():
@@ -889,7 +895,7 @@ async def test_signal_scheduler_leader_handover(
                     await task
 
     assert len(captured) >= 1
-    assert "worker_id" in captured[0]
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_scheduler_heartbeat(
@@ -930,7 +936,7 @@ async def test_signal_scheduler_heartbeat(
                 await worker_task
 
     assert len(captured) >= 1
-    assert "worker_id" in captured[0]
+    assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
 async def test_signal_scheduler_standby(
@@ -978,6 +984,7 @@ async def test_signal_scheduler_standby(
             scheduler_heartbeat_interval=0.2,
             scheduler_lock_ttl=2.0,
         )
+        owner_token = f"standby-test-{uuid.uuid4().hex[:6]}"
         loop = SchedulerLoop(
             backend=backend,
             broker=broker,
@@ -985,7 +992,7 @@ async def test_signal_scheduler_standby(
             lock_manager=backend.locks,
             store=ScheduleStore(backend),
             signal_dispatcher=dispatcher,
-            owner_token=f"standby-test-{uuid.uuid4().hex[:6]}",
+            owner_token=owner_token,
         )
         await loop.start()
         try:
@@ -998,7 +1005,10 @@ async def test_signal_scheduler_standby(
             await loop.abort()
 
         assert len(standby_captured) >= 1
-        assert "worker_id" in standby_captured[0]
+        # Hier baut der Test den ``SchedulerLoop`` ohne Worker und ohne
+        # ``worker_id``; er faellt auf sein Owner-Token zurueck. Geprueft wird
+        # die Durchreichung, nicht das Format aus R3.
+        assert standby_captured[0]["worker_id"] == owner_token
         assert loop.state == "stopped"
     finally:
         await broker.close()

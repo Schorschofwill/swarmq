@@ -244,6 +244,11 @@ def build_config_spec() -> dict[str, Any]:
     Fully code-derived. The env var follows the uniform ``SWARMQ_<UPPER>``
     rule SwarmQConfig.__post_init__ applies; defaults come straight off the
     dataclass (factories are evaluated)."""
+    # Die Env-Namen kommen aus der Override-Tabelle der Konfiguration, nicht
+    # aus einer Namensregel: seit U2 gibt es Felder, die bewusst kein Env
+    # haben (``worker_slot`` vergibt allein der Supervisor). Eine erfundene
+    # Env-Var stuende sonst in der Spezifikation, ohne dass sie jemand liest.
+    env_by_field = {field: env for env, field, _kind in SwarmQConfig._ENV_OVERRIDES}
     options: list[dict[str, Any]] = []
     for f in dataclasses.fields(SwarmQConfig):
         default = f.default_factory() if f.default_factory is not dataclasses.MISSING else f.default
@@ -251,7 +256,7 @@ def build_config_spec() -> dict[str, Any]:
             "name": f.name,
             "type": str(f.type),
             "default": default,
-            "env_var": f"SWARMQ_{f.name.upper()}",
+            "env_var": env_by_field.get(f.name),
         }
         if f.name in _CONFIG_CHOICES:
             entry["choices"] = _CONFIG_CHOICES[f.name]

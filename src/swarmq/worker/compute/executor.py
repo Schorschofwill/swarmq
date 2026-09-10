@@ -39,7 +39,7 @@ class ComputeExecutor(TaskExecutor):
     def __init__(self, deps: GateDeps, pool: SlotPool, *, worker_id: str = "") -> None:
         super().__init__(deps)
         self._pool = pool
-        self._worker_id = worker_id or str(id(self))
+        self._worker_id = worker_id or deps.config.worker_identity
 
     async def start(self) -> None:
         await self._pool.start()

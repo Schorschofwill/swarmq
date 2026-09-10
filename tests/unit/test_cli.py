@@ -336,6 +336,48 @@ class TestRunWorkerAsync:
             await cli.run_worker_async(ns)
 
     @pytest.mark.asyncio
+    async def test_worker_slot_reaches_the_app_config(self, monkeypatch):
+        """U2 (R3/KTD2): Der Slot aus dem Supervisor-Entry muss bis in die
+        ``SwarmQConfig`` durchreisen — dort loest ``worker_identity`` ihn auf."""
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_slot_probe", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        monkeypatch.setenv("SWARMQ_WORKER_ID", "phx")
+
+        built: dict = {}
+
+        class _FakeApp:
+            def __init__(self, broker, backend, **kwargs):
+                built["kwargs"] = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def start_worker(self):
+                return None
+
+        monkeypatch.setattr("swarmq.app.SwarmQ", _FakeApp)
+
+        ns = argparse.Namespace(
+            module="json", queues=["default"], concurrency=10,
+            log_level="INFO", log_format="human", burst=False,
+            burst_idle_timeout=60.0, priorities=False,
+            metrics_port=None, health_port=None, worker_slot=4,
+        )
+        await cli.run_worker_async(ns)
+        assert built["kwargs"]["worker_slot"] == 4
+
+    @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(
         self, monkeypatch
     ):

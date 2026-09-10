@@ -135,3 +135,21 @@ async def test_bind_retry_retries_bind_failures_only():
 
     with pytest.raises(RuntimeError, match="something else"):
         await recycling.start_with_bind_retry(other)
+
+
+@pytest.mark.timeout(10)
+async def test_recycling_signal_carries_the_slot_identity(worker, channel, monkeypatch):
+    """U2 (R3): ``WORKER_RECYCLING`` traegt dieselbe Kennung wie die uebrigen
+    Worker-Signale — gerade beim Recycling zaehlt, dass der Slot gleich
+    bleibt, denn genau hier wechselt der Prozess."""
+    monkeypatch.setattr(recycling, "RECYCLE_ACK_TIMEOUT_S", 2.0)
+    worker._config.worker_slot = 1
+    worker._config.worker_id = "phx"
+    events = _arm(worker, recycle_max_tasks=1)
+    worker._start_recycle_monitor()
+    await worker._signal_dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t", task_name="n", queue="q")
+    await _wait_for(lambda: channel.intent_value() == sv.INTENT_RECYCLE)
+    channel.acknowledge_replacement()
+    await _wait_for(lambda: worker._state is WorkerState.DRAINING)
+    assert events[0]["worker_id"] == "phx:1"
+    assert events[0]["kind"] == "worker"

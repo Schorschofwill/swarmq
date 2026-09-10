@@ -1,5 +1,7 @@
 """Tests for swarmq.config — SwarmQConfig dataclass."""
 
+import os
+
 import pytest
 
 from swarmq.config import SwarmQConfig
@@ -689,3 +691,31 @@ def test_invalid_env_recycling_threshold_raises(monkeypatch):
     monkeypatch.setenv("SWARMQ_RECYCLE_MAX_TASKS", "viele")
     with pytest.raises(ConfigurationError):
         _cfg()
+
+
+class TestWorkerIdentity:
+    """U2 (Plan 2026-09-08-001, R3/KTD2): stabile Worker-Kennung.
+
+    Der Slot ueberlebt den Respawn, der PID nicht — ein Dashboard, das nach
+    ``worker_id`` gruppiert, verlor bisher bei jedem Ersatzprozess seine
+    Zeitreihe (``str(id(self))`` wechselte sogar ohne Respawn).
+    """
+
+    def test_slot_identity_uses_hostname_and_slot(self, monkeypatch):
+        monkeypatch.delenv("SWARMQ_WORKER_ID", raising=False)
+        monkeypatch.setattr("swarmq.config.socket.gethostname", lambda: "h")
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", worker_slot=2)
+        assert cfg.worker_identity == "h:2"
+
+    def test_env_worker_id_replaces_the_hostname_base(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_WORKER_ID", "phx")
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", worker_slot=2)
+        assert cfg.worker_identity == "phx:2"
+
+    def test_embedded_worker_without_slot_uses_the_pid(self, monkeypatch):
+        monkeypatch.delenv("SWARMQ_WORKER_ID", raising=False)
+        monkeypatch.setattr("swarmq.config.socket.gethostname", lambda: "h")
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        # Das ``p`` haelt die beiden Formen auseinander: ohne Praefix waere
+        # ``h:7`` mal ein Slot und mal ein Prozess.
+        assert cfg.worker_identity == f"h:p{os.getpid()}"
