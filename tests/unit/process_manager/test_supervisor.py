@@ -1360,8 +1360,14 @@ class TestSlotTable:
     def test_scale_down_tie_on_spawn_time_frees_the_highest_slot(self):
         pm = self._autoscale_pm(depth=0, n=3)
         pm._start_all_workers()
+        # Relativ zu ``time.monotonic()``, nicht absolut: der Wert ist die
+        # Systemlaufzeit. Ein fester 1000.0 liegt auf einer Maschine, die noch
+        # keine 17 Minuten laeuft, in der ZUKUNFT — dann gilt kein Worker als
+        # alt genug fuer den Scale-Down und der Test scheitert. Genau so in
+        # der CI passiert (frischer Container), lokal nie.
+        now = time.monotonic()
         for info in pm.workers.values():
-            info.spawned_at = 1000.0
+            info.spawned_at = now - 100.0
         pm._autoscale_tick()
         pm._autoscale_tick()
         pm.workers[102].process.terminate.assert_called_once()
