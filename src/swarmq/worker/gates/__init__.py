@@ -26,6 +26,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
+from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
 
 if TYPE_CHECKING:
@@ -102,17 +103,41 @@ class Gate(Protocol):
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome: ...
 
 
-async def route_via_dlx(broker: Any, delivery: Any) -> None:
+async def route_via_dlx(
+    deps: GateDeps,
+    delivery: Any,
+    *,
+    reason: str,
+    task_id: str | None = None,
+    task_name: str | None = None,
+    error: str | None = None,
+) -> None:
     """Terminaler DLX-Fallback (KTD3): ``BrokerAdmin.route_via_dlx`` — bei
     RabbitMQ ``nack(requeue=False)`` über die Broker-Konfiguration, ohne
     Diagnose-Header. Ein Broker ohne diese Fähigkeit veröffentlicht
     stattdessen an sein Dead-Letter-Ziel mit den Original-Headern; der Kern
-    referenziert ``BrokerAdmin`` dadurch nicht als Typ."""
-    admin = getattr(broker, "route_via_dlx", None)
+    referenziert ``BrokerAdmin`` dadurch nicht als Typ.
+
+    Danach feuert ``TASK_REJECTED`` mit *reason* (U6, R12): dieser Weg war
+    stumm, eine Nachricht landete im ``.XQ``, ohne dass ein Signal feuerte
+    oder ein Zähler stieg. Das Signal folgt dem ERFOLGREICHEN Verb — sonst
+    meldete es eine Ablehnung, die nie stattfand. Es ist selbst kein Verb,
+    die Ack-Invariante der Pipeline bleibt also unberührt.
+    """
+    admin = getattr(deps.broker, "route_via_dlx", None)
     if admin is not None:
         await admin(delivery)
-        return
-    await broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
+    else:
+        await deps.broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
+
+    await deps.signals.dispatch(
+        Signal.TASK_REJECTED,
+        queue=getattr(delivery, "queue", None),
+        reason=reason,
+        task_id=task_id,
+        task_name=task_name,
+        error=error,
+    )
 
 
 __all__ = [

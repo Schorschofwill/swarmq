@@ -14,6 +14,7 @@ registry decides whether to record or skip.
 Metrics (plan §R5.1):
 
 - ``swarmq_tasks_total{task_name,queue,outcome}`` — counter
+- ``swarmq_tasks_rejected_total{queue,reason}`` — counter
   (outcome: completed | failed | cancelled | expired | rate_limited
   | dlq | duplicate)
 - ``swarmq_task_duration_seconds{task_name,queue}`` — histogram
@@ -165,6 +166,15 @@ class Metrics:
                 labelnames=("kind", "reason"),
                 registry=self.registry,
             )
+            self.tasks_rejected_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_tasks_rejected_total",
+                (
+                    "Messages handed to the broker DLX without diagnostic "
+                    "headers, by reason (U6, R13)"
+                ),
+                labelnames=("queue", "reason"),
+                registry=self.registry,
+            )
             self.dlq_messages: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_dlq_messages",
                 "Dead-letter-queue live message count",
@@ -187,6 +197,7 @@ class Metrics:
             self.worker_uptime_seconds = noop
             self.retries_total = noop
             self.recyclings_total = noop
+            self.tasks_rejected_total = noop
             self.dlq_messages = noop
             self.scheduler_leader = noop
 
@@ -309,6 +320,23 @@ def _install_recycling_counter(dispatcher: SignalDispatcher, metrics: Metrics) -
     dispatcher.on_signal(Signal.WORKER_RECYCLING)(_count)
 
 
+def _install_rejected_counter(dispatcher: SignalDispatcher, metrics: Metrics) -> None:
+    """U6 (R13): jede Ablehnung am DLX-Fallback mit ihrem Grund.
+
+    Getrennt von ``tasks_total{outcome="dlq"}``: die beiden Wege haben
+    verschiedene Ursachen und verschiedene Gegenmassnahmen, und ein Alert auf
+    "wir dead-lettern" soll nicht bei jeder zu grossen Nachricht anschlagen.
+    """
+    from swarmq.signals import Signal
+
+    async def _count(**kw: Any) -> None:
+        metrics.tasks_rejected_total.labels(
+            queue=str(kw.get("queue") or ""), reason=str(kw.get("reason") or ""),
+        ).inc()
+
+    dispatcher.on_signal(Signal.TASK_REJECTED)(_count)
+
+
 def _install_outcome_counters(
     dispatcher: SignalDispatcher, metrics: Metrics,
 ) -> None:
@@ -381,4 +409,5 @@ def install_signal_collectors(
     _install_lifecycle_collectors(dispatcher, metrics)
     _install_outcome_counters(dispatcher, metrics)
     _install_recycling_counter(dispatcher, metrics)
+    _install_rejected_counter(dispatcher, metrics)
     _install_scheduler_gauge(dispatcher, metrics)

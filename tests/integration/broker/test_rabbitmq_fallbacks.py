@@ -32,6 +32,7 @@ from swarmq.config import SwarmQConfig
 from swarmq.contracts import Delivery
 from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.middleware import MessageContext, MiddlewareChain
+from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
 from swarmq.worker.gates import GateContext
@@ -146,10 +147,22 @@ async def test_lock_render_failure_with_publish_failure_routes_via_dlx(
         task_id="t1", task_name="ctr-locked", queue=queue, task_info=task_info, task_class=_LockedTask,
         args=[1], kwargs={}, handler_id=uuid.uuid4(),
     )
+    # U6 (R12): derselbe Weg, jetzt beobachtbar — das Signal folgt dem
+    # erfolgreichen Broker-Verb, also muss es hier feuern.
+    rejected: list[dict[str, Any]] = []
+
+    async def _on_rejected(**kwargs: Any) -> None:
+        rejected.append(kwargs)
+
+    worker._signal_dispatcher.on_signal(Signal.TASK_REJECTED)(_on_rejected)
+
     with publish_failure(broker):
         outcome = await worker._lock_gate.apply(delivery, ctx)
 
     assert outcome is not Continue
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "dlq_publish_failed"
+    assert rejected[0]["task_name"] == "ctr-locked"
     await inbox.expect_nothing()  # nicht redelivered
     letters = await _read_dead_letters(rabbitmq_url, queue)
     assert len(letters) == 1

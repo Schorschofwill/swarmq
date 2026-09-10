@@ -196,7 +196,10 @@ class LockGate:
                     f"via valkey-cli DEL sq:lock:{lock_name}",
                 )
                 # Terminal DLX fallback — route first, then release.
-                await route_via_dlx(deps.broker, delivery)
+                await route_via_dlx(
+                    deps, delivery, reason="dlq_publish_failed",
+                    task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc),
+                )
                 await deps.maybe_release_unique(delivery, ctx.task_id, task_info)
             return Redelivered
 
@@ -243,7 +246,10 @@ class LockGate:
                 error=str(broker_exc),
                 note=f"message routed via broker DLX to {ctx.queue}.XQ without diagnostic headers",
             )
-            await route_via_dlx(deps.broker, delivery)
+            await route_via_dlx(
+                deps, delivery, reason="dlq_publish_failed",
+                task_id=ctx.task_id, task_name=ctx.task_name, error=str(broker_exc),
+            )
             await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
 
     async def _acquire_and_register(

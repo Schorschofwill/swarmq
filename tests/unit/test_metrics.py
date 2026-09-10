@@ -263,3 +263,59 @@ async def test_recycling_signal_increments_recyclings_total():
         body = m.render().decode()
         assert 'swarmq_recyclings_total{kind="compute_child",reason="rss"} 1.0' in body
         assert 'swarmq_recyclings_total{kind="worker",reason="tasks"} 1.0' in body
+
+
+class TestRejectedCounter:
+    """U6 (R13): ``swarmq_tasks_rejected_total{queue, reason}``.
+
+    Der Reject-Weg hatte keinen Zaehler; ``swarmq_tasks_total{outcome="dlq"}``
+    darf ihn auch nicht mitzaehlen -- die beiden Wege haben verschiedene
+    Ursachen und verschiedene Gegenmassnahmen, und ein Alert auf "wir
+    dead-lettern" soll nicht bei jeder zu grossen Nachricht anschlagen."""
+
+    async def test_signal_increments_the_counter_by_queue_and_reason(self):
+        from swarmq.metrics import Metrics, install_signal_collectors
+        from swarmq.signals import Signal, SignalDispatcher
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        dispatcher = SignalDispatcher()
+        install_signal_collectors(dispatcher, m)
+
+        await dispatcher.dispatch(
+            Signal.TASK_REJECTED, queue="tasks.high", reason="body_too_large",
+            task_id=None, task_name=None, error="too big",
+        )
+        await dispatcher.dispatch(
+            Signal.TASK_REJECTED, queue="tasks.high", reason="body_too_large",
+            task_id=None, task_name=None, error="too big",
+        )
+        await dispatcher.dispatch(
+            Signal.TASK_REJECTED, queue="tasks.high", reason="undecodable",
+            task_id=None, task_name=None, error="bad json",
+        )
+
+        assert m.tasks_rejected_total.labels(
+            queue="tasks.high", reason="body_too_large"
+        )._value.get() == 2
+        assert m.tasks_rejected_total.labels(
+            queue="tasks.high", reason="undecodable"
+        )._value.get() == 1
+
+    async def test_dlq_outcome_stays_separate(self):
+        """R13: ``TASK_DLQ`` zaehlt weiter nur sich selbst."""
+        from swarmq.metrics import Metrics, install_signal_collectors
+        from swarmq.signals import Signal, SignalDispatcher
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        dispatcher = SignalDispatcher()
+        install_signal_collectors(dispatcher, m)
+
+        await dispatcher.dispatch(
+            Signal.TASK_REJECTED, queue="q", reason="undecodable",
+            task_id=None, task_name=None, error="x",
+        )
+        assert m.tasks_total.labels(task_name="", queue="q", outcome="dlq")._value.get() == 0

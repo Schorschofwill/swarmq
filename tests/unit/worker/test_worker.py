@@ -2853,7 +2853,9 @@ class TestBodySizeCap:
         msg.body = b"x" * (cap + 1)
         msg.headers = {}
 
-        with patch("swarmq.worker.pipeline.decode_json") as mock_decode:
+        # ``decode_json`` liegt seit U6 in ``worker/decode.py`` (Extraktion
+        # aus ``pipeline.py``); der Patch folgt dorthin.
+        with patch("swarmq.worker.decode.decode_json") as mock_decode:
             await worker._handle_message(msg)
 
         mock_decode.assert_not_called()

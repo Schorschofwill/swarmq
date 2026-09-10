@@ -366,6 +366,38 @@ class TestLockRequeueCounter:
         # No requeue either — the requeue branch is unreachable past the cap.
         broker.retry_later.assert_not_called()
 
+    async def test_dlq_failure_at_cap_emits_task_rejected(
+        self, broker, backend, config
+    ):
+        """U6 (R12): Der Datenverlust bleibt, aber er ist nicht mehr stumm --
+        vorher sah ein Betreiber nur eine ERROR-Zeile und einen Gauge."""
+        from swarmq.signals import Signal
+
+        reg = TaskRegistry()
+        reg.register(LockedTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=None)
+        broker.dead_letter = AsyncMock(side_effect=ConnectionError("broker down"))
+        events: list[dict] = []
+
+        async def _dispatch(signal, **kwargs):
+            events.append({"signal": signal, **kwargs})
+
+        w._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+
+        msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
+        msg.headers = {"x-swarmq-lock-conflict-count": 9}
+
+        await w._handle_message(msg)
+
+        rejected = [e for e in events if e["signal"] is Signal.TASK_REJECTED]
+        assert len(rejected) == 1
+        assert rejected[0]["reason"] == "dlq_publish_failed"
+        assert rejected[0]["task_name"] == "locked"
+        assert "broker down" in rejected[0]["error"]
+
 
 class FormatStringLockTask(Task):
     task_info = TaskInfo(
