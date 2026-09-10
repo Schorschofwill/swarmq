@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 # Task registry reset is handled by root conftest.py (_reset_task_registry).
+import contextlib
+
 import pytest
 
 from tests.unit._structlog_cache import reset_swarmq_logger_caches
@@ -26,3 +28,25 @@ def _uncache_structlog_module_loggers():
     """
     reset_swarmq_logger_caches()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _stop_leftover_log_listener():
+    """Stoppt einen ``QueueListener``, den ein Test ueber ``setup_logging``
+    gestartet hat.
+
+    Der Listener schreibt aus einem eigenen Thread nach ``sys.stderr``, den
+    ``capsys`` beim Teardown schliesst — die Folge waere ein
+    ``ValueError: I/O operation on closed file`` als Rauschen in jedem
+    Testlauf, das echte Logging-Fehler verdeckt. Seit U4 konfiguriert der
+    Worker-Zweig der CLI das Logging selbst, also trifft das mehr Tests als
+    zuvor.
+    """
+    yield
+    from swarmq import logging as swarmq_logging
+
+    listener = swarmq_logging._ACTIVE_LISTENER
+    if listener is not None:
+        with contextlib.suppress(Exception):
+            listener.stop()
+        swarmq_logging._ACTIVE_LISTENER = None

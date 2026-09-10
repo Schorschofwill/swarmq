@@ -247,22 +247,26 @@ class TestMainErrorRendering:
         captured = capsys.readouterr()
         return rc, captured.err
 
-    def test_module_not_found_renders_one_line(self, capsys):
+    def test_module_not_found_exits_with_the_config_code(self, capsys):
+        """Bewusst geaenderter Test (U4/R19): vorher 1 mit stderr-Zeile, jetzt
+        78 mit strukturiertem Logsatz. Der Text erscheint als
+        ``worker_config_error``-Zeile ueber das konfigurierte Logging, nicht
+        mehr als roher stderr-Text."""
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
         rc, err = self._run_main_with_mocked_run(
             "INFO", ModuleNotFoundError("No module named 'myapp'"), capsys
         )
-        assert rc == 1
-        assert "swarmq worker:" in err
-        assert "myapp" in err
-        # Default log level: no traceback.
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" not in err
 
-    def test_configuration_error_renders_one_line(self, capsys):
+    def test_configuration_error_exits_with_the_config_code(self, capsys):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
         rc, err = self._run_main_with_mocked_run(
             "INFO", ConfigurationError("no tasks registered"), capsys
         )
-        assert rc == 1
-        assert "no tasks registered" in err
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" not in err
 
     def test_broker_connection_error_renders_one_line(self, capsys):
@@ -282,10 +286,12 @@ class TestMainErrorRendering:
         assert "Traceback" not in err
 
     def test_debug_log_level_includes_traceback(self, capsys):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
         rc, err = self._run_main_with_mocked_run(
             "DEBUG", ConfigurationError("boom"), capsys
         )
-        assert rc == 1
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "boom" in err
         assert "Traceback" in err
 
@@ -334,6 +340,48 @@ class TestRunWorkerAsync:
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         with pytest.raises(ConfigurationError, match="no tasks registered"):
             await cli.run_worker_async(ns)
+
+    @pytest.mark.asyncio
+    async def test_worker_slot_reaches_the_app_config(self, monkeypatch):
+        """U2 (R3/KTD2): Der Slot aus dem Supervisor-Entry muss bis in die
+        ``SwarmQConfig`` durchreisen — dort loest ``worker_identity`` ihn auf."""
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_slot_probe", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        monkeypatch.setenv("SWARMQ_WORKER_ID", "phx")
+
+        built: dict = {}
+
+        class _FakeApp:
+            def __init__(self, broker, backend, **kwargs):
+                built["kwargs"] = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def start_worker(self):
+                return None
+
+        monkeypatch.setattr("swarmq.app.SwarmQ", _FakeApp)
+
+        ns = argparse.Namespace(
+            module="json", queues=["default"], concurrency=10,
+            log_level="INFO", log_format="human", burst=False,
+            burst_idle_timeout=60.0, priorities=False,
+            metrics_port=None, health_port=None, worker_slot=4,
+        )
+        await cli.run_worker_async(ns)
+        assert built["kwargs"]["worker_slot"] == 4
 
     @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(

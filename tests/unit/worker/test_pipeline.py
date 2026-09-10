@@ -11,6 +11,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -273,6 +274,23 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
     assert "backend.release_unique" in rec.calls
     assert "backend.schedules.mark_fire_completed" in rec.calls
 
+
+async def test_log_context_carries_the_worker_identity_as_string():
+    """U2 (R3): Der Logkontext trug ``id(self)`` — eine Speicheradresse als
+    ``int``, die weder ueber Prozesse hinweg vergleichbar noch mit dem
+    ``worker_id`` der Signale identisch war."""
+    broker = MagicMock(spec=RabbitMQBroker)
+    backend = MagicMock(spec=ValkeyBackend)
+    config = SwarmQConfig(
+        broker_url="amqp://x", backend_url="valkey://x", worker_id="phx", worker_slot=2,
+    )
+    worker = Worker(broker=broker, backend=backend, registry=TaskRegistry(), config=config)
+    try:
+        worker._bind_log_context("t1", "task", "default")
+        bound = structlog.contextvars.get_contextvars()
+        assert bound["worker_id"] == "phx:2"
+    finally:
+        structlog.contextvars.clear_contextvars()
 
 class _EnqueueRecorder(Middleware):
     """Middleware, die den Enqueue-Pfad protokolliert (U11, AE6)."""

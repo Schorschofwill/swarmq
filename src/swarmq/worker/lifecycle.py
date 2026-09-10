@@ -156,7 +156,7 @@ class WorkerLifecycle:
             lock_manager=self._backend.locks,
             store=schedule_store,
             signal_dispatcher=self._signal_dispatcher,
-            worker_id=str(id(self)),
+            worker_id=self._config.worker_identity,
         )
         await self._scheduler.start()
 
@@ -265,9 +265,14 @@ class WorkerLifecycle:
         await request_recycle(self, reason, value)
 
     async def _start_with_bind_retry(self, start: Callable[[], Awaitable[None]]) -> None:
-        from swarmq.worker.recycling import start_with_bind_retry
+        from swarmq.worker import recycling
 
-        await start_with_bind_retry(start)
+        # KTD4: das Budget kommt aus der Konfiguration — das Entry leitet es
+        # aus beiden Freigabefristen ab, damit ein Ersatz nicht in einen
+        # Bind-Fehler und damit ins Neustart-Budget laeuft.
+        await recycling.start_with_bind_retry(
+            start, budget_s=self._config.bind_retry_budget_s
+        )
 
     def _warn_without_delivery_limit(self) -> None:
         """R21: ohne Quorum-Queue gibt es kein Delivery-Limit — eine Giftnachricht
@@ -394,7 +399,7 @@ class WorkerLifecycle:
         await self._signal_dispatcher.dispatch(
             Signal.WORKER_ONLINE,
             handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-            worker_id=str(id(self)),
+            worker_id=self._config.worker_identity,
         )
         self._start_background_monitors()
         # Block until shutdown is requested. The try/finally makes the cancel
@@ -475,7 +480,7 @@ class WorkerLifecycle:
         set the uptime / queue-depth / dlq gauges and emit the heartbeat.
         Per-queue broker errors are logged and skipped."""
         assert self._metrics is not None  # Sampler startet nur mit Metrics
-        worker_id = str(id(self))
+        worker_id = self._config.worker_identity
         now = time.monotonic()
         uptime = now - self._worker_started_at
         self._metrics.worker_uptime_seconds.labels(
@@ -662,7 +667,7 @@ class WorkerLifecycle:
             await self._signal_dispatcher.dispatch(
                 Signal.WORKER_SHUTDOWN,
                 handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-                worker_id=str(id(self)),
+                worker_id=self._config.worker_identity,
             )
             await self._stop_http_surfaces()
             # Ab hier darf kein Publish mehr laenger laufen als das

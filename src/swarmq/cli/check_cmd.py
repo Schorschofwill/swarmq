@@ -110,6 +110,10 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             pool=result["pool"],
             slots=result["slots"],
             warnings=result["warnings"],
+            # R7: die belegten Bereiche, damit der Betreiber seine
+            # Prometheus-Targets nicht selbst ausrechnen muss.
+            metrics_ports=result["metrics_ports"],
+            health_ports=result["health_ports"],
         )
         sys.stdout.write(json.dumps(payload) + "\n")
         return 0

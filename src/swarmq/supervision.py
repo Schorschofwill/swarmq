@@ -61,6 +61,17 @@ class SupervisorChannel:
 #: Exit-Code eines Workers, dessen Recycling-Absicht der Supervisor nicht
 #: bestaetigt hat (KTD11): ungleich 0 und ungleich 78, damit der bestehende
 #: Restart-Pfad greift statt eines stillen Verschwindens.
+# Exit-Code fuer Konfigurationsfehler (EX_CONFIG). Liegt hier, damit ``cli``
+# ihn ohne Import von ``process_manager`` kennt (KTD8); ein Neustart wuerde
+# denselben Fehler reproduzieren, also unterscheidet eine Orchestrierung
+# damit "nicht wieder anfassen" von "gleich nochmal".
+CONFIG_ERROR_EXIT_CODE = 78
+
+# Frist zwischen SIGTERM und SIGKILL fuer ein Worker-Kind. Liegt hier statt
+# im Supervisor, damit ``process_manager/entry.py`` und die Konfiguration sie
+# ohne Import von ``supervisor.py`` kennen (KTD4).
+SHUTDOWN_TERM_S = 5.0
+
 RECYCLE_NOACK_EXIT_CODE = 75  # EX_TEMPFAIL
 
 

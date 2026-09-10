@@ -93,7 +93,7 @@ async def request_recycle(worker: Any, reason: str, value: float) -> None:
     await worker._signal_dispatcher.dispatch(
         Signal.WORKER_RECYCLING,
         handler_timeout=_DISPATCH_TIMEOUT_S,
-        worker_id=str(id(worker)), kind="worker", slot=None, reason=reason, value=value,
+        worker_id=worker._config.worker_identity, kind="worker", slot=None, reason=reason, value=value,
     )
     channel = current_channel()
     if channel is None:

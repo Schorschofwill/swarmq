@@ -150,3 +150,27 @@ class TestQueueDropVisibility:
         handler.enqueue(rec)
         assert handler.dropped == 0
         assert q.qsize() == 1
+
+
+class TestSingleListenerPerProcess:
+    """U4/KTD8 (R21): genau ein ``QueueListener`` je Prozess.
+
+    Das Worker-Kind konfiguriert das Logging fruehzeitig, damit ein
+    Konfigurationsfehler als strukturierte Zeile erscheint; ``SwarmQ``
+    konfiguriert danach erneut. Zwei laufende Listener waeren zwei Threads,
+    die dieselbe Ausgabe bedienen wollen -- die Lehre aus B6.
+    """
+
+    def test_second_setup_stops_the_previous_listener(self):
+        import logging as stdlib_logging
+
+        from swarmq.logging import setup_logging
+
+        first = setup_logging("INFO", True)
+        try:
+            second = setup_logging("INFO", True)
+            assert first is not second
+            assert first._thread is None, "der erste Listener laeuft noch"
+            assert len(stdlib_logging.getLogger().handlers) == 1
+        finally:
+            second.stop()

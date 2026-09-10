@@ -135,8 +135,10 @@ def test_cli_worker_round_trip_then_clean_sigterm() -> None:
             proc.wait(timeout=10)
 
 
-def test_cli_worker_unknown_module_exits_non_zero_quickly() -> None:
-    """Sanity: bad --module should fail fast with exit 1, not hang."""
+def test_cli_worker_unknown_module_exits_with_config_code_quickly() -> None:
+    """Bewusst geaenderter Test (U4/R19): ein unbekanntes Modul ist ein
+    Konfigurationsfehler und endet mit 78 statt 1 -- eine Orchestrierung
+    startet einen kaputt konfigurierten Worker sonst endlos neu."""
     env = dict(os.environ)
     env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
     env["SWARMQ_BACKEND_URL"] = valkey_db_url()
@@ -152,7 +154,68 @@ def test_cli_worker_unknown_module_exits_non_zero_quickly() -> None:
         text=True,
         timeout=15,
     )
-    assert proc.returncode == 1, f"expected rc=1, got {proc.returncode}"
-    assert "swarmq worker:" in proc.stderr
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    assert proc.returncode == CONFIG_ERROR_EXIT_CODE, proc.stderr[-2000:]
+    assert "worker_config_error" in proc.stderr
     assert "definitely_no_module_with_this_name_xyz" in proc.stderr
     assert "Traceback" not in proc.stderr  # default INFO level
+
+
+def _run_worker_cli(*args: str, env_extra: dict[str, str] | None = None, timeout: float = 60.0):
+    env = dict(os.environ)
+    env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
+    env["SWARMQ_BACKEND_URL"] = valkey_db_url()
+    env["PYTHONUNBUFFERED"] = "1"
+    env.update(env_extra or {})
+    return subprocess.run(
+        [sys.executable, "-m", "swarmq.cli", "worker", *args],
+        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def test_config_error_in_the_parent_is_one_structured_line_and_exit_78() -> None:
+    """AE8 (U4, R19): ``SWARMQ_QUEUE_TYPE=bogus`` scheitert im Elternprozess
+    beim Bau der Konfiguration -- vor jedem Kind. Genau eine JSON-Zeile,
+    Exit 78. Vorher: eine rohe stderr-Zeile und Exit 1, in dem eine
+    Orchestrierung "gleich nochmal" las."""
+    import json
+
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    proc = _run_worker_cli(
+        "--module", "tests.integration._cli_fixture_tasks", "--log-format", "json",
+        env_extra={"SWARMQ_QUEUE_TYPE": "bogus", "CLI_TEST_QUEUE": "cli-cfg-err"},
+        timeout=30,
+    )
+    assert proc.returncode == CONFIG_ERROR_EXIT_CODE, proc.stderr[-2000:]
+    lines = [json.loads(line) for line in proc.stderr.splitlines() if line.startswith("{")]
+    config_errors = [entry for entry in lines if entry.get("event") == "worker_config_error"]
+    assert len(config_errors) == 1, proc.stderr[-2000:]
+    assert config_errors[0]["source"] == "supervisor"
+    assert "bogus" in config_errors[0]["error"]
+
+
+def test_child_config_error_under_two_processes_ends_the_supervisor_with_78() -> None:
+    """AE9 (U4, R19-R21): Ein Task-Modul ohne Tasks -- beide Kinder enden mit
+    78 und einem strukturierten Logsatz, der Supervisor endet mit 78 ohne
+    Neustart. Vorher lief der Supervisor in fuenf Neustarts je Kind und
+    endete mit 1."""
+    import json
+
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    proc = _run_worker_cli(
+        "--module", "json",  # stdlib, registriert keinen Task
+        "--processes", "2", "--log-format", "json",
+        timeout=60,
+    )
+    assert proc.returncode == CONFIG_ERROR_EXIT_CODE, proc.stderr[-3000:]
+    lines = [json.loads(line) for line in proc.stderr.splitlines() if line.startswith("{")]
+    events = [entry.get("event") for entry in lines]
+    # Je Kind ein Logsatz aus dem Kind (source="worker") und der Supervisor
+    # meldet den Exit-Code; kein Neustart-Sturm.
+    from_worker = [e for e in lines if e.get("event") == "worker_config_error" and e.get("source") == "worker"]
+    assert len(from_worker) >= 1, proc.stderr[-3000:]
+    assert "no tasks registered" in from_worker[0]["error"]
+    assert events.count("worker_spawned") <= 2, proc.stderr[-3000:]

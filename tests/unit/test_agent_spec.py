@@ -129,13 +129,25 @@ def test_config_spec_covers_every_dataclass_field() -> None:
 
 def test_config_spec_env_vars_match_source_and_naming_rule() -> None:
     spec = build_config_spec()
-    spec_env = {o["env_var"] for o in spec["options"]}
+    # Seit U2 (Plan 2026-09-08-001) gibt es Felder ohne Env: ``worker_slot``
+    # vergibt allein der Supervisor, eine Env-Var waere ein zweiter Weg zur
+    # selben Groesse. Solche Optionen tragen ``env_var: null``.
+    spec_env = {o["env_var"] for o in spec["options"] if o["env_var"] is not None}
     # The naming rule (SWARMQ_<UPPER>) is applied uniformly...
     for o in spec["options"]:
-        assert o["env_var"] == f"SWARMQ_{o['name'].upper()}"
+        if o["env_var"] is not None:
+            assert o["env_var"] == f"SWARMQ_{o['name'].upper()}"
     # ...and matches exactly what config.py actually reads — so a new
     # env-parsed field cannot be added without showing up here.
     assert spec_env == _config_env_vars_in_source()
+
+
+def test_config_spec_marks_fields_without_env_var() -> None:
+    """U2: ``worker_slot`` kommt nur aus dem Supervisor-Entry; die Spec sagt
+    das ausdruecklich, statt eine Env-Var zu behaupten, die niemand liest."""
+    by_name = {o["name"]: o for o in build_config_spec()["options"]}
+    assert by_name["worker_slot"]["env_var"] is None
+    assert by_name["worker_id"]["env_var"] == "SWARMQ_WORKER_ID"
 
 
 def test_config_spec_defaults_are_json_native() -> None:

@@ -13,10 +13,10 @@ from swarmq.process_manager.sampler import (  # noqa: F401  # Re-Export (KTD10)
     SAMPLE_TIMEOUT_S,
     _make_queue_depth_sampler,
 )
+from swarmq.process_manager.slots import WorkerInfo
 from swarmq.process_manager.supervisor import (
     ProcessManager,
     QueueDepthFn,
-    WorkerInfo,
 )
 
 __all__ = [

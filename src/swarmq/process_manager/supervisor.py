@@ -1,6 +1,7 @@
-"""Supervisor (Plan U21) — verbatim: ``ProcessManager`` (Restart-Budget,
-Autoscale, SIGHUP-Reload mit eingefrorenem argv/env), Signal-Blöcke,
-``WorkerInfo`` und der injizierte ``QueueDepthFn``-Seam."""
+"""Supervisor (Plan U21): ``ProcessManager`` (Restart-Budget, Autoscale,
+SIGHUP-Reload mit eingefrorenem argv/env), Signal-Blöcke und der injizierte
+``QueueDepthFn``-Seam. Slot-Tabelle und ``WorkerInfo`` liegen in ``slots``
+(Plan 2026-09-08-001, KTD1)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,6 @@ import signal
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
@@ -18,9 +18,18 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
-from swarmq.logging import sanitize_url
+from swarmq.process_manager import autoscale
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
-from swarmq.supervision import INTENT_DRAINING, INTENT_RECYCLE, SupervisorChannel
+from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
+from swarmq.supervision import (
+    INTENT_DRAINING,
+    INTENT_RECYCLE,
+    RECYCLE_NOACK_EXIT_CODE,
+    SupervisorChannel,
+)
+from swarmq.supervision import (
+    SHUTDOWN_TERM_S as _SHUTDOWN_TERM_S,
+)
 
 logger = structlog.get_logger()
 
@@ -45,31 +54,6 @@ def _unblock_signals() -> None:
         pass
 
 
-@dataclass
-class WorkerInfo:
-    """Per-worker bookkeeping: process handle, logical id, restart state.
-
-    ``restart_timestamps`` carries the rolling-window history across
-    successive generations of a crash-then-restart slot. Each entry
-    is ``time.monotonic()`` at the moment a replacement was spawned.
-    Entries older than ``ProcessManager.RESTART_WINDOW`` are pruned
-    in :meth:`ProcessManager._maybe_restart` so the count reflects a
-    true sliding window, not a since-last-event gap.
-
-    ``spawned_at`` is set to ``time.monotonic()`` at construction time
-    and consumed by :meth:`ProcessManager._scale_down_one` to protect
-    freshly spawned replacements from immediate scale-down.
-    """
-
-    process: multiprocessing.process.BaseProcess
-    worker_id: int
-    expected_shutdown: bool = False  # True when Autoscaler scaled down
-    restart_timestamps: list[float] = field(default_factory=list)
-    spawned_at: float = field(default_factory=time.monotonic)
-    # Plan 2026-09-03-001 (R21/R22): Lebenszeichen-/Absichts-/Bestaetigungskanal.
-    channel: SupervisorChannel | None = None
-
-
 QueueDepthFn = Callable[[], int]
 
 
@@ -83,7 +67,8 @@ class ProcessManager:
         starting point clamped to ``[min, max]``.
     worker_entry:
         Callable executed inside each spawned subprocess. Must accept
-        ``(worker_id: int, shutdown_event, *worker_args)``.
+        ``(worker_id: int, shutdown_event, *worker_args)``; ``worker_id``
+        is the slot ``0..N-1`` and repeats across replacements (KTD1).
     worker_args:
         Extra positional arguments passed to ``worker_entry`` after
         ``worker_id`` and ``shutdown_event``.
@@ -109,7 +94,7 @@ class ProcessManager:
     # ``shutdown_grace_s`` to align with ``SwarmQConfig.shutdown_timeout``
     # so a subprocess actually gets its configured drain budget).
     SHUTDOWN_GRACE_S = 30.0
-    SHUTDOWN_TERM_S = 5.0
+    SHUTDOWN_TERM_S = _SHUTDOWN_TERM_S  # lebt seit U3 in ``supervision`` (KTD4)
 
     # Autoscaling knobs.
     SCALE_UP_THRESHOLD = 50  # pending tasks per active worker
@@ -176,18 +161,10 @@ class ProcessManager:
         self._ctx = multiprocessing.get_context("spawn")
         self.shutdown_event = self._ctx.Event()
         self.workers: dict[int, WorkerInfo] = {}
+        # KTD1: Slots 0..N-1 (N = --processes bzw. Autoscale-Obergrenze).
+        self._slots = SlotTable(autoscale[1] if autoscale is not None else num_workers)
         self._shutting_down = False
         self._reload_requested = False
-        self._next_worker_id = 0
-        # Count of slots whose crash-restart budget is
-        # exhausted. Each such slot permanently reduces the static
-        # backfill target — without this, the backfill loop respawned a
-        # fresh WorkerInfo (empty restart history) right after
-        # _maybe_restart declined, bypassing the 5-per-hour limit in an
-        # unbounded spawn storm. When ALL slots are exhausted the
-        # supervisor exits non-zero so systemd/k8s take over with their
-        # own backoff policy.
-        self._exhausted_slots = 0
         # R20/KTD9 (Plan 2026-09-03-001): sauber beendete Worker (Exit 0 ohne
         # expected_shutdown, z. B. --burst) werden nicht nachgefuellt; sind
         # alle so beendet, endet der Supervisor mit 0.
@@ -362,28 +339,40 @@ class ProcessManager:
     # Worker lifecycle
     # ------------------------------------------------------------------
 
-    def _start_worker(self) -> WorkerInfo:
-        """Spawn one worker subprocess and register it."""
-        wid = self._next_worker_id
-        self._next_worker_id += 1
-
+    def _start_worker(self, slot: int) -> WorkerInfo:
+        """Spawn one worker subprocess for ``slot`` and register it."""
         channel = SupervisorChannel.create(self._ctx)
         p = self._ctx.Process(
             target=self._worker_entry,
-            args=(wid, self.shutdown_event, *self._worker_args, channel),
-            name=f"swarmq-worker-{wid}",
+            args=(slot, self.shutdown_event, *self._worker_args, channel),
+            name=f"swarmq-worker-{slot}",
             daemon=False,
         )
         p.start()
-        info = WorkerInfo(process=p, worker_id=wid, channel=channel, spawned_at=time.monotonic())
+        info = WorkerInfo(process=p, worker_id=slot, channel=channel, spawned_at=time.monotonic())
         # dict key is PID — unique across restarts within a session.
-        self.workers[p.pid or wid] = info
-        logger.info("worker_spawned", worker_id=wid, pid=p.pid)
+        self.workers[p.pid or slot] = info
+        self._refresh_slot(slot)
+        logger.info("worker_spawned", worker_id=slot, pid=p.pid, slot_state=self._slots.state(slot).value)
         return info
 
+    def slot_state(self, slot: int) -> SlotState:
+        """Zustand des Slots (frei, aktiv, Uebergang, gesperrt)."""
+        return self._slots.state(slot)
+
+    @property
+    def _exhausted_slots(self) -> int:
+        """Gesperrte Slots (Budget erschoepft); Begruendung bei ``SlotTable.lock``."""
+        return self._slots.locked()
+
+    def _refresh_slot(self, slot: int) -> None:
+        """Slot-Zustand aus den Prozessen ableiten, die ihn noch halten."""
+        holders = sum(1 for w in self.workers.values() if w.worker_id == slot)
+        self._slots.refresh(slot, holders=holders)
+
     def _start_all_workers(self) -> None:
-        for _ in range(self.initial_workers):
-            self._start_worker()
+        for slot in range(self.initial_workers):
+            self._start_worker(slot)
 
     @staticmethod
     def _wait_for_exit(candidates: list[WorkerInfo], grace_s: float) -> None:
@@ -448,8 +437,10 @@ class ProcessManager:
             self._escalate_terminating()
             self._check_dead_workers()
             if self._config_error:
+                # R20: derselbe Code wie das Kind. Mit 1 sah eine
+                # Orchestrierung nur "irgendein Fehler" und startete neu.
                 self._shutdown_all_workers()
-                return 1
+                return CONFIG_ERROR_EXIT_CODE
 
             # All restart budgets burned and no live
             # worker left → exit non-zero instead of spinning (or, pre-
@@ -489,11 +480,11 @@ class ProcessManager:
             # Backfill to the current target (initial count without
             # autoscale; between min..max with autoscale).
             target = self._current_target()
-            while (
-                len(self.workers) < target
-                and not self._shutting_down
-            ):
-                self._start_worker()
+            while self._slots.occupied() < target and not self._shutting_down:
+                slot = self._slots.smallest_free()
+                if slot is None:  # nur gesperrte Slots uebrig (R4)
+                    break
+                self._start_worker(slot)
 
             if self._autoscale is not None:
                 self._autoscale_tick()
@@ -508,14 +499,14 @@ class ProcessManager:
         exhausted slots (backfilling an exhausted
         slot would reset its restart history and bypass the rate
         limit).
-        With autoscale: current ``len(self.workers)`` since
-        ``_autoscale_tick`` adjusts independently; backfill only
-        replaces crashed workers (not those we scaled down
-        deliberately).
+        With autoscale: the currently occupied slots (a slot in
+        transition counts once, R2) since ``_autoscale_tick`` adjusts
+        independently; backfill only replaces crashed workers (not
+        those we scaled down deliberately).
         """
         if self._autoscale is None:
             return max(0, self.initial_workers - self._exhausted_slots - self._clean_exits)
-        return len(self.workers)
+        return self._slots.occupied()
 
     def _check_dead_workers(self) -> None:
         """Detect exited workers and decide whether to restart."""
@@ -531,6 +522,7 @@ class ProcessManager:
             except Exception:
                 pass
             del self.workers[pid]
+            self._refresh_slot(info.worker_id)  # KTD1: Uebergang → aktiv / frei; Sperre bleibt
 
             logger.warning(
                 "worker_died",
@@ -538,6 +530,7 @@ class ProcessManager:
                 pid=pid,
                 exitcode=exitcode,
                 expected=info.expected_shutdown,
+                slot_state=self._slots.state(info.worker_id).value,
             )
 
             if self._shutting_down:
@@ -550,19 +543,32 @@ class ProcessManager:
                 # slot is retired so the backfill does not respawn it (KTD9).
                 self._clean_exits += 1
                 continue
-            if exitcode == CONFIG_ERROR_EXIT_CODE:
-                # R29: Konfigurationsfehler — ein Neustart wuerde denselben
-                # Fehler reproduzieren. Genau ein Startversuch.
-                logger.error(
-                    "worker_config_error",
-                    worker_id=info.worker_id,
-                    pid=pid,
-                    exitcode=exitcode,
-                    hint="fix the configuration and start again; no restart attempted",
-                )
-                self._config_error = True
+            if self._handle_exit_code(info, pid, exitcode):
                 continue
             self._maybe_restart(info)
+
+    def _handle_exit_code(self, info: WorkerInfo, pid: int, exitcode: int | None) -> bool:
+        """Logsaetze zu den beiden benannten Exit-Codes; ``True`` = kein
+        Neustart (R20).
+
+        78: Ein Neustart wuerde denselben Konfigurationsfehler reproduzieren,
+        also genau ein Startversuch. 75: Das Kind bekam seine
+        Recycling-Bestaetigung nicht — Neustart wie bei jedem Absturz, aber
+        mit eigenem Logsatz, sonst ist der Fall im Betrieb nicht von einem
+        Crash zu unterscheiden.
+        """
+        if exitcode == CONFIG_ERROR_EXIT_CODE:
+            logger.error(
+                "worker_config_error", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+                hint="fix the configuration and start again; no restart attempted",
+            )
+            self._config_error = True
+            return True
+        if exitcode == RECYCLE_NOACK_EXIT_CODE:
+            logger.warning(
+                "worker_recycle_noack", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+            )
+        return False
 
     # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)
 
@@ -586,7 +592,7 @@ class ProcessManager:
                 # KTD11: Absicht → expected_shutdown zuerst, dann Ersatz, dann ack.
                 # Zaehlt weder gegen MAX_RESTARTS noch als sauberes Ende.
                 info.expected_shutdown = True
-                replacement = self._start_worker()
+                replacement = self._start_worker(info.worker_id)
                 channel.acknowledge_replacement()
                 logger.info(
                     "worker_recycling_replacement",
@@ -624,7 +630,7 @@ class ProcessManager:
             deadline_s=self._heartbeat_deadline(info),
         )
         if len(self._hang_timestamps) >= self.hang_replacement_limit:
-            self._exhausted_slots += 1
+            self._slots.lock(info.worker_id)  # auch mit lebendem Vorgaenger (R4)
             logger.error(
                 "hang_replacement_budget_exhausted",
                 limit=self.hang_replacement_limit, window_s=self.RESTART_WINDOW,
@@ -632,7 +638,7 @@ class ProcessManager:
             )
         else:
             self._hang_timestamps.append(now)
-            self._start_worker()
+            self._start_worker(info.worker_id)
         self._terminate_worker(info)
 
     def _escalate_terminating(self) -> None:
@@ -668,10 +674,10 @@ class ProcessManager:
         timestamps = [t for t in old.restart_timestamps if t >= cutoff]
 
         if len(timestamps) >= self.MAX_RESTARTS:
-            # Mark the slot as permanently exhausted so
-            # _current_target shrinks and the backfill loop cannot
-            # respawn it with a fresh (empty) restart history.
-            self._exhausted_slots += 1
+            # Lock the slot permanently so _current_target shrinks and the
+            # backfill loop cannot respawn it with a fresh (empty) restart
+            # history.
+            self._slots.lock(old.worker_id)
             logger.error(
                 "worker_restart_limit_exceeded",
                 worker_id=old.worker_id,
@@ -690,111 +696,15 @@ class ProcessManager:
             attempt=len(timestamps),
             limit=self.MAX_RESTARTS,
         )
-        new = self._start_worker()
+        new = self._start_worker(old.worker_id)
         new.restart_timestamps = timestamps
 
     # ------------------------------------------------------------------
-    # R4.7 Autoscaling
+    # R4.7 Autoscaling — Entscheidungen in ``process_manager/autoscale.py``
     # ------------------------------------------------------------------
 
     def _autoscale_tick(self) -> None:
-        """One autoscale decision (no-op outside the sample interval).
-
-        Sampling uses ``_queue_depth_fn`` which is synchronous — the
-        caller adapts async broker APIs into a sync wrapper (see
-        :func:`make_queue_depth_sampler`).
-        """
-        # Use explicit checks instead of asserts so
-        # the invariant survives python -O deployments. Constructor
-        # already enforces these, but a subtle refactor could later
-        # violate them.
-        if self._autoscale is None or self._queue_depth_fn is None:
-            return
-
-        now = time.monotonic()
-        if now - self._last_autoscale_sample < self.AUTOSCALE_SAMPLE_INTERVAL:
-            return
-
-        # Check cooldown BEFORE advancing the sample
-        # timestamp. Otherwise a cooldown early-return consumes the
-        # sample slot, extending the effective dead-time by up to
-        # AUTOSCALE_SAMPLE_INTERVAL beyond the documented cooldown.
-        if now - self._last_scale_decision < self.SCALE_COOLDOWN_S:
-            return
-
-        self._last_autoscale_sample = now
-
-        try:
-            depth = self._queue_depth_fn()
-        except Exception as exc:
-            # sanitize_url strips embedded AMQP
-            # credentials before the exception text reaches structlog.
-            logger.warning(
-                "autoscale_sample_failed", error=sanitize_url(str(exc)),
-            )
-            return
-
-        min_w, max_w = self._autoscale
-        active = len(self.workers)
-
-        # Scale up: enough backlog to justify another worker.
-        if active < max_w and depth > active * self.SCALE_UP_THRESHOLD:
-            logger.info(
-                "autoscale_up",
-                depth=depth, active=active, max_workers=max_w,
-            )
-            self._start_worker()
-            self._last_scale_decision = now
-            self._idle_since = None
-            return
-
-        # Scale down: sustained idle.
-        if active > min_w and depth == 0:
-            if self._idle_since is None:
-                self._idle_since = now
-                return
-            if now - self._idle_since >= self.SCALE_DOWN_IDLE_S:
-                self._scale_down_one()
-                self._last_scale_decision = now
-                self._idle_since = None
-        else:
-            self._idle_since = None
+        autoscale.tick(self)
 
     def _scale_down_one(self) -> None:
-        """Tell the youngest eligible worker to drain + exit (SIGTERM).
-
-        Workers younger than
-        :attr:`SCALE_MIN_AGE_S` are excluded. Without this, a
-        crash → ``_maybe_restart`` → ``_autoscale_tick`` sequence
-        would spawn a replacement and immediately kill it, producing
-        pointless process churn.
-        """
-        if not self.workers:
-            return
-        now = time.monotonic()
-        eligible = {
-            pid: w for pid, w in self.workers.items()
-            if (now - w.spawned_at) >= self.SCALE_MIN_AGE_S
-        }
-        if not eligible:
-            logger.debug(
-                "autoscale_down_deferred_all_young",
-                total=len(self.workers),
-                min_age_s=self.SCALE_MIN_AGE_S,
-            )
-            return
-        # Youngest (highest worker_id) among the eligible — oldest
-        # workers have warmer caches.
-        target_pid, info = max(
-            eligible.items(), key=lambda kv: kv[1].worker_id,
-        )
-        logger.info(
-            "autoscale_down",
-            worker_id=info.worker_id, pid=target_pid,
-        )
-        info.expected_shutdown = True
-        try:
-            info.process.terminate()
-        except ProcessLookupError:
-            # Already gone — bookkeeping will clean up in _check_dead.
-            pass
+        autoscale.scale_down_one(self)

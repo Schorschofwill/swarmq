@@ -557,7 +557,7 @@ class Worker(WorkerLifecycle):
             task_id=task_id,
             task_name=task_name,
             queue=queue,
-            worker_id=id(self),
+            worker_id=self._config.worker_identity,
         )
 
     async def _finalize_delivery(
