@@ -70,3 +70,20 @@ def test_unique_release_script_loads_and_has_owner_check():
     assert "task_id" in script.lower() or "owner" in script.lower()
     # Only KEYS[1] and ARGV[1] referenced — no semaphore/force branches.
     assert "ARGV[2]" not in script
+
+
+def test_workflow_state_cas_script_decodes_version_but_never_encodes():
+    """KTD11 (Plan 2026-09-08-001, U9): workflow_state_cas.lua vergleicht die
+    ``version`` des Bestands und schreibt die Payload byteweise mit ``PX``.
+    Es darf das Dokument NIE neu kodieren -- ``cjson.encode`` verfaelscht
+    Fliesskommazahlen in den Task-Argumenten der Topologie."""
+    script = load_script("workflow_state_cas")
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("--"))
+    assert "cjson.decode" in code
+    assert "cjson.encode" not in code
+    assert "redis.call('GET'" in script
+    assert "redis.call('SET'" in script
+    assert "'PX'" in script
+    # Vertrag: ein Schluessel, drei Argumente (Version, Payload, TTL).
+    assert "KEYS[1]" in script and "KEYS[2]" not in script
+    assert "ARGV[3]" in script and "ARGV[4]" not in script

@@ -19,6 +19,7 @@ from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
     ResultSerializationError,
+    WorkflowStateConflict,
 )
 from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
 from swarmq.serialization import encode_result
@@ -97,18 +98,16 @@ class ResultTail:
         assert task_info is not None
         wf_id_faf = self._extract_workflow_id(delivery, ctx)
         if wf_id_faf is not None and advancer is not None:
-            try:
-                await advancer.fail(
-                    wf_id_faf,
-                    "WorkflowValidationError",
-                    f"task {ctx.task_name!r} is FIRE_AND_FORGET and cannot "
-                    "advance a workflow",
-                )
-            except Exception as exc:
-                logger.error(
-                    "workflow_faf_fail_mark_error",
-                    workflow_id=wf_id_faf, error=str(exc),
-                )
+            outcome = await self._fail_workflow(
+                delivery, ctx, wf_id_faf, advancer, "WorkflowValidationError",
+                f"task {ctx.task_name!r} is FIRE_AND_FORGET and cannot "
+                "advance a workflow",
+                event="workflow_faf_fail_mark_error",
+            )
+            if outcome is not None:
+                # Redelivered: kein Ack, und das Cancel-Flag bleibt stehen,
+                # damit die Redelivery den Cancel-Zweig erneut sieht.
+                return outcome
         if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
             await deps.broker.ack(delivery)
         # Even with result_ttl=0 we must clear the cancel flag when the task
@@ -117,6 +116,38 @@ class ResultTail:
         if execution.is_cancelled:
             await deps.backend.clear_cancel_flag(ctx.task_id, op_timeout=deps.config.backend_op_timeout)
         return Terminal.release_in_finally()
+
+    async def _fail_workflow(
+        self, delivery: Any, ctx: GateContext, wf_id: str, advancer: Any,
+        error_type: str, reason: str, *, event: str,
+    ) -> DeliveryOutcome | None:
+        """Fehlermarkierung eines Workflows nach R25/KTD12 (U10).
+
+        Scheitert sie transient — Backend weg oder die Konfliktgrenze des
+        Compare-and-Set erreicht —, darf die Nachricht nicht bestätigt werden:
+        der Workflow bliebe bis zum TTL ``RUNNING`` und ``handle.get()`` liefe
+        in seinen Timeout. Bei AT_LEAST_ONCE wird redelivered, bei
+        FIRE_AND_FORGET gibt es kein Broker-Verb mehr (der Pfad hat nichts zu
+        bestätigen). Jeder andere Fehler ist deterministisch: eine Redelivery
+        würde den Task-Körper erneut ausführen und bis zum Delivery-Limit in
+        einer Poison-Schleife drehen — also bestätigen und loggen.
+
+        Liefert ``Redelivered``, wenn die Nachricht neu zugestellt wurde,
+        sonst ``None`` (der Aufrufer läuft weiter wie bisher)."""
+        deps = self._deps
+        task_info = ctx.task_info
+        assert task_info is not None
+        try:
+            await advancer.fail(wf_id, error_type, reason)
+        except (BackendConnectionError, WorkflowStateConflict) as exc:
+            at_least_once = task_info.delivery is DeliveryMode.AT_LEAST_ONCE
+            logger.error(event, workflow_id=wf_id, error=str(exc), redelivered=at_least_once)
+            if at_least_once:
+                await deps.broker.redeliver(delivery)
+                return Redelivered
+        except Exception as exc:
+            logger.error(event, workflow_id=wf_id, error=str(exc), redelivered=False)
+        return None
 
     async def _advance_workflow(
         self, delivery: Any, ctx: GateContext, execution: ExecutionResult, advancer: Any
@@ -140,19 +171,19 @@ class ResultTail:
             reason = "task was cancelled" if execution.is_cancelled else (
                 execution.error_message or "workflow step failed"
             )
-            try:
-                await advancer.fail(wf_id, "TaskError", reason)
-            except Exception as exc:
-                logger.warning(
-                    "workflow_fail_mark_failed", workflow_id=wf_id, error=str(exc)
-                )
-            return None
+            return await self._fail_workflow(
+                delivery, ctx, wf_id, advancer, "TaskError", reason,
+                event="workflow_fail_mark_failed",
+            )
         step_path = (delivery.headers or {}).get(HEADER_WORKFLOW_STEP, "")
         if not isinstance(step_path, str):
             step_path = ""
         try:
             await advancer.advance(wf_id, step_path, ctx.task_id, execution.result_value)
-        except BackendConnectionError:
+        except (BackendConnectionError, WorkflowStateConflict):
+            # Die Konfliktgrenze des Compare-and-Set (U9) heisst: der Advance
+            # ist nicht fertig, nicht gescheitert — wie ein Backend-Ausfall
+            # behandeln, nicht fail-markieren.
             logger.error("workflow_advance_backend_error", workflow_id=wf_id)
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 # Transient — redelivery retries the idempotent advance.
@@ -177,13 +208,10 @@ class ResultTail:
                 "workflow_advance_failed",
                 workflow_id=wf_id, error=str(exc),
             )
-            try:
-                await advancer.fail(wf_id, type(exc).__name__, str(exc))
-            except Exception as fail_exc:
-                logger.error(
-                    "workflow_fail_mark_error",
-                    workflow_id=wf_id, error=str(fail_exc),
-                )
+            return await self._fail_workflow(
+                delivery, ctx, wf_id, advancer, type(exc).__name__, str(exc),
+                event="workflow_fail_mark_error",
+            )
         return None
 
     async def finish(

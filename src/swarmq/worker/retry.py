@@ -21,10 +21,17 @@ import structlog
 
 from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import build_error_result_dict
-from swarmq.exceptions import NoRetry, Retry, TaskNotFoundError
+from swarmq.exceptions import (
+    BackendConnectionError,
+    NoRetry,
+    Retry,
+    TaskNotFoundError,
+    WorkflowStateConflict,
+)
 from swarmq.headers import HEADER_WORKFLOW_ID
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
+from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
@@ -159,12 +166,48 @@ class RetryHandler:
         wf_id = deps.extract_valid_workflow_id(delivery)
         if wf_id is None and (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
             logger.warning("workflow_id_header_invalid", task_id=task_id, task_name=task_name)
+        # Fetch task_info for release-mode and for the delivery mode below;
+        # unregistered tasks default to completion (see _maybe_release_unique
+        # contract) and to AT_LEAST_ONCE (the TaskInfo default).
+        try:
+            task_info_for_release = deps.registry.get(task_name).task_info
+        except TaskNotFoundError:
+            task_info_for_release = None
+
         advancer = self._workflow_advancer()
         if wf_id is not None and advancer is not None:
             try:
                 await advancer.fail(wf_id, "TaskError", error_message)
+            except (BackendConnectionError, WorkflowStateConflict) as wf_exc:
+                # R25/KTD12 (U10): ``dead_letter`` bestaetigt das Original —
+                # ohne terminalen Workflow-Zustand bliebe der Workflow bis zum
+                # TTL ``RUNNING`` und ``handle.get()`` liefe in den Timeout.
+                # Die Redelivery wiederholt Fail-Mark und Dead-Letter (beide
+                # idempotent); das Delivery-Limit begrenzt die Schleife. Bei
+                # FIRE_AND_FORGET gibt es nichts zurueckzuhalten.
+                at_least_once = (
+                    task_info_for_release is None
+                    or task_info_for_release.delivery is DeliveryMode.AT_LEAST_ONCE
+                )
+                logger.error(
+                    "workflow_fail_mark_failed", workflow_id=wf_id,
+                    error=str(wf_exc), redelivered=at_least_once,
+                )
+                if at_least_once:
+                    try:
+                        await deps.broker.redeliver(delivery)
+                    except Exception:
+                        pass
+                    # Non-terminal — das Unique-Flag bleibt stehen, damit der
+                    # terminale Pfad der Redelivery es freigibt.
+                    return
             except Exception as wf_exc:
-                logger.warning("workflow_fail_mark_failed", workflow_id=wf_id, error=str(wf_exc))
+                # Deterministisch: eine Redelivery drehte bis zum
+                # Delivery-Limit, ohne dass die Markierung je gelingt.
+                logger.error(
+                    "workflow_fail_mark_failed", workflow_id=wf_id,
+                    error=str(wf_exc), redelivered=False,
+                )
 
         # R3.5 Unit 11: preserve all inbound headers so a message that
         # reached DLQ via retry-exhaustion still carries its original
@@ -172,12 +215,6 @@ class RetryHandler:
         # release below takes care of the actual flag cleanup).
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
         headers["x-swarmq-traceback"] = error_message
-        # Fetch task_info for release-mode; unregistered tasks default
-        # to completion (see _maybe_release_unique contract).
-        try:
-            task_info_for_release = deps.registry.get(task_name).task_info
-        except TaskNotFoundError:
-            task_info_for_release = None
         try:
             await deps.broker.dead_letter(delivery, headers=headers)
             # Release AFTER successful ack (dead_letter bestätigt das

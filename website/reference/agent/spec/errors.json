@@ -271,6 +271,22 @@
       ]
     },
     {
+      "dlq_on_uncaught": "no",
+      "doc": "Raised when a workflow-state Compare-and-Set lost every one of its\nconflict rounds (KTD11, R23) — the advance is not finished and the step\nmessage must be redelivered. Each round is won by at least one writer,\nso this needs more concurrently writing branches than the limit\n(``WORKFLOW_CAS_MAX_ROUNDS``) allows; the redelivery may re-publish\ndeterministic step ids, which step idempotency absorbs.",
+      "exception_class": "swarmq.exceptions.WorkflowStateConflict",
+      "exit_code_on_cli": null,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "WorkflowStateConflict",
+      "origin": "library",
+      "parent": "SwarmQError",
+      "retriable": "yes",
+      "transport_field": "redelivery of the step message",
+      "when": [
+        "run"
+      ]
+    },
+    {
       "dlq_on_uncaught": "n/a",
       "doc": "Raised at workflow construction when a topology violates the\nflat-DAG depth limit, the group-size limit, or embeds a\nFIRE_AND_FORGET task as a step (R8, R9).\n\nAlso raised at **run time**, during group/chord fan-in, when the member\nresult list cannot be assembled completely — a member step marker is\nmissing from the workflow state. Delivering a shorter list than the group\nhas members would be an undetectable wrong answer, so the workflow fails\ninstead. The worker seam marks the workflow failed and ``handle.get()``\nraises.",
       "exception_class": "swarmq.exceptions.WorkflowValidationError",

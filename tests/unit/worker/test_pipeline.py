@@ -15,12 +15,15 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
+from swarmq.contracts import PublishReceipt
 from swarmq.contracts.coordination import LockToken, RateLimitDecision
 from swarmq.exceptions import BackendConnectionError
 from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
+from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
+from swarmq.workflow_orchestration import WorkflowStep, WorkflowStepEnqueuer
 from tests.support.messages import make_message
 
 _HASH = "a" * 64
@@ -269,3 +272,63 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
 
     assert "backend.release_unique" in rec.calls
     assert "backend.schedules.mark_fire_completed" in rec.calls
+
+
+class _EnqueueRecorder(Middleware):
+    """Middleware, die den Enqueue-Pfad protokolliert (U11, AE6)."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def pre_enqueue(self, message) -> None:
+        self.calls.append(f"pre_enqueue:{message['step_path']}:{message['delivery_mode']}")
+
+    async def post_enqueue(self, message) -> None:
+        self.calls.append(f"post_enqueue:{message['step_path']}")
+
+
+async def test_workflow_step_publisher_runs_middleware_then_signals():
+    """R15/R16 (AE6): Ein Folgeschritt laeuft durch dieselbe Kette wie
+    ``Client.schedule`` — pre_enqueue, Publish, post_enqueue, dann
+    ``TASK_ENQUEUED`` und ``WORKFLOW_STEP_ENQUEUED``."""
+    calls: list[str] = []
+    broker = MagicMock(spec=RabbitMQBroker)
+
+    async def _publish(queue, body, headers=None):
+        calls.append("publish")
+        return PublishReceipt(queue=queue)
+
+    broker.publish = AsyncMock(side_effect=_publish)
+    backend = MagicMock(spec=ValkeyBackend)
+    registry = TaskRegistry()
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+    worker = Worker(
+        broker=broker, backend=backend, registry=registry, config=config,
+        middleware_chain=MiddlewareChain([_EnqueueRecorder(calls)]),
+    )
+
+    async def _dispatch(signal, **kwargs):
+        calls.append(f"signal:{signal.value}:{kwargs.get('step_path', '-')}")
+
+    worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+
+    step = WorkflowStep(
+        workflow_id="wf-1", step_path="/1", task_id="t1", task_name="echo",
+        queue="default", args=[1], kwargs={}, headers={"x-swarmq-workflow-step": "/1"},
+    )
+    publisher = WorkflowStepEnqueuer(
+        publish=worker._publish_workflow_step,
+        dispatch=worker._signal_dispatcher.dispatch,
+        get_chain=worker._get_chain,
+    )
+    await publisher.pre_enqueue([step])
+    receipt = await publisher.publish(step)
+
+    assert isinstance(receipt, PublishReceipt)
+    assert calls == [
+        "pre_enqueue:/1:at_least_once",
+        "publish",
+        "post_enqueue:/1",
+        "signal:task_enqueued:-",
+        "signal:workflow_step_enqueued:/1",
+    ]
