@@ -156,3 +156,63 @@ def test_cli_worker_unknown_module_exits_non_zero_quickly() -> None:
     assert "swarmq worker:" in proc.stderr
     assert "definitely_no_module_with_this_name_xyz" in proc.stderr
     assert "Traceback" not in proc.stderr  # default INFO level
+
+
+def _run_worker_cli(*args: str, env_extra: dict[str, str] | None = None, timeout: float = 60.0):
+    env = dict(os.environ)
+    env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
+    env["SWARMQ_BACKEND_URL"] = valkey_db_url()
+    env["PYTHONUNBUFFERED"] = "1"
+    env.update(env_extra or {})
+    return subprocess.run(
+        [sys.executable, "-m", "swarmq.cli", "worker", *args],
+        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def test_configure_hook_middleware_runs_for_every_task() -> None:
+    """AE4 (U5, R9/R10): Die Middleware aus ``--configure`` sieht jeden Task.
+
+    Vorher brauchte man dafuer ein eigenes Worker-Entry -- genau das hat die
+    Lasttest-Suite geschrieben, nur um eine Middleware anzuhaengen."""
+    import json
+
+    queue = f"cli-hook-{uuid.uuid4().hex[:8]}"
+    tids = asyncio.run(_enqueue_hook_tasks(queue, 3))
+    proc = _run_worker_cli(
+        "--module", "tests.integration._cli_fixture_tasks",
+        "--configure", "tests.integration._cli_hook_module:setup",
+        "--queues", queue, "--burst", "--burst-idle-timeout", "4",
+        "--log-format", "json",
+        env_extra={"CLI_TEST_QUEUE": queue},
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    lines = [
+        json.loads(line)
+        for line in (proc.stdout + proc.stderr).splitlines()
+        if line.startswith("{")
+    ]
+    events = [entry.get("event") for entry in lines]
+    assert "hook_called" in events, events[-20:]
+    assert events.count("hook_middleware_pre_execute") == 3, events[-20:]
+    assert asyncio.run(_results_ok(queue, tids)) == 3
+
+
+async def _enqueue_hook_tasks(queue: str, n: int) -> list[str]:
+    os.environ["CLI_TEST_QUEUE"] = queue
+    ensure_fixture_registered("tests.integration._cli_fixture_tasks", "cli_echo")
+    app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
+    async with app:
+        await app.broker.declare_queue(queue)
+        return [await app.schedule("cli_echo", "ping", queue=queue) for _ in range(n)]
+
+
+async def _results_ok(queue: str, tids: list[str]) -> int:
+    app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
+    ok = 0
+    async with app:
+        for tid in tids:
+            if await app.get_result(tid, timeout=10.0) is not None:
+                ok += 1
+    return ok

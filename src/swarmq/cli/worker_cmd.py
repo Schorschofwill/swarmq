@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+from typing import Any
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.task import Task
@@ -114,5 +115,53 @@ async def run_worker_async(args: argparse.Namespace) -> None:
         metrics_port=args.metrics_port,
         health_port=args.health_port,
     )
+    configure = getattr(args, "configure", None)
+    if configure is not None:
+        await _run_configure_hook(app, configure)
+
     async with app:
         await app.start_worker()
+
+
+async def _run_configure_hook(app: Any, spec: str) -> None:
+    """``--configure MODULE:CALLABLE`` nach der App-Konstruktion aufrufen
+    (R9/R10, KTD5).
+
+    Der Import passiert hier, im Worker-Prozess -- nicht im Supervisor und
+    nicht im Forkserver-Preload: der Hook ist Anwendungscode und soll nur
+    dort laufen, wo Tasks laufen. Ein Awaitable wird abgewartet, damit ein
+    ``async def setup(app)`` nicht stillschweigend nie laeuft.
+
+    Jeder Fehler wird in einen ``ConfigurationError`` gehuellt und nennt
+    Modul und Callable: ein Neustart wuerde ihn reproduzieren, also endet der
+    Worker damit mit Exit 78 statt in fuenf Neustarts.
+    """
+    import inspect
+
+    module_name, _, attr_name = spec.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ConfigurationError(
+            f"--configure {spec!r}: importing {module_name!r} failed: {exc}"
+        ) from exc
+
+    hook = getattr(module, attr_name, None)
+    if hook is None:
+        raise ConfigurationError(
+            f"--configure {spec!r}: {module_name!r} has no attribute {attr_name!r}"
+        )
+    if not callable(hook):
+        raise ConfigurationError(
+            f"--configure {spec!r}: {module_name}.{attr_name} is not callable"
+        )
+
+    try:
+        result = hook(app)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        raise ConfigurationError(
+            f"--configure {spec!r}: {module_name}.{attr_name} raised "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc

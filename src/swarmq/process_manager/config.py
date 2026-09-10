@@ -70,6 +70,10 @@ class WorkerConfig:
     malloc_trim_threshold: int | None = None
     malloc_arena_max: int | None = None
     compute_thread_limit: int | None = None
+    # U5 (Plan 2026-09-08-001, R9/R10): ``MODULE:CALLABLE``. Der String reist
+    # als Feld ins Kind und wird erst dort aufgeloest -- der Supervisor
+    # importiert kein Anwendungsmodul (KTD5).
+    configure: str | None = None
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):

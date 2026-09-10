@@ -161,3 +161,17 @@ async def test_cpu_pool_sets_main_module_env_before_forkserver_start(monkeypatch
     await wiring.start_compute_executor(_worker())
     assert seen["env"] == "pkg.mod"
     assert seen["preload"][:2] == ["swarmq.worker.compute.preload", "pkg.mod"]
+
+
+def test_preload_list_never_contains_the_configure_hook():
+    """U5/KTD5: Der ``--configure``-Hook gehoert NICHT in die Preload-Liste.
+
+    Der Forkserver laedt seine Preload-Module einmal und gibt sie an jedes
+    Rechenkind weiter. Anwendungscode aus dem Hook liefe damit im
+    Forkserver-Prozess -- vor jeder Task-Ausfuehrung, ohne Broker und ohne
+    Backend. Der Hook laeuft ausschliesslich im Worker (``run_worker_async``).
+    """
+    w = _worker()
+    w._config.configure = "tests.integration._cli_hook_module:setup"
+    preload = wiring.preload_modules(w._registry)
+    assert not any("hook" in name for name in preload), preload

@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import pytest
 
+from swarmq.exceptions import ConfigurationError
+from swarmq.process_manager.check import check_worker_config
+
 
 class TestValidateModuleImportable:
     """ce-review Unit 2: find_spec pre-flight check direct tests."""
@@ -52,3 +55,38 @@ class TestValidateModuleImportable:
             _validate_module_importable("my_namespace_pkg")
         # Cleanup sys.modules so other tests aren't polluted.
         _sys.modules.pop("my_namespace_pkg", None)
+
+
+class TestConfigureHookPreflight:
+    """U5 (R11/KTD5): ``--check`` prueft Syntax und Auffindbarkeit des
+    Hook-Moduls -- ohne es zu importieren.
+
+    Ein Import im Supervisor liesse Anwendungscode im Elternprozess laufen
+    (und im Forkserver-Preload). Das Attribut wird deshalb erst im Worker
+    aufgeloest; ein Tippfehler im Modulnamen faellt aber schon hier auf,
+    statt erst in fuenf Kindern."""
+
+    def _check(self, **kwargs):
+        defaults = {"module": "swarmq", "reload": False, "watch_dir": None}
+        return check_worker_config(**{**defaults, **kwargs})
+
+    def test_resolvable_module_passes_and_is_reported(self):
+        result = self._check(configure="swarmq.cli:main")
+        assert result["configure"] == "swarmq.cli:main"
+
+    def test_unresolvable_module_is_rejected(self):
+        with pytest.raises(ConfigurationError, match="definitely_no_hook_module_xyz"):
+            self._check(configure="definitely_no_hook_module_xyz:setup")
+
+    def test_malformed_spec_is_rejected(self):
+        with pytest.raises(ConfigurationError, match="MODULE:CALLABLE"):
+            self._check(configure="swarmq.cli")
+
+    def test_missing_attribute_is_not_checked_here(self):
+        """Das Attribut loest erst der Worker auf -- ein ``getattr`` hier
+        braeuchte den Import."""
+        result = self._check(configure="swarmq.cli:no_such_callable")
+        assert result["configure"] == "swarmq.cli:no_such_callable"
+
+    def test_absent_hook_reports_none(self):
+        assert self._check()["configure"] is None

@@ -80,3 +80,20 @@ def test_worker_config_pool_fields_default_and_pickle_roundtrip():
     assert cfg.pool == "cpu"
     assert cfg.recycle_max_tasks is None
     assert pickle.loads(pickle.dumps(cfg)) == cfg
+
+
+class TestConfigureHookTransport:
+    """U5 (R10/KTD5): Der Hook-String reist als Feld des ``WorkerConfig`` ins
+    Kind -- er muss also den Pickle-Weg ueberleben. Aufgeloest wird er erst
+    im Worker, damit der Supervisor kein Anwendungsmodul importiert."""
+
+    def test_configure_survives_pickle_and_asdict(self):
+        import dataclasses
+        import pickle
+
+        cfg = _make_test_cfg(configure="app.hooks:setup")
+        assert pickle.loads(pickle.dumps(cfg)).configure == "app.hooks:setup"
+        assert dataclasses.asdict(cfg)["configure"] == "app.hooks:setup"
+
+    def test_default_is_none(self):
+        assert _make_test_cfg().configure is None

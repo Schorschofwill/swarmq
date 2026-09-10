@@ -335,6 +335,164 @@ class TestRunWorkerAsync:
         with pytest.raises(ConfigurationError, match="no tasks registered"):
             await cli.run_worker_async(ns)
 
+    @staticmethod
+    def _hook_module(monkeypatch, **attrs):
+        """Ein importierbares Modul mit den uebergebenen Attributen."""
+        import sys
+        import types
+
+        module = types.ModuleType("swarmq_test_hooks")
+        for name, value in attrs.items():
+            setattr(module, name, value)
+        monkeypatch.setitem(sys.modules, "swarmq_test_hooks", module)
+        return module
+
+    def _hook_args(self, configure):
+        return argparse.Namespace(
+            module="json", queues=["default"], concurrency=10,
+            log_level="INFO", log_format="human", burst=False,
+            burst_idle_timeout=60.0, priorities=False,
+            metrics_port=None, health_port=None, configure=configure,
+        )
+
+    @staticmethod
+    def _fake_app(monkeypatch, sink):
+        class _FakeApp:
+            def __init__(self, broker, backend, **kwargs):
+                sink["app"] = self
+
+            async def __aenter__(self):
+                sink.setdefault("calls", []).append("enter")
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def start_worker(self):
+                sink.setdefault("calls", []).append("start_worker")
+
+        monkeypatch.setattr("swarmq.app.SwarmQ", _FakeApp)
+        return _FakeApp
+
+    @pytest.mark.asyncio
+    async def test_configure_hook_runs_with_the_app_before_start(self, monkeypatch):
+        """U5 (R9/R10): Der Hook sieht die fertige App und laeuft vor dem
+        Start des Workers -- Middleware, die er registriert, muss den ersten
+        Task schon sehen."""
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_hook_probe", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        sink: dict = {}
+        self._fake_app(monkeypatch, sink)
+        seen: list = []
+
+        def setup(app):
+            seen.append(app)
+            sink.setdefault("calls", []).append("hook")
+
+        self._hook_module(monkeypatch, setup=setup)
+
+        await cli.run_worker_async(self._hook_args("swarmq_test_hooks:setup"))
+
+        assert seen == [sink["app"]]
+        assert sink["calls"] == ["hook", "enter", "start_worker"]
+
+    @pytest.mark.asyncio
+    async def test_async_configure_hook_is_awaited(self, monkeypatch):
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_hook_probe_async", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        sink: dict = {}
+        self._fake_app(monkeypatch, sink)
+        awaited: list[str] = []
+
+        async def setup(app):
+            awaited.append("done")
+
+        self._hook_module(monkeypatch, setup=setup)
+
+        await cli.run_worker_async(self._hook_args("swarmq_test_hooks:setup"))
+
+        assert awaited == ["done"], "ein nicht abgewarteter Hook lief nie"
+
+    @pytest.mark.asyncio
+    async def test_failing_hook_is_a_configuration_error_naming_module_and_callable(
+        self, monkeypatch
+    ):
+        """R10: Ein Fehler im Hook ist ein Konfigurationsfehler -- ein
+        Neustart wuerde ihn reproduzieren (Exit 78 kommt aus U4)."""
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_hook_probe_fail", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        self._fake_app(monkeypatch, {})
+
+        def setup(app):
+            raise RuntimeError("redis client missing")
+
+        self._hook_module(monkeypatch, setup=setup)
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            await cli.run_worker_async(self._hook_args("swarmq_test_hooks:setup"))
+        message = str(excinfo.value)
+        assert "swarmq_test_hooks" in message
+        assert "setup" in message
+        assert "redis client missing" in message
+
+    @pytest.mark.asyncio
+    async def test_missing_callable_is_a_configuration_error(self, monkeypatch):
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_hook_probe_missing", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        self._fake_app(monkeypatch, {})
+        self._hook_module(monkeypatch)  # ohne ``setup``
+
+        with pytest.raises(ConfigurationError, match="setup"):
+            await cli.run_worker_async(self._hook_args("swarmq_test_hooks:setup"))
+
+    @pytest.mark.asyncio
+    async def test_missing_hook_module_is_a_configuration_error(self, monkeypatch):
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_hook_probe_nomod", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        self._fake_app(monkeypatch, {})
+
+        with pytest.raises(ConfigurationError, match="definitely_no_hook_module_xyz"):
+            await cli.run_worker_async(
+                self._hook_args("definitely_no_hook_module_xyz:setup")
+            )
+
     @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(
         self, monkeypatch
