@@ -515,6 +515,17 @@
         {
           "default": null,
           "flags": [
+            "--configure"
+          ],
+          "help": "Callable invoked with the SwarmQ app after construction and before the worker starts, e.g. 'myapp.hooks:setup'. Use it to register middleware and signal handlers without writing your own worker entry point. Runs once per worker process; an awaitable return value is awaited.",
+          "name": "--configure",
+          "positional": false,
+          "required": false,
+          "type": "configure_hook"
+        },
+        {
+          "default": null,
+          "flags": [
             "--health-port"
           ],
           "help": "R5.2: serve /health + /ready on the given port. /ready pings broker + backend (2s timeout) and returns structured JSON. Default bind: 127.0.0.1.",

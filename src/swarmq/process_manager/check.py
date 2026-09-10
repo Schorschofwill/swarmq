@@ -90,6 +90,8 @@ class WorkerConfigCheckResult(TypedDict):
     warnings: list[str]
     pool: str
     slots: int
+    # U5 (R11): der gepruefte ``MODULE:CALLABLE``-String, oder ``None``.
+    configure: str | None
     # U3 (R7): die belegten Portbereiche ``[erster, letzter]``, oder ``None``
     # ohne Basisport. Der Betreiber liest daraus seine Prometheus-Targets.
     metrics_ports: list[int] | None
@@ -185,6 +187,17 @@ def _validate_observability_ports(
     return metrics_range, health_range
 
 
+def _validate_configure_spec(spec: str) -> None:
+    """Form ``MODULE:CALLABLE`` und Auffindbarkeit des Moduls (R11)."""
+    module_name, sep, attr_name = spec.partition(":")
+    if not sep or not module_name or not attr_name.isidentifier():
+        raise ConfigurationError(
+            f"--configure {spec!r} is not MODULE:CALLABLE "
+            "(expected: package.module:callable)"
+        )
+    _validate_module_importable(module_name)
+
+
 def check_worker_config(
     *,
     module: str,
@@ -198,6 +211,7 @@ def check_worker_config(
     pool: str = "io",
     concurrency: int | None = None,
     recycling: bool = False,
+    configure: str | None = None,
 ) -> WorkerConfigCheckResult:
     """Run the pre-flight validation for ``swarmq worker`` and return
     a machine-readable summary dict.
@@ -248,6 +262,12 @@ def check_worker_config(
         health_port=health_port,
     )
 
+    # U5/R11: Form und Auffindbarkeit des Hook-Moduls, ohne Import. Ein
+    # Import hier liesse Anwendungscode im Supervisor laufen (und im
+    # Forkserver-Preload); das Attribut loest erst der Worker auf.
+    if configure is not None:
+        _validate_configure_spec(configure)
+
     # Protect JSON-on-stdout callers against
     # module-init print() contaminating the payload. Side-effects
     # captured here are discarded on success; on failure the captured
@@ -286,6 +306,7 @@ def check_worker_config(
         "warnings": warnings,
         "pool": pool,
         "slots": slots.count,
+        "configure": configure,
         "metrics_ports": metrics_ports,
         "health_ports": health_ports,
     }

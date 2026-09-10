@@ -29,6 +29,7 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.serialization import encode_json
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain
@@ -1077,3 +1078,41 @@ async def test_signal_workflow_step_enqueued(
     assert {c["queue"] for c in captured} == {queue}
     assert {c["workflow_id"] for c in captured} == {handle.workflow_id}
     assert all(c["task_id"] for c in captured)
+
+
+async def test_signal_task_rejected(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """TASK_REJECTED feuert, wenn der Worker eine Nachricht ohne
+    Diagnose-Header ins ``.XQ`` gibt (U6, R12).
+
+    Hier der Weg "unregistrierter Task": der Worker kennt den Namen nicht,
+    kann also kein Fehlerergebnis speichern -- genau der Fall, den
+    ``TASK_DLQ`` nicht abdecken kann.
+    """
+    queue = _unique_queue()
+    captured: list[dict[str, Any]] = []
+    seen = asyncio.Event()
+
+    async def _handler(**kwargs: Any) -> None:
+        captured.append(kwargs)
+        seen.set()
+
+    async with _running_worker(
+        rabbitmq_url, valkey_url, queue,
+        register_signals={Signal.TASK_REJECTED: _handler},
+    ) as (worker_app, _task):
+        body = encode_json(
+            {
+                "task": {"id": "rejected-1", "queue": queue, "name": "no_such_task"},
+                "args": [],
+                "kwargs": {},
+            }
+        )
+        await worker_app.broker.publish(queue, body, headers={})
+        await asyncio.wait_for(seen.wait(), timeout=_EVENT_TIMEOUT)
+
+    assert captured[0]["reason"] == "unregistered_task"
+    assert captured[0]["task_name"] == "no_such_task"
+    assert captured[0]["queue"] == queue
+    assert captured[0]["task_id"] is None

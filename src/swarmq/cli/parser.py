@@ -18,6 +18,7 @@ from swarmq.cli._shared import (
     _VALID_LOG_FORMATS,
     _VALID_LOG_LEVELS,
     _autoscale_range,
+    _configure_hook,
     _dotted_module_name,
     _positive_float,
     _positive_int,
@@ -88,6 +89,18 @@ def _add_worker_parser(subparsers: Any) -> None:
             "Python module containing Task subclasses to register, "
             "e.g. 'myapp.tasks'. Must be importable from the current "
             "Python path."
+        ),
+    )
+    worker.add_argument(
+        "--configure",
+        type=_configure_hook,
+        metavar="MODULE:CALLABLE",
+        help=(
+            "Callable invoked with the SwarmQ app after construction and "
+            "before the worker starts, e.g. 'myapp.hooks:setup'. Use it to "
+            "register middleware and signal handlers without writing your "
+            "own worker entry point. Runs once per worker process; an "
+            "awaitable return value is awaited."
         ),
     )
     worker.add_argument(

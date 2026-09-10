@@ -58,7 +58,12 @@ _ALIAS_MODULES: frozenset[str] = frozenset()  # seit U15 leer (KTD10 abgeschloss
 _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.broker.rabbitmq": ["connection", "delivery", "admin"],  # U5
     "swarmq.backend.valkey": ["connection", "results"],  # U17
-    "swarmq.worker": ["outcome", "pipeline", "gates", "execution", "retry", "results", "lifecycle"],  # U6-U9
+    # ``decode`` seit U6 (Plan 2026-09-08-001): Header-Pruefung, Size-Cap und
+    # Body-Dekodierung aus ``pipeline.py`` gezogen.
+    "swarmq.worker": [
+        "outcome", "pipeline", "gates", "execution", "retry", "results",
+        "lifecycle", "decode",
+    ],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows"],  # U10
     "swarmq.scheduler": ["definition", "loop", "sync"],  # U11
     "swarmq.process_manager": ["config", "supervisor", "entry", "sampler", "check", "run"],  # U21

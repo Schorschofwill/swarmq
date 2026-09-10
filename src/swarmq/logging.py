@@ -60,6 +60,59 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
                 )
 
 
+class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
+    """ProcessorFormatter, der an fremden Records nicht scheitert.
+
+    Plan 2026-09-08-001, U7 (R27, KTD9). ``format`` ruft fuer fremde
+    Records ``record.getMessage()`` — ``msg % args``. Wirft dabei ein
+    ``__repr__`` (so ``aio_pika.tools.OneShotCallback`` in aio-pika 10),
+    landete die Ausnahme in ``Handler.handleError`` und damit als
+    Traceback auf stderr, mitten im Logstrom. Stattdessen rendert dieser
+    Formatter ein Ersatz-Event ``log_record_unformattable`` mit
+    ``logger``, ``level`` und ``error`` durch dieselbe Prozessorkette und
+    denselben Renderer wie jede andere Zeile.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        try:
+            return super().format(record)
+        except Exception as exc:
+            return super().format(self._substitute_record(record, exc))
+
+    def _substitute_record(
+        self, record: logging.LogRecord, exc: Exception
+    ) -> logging.LogRecord:
+        """Baut einen structlog-nativen Record mit dem Ersatz-Event.
+
+        Die ``foreign_pre_chain`` (Level, Zeitstempel) laeuft hier von
+        Hand, weil der Ersatz-Record den structlog-Pfad von ``format``
+        nimmt — dort laeuft sie nicht mehr.
+        """
+        logger = logging.getLogger(record.name)
+        meth_name = record.levelname.lower()
+        ed: Any = {
+            "event": "log_record_unformattable",
+            "logger": record.name,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        for proc in self.foreign_pre_chain or ():
+            ed = proc(logger, meth_name, ed)
+        args, kwargs = structlog.stdlib.ProcessorFormatter.wrap_for_formatter(
+            logger, meth_name, ed
+        )
+        substitute = logging.LogRecord(
+            record.name,
+            record.levelno,
+            record.pathname,
+            record.lineno,
+            args[0],
+            None,
+            None,
+        )
+        substitute.__dict__.update(kwargs["extra"])
+        return substitute
+
+
 _ACTIVE_LISTENER: logging.handlers.QueueListener | None = None
 
 
@@ -118,7 +171,7 @@ def setup_logging(
     # Non-blocking I/O via QueueHandler + QueueListener
     log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10_000)
 
-    formatter = structlog.stdlib.ProcessorFormatter(
+    formatter = _SafeProcessorFormatter(
         processors=[
             # Ohne diesen Schritt rendert der Formatter seine eigenen
             # Arbeitsschluessel mit: ``_record`` traegt den LogRecord, dessen

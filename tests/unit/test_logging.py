@@ -152,6 +152,78 @@ class TestQueueDropVisibility:
         assert q.qsize() == 1
 
 
+class _RaisingRepr:
+    """Stellvertreter fuer ``aio_pika.tools.OneShotCallback`` (aio-pika 10),
+    dessen ``__repr__`` wirft — ein fremder Record mit diesem Objekt in
+    ``args`` liess den Formatter scheitern."""
+
+    def __repr__(self) -> str:
+        raise RuntimeError("repr exploded")
+
+
+class TestUnformattableRecord:
+    """Plan 2026-09-08-001, U7 (R27, KTD9): Scheitert die Formatierung eines
+    fremden Records, rendert der Formatter ein Ersatz-Event statt einen
+    Traceback ueber ``Handler.handleError`` auf stderr zu kippen.
+
+    Test-Liste:
+    1. JSON-Renderer: Zeile ``log_record_unformattable`` mit logger, level,
+       error; kein Traceback auf stderr (AE12)
+    2. Console-Renderer: dieselbe Zeile im Textformat
+    3. Normale fremde Records rendern unveraendert
+    """
+
+    @staticmethod
+    def _emit_foreign(*, log_json: bool, args: tuple) -> str:
+        listener = setup_logging(log_level="INFO", log_json=log_json)
+        try:
+            stream = io.StringIO()
+            listener.handlers[0].stream = stream  # type: ignore[attr-defined]
+            logging.getLogger("aio_pika.robust_connection").warning(
+                "callback %r failed", *args
+            )
+            listener.stop()
+            return stream.getvalue().strip().split("\n")[-1]
+        finally:
+            if listener._thread is not None:
+                listener.stop()
+
+    def test_json_renders_substitute_event_without_traceback(self, capsys):
+        """Covers AE12."""
+        line = self._emit_foreign(log_json=True, args=(_RaisingRepr(),))
+
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "Logging error" not in err
+
+        data = json.loads(line)
+        assert data["event"] == "log_record_unformattable"
+        assert data["logger"] == "aio_pika.robust_connection"
+        assert data["level"] == "warning"
+        assert "repr exploded" in data["error"]
+
+    def test_console_renders_substitute_event_without_traceback(self, capsys):
+        """R27: beide Renderer haengen an demselben Formatter."""
+        line = self._emit_foreign(log_json=False, args=(_RaisingRepr(),))
+
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "Logging error" not in err
+
+        assert "log_record_unformattable" in line
+        assert "aio_pika.robust_connection" in line
+        assert "warning" in line
+        assert "repr exploded" in line
+
+    def test_normal_foreign_record_renders_unchanged(self, capsys):
+        """Regression: der Schutz greift nur im Fehlerfall."""
+        line = self._emit_foreign(log_json=True, args=("fine",))
+
+        assert capsys.readouterr().err == ""
+        data = json.loads(line)
+        assert data["event"] == "callback 'fine' failed"
+        assert data["level"] == "warning"
+        assert "log_record_unformattable" not in line
 class TestSingleListenerPerProcess:
     """U4/KTD8 (R21): genau ein ``QueueListener`` je Prozess.
 

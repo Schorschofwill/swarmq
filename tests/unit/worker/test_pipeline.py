@@ -26,6 +26,7 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.workflow_orchestration import WorkflowStep, WorkflowStepEnqueuer
 from tests.support.messages import make_message
+from tests.unit.worker._helpers import _default_payload
 
 _HASH = "a" * 64
 _SCHEDFIRE = "golden-sched:1700000000000"
@@ -275,6 +276,96 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
     assert "backend.schedules.mark_fire_completed" in rec.calls
 
 
+class TestRejectReasons:
+    """U6 (R12/AE5): Jeder Weg ins ``.XQ`` nennt seinen Grund.
+
+    Die Gruende sind ein fester Satz -- ein freier Text waere als Label
+    unbrauchbar (Kardinalitaet) und als Alert-Bedingung unzuverlaessig.
+    """
+
+    @staticmethod
+    def _worker_with_spy(broker, backend, *tasks):
+        # Die Conftest-Fixtures bringen die Cancel-Flag-Defaults mit; ein
+        # nackter ``MagicMock(spec=...)`` liefert dort truthy Mocks und der
+        # Pre-Start-Cancel-Gate greift, bevor der Reject-Pfad erreicht ist.
+        registry = TaskRegistry()
+        for task in tasks:
+            registry.register(task)
+        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        events: list[dict] = []
+
+        async def _dispatch(signal, **kwargs):
+            events.append({"signal": signal, **kwargs})
+
+        worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+        return worker, broker, events
+
+    @staticmethod
+    def _rejections(events):
+        from swarmq.signals import Signal
+
+        return [e for e in events if e["signal"] is Signal.TASK_REJECTED]
+
+    async def test_oversized_body(self, broker, backend):
+        worker, _broker, events = self._worker_with_spy(broker, backend)
+        msg = MagicMock()
+        msg.body = b"x" * (worker._config.max_message_body_bytes + 1)
+        msg.headers = {}
+        msg.queue = "tasks.high"
+
+        await worker._handle_message(msg)
+
+        (rejected,) = self._rejections(events)
+        assert rejected["reason"] == "body_too_large"
+        assert rejected["queue"] == "tasks.high"
+        assert rejected["task_id"] is None and rejected["task_name"] is None
+
+    async def test_undecodable_body(self, broker, backend):
+        worker, _broker, events = self._worker_with_spy(broker, backend)
+        msg = MagicMock()
+        msg.body = b"not json at all"
+        msg.headers = {}
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        (rejected,) = self._rejections(events)
+        assert rejected["reason"] == "undecodable"
+        assert rejected["task_id"] is None
+
+    async def test_unregistered_task_names_the_task(self, broker, backend):
+        worker, _broker, events = self._worker_with_spy(broker, backend)
+        msg = make_message(_default_payload(name="not-registered"))
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        (rejected,) = self._rejections(events)
+        assert rejected["reason"] == "unregistered_task"
+        assert rejected["task_name"] == "not-registered"
+
+    async def test_broken_middleware_chain_factory(self, broker, backend):
+        class Ok(Task):
+            task_info = TaskInfo(name="reject-ok", queues=["default"])
+
+            async def run(self) -> str:
+                return "ok"
+
+        worker, _broker, events = self._worker_with_spy(broker, backend, Ok)
+
+        def boom():
+            raise RuntimeError("factory exploded")
+
+        worker._middleware_chain_factory = boom
+        msg = make_message(_default_payload(name="reject-ok"))
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        (rejected,) = self._rejections(events)
+        assert rejected["reason"] == "middleware_chain_factory"
+        assert "factory exploded" in rejected["error"]
 async def test_log_context_carries_the_worker_identity_as_string():
     """U2 (R3): Der Logkontext trug ``id(self)`` — eine Speicheradresse als
     ``int``, die weder ueber Prozesse hinweg vergleichbar noch mit dem

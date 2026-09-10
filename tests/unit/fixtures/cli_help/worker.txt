@@ -1,5 +1,5 @@
-usage: swarmq worker [-h] --module DOTTED.PATH [--queues A,B,C]
-                     [--concurrency N] [--pool {io,cpu}]
+usage: swarmq worker [-h] --module DOTTED.PATH [--configure MODULE:CALLABLE]
+                     [--queues A,B,C] [--concurrency N] [--pool {io,cpu}]
                      [--log-level {DEBUG,INFO,WARNING,ERROR}]
                      [--log-format {human,json}] [--burst]
                      [--metrics-port PORT] [--health-port PORT] [--priorities]
@@ -17,6 +17,13 @@ options:
   --module DOTTED.PATH  Python module containing Task subclasses to register,
                         e.g. 'myapp.tasks'. Must be importable from the
                         current Python path.
+  --configure MODULE:CALLABLE
+                        Callable invoked with the SwarmQ app after
+                        construction and before the worker starts, e.g.
+                        'myapp.hooks:setup'. Use it to register middleware and
+                        signal handlers without writing your own worker entry
+                        point. Runs once per worker process; an awaitable
+                        return value is awaited.
   --queues A,B,C        Comma-separated queue names to consume from (default:
                         default).
   --concurrency N       Maximum tasks executed in parallel (default: 10). With

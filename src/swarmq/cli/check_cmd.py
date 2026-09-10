@@ -33,6 +33,8 @@ _WORKER_CHECK_PAYLOAD_KEYS = (
     "error_type",
     "pool",
     "slots",
+    # U5 (R11): der geprüfte ``--configure``-Hook, oder ``None``.
+    "configure",
 )
 
 
@@ -56,6 +58,7 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
         # (resolve_pool) zum JSON-Fehler, nicht zum Traceback.
         "pool": getattr(args, "pool", None) or os.environ.get("SWARMQ_POOL", "").strip() or "io",
         "slots": None,
+        "configure": getattr(args, "configure", None),
     }
 
 
@@ -102,6 +105,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             recycling=bool(
                 os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")
             ),
+            configure=getattr(args, "configure", None),
         )
         payload.update(
             ok=True,
@@ -110,6 +114,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             pool=result["pool"],
             slots=result["slots"],
             warnings=result["warnings"],
+            configure=result["configure"],
             # R7: die belegten Bereiche, damit der Betreiber seine
             # Prometheus-Targets nicht selbst ausrechnen muss.
             metrics_ports=result["metrics_ports"],

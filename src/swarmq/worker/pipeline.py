@@ -33,9 +33,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.headers import (
-    HEADER_UNIQUE_HASH,
     HEADER_UNIQUE_UNTIL,
-    HEADER_WORKFLOW_ID,
 )
 from swarmq.middleware import (
     MessageContext,
@@ -44,9 +42,9 @@ from swarmq.middleware import (
 )
 from swarmq.registry import TaskRegistry
 from swarmq.scheduler import SchedulerLoop
-from swarmq.serialization import decode_json
 from swarmq.signals import SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
+from swarmq.worker import decode
 from swarmq.worker.execution import TaskExecutor
 from swarmq.worker.gates import (
     GateContext,
@@ -279,47 +277,11 @@ class Worker(WorkerLifecycle):
 
     @staticmethod
     def _extract_valid_unique_hash(message: Any) -> str | None:
-        """Read and validate the unique-hash header from an incoming message.
-
-        Producer sites emit a sha256 hex digest (64 lowercase hex chars).
-        Any message whose header deviates — missing, wrong type, wrong
-        length, non-hex — is treated as "no flag": the worker skips
-        release rather than forwarding unvalidated bytes to Valkey as a
-        key. Defends against adversarial producers that could otherwise
-        amplify a malformed header into a large per-message Valkey key
-        (plan Risks / R3.5).
-        """
-        unique_hash = (message.headers or {}).get(HEADER_UNIQUE_HASH)
-        if not isinstance(unique_hash, str) or len(unique_hash) != 64:
-            return None
-        # Cheap manual hex check — re.match on a 64-char string is
-        # faster than compiling a regex but still O(n).
-        if not all(c in "0123456789abcdef" for c in unique_hash):
-            return None
-        return unique_hash
+        return decode.valid_unique_hash(message)
 
     @staticmethod
     def _extract_valid_workflow_id(message: Any) -> str | None:
-        """Read and validate the workflow-id header from an incoming message.
-
-        Workflow ids are minted as ``str(uuid.uuid7())`` (client/worker side)
-        — a canonical UUID string: 36 chars, lowercase hex with dashes at the
-        8-4-4-4-12 positions. Any header that deviates — missing, wrong type,
-        wrong length, non-hex, misplaced dashes — is treated as "no workflow":
-        the caller skips advancement rather than forwarding unvalidated bytes
-        to Valkey as a workflow-state key. Mirrors ``_extract_valid_unique_hash``:
-        never mark a workflow failed on a malformed id.
-        """
-        wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
-        if not isinstance(wf_id, str) or len(wf_id) != 36:
-            return None
-        for i, c in enumerate(wf_id):
-            if i in (8, 13, 18, 23):
-                if c != "-":
-                    return None
-            elif c not in "0123456789abcdef":
-                return None
-        return wf_id
+        return decode.valid_workflow_id(message)
 
     async def _maybe_release_unique(
         self, message: Any, task_id: str, task_info: TaskInfo | None = None,
@@ -381,48 +343,7 @@ class Worker(WorkerLifecycle):
         return queue
 
     async def _decode_and_validate(self, message: Any) -> tuple[str, str, str, list[Any], dict[str, Any]] | None:
-        """Size-Cap + Deserialize + Shape-Validierung; ``None`` = behandelt
-        (Oversize/Malformed → DLX-Route ohne Redelivery)."""
-        # Size cap BEFORE the decode. msgspec has a built-in recursion-depth
-        # guard but no size guard — a compromised/misconfigured producer
-        # could otherwise make the worker decode an arbitrarily large body
-        # fully into memory before any validation runs.
-        if len(message.body) > self._config.max_message_body_bytes:
-            logger.error(
-                "message_body_too_large",
-                body_bytes=len(message.body),
-                cap_bytes=self._config.max_message_body_bytes,
-                hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
-            )
-            await route_via_dlx(self._broker, message)
-            return None
-        try:
-            payload = decode_json(message.body)
-            task_meta = payload["task"]
-            task_id = task_meta["id"]
-            queue = task_meta["queue"]
-            task_name = task_meta["name"]
-            args = payload["args"]
-            kwargs = payload["kwargs"]
-            # Validate shapes before run(*args, **kwargs). A wrong-typed
-            # payload (e.g. args="hello") would otherwise unpack a string
-            # character-by-character into positional args and run the task
-            # with garbage. Treat as malformed: route to DLQ, don't redeliver.
-            if not isinstance(args, list):
-                raise TypeError(
-                    f"task 'args' must be a list, got {type(args).__name__}"
-                )
-            if not isinstance(kwargs, dict):
-                raise TypeError(
-                    f"task 'kwargs' must be a dict, got {type(kwargs).__name__}"
-                )
-        except Exception as exc:
-            logger.error("deserialize_failed", error=str(exc))
-            # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
-            # unknown). Accepted limitation — flag self-heals via TTL.
-            await route_via_dlx(self._broker, message)
-            return None
-        return task_id, queue, task_name, args, kwargs
+        return await decode.decode_and_validate(self._gate_deps, message)
 
     async def _check_late_cancel(self, task_id: str) -> bool:
         """Post-execution cancel guard: ein Cancel, der während
@@ -526,7 +447,10 @@ class Worker(WorkerLifecycle):
         except Exception as exc:
             logger.error("middleware_chain_factory_failed", error=str(exc))
             if not acked_before_execute:
-                await route_via_dlx(self._broker, message)
+                await route_via_dlx(
+                    self._gate_deps, message,
+                    reason="middleware_chain_factory", error=str(exc),
+                )
             return None
 
     async def _pre_pipeline_gates(self, message: Any, ctx: GateContext) -> bool:
@@ -547,7 +471,10 @@ class Worker(WorkerLifecycle):
             return self._registry.get(task_name)
         except TaskNotFoundError:
             logger.error("task_not_found")
-            await route_via_dlx(self._broker, message)
+            await route_via_dlx(
+                self._gate_deps, message, reason="unregistered_task",
+                task_name=task_name, error=f"task {task_name!r} is not registered",
+            )
             return None
 
     def _bind_log_context(self, task_id: str, task_name: str, queue: str) -> None:

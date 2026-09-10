@@ -57,6 +57,18 @@ class Signal(enum.Enum):
           list at which the duplicate was detected. Handlers MUST use
           kwargs.get("batch_index") (not kwargs["batch_index"]) to avoid
           KeyError on non-batch sources.
+      * TASK_REJECTED:     queue, reason, task_id, task_name, error
+        - Emitted for every message the worker hands to the broker's DLX
+          without diagnostic headers (the ``route_via_dlx`` path): a body
+          over the size cap, an undecodable body, an unregistered task, a
+          broken middleware-chain factory, or a failed dead-letter publish.
+        - reason is one of "body_too_large" | "undecodable" |
+          "unregistered_task" | "middleware_chain_factory" |
+          "dlq_publish_failed".
+        - task_id / task_name are None when the body never decoded.
+        - Distinct from TASK_DLQ, which promises an error result and a task
+          identity — on this path both are often absent. TASK_DLQ keeps
+          counting only itself in ``swarmq_tasks_total{outcome="dlq"}``.
       * WORKFLOW_STEP_ENQUEUED: task_id, task_name, queue, workflow_id,
                                 step_path
         - Emitted after each workflow step the advancer (or ``apply``)
@@ -111,6 +123,7 @@ class Signal(enum.Enum):
     TASK_RATE_LIMITED = "task_rate_limited"
     TASK_DUPLICATE_DETECTED = "task_duplicate_detected"
     TASK_DLQ = "task_dlq"
+    TASK_REJECTED = "task_rejected"
 
     # Workflow lifecycle
     WORKFLOW_STEP_ENQUEUED = "workflow_step_enqueued"

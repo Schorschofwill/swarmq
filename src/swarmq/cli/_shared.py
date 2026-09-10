@@ -118,6 +118,27 @@ def _dotted_module_name(raw: str) -> str:
     return raw
 
 
+def _configure_hook(raw: str) -> str:
+    """argparse type-function fuer ``--configure MODULE:CALLABLE`` (R9/R11).
+
+    Geprueft wird nur die Form: ein dotted Modulname, ein Doppelpunkt, ein
+    Attributname. Der Import passiert im Worker, nicht hier -- der Supervisor
+    importiert das Hook-Modul nie (KTD5), sonst liefe Anwendungscode im
+    Elternprozess und im Forkserver.
+    """
+    module, sep, attr = raw.partition(":")
+    if (
+        not sep
+        or not _DOTTED_IDENTIFIER_RE.match(module)
+        or not attr.isidentifier()
+    ):
+        raise argparse.ArgumentTypeError(
+            f"--configure {raw!r} is not MODULE:CALLABLE "
+            "(expected: package.module:callable)"
+        )
+    return raw
+
+
 def _autoscale_range(raw: str) -> tuple[int, int]:
     """argparse type-function for ``--autoscale=MIN,MAX``.
 
