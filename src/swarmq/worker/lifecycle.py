@@ -249,9 +249,14 @@ class WorkerLifecycle:
         await request_recycle(self, reason, value)
 
     async def _start_with_bind_retry(self, start: Callable[[], Awaitable[None]]) -> None:
-        from swarmq.worker.recycling import start_with_bind_retry
+        from swarmq.worker import recycling
 
-        await start_with_bind_retry(start)
+        # KTD4: das Budget kommt aus der Konfiguration — das Entry leitet es
+        # aus beiden Freigabefristen ab, damit ein Ersatz nicht in einen
+        # Bind-Fehler und damit ins Neustart-Budget laeuft.
+        await recycling.start_with_bind_retry(
+            start, budget_s=self._config.bind_retry_budget_s
+        )
 
     def _warn_without_delivery_limit(self) -> None:
         """R21: ohne Quorum-Queue gibt es kein Delivery-Limit — eine Giftnachricht

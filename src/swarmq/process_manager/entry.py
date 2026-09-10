@@ -19,6 +19,7 @@ from swarmq.exceptions import ConfigurationError
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.supervision import (
     RECYCLE_NOACK_EXIT_CODE,
+    SHUTDOWN_TERM_S,
     RecycleAckTimeout,
     SupervisorChannel,
     set_current_channel,
@@ -100,6 +101,14 @@ def worker_subprocess_entry(
     # unterscheidet — er reist ueber die Namespace in die ``SwarmQConfig``.
     # ``WorkerConfig`` bleibt das geteilte, slot-unabhaengige Objekt.
     kwargs["worker_slot"] = worker_id
+    # KTD4: Der Ersatz eines Slots bindet denselben Port wie sein Vorgaenger.
+    # Der haelt ihn bis zum SIGKILL nach SHUTDOWN_TERM_S, ein recycelnder bis
+    # zum Ende seines WORKER_SHUTDOWN-Dispatchs (gedeckelt auf
+    # _LIFECYCLE_DISPATCH_TIMEOUT_S). Beides plus Reserve, sonst laeuft der
+    # Ersatz in einen Bind-Fehler und damit ins Neustart-Budget.
+    from swarmq.worker.lifecycle import _LIFECYCLE_DISPATCH_TIMEOUT_S
+
+    kwargs["bind_retry_budget_s"] = max(SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S) + 2.0
     ns = _argparse.Namespace(**kwargs)
 
     set_current_channel(channel)

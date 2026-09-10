@@ -92,6 +92,7 @@ async def run_worker_async(args: argparse.Namespace) -> None:
             # eingebetteten Betrieb fehlt er und die Kennung faellt auf den
             # PID zurueck.
             "worker_slot",
+            "bind_retry_budget_s",
             "pool",
             "recycle_rss_mb",
             "recycle_max_tasks",

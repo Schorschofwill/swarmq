@@ -64,6 +64,22 @@ def _parse_float(raw: str, env_var: str) -> float:
         ) from exc
 
 
+def observability_port_ranges(
+    base_metrics: int | None, base_health: int | None, upper: int
+) -> tuple[list[int] | None, list[int] | None]:
+    """Die Portbereiche, die ``upper`` Worker-Slots belegen (R5-R7/KTD3).
+
+    Je Bereich ``[erster, letzter]`` oder ``None``, wenn kein Basisport
+    gesetzt ist. Eine Quelle fuer die Pruefung, den ``--check``-Payload und
+    das Startlog — drei getrennte Rechnungen waeren drei Gelegenheiten, sich
+    um eins zu vertun.
+    """
+    span = max(upper, 1) - 1
+    metrics = None if base_metrics is None else [base_metrics, base_metrics + span]
+    health = None if base_health is None else [base_health, base_health + span]
+    return metrics, health
+
+
 @dataclass
 class SwarmQConfig:
     broker_url: str = ""
@@ -174,6 +190,11 @@ class SwarmQConfig:
     # ``worker_id`` ist die Basis, die ein Betreiber setzen kann.
     worker_slot: int | None = None
     worker_id: str | None = None
+    # Budget, in dem ein Prozess seinen Beobachtungsport erneut zu binden
+    # versucht (R8/KTD4). Kein Env. Der Default gilt fuer den eingebetteten
+    # Betrieb, wo kein Vorgaenger den Port haelt; unter dem Supervisor setzt
+    # ``worker_subprocess_entry`` ihn auf beide Freigabefristen hoch.
+    bind_retry_budget_s: float = 5.0
 
     # (Env-Var, Feldname, Parser) — eine Zeile pro Override statt der
     # früheren 27 if-Blöcke; ``__post_init__`` wendet sie der Reihe nach an.
@@ -310,6 +331,22 @@ class SwarmQConfig:
                 value = raw
             setattr(self, field_name, value)
 
+    def _apply_slot_port_offset(self) -> None:
+        """Beobachtungsports sind Basisports; Slot s bindet ``basis + s``
+        (R5/KTD3).
+
+        Die Ableitung laeuft NACH ``_apply_env_overrides``, damit auch der
+        Umgebungswert als Basis gilt — sonst haette ein
+        ``SWARMQ_METRICS_PORT`` im Kind den Versatz wieder ueberschrieben und
+        alle Kinder haetten erneut denselben Port gebunden.
+        """
+        if not self.worker_slot:
+            return
+        if self.metrics_port is not None:
+            self.metrics_port += self.worker_slot
+        if self.health_port is not None:
+            self.health_port += self.worker_slot
+
     def _validate_core(self) -> None:
         self._apply_pool_defaults()
         self._validate_pool()
@@ -376,6 +413,7 @@ class SwarmQConfig:
 
     def __post_init__(self) -> None:
         self._apply_env_overrides()
+        self._apply_slot_port_offset()
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
         # retry horizon and prevent retried schedule-fires from bypassing

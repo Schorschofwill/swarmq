@@ -719,3 +719,36 @@ class TestWorkerIdentity:
         # Das ``p`` haelt die beiden Formen auseinander: ohne Praefix waere
         # ``h:7`` mal ein Slot und mal ein Prozess.
         assert cfg.worker_identity == f"h:p{os.getpid()}"
+
+
+class TestPortsPerSlot:
+    """U3 (R5): ``--metrics-port``/``--health-port`` sind Basisports; der
+    Worker in Slot s bindet ``basis + s``.
+
+    Vorher band jedes Kind denselben Port: das erste gewann, die uebrigen
+    scheiterten, und der Lauf lief unterbesetzt weiter."""
+
+    def test_slot_is_added_to_the_base_port(self):
+        cfg = SwarmQConfig(
+            broker_url="amqp://x", backend_url="valkey://x",
+            metrics_port=9000, health_port=9100, worker_slot=3,
+        )
+        assert cfg.metrics_port == 9003
+        assert cfg.health_port == 9103
+
+    def test_env_port_is_the_base_not_the_final_port(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_METRICS_PORT", "9000")
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", worker_slot=1)
+        assert cfg.metrics_port == 9001
+
+    def test_without_a_slot_the_base_port_is_bound(self):
+        cfg = SwarmQConfig(
+            broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000,
+        )
+        assert cfg.metrics_port == 9000
+
+    def test_slot_zero_keeps_the_base_port(self):
+        cfg = SwarmQConfig(
+            broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000, worker_slot=0,
+        )
+        assert cfg.metrics_port == 9000

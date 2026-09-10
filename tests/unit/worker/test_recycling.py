@@ -153,3 +153,68 @@ async def test_recycling_signal_carries_the_slot_identity(worker, channel, monke
     await _wait_for(lambda: worker._state is WorkerState.DRAINING)
     assert events[0]["worker_id"] == "phx:1"
     assert events[0]["kind"] == "worker"
+
+
+class TestBindRetryBudget:
+    """U3/KTD4 (R8): Das Bind-Budget des Ersatzes deckt beide Freigabefristen.
+
+    Ein haengender Vorgaenger haelt den Port bis zum SIGKILL nach
+    ``SHUTDOWN_TERM_S``; ein recycelnder gibt ihn erst nach dem
+    ``WORKER_SHUTDOWN``-Dispatch frei, der mit 10 s gedeckelt ist. Ein festes
+    5-s-Budget liess den Ersatz in einen Bind-Fehler und damit ins
+    Neustart-Budget laufen — genau bei einem langsamen Handler, den
+    ``--configure`` wahrscheinlich macht.
+    """
+
+    def test_entry_derives_a_budget_covering_both_release_deadlines(self, monkeypatch):
+        import threading
+
+        from swarmq.process_manager.entry import worker_subprocess_entry
+        from swarmq.supervision import SHUTDOWN_TERM_S
+        from swarmq.worker.lifecycle import _LIFECYCLE_DISPATCH_TIMEOUT_S
+        from tests.unit.process_manager.test_entry import _make_test_cfg
+
+        captured: dict = {}
+
+        async def capture_ns(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
+        worker_subprocess_entry(
+            worker_id=0, shutdown_event=threading.Event(), cfg=_make_test_cfg(),
+        )
+        assert captured["ns"].bind_retry_budget_s > max(
+            SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S
+        )
+
+    def test_embedded_default_stays_short(self):
+        """Ohne Supervisor haelt kein Vorgaenger den Port — ein langes Budget
+        wuerde einen echten Portkonflikt nur spaeter melden."""
+        from swarmq.config import SwarmQConfig
+
+        cfg = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        assert cfg.bind_retry_budget_s == 5.0
+
+    def test_supervisor_constant_is_the_shared_one(self):
+        from swarmq.process_manager.supervisor import ProcessManager
+        from swarmq.supervision import SHUTDOWN_TERM_S
+
+        assert ProcessManager.SHUTDOWN_TERM_S == SHUTDOWN_TERM_S
+
+    async def test_lifecycle_passes_the_configured_budget(self, worker, monkeypatch):
+        seen: dict[str, float] = {}
+
+        async def fake_start_with_bind_retry(start, *, budget_s):
+            seen["budget"] = budget_s
+            await start()
+
+        monkeypatch.setattr(recycling, "start_with_bind_retry", fake_start_with_bind_retry)
+        worker._config.bind_retry_budget_s = 12.0
+        started = []
+        await worker._start_with_bind_retry(lambda: _noop(started))
+        assert seen["budget"] == 12.0
+        assert started == ["started"]
+
+
+async def _noop(sink: list[str]) -> None:
+    sink.append("started")

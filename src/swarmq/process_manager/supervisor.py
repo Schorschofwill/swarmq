@@ -21,7 +21,14 @@ import structlog
 from swarmq.logging import sanitize_url
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
-from swarmq.supervision import INTENT_DRAINING, INTENT_RECYCLE, SupervisorChannel
+from swarmq.supervision import (
+    INTENT_DRAINING,
+    INTENT_RECYCLE,
+    SupervisorChannel,
+)
+from swarmq.supervision import (
+    SHUTDOWN_TERM_S as _SHUTDOWN_TERM_S,
+)
 
 logger = structlog.get_logger()
 
@@ -86,7 +93,9 @@ class ProcessManager:
     # ``shutdown_grace_s`` to align with ``SwarmQConfig.shutdown_timeout``
     # so a subprocess actually gets its configured drain budget).
     SHUTDOWN_GRACE_S = 30.0
-    SHUTDOWN_TERM_S = 5.0
+    # Die Konstante lebt seit U3 in ``supervision`` (KTD4); hier bleibt
+    # der Klassenzugriff, den der Supervisor und seine Tests nutzen.
+    SHUTDOWN_TERM_S = _SHUTDOWN_TERM_S
 
     # Autoscaling knobs.
     SCALE_UP_THRESHOLD = 50  # pending tasks per active worker

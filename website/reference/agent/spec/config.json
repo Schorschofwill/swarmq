@@ -247,6 +247,12 @@
       "env_var": "SWARMQ_WORKER_ID",
       "name": "worker_id",
       "type": "str | None"
+    },
+    {
+      "default": 5.0,
+      "env_var": null,
+      "name": "bind_retry_budget_s",
+      "type": "float"
     }
   ]
 }
