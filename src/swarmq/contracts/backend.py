@@ -67,6 +67,15 @@ class ResultBackend(Protocol):
         self, wf_id: str, data: bytes, ttl_ms: int, *, op_timeout: float | None = None
     ) -> None: ...
 
+    async def compare_and_store_workflow_state(
+        self, wf_id: str, data: bytes, ttl_ms: int, *, expected_version: int, op_timeout: float | None = None
+    ) -> bool:
+        """Compare-and-Set (KTD11): schreibt *data* nur, wenn der Bestand
+        existiert und seine ``version`` (fehlend = 0) *expected_version*
+        entspricht. ``True`` bei Schreibung, ``False`` bei Konflikt oder
+        fehlendem Schlüssel. Die Erstanlage bleibt ``store_workflow_state``."""
+        ...
+
     async def get_workflow_state(self, wf_id: str, *, op_timeout: float | None = None) -> bytes | None: ...
 
     async def set_workflow_cancel_flag(self, wf_id: str, ttl_ms: int, *, op_timeout: float | None = None) -> bool: ...

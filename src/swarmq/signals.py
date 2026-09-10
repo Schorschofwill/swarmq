@@ -57,6 +57,12 @@ class Signal(enum.Enum):
           list at which the duplicate was detected. Handlers MUST use
           kwargs.get("batch_index") (not kwargs["batch_index"]) to avoid
           KeyError on non-batch sources.
+      * WORKFLOW_STEP_ENQUEUED: task_id, task_name, queue, workflow_id,
+                                step_path
+        - Emitted after each workflow step the advancer (or ``apply``)
+          publishes, in addition to TASK_ENQUEUED. Carries the workflow
+          identity that TASK_ENQUEUED cannot grow without breaking
+          handlers with a fixed signature (U11, R16).
       * TASK_DLQ:          task_id, task_name, queue, error
         - Emitted when a message is terminally dead-lettered (retry
           exhaustion / non-retryable error). Distinct from TASK_FAILED,
@@ -105,6 +111,9 @@ class Signal(enum.Enum):
     TASK_RATE_LIMITED = "task_rate_limited"
     TASK_DUPLICATE_DETECTED = "task_duplicate_detected"
     TASK_DLQ = "task_dlq"
+
+    # Workflow lifecycle
+    WORKFLOW_STEP_ENQUEUED = "workflow_step_enqueued"
 
     # Worker lifecycle
     WORKER_ONLINE = "worker_online"

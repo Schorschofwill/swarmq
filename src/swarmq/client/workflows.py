@@ -11,6 +11,7 @@ import structlog
 
 if TYPE_CHECKING:
     from swarmq.client.schedule import ClientBackend, ClientBroker
+    from swarmq.middleware import MiddlewareChain
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
 
@@ -24,14 +25,17 @@ from swarmq.headers import (
     HEADER_WORKFLOW_STEP,
 )
 from swarmq.serialization import (
+    decode_json,
     decode_result,
     encode_json,
 )
-from swarmq.signals import Signal
 from swarmq.workflow import Chain, Chord, Group, Signature
 from swarmq.workflow_orchestration import (
     STATUS_FAILED,
+    STATUS_RUNNING,
     WorkflowHandle,
+    WorkflowStep,
+    WorkflowStepEnqueuer,
     build_initial_workflow_state,
     initial_frontier,
     workflow_step_task_id,
@@ -61,6 +65,8 @@ class ClientWorkflows:
             self, task_name: str, queue: str | None
         ) -> tuple[str, str]: ...
 
+        def _get_chain(self) -> MiddlewareChain: ...
+
     async def apply(
         self,
         workflow: Signature | Chain | Group | Chord,
@@ -76,7 +82,12 @@ class ClientWorkflows:
         runs independently of this client process.
 
         State is written BEFORE the frontier is published so a fast-completing
-        first step always finds the topology in Valkey when it advances.
+        first step always finds the topology in Valkey when it advances —
+        aber NACH ``pre_enqueue`` der ganzen Front (R18), damit eine
+        ablehnende Middleware keinen verwaisten Zustand hinterlaesst. Jeder
+        Schritt loest nach dem Publish ``TASK_ENQUEUED`` und
+        ``WORKFLOW_STEP_ENQUEUED`` aus; das frühere Pseudo-Ereignis mit
+        ``task_name="<workflow>"`` entfaellt.
         """
         workflow_id = str(uuid.uuid7())
         frontier = initial_frontier(workflow)  # list[(step_path, Signature)]
@@ -98,31 +109,47 @@ class ClientWorkflows:
 
         state = build_initial_workflow_state(workflow_id, workflow.to_dict())
         state["step_tasks"] = step_tasks
+        # KTD11: Erstanlage mit Version 0; jede spaetere Schreibung ist ein
+        # Compare-and-Set gegen die gelesene Version.
+        state["version"] = 0
+
+        enqueued_at = int(time.time())
+        steps = [
+            WorkflowStep(
+                workflow_id=workflow_id,
+                step_path=step_path,
+                task_id=task_id,
+                task_name=signature.task_name,
+                queue=resolved_queue,
+                args=list(signature.args),
+                kwargs=signature.kwargs,
+                headers={
+                    HEADER_WORKFLOW_ID: workflow_id,
+                    HEADER_WORKFLOW_STEP: step_path,
+                    HEADER_ENQUEUED_AT: enqueued_at,
+                },
+            )
+            for step_path, task_id, signature, resolved_queue in enqueue_plan
+        ]
+        enqueuer = WorkflowStepEnqueuer(
+            publish=lambda queue, body, headers: self._broker.publish(
+                queue, body, headers=headers
+            ),
+            dispatch=self._signal_dispatcher.dispatch,
+            get_chain=self._get_chain,
+        )
+        # R18: ``pre_enqueue`` ist ein Gate ueber die ganze Anfangsfront und
+        # laeuft VOR der Persistenz — lehnt eine Middleware ab, bleibt kein
+        # verwaister ``running``-Zustand zurueck, den niemand mehr weiterdreht.
+        await enqueuer.pre_enqueue(steps)
         await self._backend.store_workflow_state(
             workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
             op_timeout=self._backend_op_timeout,
         )
 
-        enqueued_at = int(time.time())
         try:
-            for step_path, task_id, signature, resolved_queue in enqueue_plan:
-                message = {
-                    "task": {
-                        "id": task_id,
-                        "queue": resolved_queue,
-                        "name": signature.task_name,
-                    },
-                    "args": list(signature.args),
-                    "kwargs": signature.kwargs,
-                }
-                headers = {
-                    HEADER_WORKFLOW_ID: workflow_id,
-                    HEADER_WORKFLOW_STEP: step_path,
-                    HEADER_ENQUEUED_AT: enqueued_at,
-                }
-                await self._broker.publish(
-                    resolved_queue, encode_json(message), headers=headers
-                )
+            for step in steps:
+                await enqueuer.publish(step)
         except Exception as exc:
             # Partial-frontier publish failure: members 1..k-1 are enqueued
             # and the state is already persisted as "running", but the
@@ -132,26 +159,41 @@ class ClientWorkflows:
             # The already-enqueued members run harmlessly (their advance finds
             # a terminal workflow and no-ops).
             with contextlib.suppress(Exception):
-                state["status"] = STATUS_FAILED
-                state["error"] = {
-                    "type": type(exc).__name__,
-                    "message": f"apply() failed to enqueue the initial frontier: {exc}",
-                }
-                await self._backend.store_workflow_state(
-                    workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
-                    op_timeout=self._backend_op_timeout,
-                )
+                await self._mark_apply_failed(workflow_id, state, exc, state_ttl_ms)
             raise
 
-        await self._signal_dispatcher.dispatch(
-            Signal.TASK_ENQUEUED,
-            task_id=workflow_id,
-            task_name="<workflow>",
-            queue="<workflow>",
-        )
         return WorkflowHandle(
             self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms
         )
+
+    async def _mark_apply_failed(
+        self, workflow_id: str, state: dict[str, Any], exc: Exception, state_ttl_ms: int
+    ) -> None:
+        """Fehlermarkierung per Compare-and-Set gegen die Erstanlage (R24,
+        KTD11). War ein Advancer eines schon publizierten Glieds schneller,
+        wird der frische Zustand gelesen und nur ein noch LAUFENDER Zustand
+        erneut markiert -- ein terminaler bleibt unangetastet."""
+        error = {
+            "type": type(exc).__name__,
+            "message": f"apply() failed to enqueue the initial frontier: {exc}",
+        }
+        for candidate in (state, None):
+            if candidate is None:
+                raw = await self._backend.get_workflow_state(
+                    workflow_id, op_timeout=self._backend_op_timeout
+                )
+                if raw is None:
+                    return
+                candidate = decode_json(raw)
+                if candidate["status"] != STATUS_RUNNING:
+                    return
+            expected = int(candidate.get("version", 0))
+            failed = dict(candidate, status=STATUS_FAILED, error=error, version=expected + 1)
+            if await self._backend.compare_and_store_workflow_state(
+                workflow_id, encode_json(failed), ttl_ms=state_ttl_ms,
+                expected_version=expected, op_timeout=self._backend_op_timeout,
+            ):
+                return
 
     async def workflow(self, workflow_id: str) -> WorkflowHandle:
         """Reattach to a running/finished workflow by id (R14).

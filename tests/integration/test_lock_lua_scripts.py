@@ -8,6 +8,7 @@ Same shape as ``test_rate_limit_lua.py``.
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import uuid
 
@@ -17,7 +18,7 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.lua import load_script
 
 VALKEY_HOST = "localhost"
-VALKEY_PORT = 6379
+VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
 VALKEY_URL = f"valkey://{VALKEY_HOST}:{VALKEY_PORT}/0"
 
 

@@ -1,11 +1,26 @@
 """Ergebnis-Tail (Plan U20): direkte ``ResultTail``-Tests — ``result_ttl``-
-Kaskade, Backend-Fehler, Workflow-Advance-Seam."""
+Kaskade, Backend-Fehler, Workflow-Advance-Seam.
+
+Test-Liste U10 (Plan 2026-09-08-001, R25/KTD12) — Fail-Mark-Regel:
+
+1. Fail-Mark wirft ``BackendConnectionError`` nach ``workflow_advance_failed``
+   → ``Redelivered``, kein Ack (AE11).
+2. Derselbe Fall bei FIRE_AND_FORGET → nur Log, kein Broker-Verb.
+3. Fail-Mark wirft ``ValueError`` → Ack wie bisher, Log mit Workflow-Kennung.
+4. Fehler-/Cancel-Zweig: dieselbe Regel.
+5. FAF-Guard (``result_ttl=0``): dieselbe Regel.
+6. ``WorkflowStateConflict`` aus ``advance`` → ``Redelivered`` ohne Fail-Mark.
+"""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
+from swarmq.exceptions import (
+    BackendConnectionError,
+    BrokerConnectionError,
+    WorkflowStateConflict,
+)
 from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
 from swarmq.registry import TaskRegistry
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -28,6 +43,29 @@ class TailTask(Task):
 
 class TailFafTask(Task):
     task_info = TaskInfo(name="tail-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
+
+    async def run(self) -> None:
+        return None
+
+
+class TailFafStoreTask(Task):
+    """FIRE_AND_FORGET mit explizitem ``result_ttl`` — erreicht den
+    Advance-Seam, hat aber nichts zu bestätigen."""
+
+    task_info = TaskInfo(
+        name="tail-faf-store", queues=["default"],
+        delivery=DeliveryMode.FIRE_AND_FORGET, result_ttl=60,
+    )
+
+    async def run(self) -> str:
+        return "ok"
+
+
+class TailNoStoreTask(Task):
+    """AT_LEAST_ONCE mit ``result_ttl=0`` — erreicht den ``_finish_without_store``-
+    Pfad, ohne FIRE_AND_FORGET zu sein (dort gibt es ein Ack zu unterlassen)."""
+
+    task_info = TaskInfo(name="tail-nostore", queues=["default"], result_ttl=0)
 
     async def run(self) -> None:
         return None
@@ -109,3 +147,99 @@ async def test_workflow_advance_unexpected_error_fail_marks_and_acks(broker, bac
     assert outcome == Terminal.release_in_finally()
     worker._workflow_advancer.fail.assert_awaited_once()
     broker.ack.assert_awaited_once_with(msg)
+
+
+async def test_fail_mark_backend_error_after_advance_failure_is_redelivered(broker, backend, config):
+    """U10 Fall 1 (AE11): Der Advance ist an einem Bug gescheitert, aber die
+    Fehlermarkierung erreicht das Backend nicht — ein Ack liesse den Workflow
+    bis zum TTL ``RUNNING`` und ``handle.get()`` in den Timeout laufen."""
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=RuntimeError("advance bug"))
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(), _execution())
+    assert outcome is Redelivered
+    broker.redeliver.assert_awaited_once_with(msg)
+    broker.ack.assert_not_awaited()
+
+
+async def test_workflow_state_conflict_from_advance_is_redelivered(broker, backend, config):
+    """U10 Fall 6: Die Konfliktgrenze des Compare-and-Set (U9) bedeutet, dass
+    der Advance nicht fertig ist — dieselbe Behandlung wie ein Backend-Ausfall,
+    kein Fail-Mark (der Workflow ist nicht gescheitert)."""
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=WorkflowStateConflict("25 rounds lost"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(), _execution())
+    assert outcome is Redelivered
+    worker._workflow_advancer.fail.assert_not_awaited()
+    broker.redeliver.assert_awaited_once_with(msg)
+    broker.ack.assert_not_awaited()
+
+
+async def test_cancel_branch_fail_mark_backend_error_is_redelivered(broker, backend, config):
+    """U10 Fall 4: Der Fehler-/Cancel-Zweig markiert synchron fail, damit
+    ``handle.get()`` in endlicher Zeit wirft — scheitert das transient, gilt
+    dieselbe Regel wie nach einem Advance-Fehler."""
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(), _execution(is_cancelled=True, result_value=None))
+    assert outcome is Redelivered
+    worker._workflow_advancer.advance.assert_not_awaited()
+    broker.redeliver.assert_awaited_once_with(msg)
+    broker.ack.assert_not_awaited()
+
+
+async def test_faf_guard_fail_mark_backend_error_is_redelivered(broker, backend, config):
+    """U10 Fall 5: Der ``result_ttl=0``-Guard markiert den Workflow fail, weil
+    dieser Schritt den Advance-Seam nie erreicht — scheitert die Markierung
+    transient, wird nicht bestätigt."""
+    tail, worker = _tail(broker, backend, config, TailNoStoreTask)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-nostore"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(TailNoStoreTask), _execution(result_value=None))
+    assert outcome is Redelivered
+    backend.store_result.assert_not_awaited()
+    broker.redeliver.assert_awaited_once_with(msg)
+    broker.ack.assert_not_awaited()
+
+
+async def test_fail_mark_backend_error_on_faf_step_emits_no_broker_verb(broker, backend, config):
+    """U10 Fall 2: FIRE_AND_FORGET hat kein Ack zurückzuhalten — der transiente
+    Fail-Mark-Fehler wird geloggt, aber es folgt kein Broker-Verb (nach dem
+    Früh-Ack der Pipeline wäre jedes Verb ein Protokollfehler)."""
+    tail, worker = _tail(broker, backend, config, TailFafStoreTask)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=RuntimeError("advance bug"))
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-faf-store"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(TailFafStoreTask), _execution())
+    assert outcome == Terminal.release_in_finally()
+    broker.redeliver.assert_not_awaited()
+    broker.ack.assert_not_awaited()
+
+
+async def test_fail_mark_deterministic_error_acks(broker, backend, config):
+    """U10 Fall 3: Ein deterministischer Fail-Mark-Fehler wird bestätigt — eine
+    Redelivery führte den Task-Körper erneut aus und drehte bis zum
+    Delivery-Limit."""
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=RuntimeError("advance bug"))
+    worker._workflow_advancer.fail = AsyncMock(side_effect=ValueError("bad state doc"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(), _execution())
+    assert outcome == Terminal.release_in_finally()
+    broker.ack.assert_awaited_once_with(msg)
+    broker.redeliver.assert_not_awaited()

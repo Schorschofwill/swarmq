@@ -43,6 +43,8 @@ class ValkeyResults(ValkeyConnection):
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
         self._unique_release_script: Any = None
+        # KTD11: Compare-and-Set des Workflow-Zustands, ebenfalls lazy.
+        self._workflow_cas_script: Any = None
 
     # ------------------------------------------------------------------
     # Keys und Kanäle (Wire-Format, KTD12 — unverändert)
@@ -343,6 +345,30 @@ class ValkeyResults(ValkeyConnection):
         await self._run(
             "store_workflow_state", self._require_client().set(self._workflow_key(wf_id), data, px=ttl_ms), op_timeout
         )
+
+    def _ensure_workflow_cas_script(self) -> Any:
+        """Lazy-register workflow_state_cas.lua on first use (needs a live client)."""
+        client = self._client
+        if client is None:
+            raise BackendConnectionError("ValkeyBackend not connected; call connect() before workflow-state operations")
+        if self._workflow_cas_script is None:
+            self._workflow_cas_script = client.register_script(load_script("workflow_state_cas"))
+        return self._workflow_cas_script
+
+    async def compare_and_store_workflow_state(
+        self, wf_id: str, data: bytes, ttl_ms: int, *, expected_version: int, op_timeout: float | None = None
+    ) -> bool:
+        """Compare-and-Set (KTD11): ``workflow_state_cas.lua`` vergleicht die
+        ``version`` des Bestands mit *expected_version* und schreibt *data*
+        byteweise mit ``PX``. ``True`` bei Schreibung, ``False`` bei Konflikt
+        oder fehlendem Schluessel."""
+        script = self._ensure_workflow_cas_script()
+        result = await self._run(
+            "compare_and_store_workflow_state",
+            script(keys=[self._workflow_key(wf_id)], args=[expected_version, data, ttl_ms]),
+            op_timeout,
+        )
+        return int(result) == 1
 
     async def get_workflow_state(self, wf_id: str, op_timeout: float | None = None) -> bytes | None:
         raw: bytes | None = await self._run(

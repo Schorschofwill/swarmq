@@ -29,6 +29,40 @@ class MessageContext(TypedDict):
     kwargs: dict[str, Any]
     delivery_mode: str
     retry_count: NotRequired[int]
+    # U11: nur bei Workflow-Schritten gesetzt. Zusaetzliche Schluessel statt
+    # neuer Pflichtfelder, damit Handler mit fester Signatur weiterlaufen.
+    workflow_id: NotRequired[str]
+    step_path: NotRequired[str]
+
+
+def workflow_step_message_context(
+    *,
+    task_id: str,
+    task_name: str,
+    queue: str,
+    args: list[Any],
+    kwargs: dict[str, Any],
+    workflow_id: str,
+    step_path: str,
+) -> MessageContext:
+    """``MessageContext`` fuer einen Workflow-Schritt (U11, R15/R16).
+
+    Eine Quelle fuer beide Enqueue-Pfade — ``Client.apply`` und den
+    ``WorkflowAdvancer`` im Worker. ``delivery_mode`` ist fest
+    ``at_least_once``, unabhaengig von der Deklaration des Tasks: ein
+    Workflow-Schritt braucht den Advance-Seam nach dem Ergebnis, den nur
+    at-least-once hat.
+    """
+    return {
+        "task_id": task_id,
+        "task_name": task_name,
+        "queue": queue,
+        "args": list(args),
+        "kwargs": kwargs,
+        "delivery_mode": "at_least_once",
+        "workflow_id": workflow_id,
+        "step_path": step_path,
+    }
 
 
 async def _swallow(

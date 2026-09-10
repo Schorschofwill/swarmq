@@ -31,6 +31,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from swarmq.workflow import chain
 
 # Liveness safety-net for "wait for an async signal/event" below — generous so
 # a loaded/cold CI runner never turns a slow signal round-trip into a false
@@ -1024,3 +1025,55 @@ async def test_signal_worker_recycling_reference():
 
     assert hasattr(test_cpu_mode, "test_di_child_is_reused_and_recycled_with_signal")
     assert Signal.WORKER_RECYCLING.value == "worker_recycling"
+
+
+async def test_signal_workflow_step_enqueued(
+    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+):
+    """WORKFLOW_STEP_ENQUEUED feuert je Workflow-Schritt — im Client fuer die
+    Anfangsfront, im Worker fuer jeden Folgeschritt (U11, R16)."""
+    queue = _unique_queue()
+    first = _task_name("wfstep1")
+    second = _task_name("wfstep2")
+
+    class First(Task):
+        task_info = TaskInfo(name=first, queues=[queue])
+
+        async def run(self) -> str:
+            return "one"
+
+    class Second(Task):
+        task_info = TaskInfo(name=second, queues=[queue])
+
+        async def run(self, prev: str) -> str:
+            return f"{prev}-two"
+
+    captured: list[dict[str, Any]] = []
+    seen = asyncio.Event()
+
+    async def _handler(**kwargs: Any) -> None:
+        captured.append(kwargs)
+        if len(captured) >= 2:
+            seen.set()
+
+    client_app = SwarmQ(
+        RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue],
+    )
+    client_app.on_signal(Signal.WORKFLOW_STEP_ENQUEUED)(_handler)
+
+    async with client_app:
+        await client_app.broker.declare_queue(queue)
+        async with _running_worker(
+            rabbitmq_url, valkey_url, queue,
+            register_signals={Signal.WORKFLOW_STEP_ENQUEUED: _handler},
+        ):
+            handle = await client_app.apply(chain(First.s(), Second.s()))
+            assert await handle.get(timeout=_EVENT_TIMEOUT) == "one-two"
+            await asyncio.wait_for(seen.wait(), timeout=_EVENT_TIMEOUT)
+
+    # Erster Eintrag aus dem Client (Anfangsfront), zweiter aus dem Worker.
+    assert [c["step_path"] for c in captured] == ["/0", "/1"]
+    assert [c["task_name"] for c in captured] == [first, second]
+    assert {c["queue"] for c in captured} == {queue}
+    assert {c["workflow_id"] for c in captured} == {handle.workflow_id}
+    assert all(c["task_id"] for c in captured)
