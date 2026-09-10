@@ -42,11 +42,6 @@ if TYPE_CHECKING:
 
 import msgspec  # noqa: F401
 
-# Submodule imports — the symbols they define become swarmq.cli.* attributes.
-# ``SwarmQ`` is served via the lazy ``__getattr__`` below to avoid pulling
-# in ``swarmq.app`` (and transitively ``swarmq.client`` / ``swarmq.worker``
-# / structlog / asyncio.base_events) on every ``swarmq --help``. The
-# subcommand handlers that actually need ``SwarmQ`` import it locally.
 from swarmq.cli._shared import (
     _DOTTED_IDENTIFIER_RE,
     _FORBIDDEN_WATCH_PREFIXES,
@@ -104,6 +99,13 @@ from swarmq.scheduler import (
     ScheduleStore,  # noqa: F401
 )
 from swarmq.serialization import compute_dedup_hash  # noqa: F401
+
+# Submodule imports — the symbols they define become swarmq.cli.* attributes.
+# ``SwarmQ`` is served via the lazy ``__getattr__`` below to avoid pulling
+# in ``swarmq.app`` (and transitively ``swarmq.client`` / ``swarmq.worker``
+# / structlog / asyncio.base_events) on every ``swarmq --help``. The
+# subcommand handlers that actually need ``SwarmQ`` import it locally.
+from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 from swarmq.task import Task  # noqa: F401
 
 # ---------------------------------------------------------------------------
@@ -234,6 +236,44 @@ def _parse_args_for_mode(
         return _emit_argparse_check_error(argparse_err.getvalue())
 
 
+def _setup_worker_logging(args: argparse.Namespace) -> None:
+    """Logging fuer den Worker-Zweig konfigurieren (KTD8).
+
+    Lazy importiert, damit ``swarmq --help`` weiter ohne ``swarmq.logging``
+    auskommt.
+    """
+    from swarmq.logging import setup_logging
+
+    setup_logging(
+        getattr(args, "log_level", "INFO"),
+        getattr(args, "log_format", "human") == "json",
+    )
+
+
+def _flush_worker_logging() -> None:
+    """Log-Queue leeren; lazy importiert wie ``_setup_worker_logging``."""
+    from swarmq.logging import flush_logging
+
+    flush_logging()
+
+
+def _log_worker_config_error(exc: BaseException) -> None:
+    """``worker_config_error`` aus dem Elternprozess (R19/KTD8)."""
+    import structlog
+
+    from swarmq.logging import flush_logging
+
+    structlog.get_logger().error(
+        "worker_config_error",
+        source="supervisor",
+        error=f"{type(exc).__name__}: {exc}",
+        hint="fix the configuration and start again; no restart attempted",
+    )
+    # Der Aufrufer beendet den Prozess gleich danach; ohne Flush bliebe die
+    # Zeile in der Queue des Listener-Threads liegen.
+    flush_logging()
+
+
 def _run_worker_command(args: argparse.Namespace) -> int:
     """Worker-Zweig: ``--check``-Dry-Run oder Supervisor; liefert den Exit-Code."""
     # R5.3: dry-run validation. Never starts the supervisor or touches
@@ -243,11 +283,16 @@ def _run_worker_command(args: argparse.Namespace) -> int:
         return _run_worker_check(args)
     # Plan 2026-09-03-001 (R1, R3, R4): Pool-Modus pruefen und --concurrency
     # aufloesen, bevor irgendein Pfad den Wert liest.
+    # KTD8: Logging als ERSTES konfigurieren, damit auch ein Fehler vor dem
+    # Bau der Konfiguration als strukturierte Zeile im gewaehlten Format
+    # erscheint statt als roher stderr-Text.
+    _setup_worker_logging(args)
+
     try:
         prepare_pool_args(args)
     except ConfigurationError as exc:
-        sys.stderr.write(f"swarmq worker: {exc}\n")
-        return 1
+        _log_worker_config_error(exc)
+        return CONFIG_ERROR_EXIT_CODE
 
     # R20 (Plan 2026-09-03-001): der Supervisor ist Standard — auch bei
     # --processes 1. Lebenszeichen, Recycling und Neustart funktionieren so
@@ -267,18 +312,25 @@ def _run_worker_command(args: argparse.Namespace) -> int:
         return run_multi_process_worker(args, admin_factory=_admin_factory)
     except KeyboardInterrupt:
         return 0
-    except (
-        ModuleNotFoundError,
-        ConfigurationError,
-        BrokerConnectionError,
-        BackendConnectionError,
-    ) as exc:
-        # Eine Zeile statt Traceback — wie frueher im Single-Process-Pfad;
-        # DEBUG haengt den Traceback an.
+    except (ModuleNotFoundError, ConfigurationError) as exc:
+        # R19: Konfigurationsfehler enden mit 78. Eine Orchestrierung
+        # unterscheidet damit "nicht wieder anfassen" von "gleich nochmal" --
+        # mit 1 fuer alle Startfehler startete sie einen kaputt
+        # konfigurierten Worker endlos neu.
+        _log_worker_config_error(exc)
+        if getattr(args, "log_level", "INFO") == "DEBUG":
+            traceback.print_exc(file=sys.stderr)
+        return CONFIG_ERROR_EXIT_CODE
+    except (BrokerConnectionError, BackendConnectionError) as exc:
+        # Verbindungsfehler bleiben 1: hier ist "gleich nochmal" richtig.
         sys.stderr.write(f"swarmq worker: {exc}\n")
         if getattr(args, "log_level", "INFO") == "DEBUG":
             traceback.print_exc(file=sys.stderr)
         return 1
+    finally:
+        # Flush-on-exit: der Listener-Thread schreibt sonst nichts mehr,
+        # sobald der Prozess endet (KTD8).
+        _flush_worker_logging()
 
 
 def _startup_error_classes() -> tuple[type[BaseException], ...]:

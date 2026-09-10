@@ -16,7 +16,11 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
+from swarmq.logging import flush_logging, setup_logging
 from swarmq.process_manager.config import WorkerConfig
+from swarmq.supervision import (
+    CONFIG_ERROR_EXIT_CODE as _CONFIG_ERROR_EXIT_CODE,
+)
 from swarmq.supervision import (
     RECYCLE_NOACK_EXIT_CODE,
     SHUTDOWN_TERM_S,
@@ -31,7 +35,8 @@ logger = structlog.get_logger()
 #: Exit-Code fuer Konfigurationsfehler im Worker-Subprozess (R29, KTD8).
 #: Entspricht ``EX_CONFIG`` aus sysexits.h; der Supervisor startet einen so
 #: beendeten Worker nicht neu, sondern endet selbst mit 1.
-CONFIG_ERROR_EXIT_CODE = 78
+# Re-Export: die Konstante lebt seit U4 in ``supervision`` (KTD8).
+CONFIG_ERROR_EXIT_CODE = _CONFIG_ERROR_EXIT_CODE
 
 
 def _unblock_inherited_signals() -> None:
@@ -79,10 +84,12 @@ def worker_subprocess_entry(
     # error surface.
     from swarmq.cli import run_worker_async
 
-    # Logging is fresh-configured per subprocess. structlog picks up
-    # its global config on first use, but stdlib logging is
-    # per-process — reset level so child inherits parent's verbosity.
+    # KTD8: Logging als ERSTES konfigurieren, damit auch ein
+    # Konfigurationsfehler vor dem Bau der App im konfigurierten Format
+    # erscheint. ``SwarmQ`` konfiguriert danach erneut; ``setup_logging``
+    # stoppt dabei den Listener dieses Aufrufs, so dass genau einer laeuft.
     _stdlib_logging.basicConfig(level=cfg.log_level)
+    setup_logging(cfg.log_level, cfg.log_format == "json")
 
     # asdict converts tuple → list (dataclasses has no tuple-preservation);
     # Namespace callers expect list-typed queues so we re-wrap explicitly.
@@ -148,9 +155,24 @@ def worker_subprocess_entry(
     except RecycleAckTimeout as exc:
         sys.stderr.write(f"swarmq worker: {exc}\n")
         raise SystemExit(RECYCLE_NOACK_EXIT_CODE) from None
-    except ConfigurationError as exc:
+    except (ConfigurationError, ModuleNotFoundError) as exc:
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
         # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code
         # und der Supervisor beendet den Lauf statt fuenfmal neu zu starten.
-        sys.stderr.write(f"swarmq worker: {exc}\n")
+        # R21/U4: als strukturierter Logsatz im konfigurierten Format -- eine
+        # rohe stderr-Zeile war in einer JSON-Pipeline eine kaputte Zeile,
+        # und zwar genau im Fehlerfall, wo sie gelesen werden muss. Ein
+        # ``ModuleNotFoundError`` (etwa eine fehlende Abhaengigkeit des
+        # Task-Moduls) gehoert in dieselbe Klasse: er endete bisher mit
+        # Traceback und fuenf Neustarts.
+        logger.error(
+            "worker_config_error",
+            source="worker",
+            worker_id=worker_id,
+            error=f"{type(exc).__name__}: {exc}",
+            hint="fix the configuration and start again; no restart attempted",
+        )
+        # Ohne Flush endet der Prozess, bevor der Listener-Thread die Zeile
+        # geschrieben hat -- der Supervisor saehe nur den Exit-Code.
+        flush_logging()
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None

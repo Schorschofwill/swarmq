@@ -62,6 +62,14 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_VALID_LOG_FORMATS",           # internal
         "_VALID_LOG_LEVELS",            # internal
         "_WORKER_CHECK_PAYLOAD_KEYS",   # internal
+        # U4 (Plan 2026-09-08-001, R19/KTD8): Exit-Code-Vertrag im
+        # Worker-Zweig. Die Konstante kommt aus ``swarmq.supervision`` und
+        # wird hier gelesen, damit ``cli`` sie ohne Import von
+        # ``process_manager`` kennt.
+        "CONFIG_ERROR_EXIT_CODE",       # ambient — aus swarmq.supervision
+        "_log_worker_config_error",     # internal — worker_config_error (R19)
+        "_setup_worker_logging",        # internal — setup_logging als erster Schritt (KTD8)
+        "_flush_worker_logging",        # internal — flush-on-exit (KTD8)
         "_autoscale_range",             # internal — test_cli_multiprocess.py
         "prepare_pool_args",            # internal — Pool-Modus + --concurrency Aufloesung (Plan 2026-09-03-001)
         "_backend_from_env",            # internal

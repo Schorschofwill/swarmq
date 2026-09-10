@@ -18,12 +18,13 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
-from swarmq.logging import sanitize_url
+from swarmq.process_manager import autoscale
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
 from swarmq.supervision import (
     INTENT_DRAINING,
     INTENT_RECYCLE,
+    RECYCLE_NOACK_EXIT_CODE,
     SupervisorChannel,
 )
 from swarmq.supervision import (
@@ -93,9 +94,7 @@ class ProcessManager:
     # ``shutdown_grace_s`` to align with ``SwarmQConfig.shutdown_timeout``
     # so a subprocess actually gets its configured drain budget).
     SHUTDOWN_GRACE_S = 30.0
-    # Die Konstante lebt seit U3 in ``supervision`` (KTD4); hier bleibt
-    # der Klassenzugriff, den der Supervisor und seine Tests nutzen.
-    SHUTDOWN_TERM_S = _SHUTDOWN_TERM_S
+    SHUTDOWN_TERM_S = _SHUTDOWN_TERM_S  # lebt seit U3 in ``supervision`` (KTD4)
 
     # Autoscaling knobs.
     SCALE_UP_THRESHOLD = 50  # pending tasks per active worker
@@ -438,8 +437,10 @@ class ProcessManager:
             self._escalate_terminating()
             self._check_dead_workers()
             if self._config_error:
+                # R20: derselbe Code wie das Kind. Mit 1 sah eine
+                # Orchestrierung nur "irgendein Fehler" und startete neu.
                 self._shutdown_all_workers()
-                return 1
+                return CONFIG_ERROR_EXIT_CODE
 
             # All restart budgets burned and no live
             # worker left → exit non-zero instead of spinning (or, pre-
@@ -542,19 +543,32 @@ class ProcessManager:
                 # slot is retired so the backfill does not respawn it (KTD9).
                 self._clean_exits += 1
                 continue
-            if exitcode == CONFIG_ERROR_EXIT_CODE:
-                # R29: Konfigurationsfehler — ein Neustart wuerde denselben
-                # Fehler reproduzieren. Genau ein Startversuch.
-                logger.error(
-                    "worker_config_error",
-                    worker_id=info.worker_id,
-                    pid=pid,
-                    exitcode=exitcode,
-                    hint="fix the configuration and start again; no restart attempted",
-                )
-                self._config_error = True
+            if self._handle_exit_code(info, pid, exitcode):
                 continue
             self._maybe_restart(info)
+
+    def _handle_exit_code(self, info: WorkerInfo, pid: int, exitcode: int | None) -> bool:
+        """Logsaetze zu den beiden benannten Exit-Codes; ``True`` = kein
+        Neustart (R20).
+
+        78: Ein Neustart wuerde denselben Konfigurationsfehler reproduzieren,
+        also genau ein Startversuch. 75: Das Kind bekam seine
+        Recycling-Bestaetigung nicht — Neustart wie bei jedem Absturz, aber
+        mit eigenem Logsatz, sonst ist der Fall im Betrieb nicht von einem
+        Crash zu unterscheiden.
+        """
+        if exitcode == CONFIG_ERROR_EXIT_CODE:
+            logger.error(
+                "worker_config_error", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+                hint="fix the configuration and start again; no restart attempted",
+            )
+            self._config_error = True
+            return True
+        if exitcode == RECYCLE_NOACK_EXIT_CODE:
+            logger.warning(
+                "worker_recycle_noack", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+            )
+        return False
 
     # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)
 
@@ -686,114 +700,11 @@ class ProcessManager:
         new.restart_timestamps = timestamps
 
     # ------------------------------------------------------------------
-    # R4.7 Autoscaling
+    # R4.7 Autoscaling — Entscheidungen in ``process_manager/autoscale.py``
     # ------------------------------------------------------------------
 
     def _autoscale_tick(self) -> None:
-        """One autoscale decision (no-op outside the sample interval).
-
-        Sampling uses ``_queue_depth_fn`` which is synchronous — the
-        caller adapts async broker APIs into a sync wrapper (see
-        :func:`make_queue_depth_sampler`).
-        """
-        # Use explicit checks instead of asserts so
-        # the invariant survives python -O deployments. Constructor
-        # already enforces these, but a subtle refactor could later
-        # violate them.
-        if self._autoscale is None or self._queue_depth_fn is None:
-            return
-
-        now = time.monotonic()
-        if now - self._last_autoscale_sample < self.AUTOSCALE_SAMPLE_INTERVAL:
-            return
-
-        # Check cooldown BEFORE advancing the sample
-        # timestamp. Otherwise a cooldown early-return consumes the
-        # sample slot, extending the effective dead-time by up to
-        # AUTOSCALE_SAMPLE_INTERVAL beyond the documented cooldown.
-        if now - self._last_scale_decision < self.SCALE_COOLDOWN_S:
-            return
-
-        self._last_autoscale_sample = now
-
-        try:
-            depth = self._queue_depth_fn()
-        except Exception as exc:
-            # sanitize_url strips embedded AMQP
-            # credentials before the exception text reaches structlog.
-            logger.warning(
-                "autoscale_sample_failed", error=sanitize_url(str(exc)),
-            )
-            return
-
-        min_w, max_w = self._autoscale
-        # R2: belegte Slots, ein Slot im Uebergang zaehlt einmal.
-        active = self._slots.occupied()
-
-        # Scale up: enough backlog to justify another worker.
-        slot = self._slots.smallest_free()
-        if active < max_w and slot is not None and depth > active * self.SCALE_UP_THRESHOLD:
-            logger.info(
-                "autoscale_up",
-                depth=depth, active=active, max_workers=max_w, slot=slot,
-            )
-            self._start_worker(slot)
-            self._last_scale_decision = now
-            self._idle_since = None
-            return
-
-        # Scale down: sustained idle.
-        if active > min_w and depth == 0:
-            if self._idle_since is None:
-                self._idle_since = now
-                return
-            if now - self._idle_since >= self.SCALE_DOWN_IDLE_S:
-                self._scale_down_one()
-                self._last_scale_decision = now
-                self._idle_since = None
-        else:
-            self._idle_since = None
+        autoscale.tick(self)
 
     def _scale_down_one(self) -> None:
-        """Tell the youngest eligible worker to drain + exit (SIGTERM).
-
-        Workers younger than
-        :attr:`SCALE_MIN_AGE_S` are excluded. Without this, a
-        crash → ``_maybe_restart`` → ``_autoscale_tick`` sequence
-        would spawn a replacement and immediately kill it, producing
-        pointless process churn.
-        """
-        if not self.workers:
-            return
-        now = time.monotonic()
-        # KTD1: Slots im Uebergang (Alt- und Ersatzprozess) sind tabu — der
-        # Ersatz waere sonst als juengster Prozess der erste Kandidat.
-        eligible = {
-            pid: w for pid, w in self.workers.items()
-            if (now - w.spawned_at) >= self.SCALE_MIN_AGE_S
-            and self._slots.state(w.worker_id) is not SlotState.TRANSITION
-        }
-        if not eligible:
-            logger.debug(
-                "autoscale_down_deferred_all_young",
-                total=len(self.workers),
-                min_age_s=self.SCALE_MIN_AGE_S,
-            )
-            return
-        # Youngest by spawn time among the eligible (R4) — oldest
-        # workers have warmer caches. A low slot may carry the youngest
-        # process after a replacement, so the slot number is no proxy;
-        # on equal age the highest slot goes (R1).
-        target_pid, info = max(
-            eligible.items(), key=lambda kv: (kv[1].spawned_at, kv[1].worker_id),
-        )
-        logger.info(
-            "autoscale_down",
-            worker_id=info.worker_id, pid=target_pid,
-        )
-        info.expected_shutdown = True
-        try:
-            info.process.terminate()
-        except ProcessLookupError:
-            # Already gone — bookkeeping will clean up in _check_dead.
-            pass
+        autoscale.scale_down_one(self)

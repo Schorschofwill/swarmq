@@ -247,22 +247,26 @@ class TestMainErrorRendering:
         captured = capsys.readouterr()
         return rc, captured.err
 
-    def test_module_not_found_renders_one_line(self, capsys):
+    def test_module_not_found_exits_with_the_config_code(self, capsys):
+        """Bewusst geaenderter Test (U4/R19): vorher 1 mit stderr-Zeile, jetzt
+        78 mit strukturiertem Logsatz. Der Text erscheint als
+        ``worker_config_error``-Zeile ueber das konfigurierte Logging, nicht
+        mehr als roher stderr-Text."""
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
         rc, err = self._run_main_with_mocked_run(
             "INFO", ModuleNotFoundError("No module named 'myapp'"), capsys
         )
-        assert rc == 1
-        assert "swarmq worker:" in err
-        assert "myapp" in err
-        # Default log level: no traceback.
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" not in err
 
-    def test_configuration_error_renders_one_line(self, capsys):
+    def test_configuration_error_exits_with_the_config_code(self, capsys):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
         rc, err = self._run_main_with_mocked_run(
             "INFO", ConfigurationError("no tasks registered"), capsys
         )
-        assert rc == 1
-        assert "no tasks registered" in err
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" not in err
 
     def test_broker_connection_error_renders_one_line(self, capsys):
@@ -282,10 +286,12 @@ class TestMainErrorRendering:
         assert "Traceback" not in err
 
     def test_debug_log_level_includes_traceback(self, capsys):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
         rc, err = self._run_main_with_mocked_run(
             "DEBUG", ConfigurationError("boom"), capsys
         )
-        assert rc == 1
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "boom" in err
         assert "Traceback" in err
 

@@ -897,8 +897,12 @@ class TestFileWatcherIntegration:
 
 
 class TestConfigErrorNoRestart:
-    """R29 (Plan 2026-09-03-001): Exit 78 wird nicht neu gestartet; der
-    Supervisor beendet den Lauf mit 1 statt das Restart-Budget zu verbrennen."""
+    """R29 (Plan 2026-09-03-001): Exit 78 wird nicht neu gestartet.
+
+    U4 (Plan 2026-09-08-001, R20) zieht den Exit-Code nach: der Supervisor
+    endet selbst mit 78 statt mit 1. Eine Orchestrierung unterscheidet damit
+    "nicht wieder anfassen" von "gleich nochmal" -- ``RestartPreventExitStatus=78``
+    greift jetzt auch fuer den Elternprozess."""
 
     def _pm(self):
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),))
@@ -917,15 +921,34 @@ class TestConfigErrorNoRestart:
         assert pm._config_error is True
         pm._ctx.Process.assert_not_called()
 
-    def test_monitor_loop_exits_one_after_config_error(self, monkeypatch):
-        from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+    def test_monitor_loop_exits_seventy_eight_after_config_error(self, monkeypatch):
+        """Bewusst geaenderter Test (U4/R20): vorher 1, jetzt 78."""
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
         pm = self._pm()
         dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
         pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
         monkeypatch.setattr(pm, "_shutdown_all_workers", MagicMock())
-        assert pm._monitor_loop() == 1
+        assert pm._monitor_loop() == CONFIG_ERROR_EXIT_CODE
         pm._shutdown_all_workers.assert_called_once()
+
+    def test_recycle_noack_exit_is_logged_and_restarted(self):
+        """R20: Exit 75 bleibt ein Neustart im Budget, bekommt aber einen
+        eigenen Logsatz -- vorher war er vom gewoehnlichen Absturz nicht zu
+        unterscheiden."""
+        import structlog
+
+        from swarmq.supervision import RECYCLE_NOACK_EXIT_CODE
+
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=RECYCLE_NOACK_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        with structlog.testing.capture_logs() as logs:
+            pm._check_dead_workers()
+        assert "worker_recycle_noack" in [entry["event"] for entry in logs]
+        assert 500 in pm.workers  # Neustart im Budget wie bisher
+        assert pm._config_error is False
 
     def test_ordinary_crash_still_restarts(self):
         pm = self._pm()

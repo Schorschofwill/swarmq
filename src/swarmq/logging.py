@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import logging.handlers
 import queue
@@ -59,13 +60,28 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
                 )
 
 
+_ACTIVE_LISTENER: logging.handlers.QueueListener | None = None
+
+
 def setup_logging(
     log_level: str = "INFO", log_json: bool = True
 ) -> logging.handlers.QueueListener:
     """Configure structlog + stdlib logging with QueueHandler/QueueListener.
 
     Returns the QueueListener so it can be stopped on shutdown.
+
+    Ein zweiter Aufruf im selben Prozess stoppt den Listener des ersten
+    (U4/KTD8): Das Worker-Kind konfiguriert fruehzeitig, damit ein
+    Konfigurationsfehler als strukturierte Zeile erscheint, und ``SwarmQ``
+    konfiguriert danach erneut. Ohne das Stoppen blieben zwei Threads am
+    Leben, von denen einer nie wieder etwas zu tun bekommt -- die Lehre aus
+    B6 (doppelte Logzeilen bei zwei Listenern).
     """
+    global _ACTIVE_LISTENER
+    if _ACTIVE_LISTENER is not None:
+        with contextlib.suppress(Exception):
+            _ACTIVE_LISTENER.stop()
+        _ACTIVE_LISTENER = None
     # Plan 2026-04-23-001 CLI-03: bind ``colors`` to the TTY state of
     # stderr at configure time. Keeps ANSI escapes out of piped /
     # captured stderr (log aggregators, CI output, pytest fixtures).
@@ -131,8 +147,24 @@ def setup_logging(
         log_queue, stream_handler, respect_handler_level=False
     )
     listener.start()
+    _ACTIVE_LISTENER = listener
 
     return listener
+
+
+def flush_logging() -> None:
+    """Stoppt den aktiven ``QueueListener`` und leert damit die Log-Queue.
+
+    Vor einem ``SystemExit`` noetig: die Logzeile liegt bis dahin nur in der
+    Queue, und der Listener-Thread kommt nicht mehr dazu, sie zu schreiben.
+    Genau darum stand der Konfigurationsfehler frueher als synchrone
+    stderr-Zeile da -- der strukturierte Logsatz (R21) braucht dieses Flush.
+    """
+    global _ACTIVE_LISTENER
+    if _ACTIVE_LISTENER is not None:
+        with contextlib.suppress(Exception):
+            _ACTIVE_LISTENER.stop()
+        _ACTIVE_LISTENER = None
 
 
 def sanitize_url(url: str) -> str:

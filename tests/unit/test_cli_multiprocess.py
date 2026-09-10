@@ -322,7 +322,9 @@ class TestMainRouting:
             assert ns.autoscale == (2, 5)
 
     def test_supervisor_surfaces_config_error(self):
+        """Bewusst geaenderter Test (U4/R19): der Exit-Code ist jetzt 78."""
         from swarmq.exceptions import ConfigurationError
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(
@@ -330,8 +332,68 @@ class TestMainRouting:
                  side_effect=ConfigurationError("boom"),
              ):
             rc = main(["worker", "--module=x", "--processes", "2"])
-            assert rc == 1
+            assert rc == CONFIG_ERROR_EXIT_CODE
 
 
 
 
+
+
+class TestSupervisorConfigErrorExitCode:
+    """U4/KTD8 (R19): Ein Konfigurationsfehler im Elternprozess endet mit 78
+    und einem strukturierten Logsatz.
+
+    Vorher gab jeder Startfehler 1 zurueck -- eine Orchestrierung konnte
+    "nicht wieder anfassen" nicht von "gleich nochmal" unterscheiden und
+    startete einen kaputt konfigurierten Worker endlos neu.
+    """
+
+    def _args(self, **over):
+        import argparse
+
+        ns = argparse.Namespace(
+            module="json", queues=["default"], concurrency=None,
+            log_level="INFO", log_format="human", burst=False,
+            burst_idle_timeout=5.0, priorities=False, metrics_port=None,
+            health_port=None, processes=1, autoscale=None, reload=False,
+            watch_dir=None, check=False, pool="io",
+        )
+        for k, v in over.items():
+            setattr(ns, k, v)
+        return ns
+
+    def _run(self, monkeypatch, exc):
+        """Exit-Code des Worker-Zweigs bei *exc*.
+
+        Der Logsatz selbst laeuft ueber den QueueListener nach stderr und ist
+        hier nicht zuverlaessig abzugreifen; sein Format prueft der
+        Integrationstest mit echtem Subprozess (AE8).
+        """
+        from swarmq import cli
+
+        def boom(args, **kwargs):
+            raise exc
+
+        monkeypatch.setattr("swarmq.process_manager.run.run_multi_process_worker", boom)
+        return cli._run_worker_command(self._args())
+
+    def test_configuration_error_returns_seventy_eight(self, monkeypatch):
+        from swarmq.exceptions import ConfigurationError
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        code = self._run(monkeypatch, ConfigurationError("queue_type must be one of"))
+        assert code == CONFIG_ERROR_EXIT_CODE
+
+    def test_module_not_found_returns_seventy_eight(self, monkeypatch):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        code = self._run(monkeypatch, ModuleNotFoundError("No module named 'nope'"))
+        assert code == CONFIG_ERROR_EXIT_CODE
+
+    def test_connection_errors_still_return_one(self, monkeypatch):
+        """R19: ein nicht erreichbarer Broker ist kein Konfigurationsfehler --
+        dort ist "gleich nochmal" die richtige Antwort."""
+        from swarmq.exceptions import BrokerConnectionError
+
+        code = self._run(monkeypatch, BrokerConnectionError("connection refused"))
+        assert code == 1
