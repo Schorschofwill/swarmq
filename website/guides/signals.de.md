@@ -47,6 +47,9 @@ dispatched wurde — keine separate Event-Loop, kein Worker-Thread.
 | `TASK_LOCKED` | Wenn Lock-Acquisition in Arbeit ist | `task_id`, `task_name`, `lock_name` |
 | `TASK_RATE_LIMITED` | Wenn Rate-Limiter eine Nachricht aufschiebt | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | Wenn Unique-Task-SETNX das Race verliert | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
+| `TASK_DLQ` | Einmal, wenn der Worker eine Nachricht terminal dead-lettert (Retries erschöpft, `NoRetry`, Delivery-Limit erreicht) | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_REJECTED` | Wenn der Worker eine Nachricht ohne Diagnose-Header an den Dead-Letter-Exchange des Brokers gibt: zu großer Body, nicht dekodierbarer Body, unregistrierter Task, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `WORKFLOW_STEP_ENQUEUED` | Nach jedem publizierten Workflow-Schritt (durch `Client.apply` oder den Advancer im Worker), zusätzlich zu `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | Worker-Lifecycle | `worker_id` |
 | `WORKER_RECYCLING` | Ein Rechenkind (`kind="compute_child"`) oder der Worker selbst (`kind="worker"`) wird nach RSS oder Taskzahl recycelt | `worker_id`, `kind`, `slot`, `reason` (`rss`/`tasks`/`forced`), `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler-Leader-Übergänge | `worker_id` |
@@ -57,6 +60,31 @@ Handler sollten `**kwargs` defensiv akzeptieren. Der
 `batch_index`-Key im `TASK_DUPLICATE_DETECTED`-Signal ist nur
 vorhanden, wenn die Quelle `client.schedule_many` ist — nutze
 `kwargs.get("batch_index")`, um `KeyError` zu vermeiden.
+
+`TASK_REJECTED` trägt `reason` aus einem festen Satz: `body_too_large`,
+`undecodable`, `unregistered_task`, `middleware_chain_factory`,
+`dlq_publish_failed`. `task_id` und `task_name` sind `None`, wenn der
+Body nie dekodiert wurde. Es ist von `TASK_DLQ` zu unterscheiden, das
+ein Fehlerergebnis und eine Task-Identität verspricht; der
+[Dead-Letter-Guide](dead-letter-queues.de.md#drei-wege-in-die-xq)
+erklärt, welchen Weg eine Nachricht genommen hat.
+
+Workflow-Schritte feuern `TASK_ENQUEUED` mit dem echten Task-Namen des
+Schritts (den Platzhalter `<workflow>` gibt es nicht mehr) und danach
+`WORKFLOW_STEP_ENQUEUED` mit der Workflow-Identität. Handler, die nur
+`TASK_ENQUEUED` kennen, funktionieren weiter; abonniere das zweite
+Signal, wenn du `workflow_id` oder `step_path` brauchst.
+
+### Das Feld `worker_id`
+
+Jedes `WORKER_*`-, `SCHEDULER_*`- und `WORKER_RECYCLING`-Payload trägt
+die stabile Identität des Workers: `<basis>:<slot>` unter dem
+Supervisor (`web-3:0`, `web-3:1`, …) und `<basis>:p<pid>` im
+eingebetteten Betrieb (`web-3:p41872`). `<basis>` ist
+`SWARMQ_WORKER_ID` oder der Hostname. Der Slot überlebt Neustarts und
+Recycling und ist damit der richtige Schlüssel für Dashboards je
+Worker; siehe
+[Worker-Identität](../reference/configuration.de.md#worker-identitat).
 
 ## Fehlersemantik
 
@@ -132,6 +160,26 @@ async def alert(task_id, task_name, exception):
             text=f":fire: {task_name} failed: {task_id}",
         )
 ```
+
+### Alert auf abgewiesene Nachrichten
+
+`TASK_REJECTED` heißt: Der Worker konnte den Task nicht einmal starten.
+Der Body war zu groß, nicht dekodierbar oder nannte einen Task, den
+dieser Worker nicht kennt. Nichts davon wird wiederholt, deshalb
+verdient es einen eigenen Alert getrennt vom gewöhnlichen DLQ-Verkehr:
+
+```python
+@app.on_signal(Signal.TASK_REJECTED)
+async def on_rejected(queue, reason, task_name=None, **kwargs):
+    if reason == "unregistered_task":
+        await slack.post(
+            channel="#ops",
+            text=f":warning: {queue}: unbekannter Task {task_name!r} — Deploy-Versatz?",
+        )
+```
+
+Mit `swarmq[metrics]` zählt `swarmq_tasks_rejected_total{queue,reason}`
+dieselben Ereignisse.
 
 ### Audit-Log für Cancellations
 

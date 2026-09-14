@@ -19,12 +19,25 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | Code | Meaning |
 |---|---|
 | `0` | Success or graceful shutdown |
-| `1` | Runtime or configuration error (broker/backend unreachable, module import failed, `ConfigurationError`) |
+| `1` | Runtime error: broker or backend unreachable, `swarmq dlq`/`schedule` failed at runtime. Retrying later is the right response. |
 | `2` | Bad arguments (argparse-detected usage error) |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
+| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid. Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. |
 
-`--log-level DEBUG` adds a full Python traceback to stderr when
-exit code `1` fires.
+`78` follows `sysexits.h`. Every configuration error, whether it
+surfaces in the parent process or inside a worker subprocess, ends the
+whole run with `78` after a single attempt and logs one structured
+`worker_config_error` line in the configured `--log-format`. Connection
+errors stay at `1`, because there "try again" is right. In systemd use
+`RestartPreventExitStatus=78` so a broken deployment does not restart in
+a loop; in Kubernetes alert on the exit code rather than on restarts.
+Exit `75` (`EX_TEMPFAIL`) is internal: a worker child that asked for
+recycling without getting an acknowledgement exits with it, the
+supervisor logs `worker_recycle_noack` and restarts it within the
+budget; it never reaches the caller.
+
+`--log-level DEBUG` adds a full Python traceback to stderr when exit
+code `1` or `78` fires.
 
 ## `swarmq worker`
 
@@ -34,14 +47,16 @@ broker + backend, and consume. `SWARMQ_BROKER_URL` and
 
 ```text
 swarmq worker --module DOTTED.PATH
+              [--configure MODULE:CALLABLE]
               [--queues A,B,C]
-              [--concurrency N]
+              [--concurrency N] [--pool {io,cpu}]
               [--log-level LEVEL] [--log-format FORMAT]
               [--burst] [--burst-idle-timeout SECONDS]
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
               [--processes N | -p N] [--autoscale MIN,MAX]
               [--reload] [--watch-dir PATH]...
+              [--check]
 ```
 
 ### Options
@@ -49,6 +64,7 @@ swarmq worker --module DOTTED.PATH
 | Flag | Default | Description |
 |---|---|---|
 | `--module DOTTED.PATH` | *required* | Python module containing `Task` subclasses to register (e.g. `myapp.tasks`). Must be importable from the current `PYTHONPATH`. |
+| `--configure MODULE:CALLABLE` | unset | Callable invoked with the `SwarmQ` app after construction and before the worker starts, e.g. `myapp.hooks:setup`. Use it to register middleware and signal handlers without writing your own worker entry point. Runs exactly once per worker process, never in the forkserver and never in `schedule`, `dlq` or `inspect`; an awaitable return value is awaited. Any exception from the hook is a configuration error (exit `78`). See [the example](#registering-middleware-with-configure). |
 | `--queues A,B,C` | `default` | Comma-separated queue names the worker consumes. Env var: `SWARMQ_QUEUES`. |
 | `--concurrency N` | `10` (io) / assigned CPUs (cpu) | Maximum tasks executed in parallel. With `--pool cpu` the number of compute slots; the default is the CPUs assigned to the worker (affinity and cgroup quota) divided by `--processes`. Env var: `SWARMQ_CONCURRENCY`. |
 | `--pool {io,cpu}` | `io` | Execution pool. `cpu` runs every task body in a compute child forked from a pre-warmed forkserver: the loop process never computes, `hard_timeout` and cancel kill the child. POSIX only; not combinable with `--autoscale`. See the [CPU mode guide](../guides/cpu-mode.md). |
@@ -57,13 +73,13 @@ swarmq worker --module DOTTED.PATH
 | `--burst` | off | Exit cleanly once all queues have been idle for `--burst-idle-timeout` seconds. Env var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. |
-| `--metrics-port PORT` | unset | Serve Prometheus `/metrics` on this port. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). |
-| `--health-port PORT` | unset | Serve `/health` + `/ready` on this port. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Run N worker subprocesses. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour), replaces workers whose heartbeat stops, reloads on `SIGHUP` via `os.execvp()`, and exits 0 once all workers ended cleanly (`--burst`). A configuration error ends the run after a single attempt (exit 1). |
+| `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
+| `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
+| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` via `os.execvp()`, and exits 0 once all workers ended cleanly (`--burst`). A configuration error in any worker ends the run after a single attempt with exit `78`. |
 | `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
 | `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Ignored without `--reload`. |
-| `--check` | off | Dry-run validation: verify `--module` is importable, with `--reload` that `watchfiles` is installed + watch-dirs resolve, and that multi-process mode is not combined with a fixed `--metrics-port`/`--health-port`. Prints a JSON summary and exits `0`/`1` without starting the supervisor or touching broker/backend. |
+| `--check` | off | Dry-run validation: verify `--module` is importable, that a `--configure` spec has the form `MODULE:CALLABLE` and its module can be found (without importing it), with `--reload` that `watchfiles` is installed + watch-dirs resolve, and that the observability port ranges fit below 65535 and do not overlap. Prints a JSON summary including `metrics_ports` and `health_ports` (the exact ports the slots will bind) and exits `0`/`1` without starting the supervisor or touching broker/backend. Payload: [message formats](agent/message-formats.md#swarmq-worker-check-payload). |
 
 ### Examples
 
@@ -76,7 +92,8 @@ swarmq worker --module myapp.tasks
 ```
 
 Production shape with JSON logs, three worker subprocesses,
-Prometheus, and health:
+Prometheus, and health. The three slots serve metrics on
+`9100-9102` and health on `9200-9202`:
 
 ```bash
 swarmq worker \
@@ -85,9 +102,34 @@ swarmq worker \
   --concurrency 25 \
   --processes 3 \
   --log-format json \
-  --metrics-port 9108 \
-  --health-port 9109
+  --metrics-port 9100 \
+  --health-port 9200
 ```
+
+### Registering middleware with `--configure`
+
+```python title="myapp/hooks.py"
+from swarmq import Signal, SwarmQ
+
+from myapp.middleware import TimingMiddleware
+
+
+async def setup(app: SwarmQ) -> None:
+    app.add_middleware(TimingMiddleware())
+
+    @app.on_signal(Signal.TASK_REJECTED)
+    async def on_rejected(queue, reason, **kwargs):
+        log.warning("task_rejected", queue=queue, reason=reason)
+```
+
+```bash
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup
+```
+
+The hook may be a plain function or a coroutine function. It runs in
+every worker subprocess after the app exists and before the worker
+connects; it does not run in the supervisor, so keep the module free
+of side effects at import time.
 
 Autoscaled deployment:
 

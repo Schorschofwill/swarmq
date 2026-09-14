@@ -35,6 +35,24 @@ Nur `pre_enqueue` kann die Operation vetoen. Jeder andere Hook ist
 beobachtend: Er kann aufzeichnen, loggen oder State erweitern,
 aber Raisen dort ändert den Task-Pfad nicht.
 
+### Workflow-Schritte
+
+`pre_enqueue` und `post_enqueue` laufen auch für jeden
+Workflow-Schritt — aus `Client.apply` für die Anfangsfront und aus dem
+Advancer im Worker für jeden Folgeschritt. Der Kontext eines solchen
+Schritts hat `delivery_mode="at_least_once"` unabhängig von der
+Deklaration des Tasks und zwei zusätzliche Schlüssel, `workflow_id` und
+`step_path`, die gewöhnliche `schedule()`-Aufrufe nicht tragen.
+`pre_enqueue` läuft für alle Schritte einer Front, bevor der erste
+publiziert wird; wirft es, wird kein Schritt dieser Front publiziert,
+der Workflow mit dem Klassennamen der Ausnahme als gescheitert markiert
+und die auslösende Nachricht bestätigt.
+
+Eine `pre_enqueue`, die Client-Kontext voraussetzt (eine Request-ID,
+ein Auth-Token), muss dessen Fehlen deshalb tolerieren — oder
+`message.get("workflow_id")` prüfen und die Durchsetzung für
+Workflow-Schritte überspringen.
+
 ## Eine Middleware schreiben
 
 ```python title="myapp/middleware.py"

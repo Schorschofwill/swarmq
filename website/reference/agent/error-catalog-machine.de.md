@@ -25,7 +25,7 @@ Jede Zeile hat die folgenden Spalten:
 | exception_class | parent | origin | when | retriable | dlq_on_uncaught | exit_code_on_cli | transport_field |
 |---|---|---|---|---|---|---|---|
 | `swarmq.exceptions.SwarmQError` | `Exception` | library | any | controlled | yes | `1` | `error_class` |
-| `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `78` (`swarmq worker`), `1` (andere Subcommands) | Logsatz `worker_config_error` (Worker), `stderr line` (andere Subcommands) |
 | `swarmq.exceptions.BrokerConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
@@ -49,9 +49,15 @@ des `swarmq`-Binaries ab:
 | Code | Bedeutung | Raising Exception (wenn zutreffend) |
 |---|---|---|
 | `0` | Erfolg oder Graceful Shutdown | — |
-| `1` | Laufzeitfehler | `ConfigurationError`, `BrokerConnectionError`, `BackendConnectionError`, `ModuleNotFoundError` |
+| `1` | Laufzeitfehler | `BrokerConnectionError`, `BackendConnectionError`; `ConfigurationError` außerhalb von `swarmq worker` |
 | `2` | Schlechte Argumente (argparse) | — (von argparse gedruckt) |
 | `3` | `dlq inspect` / `dlq retry <task_id>` nicht gefunden | `_DLQNotFound` (interner Sentinel) |
+| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`) — im Elternprozess oder in einem beliebigen Worker-Kind; der Supervisor reicht ihn durch | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` des Task-Moduls, ein werfender `--configure`-Hook |
+
+`75` (`EX_TEMPFAIL`) wird nur zwischen Worker-Kind und Supervisor
+verwendet (Recycling ohne Bestätigung) und erreicht den Aufrufer nie.
+`78` heißt „nicht ohne Änderung neu starten", `1` heißt „mit Backoff
+erneut versuchen".
 
 ## Klassifizierungshinweise
 

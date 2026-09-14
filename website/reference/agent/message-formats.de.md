@@ -356,24 +356,118 @@ als *(optional)* markiert sind, können in einigen Quellen fehlen
 - `batch_index` *(optional)* ist nur vorhanden, wenn
   `source == "client.schedule_many"`.
 
+### `TASK_DLQ`
+
+```jsonc
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails", "error": "smtp connection refused"}
+```
+
+Feuert einmal, wenn der Worker eine Nachricht terminal dead-lettert.
+Für `task_id` existiert ein Fehlerergebnis.
+
+### `TASK_REJECTED`
+
+```jsonc
+{
+  "queue": "emails",
+  "reason": "unregistered_task",
+  "task_id": "01HV...",
+  "task_name": "send_emial",
+  "error": "task 'send_emial' is not registered"
+}
+```
+
+- `reason` ist einer von `"body_too_large"`, `"undecodable"`,
+  `"unregistered_task"`, `"middleware_chain_factory"`,
+  `"dlq_publish_failed"`.
+- `task_id` und `task_name` sind `null`, wenn der Body nie dekodiert
+  wurde (`body_too_large`, `undecodable`).
+- Es wird kein Fehlerergebnis gespeichert; die Nachricht trägt in der
+  `.XQ` nur den `x-death`-Header des Brokers.
+
+### `WORKFLOW_STEP_ENQUEUED`
+
+```jsonc
+{
+  "task_id": "01HV...",
+  "task_name": "render_pdf",
+  "queue": "pdf",
+  "workflow_id": "01HW...",
+  "step_path": "/1/g0"
+}
+```
+
+Folgt dem `TASK_ENQUEUED` desselben Schritts. `step_path` ist die
+Position des Schritts in der Workflow-Topologie: durch `/` getrennte
+Segmente, wobei `N` der N-te Schritt einer Chain ist, `gN` das N-te
+Mitglied einer Group und `h` der Header eines Chords (`""` für einen
+Workflow aus einer einzelnen Signature, `/0` für den ersten
+Chain-Schritt, `/1/g0` für das erste Mitglied einer Group als zweitem
+Chain-Schritt).
+
 ### `WORKER_*`
 
 ```jsonc
-{"worker_id": "worker-01HV..."}
+{"worker_id": "web-3:0"}
 ```
 
 Emittiert für `WORKER_ONLINE`, `WORKER_SHUTDOWN`,
-`WORKER_HEARTBEAT`.
+`WORKER_HEARTBEAT` (letzteres zusätzlich mit `uptime_seconds`).
+`worker_id` ist `<basis>:<slot>` unter dem Supervisor und
+`<basis>:p<pid>` im eingebetteten Betrieb; `<basis>` ist
+`SWARMQ_WORKER_ID` oder der Hostname. `WORKER_RECYCLING` ergänzt
+`kind`, `slot`, `reason`, `value`.
 
 ### `SCHEDULER_*`
 
 ```jsonc
-{"worker_id": "worker-01HV..."}
+{"worker_id": "web-3:0"}
 ```
 
 Emittiert für `SCHEDULER_LEADER`, `SCHEDULER_STANDBY`,
 `SCHEDULER_HEARTBEAT`, `SCHEDULER_LEADER_HANDOVER`,
 `SCHEDULER_LEADER_FAILOVER`.
+
+## Payload von `swarmq worker --check`
+
+`swarmq worker --check ...` druckt ein JSON-Objekt auf stdout und
+endet mit `0` (`ok: true`) oder `1` (`ok: false`). Nichts wird
+gestartet, keine Verbindung geöffnet.
+
+```jsonc
+{
+  "ok": true,
+  "module": "myapp.tasks",
+  "module_origin": "/srv/app/myapp/tasks.py",
+  "reload": false,
+  "watch_dirs": null,
+  "warnings": [],
+  "error": null,
+  "error_type": null,
+  "pool": "io",
+  "slots": 10,
+  "configure": "myapp.hooks:setup",
+  "metrics_ports": [9000, 9001, 9002],
+  "health_ports": [9100, 9101, 9102]
+}
+```
+
+| Feld | Typ | Beschreibung |
+|---|---|---|
+| `ok` | `bool` | `true`, wenn jede Prüfung bestanden hat. |
+| `module` | `str` | Das `--module`-Argument. |
+| `module_origin` | `str \| null` | Aufgelöste Datei des Task-Moduls (`find_spec`). |
+| `reload` | `bool` | Ob `--reload` angefordert wurde. |
+| `watch_dirs` | `list[str] \| null` | Aufgelöste Watch-Verzeichnisse; `null` ohne `--reload`. |
+| `warnings` | `list[str]` | Nicht-fatale Befunde, z. B. ein `hard_timeout` über dem Consumer-Timeout des Brokers. |
+| `error`, `error_type` | `str \| null` | Gesetzt, wenn `ok` `false` ist; `error_type` ist der Klassenname der Ausnahme (`ConfigurationError`, `ModuleNotFoundError`, `ArgparseError`, …). |
+| `pool` | `"io" \| "cpu"` | Wirksamer Pool. |
+| `slots` | `int` | Wirksame Concurrency je Prozess (Rechenslots im CPU-Modus). |
+| `configure` | `str \| null` | Die `--configure`-Angabe nach Syntax- und `find_spec`-Prüfung; das Callable selbst wird erst im Worker aufgelöst. |
+| `metrics_ports`, `health_ports` | `list[int] \| null` | Die genauen Ports, die die Slots `0..N-1` binden, `N` ist `--processes` oder die Obergrenze von `--autoscale`; `null`, wenn der Basisport ungesetzt ist. |
+
+Bei einem argparse-Fehler (Exit `2`) hat das Payload `error_type:
+"ArgparseError"`, die übrigen Felder sind `null`.
 
 ## Siehe auch
 

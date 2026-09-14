@@ -22,10 +22,38 @@ inspizierst, retry'st und purgest.
 | `TaskInfo.max_age` bei Pickup überschritten | `x-swarmq-expired=1` |
 | Lock-Render-Fehler (Template-Kwarg fehlt) | `x-swarmq-lock-error=render_failed` |
 | Lock-Konflikt-Budget erschöpft | `x-swarmq-lock-error=conflict_cap` |
+| Body über der Größengrenze, nicht dekodierbarer Body, unregistrierter Task-Name, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | keiner von SwarmQ — nur das `x-death` des Brokers |
 
 Die DLQ ist eine reguläre RabbitMQ-Queue — du kannst sie mit
 `rabbitmqadmin` oder der Management-UI inspizieren, aber die
 `swarmq dlq`-CLI rendert sie SwarmQ-aware.
+
+## Drei Wege in die `.XQ`
+
+Nachrichten erreichen `{queue}.XQ` auf drei verschiedenen Wegen, und
+die sind nicht gleich gut sichtbar. Ein Alert auf „Queue-Tiefe > 0"
+fängt alle drei; zu wissen, welcher Weg gefeuert hat, sagt dir, was zu
+reparieren ist.
+
+| Weg | Wer bewegt die Nachricht | Signal | Metrik | Header |
+|---|---|---|---|---|
+| **Dead-Lettering durch den Worker** — Retries erschöpft, `NoRetry`, `max_age`, Lock-Fehler, Delivery-Limit kurz vor dem Auslösen | Worker publiziert nach `.XQ` und bestätigt das Original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) | `swarmq_tasks_total{outcome="dlq"}` | volle SwarmQ-Diagnose (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-error`, …); ein Fehlerergebnis wird gespeichert |
+| **Abweisung durch den Worker** — die Nachricht ließ sich nicht in einen Task verwandeln | Worker weist ohne Requeue ab; der Dead-Letter-Exchange des Brokers routet sie | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | nur das `x-death` des Brokers; `task_id`/`task_name` sind `None`, wenn der Body nie dekodiert wurde |
+| **Dead-Lettering durch den Broker** — `x-delivery-limit` nach wiederholten Worker-Abstürzen, Nachrichten-TTL, Längenlimit der Queue | RabbitMQ selbst | keines — kein Worker hat die letzte Zustellung gesehen | `swarmq_dlq_messages{queue}` (Tiefen-Gauge, vom Worker abgetastet) | nur `x-death` |
+
+`reason` auf dem Abweisungsweg ist einer von `body_too_large`,
+`undecodable`, `unregistered_task`, `middleware_chain_factory`,
+`dlq_publish_failed`. `unregistered_task` nach einem Deploy heißt
+meist, dass Worker und Produzent verschiedene Versionen des Task-Moduls
+fahren; `body_too_large` und `undecodable` zeigen auf den Produzenten.
+
+Der dritte Weg ist der, den man beobachten muss, wenn die anderen beiden
+still sind: Ein Task, der den Prozess zuverlässig tötet (SIGSEGV, OOM),
+erreicht nie `TASK_FAILED`. Seit 0.5.0 dead-lettert der Worker eine
+solche Nachricht ab der vorletzten Zustellung selbst, sie landet also
+auf dem ersten Weg mit `TASK_DLQ`; der Broker-Weg bleibt für TTL und
+Längenlimits und für Abstürze, die schneller sind als die eigene
+Prüfung des Workers.
 
 ## DLQ-Inhalte auflisten
 
@@ -166,9 +194,20 @@ Ein typischer Recovery-Durchgang sieht so aus:
 ## Alerting
 
 Richte einen Alert auf DLQ-Queue-Tiefe in deinem Metrics-Stack
-ein. `swarmq[metrics]` emittiert `rabbitmq_queue_messages` für
-jede Queue inklusive `*.XQ` — filter auf `queue=~".+\\.XQ"` und
-alarmiere bei `> 0 for 10m`.
+ein. `swarmq[metrics]` tastet `swarmq_dlq_messages{queue}` für die
+`.XQ` jeder konsumierten Queue ab — alarmiere bei `> 0 for 10m`.
+Dieses Gauge fängt alle [drei Wege](#drei-wege-in-die-xq), auch das
+broker-seitige Dead-Lettering, das kein Signal meldet.
+
+Alarmiere getrennt auf die beiden Zähler, weil sie Verschiedenes
+bedeuten:
+
+- `increase(swarmq_tasks_total{outcome="dlq"}[10m]) > 0` — Tasks sind
+  gelaufen und terminal gescheitert; Fehlerergebnis und
+  Traceback-Header ansehen.
+- `increase(swarmq_tasks_rejected_total[10m]) > 0` — Nachrichten sind
+  nie zu Tasks geworden; nach `reason` gruppieren und Produzent oder
+  Deployment prüfen.
 
 Ohne Prometheus exposet das RabbitMQ-Management-Plugin Queue-Tiefe
 unter `/api/queues/%2F/{queue}.XQ`.

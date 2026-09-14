@@ -46,6 +46,9 @@ dispatched — no separate event loop, no worker thread.
 | `TASK_LOCKED` | When a task's lock acquisition is in progress | `task_id`, `task_name`, `lock_name` |
 | `TASK_RATE_LIMITED` | When the rate limiter defers a message | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | When a unique-task SETNX loses the race | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
+| `TASK_DLQ` | Once, when a message is terminally dead-lettered by the worker (retry exhaustion, `NoRetry`, delivery limit reached) | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_REJECTED` | When the worker hands a message to the broker's dead-letter exchange without diagnostic headers: oversized body, undecodable body, unregistered task, broken middleware-chain factory, failed dead-letter publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `WORKFLOW_STEP_ENQUEUED` | After each workflow step is published (by `Client.apply` or the advancer in the worker), in addition to `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | Worker lifecycle | `worker_id` |
 | `WORKER_RECYCLING` | A compute child (`kind="compute_child"`) or the worker itself (`kind="worker"`) is recycled by RSS or task count | `worker_id`, `kind`, `slot`, `reason` (`rss`/`tasks`/`forced`), `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler leader transitions | `worker_id` |
@@ -56,6 +59,30 @@ Handlers should accept `**kwargs` defensively. The
 `TASK_DUPLICATE_DETECTED` signal's `batch_index` key is present only
 when the source is `client.schedule_many` — use
 `kwargs.get("batch_index")` to avoid `KeyError`.
+
+`TASK_REJECTED` carries `reason` from a fixed set: `body_too_large`,
+`undecodable`, `unregistered_task`, `middleware_chain_factory`,
+`dlq_publish_failed`. `task_id` and `task_name` are `None` when the
+body never decoded. It is distinct from `TASK_DLQ`, which promises an
+error result and a task identity; the
+[dead letter guide](dead-letter-queues.md#three-ways-into-the-xq)
+explains which path a message took.
+
+Workflow steps fire `TASK_ENQUEUED` with the step's real task name
+(there is no `<workflow>` placeholder any more) and then
+`WORKFLOW_STEP_ENQUEUED` with the workflow identity. Handlers that
+only know `TASK_ENQUEUED` keep working; subscribe to the second signal
+when you need `workflow_id` or `step_path`.
+
+### The `worker_id` field
+
+Every `WORKER_*`, `SCHEDULER_*` and `WORKER_RECYCLING` payload carries
+the worker's stable identity: `<base>:<slot>` under the supervisor
+(`web-3:0`, `web-3:1`, …) and `<base>:p<pid>` for an embedded worker
+(`web-3:p41872`). `<base>` is `SWARMQ_WORKER_ID` or the hostname. The
+slot survives restarts and recycling, so it is the right key for
+per-worker dashboards; see
+[worker identity](../reference/configuration.md#worker-identity).
 
 ## Error semantics
 
@@ -130,6 +157,26 @@ async def alert(task_id, task_name, exception):
             text=f":fire: {task_name} failed: {task_id}",
         )
 ```
+
+### Alert on rejected messages
+
+`TASK_REJECTED` means the worker could not even start the task: the
+body was too large, undecodable, or named a task this worker does not
+know. None of these are retried, so they deserve a separate alert from
+ordinary DLQ traffic:
+
+```python
+@app.on_signal(Signal.TASK_REJECTED)
+async def on_rejected(queue, reason, task_name=None, **kwargs):
+    if reason == "unregistered_task":
+        await slack.post(
+            channel="#ops",
+            text=f":warning: {queue}: unknown task {task_name!r} — deploy mismatch?",
+        )
+```
+
+With `swarmq[metrics]` the same events are counted in
+`swarmq_tasks_rejected_total{queue,reason}`.
 
 ### Audit log for cancellations
 
