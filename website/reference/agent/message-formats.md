@@ -353,24 +353,117 @@ Handlers receive the following kwargs per signal. Fields marked
 - `batch_index` *(optional)* is present only when
   `source == "client.schedule_many"`.
 
+### `TASK_DLQ`
+
+```jsonc
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails", "error": "smtp connection refused"}
+```
+
+Fires once, when the worker dead-letters a message terminally. An
+error result exists for `task_id`.
+
+### `TASK_REJECTED`
+
+```jsonc
+{
+  "queue": "emails",
+  "reason": "unregistered_task",
+  "task_id": "01HV...",
+  "task_name": "send_emial",
+  "error": "task 'send_emial' is not registered"
+}
+```
+
+- `reason` is one of `"body_too_large"`, `"undecodable"`,
+  `"unregistered_task"`, `"middleware_chain_factory"`,
+  `"dlq_publish_failed"`.
+- `task_id` and `task_name` are `null` when the body never decoded
+  (`body_too_large`, `undecodable`).
+- No error result is stored; the message carries only the broker's
+  `x-death` header in `.XQ`.
+
+### `WORKFLOW_STEP_ENQUEUED`
+
+```jsonc
+{
+  "task_id": "01HV...",
+  "task_name": "render_pdf",
+  "queue": "pdf",
+  "workflow_id": "01HW...",
+  "step_path": "/1/g0"
+}
+```
+
+Follows the `TASK_ENQUEUED` of the same step. `step_path` is the
+step's position in the workflow topology: `/`-separated segments,
+where `N` is the N-th step of a chain, `gN` the N-th member of a group
+and `h` the header of a chord (`""` for a workflow that is a single
+signature, `/0` for the first chain step, `/1/g0` for the first member
+of a group that is the second chain step).
+
 ### `WORKER_*`
 
 ```jsonc
-{"worker_id": "worker-01HV..."}
+{"worker_id": "web-3:0"}
 ```
 
 Emitted for `WORKER_ONLINE`, `WORKER_SHUTDOWN`,
-`WORKER_HEARTBEAT`.
+`WORKER_HEARTBEAT` (the latter with `uptime_seconds` in addition).
+`worker_id` is `<base>:<slot>` under the supervisor and
+`<base>:p<pid>` for an embedded worker; `<base>` is `SWARMQ_WORKER_ID`
+or the hostname. `WORKER_RECYCLING` adds `kind`, `slot`, `reason`,
+`value`.
 
 ### `SCHEDULER_*`
 
 ```jsonc
-{"worker_id": "worker-01HV..."}
+{"worker_id": "web-3:0"}
 ```
 
 Emitted for `SCHEDULER_LEADER`, `SCHEDULER_STANDBY`,
 `SCHEDULER_HEARTBEAT`, `SCHEDULER_LEADER_HANDOVER`,
 `SCHEDULER_LEADER_FAILOVER`.
+
+## `swarmq worker --check` payload
+
+`swarmq worker --check ...` prints one JSON object on stdout and exits
+`0` (`ok: true`) or `1` (`ok: false`). Nothing is started and no
+connection is opened.
+
+```jsonc
+{
+  "ok": true,
+  "module": "myapp.tasks",
+  "module_origin": "/srv/app/myapp/tasks.py",
+  "reload": false,
+  "watch_dirs": null,
+  "warnings": [],
+  "error": null,
+  "error_type": null,
+  "pool": "io",
+  "slots": 10,
+  "configure": "myapp.hooks:setup",
+  "metrics_ports": [9000, 9001, 9002],
+  "health_ports": [9100, 9101, 9102]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | `bool` | `true` when every check passed. |
+| `module` | `str` | The `--module` argument. |
+| `module_origin` | `str \| null` | Resolved file of the task module (`find_spec`). |
+| `reload` | `bool` | Whether `--reload` was requested. |
+| `watch_dirs` | `list[str] \| null` | Resolved watch directories; `null` without `--reload`. |
+| `warnings` | `list[str]` | Non-fatal findings, e.g. a `hard_timeout` above the broker's consumer timeout. |
+| `error`, `error_type` | `str \| null` | Set when `ok` is `false`; `error_type` is the exception class name (`ConfigurationError`, `ModuleNotFoundError`, `ArgparseError`, …). |
+| `pool` | `"io" \| "cpu"` | Effective pool. |
+| `slots` | `int` | Effective concurrency per process (compute slots in CPU mode). |
+| `configure` | `str \| null` | The `--configure` spec after syntax and `find_spec` validation; the callable itself is resolved only inside the worker. |
+| `metrics_ports`, `health_ports` | `list[int] \| null` | The exact ports the slots `0..N-1` will bind, `N` being `--processes` or the `--autoscale` upper bound; `null` when the base port is unset. |
+
+On an argparse error (exit `2`) the payload has `error_type:
+"ArgparseError"` and the other fields `null`.
 
 ## See also
 

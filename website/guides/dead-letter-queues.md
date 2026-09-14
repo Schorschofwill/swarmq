@@ -20,10 +20,36 @@ guide covers how to inspect, retry, and purge DLQ messages.
 | `TaskInfo.max_age` exceeded at pickup | `x-swarmq-expired=1` |
 | Lock-render failure (template kwarg missing) | `x-swarmq-lock-error=render_failed` |
 | Lock conflict budget exhausted | `x-swarmq-lock-error=conflict_cap` |
+| Body over the size cap, undecodable body, unregistered task name, broken middleware-chain factory, failed dead-letter publish | none from SwarmQ — only the broker's `x-death` |
 
 The DLQ is a regular RabbitMQ queue — you can inspect it with
 `rabbitmqadmin` or the management UI, but the `swarmq dlq` CLI
 renders it in SwarmQ-aware shape.
+
+## Three ways into the `.XQ`
+
+Messages reach `{queue}.XQ` on three different paths, and they are
+not equally visible. Alerting on "queue depth > 0" catches all three;
+knowing which path fired tells you what to fix.
+
+| Path | Who moves the message | Signal | Metric | Headers |
+|---|---|---|---|---|
+| **Dead-lettering by the worker** — retries exhausted, `NoRetry`, `max_age`, lock errors, delivery limit about to trip | Worker publishes to `.XQ` and acks the original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) | `swarmq_tasks_total{outcome="dlq"}` | full SwarmQ diagnostics (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-error`, …); an error result is stored |
+| **Rejection by the worker** — the message could not be turned into a task | Worker rejects without requeue; the broker's dead-letter exchange routes it | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | only the broker's `x-death`; `task_id`/`task_name` are `None` when the body never decoded |
+| **Dead-lettering by the broker** — `x-delivery-limit` after repeated worker crashes, message TTL, queue length limit | RabbitMQ itself | none — no worker saw the terminal delivery | `swarmq_dlq_messages{queue}` (depth gauge sampled by the worker) | only `x-death` |
+
+`reason` on the rejection path is one of `body_too_large`,
+`undecodable`, `unregistered_task`, `middleware_chain_factory`,
+`dlq_publish_failed`. `unregistered_task` after a deploy usually means
+the worker and the producer run different versions of the task module;
+`body_too_large` and `undecodable` point at the producer.
+
+The third path is the one to watch when the other two are quiet: a
+task that reliably kills the process (SIGSEGV, OOM) never reaches
+`TASK_FAILED`. From 0.5.0 the worker dead-letters such a message itself
+from the penultimate delivery on, so it lands on the first path with
+`TASK_DLQ`; the broker path remains for TTL and length limits, and for
+crashes faster than the worker's own check.
 
 ## Listing DLQ contents
 
@@ -161,9 +187,20 @@ A typical recovery pass looks like this:
 ## Alerting
 
 Set up an alert on DLQ queue depth in your metrics stack.
-`swarmq[metrics]` emits `rabbitmq_queue_messages` for every queue
-including `*.XQ` — filter to `queue=~".+\\.XQ"` and alert on
-`> 0 for 10m`.
+`swarmq[metrics]` samples `swarmq_dlq_messages{queue}` for every
+consumed queue's `.XQ` — alert on `> 0 for 10m`. That gauge catches
+all [three paths](#three-ways-into-the-xq), including broker-side
+dead-lettering that no signal reports.
+
+Alert separately on the two counters, because they mean different
+things:
+
+- `increase(swarmq_tasks_total{outcome="dlq"}[10m]) > 0` — tasks ran
+  and failed terminally; look at the error result and the traceback
+  header.
+- `increase(swarmq_tasks_rejected_total[10m]) > 0` — messages never
+  became tasks; group by `reason` and check the producer or the
+  deployment.
 
 Without Prometheus, the RabbitMQ management plugin exposes queue
 depth at `/api/queues/%2F/{queue}.XQ`.

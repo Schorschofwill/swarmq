@@ -6,6 +6,115 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-14
+
+### Geändert (breaking)
+
+- **`worker_id` hat eine feste Form.** In jedem Signal, Metrik-Label und
+  Logkontext ist die Worker-Identität `<basis>:<slot>` unter dem Supervisor
+  und `<basis>:p<pid>` im eingebetteten `start_worker()`. `<basis>` ist
+  `SWARMQ_WORKER_ID`, sonst der Hostname. Bisher war es eine undurchsichtige
+  Objekt-ID, die sich mit jedem Neustart änderte. Gilt für `WORKER_*`,
+  `SCHEDULER_*`, `WORKER_RECYCLING` (auch `kind="compute_child"`) und die
+  Labels von `swarmq_worker_uptime_seconds` und `swarmq_scheduler_leader`.
+  Dashboards können den Slot lesen; die Uptime beginnt beim Recycling eines
+  Slots von vorn.
+- **`--metrics-port` und `--health-port` sind Basisports.** Der Worker in
+  Slot `s` bindet `basis + s`; Mehrprozess-Betrieb mit festem Port wird nicht
+  mehr abgelehnt. Abgelehnt wird stattdessen ein Bereich `[basis, basis + N)`
+  über 65535 hinaus oder eine Überschneidung von Metrik- und Health-Bereich.
+  `N` ist `--processes` oder die Obergrenze von `--autoscale`. Prometheus
+  braucht ein Target je Slot; `swarmq worker --check` gibt beide Bereiche
+  aus (`metrics_ports`, `health_ports`).
+- **Exit-Code 78 für Konfigurationsfehler, auf jeder Ebene.** Ein
+  `ConfigurationError` oder `ModuleNotFoundError` im Elternprozess von
+  `swarmq worker` erzeugt den strukturierten Logsatz `worker_config_error`
+  und endet mit 78 (bisher 1). Endet ein Worker-Kind mit 78 — auch bei einem
+  `ImportError` beim Import des Task-Moduls — endet der Supervisor ebenfalls
+  mit 78 (bisher 1). Verbindungsfehler zu Broker oder Backend bleiben bei 1.
+  Eine Orchestrierung kann jetzt „nicht wieder anfassen" von „gleich
+  nochmal" unterscheiden.
+- **Workflow-Schritte laufen durch die Enqueue-Middleware.** Jeder Schritt,
+  den der `WorkflowAdvancer` publiziert, und jeder Schritt der Anfangsfront
+  in `Client.apply` durchläuft vor dem Publish `pre_enqueue` und danach
+  `post_enqueue`, in derselben Kette wie `Client.schedule`, mit
+  `delivery_mode="at_least_once"` und den zusätzlichen Kontextschlüsseln
+  `workflow_id` und `step_path`. `pre_enqueue` läuft für alle Schritte einer
+  Front, bevor der erste publiziert wird; wirft es, wird kein Schritt dieser
+  Front publiziert, der Workflow als gescheitert markiert (`error.type` =
+  Name der Ausnahme) und die Nachricht bestätigt. Eine `pre_enqueue`, die
+  Client-Kontext voraussetzt, kann jetzt Workflow-Schritte ablehnen.
+- **Das Pseudo-Ereignis `<workflow>` entfällt.** `Client.apply` löst kein
+  `TASK_ENQUEUED` mit `task_name="<workflow>"` mehr aus. Jeder Schritt löst
+  `TASK_ENQUEUED` mit seiner echten Identität aus, gefolgt von
+  `WORKFLOW_STEP_ENQUEUED`.
+
+### Hinzugefügt
+
+- **`swarmq worker --configure MODULE:CALLABLE`**: Das Callable erhält die
+  `SwarmQ`-App nach ihrer Konstruktion und vor dem Start des Workers; ein
+  Awaitable als Rückgabe wird abgewartet. Middleware und Signal-Handler
+  registrieren, ohne einen eigenen Worker-Einstieg zu schreiben. Läuft genau
+  einmal je Worker-Prozess, nie im Forkserver und nie in `schedule`, `dlq`
+  oder `inspect`. Ein scheiternder Hook ist ein Konfigurationsfehler
+  (Exit 78). `--check` prüft die Syntax `MODULE:CALLABLE` und die
+  Auffindbarkeit des Moduls, ohne es zu importieren.
+- **Signal `TASK_REJECTED`** mit `queue`, `reason`, `task_id`, `task_name`,
+  `error` für jede Nachricht, die der Worker ohne Diagnose-Header an den
+  Dead-Letter-Exchange des Brokers gibt. `reason` ist einer von
+  `body_too_large`, `undecodable`, `unregistered_task`,
+  `middleware_chain_factory`, `dlq_publish_failed`; `task_id` und
+  `task_name` sind `None`, wenn der Body nie dekodiert wurde. Zähler
+  `swarmq_tasks_rejected_total{queue,reason}`.
+  `swarmq_tasks_total{outcome="dlq"}` zählt weiterhin nur `TASK_DLQ`. Der
+  [Dead-Letter-Guide](../guides/dead-letter-queues.de.md#drei-wege-in-die-xq)
+  benennt die drei Wege ins `.XQ`.
+- **Signal `WORKFLOW_STEP_ENQUEUED`** mit `task_id`, `task_name`, `queue`,
+  `workflow_id`, `step_path` nach jedem publizierten Workflow-Schritt,
+  zusätzlich zu `TASK_ENQUEUED`.
+- **`SWARMQ_WORKER_ID`** (auch `SwarmQ(worker_id=...)`) setzt die Basis der
+  Worker-Identität; Standard ist der Hostname.
+- **Slot-Tabelle im Supervisor.** Slots sind `0..N-1`. Der Ersatz für einen
+  gestorbenen, hängenden oder recycelten Worker erhält denselben Slot und
+  damit dieselben Ports; ein Scale-Up nimmt den kleinsten freien Slot, ein
+  Scale-Down entfernt den jüngsten Worker nach Startzeit. Ein Slot mit
+  erschöpftem Neustart-Budget wird gesperrt und nie nachgefüllt. Während
+  eines rollierenden Ersatzes teilen Alt- und Neu-Prozess den Slot; der
+  Autoscaler zählt ihn einmal. Der Ersatz bindet seinen Port mit
+  Wiederholung; das Budget deckt das SIGKILL eines hängenden und die
+  Portfreigabe eines recycelnden Vorgängers.
+
+### Behoben
+
+- **Verlorene Zustands-Updates von Workflows bei parallelen Zweigen.** Jede
+  Schreibung des Workflow-Zustands durch den Advancer ist ein
+  Compare-and-Set gegen die gelesene Version (Feld `version`; Dokumente aus
+  0.5.x gelten als 0). Bei einem Konflikt liest der Advancer neu, übernimmt
+  seine lokalen Änderungen (`step_tasks` additiv; `status`,
+  `final_result_task_id` und `error` bei lokalem Terminalstatus) und
+  schreibt erneut, bis zu 25 Runden; ein frischer Terminalstatus beendet
+  den Advance ohne Schreibung. Oberhalb der Grenze wird die Nachricht neu
+  zugestellt. Der bisher als `xfail` geführte Test zum verlorenen
+  Schritt-Marker ist jetzt ein Regressionstest.
+- **Fehlermarkierung unterscheidet Fehlertypen.** Scheitert die
+  Fehlermarkierung eines Workflows an einem `BackendConnectionError`, wird
+  die Nachricht (at-least-once) neu zugestellt statt bestätigt; jeder andere
+  Fehler bestätigt und loggt mit Workflow-Kennung.
+- **Konfigurationsfehler im Kind sind strukturierte Logsätze.** Der
+  Fehlertext erscheint im konfigurierten Format (`human` oder `json`), nicht
+  als rohe stderr-Zeile; der Supervisor loggt `worker_config_error`. Ein
+  Kind, das mit 75 endet (Recycling ohne Bestätigung), wird als
+  `worker_recycle_noack` geloggt und im Budget neu gestartet.
+- **Der Log-Formatter druckt keine Tracebacks mehr.** Scheitert die
+  Formatierung eines Records (etwa an einem werfenden `__repr__` in
+  `record.args`), gibt der Formatter eine Zeile im konfigurierten Format mit
+  `event="log_record_unformattable"`, Logger-Name, Level und Fehlertext aus.
+- **Keine `RuntimeWarning` je Rechenkind.** Ein per
+  `python -m paket.modul` gestarteter Worker im CPU-Modus importierte sein
+  Hauptmodul in jedem Rechenkind erneut, jeweils mit einer `runpy`-Warnung.
+  Der Forkserver-Preload registriert es jetzt einmal als `__main__`; der
+  Kindstart bleibt bei etwa 5 ms.
+
 ## [0.5.1] — 2026-09-06
 
 ### Behoben

@@ -35,6 +35,23 @@ Only `pre_enqueue` can veto the operation. Every other hook is
 observational: it can record, log, or augment state, but raising
 there will not change the task's path.
 
+### Workflow steps
+
+`pre_enqueue` and `post_enqueue` also run for every workflow step —
+from `Client.apply` for the initial front and from the advancer inside
+the worker for every following step. The context of such a step has
+`delivery_mode="at_least_once"` regardless of the task's declaration
+and two extra keys, `workflow_id` and `step_path`, that ordinary
+`schedule()` calls do not carry. `pre_enqueue` runs for all steps of a
+front before the first one is published; if it raises, no step of that
+front is published, the workflow is marked failed with the exception's
+class name and the triggering message is acked.
+
+A `pre_enqueue` that assumes client-side context (a request id, an
+auth token) therefore has to tolerate its absence, or check
+`message.get("workflow_id")` and skip the enforcement for workflow
+steps.
+
 ## Writing a middleware
 
 ```python title="myapp/middleware.py"

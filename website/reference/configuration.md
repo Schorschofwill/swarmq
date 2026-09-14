@@ -61,26 +61,77 @@ The CLI prints a descriptive error if either is missing; see the
 
 | Variable | Default | Description |
 |---|---|---|
-| `SWARMQ_METRICS_PORT` | *unset* | If set, serve `/metrics` on this port. Requires `pip install swarmq[metrics]`. Must be `1..65535`. Cannot be combined with multi-process mode — see the note below. |
-| `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind address for the metrics server. |
-| `SWARMQ_HEALTH_PORT` | *unset* | If set, serve `/health` and `/ready` on this port. Must be `1..65535`. Cannot be combined with multi-process mode — see the note below. |
+| `SWARMQ_METRICS_PORT` | *unset* | **Base port** for `/metrics`. The worker in slot `s` serves on `SWARMQ_METRICS_PORT + s`; an embedded worker without a slot serves on the base port itself. Requires `pip install swarmq[metrics]`. Must be `1..65535`. |
+| `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind address for the metrics server. Set `0.0.0.0` when Prometheus scrapes from another host or container. |
+| `SWARMQ_HEALTH_PORT` | *unset* | **Base port** for `/health` and `/ready`, same slot offset. Must be `1..65535`. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. |
+| `SWARMQ_WORKER_ID` | hostname | Base of the worker identity that appears as `worker_id` in signals, metric labels and the log context. See [worker identity](#worker-identity). |
 
-!!! warning "A fixed observability port cannot be shared by several worker processes"
+#### Base ports and slots
 
-    `swarmq worker` refuses to start when more than one worker process is
-    requested (`--processes N` with N > 1, or `--autoscale MIN,MAX` with
-    MAX > 1) while a metrics or health port is in effect. Every child would
-    bind the same port, so only the first survives; the remaining slots burn
-    their restart budget and the run continues silently under-provisioned.
+The supervisor runs its workers in slots `0..N-1`, where `N` is
+`--processes` or the upper bound of `--autoscale`. Each slot binds its
+own observability ports, derived from the base port:
 
-    The check uses the resolved value, so setting the port through
-    `SWARMQ_METRICS_PORT` / `SWARMQ_HEALTH_PORT` is refused just as a
-    command-line flag is, and the message names whichever source is in
-    effect. `swarmq worker --check` reports the same conflict.
+| Slot | `/metrics` with `SWARMQ_METRICS_PORT=9000` | `/health` with `SWARMQ_HEALTH_PORT=9100` |
+|---|---|---|
+| `0` | `9000` | `9100` |
+| `1` | `9001` | `9101` |
+| `2` | `9002` | `9102` |
 
-    Either drop the fixed port for multi-process mode, or run a single
-    process with it. A port per child process is not available yet.
+A slot keeps its ports for the life of the run: a worker that crashes,
+hangs or recycles itself is replaced in the same slot, and the
+replacement re-binds the same port (with retries while the predecessor
+releases it). Scrape targets therefore stay stable across restarts.
+
+Two configurations are refused at startup with a `ConfigurationError`
+(exit `78`), and `swarmq worker --check` reports the same:
+
+- a range `[base, base + N)` that runs past `65535` — lower the base
+  port or run fewer processes;
+- metrics and health ranges that overlap — move one base port at least
+  `N` ports away.
+
+The `--check` payload lists the exact ports as `metrics_ports` and
+`health_ports`, so an operator does not have to compute them.
+
+#### Prometheus example
+
+One target per slot; the bind host must be reachable from Prometheus
+(`SWARMQ_METRICS_HOST=0.0.0.0` when it scrapes over the network):
+
+```yaml
+scrape_configs:
+  - job_name: swarmq
+    static_configs:
+      - targets:
+          - worker-host:9000   # slot 0
+          - worker-host:9001   # slot 1
+          - worker-host:9002   # slot 2
+```
+
+With `--autoscale MIN,MAX` list `MAX` targets; slots that are not
+running are scraped as `down`, which is expected while the pool is
+scaled down.
+
+### Worker identity
+
+Every worker carries a stable identity in the `worker_id` field of
+the `WORKER_*`, `SCHEDULER_*` and `WORKER_RECYCLING` signals, in the
+labels of `swarmq_worker_uptime_seconds` and `swarmq_scheduler_leader`,
+and in the structured log context:
+
+| Runs as | `worker_id` | Example |
+|---|---|---|
+| Under the supervisor (`swarmq worker`) | `<base>:<slot>` | `web-3:0`, `web-3:1` |
+| Embedded (`await app.start_worker()`) | `<base>:p<pid>` | `web-3:p41872` |
+
+`<base>` is `SWARMQ_WORKER_ID` (or the `worker_id=` kwarg of
+`SwarmQConfig`); the default is the hostname. Compute children in CPU
+mode report the identity of the loop process that owns them, so
+`WORKER_RECYCLING` with `kind="compute_child"` carries the slot as
+well. Read the slot in dashboards as the stable dimension: a slot's
+uptime restarts when its worker is replaced, its identity does not.
 
 All ports are validated at config-time: a bad value raises
 `ConfigurationError` before the worker tries to bind.
@@ -113,7 +164,9 @@ app = SwarmQ(
 Field names match the env vars without the `SWARMQ_` prefix and in
 lowercase. Env vars always win when both are set — pass kwargs only
 when you need a non-default that you do not want in the shell
-environment.
+environment. `worker_id=` sets the base of the
+[worker identity](#worker-identity); an embedded worker has no slot,
+so `metrics_port` and `health_port` are bound as given.
 
 ## `TaskInfo` fields
 

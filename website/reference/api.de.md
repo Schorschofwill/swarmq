@@ -465,6 +465,12 @@ class MessageContext(TypedDict):
 Client-seitigen Hooks (`pre_enqueue`, `post_enqueue`) abwesend.
 Behandle es als optional.
 
+Workflow-Schritte durchlaufen ebenfalls `pre_enqueue` und
+`post_enqueue` (aus `Client.apply` und aus dem Advancer im Worker).
+Ihr Kontext hat immer `delivery_mode="at_least_once"` und zwei
+zusätzliche Schlüssel, `workflow_id` und `step_path`, die gewöhnliche
+`schedule()`-Aufrufe nicht tragen — mit `.get()` lesen.
+
 ## `enum Signal`
 
 Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
@@ -482,7 +488,11 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `TASK_LOCKED` | `task_id`, `task_name`, `lock_name` |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
+| `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` können `None` sein |
+| `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | `worker_id` |
+| `WORKER_RECYCLING` | `worker_id`, `kind`, `slot`, `reason`, `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` |
@@ -490,7 +500,9 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 Handler müssen `**kwargs` akzeptieren (oder jedes Feld explizit
 nennen). Nutze `kwargs.get("batch_index")` für das nur in
 `TASK_DUPLICATE_DETECTED` vorhandene Feld, da Nicht-Batch-Quellen
-es nicht enthalten.
+es nicht enthalten. `worker_id` ist `<basis>:<slot>` unter dem
+Supervisor und `<basis>:p<pid>` eingebettet; siehe
+[Worker-Identität](configuration.de.md#worker-identitat).
 
 ## `class ProgressInfo`
 

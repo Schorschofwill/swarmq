@@ -24,7 +24,7 @@ Every row has the following columns:
 | exception_class | parent | origin | when | retriable | dlq_on_uncaught | exit_code_on_cli | transport_field |
 |---|---|---|---|---|---|---|---|
 | `swarmq.exceptions.SwarmQError` | `Exception` | library | any | controlled | yes | `1` | `error_class` |
-| `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `78` (`swarmq worker`), `1` (other subcommands) | `worker_config_error` log line (worker), `stderr line` (other subcommands) |
 | `swarmq.exceptions.BrokerConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
@@ -48,9 +48,15 @@ binary's contract:
 | Code | Meaning | Raising exception (when applicable) |
 |---|---|---|
 | `0` | Success or graceful shutdown | — |
-| `1` | Runtime error | `ConfigurationError`, `BrokerConnectionError`, `BackendConnectionError`, `ModuleNotFoundError` |
+| `1` | Runtime error | `BrokerConnectionError`, `BackendConnectionError`; `ConfigurationError` outside `swarmq worker` |
 | `2` | Bad arguments (argparse) | — (printed by argparse) |
 | `3` | `dlq inspect` / `dlq retry <task_id>` not found | `_DLQNotFound` (internal sentinel) |
+| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`) — in the parent process or in any worker child; the supervisor propagates it | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` of the task module, a raising `--configure` hook |
+
+`75` (`EX_TEMPFAIL`) is used between a worker child and the supervisor
+only (recycle without acknowledgement) and never reaches the caller.
+Treat `78` as "do not restart without a change" and `1` as "retry with
+backoff".
 
 ## Classification guidance
 

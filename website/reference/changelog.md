@@ -6,6 +6,110 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-14
+
+### Changed (breaking)
+
+- **`worker_id` has a fixed shape.** In every signal, metric label and log
+  context the worker identity is `<base>:<slot>` under the supervisor and
+  `<base>:p<pid>` for an embedded `start_worker()`. `<base>` is
+  `SWARMQ_WORKER_ID`, otherwise the hostname. Previously it was an opaque
+  object id that changed with every restart. Applies to `WORKER_*`,
+  `SCHEDULER_*`, `WORKER_RECYCLING` (also `kind="compute_child"`) and the
+  labels of `swarmq_worker_uptime_seconds` and `swarmq_scheduler_leader`.
+  Dashboards can read the slot; uptime restarts when a slot is recycled.
+- **`--metrics-port` and `--health-port` are base ports.** The worker in
+  slot `s` binds `base + s`; multi-process mode with a fixed port is no
+  longer refused. Refused instead: a range `[base, base + N)` that runs past
+  65535, or metrics and health ranges that overlap. `N` is `--processes` or
+  the upper bound of `--autoscale`. Prometheus needs one target per slot;
+  `swarmq worker --check` prints both ranges (`metrics_ports`,
+  `health_ports`).
+- **Exit code 78 for configuration errors, on every level.** A
+  `ConfigurationError` or `ModuleNotFoundError` in the parent process of
+  `swarmq worker` emits the structured log line `worker_config_error` and
+  exits 78 (previously 1). A worker child that exits 78 — including an
+  `ImportError` while importing the task module — ends the supervisor with
+  78 as well (previously 1). Connection errors to broker or backend stay at
+  1. Orchestrators can now tell "do not restart" from "try again".
+- **Workflow steps run through the enqueue middleware.** Every step the
+  `WorkflowAdvancer` publishes, and every step of the initial front in
+  `Client.apply`, passes `pre_enqueue` before the publish and `post_enqueue`
+  after it, in the same chain as `Client.schedule`, with
+  `delivery_mode="at_least_once"` and the extra context keys `workflow_id`
+  and `step_path`. `pre_enqueue` runs for all steps of a front before the
+  first is published; if it raises, no step of that front is published, the
+  workflow is marked failed (`error.type` = exception name) and the message
+  is acked. A `pre_enqueue` that assumes client context can now reject
+  workflow steps.
+- **The `<workflow>` pseudo-event is gone.** `Client.apply` no longer emits
+  `TASK_ENQUEUED` with `task_name="<workflow>"`. Each step emits
+  `TASK_ENQUEUED` with its real identity, followed by
+  `WORKFLOW_STEP_ENQUEUED`.
+
+### Added
+
+- **`swarmq worker --configure MODULE:CALLABLE`**: the callable receives
+  the `SwarmQ` app after construction and before the worker starts; an
+  awaitable return value is awaited. Register middleware and signal
+  handlers without writing your own worker entry point. Runs exactly once
+  per worker process, never in the forkserver and never in `schedule`,
+  `dlq` or `inspect`. A failing hook is a configuration error (exit 78).
+  `--check` validates the `MODULE:CALLABLE` syntax and that the module can
+  be found, without importing it.
+- **Signal `TASK_REJECTED`** with `queue`, `reason`, `task_id`, `task_name`,
+  `error` for every message the worker hands to the broker's dead-letter
+  exchange without diagnostic headers. `reason` is one of `body_too_large`,
+  `undecodable`, `unregistered_task`, `middleware_chain_factory`,
+  `dlq_publish_failed`; `task_id` and `task_name` are `None` when the body
+  never decoded. Counter `swarmq_tasks_rejected_total{queue,reason}`.
+  `swarmq_tasks_total{outcome="dlq"}` still counts only `TASK_DLQ`. The
+  [dead letter guide](../guides/dead-letter-queues.md#three-ways-into-the-xq)
+  names the three ways into `.XQ`.
+- **Signal `WORKFLOW_STEP_ENQUEUED`** with `task_id`, `task_name`, `queue`,
+  `workflow_id`, `step_path` after every published workflow step, in
+  addition to `TASK_ENQUEUED`.
+- **`SWARMQ_WORKER_ID`** (also `SwarmQ(worker_id=...)`) sets the base of the
+  worker identity; default is the hostname.
+- **Slot table in the supervisor.** Slots are `0..N-1`. A replacement for a
+  crashed, hung or recycled worker gets the same slot and therefore the same
+  ports; scale-up takes the lowest free slot, scale-down removes the
+  youngest worker by start time. A slot whose restart budget is exhausted
+  is locked and never backfilled. During a rolling replacement the old and
+  the new process share the slot; the autoscaler counts it once. The
+  replacement re-binds its port with retries; the budget covers the SIGKILL
+  of a hanging predecessor and the port release of a recycling one.
+
+### Fixed
+
+- **Lost workflow state updates under parallel branches.** Every write of
+  the workflow state by the advancer is a compare-and-set against the
+  version it read (field `version`; documents from 0.5.x count as 0). On a
+  conflict the advancer re-reads, merges its local changes (`step_tasks`
+  additively; `status`, `final_result_task_id` and `error` when it is
+  terminal locally) and writes again, up to 25 rounds; a fresh terminal
+  status ends the advance without a write. Above the limit the message is
+  redelivered. The previously `xfail`ed test for the lost step marker is now
+  a regression test.
+- **Failure marking distinguishes error types.** When marking a workflow as
+  failed hits a `BackendConnectionError`, the message is redelivered
+  (at-least-once) instead of acked; any other error acks and logs the
+  failure with the workflow id.
+- **Configuration errors in the child are structured log lines.** The
+  error text appears in the configured format (`human` or `json`), not as a
+  raw stderr line; the supervisor logs `worker_config_error`. A child that
+  exits 75 (recycle without acknowledgement) is logged as
+  `worker_recycle_noack` and restarted within the budget.
+- **The log formatter no longer prints tracebacks.** If formatting a record
+  fails (for example a raising `__repr__` in `record.args`), the formatter
+  emits one line in the configured format with
+  `event="log_record_unformattable"`, logger name, level and error text.
+- **No `RuntimeWarning` per compute child.** A worker started with
+  `python -m package.module` in CPU mode re-imported its main module in
+  every compute child, with a `runpy` warning each time. The forkserver
+  preload now registers it once as `__main__`; child start stays at about
+  5 ms.
+
 ## [0.5.1] — 2026-09-06
 
 ### Fixed

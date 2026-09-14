@@ -454,6 +454,12 @@ class MessageContext(TypedDict):
 `post_execute`, `on_error`, `on_retry`); absent on client-side hooks
 (`pre_enqueue`, `post_enqueue`). Treat it as optional.
 
+Workflow steps pass through `pre_enqueue` and `post_enqueue` as well
+(from `Client.apply` and from the advancer inside the worker). Their
+context always has `delivery_mode="at_least_once"` and two extra keys,
+`workflow_id` and `step_path`, that plain `schedule()` calls do not
+carry — read them with `.get()`.
+
 ## `enum Signal`
 
 Lifecycle events emitted by SwarmQ. Register handlers with
@@ -471,7 +477,11 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `TASK_LOCKED` | `task_id`, `task_name`, `lock_name` |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
+| `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` |
+| `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | `worker_id` |
+| `WORKER_RECYCLING` | `worker_id`, `kind`, `slot`, `reason`, `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` |
@@ -479,7 +489,9 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 Handlers must accept `**kwargs` (or name every field explicitly).
 Use `kwargs.get("batch_index")` for the
 `TASK_DUPLICATE_DETECTED`-only field, since non-batch sources do
-not include it.
+not include it. `worker_id` is `<base>:<slot>` under the supervisor
+and `<base>:p<pid>` embedded; see
+[worker identity](configuration.md#worker-identity).
 
 ## `class ProgressInfo`
 
