@@ -345,6 +345,22 @@ class TestRejectReasons:
         assert rejected["reason"] == "unregistered_task"
         assert rejected["task_name"] == "not-registered"
 
+    async def test_unregistered_task_carries_the_decoded_task_id(self, broker, backend):
+        """B14 (Loadsuite-Testlauf v0.6.0): Der Docstring verspricht ``task_id``
+        nur dann als ``None``, wenn der Body nie dekodiert wurde. Bei einem
+        unregistrierten Task ist er dekodiert -- ``task_not_found`` loggt die
+        Kennung --, das Signal trug sie trotzdem nicht. Ohne Kennung ist die
+        Nachricht im ``.XQ`` nicht wiederzufinden (``swarmq dlq inspect``)."""
+        worker, _broker, events = self._worker_with_spy(broker, backend)
+        payload = _default_payload(name="not-registered")
+        msg = make_message(payload)
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        (rejected,) = self._rejections(events)
+        assert rejected["task_id"] == payload["task"]["id"]
+
     async def test_broken_middleware_chain_factory(self, broker, backend):
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok", queues=["default"])
@@ -366,6 +382,31 @@ class TestRejectReasons:
         (rejected,) = self._rejections(events)
         assert rejected["reason"] == "middleware_chain_factory"
         assert "factory exploded" in rejected["error"]
+
+    async def test_broken_middleware_chain_factory_carries_the_identity(self, broker, backend):
+        """B14, zweiter Weg mit dekodiertem Body: Auch hier stehen Kennung und
+        Name fest, bevor die Kette gebaut wird."""
+        class Ok(Task):
+            task_info = TaskInfo(name="reject-ok-id", queues=["default"])
+
+            async def run(self) -> str:
+                return "ok"
+
+        worker, _broker, events = self._worker_with_spy(broker, backend, Ok)
+
+        def boom():
+            raise RuntimeError("factory exploded")
+
+        worker._middleware_chain_factory = boom
+        payload = _default_payload(name="reject-ok-id")
+        msg = make_message(payload)
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        (rejected,) = self._rejections(events)
+        assert rejected["task_id"] == payload["task"]["id"]
+        assert rejected["task_name"] == "reject-ok-id"
 async def test_log_context_carries_the_worker_identity_as_string():
     """U2 (R3): Der Logkontext trug ``id(self)`` — eine Speicheradresse als
     ``int``, die weder ueber Prozesse hinweg vergleichbar noch mit dem

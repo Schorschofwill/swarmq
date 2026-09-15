@@ -1088,7 +1088,9 @@ async def test_signal_task_rejected(
 
     Hier der Weg "unregistrierter Task": der Worker kennt den Namen nicht,
     kann also kein Fehlerergebnis speichern -- genau der Fall, den
-    ``TASK_DLQ`` nicht abdecken kann.
+    ``TASK_DLQ`` nicht abdecken kann. Der Body ist dekodiert, also traegt das
+    Signal die Kennung (0.6.1, B14); ``None`` bleibt den Wegen vorbehalten,
+    auf denen der Body nie dekodiert wurde.
     """
     queue = _unique_queue()
     captured: list[dict[str, Any]] = []
@@ -1115,4 +1117,4 @@ async def test_signal_task_rejected(
     assert captured[0]["reason"] == "unregistered_task"
     assert captured[0]["task_name"] == "no_such_task"
     assert captured[0]["queue"] == queue
-    assert captured[0]["task_id"] is None
+    assert captured[0]["task_id"] == "rejected-1"
