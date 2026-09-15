@@ -126,7 +126,7 @@ class SwarmQ:
         tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None = None,
         *,
-        unique_for: int | None | _MissingType = _MISSING,
+        unique_for: int | _MissingType | None = _MISSING,
         unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
     ) -> list[str]:
         """Forward to :meth:`Client.schedule_many` including R3.5 dedup kwargs."""

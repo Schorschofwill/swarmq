@@ -229,7 +229,7 @@ class ClientScheduling:
         queue: str | None = None,
         delay: float | None = None,
         eta: datetime | None = None,
-        unique_for: int | None | _MissingType = _MISSING,
+        unique_for: int | _MissingType | None = _MISSING,
         unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
         **kwargs: Any,
     ) -> str:
@@ -380,7 +380,7 @@ class ClientScheduling:
     def _resolve_unique(
         self,
         task_name: str,
-        unique_for: int | None | _MissingType,
+        unique_for: int | _MissingType | None,
         unique_until: Literal["start", "completion"] | _MissingType,
     ) -> tuple[int | None, UniqueUntil]:
         """Resolve effective unique_for / unique_until for a schedule() call.
@@ -416,7 +416,7 @@ class ClientScheduling:
         self,
         tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None,
-        unique_for: int | None | _MissingType,
+        unique_for: int | _MissingType | None,
         unique_until: Literal["start", "completion"] | _MissingType,
     ) -> list[dict[str, Any]]:
         """Pass 0 (sync): validate + generate task_ids + compute dedup
@@ -573,7 +573,7 @@ class ClientScheduling:
         tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None = None,
         *,
-        unique_for: int | None | _MissingType = _MISSING,
+        unique_for: int | _MissingType | None = _MISSING,
         unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
     ) -> list[str]:
         """Submit multiple tasks for execution and return their task_ids.

@@ -55,7 +55,7 @@ class ClientResults:
             queue: str | None = None,
             delay: float | None = None,
             eta: datetime | None = None,
-            unique_for: int | None | _MissingType = _MISSING,
+            unique_for: int | _MissingType | None = _MISSING,
             unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
             **kwargs: Any,
         ) -> str: ...
