@@ -6,6 +6,16 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependencies refreshed (2026-09-15).** Verified against aio-pika 10.0.1
+  and aiormq 7.0.0 (pamqp 4), structlog 26.1, valkey with libvalkey 4.1,
+  msgpack 1.2, prometheus-client 0.26, watchfiles 1.2; the declared lower
+  bounds are unchanged, so existing installations keep working. Dev
+  toolchain: mypy 2.3, ruff 0.16 (new rule `RUF036`, `None` last in type
+  unions), pytest 9.1, hypothesis 6.168. Unit, integration, e2e, property
+  and contract suites pass on the new set.
+
 ### Fixed
 
 - **Worker subprocesses die with their supervisor, also on SIGKILL.** A
