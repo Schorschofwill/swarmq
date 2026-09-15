@@ -51,3 +51,14 @@ def _register(pm, *infos) -> None:
     for info in infos:
         pm.workers[info.process.pid] = info
         pm._refresh_slot(info.worker_id)
+
+
+def _report_pdeathsig_entry(conn):
+    """Real-subprocess entry: meldet das gesetzte Parent-Death-Signal (Linux)."""
+    import ctypes
+
+    value = ctypes.c_int(0)
+    libc = ctypes.CDLL(None, use_errno=True)
+    rc = libc.prctl(2, ctypes.byref(value), 0, 0, 0)  # PR_GET_PDEATHSIG
+    conn.send(int(value.value) if rc == 0 else -1)
+    conn.close()

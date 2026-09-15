@@ -6,6 +6,18 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Worker subprocesses die with their supervisor, also on SIGKILL.** A
+  supervisor that was killed hard (test teardown, OOM killer, `docker kill`)
+  left its workers running as orphans; they kept renewing the scheduler
+  leader lock by heartbeat and blocked every later leader in the same
+  database. The child process target now arms `PR_SET_PDEATHSIG` with
+  SIGTERM (Linux), so the death of the supervisor triggers the same graceful
+  shutdown as an orderly stop; a child whose supervisor died between spawn
+  and arming exits instead of starting as an orphan. On platforms without
+  `prctl` the behaviour is unchanged.
+
 ## [0.6.1] — 2026-09-15
 
 ### Fixed

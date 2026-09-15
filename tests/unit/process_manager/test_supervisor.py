@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import multiprocessing
 import signal
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from tests.unit.process_manager._helpers import (
     _instant_crash_entry,
     _make_test_cfg,
     _register,
+    _report_pdeathsig_entry,
 )
 
 
@@ -97,6 +99,33 @@ class TestProcessManagerCore:
         assert seen["args"][0] == 0
         assert seen["args"][1] is pm.shutdown_event
         assert seen["args"][2] == "cfg"
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="PR_SET_PDEATHSIG gibt es nur unter Linux")
+    def test_child_target_arms_the_parent_death_signal(self):
+        """Ein Worker-Kind stirbt mit seinem Supervisor -- auch bei dessen SIGKILL.
+
+        Bis hierher blieb ein Kind, dessen Supervisor per SIGKILL endete (etwa
+        ein Test-Teardown mit ``proc.kill()``), als Waise am Leben, hielt den
+        Scheduler-Leader-Lock per Heartbeat und liess spaetere Leader-Tests
+        scheitern (Notiz e2e-scheduler-leader-flake). Das Kindziel setzt darum
+        ``PR_SET_PDEATHSIG`` auf SIGTERM: der Elterntod loest denselben
+        Graceful-Shutdown aus wie ein geordnetes Herunterfahren.
+        """
+        from swarmq.process_manager.supervisor import _run_worker_entry
+
+        ctx = multiprocessing.get_context("spawn")
+        parent_conn, child_conn = ctx.Pipe(duplex=False)
+        proc = ctx.Process(
+            target=_run_worker_entry, args=(_report_pdeathsig_entry, child_conn)
+        )
+        proc.start()
+        try:
+            assert parent_conn.poll(30), "das Kind meldete sein Parent-Death-Signal nicht"
+            assert parent_conn.recv() == int(signal.SIGTERM)
+        finally:
+            proc.join(timeout=10)
+            if proc.is_alive():
+                proc.kill()
 
     def test_start_all_workers_spawns_n(self):
         pm = ProcessManager(num_workers=3, worker_entry=_entry_stub)

@@ -28,6 +28,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+from tests.support.cli_process import terminate_worker_process  # noqa: E402
 from tests.support.services import (  # noqa: E402  # nach den Konstanten-Docs
     RABBITMQ_HOST,
     RABBITMQ_PORT,
@@ -84,6 +85,7 @@ def _spawn_worker(queue_name: str):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        start_new_session=True,
     )
 
 
@@ -128,6 +130,4 @@ def test_cli_worker_dishka_injection_round_trip_then_clean_sigterm() -> None:
         rc = proc.wait(timeout=30)
         assert rc == 0, f"expected clean exit (implies container.close), got rc={rc}"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
+        terminate_worker_process(proc)

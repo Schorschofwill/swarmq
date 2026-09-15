@@ -14,6 +14,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.cli_process import terminate_worker_process
 from tests.support.fixture_modules import ensure_fixture_registered
 from tests.support.services import missing_services, rabbitmq_amqp_url, valkey_db_url
 
@@ -42,13 +43,14 @@ def test_burst_worker_under_default_supervisor_drains_and_exits_zero():
         [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._cli_fixture_tasks",
          "--queues", queue, "--burst", "--burst-idle-timeout", "2", "--log-format", "json"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
     )
     deadline = time.monotonic() + 60
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.5)
     output = proc.stdout.read() if proc.stdout else ""
     if proc.poll() is None:
-        proc.kill()
+        terminate_worker_process(proc)
         pytest.fail(f"burst worker did not exit under the supervisor:\n{output[-3000:]}")
     assert proc.returncode == 0, output[-3000:]
     assert "all_workers_exited_clean" in output

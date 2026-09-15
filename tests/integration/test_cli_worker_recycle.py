@@ -17,6 +17,7 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
+from tests.support.cli_process import terminate_worker_process
 from tests.support.fixture_modules import ensure_fixture_registered
 from tests.support.services import missing_services, rabbitmq_amqp_url, valkey_db_url
 
@@ -63,13 +64,14 @@ def test_worker_recycles_by_task_count_without_losing_tasks():
          "--queues", queue, "--burst", "--burst-idle-timeout", "4", "--log-format", "json",
          "--metrics-port", "9188"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
     )
     deadline = time.monotonic() + 150
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.5)
     output = proc.stdout.read() if proc.stdout else ""
     if proc.poll() is None:
-        proc.kill()
+        terminate_worker_process(proc)
         pytest.fail(f"worker did not exit:\n{output[-4000:]}")
     assert proc.returncode == 0, output[-4000:]
     # Echo-Tasks sind so schnell, dass der Monitor die Schwelle meist erst nach
@@ -131,6 +133,7 @@ def test_two_processes_bind_their_own_metrics_port_across_a_recycle():
          "--queues", queue, "--processes", "2", "--log-format", "json",
          "--metrics-port", "9190"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
     )
     lines: list[str] = []
     reader = threading.Thread(target=_drain, args=(proc, lines), daemon=True)
@@ -146,11 +149,7 @@ def test_two_processes_bind_their_own_metrics_port_across_a_recycle():
         assert _metrics_ok(9190, timeout=30.0), "Slot 0 hat den Port nach dem Ersatz nicht wieder gebunden"
         assert _metrics_ok(9191, timeout=30.0), "Slot 1 hat den Port nach dem Ersatz nicht wieder gebunden"
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        terminate_worker_process(proc)
         reader.join(timeout=5)
     output = "".join(lines)
     assert "bind failed" not in output, output[-4000:]
