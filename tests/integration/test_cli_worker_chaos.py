@@ -23,6 +23,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.cli_process import terminate_worker_process
 from tests.support.fixture_modules import ensure_fixture_registered
 from tests.support.services import missing_services, rabbitmq_amqp_url, valkey_db_url
 
@@ -77,6 +78,7 @@ def test_loop_process_sigkill_kills_the_child_and_the_replacement_finishes_the_t
          "--queues", queue, "--pool", "cpu", "--concurrency", "1",
          "--burst", "--burst-idle-timeout", "5", "--log-format", "json"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
     )
     lines: list[str] = []
 
@@ -108,9 +110,7 @@ def test_loop_process_sigkill_kills_the_child_and_the_replacement_finishes_the_t
         _wait_until(lambda: len(_spawned_pids()) >= 2, 30.0, "the supervisor to replace the worker")
         _wait_until(lambda: proc.poll() is not None, 90.0, "the burst run to finish")
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
+        terminate_worker_process(proc)
     output = "".join(lines)
     assert proc.returncode == 0, output[-4000:]
     assert '"exitcode": -9' in output, output[-4000:]

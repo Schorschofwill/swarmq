@@ -16,6 +16,7 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
+from tests.support.cli_process import terminate_worker_process
 from tests.support.fixture_modules import ensure_fixture_registered
 from tests.support.services import missing_services, rabbitmq_amqp_url, valkey_db_url
 
@@ -56,13 +57,14 @@ def test_hung_worker_is_replaced_and_poison_message_reaches_dlq():
         [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._hang_fixture_tasks",
          "--queues", queue, "--burst", "--burst-idle-timeout", "12", "--log-format", "json"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
     )
     deadline = time.monotonic() + 150
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.5)
     output = proc.stdout.read() if proc.stdout else ""
     if proc.poll() is None:
-        proc.kill()
+        terminate_worker_process(proc)
         pytest.fail(f"supervisor did not finish:\n{output[-4000:]}")
     assert "worker_hung" in output, output[-4000:]
     assert "delivery_limit_reached_dead_letter" in output, output[-4000:]
