@@ -6,6 +6,27 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-15
+
+### Fixed
+
+- **`TASK_REJECTED` carries the task identity whenever the body decoded.**
+  For `reason="unregistered_task"` and `reason="middleware_chain_factory"`
+  the signal now includes `task_id` and `task_name`; before, `task_id` was
+  `None` on both paths although the worker had already decoded the message
+  and logged the id. Without it a rejected message could not be found in
+  `.XQ` with `swarmq dlq inspect`. `body_too_large` and `undecodable` still
+  report `None`, as documented. Found by the load-test suite at pin v0.6.0
+  (its backlog entry B14).
+- **The supervisor unblocks the inherited signal mask before it runs any
+  worker entry.** `ProcessManager` blocks SIGINT/SIGTERM/SIGHUP while it
+  spawns children, and `spawn` hands that mask down. swarmq's own child
+  entry lifted it; a custom `worker_entry` passed to `ProcessManager` did
+  not and never saw the SIGTERM its shutdown watcher sent, so a graceful
+  stop ended only with the orchestrator's SIGKILL after the full stop
+  timeout. The child process target now lifts the mask itself, before the
+  entry runs. Found by the load-test suite (backlog entry B15).
+
 ## [0.6.0] — 2026-09-14
 
 ### Changed (breaking)

@@ -6,6 +6,29 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-15
+
+### Behoben
+
+- **`TASK_REJECTED` trägt die Task-Identität, sobald der Body dekodiert
+  wurde.** Für `reason="unregistered_task"` und
+  `reason="middleware_chain_factory"` enthält das Signal jetzt `task_id` und
+  `task_name`; bisher war `task_id` auf beiden Wegen `None`, obwohl der
+  Worker die Nachricht schon dekodiert und die Kennung geloggt hatte. Ohne
+  sie ließ sich eine abgewiesene Nachricht mit `swarmq dlq inspect` nicht im
+  `.XQ` wiederfinden. `body_too_large` und `undecodable` melden weiterhin
+  `None`, wie dokumentiert. Gefunden von der Lasttest-Suite am Pin v0.6.0
+  (dort Backlog-Eintrag B14).
+- **Der Supervisor hebt die geerbte Signalmaske auf, bevor er irgendeinen
+  Worker-Entry ausführt.** `ProcessManager` blockiert SIGINT/SIGTERM/SIGHUP,
+  während er Kinder startet, und `spawn` gibt diese Maske weiter. swarmqs
+  eigener Kind-Entry hob sie auf; ein eigener `worker_entry`, den ein
+  Betreiber dem `ProcessManager` übergibt, tat das nicht und sah das SIGTERM
+  seines Shutdown-Watchers nie. Ein Graceful Stop endete deshalb erst mit
+  dem SIGKILL der Orchestrierung nach dem vollen Stop-Timeout. Das Ziel des
+  Kindprozesses hebt die Maske jetzt selbst auf, bevor der Entry läuft.
+  Gefunden von der Lasttest-Suite (Backlog-Eintrag B15).
+
 ## [0.6.0] — 2026-09-14
 
 ### Geändert (breaking)

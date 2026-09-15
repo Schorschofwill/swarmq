@@ -436,12 +436,20 @@ class Worker(WorkerLifecycle):
             "retry_count": message.headers.get("x-swarmq-retry-count", 0),
         }
 
-    async def _resolve_chain_or_route(self, message: Any, acked_before_execute: bool) -> Any:
+    async def _resolve_chain_or_route(
+        self,
+        message: Any,
+        acked_before_execute: bool,
+        *,
+        task_id: str | None = None,
+        task_name: str | None = None,
+    ) -> Any:
         """Resolve the middleware chain once per message (add_middleware()
         after Worker construction stays visible; list-copy cost is
         negligible vs broker roundtrip). A broken user-supplied factory
         must not crash the consumer loop — DLX-route unless the FAF ack
-        already happened (KTD5: no verb after acked_before_execute)."""
+        already happened (KTD5: no verb after acked_before_execute). Der
+        Body ist dekodiert, das Signal trägt Kennung und Name (B14)."""
         try:
             return self._get_chain()
         except Exception as exc:
@@ -450,6 +458,7 @@ class Worker(WorkerLifecycle):
                 await route_via_dlx(
                     self._gate_deps, message,
                     reason="middleware_chain_factory", error=str(exc),
+                    task_id=task_id, task_name=task_name,
                 )
             return None
 
@@ -464,16 +473,21 @@ class Worker(WorkerLifecycle):
                 return False
         return True
 
-    async def _lookup_task_or_route(self, message: Any, task_name: str) -> type[Task] | None:
+    async def _lookup_task_or_route(
+        self, message: Any, task_name: str, task_id: str | None = None,
+    ) -> type[Task] | None:
         """Registry-Lookup; unbekannte Tasks gehen über den DLX-Fallback
-        (``None`` = behandelt)."""
+        (``None`` = behandelt). Der Body ist hier dekodiert, also trägt das
+        Signal die Kennung -- ohne sie wäre die Nachricht im ``.XQ`` nicht
+        wiederzufinden (B14 des Loadsuite-Backlogs)."""
         try:
             return self._registry.get(task_name)
         except TaskNotFoundError:
             logger.error("task_not_found")
             await route_via_dlx(
                 self._gate_deps, message, reason="unregistered_task",
-                task_name=task_name, error=f"task {task_name!r} is not registered",
+                task_id=task_id, task_name=task_name,
+                error=f"task {task_name!r} is not registered",
             )
             return None
 
@@ -614,7 +628,7 @@ class Worker(WorkerLifecycle):
                 return
 
             # 4-5. Look up task in registry
-            task_class = await self._lookup_task_or_route(message, task_name)
+            task_class = await self._lookup_task_or_route(message, task_name, task_id)
             if task_class is None:
                 return
 
@@ -648,7 +662,9 @@ class Worker(WorkerLifecycle):
                 acked_before_execute = True
 
             message_dict = self._build_message_dict(ctx, message)
-            chain = await self._resolve_chain_or_route(message, acked_before_execute)
+            chain = await self._resolve_chain_or_route(
+                message, acked_before_execute, task_id=task_id, task_name=task_name,
+            )
             if chain is None:
                 return
 

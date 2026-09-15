@@ -54,6 +54,21 @@ def _unblock_signals() -> None:
         pass
 
 
+def _run_worker_entry(entry: Callable[..., Any], *args: Any) -> Any:
+    """Ziel des Kindprozesses: geerbte Signalblockade aufheben, dann den Entry rufen.
+
+    Der Supervisor blockiert ``_HANDLED_SIGNALS``, waehrend er Kinder startet;
+    ``spawn`` vererbt die Maske. swarmqs eigener Entry hob sie selbst auf, ein
+    fremder Entry (der Betreiber gibt dem ``ProcessManager`` seinen eigenen)
+    erbte sie -- das SIGTERM, das sein Shutdown-Watcher auf die eigene PID
+    schickt, blieb anhaengig, und der Container endete erst per SIGKILL nach
+    dem Stop-Timeout (B15 des Loadsuite-Backlogs). Modulfunktion, damit
+    ``spawn`` sie picklen kann.
+    """
+    _unblock_signals()
+    return entry(*args)
+
+
 QueueDepthFn = Callable[[], int]
 
 
@@ -343,8 +358,8 @@ class ProcessManager:
         """Spawn one worker subprocess for ``slot`` and register it."""
         channel = SupervisorChannel.create(self._ctx)
         p = self._ctx.Process(
-            target=self._worker_entry,
-            args=(slot, self.shutdown_event, *self._worker_args, channel),
+            target=_run_worker_entry,
+            args=(self._worker_entry, slot, self.shutdown_event, *self._worker_args, channel),
             name=f"swarmq-worker-{slot}",
             daemon=False,
         )

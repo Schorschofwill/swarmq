@@ -67,6 +67,37 @@ class TestProcessManagerCore:
         assert 9001 in pm.workers
         fake.start.assert_called_once()
 
+    def test_start_worker_unblocks_inherited_signals_before_the_entry(self):
+        """B15 (Loadsuite-Testlauf v0.6.0): Der Supervisor blockiert
+        SIGINT/SIGTERM/SIGHUP, waehrend er Kinder startet; ``spawn`` vererbt
+        die Maske. swarmqs eigener Entry hob sie auf, ein fremder Entry
+        erbte sie -- sein SIGTERM blieb anhaengig, der Container endete erst
+        per SIGKILL nach dem Stop-Timeout. Das Ziel des Kindprozesses hebt
+        die Maske darum selbst auf, bevor irgendein Entry laeuft."""
+        seen: dict[str, object] = {}
+
+        def entry(worker_id, shutdown_event, *args):
+            seen["mask"] = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+            seen["args"] = (worker_id, shutdown_event, *args)
+
+        pm = ProcessManager(num_workers=1, worker_entry=entry, worker_args=("cfg",))
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=9002))
+        pm._start_worker(0)
+        kwargs = pm._ctx.Process.call_args.kwargs
+
+        blocked = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+        before = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+        try:
+            kwargs["target"](*kwargs["args"])  # so laeuft es im Kind
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, before)
+
+        assert not (blocked & set(seen["mask"]))
+        assert seen["args"][0] == 0
+        assert seen["args"][1] is pm.shutdown_event
+        assert seen["args"][2] == "cfg"
+
     def test_start_all_workers_spawns_n(self):
         pm = ProcessManager(num_workers=3, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
@@ -1199,7 +1230,9 @@ class TestSlotTable:
         generations: dict[int, int] = {}
 
         def spawn(**kwargs):
-            slot = kwargs["args"][0]
+            # Ziel ist seit B15 die Huelle ``_run_worker_entry``; der Slot steht
+            # hinter dem Entry an zweiter Stelle.
+            slot = kwargs["args"][1]
             generations[slot] = generations.get(slot, 0) + 1
             return _fake_process(pid=100 * generations[slot] + slot)
 
@@ -1221,7 +1254,7 @@ class TestSlotTable:
         pm._check_dead_workers()
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
         kwargs = pm._ctx.Process.call_args.kwargs
-        assert kwargs["args"][0] == 1 and kwargs["name"] == "swarmq-worker-1"
+        assert kwargs["args"][1] == 1 and kwargs["name"] == "swarmq-worker-1"
 
     def test_autoscale_upper_bound_defines_the_slot_table(self):
         pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
