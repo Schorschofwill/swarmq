@@ -6,8 +6,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-09-15
+
 ### Geändert
 
+- **README aktualisiert.** Die Paketbeschreibung auf PyPI führte unter „What's
+  planned next“ Features, die längst ausgeliefert sind (Priorities, Expiry,
+  Burst, Supervisor, Autoscaling, Metriken, Health, Hot Reload, Agent-Spec).
+  Sie beschreibt jetzt den aktuellen Funktionsumfang, den CPU-Worker-Modus,
+  die Supervisor-Vorgaben und die zwei verbliebenen Roadmap-Punkte.
 - **Abhängigkeiten aktualisiert (2026-09-15).** Geprüft gegen aio-pika 10.0.1
   und aiormq 7.0.0 (pamqp 4), structlog 26.1, valkey mit libvalkey 4.1,
   msgpack 1.2, prometheus-client 0.26, watchfiles 1.2; die deklarierten
