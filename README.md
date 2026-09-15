@@ -2,10 +2,13 @@
 
 Async-first Python task queue on RabbitMQ + Valkey.
 
-> **Status:** Phase 3 + E2E hardening complete; Phase 5 in progress
-> (metrics + health endpoints landed, hot-reload + agent-docs to come).
-> 1280+ tests across unit / integration / e2e / chaos / property / fuzz
-> / stress suites. Not yet production-tested by anyone but the author.
+> **Status:** 0.6.x on PyPI. Core, workflow primitives, operator
+> features (priorities, expiry, burst, supervisor, autoscaling), CPU
+> worker mode, metrics, health, hot reload and the machine-readable agent
+> spec are all shipped. About 2 700 tests across unit / integration /
+> e2e / chaos / property / fuzz / stress suites, plus a separate load-test
+> suite that gates every release with conformance, smoke and one-hour
+> reference runs. Not yet in production use by anyone but the author.
 
 ## Quick Start
 
@@ -108,7 +111,7 @@ Things to know:
 
 ## What's in the box
 
-### Core (Phase 1+2+3)
+### Core
 
 - **At-least-once delivery** with Quorum-Queue durability and
   `x-delivery-limit=20` against pathological redelivery loops.
@@ -118,8 +121,9 @@ Things to know:
   retry/purge` CLI for operator recovery.
 - **Middleware** stack with 6 hooks (pre/post enqueue, pre/post
   execute, on_error, on_retry).
-- **Signals** — 14 lifecycle events with `@app.on_signal(...)`
-  decorator.
+- **Signals** — 23 lifecycle events with `@app.on_signal(...)`
+  decorator, from `TASK_ENQUEUED` over `TASK_DLQ` / `TASK_REJECTED` to
+  worker, scheduler and workflow-step events.
 - **Rate limiting** — Cloudflare 2-period sliding window via Lua
   (`TaskInfo(rate_limit="100/m")`).
 - **Locking** — mutex + semaphore via Valkey atomic primitives, with
@@ -156,23 +160,38 @@ result = await (await app.apply(
 )).get(timeout=30)
 ```
 
-### Operations (Phase 4 + Phase 5)
+### Operations
 
-- **Multi-process workers** (`--processes N`) — supervisor starts N
-  subprocesses, restarts crashed workers (5/hr rolling-window limit),
-  reloads on SIGHUP via `os.execvp`. SIGHUP replays the `sys.argv`
-  snapshot captured at supervisor start (by design — in-process
-  argv-mutation cannot influence the re-exec vector). Sichere
-  Launch-Entrypoints (Container CMD, systemd ExecStart) bleiben die
-  Trust-Grenze für das initiale argv.
+- **Supervisor by default** — every `swarmq worker` runs under a
+  process manager, also with `--processes 1`: it restarts crashed
+  workers into the same slot (5/hr rolling-window budget), replaces
+  workers whose heartbeat stops, reloads on SIGHUP via `os.execvp`
+  (replaying the `sys.argv` snapshot captured at start — the container
+  CMD or systemd ExecStart stays the trust boundary for argv), and
+  takes its children down with it even on SIGKILL. Configuration errors
+  end the run with exit code `78` on every level; connection errors stay
+  at `1`.
+- **Multi-process workers** (`--processes N`) with a stable slot
+  identity: `worker_id` is `<host>:<slot>` in signals, metrics and logs,
+  and `--metrics-port` / `--health-port` are base ports — slot `s`
+  binds `base + s`, so scrape targets survive restarts.
 - **Autoscaling** (`--autoscale=MIN,MAX`) — queue-depth-driven
   scale up/down with 30s cooldown, 60s idle window, and a 30s
   minimum worker age that suppresses spawn→immediate-kill churn
   when a crashed worker is restarted during an idle period.
-- **Prometheus metrics** (`pip install swarmq[metrics]`) — 7 metrics
+- **CPU worker mode** (`--pool cpu`) — task bodies run in compute
+  children forked from a pre-warmed forkserver; the loop process never
+  computes, `hard_timeout` and cancel kill the child's process group,
+  DI children are recycled by RSS or task count. POSIX only.
+- **Priorities** (`--priorities`, `TaskInfo.priority`), **expiry**
+  (`TaskInfo.max_age` → `TASK_EXPIRED` + DLQ) and **burst mode**
+  (`--burst --burst-idle-timeout N` drains and exits 0).
+- **`--configure MODULE:CALLABLE`** — register middleware and signal
+  handlers on the CLI worker without writing your own entry point.
+- **Prometheus metrics** (`pip install swarmq[metrics]`) — 10 metrics
   exposed on `/metrics`, drop-in no-op when the dep is absent.
 - **Health endpoints** — `/health` (liveness) + `/ready` (broker +
-  backend reachable, structured 503 body).
+  backend reachable, forkserver in CPU mode, structured 503 body).
 - **Hot reload** (`--reload`, `pip install swarmq[reload]`) — file-
   watch trigger that fires the existing SIGHUP drain-and-execvpe
   pipeline. Developer-only (WARNING log on every start); see
@@ -203,22 +222,29 @@ wins where both are set).
 | `--log-level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `--log-format` | `human` | `human` or `json` |
 
-Other env vars: `SWARMQ_RESULT_TTL`, `SWARMQ_QUEUES`,
-`SWARMQ_CONCURRENCY`, `SWARMQ_LOG_LEVEL`, `SWARMQ_LOG_JSON`. Full
-list in `src/swarmq/config.py`.
+Other flags: `--processes`, `--autoscale`, `--pool`, `--metrics-port`,
+`--health-port`, `--burst`, `--priorities`, `--configure`, `--check`.
+Every flag has an env-var twin (`SWARMQ_QUEUES`, `SWARMQ_CONCURRENCY`,
+`SWARMQ_POOL`, …); the full list with defaults is in the
+configuration reference (`website/reference/configuration.md`) and the
+CLI reference (`website/reference/cli.md`).
 
-## What's planned next
+## Status and roadmap
 
-Phase 4 operator features complete (Priorities, Expiry, Burst,
-ProcessManager, Autoscaling). Phase 5 Wave 1 complete (Metrics,
-Health, Hot reload). Workflow primitives (`chain` / `group` / `chord`
-+ Signatures) implemented — see "Workflow primitives" above.
-Machine-readable agent spec (R5.5) implemented — generated JSON for
-errors, config, CLI, and message schemas plus an `llms.txt` index
-under `reference/agent/spec/`, kept in sync with the code by tests
+Everything listed above is shipped and covered by tests; the
+changelog (`website/reference/changelog.md`) records each release. A
+machine-readable agent spec — generated JSON for errors, config, CLI
+and message schemas plus an `llms.txt` index under
+`website/reference/agent/spec/` — is kept in sync with the code by tests
 (`python -m swarmq.agent_spec`).
-Remaining — bulk-throughput optimisation (`schedule_many` fast path)
-— see `docs/brainstorms/implementation-order-requirements.md`.
+
+Still open:
+
+- **Bulk-throughput optimisation** — a `schedule_many` fast path
+  (design note in `docs/brainstorms/implementation-order-requirements.md`).
+- **24-hour acceptance run** of the load-test suite before the first
+  production deployment, and the resulting SLO thresholds for p95
+  latency and throughput.
 
 ## Project layout
 
