@@ -55,6 +55,7 @@ swarmq worker --module DOTTED.PATH
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
               [--processes N | -p N] [--autoscale MIN,MAX]
+              [--max-processes N] [--group LABEL]
               [--reload] [--watch-dir PATH]...
               [--check]
 ```
@@ -77,6 +78,8 @@ swarmq worker --module DOTTED.PATH
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
 | `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` via `os.execvp()`, and exits 0 once all workers ended cleanly (`--burst`). A configuration error in any worker ends the run after a single attempt with exit `78`. |
 | `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
+| `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. See [control channel](#control-channel). |
+| `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |
 | `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Ignored without `--reload`. |
 | `--check` | off | Dry-run validation: verify `--module` is importable, that a `--configure` spec has the form `MODULE:CALLABLE` and its module can be found (without importing it), with `--reload` that `watchfiles` is installed + watch-dirs resolve, and that the observability port ranges fit below 65535 and do not overlap. Prints a JSON summary including `metrics_ports` and `health_ports` (the exact ports the slots will bind) and exits `0`/`1` without starting the supervisor or touching broker/backend. Payload: [message formats](agent/message-formats.md#swarmq-worker-check-payload). |
@@ -142,6 +145,66 @@ Burst mode for a cron-style batch drain:
 ```bash
 swarmq worker --module myapp.tasks --burst --burst-idle-timeout 10
 ```
+
+### Control channel
+
+`--max-processes N` lets an operator (or a controlling service such as
+the swarmq dashboard) change the process count and the autoscale bounds
+of a worker group at runtime, without a deploy and without a console:
+
+```bash
+swarmq worker --module myapp.tasks --autoscale 2,4 --max-processes 16 --group orders-eu
+```
+
+**Setpoint.** The controlling service writes one JSON value per group to
+`sq:control:setpoint:<group>`, for example `{"min": 2, "max": 8}`. A
+fixed process count `N` is the setpoint `{"min": N, "max": N}` and
+switches autoscaling off for the group. The supervisor reads the key
+once before it spawns the first worker and then every 5 seconds. A
+higher lower bound starts the missing workers immediately, a lower
+upper bound drains the surplus workers gently (the running task
+finishes, then the process exits). Deleting the key restores the
+start-up arguments. A new deploy therefore comes up with the last
+setpoint, not with the deployment file.
+
+**Rejection.** A setpoint is rejected -- and the previous bounds stay in
+effect -- when its upper bound exceeds the headroom, its lower bound is
+below 1, its bounds are inverted, the value is not readable as
+`{"min": N, "max": M}`, or a range is written for a group without
+autoscaling (fixed `--processes` or `--pool cpu` accept only the fixed
+form `N..N`). A setpoint never makes the supervisor fail to start: if
+the backend is unreachable at start-up, the group comes up with its
+start-up arguments and applies the setpoint once the backend answers.
+
+**Status.** Every supervisor reports under
+`sq:control:status:<group>:<supervisor>` (the supervisor id is
+`SWARMQ_WORKER_ID` or the hostname plus `:p<pid>`): the group key, the
+last setpoint read (or `null`), whether the store was `present`,
+`absent` or `unread` (unreachable), the effective bounds and their
+`source` (`startup` or `setpoint`), the `rejection` reason if any, the
+slot counts (`size`, `occupied`, `locked`) and `reported_at`. The key
+expires after the shutdown grace period plus the termination window
+plus one sample interval, so a dead supervisor disappears on its own.
+A reader can therefore tell "rejected" from "not yet applied" and from
+"backend unreachable" without looking at the process.
+
+**What the headroom sizes.** The slot table, the observability port
+ranges (`--metrics-port`/`--health-port` cover `PORT..PORT+N-1`) and,
+with `--pool cpu`, the default compute slots per worker (assigned CPUs
+divided by `N`) are derived from `N` once at start-up and checked once.
+None of them grows at runtime: raising the headroom needs a deploy.
+Enabling the control channel on an existing deployment may therefore
+require moving a base port. Slots locked by the restart budget stay
+locked; the status reports their number.
+
+**Security.** Whoever may write to the backend may set the size of a
+worker group. The setpoint and status keys live under their own
+prefixes (`sq:control:setpoint:` and `sq:control:status:`), separate
+from task and result keys, so an operator can grant write access to
+setpoints and to statuses separately (for example with Valkey ACLs).
+Until the controlling service has its own credentials with such
+restricted write access, every task producer that shares the backend
+URL can also set setpoints.
 
 ## `swarmq schedule`
 
