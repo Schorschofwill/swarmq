@@ -12,6 +12,7 @@ from swarmq.contracts.broker import (
     DeliveryCallback,
     Publisher,
 )
+from swarmq.contracts.control import Setpoint, SetpointRead, SetpointUnreadable
 from swarmq.contracts.coordination import (
     ChordStore,
     LockStore,
@@ -39,4 +40,7 @@ __all__ = [
     "RateLimitStore",
     "ResultBackend",
     "ScheduleStore",
+    "Setpoint",
+    "SetpointRead",
+    "SetpointUnreadable",
 ]
