@@ -48,10 +48,14 @@ class TestValidate:
 class FakeStore:
     """Sollwert-Speicher fuer die Fabrik-Seam: liefert ein festes Ergebnis oder scheitert."""
 
-    def __init__(self, result=None, *, fail=False):
+    def __init__(self, result=None, *, fail=False, read_fail=False):
         self.result = result
         self.fail = fail
+        self.read_fail = read_fail
         self.status_writes: list[dict] = []
+        self.status_ttls: list[float] = []
+        self.status_keys: list[tuple[str, str]] = []
+        self.reads = 0
 
     async def connect(self):
         if self.fail:
@@ -61,10 +65,15 @@ class FakeStore:
         pass
 
     async def read_setpoint(self, group):
+        self.reads += 1
+        if self.read_fail:
+            raise ConnectionRefusedError("backend down")
         return self.result
 
     async def write_status(self, group, supervisor_id, status, *, ttl_s):
+        self.status_keys.append((group, supervisor_id))
         self.status_writes.append(dict(status))
+        self.status_ttls.append(ttl_s)
 
 
 def _pm(n: int = 2, *, store=None, factory=None, **kw) -> ProcessManager:
@@ -307,18 +316,13 @@ class TestTick:
         assert calls == [] and len(pm.workers) == 2
 
     def test_sample_interval_gates_reads_also_after_a_failure(self):
-        calls = []
-
-        def factory():
-            calls.append(1)
-            return FakeStore(fail=True)
-
-        pm = _pm(n=2, factory=factory, max_processes=8)
+        store = FakeStore(read_fail=True)
+        pm = _pm(n=2, store=store, max_processes=8)
         pm.SETPOINT_SAMPLE_INTERVAL = 3600.0
         pm._start_all_workers()
         setpoint.tick(pm)
         setpoint.tick(pm)
-        assert calls == [1]
+        assert store.reads == 1  # der Rest des Intervalls wird uebersprungen (KTD5)
         assert pm._setpoint.store == "unread"
 
     def test_autoscaler_scales_into_the_effective_bounds_not_the_start_argument(self):
@@ -332,3 +336,87 @@ class TestTick:
         for _ in range(10):
             pm._autoscale_tick()
         assert len(pm.workers) == 8  # ueber die Startobergrenze 4 hinaus, bis zur wirksamen 8
+
+
+class TestStatus:
+    """U7: Rueckmeldung des Supervisors (R14, R15).
+
+    Test-Liste:
+    - Die Rueckmeldung nennt den wirksamen Gruppenschluessel und den Supervisor.
+    - Ohne hinterlegten Sollwert weist sie die Startargumente als Herkunft aus.
+    - Nach einer Ablehnung traegt sie den Grund und die weiterhin wirksamen alten Grenzen (AE5).
+    - Bei nicht erreichbarem Speicher weist sie den Sollwert als ungelesen aus (AE7).
+    - Gesperrte Slots erscheinen mit ihrer Zahl (KTD9).
+    - Das Verfallsdatum deckt Gnadenfrist, Terminierungsfrist und ein Intervall (KTD7).
+    - Schon der Start schreibt eine Rueckmeldung (F1).
+    """
+
+    def _pm(self, store: FakeStore, n: int = 2, **kw) -> ProcessManager:
+        pm = _pm(n=n, store=store, max_processes=kw.pop("max_processes", 8), **kw)
+        pm.SETPOINT_SAMPLE_INTERVAL = 0.0
+        pm._start_all_workers()
+        return pm
+
+    def test_status_names_group_and_supervisor(self):
+        store = FakeStore(None)
+        pm = self._pm(store)
+        setpoint.tick(pm)
+        assert store.status_keys == [("orders", "host:p1")]
+        assert store.status_writes[-1]["group"] == "orders"
+        assert store.status_writes[-1]["supervisor"] == "host:p1"
+
+    def test_without_setpoint_the_start_arguments_are_the_source(self):
+        store = FakeStore(None)
+        pm = self._pm(store)
+        setpoint.tick(pm)
+        status = store.status_writes[-1]
+        assert status["store"] == "absent" and status["setpoint"] is None
+        assert status["effective"] == {"min": 2, "max": 2} and status["source"] == "startup"
+        assert status["rejection"] is None and status["headroom"] == 8
+
+    def test_rejection_carries_the_reason_and_the_still_effective_bounds(self):
+        """Covers AE5: Spielraum 8, wirksam 2..6, Sollwert 2..12 -> bleibt 2..6, Grund nennt den Spielraum."""
+        store = FakeStore(Setpoint(2, 6))
+        pm = self._pm(store, autoscale=(2, 4), queue_depth_fn=lambda: 0)
+        setpoint.tick(pm)
+        store.result = Setpoint(2, 12)
+        setpoint.tick(pm)
+        status = store.status_writes[-1]
+        assert status["effective"] == {"min": 2, "max": 6} and status["source"] == "setpoint"
+        assert status["setpoint"] == {"min": 2, "max": 12}
+        assert "headroom 8" in status["rejection"]
+
+    def test_unreachable_store_is_reported_as_unread_once_it_answers_again(self):
+        """Covers AE7: waehrend der Speicher schweigt, gelten die Startargumente; die Rueckmeldung
+        (sobald sie ankommt) weist den Sollwert als ungelesen aus."""
+        store = FakeStore(Setpoint(4, 4), read_fail=True)
+        pm = self._pm(store)
+        setpoint.tick(pm)
+        status = store.status_writes[-1]
+        assert status["store"] == "unread" and status["source"] == "startup"
+        assert status["effective"] == {"min": 2, "max": 2}
+        store.read_fail = False
+        setpoint.tick(pm)
+        status = store.status_writes[-1]
+        assert status["store"] == "present" and status["effective"] == {"min": 4, "max": 4}
+
+    def test_locked_slots_are_counted(self):
+        store = FakeStore(None)
+        pm = self._pm(store)
+        pm._slots.lock(5)  # ein freier Slot mit erschoepftem Budget (KTD9)
+        setpoint.tick(pm)
+        assert store.status_writes[-1]["slots"] == {"size": 8, "occupied": 2, "locked": 1}
+
+    def test_ttl_covers_grace_term_and_one_interval(self):
+        store = FakeStore(None)
+        pm = self._pm(store, shutdown_grace_s=45.0)
+        setpoint.tick(pm)
+        assert store.status_ttls[-1] == 45.0 + pm.SHUTDOWN_TERM_S + pm.SETPOINT_SAMPLE_INTERVAL
+        assert store.status_writes[-1]["ttl_s"] == store.status_ttls[-1]
+
+    def test_start_already_reports(self):
+        store = FakeStore(Setpoint(3, 3))
+        pm = _pm(n=2, store=store, max_processes=8)
+        setpoint.read_at_start(pm)
+        assert store.status_writes[-1]["effective"] == {"min": 3, "max": 3}
+        assert store.status_writes[-1]["workers"] == 0  # vor dem ersten Kind

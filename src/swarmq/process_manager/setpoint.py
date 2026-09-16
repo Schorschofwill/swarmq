@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from swarmq.contracts.control import Setpoint, SetpointRead, SetpointUnreadable
-from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync
+from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync, write_status_sync
 from swarmq.process_manager.slots import SlotState
 
 logger = structlog.get_logger()
@@ -83,6 +84,7 @@ def read_at_start(pm: Any) -> None:
         return
     pm._setpoint.last_sample = time.monotonic()
     apply(pm, read_setpoint_sync(pm._setpoint_store_factory, pm.group))
+    report(pm)
 
 
 def apply(pm: Any, result: SetpointRead | SetpointUnread) -> bool:
@@ -146,6 +148,7 @@ def tick(pm: Any) -> None:
         pm._last_scale_decision = now
         pm._last_autoscale_sample = now
         pm._idle_since = None
+    report(pm)
 
 
 def _heading_slots(pm: Any) -> set[int]:
@@ -193,3 +196,45 @@ def reconcile(pm: Any) -> bool:
         heading += 1
         acted = True
     return acted
+
+
+def _bounds(bounds: tuple[int, int] | None) -> dict[str, int] | None:
+    return None if bounds is None else {"min": bounds[0], "max": bounds[1]}
+
+
+def status_ttl_s(pm: Any) -> float:
+    """Verfallsdatum der Rueckmeldung (KTD7): waehrend des gesamten Abbaus wird
+    nichts mehr erneuert, also Gnadenfrist plus Terminierungsfrist plus ein
+    Abtastintervall -- so verschwindet die Meldung eines toten Supervisors,
+    aber nicht die eines Supervisors im geordneten Abbau."""
+    return float(pm.shutdown_grace_s + pm.SHUTDOWN_TERM_S + pm.SETPOINT_SAMPLE_INTERVAL)
+
+
+def build_status(pm: Any) -> dict[str, Any]:
+    """Rueckmeldung nach R14/R15: Schluessel, zuletzt gelesener Sollwert oder
+    sein Fehlen, wirksame Grenzen samt Herkunft, Ablehnungsgrund, Slots, Zeit.
+    Feldnamen wie die Protokollereignisse, damit Meldung und Log dieselben
+    Begriffe tragen."""
+    state: SetpointState = pm._setpoint
+    last = state.last_setpoint
+    low, high = state.effective
+    return {
+        "group": pm.group,
+        "supervisor": pm.supervisor_id,
+        "headroom": pm.max_processes,
+        "store": state.store,
+        "setpoint": _bounds((last.low, last.high) if last is not None else None),
+        "effective": _bounds(state.effective),
+        "source": state.source,
+        "autoscaling": pm._autoscale is not None and low != high,
+        "rejection": state.rejection,
+        "slots": {"size": len(pm._slots), "occupied": pm._slots.occupied(), "locked": pm._slots.locked()},
+        "workers": len(pm.workers),
+        "reported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "ttl_s": status_ttl_s(pm),
+    }
+
+
+def report(pm: Any) -> None:
+    """Rueckmeldung schreiben; das Verfallsdatum wird bei jedem Aufruf erneuert (KTD7)."""
+    write_status_sync(pm._setpoint_store_factory, pm.group, pm.supervisor_id, build_status(pm), ttl_s=status_ttl_s(pm))
