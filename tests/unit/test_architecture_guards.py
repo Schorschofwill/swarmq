@@ -66,7 +66,10 @@ _SPLIT_MODULES: dict[str, list[str]] = {
     ],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows"],  # U10
     "swarmq.scheduler": ["definition", "loop", "sync"],  # U11
-    "swarmq.process_manager": ["config", "supervisor", "entry", "sampler", "check", "run"],  # U21
+    "swarmq.process_manager": [
+        "config", "supervisor", "entry", "sampler", "check", "run",
+        "setpoint_store", "setpoint",  # Kontrollkanal U2/U5
+    ],  # U21
 }
 
 
