@@ -560,6 +560,7 @@ class ProcessManager:
                 )
                 return 1
 
+            setpoint.tick(self)  # Kontrollkanal: vor Nachfuellen und Autoskalierer (KTD3)
             # Backfill to the current target (initial count without
             # autoscale; between min..max with autoscale).
             target = self._current_target()

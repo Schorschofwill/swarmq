@@ -17,6 +17,7 @@ import structlog
 
 from swarmq.contracts.control import Setpoint, SetpointRead, SetpointUnreadable
 from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync
+from swarmq.process_manager.slots import SlotState
 
 logger = structlog.get_logger()
 
@@ -122,3 +123,73 @@ def apply(pm: Any, result: SetpointRead | SetpointUnread) -> bool:
     state.source = "setpoint"
     logger.info("setpoint_applied", group=pm.group, effective=list(bounds))
     return True
+
+
+def tick(pm: Any) -> None:
+    """Ein Sollwert-Durchlauf (R7); ausserhalb des Intervalls ein No-op.
+
+    Ruht, sobald das Herunterfahren begonnen hat (KTD2). Laeuft vor dem
+    Autoskalierer und setzt dessen Abkuehl- und Leerlaufbuchhaltung zurueck,
+    wenn er etwas geaendert hat (KTD3). Nach einem Fehlschlag wird erst im
+    naechsten Intervall erneut gelesen (KTD5).
+    """
+    if pm._shutting_down or not enabled(pm):
+        return
+    state: SetpointState = pm._setpoint
+    now = time.monotonic()
+    if now - state.last_sample < pm.SETPOINT_SAMPLE_INTERVAL:
+        return
+    state.last_sample = now
+    changed = apply(pm, read_setpoint_sync(pm._setpoint_store_factory, pm.group))
+    acted = reconcile(pm)
+    if changed or acted:
+        pm._last_scale_decision = now
+        pm._last_autoscale_sample = now
+        pm._idle_since = None
+
+
+def _heading_slots(pm: Any) -> set[int]:
+    """Slots mit mindestens einem Prozess, der nicht zum sanften Ende markiert ist."""
+    return {w.worker_id for w in pm.workers.values() if not w.expected_shutdown}
+
+
+def _drain_one(pm: Any) -> bool:
+    """Juengsten Worker sanft beenden (Weg des Autoskalierers, ohne Mindestalter, R12)."""
+    eligible = {
+        pid: w for pid, w in pm.workers.items()
+        if not w.expected_shutdown and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
+    }
+    if not eligible:
+        return False
+    pid, info = max(eligible.items(), key=lambda kv: (kv[1].spawned_at, kv[1].worker_id))
+    logger.info("setpoint_scale_down", group=pm.group, worker_id=info.worker_id, pid=pid)
+    info.expected_shutdown = True
+    try:
+        info.process.terminate()
+    except ProcessLookupError:
+        pass
+    return True
+
+
+def reconcile(pm: Any) -> bool:
+    """Worker-Zahl auf die wirksamen Grenzen bringen, Bestes-Bemuehen je
+    Durchlauf (KTD11): Slots im Uebergang oder gesperrte Slots bleiben aus,
+    der naechste Durchlauf zieht nach. Liefert ``True``, wenn etwas geschah."""
+    low, high = pm.effective_bounds
+    heading = len(_heading_slots(pm))
+    # Ohne Autoskalierung zaehlen gesperrte Slots und saubere Enden wie heute
+    # gegen das Ziel; mit Autoskalierung fuellt der Durchlauf bis zur Untergrenze.
+    floor = low if pm._autoscale is not None else pm._current_target()
+    acted = False
+    while heading > high and _drain_one(pm):
+        heading -= 1
+        acted = True
+    while heading < floor:
+        slot = pm._slots.smallest_free()
+        if slot is None:
+            break
+        logger.info("setpoint_scale_up", group=pm.group, slot=slot, effective=[low, high])
+        pm._start_worker(slot)
+        heading += 1
+        acted = True
+    return acted
