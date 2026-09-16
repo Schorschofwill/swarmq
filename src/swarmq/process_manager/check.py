@@ -128,6 +128,7 @@ def _validate_observability_ports(
     autoscale: tuple[int, int] | None,
     metrics_port: int | None,
     health_port: int | None,
+    max_processes: int | None = None,
 ) -> tuple[list[int] | None, list[int] | None]:
     """Prueft die Portbereiche und gibt sie zurueck (R5, R6).
 
@@ -139,11 +140,13 @@ def _validate_observability_ports(
 
     Der Autoskalierungsbereich zaehlt mit seiner OBERGRENZE: sonst startet
     der Lauf sauber und kollidiert erst beim ersten Hochskalieren mitten im
-    Betrieb (KTD7).
+    Betrieb (KTD7). Der Spielraum des Kontrollkanals zaehlt aus demselben
+    Grund (R4): ein Sollwert darf bis dorthin hochsetzen, geprueft wird nur
+    beim Start.
     """
     from swarmq.config import observability_port_ranges
 
-    upper = max(processes, autoscale[1] if autoscale is not None else 1)
+    upper = max(processes, autoscale[1] if autoscale is not None else 1, max_processes or 1)
     found: dict[str, tuple[int | None, str] | None] = {
         "--metrics-port": _effective_port(metrics_port, "SWARMQ_METRICS_PORT", "--metrics-port"),
         "--health-port": _effective_port(health_port, "SWARMQ_HEALTH_PORT", "--health-port"),
@@ -298,7 +301,7 @@ def check_worker_config(
     _validate_headroom(
         max_processes=max_processes, processes=processes, autoscale=autoscale, pool=pool, concurrency=concurrency,
     )
-    slots = effective_concurrency(concurrency, pool, processes)
+    slots = effective_concurrency(concurrency, pool, max_processes or processes)
 
     # Vor dem teuren Modul-Import: eine Portkollision ist ohne Dateisystem-
     # oder Import-Arbeit entscheidbar.
@@ -307,6 +310,7 @@ def check_worker_config(
         autoscale=autoscale,
         metrics_port=metrics_port,
         health_port=health_port,
+        max_processes=max_processes,
     )
 
     # U5/R11: Form und Auffindbarkeit des Hook-Moduls, ohne Import. Ein

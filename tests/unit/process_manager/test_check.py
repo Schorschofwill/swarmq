@@ -137,3 +137,9 @@ class TestHeadroomPreflight:
         check_worker_config(
             module="json", reload=False, watch_dir=None, pool="cpu", processes=1, concurrency=2, max_processes=4,
         )
+
+    def test_check_payload_slots_follow_the_headroom(self, eight_cpus):
+        result = check_worker_config(
+            module="json", reload=False, watch_dir=None, pool="cpu", processes=2, max_processes=8,
+        )
+        assert result["slots"] == 1

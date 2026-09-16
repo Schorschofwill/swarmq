@@ -218,8 +218,16 @@ class ProcessManager:
         self._ctx = multiprocessing.get_context("spawn")
         self.shutdown_event = self._ctx.Event()
         self.workers: dict[int, WorkerInfo] = {}
-        # KTD1: Slots 0..N-1 (N = --processes bzw. Autoscale-Obergrenze).
-        self._slots = SlotTable(autoscale[1] if autoscale is not None else num_workers)
+        # KTD1: Slots 0..N-1 (N = --processes bzw. Autoscale-Obergrenze); mit
+        # Kontrollkanal der erklaerte Spielraum (R4) -- die Tabelle waechst
+        # zur Laufzeit nie.
+        if max_processes is not None:
+            slot_count = max_processes
+        elif autoscale is not None:
+            slot_count = autoscale[1]
+        else:
+            slot_count = num_workers
+        self._slots = SlotTable(slot_count)
         self._shutting_down = False
         self._reload_requested = False
         # R20/KTD9 (Plan 2026-09-03-001): sauber beendete Worker (Exit 0 ohne

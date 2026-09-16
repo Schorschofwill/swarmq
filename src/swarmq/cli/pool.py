@@ -34,10 +34,9 @@ def prepare_pool_args(args: argparse.Namespace) -> None:
     """
     pool = resolve_pool(args)
     validate_pool_mode(pool=pool, autoscale=getattr(args, "autoscale", None))
-    decision = effective_concurrency(
-        getattr(args, "concurrency", None),
-        pool,
-        int(getattr(args, "processes", 1) or 1),
-    )
+    # Kontrollkanal (U4, R4): mit Spielraum teilt der die CPUs, nicht die
+    # Startprozesszahl -- sonst ueberbucht ein Sollwert am Spielraum die CPUs.
+    divisor = getattr(args, "max_processes", None) or int(getattr(args, "processes", 1) or 1)
+    decision = effective_concurrency(getattr(args, "concurrency", None), pool, int(divisor))
     args.concurrency = decision.count
     args.concurrency_source = decision.source

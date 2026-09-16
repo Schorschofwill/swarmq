@@ -1292,6 +1292,23 @@ class TestSlotTable:
             SlotState.ACTIVE, SlotState.ACTIVE, SlotState.FREE, SlotState.FREE,
         ]
 
+    def test_headroom_defines_the_slot_table_regardless_of_the_start_count(self):
+        """Covers AE3 (Kontrollkanal U4, R4): Spielraum 16 -> 16 Slots, 2 davon belegt."""
+        pm = self._pm(n=2, max_processes=16)
+        pm._start_all_workers()
+        states = [pm.slot_state(s) for s in range(16)]
+        assert states[:2] == [SlotState.ACTIVE, SlotState.ACTIVE]
+        assert states[2:] == [SlotState.FREE] * 14
+        with pytest.raises(IndexError):
+            pm.slot_state(16)
+
+    def test_without_headroom_the_slot_table_keeps_the_start_count(self):
+        pm = self._pm(n=3)
+        pm._start_all_workers()
+        assert [pm.slot_state(s) for s in range(3)] == [SlotState.ACTIVE] * 3
+        with pytest.raises(IndexError):
+            pm.slot_state(3)
+
     def _run_monitor_briefly(self, pm: ProcessManager) -> None:
         import threading
 
