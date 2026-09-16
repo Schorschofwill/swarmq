@@ -38,6 +38,7 @@ from pathlib import Path  # noqa: F401
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from swarmq.backend.valkey.control import ValkeySetpointStore
     from swarmq.broker.rabbitmq import RabbitMQBroker
 
 import msgspec  # noqa: F401
@@ -308,8 +309,19 @@ def _run_worker_command(args: argparse.Namespace) -> int:
 
         return RabbitMQBroker(_os.environ["SWARMQ_BROKER_URL"])
 
+    # Kontrollkanal (R16, KTD4): die Backend-Implementierung des Sollwert-
+    # Speichers kennt nur die CLI; ``process_manager`` sieht eine Fabrik.
+    def _setpoint_store_factory() -> ValkeySetpointStore:
+        import os as _os
+
+        from swarmq.backend.valkey.control import ValkeySetpointStore
+
+        return ValkeySetpointStore(_os.environ["SWARMQ_BACKEND_URL"])
+
     try:
-        return run_multi_process_worker(args, admin_factory=_admin_factory)
+        return run_multi_process_worker(
+            args, admin_factory=_admin_factory, setpoint_store_factory=_setpoint_store_factory,
+        )
     except KeyboardInterrupt:
         return 0
     except (ModuleNotFoundError, ConfigurationError) as exc:

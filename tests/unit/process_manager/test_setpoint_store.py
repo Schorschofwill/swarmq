@@ -106,3 +106,16 @@ class TestWriteStatusSync:
         assert log.warning.call_count == 1
         assert log.warning.call_args.args[0] == "setpoint_status_write_failed"
         assert store.closed is True
+
+
+class TestFactoryFailure:
+    def test_factory_raising_yields_unread_instead_of_propagating(self):
+        """Kein Pfad laesst einen Sollwert den Start scheitern (R10): auch die Fabrik nicht."""
+
+        def broken_factory():
+            raise RuntimeError("no backend url")
+
+        with patch("swarmq.process_manager.setpoint_store.logger"):
+            result = read_setpoint_sync(broken_factory, "orders")
+            assert isinstance(result, SetpointUnread)
+            assert write_status_sync(broken_factory, "orders", "host:p1", {}, ttl_s=1.0) is False

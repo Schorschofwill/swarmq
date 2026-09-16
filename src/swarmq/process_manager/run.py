@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
@@ -17,12 +18,18 @@ from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
 from swarmq.process_manager.sampler import AdminFactory, _make_queue_depth_sampler
+from swarmq.process_manager.setpoint_store import SetpointStoreFactory
 from swarmq.process_manager.supervisor import ProcessManager, QueueDepthFn
 
 logger = structlog.get_logger()
 
 
-def run_multi_process_worker(args: argparse.Namespace, *, admin_factory: AdminFactory | None = None) -> int:
+def run_multi_process_worker(
+    args: argparse.Namespace,
+    *,
+    admin_factory: AdminFactory | None = None,
+    setpoint_store_factory: SetpointStoreFactory | None = None,
+) -> int:
     """CLI entry for ``swarmq worker --processes N`` / ``--autoscale``.
 
     Called from :func:`swarmq.cli.main` when the user opted into the
@@ -41,7 +48,9 @@ def run_multi_process_worker(args: argparse.Namespace, *, admin_factory: AdminFa
     # Vorher stoppte diese Funktion ihren Listener im ``finally``: ein
     # Konfigurationsfehler, den der Aufrufer danach loggte, blieb in der
     # Queue eines gestoppten Listeners liegen und erreichte niemanden.
-    return _run_multi_process_worker_configured(args, admin_factory=admin_factory)
+    return _run_multi_process_worker_configured(
+        args, admin_factory=admin_factory, setpoint_store_factory=setpoint_store_factory,
+    )
 
 
 def resolve_group_key(label: str | None, queues: list[str] | tuple[str, ...]) -> str:
@@ -52,7 +61,12 @@ def resolve_group_key(label: str | None, queues: list[str] | tuple[str, ...]) ->
     return ",".join(sorted(set(queues)))
 
 
-def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_factory: AdminFactory | None = None) -> int:
+def _run_multi_process_worker_configured(
+    args: argparse.Namespace,
+    *,
+    admin_factory: AdminFactory | None = None,
+    setpoint_store_factory: SetpointStoreFactory | None = None,
+) -> int:
     """Body of :func:`run_multi_process_worker` after logging setup."""
     broker_url = os.environ["SWARMQ_BROKER_URL"]
     backend_url = os.environ["SWARMQ_BACKEND_URL"]
@@ -152,5 +166,9 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         delivery_limit=sq_config.delivery_limit,
         max_processes=max_processes,
         group=group_key,
+        # Kontrollkanal (R2): ohne Spielraum keine Fabrik, also kein
+        # Backend-Zugriff beim Start und kein neuer Fehlerfall.
+        setpoint_store_factory=setpoint_store_factory if max_processes is not None else None,
+        supervisor_id=f"{sq_config.worker_id or socket.gethostname()}:p{os.getpid()}",
     )
     return pm.run()

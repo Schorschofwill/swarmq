@@ -8,6 +8,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import signal
+import socket
 import sys
 import time
 from collections.abc import Callable
@@ -18,8 +19,9 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
-from swarmq.process_manager import autoscale
+from swarmq.process_manager import autoscale, setpoint
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
 from swarmq.supervision import (
     INTENT_DRAINING,
@@ -163,6 +165,8 @@ class ProcessManager:
     # SCALE_COOLDOWN_S, override SCALE_MIN_AGE_S to stay
     # >= max(AUTOSCALE_SAMPLE_INTERVAL, SCALE_COOLDOWN_S).
     SCALE_MIN_AGE_S = 30.0
+    # Kontrollkanal (KTD5): Abtastintervall des Sollwert-Durchlaufs.
+    SETPOINT_SAMPLE_INTERVAL = DEFAULT_SAMPLE_INTERVAL_S
 
     def __init__(
         self,
@@ -179,6 +183,8 @@ class ProcessManager:
         delivery_limit: int = 20,
         max_processes: int | None = None,
         group: str | None = None,
+        setpoint_store_factory: SetpointStoreFactory | None = None,
+        supervisor_id: str | None = None,
     ) -> None:
         if autoscale is not None:
             min_w, max_w = autoscale
@@ -198,6 +204,12 @@ class ProcessManager:
         # = Kanal aus) und der von der CLI fertig gebildete Gruppenschluessel.
         self.max_processes = max_processes
         self.group = group
+        self._setpoint_store_factory = setpoint_store_factory
+        self.supervisor_id = supervisor_id or f"{socket.gethostname()}:p{os.getpid()}"
+        # KTD12: wirksame Grenzen; die Startargumente bleiben als Rueckfall.
+        self._setpoint = setpoint.SetpointState.from_start(
+            autoscale if autoscale is not None else (num_workers, num_workers),
+        )
         self._worker_entry = worker_entry
         self._worker_args = worker_args
         self._autoscale = autoscale
@@ -294,6 +306,7 @@ class ProcessManager:
             workers=self.initial_workers,
             autoscale=self._autoscale,
         )
+        setpoint.read_at_start(self)  # R6: vor dem ersten Kind, scheitert nie
         _block_signals()
         self._start_all_workers()
         self._setup_signals()
@@ -435,8 +448,13 @@ class ProcessManager:
         holders = sum(1 for w in self.workers.values() if w.worker_id == slot)
         self._slots.refresh(slot, holders=holders)
 
+    @property
+    def effective_bounds(self) -> tuple[int, int]:
+        """Wirksame Unter- und Obergrenze (KTD12): Sollwert oder Startargumente."""
+        return self._setpoint.effective
+
     def _start_all_workers(self) -> None:
-        for slot in range(self.initial_workers):
+        for slot in range(setpoint.start_count(self)):
             self._start_worker(slot)
 
     @staticmethod
@@ -570,7 +588,7 @@ class ProcessManager:
         those we scaled down deliberately).
         """
         if self._autoscale is None:
-            return max(0, self.initial_workers - self._exhausted_slots - self._clean_exits)
+            return max(0, self.effective_bounds[0] - self._exhausted_slots - self._clean_exits)
         return self._slots.occupied()
 
     def _check_dead_workers(self) -> None:

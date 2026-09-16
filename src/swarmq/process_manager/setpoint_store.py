@@ -66,9 +66,10 @@ def read_setpoint_sync(factory: SetpointStoreFactory, group: str) -> SetpointRea
     import asyncio
 
     async def _run() -> SetpointRead | SetpointUnread:
-        store = factory()
+        store: SetpointStore | None = None
         try:
             async with asyncio.timeout(READ_TIMEOUT_S):
+                store = factory()
                 await store.connect()
                 return await store.read_setpoint(group)
         except Exception as exc:
@@ -93,9 +94,10 @@ def write_status_sync(
     import asyncio
 
     async def _run() -> bool:
-        store = factory()
+        store: SetpointStore | None = None
         try:
             async with asyncio.timeout(WRITE_TIMEOUT_S):
+                store = factory()
                 await store.connect()
                 await store.write_status(group, supervisor_id, status, ttl_s=ttl_s)
                 return True
@@ -111,9 +113,11 @@ def write_status_sync(
     return asyncio.run(_run())
 
 
-async def _close_quietly(store: SetpointStore) -> None:
+async def _close_quietly(store: SetpointStore | None) -> None:
     import asyncio
 
+    if store is None:
+        return
     try:
         async with asyncio.timeout(CLOSE_TIMEOUT_S):
             await store.close()

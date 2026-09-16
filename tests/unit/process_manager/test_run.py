@@ -314,7 +314,7 @@ class TestHeartbeatIntervalPassThrough:
 class TestControlChannelWiring:
     """Kontrollkanal U3 (R1, R3, R5): Gruppenschluessel und Spielraum erreichen Kinder und Supervisor."""
 
-    def _run(self, **over):
+    def _run(self, setpoint_store_factory=None, **over):
         args = TestReloadRoutingThroughCLI()._args(**over)
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
@@ -323,7 +323,7 @@ class TestControlChannelWiring:
              patch("swarmq.process_manager.check._validate_module_importable"):
             from swarmq.process_manager import run_multi_process_worker
 
-            assert run_multi_process_worker(args) == 0
+            assert run_multi_process_worker(args, setpoint_store_factory=setpoint_store_factory) == 0
         return PM.call_args.kwargs
 
     def test_group_key_defaults_to_the_sorted_queue_set(self):
@@ -348,3 +348,13 @@ class TestControlChannelWiring:
         kwargs = self._run()
         assert kwargs["max_processes"] is None
         assert kwargs["worker_args"][0].max_processes is None
+
+    def test_store_factory_reaches_the_supervisor_only_with_headroom(self):
+        """Covers AE1 (Verdrahtung): ohne --max-processes keine Fabrik, mit Spielraum die gereichte."""
+        sentinel = object()
+        factory = lambda: sentinel  # noqa: E731
+        without = self._run(setpoint_store_factory=factory)
+        assert without["setpoint_store_factory"] is None
+        with_headroom = self._run(setpoint_store_factory=factory, max_processes=8)
+        assert with_headroom["setpoint_store_factory"] is factory
+        assert with_headroom["supervisor_id"].endswith(f":p{os.getpid()}")
