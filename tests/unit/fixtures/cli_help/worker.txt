@@ -3,8 +3,8 @@ usage: swarmq worker [-h] --module DOTTED.PATH [--configure MODULE:CALLABLE]
                      [--log-level {DEBUG,INFO,WARNING,ERROR}]
                      [--log-format {human,json}] [--burst]
                      [--metrics-port PORT] [--health-port PORT] [--priorities]
-                     [--processes N] [--autoscale MIN,MAX] [--reload]
-                     [--watch-dir PATH] [--check]
+                     [--processes N] [--autoscale MIN,MAX] [--max-processes N]
+                     [--group LABEL] [--reload] [--watch-dir PATH] [--check]
                      [--burst-idle-timeout SECONDS]
 
 Import a Python module so its Task subclasses register, then connect to broker
@@ -73,6 +73,19 @@ options:
                         sustained idle. 30s cooldown between decisions.
                         Implies --processes (the initial count is clamped into
                         [MIN,MAX]).
+  --max-processes N     Enable the control channel and declare the headroom: a
+                        setpoint stored in the backend
+                        (sq:control:setpoint:<group>) may raise this
+                        supervisor to at most N worker processes. Slot table,
+                        observability port ranges and the default compute
+                        slots per worker are sized from N at start-up; N must
+                        be at least --processes and the --autoscale upper
+                        bound. Without this flag the supervisor never reads or
+                        writes setpoints.
+  --group LABEL         Group label for the control channel. Supervisors
+                        sharing a label (and a backend) follow the same
+                        setpoint, each on its own. Default: the sorted set of
+                        --queues.
   --reload              R5.3: watch task modules for changes and trigger the
                         existing SIGHUP reload pipeline (ProcessManager
                         execvp). Implies --processes (activates the supervisor

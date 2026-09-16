@@ -14,7 +14,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
-from swarmq.slots import effective_concurrency, validate_pool_mode
+from swarmq.slots import effective_concurrency, resolve_default_slots, validate_pool_mode
 
 logger = structlog.get_logger()
 
@@ -187,6 +187,49 @@ def _validate_observability_ports(
     return metrics_range, health_range
 
 
+def _validate_headroom(
+    *,
+    max_processes: int | None,
+    processes: int,
+    autoscale: tuple[int, int] | None,
+    pool: str,
+    concurrency: int | None,
+) -> None:
+    """``--max-processes`` gegen die Startwerte pruefen (Kontrollkanal U3, R1/R3).
+
+    Der Spielraum dimensioniert Slot-Tabelle und Portbereiche (R4); liegt er
+    unter der Startprozesszahl oder der Autoscale-Obergrenze, gaebe es beim
+    Start mehr Worker als Slots. Ohne das Argument bleibt alles wie bisher (R2).
+    """
+    if max_processes is None:
+        return
+    if max_processes < processes:
+        raise ConfigurationError(
+            f"--max-processes {max_processes} is below --processes {processes}: "
+            "the headroom must cover the start-up worker count"
+        )
+    if autoscale is not None and max_processes < autoscale[1]:
+        raise ConfigurationError(
+            f"--max-processes {max_processes} is below the --autoscale upper bound {autoscale[1]}: "
+            "the headroom must cover the autoscale range"
+        )
+    if pool != "cpu":
+        return
+    available = resolve_default_slots(1).count
+    if concurrency is None and max_processes > available:
+        raise ConfigurationError(
+            f"--max-processes {max_processes} exceeds the {available} CPUs assigned to this worker: "
+            "with --pool cpu every worker process needs at least one compute slot, so a setpoint "
+            "at the headroom would overbook the CPUs. Lower --max-processes or assign more CPUs."
+        )
+    if concurrency is not None and concurrency * max_processes > available:
+        raise ConfigurationError(
+            f"--concurrency {concurrency} x --max-processes {max_processes} = {concurrency * max_processes} "
+            f"compute slots exceed the {available} CPUs assigned to this worker: a setpoint at the "
+            "headroom would overbook the CPUs. Lower --concurrency or --max-processes."
+        )
+
+
 def _validate_configure_spec(spec: str) -> None:
     """Form ``MODULE:CALLABLE`` und Auffindbarkeit des Moduls (R11)."""
     module_name, sep, attr_name = spec.partition(":")
@@ -212,6 +255,7 @@ def check_worker_config(
     concurrency: int | None = None,
     recycling: bool = False,
     configure: str | None = None,
+    max_processes: int | None = None,
 ) -> WorkerConfigCheckResult:
     """Run the pre-flight validation for ``swarmq worker`` and return
     a machine-readable summary dict.
@@ -251,6 +295,9 @@ def check_worker_config(
     # ab (KTD4), statt fest 5 s zu betragen.
     warnings: list[str] = []
     validate_pool_mode(pool=pool, autoscale=autoscale)
+    _validate_headroom(
+        max_processes=max_processes, processes=processes, autoscale=autoscale, pool=pool, concurrency=concurrency,
+    )
     slots = effective_concurrency(concurrency, pool, processes)
 
     # Vor dem teuren Modul-Import: eine Portkollision ist ohne Dateisystem-

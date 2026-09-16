@@ -44,6 +44,14 @@ def run_multi_process_worker(args: argparse.Namespace, *, admin_factory: AdminFa
     return _run_multi_process_worker_configured(args, admin_factory=admin_factory)
 
 
+def resolve_group_key(label: str | None, queues: list[str] | tuple[str, ...]) -> str:
+    """Gruppenschluessel des Kontrollkanals (R5, KD4): das Label, ersatzweise
+    die sortierte Queue-Menge. Nur innerhalb eines Backends eindeutig."""
+    if label:
+        return label
+    return ",".join(sorted(set(queues)))
+
+
 def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_factory: AdminFactory | None = None) -> int:
     """Body of :func:`run_multi_process_worker` after logging setup."""
     broker_url = os.environ["SWARMQ_BROKER_URL"]
@@ -51,6 +59,8 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
 
     reload_enabled = bool(getattr(args, "reload", False))
     watch_dirs_raw = getattr(args, "watch_dir", None) or ()
+    max_processes: int | None = getattr(args, "max_processes", None)
+    group_key = resolve_group_key(getattr(args, "group", None), args.queues)
 
     # R5.3: --watch-dir without --reload is almost certainly an operator
     # typo. Warn (don't error) so the worker still starts, but surface
@@ -78,6 +88,12 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         recycling=bool(os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")),
         metrics_port=args.metrics_port,
         health_port=args.health_port,
+        # Kontrollkanal (U3): der Spielraum muss Startprozesszahl und
+        # Autoscale-Obergrenze decken; im Rechen-Pool zaehlt nur eine
+        # ausdrueckliche Nebenlaeufigkeit gegen die CPU-Zuteilung.
+        pool=getattr(args, "pool", "io") or "io",
+        concurrency=args.concurrency if getattr(args, "concurrency_source", "explicit") == "explicit" else None,
+        max_processes=max_processes,
     )
     for warning in check_result["warnings"] or []:
         logger.warning("worker_config_warning", warning=warning)
@@ -119,6 +135,8 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         pool=getattr(args, "pool", "io") or "io",
         heartbeat_interval_s=sq_config.heartbeat_interval_s,
         configure=getattr(args, "configure", None),
+        max_processes=max_processes,
+        group=group_key,
     )
 
     pm = ProcessManager(
@@ -132,5 +150,7 @@ def _run_multi_process_worker_configured(args: argparse.Namespace, *, admin_fact
         watch_dirs=resolved_watch_dirs,
         heartbeat_timeout_s=sq_config.heartbeat_timeout_s,
         delivery_limit=sq_config.delivery_limit,
+        max_processes=max_processes,
+        group=group_key,
     )
     return pm.run()

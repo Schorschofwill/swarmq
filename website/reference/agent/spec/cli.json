@@ -526,6 +526,17 @@
         {
           "default": null,
           "flags": [
+            "--group"
+          ],
+          "help": "Group label for the control channel. Supervisors sharing a label (and a backend) follow the same setpoint, each on its own. Default: the sorted set of --queues.",
+          "name": "--group",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "default": null,
+          "flags": [
             "--health-port"
           ],
           "help": "R5.2: serve /health + /ready on the given port. /ready pings broker + backend (2s timeout) and returns structured JSON. Default bind: 127.0.0.1.",
@@ -565,6 +576,17 @@
           "positional": false,
           "required": false,
           "type": "str"
+        },
+        {
+          "default": null,
+          "flags": [
+            "--max-processes"
+          ],
+          "help": "Enable the control channel and declare the headroom: a setpoint stored in the backend (sq:control:setpoint:<group>) may raise this supervisor to at most N worker processes. Slot table, observability port ranges and the default compute slots per worker are sized from N at start-up; N must be at least --processes and the --autoscale upper bound. Without this flag the supervisor never reads or writes setpoints.",
+          "name": "--max-processes",
+          "positional": false,
+          "required": false,
+          "type": "positive_int"
         },
         {
           "default": null,

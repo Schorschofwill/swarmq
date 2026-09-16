@@ -74,6 +74,10 @@ class WorkerConfig:
     # als Feld ins Kind und wird erst dort aufgeloest -- der Supervisor
     # importiert kein Anwendungsmodul (KTD5).
     configure: str | None = None
+    # Kontrollkanal (Plan 2026-09-16, R1/R5): der erklaerte Spielraum schaltet
+    # den Kanal ein; ``group`` ist der fertig gebildete Gruppenschluessel.
+    max_processes: int | None = None
+    group: str | None = None
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):

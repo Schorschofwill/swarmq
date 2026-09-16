@@ -97,3 +97,16 @@ class TestConfigureHookTransport:
 
     def test_default_is_none(self):
         assert _make_test_cfg().configure is None
+
+
+class TestControlChannelFields:
+    """Kontrollkanal U3 (R1, R5): Spielraum und Gruppenschlüssel reisen ins Kind."""
+
+    def test_defaults_are_unset_and_fields_survive_pickle(self):
+        import pickle
+
+        plain = _make_test_cfg()
+        assert (plain.max_processes, plain.group) == (None, None)
+        cfg = _make_test_cfg(max_processes=16, group="orders-eu")
+        restored = pickle.loads(pickle.dumps(cfg))
+        assert (restored.max_processes, restored.group) == (16, "orders-eu")

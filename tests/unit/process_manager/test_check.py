@@ -90,3 +90,50 @@ class TestConfigureHookPreflight:
 
     def test_absent_hook_reports_none(self):
         assert self._check()["configure"] is None
+
+
+class TestHeadroomPreflight:
+    """Kontrollkanal U3 (R1, R3): ``--max-processes`` gegen Startwerte und CPU-Zuteilung.
+
+    Test-Liste:
+    - Spielraum unter --processes wird abgelehnt.
+    - Spielraum unter der Autoscale-Obergrenze wird abgelehnt.
+    - Spielraum ab den Startwerten wird angenommen.
+    - Rechen-Pool ohne ausdrueckliche Nebenlaeufigkeit: Spielraum ueber der CPU-Zuteilung abgelehnt.
+    - Rechen-Pool mit ausdruecklicher Nebenlaeufigkeit: Produkt ueber der CPU-Zuteilung abgelehnt.
+    """
+
+    def test_headroom_below_processes_is_rejected(self):
+        with pytest.raises(ConfigurationError, match="--max-processes 4"):
+            check_worker_config(module="json", reload=False, watch_dir=None, processes=8, max_processes=4)
+
+    def test_headroom_below_autoscale_upper_bound_is_rejected(self):
+        with pytest.raises(ConfigurationError, match="autoscale upper bound 8"):
+            check_worker_config(
+                module="json", reload=False, watch_dir=None, processes=1, autoscale=(2, 8), max_processes=4,
+            )
+
+    def test_headroom_covering_the_start_values_is_accepted(self):
+        result = check_worker_config(
+            module="json", reload=False, watch_dir=None, processes=4, autoscale=(2, 8), max_processes=8,
+        )
+        assert result["module"] == "json"
+
+    @pytest.fixture
+    def eight_cpus(self, monkeypatch):
+        monkeypatch.setattr("swarmq.slots._affinity_count", lambda: 8)
+        monkeypatch.setattr("swarmq.slots._cgroup_quota", lambda _path: None)
+
+    def test_cpu_pool_without_explicit_concurrency_rejects_headroom_above_the_cpus(self, eight_cpus):
+        with pytest.raises(ConfigurationError, match="exceeds the 8 CPUs"):
+            check_worker_config(module="json", reload=False, watch_dir=None, pool="cpu", processes=2, max_processes=9)
+        check_worker_config(module="json", reload=False, watch_dir=None, pool="cpu", processes=2, max_processes=8)
+
+    def test_cpu_pool_with_explicit_concurrency_rejects_a_product_above_the_cpus(self, eight_cpus):
+        with pytest.raises(ConfigurationError, match="3 x --max-processes 3 = 9"):
+            check_worker_config(
+                module="json", reload=False, watch_dir=None, pool="cpu", processes=1, concurrency=3, max_processes=3,
+            )
+        check_worker_config(
+            module="json", reload=False, watch_dir=None, pool="cpu", processes=1, concurrency=2, max_processes=4,
+        )

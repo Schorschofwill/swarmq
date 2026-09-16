@@ -177,6 +177,8 @@ class ProcessManager:
         watch_dirs: tuple[str, ...] = (),
         heartbeat_timeout_s: float = 60.0,
         delivery_limit: int = 20,
+        max_processes: int | None = None,
+        group: str | None = None,
     ) -> None:
         if autoscale is not None:
             min_w, max_w = autoscale
@@ -192,6 +194,10 @@ class ProcessManager:
             num_workers = max(min_w, min(num_workers, max_w))
 
         self.initial_workers = num_workers
+        # Kontrollkanal (Plan 2026-09-16, R1/R5): erklaerter Spielraum (``None``
+        # = Kanal aus) und der von der CLI fertig gebildete Gruppenschluessel.
+        self.max_processes = max_processes
+        self.group = group
         self._worker_entry = worker_entry
         self._worker_args = worker_args
         self._autoscale = autoscale

@@ -106,6 +106,8 @@ def _run_worker_check(args: argparse.Namespace) -> int:
                 os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")
             ),
             configure=getattr(args, "configure", None),
+            # Kontrollkanal (U3): derselbe Spielraum-Check wie beim Start.
+            max_processes=getattr(args, "max_processes", None),
         )
         payload.update(
             ok=True,
