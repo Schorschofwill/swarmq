@@ -25,6 +25,40 @@ damit `pytest tests/unit` ≤ 15s bleibt.
 - **Nightly** (`.github/workflows/nightly.yml`, cron `0 2 * * *`) — ≤ 30 min: Chaos + Stress + Fuzz + Property-Thorough + Bandit.
 - **Weekly** (`.github/workflows/weekly.yml`, cron `0 2 * * 0`) — ≤ 4h: Mutation-Testing + 1h-Soak.
 
+## Chaos und Fuzz — örtlich, vor jedem Release
+
+Beide Suiten laufen **nicht** in der Pipeline. Der Chaos-Job dort trug
+`allow_failure: false` und hielt Branch-Pipelines blockiert, bis er grün
+war; geprüft hat er nie etwas. Die beiden einzigen Läufe (2026-09-15 und
+2026-09-22) meldeten „1 passed, 40 skipped" in 1,17 Sekunden und gingen
+grün durch: `docker:dind` braucht einen privilegierten Container, der
+Runner dieses Projekts fährt mit `privileged = false`, und die Fixture
+überspringt dann jeden Test.
+
+Die Alternativen wogen schwerer als der Gewinn: einen eigenen Runner
+privilegiert zu fahren gibt jedem Job dort die Kontrolle über den Rechner,
+und die SaaS-Runner weisen den Job mit `ci_quota_exceeded` ab, weil der
+Free-Plan keine Minuten mehr hat. Das ist eine bewusste Abweichung von
+KTD15 aus Plan U2.
+
+**Vor jedem Release örtlich fahren**, mit laufendem Docker:
+
+```bash
+uv run --extra test --extra reload pytest -m chaos tests/chaos -q
+uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q
+```
+
+Erwartung (Stand 2026-09-22): **37 passed, 4 skipped** in rund vier Minuten,
+und **2 passed** für den Fuzz-Lauf. Die vier Skips sind begründet und
+sollen so bleiben — `libfaketime` fehlt (auf die U3.x-Stressreihe vertagt),
+und die drei Disk-Pressure-Tests stehen hinter `SWARMQ_RUN_DISK_TESTS=1`,
+weil sie unter geteilter Last flattern.
+
+Wer die Suite in einer Umgebung fährt, in der ein fehlender Stack ein
+Fehler sein soll statt eines Skips, setzt `SWARMQ_REQUIRE_CHAOS=1`. Dann
+wird aus jedem übersprungenen Test ein Fehlschlag — gedacht für den Tag, an
+dem das Gate wieder in eine Pipeline zurückkehrt.
+
 ## Lokale Ausführung
 
 ```bash
