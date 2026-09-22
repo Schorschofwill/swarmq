@@ -14,7 +14,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
-from swarmq.slots import effective_concurrency, validate_pool_mode
+from swarmq.slots import effective_concurrency, resolve_default_slots, validate_pool_mode
 
 logger = structlog.get_logger()
 
@@ -128,6 +128,7 @@ def _validate_observability_ports(
     autoscale: tuple[int, int] | None,
     metrics_port: int | None,
     health_port: int | None,
+    max_processes: int | None = None,
 ) -> tuple[list[int] | None, list[int] | None]:
     """Prueft die Portbereiche und gibt sie zurueck (R5, R6).
 
@@ -139,11 +140,13 @@ def _validate_observability_ports(
 
     Der Autoskalierungsbereich zaehlt mit seiner OBERGRENZE: sonst startet
     der Lauf sauber und kollidiert erst beim ersten Hochskalieren mitten im
-    Betrieb (KTD7).
+    Betrieb (KTD7). Der Spielraum des Kontrollkanals zaehlt aus demselben
+    Grund (R4): ein Sollwert darf bis dorthin hochsetzen, geprueft wird nur
+    beim Start.
     """
     from swarmq.config import observability_port_ranges
 
-    upper = max(processes, autoscale[1] if autoscale is not None else 1)
+    upper = max(processes, autoscale[1] if autoscale is not None else 1, max_processes or 1)
     found: dict[str, tuple[int | None, str] | None] = {
         "--metrics-port": _effective_port(metrics_port, "SWARMQ_METRICS_PORT", "--metrics-port"),
         "--health-port": _effective_port(health_port, "SWARMQ_HEALTH_PORT", "--health-port"),
@@ -187,6 +190,49 @@ def _validate_observability_ports(
     return metrics_range, health_range
 
 
+def _validate_headroom(
+    *,
+    max_processes: int | None,
+    processes: int,
+    autoscale: tuple[int, int] | None,
+    pool: str,
+    concurrency: int | None,
+) -> None:
+    """``--max-processes`` gegen die Startwerte pruefen (Kontrollkanal U3, R1/R3).
+
+    Der Spielraum dimensioniert Slot-Tabelle und Portbereiche (R4); liegt er
+    unter der Startprozesszahl oder der Autoscale-Obergrenze, gaebe es beim
+    Start mehr Worker als Slots. Ohne das Argument bleibt alles wie bisher (R2).
+    """
+    if max_processes is None:
+        return
+    if max_processes < processes:
+        raise ConfigurationError(
+            f"--max-processes {max_processes} is below --processes {processes}: "
+            "the headroom must cover the start-up worker count"
+        )
+    if autoscale is not None and max_processes < autoscale[1]:
+        raise ConfigurationError(
+            f"--max-processes {max_processes} is below the --autoscale upper bound {autoscale[1]}: "
+            "the headroom must cover the autoscale range"
+        )
+    if pool != "cpu":
+        return
+    available = resolve_default_slots(1).count
+    if concurrency is None and max_processes > available:
+        raise ConfigurationError(
+            f"--max-processes {max_processes} exceeds the {available} CPUs assigned to this worker: "
+            "with --pool cpu every worker process needs at least one compute slot, so a setpoint "
+            "at the headroom would overbook the CPUs. Lower --max-processes or assign more CPUs."
+        )
+    if concurrency is not None and concurrency * max_processes > available:
+        raise ConfigurationError(
+            f"--concurrency {concurrency} x --max-processes {max_processes} = {concurrency * max_processes} "
+            f"compute slots exceed the {available} CPUs assigned to this worker: a setpoint at the "
+            "headroom would overbook the CPUs. Lower --concurrency or --max-processes."
+        )
+
+
 def _validate_configure_spec(spec: str) -> None:
     """Form ``MODULE:CALLABLE`` und Auffindbarkeit des Moduls (R11)."""
     module_name, sep, attr_name = spec.partition(":")
@@ -212,6 +258,7 @@ def check_worker_config(
     concurrency: int | None = None,
     recycling: bool = False,
     configure: str | None = None,
+    max_processes: int | None = None,
 ) -> WorkerConfigCheckResult:
     """Run the pre-flight validation for ``swarmq worker`` and return
     a machine-readable summary dict.
@@ -251,7 +298,10 @@ def check_worker_config(
     # ab (KTD4), statt fest 5 s zu betragen.
     warnings: list[str] = []
     validate_pool_mode(pool=pool, autoscale=autoscale)
-    slots = effective_concurrency(concurrency, pool, processes)
+    _validate_headroom(
+        max_processes=max_processes, processes=processes, autoscale=autoscale, pool=pool, concurrency=concurrency,
+    )
+    slots = effective_concurrency(concurrency, pool, max_processes or processes)
 
     # Vor dem teuren Modul-Import: eine Portkollision ist ohne Dateisystem-
     # oder Import-Arbeit entscheidbar.
@@ -260,6 +310,7 @@ def check_worker_config(
         autoscale=autoscale,
         metrics_port=metrics_port,
         health_port=health_port,
+        max_processes=max_processes,
     )
 
     # U5/R11: Form und Auffindbarkeit des Hook-Moduls, ohne Import. Ein

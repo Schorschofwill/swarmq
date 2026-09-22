@@ -57,6 +57,7 @@ swarmq worker --module DOTTED.PATH
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
               [--processes N | -p N] [--autoscale MIN,MAX]
+              [--max-processes N] [--group LABEL]
               [--reload] [--watch-dir PATH]...
               [--check]
 ```
@@ -79,6 +80,8 @@ swarmq worker --module DOTTED.PATH
 | `--health-port PORT` | ungesetzt | **Basisport** für `/health` + `/ready`, derselbe Slot-Versatz wie bei `--metrics-port`. Bind-Host: `SWARMQ_HEALTH_HOST` (Default `127.0.0.1`). |
 | `--processes N`, `-p N` | `1` | Lässt N Worker-Subprozesse in den Slots `0..N-1` laufen. Seit 0.5.0 läuft jeder `swarmq worker` unter dem Supervisor, auch mit `N = 1`: Er startet gecrashte Worker im selben Slot neu (max 5 pro Stunde), ersetzt Worker ohne Lebenszeichen, reloaded auf `SIGHUP` via `os.execvp()` und endet mit 0, sobald alle Worker sauber beendet sind (`--burst`). Ein Konfigurationsfehler in einem beliebigen Worker beendet den Lauf nach genau einem Versuch mit Exit `78`. |
 | `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. |
+| `--max-processes N` | ungesetzt | **Schaltet den Kontrollkanal ein** und erklärt den Spielraum: Ein im Backend hinterlegter Sollwert darf diesen Supervisor auf höchstens `N` Worker-Prozesse bringen. `N` muss mindestens `--processes` und die `--autoscale`-Obergrenze decken; mit `--pool cpu` darf es die zugeteilten CPUs nicht überbuchen (`N` ohne `--concurrency`, `N × --concurrency` mit). Ohne dieses Argument liest und schreibt der Supervisor keine Sollwerte und verhält sich exakt wie bisher. Siehe [Kontrollkanal](#kontrollkanal). |
+| `--group LABEL` | sortierte Menge der `--queues` | Gruppenschlüssel des Kontrollkanals. Jeder Supervisor mit demselben Schlüssel (im selben Backend) folgt demselben Sollwert, jeder für sich. Deployments, die sich ein Backend teilen und dieselben Queues bedienen, brauchen verschiedene Labels, sonst steuern sie einander. |
 | `--reload` | aus | Beobachtet Task-Module und triggert SIGHUP-Reload bei Änderung. Nur Developer. Braucht `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | Elternverzeichnis der `--module`-Quelle | Zu überwachendes Verzeichnis (wiederholbar). Ohne `--reload` ignoriert. |
 | `--check` | aus | Dry-Run-Validierung: prüft, ob `--module` importierbar ist, ob eine `--configure`-Angabe die Form `MODULE:CALLABLE` hat und ihr Modul auffindbar ist (ohne es zu importieren), mit `--reload` dass `watchfiles` installiert ist und Watch-Dirs auflösbar sind, und dass die Beobachtungs-Portbereiche unter 65535 bleiben und sich nicht überschneiden. Druckt eine JSON-Zusammenfassung inklusive `metrics_ports` und `health_ports` (die genauen Ports, die die Slots binden) und exited `0`/`1` ohne Supervisor-Start oder Broker/Backend-Kontakt. Payload: [Nachrichtenformate](agent/message-formats.de.md#payload-von-swarmq-worker-check). |
@@ -144,6 +147,68 @@ Burst-Mode für einen Cron-Style-Batch-Drain:
 ```bash
 swarmq worker --module myapp.tasks --burst --burst-idle-timeout 10
 ```
+
+### Kontrollkanal
+
+Mit `--max-processes N` ändert ein Betreiber (oder ein steuernder Dienst
+wie das swarmq-Dashboard) Prozesszahl und Autoscale-Grenzen einer
+Worker-Gruppe im laufenden Betrieb, ohne Deploy und ohne Konsole:
+
+```bash
+swarmq worker --module myapp.tasks --autoscale 2,4 --max-processes 16 --group orders-eu
+```
+
+**Sollwert.** Der steuernde Dienst schreibt je Gruppe einen JSON-Wert nach
+`sq:control:setpoint:<gruppe>`, etwa `{"min": 2, "max": 8}`. Eine feste
+Prozesszahl `N` ist der Sollwert `{"min": N, "max": N}` und schaltet die
+Autoskalierung für die Gruppe ab. Der Supervisor liest den Schlüssel
+einmal, bevor er den ersten Worker startet, und danach alle 5 Sekunden.
+Eine höhere Untergrenze startet die fehlenden Worker sofort, eine
+niedrigere Obergrenze beendet die überzähligen Worker sanft (der laufende
+Task wird fertig, dann endet der Prozess). Wird der Schlüssel gelöscht,
+gelten wieder die Startargumente. Ein neuer Deploy fährt deshalb mit dem
+zuletzt gesetzten Sollwert hoch, nicht mit der Deployment-Datei.
+
+**Ablehnung.** Ein Sollwert wird abgelehnt -- und die bisherigen Grenzen
+bleiben wirksam -- wenn seine Obergrenze über dem Spielraum liegt, seine
+Untergrenze unter 1, seine Grenzen verdreht sind, der Wert nicht als
+`{"min": N, "max": M}` lesbar ist oder ein Bereich für eine Gruppe ohne
+Autoskalierung geschrieben wird (festes `--processes` oder `--pool cpu`
+nehmen nur die feste Form `N..N`). Ein Sollwert lässt den Start des
+Supervisors nie scheitern: Ist das Backend beim Start nicht erreichbar,
+fährt die Gruppe mit ihren Startargumenten hoch und übernimmt den
+Sollwert, sobald das Backend antwortet.
+
+**Rückmeldung.** Jeder Supervisor meldet unter
+`sq:control:status:<gruppe>:<supervisor>` (die Supervisor-Kennung ist
+`SWARMQ_WORKER_ID` oder der Hostname, jeweils plus `:p<pid>`): den
+Gruppenschlüssel, den zuletzt gelesenen Sollwert (oder `null`), ob der
+Speicher `present`, `absent` oder `unread` (nicht erreichbar) war, die
+wirksamen Grenzen samt `source` (`startup` oder `setpoint`), den
+`rejection`-Grund, die Slot-Zahlen (`size`, `occupied`, `locked`) und
+`reported_at`. Der Schlüssel verfällt nach Gnadenfrist des
+Herunterfahrens plus Terminierungsfrist plus einem Abtastintervall; die
+Meldung eines toten Supervisors verschwindet also von selbst. Ein Leser
+unterscheidet damit „abgelehnt", „noch nicht angekommen" und „Backend
+nicht erreichbar", ohne den Prozess anzusehen.
+
+**Was der Spielraum dimensioniert.** Slot-Tabelle, Beobachtungs-Portbereiche
+(`--metrics-port`/`--health-port` belegen `PORT..PORT+N-1`) und mit
+`--pool cpu` die Voreinstellung der Rechenslots je Worker (zugeteilte
+CPUs geteilt durch `N`) werden beim Start einmal aus `N` abgeleitet und
+einmal geprüft. Nichts davon wächst zur Laufzeit: mehr Spielraum verlangt
+einen Deploy. Das Einschalten auf einem bestehenden Deployment kann daher
+eine Portänderung verlangen. Vom Neustart-Budget gesperrte Slots bleiben
+gesperrt; die Rückmeldung nennt ihre Zahl.
+
+**Sicherheit.** Wer auf das Backend schreiben darf, kann die Größe einer
+Worker-Gruppe setzen. Sollwert- und Statusschlüssel liegen unter eigenen
+Präfixen (`sq:control:setpoint:` und `sq:control:status:`), getrennt von
+Task- und Ergebnisschlüsseln, sodass ein Betreiber Schreibrechte für
+Sollwerte und für Rückmeldungen getrennt vergeben kann (etwa per
+Valkey-ACL). Solange der steuernde Dienst keine eigenen Zugangsdaten mit
+so eingeschränkten Schreibrechten hat, kann jeder Task-Erzeuger, der die
+Backend-URL teilt, auch Sollwerte setzen.
 
 ## `swarmq schedule`
 

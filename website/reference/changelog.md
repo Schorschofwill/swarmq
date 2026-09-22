@@ -6,6 +6,27 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Control channel for worker groups.** `swarmq worker --max-processes N`
+  enables it and declares the headroom; `--group LABEL` names the group
+  (default: the sorted queue set). A setpoint `{"min": M, "max": K}` under
+  `sq:control:setpoint:<group>` is read before the first worker spawns and
+  every 5 seconds afterwards: a higher lower bound starts workers at once,
+  a lower upper bound drains the surplus gently, a deleted key restores the
+  start-up arguments, and the fixed form `N..N` switches autoscaling off.
+  Out-of-range, inverted, unreadable and range-on-fixed-group setpoints are
+  rejected with a reason; a setpoint never makes the supervisor fail to
+  start. Each supervisor reports its effective bounds, their source, the
+  last setpoint, a rejection reason and its slot counts under
+  `sq:control:status:<group>:<supervisor>` with an expiry, so a controlling
+  service can tell rejected from not-yet-applied from backend-unreachable.
+  Slot table, observability port ranges and (with `--pool cpu`) the default
+  compute slots are sized from the headroom at start-up; the pre-flight
+  rejects a headroom below `--processes` or the `--autoscale` upper bound,
+  or one that would overbook the assigned CPUs. Without `--max-processes`
+  nothing changes. See the [CLI reference](cli.md#control-channel).
+
 ## [0.6.2] — 2026-09-15
 
 ### Changed

@@ -60,6 +60,22 @@ class TestWorkerParserFlags:
         args = parser.parse_args(["worker", "--module=x"])
         assert args.autoscale is None
 
+    # --- Kontrollkanal (U3, R1/R5): --max-processes und --group ------------
+
+    def test_max_processes_and_group_parse_and_default_to_unset(self):
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--module=x", "--max-processes", "16", "--group", "orders-eu"])
+        assert (args.max_processes, args.group) == (16, "orders-eu")
+        plain = parser.parse_args(["worker", "--module=x"])
+        assert (plain.max_processes, plain.group) == (None, None)
+
+    @pytest.mark.parametrize("raw", ["0", "-1", "zwei"])
+    def test_max_processes_rejects_values_below_one(self, raw):
+        parser = _build_parser()
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(["worker", "--module=x", "--max-processes", raw])
+        assert exc_info.value.code == 2
+
 
 class TestWatchDirPathType:
     """R5.3 Unit 1: --watch-dir validator."""
@@ -397,3 +413,37 @@ class TestSupervisorConfigErrorExitCode:
 
         code = self._run(monkeypatch, BrokerConnectionError("connection refused"))
         assert code == 1
+
+
+class TestHeadroomExitCode:
+    """Kontrollkanal U3: ein Spielraum unter den Startwerten endet mit Exit 78 (R1/R3)."""
+
+    def _env(self):
+        return {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
+
+    def test_max_processes_below_processes_exits_78(self):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager") as PM:
+            rc = main(["worker", "--module=json", "--processes", "8", "--max-processes", "4"])
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        PM.assert_not_called()
+
+    def test_max_processes_below_autoscale_upper_bound_exits_78(self):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager") as PM:
+            rc = main(["worker", "--module=json", "--autoscale", "2,8", "--max-processes", "4"])
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        PM.assert_not_called()
+
+    def test_check_reports_the_headroom_error_as_json(self, capsys):
+        import json
+
+        rc = main(["worker", "--module=json", "--check", "--processes", "8", "--max-processes", "4"])
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert rc == 1
+        assert payload["error_type"] == "ConfigurationError"
+        assert "--max-processes 4" in payload["error"]

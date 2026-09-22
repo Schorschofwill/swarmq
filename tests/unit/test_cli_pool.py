@@ -91,3 +91,24 @@ class TestCheckWithInvalidPool:
         assert rc == 1
         assert payload["ok"] is False and payload["error_type"] == "ConfigurationError"
         assert "SWARMQ_POOL" in payload["error"] and payload["pool"] == "gpu"
+
+
+class TestHeadroomDividesTheCpuSlots:
+    """Kontrollkanal U4 (R4, R11): die Rechenslots je Prozess richten sich nach dem Spielraum."""
+
+    @pytest.fixture
+    def eight_cpus(self, monkeypatch):
+        monkeypatch.delenv("SWARMQ_POOL", raising=False)
+        monkeypatch.setattr("swarmq.slots._affinity_count", lambda: 8)
+        monkeypatch.setattr("swarmq.slots._cgroup_quota", lambda _path: None)
+
+    def test_headroom_eight_on_eight_cpus_gives_one_slot_per_process(self, eight_cpus):
+        args = _args(pool="cpu", processes=2, max_processes=8)
+        prepare_pool_args(args)
+        assert args.concurrency == 1
+        assert args.concurrency_source == "affinity/8"
+
+    def test_without_headroom_the_start_count_divides(self, eight_cpus):
+        args = _args(pool="cpu", processes=2)
+        prepare_pool_args(args)
+        assert args.concurrency == 4

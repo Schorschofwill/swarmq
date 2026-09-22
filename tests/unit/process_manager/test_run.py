@@ -309,3 +309,52 @@ class TestHeartbeatIntervalPassThrough:
         cfg = PM.call_args.kwargs["worker_args"][0]
         assert cfg.heartbeat_interval_s == 2.0
         assert PM.call_args.kwargs["heartbeat_timeout_s"] == 9.0
+
+
+class TestControlChannelWiring:
+    """Kontrollkanal U3 (R1, R3, R5): Gruppenschluessel und Spielraum erreichen Kinder und Supervisor."""
+
+    def _run(self, setpoint_store_factory=None, **over):
+        args = TestReloadRoutingThroughCLI()._args(**over)
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, TestReloadRoutingThroughCLI()._env(), clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
+             patch("swarmq.process_manager.check._validate_module_importable"):
+            from swarmq.process_manager import run_multi_process_worker
+
+            assert run_multi_process_worker(args, setpoint_store_factory=setpoint_store_factory) == 0
+        return PM.call_args.kwargs
+
+    def test_group_key_defaults_to_the_sorted_queue_set(self):
+        """Covers AE4 (ohne Label)."""
+        kwargs = self._run(queues=["orders", "billing", "orders"], group=None)
+        assert kwargs["group"] == "billing,orders"
+        assert kwargs["worker_args"][0].group == "billing,orders"
+
+    def test_group_label_wins_over_the_queues(self):
+        """Covers AE4 (mit Label)."""
+        kwargs = self._run(queues=["orders"], group="eu-west")
+        assert kwargs["group"] == "eu-west"
+        assert kwargs["worker_args"][0].group == "eu-west"
+
+    def test_headroom_reaches_config_and_supervisor(self):
+        kwargs = self._run(processes=2, max_processes=16)
+        assert kwargs["max_processes"] == 16
+        assert kwargs["worker_args"][0].max_processes == 16
+
+    def test_without_the_new_arguments_nothing_is_enabled(self):
+        """R2: keine Namespace-Attribute noetig, Spielraum bleibt ungesetzt."""
+        kwargs = self._run()
+        assert kwargs["max_processes"] is None
+        assert kwargs["worker_args"][0].max_processes is None
+
+    def test_store_factory_reaches_the_supervisor_only_with_headroom(self):
+        """Covers AE1 (Verdrahtung): ohne --max-processes keine Fabrik, mit Spielraum die gereichte."""
+        sentinel = object()
+        factory = lambda: sentinel  # noqa: E731
+        without = self._run(setpoint_store_factory=factory)
+        assert without["setpoint_store_factory"] is None
+        with_headroom = self._run(setpoint_store_factory=factory, max_processes=8)
+        assert with_headroom["setpoint_store_factory"] is factory
+        assert with_headroom["supervisor_id"].endswith(f":p{os.getpid()}")

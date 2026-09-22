@@ -6,6 +6,30 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Hinzugefügt
+
+- **Kontrollkanal für Worker-Gruppen.** `swarmq worker --max-processes N`
+  schaltet ihn ein und erklärt den Spielraum; `--group LABEL` benennt die
+  Gruppe (Vorgabe: die sortierte Queue-Menge). Ein Sollwert
+  `{"min": M, "max": K}` unter `sq:control:setpoint:<gruppe>` wird vor dem
+  ersten Kindprozess und danach alle 5 Sekunden gelesen: Eine höhere
+  Untergrenze startet Worker sofort, eine niedrigere Obergrenze beendet die
+  überzähligen sanft, ein gelöschter Schlüssel stellt die Startargumente
+  wieder her, die feste Form `N..N` schaltet die Autoskalierung ab.
+  Sollwerte über dem Spielraum, mit verdrehten Grenzen, unlesbare und
+  Bereiche auf Gruppen ohne Autoskalierung werden mit Grund abgelehnt; ein
+  Sollwert lässt den Start nie scheitern. Jeder Supervisor meldet unter
+  `sq:control:status:<gruppe>:<supervisor>` mit Verfallsdatum seine
+  wirksamen Grenzen samt Herkunft, den zuletzt gelesenen Sollwert, einen
+  Ablehnungsgrund und seine Slot-Zahlen, sodass ein steuernder Dienst
+  „abgelehnt", „noch nicht angekommen" und „Backend nicht erreichbar"
+  unterscheiden kann. Slot-Tabelle, Beobachtungs-Portbereiche und (mit
+  `--pool cpu`) die Voreinstellung der Rechenslots richten sich beim Start
+  nach dem Spielraum; die Vorflugprüfung lehnt einen Spielraum unter
+  `--processes` oder der `--autoscale`-Obergrenze ab, ebenso einen, der die
+  zugeteilten CPUs überbuchen würde. Ohne `--max-processes` ändert sich
+  nichts. Siehe [CLI-Referenz](cli.de.md#kontrollkanal).
+
 ## [0.6.2] — 2026-09-15
 
 ### Geändert

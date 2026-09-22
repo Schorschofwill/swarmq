@@ -166,3 +166,17 @@ class TestRealStartPathEnforcesIt:
             run_multi_process_worker(
                 self._args(processes=4, metrics_port=9000, health_port=9002)
             )
+
+
+class TestHeadroomWidensTheRanges:
+    """Kontrollkanal U4 (R4): der Spielraum stellt die Obergrenze der Portbereiche."""
+
+    def test_base_ports_too_close_for_the_headroom_are_rejected(self):
+        _check(processes=2, metrics_port=9000, health_port=9008)  # ohne Spielraum reicht der Abstand
+        with pytest.raises(ConfigurationError, match="16 worker"):
+            _check(processes=2, max_processes=16, metrics_port=9000, health_port=9008)
+
+    def test_ranges_report_the_headroom(self):
+        result = _check(processes=2, max_processes=16, metrics_port=9000, health_port=9100)
+        assert result["metrics_ports"] == [9000, 9015]
+        assert result["health_ports"] == [9100, 9115]

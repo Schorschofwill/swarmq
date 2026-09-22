@@ -58,7 +58,7 @@ def tick(pm: Any) -> None:
         )
         return
 
-    min_w, max_w = pm._autoscale
+    min_w, max_w = pm.effective_bounds  # Kontrollkanal (KTD12): Sollwert oder Startargumente
     # R2: belegte Slots, ein Slot im Uebergang zaehlt einmal.
     active = pm._slots.occupied()
 

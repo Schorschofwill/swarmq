@@ -219,6 +219,31 @@ def _add_worker_parser(subparsers: Any) -> None:
         ),
     )
     worker.add_argument(
+        "--max-processes",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "Enable the control channel and declare the headroom: a "
+            "setpoint stored in the backend (sq:control:setpoint:<group>) "
+            "may raise this supervisor to at most N worker processes. "
+            "Slot table, observability port ranges and the default compute "
+            "slots per worker are sized from N at start-up; N must be at "
+            "least --processes and the --autoscale upper bound. Without "
+            "this flag the supervisor never reads or writes setpoints."
+        ),
+    )
+    worker.add_argument(
+        "--group",
+        default=None,
+        metavar="LABEL",
+        help=(
+            "Group label for the control channel. Supervisors sharing a "
+            "label (and a backend) follow the same setpoint, each on its "
+            "own. Default: the sorted set of --queues."
+        ),
+    )
+    worker.add_argument(
         "--reload",
         action="store_true",
         help=(
