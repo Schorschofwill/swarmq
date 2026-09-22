@@ -192,13 +192,21 @@ chaos-tests:
   image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
   stage: test
   services:
+    # Kein `alias: docker` mehr: den vergibt der Runner inzwischen selbst aus
+    # dem Image-Namen, und die doppelte Angabe wurde mit
+    # "Skipping alias docker ... already in use by another service" verworfen.
     - name: docker:27-dind
-      alias: docker
   variables:
     DOCKER_HOST: "tcp://docker:2376"
     DOCKER_TLS_CERTDIR: "/certs"
     DOCKER_CERT_PATH: "/certs/client"
     DOCKER_TLS_VERIFY: "1"
+    # Ohne das ueberspringt sich dieses Gate selbst, sobald der Dienst nicht
+    # kommt -- und meldet trotzdem Erfolg. Beide Laeufe, die es je gab
+    # (2026-09-15 und 2026-09-22), endeten so: "1 passed, 40 skipped",
+    # 1,17 s, gruen. Mit dieser Variable wird ein fehlender Stack ein
+    # Fehlschlag (tests/chaos/conftest.py).
+    SWARMQ_REQUIRE_CHAOS: "1"
     UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
     UV_FROZEN: "1"
     UV_RUN: "uv run --extra test --extra reload"
@@ -220,7 +228,11 @@ chaos-tests:
           - src/swarmq/contracts/**
         compare_to: refs/heads/main
       when: manual
-      allow_failure: false  # Validierungslauf auf dem dind-Runner: Pipeline 2795414492 grün (2026-08-27)
+      # `allow_failure: false` haelt die Branch-Pipeline blockiert, bis der
+      # Job gruen gelaufen ist. Der frueher hier genannte Validierungslauf
+      # (Pipeline 2795414492) hat nie stattgefunden -- sein Job stand auf
+      # `manual` und wurde nie gestartet.
+      allow_failure: false
     - when: manual
       allow_failure: true
   before_script:
