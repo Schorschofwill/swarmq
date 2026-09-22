@@ -13,7 +13,8 @@
 #       (zombie leader); fixed by a cancel-safe try/finally + Scheduler.abort().
 #       Verified: the full suite ran clean 3x under 6-way CPU saturation
 #       (heavier than the CI runner). A red e2e job is now a real regression.
-#     * chaos-tests: opt-in (schedule/manual), never blocks.
+#     * chaos + fuzz: nicht in der Pipeline -- oertlich vor Releases,
+#       siehe den Block weiter unten und docs/testing/test-strategy.md.
 #   secret-detection stage — GitLab Secret Detection (unchanged).
 #
 # All Python steps run through uv against the committed uv.lock (UV_FROZEN),
@@ -182,65 +183,24 @@ soak-tests:
   script:
     - $UV_RUN pytest tests/soak -m soak -q
 
-# Tier 3 — chaos (Toxiproxy + docker compose). Runs on scheduled pipelines,
-# on manual trigger, and — blocking-manual — on feature branches that touch
-# pipeline/broker/backend/contracts paths (KTD15, see rules below). Needs a
-# Docker-in-Docker capable runner.
-# Härtung R2 B1: runs the WHOLE chaos directory (previously only 1 of 5
-# files) plus the chaos-stack-backed external-publish fuzz suite.
-chaos-tests:
-  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
-  stage: test
-  services:
-    - name: docker:27-dind
-      alias: docker
-  variables:
-    DOCKER_HOST: "tcp://docker:2376"
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_CERT_PATH: "/certs/client"
-    DOCKER_TLS_VERIFY: "1"
-    UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
-    UV_FROZEN: "1"
-    UV_RUN: "uv run --extra test --extra reload"
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    # Plan U2 / KTD15 — Chaos-Gate als CI-Regel: Feature-Branches, die die
-    # Worker-Pipeline, Broker-, Backend- oder Contracts-Pfade berühren,
-    # bekommen den Job als manuellen, NICHT überspringbaren Schritt; die
-    # Branch-Pipeline bleibt "blocked", bis er grün gelaufen ist. (MR-Pipelines
-    # sind per `workflow: rules` unterdrückt, eine MR-Regel griffe nie.)
-    # `allow_failure: true` auf Job-Ebene entfällt, sonst überstimmt es die Regel.
-    - if: '$CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
-      changes:
-        paths:
-          - src/swarmq/worker.py
-          - src/swarmq/worker/**
-          - src/swarmq/broker/**
-          - src/swarmq/backend/**
-          - src/swarmq/contracts/**
-        compare_to: refs/heads/main
-      when: manual
-      allow_failure: false  # Validierungslauf auf dem dind-Runner: Pipeline 2795414492 grün (2026-08-27)
-    - when: manual
-      allow_failure: true
-  before_script:
-    # build-essential: libvalkey C extension (the `reload` extra).
-    # docker CLI + compose v2 plugin: NOT in Debian's repos
-    # (`docker-compose-v2` does not exist there) — pull them from Docker's
-    # official apt repo so `docker compose` is the v2 subcommand the chaos
-    # fixture shells out to.
-    - apt-get update
-    - apt-get install -y --no-install-recommends build-essential ca-certificates curl
-    - install -m 0755 -d /etc/apt/keyrings
-    - curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-    - chmod a+r /etc/apt/keyrings/docker.asc
-    - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
-    - apt-get update
-    - apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin
-    - docker compose version
-  script:
-    - $UV_RUN pytest -m chaos tests/chaos -q
-    - $UV_RUN pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q
+# Kein Chaos-Job mehr in dieser Pipeline, und das ist eine bewusste
+# Abweichung von KTD15 (Plan U2), kein Versehen.
+#
+# Der Job trug `allow_failure: false` und hielt Branch-Pipelines blockiert,
+# bis er gruen war. Gelaufen ist er zweimal, 2026-09-15 und 2026-09-22, und
+# beide Male meldete er Erfolg, ohne etwas geprueft zu haben: "1 passed,
+# 40 skipped" in 1,17 s. `docker:dind` braucht einen privilegierten
+# Container, der Runner dieses Projekts faehrt mit `privileged = false`,
+# und die Fixture uebersprang dann jeden Test.
+#
+# Drei Wege standen zur Wahl. Den Runner zu oeffnen haette jedem Job dort
+# die Kontrolle ueber den Rechner gegeben -- fuer ein Gate, das manuell und
+# selten faehrt. Die SaaS-Runner koennen dind, weisen den Job aber mit
+# `ci_quota_exceeded` ab: der Free-Plan hat keine Minuten mehr. Bleibt der
+# dritte: die Suite laeuft oertlich vor Releases, und niemand behauptet in
+# der Pipeline etwas anderes.
+#
+# Wie und wann: docs/testing/test-strategy.md, Abschnitt "Chaos und Fuzz".
 
 secret_detection:
   stage: secret-detection

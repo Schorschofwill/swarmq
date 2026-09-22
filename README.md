@@ -319,8 +319,11 @@ uv run --extra test pytest tests/e2e/combinations -v -m chaos
 uv run --extra test pytest tests/property tests/fuzz -q -m "property or fuzz"
 ```
 
-Three-tier CI in `.github/workflows/`: pre-merge (≤5 min, every PR),
-nightly (chaos + stress + fuzz), weekly (mutation + 1h soak).
+CI is `.gitlab-ci.yml`: every push runs lint, types, the lock check, unit
+(including property and parser-fuzz), integration and e2e — all blocking.
+Stress and soak are manual jobs. The chaos suite and the chaos-backed fuzz
+run are executed locally before a release; see
+`docs/testing/test-strategy.md` for why and how.
 
 For coding conventions and TDD discipline see `AGENTS.md`.
 

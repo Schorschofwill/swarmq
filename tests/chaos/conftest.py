@@ -88,13 +88,30 @@ class ChaosStack:
         )
 
 
+#: When set, a missing chaos stack is a failure, not a skip. CI sets it for
+#: the non-skippable chaos gate (plan U2 / KTD15).
+#:
+#: Without this, the gate was worthless and nobody could tell: both runs that
+#: ever executed reported "1 passed, 40 skipped" and went green, because the
+#: dind service had not come up and every test skipped itself. A gate that
+#: cannot run must say so, not pass.
+_REQUIRE_ENV = "SWARMQ_REQUIRE_CHAOS"
+
+
+def _unavailable(reason: str) -> None:
+    """Skip locally, fail where the stack is mandatory."""
+    if os.environ.get(_REQUIRE_ENV, "").strip() not in ("", "0", "false"):
+        pytest.fail(f"{reason} — {_REQUIRE_ENV} is set, so this is a failure, not a skip")
+    pytest.skip(reason)
+
+
 @pytest.fixture(scope="class")
 def chaos_stack() -> Iterator[ChaosStack]:
     """Spin up a dedicated chaos stack on random ports for the test class."""
     if subprocess.run(
         ["docker", "info"], capture_output=True,
     ).returncode != 0:
-        pytest.skip("docker not available — chaos tests need a daemon")
+        _unavailable("docker not available — chaos tests need a daemon")
 
     project = f"swarmq-chaos-{random.randint(0, 1_000_000):06d}"
     admin_port = _free_port()
@@ -119,7 +136,7 @@ def chaos_stack() -> Iterator[ChaosStack]:
             ["docker", "compose", "-f", str(_COMPOSE_FILE), "down", "-v"],
             env=env, check=False, capture_output=True, timeout=30,
         )
-        pytest.skip(
+        _unavailable(
             f"chaos compose stack failed to start: "
             f"{up.stderr[-500:] if up.stderr else 'no stderr'}"
         )
