@@ -191,17 +191,10 @@ soak-tests:
 chaos-tests:
   image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
   stage: test
-  # **Nicht** auf einem eigenen Runner: `docker:dind` braucht einen
-  # privilegierten Container, und der lokale Runner faehrt mit
-  # `privileged = false`. Genau daran ist dieses Gate zweimal still
-  # gescheitert -- der Dienst kam nie hoch, sein Protokoll blieb leer, und
-  # der Health-Check lief 30 s gegen geschlossene Ports. Die SaaS-Runner
-  # koennen dind; ihn oertlich zu ermoeglichen hiesse, jedem Job dieses
-  # Runners die Kontrolle ueber den Rechner zu geben.
-  tags:
-    - saas-linux-medium-amd64
-  # Findet sich kein Runner mit diesem Tag, bricht der Job nach dieser Frist
-  # ab, statt die Pipeline unbegrenzt blockiert zu lassen.
+  # Warum hier kein `tags: [saas-linux-medium-amd64]` steht, obwohl `dind`
+  # dort liefe: die SaaS-Minuten des Kontos sind aufgebraucht (Free-Plan),
+  # und ein so getaggter Job wird mit `ci_quota_exceeded` abgewiesen, bevor
+  # ein Runner ihn ueberhaupt sieht. Nachgemessen am 2026-09-22.
   timeout: 30 minutes
   services:
     # Kein `alias: docker` mehr: den vergibt der Runner inzwischen selbst aus
