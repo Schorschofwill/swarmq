@@ -179,6 +179,19 @@ result = await (await app.apply(
   scale up/down with 30s cooldown, 60s idle window, and a 30s
   minimum worker age that suppresses spawn→immediate-kill churn
   when a crashed worker is restarted during an idle period.
+- **Control channel** (`--max-processes N`, `--group LABEL`) — a
+  setpoint `{"min": M, "max": K}` under `sq:control:setpoint:<group>`
+  changes a group's process count and autoscale bounds at runtime: read
+  before the first child spawns and every 5s after, applied within one
+  sampling interval, and reverted to the startup arguments when the key
+  is removed. The setpoint is per supervisor, bounded by the headroom
+  the operator declares at start, and out-of-range, inverted or
+  unreadable values are rejected with a reason instead of taking
+  effect. Each supervisor reports its effective bounds, their origin
+  and its slot counts under `sq:control:status:<group>:<supervisor>`
+  with an expiry, so a controlling service can tell "rejected" from
+  "not yet applied" from "backend unreachable". Off unless
+  `--max-processes` is given.
 - **CPU worker mode** (`--pool cpu`) — task bodies run in compute
   children forked from a pre-warmed forkserver; the loop process never
   computes, `hard_timeout` and cancel kill the child's process group,

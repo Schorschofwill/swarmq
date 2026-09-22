@@ -6,6 +6,8 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-22
+
 ### Added
 
 - **Control channel for worker groups.** `swarmq worker --max-processes N`
