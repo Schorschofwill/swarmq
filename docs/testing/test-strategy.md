@@ -10,20 +10,46 @@ unterschiedlichen Ausführungs-Stufen.
 | `tests/unit/` | `unit` | ✓ | pre-merge | reine Logik, keine externe Infra |
 | `tests/integration/` | `integration` | ✓ | pre-merge | Broker / Backend mit echtem Docker |
 | `tests/e2e/` | `e2e` | ✓ | pre-merge | Vollstack (Client + Worker + RabbitMQ + Valkey) |
-| `tests/property/` | `property` | – | nightly (`thorough`) / pre-merge (`quick`) | Hypothesis property-based |
-| `tests/fuzz/` | `fuzz` | – | nightly | Byte-Fuzz auf Parser, AMQP-Header-Fuzz |
-| `tests/chaos/` | `chaos` | – | nightly | Toxiproxy + Container-Restart + Crash |
-| `tests/stress/` | `stress` | – | nightly | hohe Parallelität (10 worker × 1000 tasks) |
-| `tests/soak/` | `soak` | – | weekly | 1h Last-Test mit Leak-Detection |
+| `tests/property/` | `property` | – | jeder Push (im `unit-tests`-Job) | Hypothesis property-based |
+| `tests/fuzz/test_parser_fuzz.py` | `fuzz` | – | jeder Push (im `unit-tests`-Job) | Byte-Fuzz auf Parser |
+| `tests/fuzz/test_external_publish_fuzz.py` | `fuzz` | – | örtlich vor Releases | AMQP-Header-Fuzz, braucht den Chaos-Stack |
+| `tests/chaos/` | `chaos` | – | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
+| `tests/stress/` | `stress` | – | manuell in der Pipeline | hohe Parallelität (10 worker × 1000 tasks) |
+| `tests/soak/` | `soak` | – | manuell in der Pipeline | 1h Last-Test mit Leak-Detection |
 
 `addopts` in `pyproject.toml` schliesst opt-in-Marker per Default aus,
 damit `pytest tests/unit` ≤ 15s bleibt.
 
 ## CI-Stufen
 
-- **Pre-merge** (`.github/workflows/ci.yml`) — ≤ 5 min: Unit + Integration + E2E + Property-Quick + Static.
-- **Nightly** (`.github/workflows/nightly.yml`, cron `0 2 * * *`) — ≤ 30 min: Chaos + Stress + Fuzz + Property-Thorough + Bandit.
-- **Weekly** (`.github/workflows/weekly.yml`, cron `0 2 * * 0`) — ≤ 4h: Mutation-Testing + 1h-Soak.
+Die einzige CI dieses Projekts ist `.gitlab-ci.yml`. Was dort steht, läuft;
+alles andere läuft örtlich oder gar nicht — und das steht hier, damit es
+niemand für eine Zusicherung hält.
+
+**Bei jedem Push**, alle blockierend:
+
+| Job | Was |
+|---|---|
+| `lint-and-types` | `ruff check src/ tests/`, `mypy src/swarmq tests/support tests/contracts` |
+| `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
+| `unit-tests` | `tests/unit`, dazu `tests/property` und `tests/fuzz/test_parser_fuzz.py` |
+| `integration-tests` | `tests/integration` gegen RabbitMQ und Valkey |
+| `e2e-tests` | `tests/e2e` |
+| `secret_detection` | GitLab Secret Detection (Template) |
+
+**Manuell in der Pipeline**, nicht blockierend: `stress-tests`, `soak-tests`.
+Beide werden faktisch nie gestartet; wer Last messen will, fährt sie von
+Hand an oder örtlich.
+
+**Nicht in der Pipeline**: Chaos und der Chaos-gestützte Fuzz-Lauf — siehe
+den Abschnitt darüber. Mutation-Testing gibt es als `scripts/run_mutation.sh`
+und läuft nur von Hand.
+
+**Es gibt keine Zeitpläne.** Weder nightly noch weekly: `pipeline_schedules`
+ist leer. Frühere Fassungen dieses Dokuments nannten
+`.github/workflows/{ci,nightly,weekly}.yml` als Quelle dieser Stufen — die
+Dateien lagen im Repo, das Projekt liegt aber auf GitLab, und sie sind nie
+gelaufen. Sie sind entfernt.
 
 ## Chaos und Fuzz — örtlich, vor jedem Release
 
