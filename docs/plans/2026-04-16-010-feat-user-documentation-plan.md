@@ -94,7 +94,7 @@ sondern in mehreren Durchgängen Seite für Seite passiert.
 Der ausführende Agent braucht nur diese Befehle, um lokal zu arbeiten:
 
 ```bash
-# Repo-Root: /home/georg/Dokumente/Development/swarmq_v2
+# Repo-Root: /home/georg/Dokumente/Development-Privat/swarmq
 uv sync --extra docs           # installiert Material, mkdocstrings, llmstxt
 uv run mkdocs serve            # Live-Reload auf http://127.0.0.1:8000
 uv run mkdocs build --strict   # Sanity-Check (muss ohne Warnings bauen)

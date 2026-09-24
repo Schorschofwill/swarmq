@@ -93,6 +93,6 @@ swarmq worker --module myapp.tasks --queues default --concurrency 10
 
 ## Sources
 
-- Brainstorm origin: product-lens review of plan 006 (`/home/georg/Dokumente/Development/swarmq_v2/.context/compound-engineering/document-review/plan006-product.json`) — quote: "Build the CLI before you build a comparison page"
+- Brainstorm origin: product-lens review of plan 006 (`/home/georg/Dokumente/Development-Privat/swarmq/.context/compound-engineering/document-review/plan006-product.json`) — quote: "Build the CLI before you build a comparison page"
 - Implementation-order requirements (R3.10): `docs/brainstorms/implementation-order-requirements.md`
 - This is intentionally a **subset** of R3.10. Future iterations can add the deferred subcommands and flags one at a time as evidence emerges.
