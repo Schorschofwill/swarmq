@@ -36,38 +36,8 @@ _REPO = Path(__file__).resolve().parents[2]
 _SRC = _REPO / "src"
 _PKG = "swarmq"
 
-# Noch nicht migrierte Module (U9). Darf nur schrumpfen.
-_NOT_YET_MIGRATED: frozenset[str] = frozenset(
-    {
-        "swarmq._http",
-        "swarmq.backend.valkey.connection",
-        "swarmq.backend.valkey.results",
-        "swarmq.broker.rabbitmq.connection",
-        "swarmq.broker.rabbitmq.delivery",
-        "swarmq.client",
-        "swarmq.client.results",
-        "swarmq.client.schedule",
-        "swarmq.client.workflows",
-        "swarmq.dishka",
-        "swarmq.health",
-        "swarmq.hot_reload",
-        "swarmq.metrics",
-        "swarmq.middleware",
-        "swarmq.process_manager.autoscale",
-        "swarmq.process_manager.check",
-        "swarmq.process_manager.config",
-        "swarmq.process_manager.run",
-        "swarmq.process_manager.sampler",
-        "swarmq.process_manager.setpoint",
-        "swarmq.process_manager.setpoint_store",
-        "swarmq.process_manager.supervisor",
-        "swarmq.scheduler.definition",
-        "swarmq.scheduler.loop",
-        "swarmq.scheduler.sync",
-        "swarmq.signals",
-        "swarmq.task",
-    }
-)
+# Noch nicht migrierte Module (U9). Darf nur schrumpfen -- seit U9 leer.
+_NOT_YET_MIGRATED: frozenset[str] = frozenset()
 
 _LEVEL_METHODS = frozenset(
     {"debug", "info", "warning", "warn", "error", "exception", "critical", "fatal", "msg"}

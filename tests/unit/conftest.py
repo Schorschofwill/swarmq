@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 
 from tests.unit._log_capture import capture_swarmq_logs, preserved_root_logger
-from tests.unit._structlog_cache import reset_swarmq_logger_caches
 
 # Logging-Umgebungsvariablen, die swarmq auswertet (Plan 2026-10-06-0831, U4).
 _SWARMQ_LOGGING_ENV_VARS = (
@@ -42,26 +41,6 @@ def swarmq_logs():
     """
     with capture_swarmq_logs() as entries:
         yield entries
-
-
-@pytest.fixture(autouse=True)
-def _uncache_structlog_module_loggers():
-    """Härtung R2 (Test-Isolation): ``setup_logging`` konfiguriert
-    structlog mit ``cache_logger_on_first_use=True``. Sobald irgendein
-    früherer Test (z.B. via ``SwarmQ.__init__`` oder den Supervisor)
-    diese Konfiguration aktiv hatte und ein Modul-Logger seinen ersten
-    Log-Call machte, wurde der fertig gebundene stdlib-Logger auf dem
-    Lazy-Proxy gecacht (Instanz-Attribut ``bind``) — und
-    ``structlog.testing.capture_logs`` konnte ihn in späteren Tests
-    nicht mehr abfangen. Der Cache wird vor jedem Unit-Test geleert;
-    der Proxy fällt auf die jeweils aktive Konfiguration zurück.
-
-    Plan U2: statt eines festen Modul-Tupels werden alle geladenen
-    ``swarmq.*``-Module durchsucht — neue Submodule der Extraktionen
-    (``swarmq.worker.pipeline`` usw.) sind damit automatisch erfasst.
-    """
-    reset_swarmq_logger_caches()
-    yield
 
 
 @pytest.fixture(autouse=True)
