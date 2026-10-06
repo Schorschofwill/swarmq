@@ -14,7 +14,9 @@ Test-Liste:
 - [x] SWARMQ_CONFIGURE_LOGGING=false schaltet die Einrichtung ab
 - [x] Fehlende Namespace-Attribute zaehlen als "nicht angegeben"
 - [x] LoggingSettings ist unveraenderlich und pickle-sicher
-- [x] cli_level_and_format: Flag oder INFO/human, Env bleibt unberuehrt (Uebergang bis U7)
+- [x] ``level_explicit``: wahr bei Level aus CLI, Env oder SwarmQConfig, sonst falsch (U7, KTD8)
+- [x] fallback_log_format: Format fuer die Fehlerzeile, wenn die Aufloesung scheitert --
+      CLI, dann Env, ungueltig oder fehlend ``human`` (U7, R14)
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ import pytest
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging_settings import (
     LoggingSettings,
-    cli_level_and_format,
+    fallback_log_format,
     resolve_logging_settings,
 )
 
@@ -100,6 +102,15 @@ class TestPriority:
         assert resolve_logging_settings(_cli(log_level="DEBUG"), env, config).level == "DEBUG"
         assert resolve_logging_settings(_cli(log_level=None), env, config).level == "WARNING"
         assert resolve_logging_settings(_cli(), {}, config).level == "ERROR"
+
+    def test_level_is_explicit_only_when_a_source_gave_it(self) -> None:
+        # U7 (KTD8): Nach einer dictConfig wirkt nur ein ausdrueckliches Level.
+        env = {"SWARMQ_LOG_LEVEL": "WARNING"}
+
+        assert resolve_logging_settings(_cli(log_level="DEBUG"), {}, None).level_explicit
+        assert resolve_logging_settings(_cli(), env, None).level_explicit
+        assert resolve_logging_settings(_cli(), {}, {"log_level": "ERROR"}).level_explicit
+        assert not resolve_logging_settings(_cli(), {}, None).level_explicit
 
     def test_queue_size_follows_cli_then_env_then_config(self) -> None:
         env = {"SWARMQ_LOG_QUEUE_SIZE": "200"}
@@ -251,12 +262,17 @@ class TestModel:
             settings.level = "DEBUG"  # type: ignore[misc]
 
 
-class TestCliLevelAndFormat:
-    def test_missing_flags_fall_back_to_the_previous_argparse_defaults(self) -> None:
-        assert cli_level_and_format(_cli(log_level=None, log_format=None)) == ("INFO", "human")
-        assert cli_level_and_format(None) == ("INFO", "human")
+class TestFallbackLogFormat:
+    """U7 (R14): Scheitert die Aufloesung, erscheint ``worker_config_error``
+    trotzdem im gewaehlten Format, soweit es sich bestimmen laesst."""
 
-    def test_given_flags_are_returned_unchanged(self) -> None:
-        assert cli_level_and_format(_cli(log_level="DEBUG", log_format="json")) == (
-            "DEBUG", "json",
-        )
+    def test_cli_then_env_then_human(self) -> None:
+        env = {"SWARMQ_LOG_FORMAT": "json"}
+
+        assert fallback_log_format(_cli(log_format="human"), env) == "human"
+        assert fallback_log_format(_cli(), env) == "json"
+        assert fallback_log_format(_cli(), {"SWARMQ_LOG_JSON": "true"}) == "json"
+        assert fallback_log_format(None, {}) == "human"
+
+    def test_an_invalid_format_falls_back_to_human(self) -> None:
+        assert fallback_log_format(_cli(), {"SWARMQ_LOG_FORMAT": "xml"}) == "human"

@@ -544,6 +544,46 @@ class TestRunWorkerAsync:
         assert built["kwargs"]["worker_slot"] == 4
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(5)
+    async def test_resolved_log_level_wins_over_the_worker_env(self, monkeypatch):
+        """U7 (KTD7): Mit ``--log-level INFO`` zeigt ``app.config.log_level``
+        im Worker INFO, auch wenn ``SWARMQ_LOG_LEVEL=DEBUG`` gesetzt ist."""
+        from swarmq.app import SwarmQ
+        from swarmq.logging import configure_logging
+        from swarmq.logging_settings import LoggingSettings
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_settings_probe", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+        # Kein Netz: Verbinden und Worker-Start sind ersetzt.
+        monkeypatch.setattr(SwarmQ, "__aenter__", AsyncMock())
+        monkeypatch.setattr(SwarmQ, "__aexit__", AsyncMock(return_value=False))
+        monkeypatch.setattr(SwarmQ, "start_worker", AsyncMock())
+        built: list = []
+
+        def setup(app):
+            built.append(app)
+
+        self._hook_module(monkeypatch, setup=setup)
+        settings = LoggingSettings(level="INFO", level_explicit=True)
+        configure_logging(settings)  # wie das Entry vor dem App-Import
+        ns = self._hook_args("swarmq_test_hooks:setup")
+        ns.log_level = None
+        ns.logging_settings = settings
+
+        await cli.run_worker_async(ns)
+
+        assert built[0].config.log_level == "INFO"
+        assert built[0].config.logging_settings is settings
+
+    @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(
         self, monkeypatch
     ):

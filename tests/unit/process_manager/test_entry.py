@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Test-Liste U7 (Plan 2026-10-06-0831, Worker-Subprozess):
+# - [x] ``--no-configure-logging``: Root-Handler bleiben unangetastet (R12)
+# - [x] Die Settings kommen aufgeloest an: ``configure_logging`` vor dem
+#       App-Import, Env im Kind wirkt nicht; die Namespace traegt das Objekt
+# - [x] ``RecycleAckTimeout``: strukturierte Zeile statt Rohtext, dann Exit 75
+# - [x] Nach dem Ende ist die Log-Queue geleert (``shutdown_logging``)
 import os
 
 import pytest
@@ -243,11 +249,16 @@ class TestRecycleAckTimeoutExitCode:
             raise RecycleAckTimeout("no ack")
 
         monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        events = _capture_entry_logs(monkeypatch)
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         with pytest.raises(SystemExit) as exc_info:
             worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
         assert exc_info.value.code == RECYCLE_NOACK_EXIT_CODE == 75
-        assert "no ack" in capsys.readouterr().err
+        # Bewusst geaendert (U7, R15): strukturierte Zeile statt Rohtext.
+        assert "swarmq worker:" not in capsys.readouterr().err
+        entry = next(e for e in events if e["event"] == "worker_recycle_ack_timeout")
+        assert entry["error_type"] == "RecycleAckTimeout"
+        assert "no ack" in entry["error"]
 
 
 class TestInheritedSignalMask:
@@ -268,3 +279,104 @@ class TestInheritedSignalMask:
             assert signal.SIGTERM not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, before)
+
+
+class TestEntryLogging:
+    """U7 (KTD4): Das Entry richtet das Logging genau einmal ein, vor dem
+    App-Import, aus den aufgeloesten Settings des Supervisors."""
+
+    def test_no_configure_logging_leaves_root_untouched(self, monkeypatch):
+        import logging
+
+        from swarmq.logging_settings import LoggingSettings
+
+        async def fake_run(ns):
+            return None
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        app_handler = logging.NullHandler()
+        root = logging.getLogger()
+        root.addHandler(app_handler)
+        before = (root.handlers[:], root.level)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        worker_subprocess_entry(
+            0, shutdown_event,
+            _make_test_cfg(logging_settings=LoggingSettings(configure=False)),
+        )
+
+        assert (root.handlers[:], root.level) == before
+
+    def test_resolved_settings_win_over_the_child_env(self, monkeypatch):
+        """KTD7: Das Kind liest kein Env mehr; die Namespace traegt das
+        Settings-Objekt (kein Dict aus ``dataclasses.asdict``)."""
+        import logging
+
+        from swarmq.logging_settings import LoggingSettings
+
+        seen: dict = {}
+
+        async def fake_run(ns):
+            seen["level"] = logging.getLogger().level
+            seen["settings"] = ns.logging_settings
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+        settings = LoggingSettings(level="WARNING", level_explicit=True)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg(logging_settings=settings))
+
+        assert seen == {"level": logging.WARNING, "settings": settings}
+
+    def test_config_error_reaches_the_dictconfig_handlers(self, monkeypatch, swarmq_logs):
+        """R11: Mit eigener dictConfig bleibt structlog unkonfiguriert (KTD6);
+        ``worker_config_error`` muss trotzdem ueber das Standard-``logging``
+        laufen, nicht ueber structlogs Default-Ausgabe auf stdout."""
+        from swarmq.exceptions import ConfigurationError
+        from swarmq.logging_settings import LoggingSettings
+
+        async def boom(ns):
+            raise ConfigurationError("no tasks registered")
+
+        import logging
+        import weakref
+
+        # dictConfig schliesst alle bekannten Handler -- auch die von pytest.
+        monkeypatch.setattr(logging, "_handlerList", [])
+        monkeypatch.setattr(logging, "_handlers", weakref.WeakValueDictionary())
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        # Wie ``load_log_config`` sie liefert; ohne den Schluessel schaltete
+        # dictConfig alle bestehenden Logger stumm -- auch fuer Folgetests.
+        settings = LoggingSettings(
+            log_config="/abs/log.json",
+            log_config_json='{"version": 1, "disable_existing_loggers": false}',
+        )
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg(logging_settings=settings))
+
+        assert [e["source"] for e in swarmq_logs if e["event"] == "worker_config_error"] == ["worker"]
+
+    def test_log_queue_is_written_when_the_entry_returns(self, monkeypatch):
+        """R15: Beim regulaeren Ende ist alles geschrieben und kein Listener
+        laeuft mehr."""
+        import io
+        import sys
+        import threading
+
+        from swarmq.logging import LISTENER_THREAD_NAME, get_logger
+
+        async def fake_run(ns):
+            get_logger("swarmq.tests.entry").error("evt_before_exit")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+        stderr = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+
+        assert "evt_before_exit" in stderr.getvalue()
+        assert not [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]

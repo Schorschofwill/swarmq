@@ -198,6 +198,19 @@ _CONFIGURED = False
 """Hat ``configure_logging`` in diesem Prozess eingerichtet? Je Prozess gibt
 es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
 
+_ENTRY_POINT_OWNED = False
+"""Hat ein Einstiegspunkt per ``configure_logging`` ueber das Logging dieses
+Prozesses entschieden -- auch mit "nicht konfigurieren" (R12)?"""
+
+
+def logging_is_configured() -> bool:
+    """Hat ein Einstiegspunkt das Logging dieses Prozesses uebernommen (KTD4)?
+
+    Bis U8 ueberspringt ``SwarmQ`` dann seine eigene Einrichtung, damit sie
+    die des Einstiegspunkts nicht ueberschreibt.
+    """
+    return _ENTRY_POINT_OWNED
+
 
 def shutdown_logging() -> None:
     """Schreibt alle Eintraege der Log-Queue und stoppt den Listener (KTD5).
@@ -205,12 +218,85 @@ def shutdown_logging() -> None:
     Der Queue-Handler bleibt installiert; der naechste Eintrag startet den
     Listener wieder. Ein folgendes ``configure_logging`` baut neu auf (KTD4).
     """
-    global _CONFIGURED
-    _CONFIGURED = False
+    global _CONFIGURED, _ENTRY_POINT_OWNED, _APP_TAKEOVER_REPORTED
+    _CONFIGURED = _ENTRY_POINT_OWNED = _APP_TAKEOVER_REPORTED = False
+    _stop_listeners()
+
+
+def _stop_listeners() -> None:
+    """Leert und stoppt alle Listener des Prozesses, ohne den Eigentuemer
+    freizugeben."""
     for listener in list(_LISTENERS):
         listener.stop()
     while _CONFIG_LISTENERS:
         _CONFIG_LISTENERS.pop().stop()
+
+
+_APP_TAKEOVER_REPORTED = False
+"""``logging_reconfigured_by_app`` erscheint einmal je Prozess (KTD4)."""
+
+
+def root_handler_snapshot() -> tuple[logging.Handler, ...]:
+    """Die Root-Handler vor dem App-Import (Regel "App gewinnt", KTD4)."""
+    return tuple(logging.getLogger().handlers)
+
+
+def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
+    """Regel "App gewinnt" (Plan 2026-10-06-0831, U7, KTD4).
+
+    Verglichen wird mit ``before`` aus :func:`root_handler_snapshot`, nach dem
+    App-Import und noch einmal nach einem ``--configure``-Hook. Fehlt ein
+    Handler von swarmq, hat die App ersetzt: swarmq stoppt seinen
+    Root-Listener und meldet ``logging_reconfigured_by_app`` einmal. Hat eine
+    dictConfig der App ``swarmq.*``-Logger stummgeschaltet, schaltet swarmq
+    sie wieder ein und nennt die Zahl im selben Event.
+    """
+    global _APP_TAKEOVER_REPORTED
+    if not _CONFIGURED:
+        # Nichts eingerichtet (R12): das Logging gehoert ganz der App.
+        return
+    current = logging.getLogger().handlers
+    replaced = any(handler not in current for handler in before)
+    reenabled = _reenable_swarmq_loggers()
+    if (replaced or reenabled) and not _APP_TAKEOVER_REPORTED:
+        if replaced:
+            _stop_listeners()
+            _activate_swarmq_queue_after_app_takeover()
+        _APP_TAKEOVER_REPORTED = True
+        get_logger(__name__).info("logging_reconfigured_by_app", reenabled_loggers=reenabled)
+    added = [handler for handler in current if handler not in before]
+    if added and not replaced:
+        # Neben swarmqs Handler: beide schreiben -- swarmq entfernt nichts.
+        get_logger(__name__).warning(
+            "logging_handlers_added_by_app",
+            handler_types=[type(handler).__name__ for handler in added],
+        )
+
+
+def _activate_swarmq_queue_after_app_takeover() -> None:
+    """Nahtstelle fuer KTD4/KTD10: Nach dem Ersatz durch die App laufen die
+    swarmq-Logs ueber die Opt-in-Queue am Logger ``swarmq`` an die Handler
+    der App, damit ein blockierender App-Handler den Event-Loop nicht
+    aufhaelt (R6).
+
+    TODO(U8): Die Opt-in-Queue (KTD10) entsteht erst in U8; bis dahin
+    schreiben die swarmq-Logs nach dem Ersatz synchron ueber die Handler der
+    App.
+    """
+
+
+def _reenable_swarmq_loggers() -> int:
+    """Schaltet von der App deaktivierte ``swarmq.*``-Logger wieder ein."""
+    count = 0
+    for name, lg in list(logging.Logger.manager.loggerDict.items()):
+        if (
+            isinstance(lg, logging.Logger)
+            and lg.disabled
+            and (name == "swarmq" or name.startswith("swarmq."))
+        ):
+            lg.disabled = False
+            count += 1
+    return count
 
 
 def _after_fork_in_child() -> None:
@@ -509,7 +595,8 @@ def configure_logging(settings: LoggingSettings) -> None:
         LoggingConfigError: Die Konfigurationsdatei ist nicht ladbar oder
             ungueltig; ``path`` nennt sie, ``__cause__`` die Ursache.
     """
-    global _CONFIGURED
+    global _CONFIGURED, _ENTRY_POINT_OWNED
+    _ENTRY_POINT_OWNED = True
     if not settings.configure:
         # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
         return
@@ -600,7 +687,10 @@ def _start_queue_listeners() -> None:
 
 def _apply_logger_levels(settings: LoggingSettings) -> None:
     """Level je Logger-Name (``--logger-level``) -- zuletzt, damit sie auch
-    nach einer dictConfig gelten (KTD8)."""
+    nach einer dictConfig gelten (KTD8). Ein ausdrueckliches Level gilt dort
+    auch fuer Root; ein Default ueberschriebe das Level aus der Datei."""
+    if settings.log_config is not None and settings.level_explicit:
+        logging.getLogger().setLevel(settings.level)
     for name, level in settings.logger_levels:
         logging.getLogger(name).setLevel(level)
 
@@ -662,11 +752,14 @@ def setup_logging(
     Logzeilen bei zwei Listenern). Wie bisher wird structlog dabei immer neu
     konfiguriert, auch ueber eine bestehende Konfiguration hinweg.
     """
+    global _ENTRY_POINT_OWNED
     shutdown_logging()
     structlog.reset_defaults()
     configure_logging(
         LoggingSettings(level=log_level, format="json" if log_json else "human")
     )
+    # Kein Einstiegspunkt: ``SwarmQ`` ruft das bis U8 selbst auf.
+    _ENTRY_POINT_OWNED = False
     handler = logging.getLogger().handlers[0]
     assert isinstance(handler, _StructlogQueueHandler) and handler.listener is not None
     return handler.listener

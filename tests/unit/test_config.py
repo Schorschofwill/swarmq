@@ -765,6 +765,8 @@ class TestLoggingFields:
     - [x] Ungueltige Werte: ConfigurationError
     - [x] log_config zusammen mit configure_logging=False: ConfigurationError
     - [x] CRITICAL fuer log_level und log_lifecycle_level
+    - [x] (U7, KTD7) ``logging_settings``: die Logging-Felder kommen aus dem
+          aufgeloesten Objekt und sind von den Env-Overrides ausgenommen
     """
 
     @staticmethod
@@ -834,3 +836,30 @@ class TestLoggingFields:
     def test_critical_is_accepted(self):
         cfg = self._cfg(log_level="CRITICAL", log_lifecycle_level="CRITICAL")
         assert (cfg.log_level, cfg.log_lifecycle_level) == ("CRITICAL", "CRITICAL")
+
+    def test_resolved_settings_win_over_the_env(self, monkeypatch):
+        """KTD7: ``--log-level INFO`` gilt im Worker auch bei
+        ``SWARMQ_LOG_LEVEL=DEBUG`` -- ``app.config.log_level`` zeigt den
+        tatsaechlich wirksamen Wert."""
+        from swarmq.logging_settings import LoggingSettings
+
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+
+        cfg = self._cfg(logging_settings=LoggingSettings(level="INFO", level_explicit=True))
+
+        assert cfg.log_level == "INFO"
+
+    def test_every_logging_field_comes_from_the_settings(self, monkeypatch):
+        from swarmq.logging_settings import LoggingSettings
+
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "json")
+        monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "5")
+        settings = LoggingSettings(
+            format="human", configure=False, queue_size=7, lifecycle_level="INFO",
+            logger_levels=(("aio_pika", "ERROR"),),
+        )
+
+        cfg = self._cfg(logging_settings=settings)
+
+        assert (cfg.log_json, cfg.configure_logging, cfg.log_queue_size) == (False, False, 7)
+        assert (cfg.log_lifecycle_level, cfg.logger_levels) == ("INFO", (("aio_pika", "ERROR"),))

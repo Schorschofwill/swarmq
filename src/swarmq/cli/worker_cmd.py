@@ -25,6 +25,11 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     registered`` check, which surfaces a config error rather than
     starting an idle worker that will silently never execute anything.
     """
+    # KTD4: Das Entry hat das Logging vor diesem Import eingerichtet; was
+    # die App beim Import selbst einrichtet, gewinnt.
+    from swarmq.logging import react_to_app_logging, root_handler_snapshot
+
+    before_import = root_handler_snapshot()
     try:
         importlib.import_module(args.module)
     except ImportError as exc:
@@ -46,6 +51,8 @@ async def run_worker_async(args: argparse.Namespace) -> None:
                 f"Install it with: pip install 'swarmq[dishka]'"
             ) from exc
         raise
+
+    react_to_app_logging(before_import)
 
     if not Task._registered_tasks:
         raise ConfigurationError(
@@ -83,7 +90,7 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     from swarmq.app import SwarmQ
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
-    from swarmq.logging_settings import cli_level_and_format
+    from swarmq.logging_settings import resolve_logging_settings
 
     broker = RabbitMQBroker(broker_url)
     backend = ValkeyBackend(backend_url)
@@ -107,15 +114,20 @@ async def run_worker_async(args: argparse.Namespace) -> None:
         )
         if (value := getattr(args, name, None)) is not None
     }
-    log_level, log_format = cli_level_and_format(args)
+    # KTD4/KTD7: Hier wird nichts eingerichtet -- das hat das Entry vor dem
+    # App-Import getan. Die aufgeloesten Settings gehen als ein Objekt an
+    # ``SwarmQConfig``; seine Logging-Felder sind von den Env-Overrides
+    # ausgenommen, ``app.config.log_level`` zeigt also den wirksamen Wert.
+    logging_settings = getattr(args, "logging_settings", None) or resolve_logging_settings(
+        args, os.environ, None,
+    )
     app = SwarmQ(
         broker,
         backend,
         queues=args.queues,
         concurrency=args.concurrency,
         **optional_kwargs,
-        log_level=log_level,
-        log_json=(log_format == "json"),
+        logging_settings=logging_settings,
         burst_mode=args.burst,
         burst_idle_timeout=args.burst_idle_timeout,
         priorities=args.priorities,
@@ -124,7 +136,11 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     )
     configure = getattr(args, "configure", None)
     if configure is not None:
+        before_hook = root_handler_snapshot()
         await _run_configure_hook(app, configure)
+        # KTD4: Ein Hook, der das Logging umbaut, zaehlt wie ein Umbau beim
+        # Import; gemeldet wird trotzdem nur einmal.
+        react_to_app_logging(before_hook)
 
     async with app:
         await app.start_worker()

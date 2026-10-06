@@ -19,6 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
+from swarmq.logging import shutdown_logging
 from swarmq.process_manager import autoscale, setpoint
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
@@ -167,6 +168,7 @@ class ProcessManager:
     SCALE_MIN_AGE_S = 30.0
     # Kontrollkanal (KTD5): Abtastintervall des Sollwert-Durchlaufs.
     SETPOINT_SAMPLE_INTERVAL = DEFAULT_SAMPLE_INTERVAL_S
+    reload_precheck: Callable[[], bool] | None = None  # KTD9: vor dem Reload, z. B. --log-config
 
     def __init__(
         self,
@@ -367,6 +369,7 @@ class ProcessManager:
                 return 0
             try:
                 logger.info("process_manager_reload_execvp")
+                shutdown_logging()  # R15: die Queue vor dem neuen Abbild leeren
                 # Use the argv AND env
                 # snapshots captured in __init__. execvpe closes the
                 # env side of the trust boundary so in-process
@@ -408,6 +411,8 @@ class ProcessManager:
         self.shutdown_event.set()
 
     def _on_reload_signal(self, _signum: int, _frame: object) -> None:
+        if self.reload_precheck is not None and not self.reload_precheck():
+            return  # vor dem Stoppen eines Workers abgebrochen (KTD9)
         logger.info("process_manager_reload_requested")
         self._reload_requested = True
         self._shutting_down = True

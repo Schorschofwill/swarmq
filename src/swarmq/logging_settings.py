@@ -22,6 +22,9 @@ class LoggingSettings:
     """Aufgeloeste Logging-Einstellungen eines Prozesses (R13)."""
 
     level: str = "INFO"
+    # Kam das Level aus CLI, Env oder SwarmQConfig? Nur dann wirkt es nach
+    # einer dictConfig zusaetzlich per ``setLevel`` (KTD8).
+    level_explicit: bool = False
     format: str = "human"
     log_config: str | None = None
     # Die geprueft geparste dictConfig als JSON-String (KTD9). Ein String
@@ -33,18 +36,11 @@ class LoggingSettings:
     lifecycle_level: str = "DEBUG"
 
 
-def cli_level_and_format(cli: object | None) -> tuple[str, str]:
-    """Level und Format aus der Namespace, fehlende Flags mit Default.
-
-    Seit die argparse-Defaults ``None`` sind (KTD7), lesen die bisherigen
-    Einstiegspunkte ihre Werte hierueber: Flag oder ``INFO``/``human``, ohne
-    Env -- genau wie vorher. Die Einstiegspunkte stellen in U7 auf
-    :func:`resolve_logging_settings` um.
-    """
-    return (
-        getattr(cli, "log_level", None) or "INFO",
-        getattr(cli, "log_format", None) or "human",
-    )
+def fallback_log_format(cli: object | None, env: Mapping[str, str]) -> str:
+    """Format fuer die Fehlerzeile, wenn :func:`resolve_logging_settings`
+    scheitert (U7, R14): CLI, dann Env, sonst ``human``."""
+    log_format = getattr(cli, "log_format", None) or _env_format(env)
+    return log_format if log_format in VALID_LOG_FORMATS else "human"
 
 
 def resolve_logging_settings(
@@ -86,6 +82,7 @@ def resolve_logging_settings(
     _check_combinations(log_config, log_format, configure)
     return LoggingSettings(
         level=_level(level),
+        level_explicit=level.explicit,
         format=_choice(log_format, VALID_LOG_FORMATS),
         log_config=None if log_config.value is None else str(log_config.value),
         configure=bool(configure.value),

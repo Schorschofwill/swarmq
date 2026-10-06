@@ -99,6 +99,12 @@
       "type": "bool"
     },
     {
+      "default": null,
+      "env_var": null,
+      "name": "logging_settings",
+      "type": "LoggingSettings | None"
+    },
+    {
       "default": 3600.0,
       "env_var": "SWARMQ_RETRY_MAX_DELAY",
       "name": "retry_max_delay",

@@ -297,6 +297,17 @@ class TestProcessManagerRestart:
         assert pm._shutting_down is True
         assert pm.shutdown_event.is_set()
 
+    def test_failed_reload_precheck_keeps_workers_running(self):
+        """U7 (KTD9): Der Supervisor prueft vor dem Stoppen der Worker (etwa
+        eine inzwischen ungueltige ``--log-config``); scheitert das, bleibt
+        alles, wie es ist -- kein Reload, kein Stopp."""
+        pm = self._pm()
+        pm.reload_precheck = lambda: False
+        pm._on_reload_signal(signal.SIGHUP, None)
+        assert pm._reload_requested is False
+        assert pm._shutting_down is False
+        assert not pm.shutdown_event.is_set()
+
     def test_sigterm_sets_shutdown_flag_no_reload(self):
         pm = self._pm()
         pm._on_shutdown_signal(signal.SIGTERM, None)
@@ -316,6 +327,34 @@ class TestProcessManagerRestart:
              patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
+
+
+    def test_reload_writes_the_log_queue_before_execvpe(self):
+        """U7 (R15): ``process_manager_reload_execvp`` ist geschrieben, bevor
+        ``execvpe`` das Prozessabbild ersetzt -- danach schreibt kein
+        Listener-Thread mehr."""
+        calls: list[str] = []
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        log = MagicMock()
+        log.info.side_effect = lambda event, **kw: calls.append(event)
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.supervisor.logger", log), \
+             patch(
+                 "swarmq.process_manager.supervisor.shutdown_logging",
+                 side_effect=lambda: calls.append("shutdown_logging"),
+             ), \
+             patch(
+                 "swarmq.process_manager.supervisor.os.execvpe",
+                 side_effect=lambda *a: calls.append("execvpe"),
+             ):
+            pm.run()
+        assert calls[-3:] == ["process_manager_reload_execvp", "shutdown_logging", "execvpe"]
 
 
 class TestCrashLoopExhaustion:

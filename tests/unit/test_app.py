@@ -357,6 +357,32 @@ class TestSwarmQLogging:
             mock_listener.stop.assert_called_once()
 
 
+    @pytest.mark.anyio()
+    @pytest.mark.timeout(5)
+    async def test_entry_point_configuration_is_not_overwritten(self, broker, backend):
+        """U7 (KTD4): Hat ein Einstiegspunkt das Logging uebernommen (Worker-
+        Subprozess), baut ``SwarmQ`` es nicht neu auf -- sonst ersetzte es
+        dessen Einrichtung und die der App. Das Entfernen fuer alle Faelle
+        folgt in U8."""
+        import logging
+
+        from swarmq.logging_settings import LoggingSettings
+
+        with patch("swarmq.app.setup_logging") as mock_setup:
+            from swarmq.logging import configure_logging
+
+            configure_logging(LoggingSettings(configure=False))
+            app_handler = logging.NullHandler()
+            logging.getLogger().addHandler(app_handler)
+
+            app = SwarmQ(broker, backend)
+            await app.__aenter__()
+            await app.__aexit__(None, None, None)
+
+        mock_setup.assert_not_called()
+        assert app_handler in logging.getLogger().handlers
+
+
 class TestSwarmQStartWorker:
     @pytest.mark.anyio()
     async def test_start_worker_creates_and_starts_worker(self, broker, backend):

@@ -11,6 +11,7 @@ from swarmq.exceptions import ConfigurationError
 from swarmq.logging_settings import (
     VALID_LOG_FORMATS,
     VALID_LOG_LEVELS,
+    LoggingSettings,
     parse_logger_levels,
     split_csv,
     validate_logger_levels,
@@ -115,6 +116,10 @@ class SwarmQConfig:
     log_lifecycle_level: str = "DEBUG"
     # Opt-in-Queue fuer eingebettete Apps (KTD10), standardmaessig aus.
     log_queue: bool = False
+    # Die im Supervisor aufgeloesten Einstellungen (U7, KTD7). Gesetzt, sind
+    # sie die Quelle der Logging-Felder oben, und die Env-Overrides gelten
+    # fuer diese Felder nicht: die CLI-Prioritaet ist dort schon angewandt.
+    logging_settings: LoggingSettings | None = None
     retry_max_delay: float = 3600.0
     shutdown_timeout: int = 30
     # Obergrenze fuer einen kompletten Publish-Vorgang inklusive aller
@@ -465,8 +470,21 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
+    def _apply_logging_settings(self) -> None:
+        settings = self.logging_settings
+        if settings is None:
+            return
+        self.log_level = settings.level
+        self.log_json = settings.format == "json"
+        self.log_config = settings.log_config
+        self.configure_logging = settings.configure
+        self.logger_levels = settings.logger_levels
+        self.log_queue_size = settings.queue_size
+        self.log_lifecycle_level = settings.lifecycle_level
+
     def __post_init__(self) -> None:
         self._apply_env_overrides()
+        self._apply_logging_settings()
         self._apply_slot_port_offset()
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the

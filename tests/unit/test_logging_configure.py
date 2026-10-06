@@ -41,6 +41,11 @@ from __future__ import annotations
 # 21. Datei-Modus laesst structlog unkonfiguriert (KTD6).
 # 22. ``setup_logging`` konfiguriert structlog wie bisher in jedem Fall neu,
 #     auch ueber eine bestehende Konfiguration hinweg.
+# 23. (U7, KTD8) Datei-Modus: ein ausdrueckliches Level gilt nach der
+#     dictConfig fuer Root; ohne ausdrueckliches Level bleibt das der Datei.
+# 24. (U7) ``logging_is_configured()`` ist nach ``configure_logging`` wahr,
+#     auch mit "nicht konfigurieren"; nach ``shutdown_logging`` und nach dem
+#     deprecated ``setup_logging`` falsch.
 import io
 import json
 import logging
@@ -524,3 +529,59 @@ def test_setup_logging_still_reconfigures_structlog(
     setup_logging("INFO", True)
 
     assert structlog.get_config()["processors"] == LOGGER_PROCESSORS
+
+
+def test_file_mode_applies_an_explicit_level_to_root(tmp_path: pathlib.Path) -> None:
+    path = _config_file(tmp_path, {"version": 1, "root": {"level": "DEBUG"}})
+
+    configure_logging(LoggingSettings(log_config=path, level="ERROR", level_explicit=True))
+
+    assert logging.getLogger().level == logging.ERROR
+
+
+def test_file_mode_keeps_the_file_level_without_an_explicit_level(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = _config_file(tmp_path, {"version": 1, "root": {"level": "DEBUG"}})
+
+    configure_logging(LoggingSettings(log_config=path, level="INFO"))
+
+    assert logging.getLogger().level == logging.DEBUG
+
+
+def test_logging_is_configured_after_an_entry_point_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import logging_is_configured, shutdown_logging
+
+    _stderr(monkeypatch)
+    assert not logging_is_configured()
+
+    configure_logging(LoggingSettings())
+    assert logging_is_configured()
+
+    shutdown_logging()
+    assert not logging_is_configured()
+
+
+def test_logging_is_configured_also_when_the_entry_point_chose_not_to() -> None:
+    # R12: "nicht konfigurieren" ist eine Entscheidung des Einstiegspunkts;
+    # ``SwarmQ`` darf danach nicht doch noch einrichten.
+    from swarmq.logging import logging_is_configured
+
+    configure_logging(LoggingSettings(configure=False))
+
+    assert logging_is_configured()
+
+
+def test_deprecated_setup_logging_is_no_entry_point_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Eingebettet baut ``SwarmQ`` bis U8 per ``setup_logging`` bei jedem
+    # Aufruf neu auf; das darf ihm selbst nicht als Einstiegspunkt gelten.
+    from swarmq.logging import logging_is_configured, setup_logging
+
+    _stderr(monkeypatch)
+    setup_logging("INFO", True)
+
+    assert not logging_is_configured()

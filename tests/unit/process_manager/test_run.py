@@ -204,11 +204,14 @@ class TestRunMultiProcessWorker:
         )
         env = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
         with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.logging.setup_logging") as sl, \
+             patch("swarmq.logging.configure_logging") as configure, \
              patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
             rc = cli._run_worker_command(ns)
         assert rc == 0
-        sl.assert_called_once_with("WARNING", True)
+        # Bewusst geaendert (U7): ``configure_logging`` mit den aufgeloesten
+        # Settings statt des deprecated ``setup_logging``.
+        (settings,), _ = configure.call_args
+        assert (settings.level, settings.format) == ("WARNING", "json")
 
     def test_worker_command_logging_human_format(self):
         from swarmq import cli
@@ -223,10 +226,11 @@ class TestRunMultiProcessWorker:
         )
         env = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
         with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.logging.setup_logging") as sl, \
+             patch("swarmq.logging.configure_logging") as configure, \
              patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
             cli._run_worker_command(ns)
-        sl.assert_called_once_with("INFO", False)
+        (settings,), _ = configure.call_args
+        assert (settings.level, settings.format) == ("INFO", "human")
 
     def test_worker_command_flushes_the_listener_when_run_raises(self):
         from swarmq import cli
@@ -286,6 +290,233 @@ class TestRunMultiProcessWorker:
             assert worker_args[0].module == "swarmq.cli"
             assert worker_args[0].queues == ("default",)
 
+
+# Test-Liste U7 (Plan 2026-10-06-0831, Supervisor ``swarmq worker``):
+# - [x] Einstellungen einmal aufloesen (CLI > Env > Default) und damit
+#       ``configure_logging`` aufrufen (AE5)
+# - [x] Ungueltige Einstellung: genau eine ``worker_config_error``-Zeile im
+#       gewaehlten Format (Fallback), Exit 78, kein Supervisor
+# - [x] ``--log-config`` relativ: absolut aufgeloest, geprueft, die JSON-
+#       Konfiguration steht in den Settings; Kinder lesen die Datei nicht
+# - [x] Ungueltige ``--log-config``: Exit 78, Zeile mit ``path`` und ``error_type``
+# - [x] Die aufgeloesten Settings reisen in ``WorkerConfig.logging_settings``
+# - [x] ``BrokerConnectionError``: strukturierte Zeile statt Rohtext, Exit 1
+# - [x] Hot-Reload: ungueltig gewordene ``--log-config`` bricht den Reload ab
+#       (``log_config_reload_failed``), gueltige laesst ihn zu
+
+
+def _worker_ns(**over):
+    ns = argparse.Namespace(
+        processes=2, autoscale=None, module="swarmq.cli",
+        queues=["default"], concurrency=10,
+        log_level=None, log_format=None,
+        burst=False, burst_idle_timeout=5.0, priorities=False,
+        metrics_port=None, health_port=None, check=False, pool="io",
+        reload=False, watch_dir=None,
+    )
+    for key, value in over.items():
+        setattr(ns, key, value)
+    return ns
+
+
+_URLS = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
+
+
+class TestSupervisorLoggingSettings:
+    """U7 (KTD7, AE5): Der Supervisor loest die Logging-Einstellungen einmal
+    auf und richtet sich danach ein."""
+
+    def test_settings_follow_cli_over_env(self, monkeypatch):
+        from swarmq import cli
+
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "json")
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "WARNING")
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.logging.configure_logging") as configure, \
+             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
+            rc = cli._run_worker_command(_worker_ns(log_format="human"))
+
+        assert rc == 0
+        (settings,), _ = configure.call_args
+        assert (settings.format, settings.level) == ("human", "WARNING")
+
+
+    def test_cli_hands_the_resolved_settings_to_the_supervisor(self):
+        from swarmq import cli
+
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.logging.configure_logging") as configure, \
+             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as run:
+            cli._run_worker_command(_worker_ns(log_level="ERROR"))
+
+        (settings,), _ = configure.call_args
+        assert run.call_args.kwargs["logging_settings"] is settings
+
+    def test_invalid_setting_is_one_structured_line_in_the_chosen_format(
+        self, monkeypatch, capsys,
+    ):
+        """R14: Der Fallback-Renderer schreibt die Zeile im gewaehlten Format;
+        der Supervisor startet nicht."""
+        import json
+
+        from swarmq import cli
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "LOUD")
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.process_manager.run.run_multi_process_worker") as run:
+            rc = cli._run_worker_command(_worker_ns(log_format="json"))
+
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        run.assert_not_called()
+        (line,) = capsys.readouterr().err.splitlines()
+        data = json.loads(line)
+        assert data["event"] == "worker_config_error"
+        assert data["error_type"] == "ConfigurationError"
+        assert "SWARMQ_LOG_LEVEL" in data["error"]
+
+    def test_relative_log_config_is_resolved_and_validated_once(
+        self, monkeypatch, tmp_path,
+    ):
+        """KTD9: absolut aufgeloest und geparst im Supervisor; die Kinder
+        bekommen die gepruefte Konfiguration und lesen die Datei nie."""
+        import json
+
+        from swarmq import cli
+
+        (tmp_path / "log.json").write_text(json.dumps({"version": 1}))
+        monkeypatch.chdir(tmp_path)
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.logging.configure_logging") as configure, \
+             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
+            cli._run_worker_command(_worker_ns(log_config="log.json"))
+
+        (settings,), _ = configure.call_args
+        assert settings.log_config == str(tmp_path / "log.json")
+        assert json.loads(settings.log_config_json) == {
+            "version": 1, "disable_existing_loggers": False,
+        }
+
+    def test_invalid_log_config_is_one_line_with_path_and_error_type(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """AE4: Tippfehler in einem Handler-Schluessel -- Exit 78, eine Zeile
+        mit ``path``, ``error_type`` und der Ursache."""
+        import json
+
+        from swarmq import cli
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        bad = tmp_path / "bad.json"
+        bad.write_text(json.dumps({
+            "version": 1,
+            "handlers": {"err": {"class": "logging.StreamHandlr"}},
+            "root": {"handlers": ["err"]},
+        }))
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.process_manager.run.run_multi_process_worker") as run:
+            rc = cli._run_worker_command(_worker_ns(log_config=str(bad)))
+
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        run.assert_not_called()
+        (line,) = capsys.readouterr().err.splitlines()
+        assert "worker_config_error" in line
+        assert f"path={bad}" in line
+        assert "error_type=LoggingConfigError" in line
+        assert "Unable to configure handler" in line  # Ursache aus __cause__
+
+    def test_resolved_settings_reach_the_worker_config(self):
+        """KTD7: Die Kinder bekommen die Settings aufgeloest und lesen kein Env."""
+        from swarmq.logging_settings import LoggingSettings
+        from swarmq.process_manager import run_multi_process_worker
+
+        settings = LoggingSettings(level="WARNING", level_explicit=True, format="json")
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
+             patch("swarmq.process_manager.check._validate_module_importable"):
+            run_multi_process_worker(
+                TestReloadRoutingThroughCLI()._args(log_level=None, log_format=None),
+                logging_settings=settings,
+            )
+
+        cfg = PM.call_args.kwargs["worker_args"][0]
+        assert cfg.logging_settings is settings
+        assert (cfg.log_level, cfg.log_format) == ("WARNING", "json")
+
+    def test_broker_connection_error_is_a_structured_line(self, capsys):
+        """R15: kein Rohtext mehr auf stderr; die Zeile ist vor dem Exit
+        geschrieben."""
+        import json
+
+        from swarmq import cli
+        from swarmq.exceptions import BrokerConnectionError
+
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch(
+                 "swarmq.process_manager.run.run_multi_process_worker",
+                 side_effect=BrokerConnectionError("amqp unreachable"),
+             ):
+            rc = cli._run_worker_command(_worker_ns(log_format="json"))
+
+        assert rc == 1
+        (line,) = capsys.readouterr().err.splitlines()
+        data = json.loads(line)
+        assert data["event"] == "worker_connection_error"
+        assert data["error_type"] == "BrokerConnectionError"
+        assert "amqp unreachable" in data["error"]
+
+    def _supervisor_with(self, settings):
+        from swarmq.process_manager import run_multi_process_worker
+
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        pm_mock.reload_precheck = None
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock), \
+             patch("swarmq.process_manager.check._validate_module_importable"):
+            run_multi_process_worker(
+                TestReloadRoutingThroughCLI()._args(), logging_settings=settings,
+            )
+        return pm_mock
+
+    def test_hot_reload_revalidates_the_log_config_first(self, tmp_path, swarmq_logs):
+        """KTD9: Vor dem Stoppen eines Workers prueft der Supervisor die Datei
+        neu; ist sie inzwischen ungueltig, laeuft alles weiter -- kein
+        ``execvpe``, kein Exit 78."""
+        from swarmq.logging_settings import LoggingSettings
+
+        path = tmp_path / "log.json"
+        path.write_text('{"version": 1}')
+        pm = self._supervisor_with(LoggingSettings(log_config=str(path)))
+
+        assert pm.reload_precheck() is True
+        path.write_text('{"version": 1,')
+        assert pm.reload_precheck() is False
+        (event,) = [e for e in swarmq_logs if e["event"] == "log_config_reload_failed"]
+        assert event["path"] == str(path)
+        assert event["error_type"] == "LoggingConfigError"
+
+    def test_hot_reload_also_catches_a_handler_typo(self, tmp_path, swarmq_logs):
+        """AE4 beim Reload: Ein Tippfehler im Handler faellt erst in
+        ``dictConfig`` auf -- der neu gestartete Supervisor endete sonst mit
+        78, nachdem die Worker schon gestoppt sind."""
+        import json
+
+        from swarmq.logging_settings import LoggingSettings
+
+        path = tmp_path / "log.json"
+        path.write_text('{"version": 1}')
+        pm = self._supervisor_with(LoggingSettings(log_config=str(path)))
+        path.write_text(json.dumps({
+            "version": 1,
+            "handlers": {"err": {"class": "logging.StreamHandlr"}},
+            "root": {"handlers": ["err"]},
+        }))
+
+        assert pm.reload_precheck() is False
+        assert [e["event"] for e in swarmq_logs] == ["log_config_reload_failed"]
 
 class TestHeartbeatIntervalPassThrough:
     """Review #8: SWARMQ_HEARTBEAT_INTERVAL_S wurde geparst, kam aber nie in der WorkerConfig an —

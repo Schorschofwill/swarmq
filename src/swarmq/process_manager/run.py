@@ -6,15 +6,20 @@ from __future__ import annotations
 import argparse
 import os
 import socket
+import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
+from collections.abc import Callable
+
 import structlog
 
-from swarmq.exceptions import ConfigurationError
-from swarmq.logging_settings import cli_level_and_format
+from swarmq.exceptions import ConfigurationError, LoggingConfigError
+from swarmq.logging import get_logger, load_log_config
+from swarmq.logging_settings import LoggingSettings, resolve_logging_settings
 from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
@@ -30,12 +35,17 @@ def run_multi_process_worker(
     *,
     admin_factory: AdminFactory | None = None,
     setpoint_store_factory: SetpointStoreFactory | None = None,
+    logging_settings: LoggingSettings | None = None,
 ) -> int:
     """CLI entry for ``swarmq worker --processes N`` / ``--autoscale``.
 
     Called from :func:`swarmq.cli.main` when the user opted into the
     multi-process path. Synchronous (the supervisor runs in the
     parent process without an event loop).
+
+    ``logging_settings`` sind die von der CLI einmal aufgeloesten
+    Einstellungen (Plan 2026-10-06-0831, KTD7); ohne sie loest diese
+    Funktion sie selbst aus ``args`` und Env auf.
     """
     broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
     backend_url = os.environ.get("SWARMQ_BACKEND_URL", "")
@@ -51,7 +61,67 @@ def run_multi_process_worker(
     # Queue eines gestoppten Listeners liegen und erreichte niemanden.
     return _run_multi_process_worker_configured(
         args, admin_factory=admin_factory, setpoint_store_factory=setpoint_store_factory,
+        logging_settings=logging_settings or resolve_logging_settings(args, os.environ, None),
     )
+
+
+def log_config_reload_check(settings: LoggingSettings) -> Callable[[], bool] | None:
+    """Pruefung vor einem Hot-Reload (Plan 2026-10-06-0831, U7, KTD9).
+
+    Der Reload ist ein ``execvpe`` des Supervisors, der ``--log-config`` dann
+    neu laedt. Ist die Datei inzwischen ungueltig, bricht der Reload ab, bevor
+    ein Worker stoppt: ``log_config_reload_failed`` statt Exit 78.
+    """
+    path = settings.log_config
+    if path is None:
+        return None
+
+    def _check() -> bool:
+        try:
+            _probe_dict_config(path, load_log_config(path))
+        except LoggingConfigError as exc:
+            get_logger(__name__).error(
+                "log_config_reload_failed",
+                path=path,
+                error_type=type(exc).__name__,
+                error=f"{type(exc).__name__}: {exc}",
+                hint="fix the logging config and send SIGHUP again; workers keep running",
+            )
+            return False
+        return True
+
+    return _check
+
+
+_DICT_CONFIG_PROBE = """
+import json, logging.config, sys
+try:
+    logging.config.dictConfig(json.loads(sys.stdin.read()))
+except Exception as exc:
+    cause = exc.__cause__
+    print(f"{exc}" + (f": {cause}" if cause else ""), file=sys.stderr)
+    sys.exit(1)
+"""
+
+
+def _probe_dict_config(path: str, raw: str) -> None:
+    """Wendet die dictConfig in einem eigenen Interpreter an.
+
+    Tippfehler in Handlern oder Formattern sieht erst ``dictConfig``; im
+    laufenden Supervisor angewandt, baute sie dessen Logging um. Das
+    Probe-Kind hat Arbeitsverzeichnis und Env des Supervisors, findet also
+    dieselben Handler-Klassen wie der neu gestartete.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _DICT_CONFIG_PROBE],
+            input=raw, capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LoggingConfigError(path, exc) from exc
+    if proc.returncode != 0:
+        cause = ValueError(proc.stderr.strip() or f"dictConfig exited {proc.returncode}")
+        raise LoggingConfigError(path, cause) from cause
 
 
 def resolve_group_key(label: str | None, queues: list[str] | tuple[str, ...]) -> str:
@@ -67,6 +137,7 @@ def _run_multi_process_worker_configured(
     *,
     admin_factory: AdminFactory | None = None,
     setpoint_store_factory: SetpointStoreFactory | None = None,
+    logging_settings: LoggingSettings,
 ) -> int:
     """Body of :func:`run_multi_process_worker` after logging setup."""
     broker_url = os.environ["SWARMQ_BROKER_URL"]
@@ -134,13 +205,12 @@ def _run_multi_process_worker_configured(
     sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
     shutdown_grace_s = float(sq_config.shutdown_timeout)
 
-    log_level, log_format = cli_level_and_format(args)
     worker_cfg = WorkerConfig(
         module=args.module,
         queues=tuple(args.queues),
         concurrency=args.concurrency,
-        log_level=log_level,
-        log_format=log_format,
+        log_level=logging_settings.level,
+        log_format=logging_settings.format,
         burst=args.burst,
         burst_idle_timeout=args.burst_idle_timeout,
         priorities=args.priorities,
@@ -153,6 +223,7 @@ def _run_multi_process_worker_configured(
         configure=getattr(args, "configure", None),
         max_processes=max_processes,
         group=group_key,
+        logging_settings=logging_settings,
     )
 
     pm = ProcessManager(
@@ -173,4 +244,5 @@ def _run_multi_process_worker_configured(
         setpoint_store_factory=setpoint_store_factory if max_processes is not None else None,
         supervisor_id=f"{sq_config.worker_id or socket.gethostname()}:p{os.getpid()}",
     )
+    pm.reload_precheck = log_config_reload_check(logging_settings)
     return pm.run()
