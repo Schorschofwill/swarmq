@@ -2,17 +2,100 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import datetime
+import json as jsonlib
 import logging
 import logging.handlers
+import os
 import queue
 import sys
+import threading
 import time
+import weakref
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import structlog
+
+LISTENER_THREAD_NAME = "swarmq-log-listener"
+"""Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests."""
+
+
+_LogQueue = queue.Queue[logging.LogRecord]
+_ListenerQueue = queue.Queue[Any]
+"""Records plus der ``None``-Sentinel des Listeners."""
+
+_LISTENER_LOCK = threading.Lock()
+"""Schuetzt den Listener-Start: Der erste Eintrag kann mit einem expliziten
+Start aus einem anderen Thread konkurrieren (KTD5)."""
+
+_LISTENERS: weakref.WeakSet[_SwarmqQueueListener] = weakref.WeakSet()
+"""Alle Listener des Prozesses. Ein laufender bleibt ueber seinen Thread am
+Leben, auch wenn sein Handler schon weg ist; ``shutdown_logging`` leert ihn."""
+
+
+class _SwarmqQueueListener(logging.handlers.QueueListener):
+    """``QueueListener`` mit benanntem Thread (Plan 2026-10-06-0831, KTD5)."""
+
+    # typeshed kennt nur die oeffentliche Schnittstelle; ``_thread``,
+    # ``_monitor`` und ``_sentinel`` sind seit 3.2 unveraendert.
+    queue: _ListenerQueue
+    _thread: threading.Thread | None
+    _sentinel: None
+    _monitor: Any
+
+    def __init__(self, queue_: _ListenerQueue, *handlers: logging.Handler) -> None:
+        super().__init__(queue_, *handlers)
+        _LISTENERS.add(self)
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None
+
+    def start(self) -> None:
+        """Idempotent: unter 3.14 wirft der Basis-``start`` beim zweiten Mal."""
+        with _LISTENER_LOCK:
+            if self._thread is not None:
+                return
+            self._thread = thread = threading.Thread(
+                target=self._monitor, name=LISTENER_THREAD_NAME, daemon=True
+            )
+            thread.start()
+
+    def dequeue(self, block: bool) -> Any:
+        """Eine per ``Queue.shutdown`` geschlossene, leere Queue beendet den
+        Thread wie ``queue.Empty`` statt mit einer Ausnahme."""
+        try:
+            return self.queue.get(block)
+        except queue.ShutDown:
+            raise queue.Empty from None
+
+    def enqueue_sentinel(self) -> None:
+        """Blockierend: Bei voller Queue wuerde ``put_nowait`` werfen; der
+        laufende Listener schafft Platz. Eine geschlossene Queue braucht
+        keinen Sentinel, der Thread endet nach dem Leeren von selbst."""
+        with contextlib.suppress(queue.ShutDown):
+            self.queue.put(self._sentinel)
+
+
+_DROPPED_TOTAL = 0
+"""Verworfene Eintraege aller Queue-Handler dieses Prozesses; monoton bis
+zum Fork (KTD5)."""
+
+
+def dropped_log_records() -> int:
+    """Anzahl der in diesem Prozess verworfenen Logeintraege (R7).
+
+    Je Prozess: ``swarmq.metrics`` exportiert den Wert des Worker-Prozesses;
+    Verluste in Compute-Kindern zeigt deren ``log_records_dropped``-Zeile.
+    """
+    return _DROPPED_TOTAL
+
+
+_HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
+"""Alle lebenden Queue-Handler des Prozesses; der Fork-Hook setzt sie zurueck."""
 
 
 class _StructlogQueueHandler(logging.handlers.QueueHandler):
@@ -27,38 +110,119 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     a saturated log pipeline looked identical to a quiet one. ``dropped``
     is the cumulative counter; a rate-limited stderr notice (at most one
     per second) keeps the drop visible without amplifying the burst.
+
+    ``handlers`` sind die Ziele des Listeners (Plan 2026-10-06-0831, KTD5).
+    Der Listener startet lazy beim ersten Eintrag.
     """
 
     _DROP_NOTICE_INTERVAL_S = 1.0
 
-    def __init__(self, queue_: queue.Queue[logging.LogRecord]) -> None:
+    queue: _LogQueue
+    listener: _SwarmqQueueListener | None
+
+    def __init__(
+        self,
+        queue_: _LogQueue,
+        *handlers: logging.Handler,
+        json: bool = False,
+    ) -> None:
         super().__init__(queue_)
+        self.json = json
         self.dropped = 0
         self._last_drop_notice = 0.0
+        self.listener = _SwarmqQueueListener(queue_, *handlers) if handlers else None
+        _HANDLERS.add(self)
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """Pass the record through without formatting."""
         return record
 
     def enqueue(self, record: logging.LogRecord) -> None:
+        listener = self.listener
+        if listener is not None and not listener.running:
+            listener.start()
+        if record.levelno < logging.WARNING and self._in_reserve():
+            self._drop()
+            return
         try:
             self.queue.put_nowait(record)
-        except queue.Full:
-            # ``dropped += 1`` is deliberately lock-free: under
-            # multi-thread contention it may undercount — acceptable for
-            # an observability counter; a lock here would serialize the
-            # hot logging path exactly when it is saturated.
-            self.dropped += 1
-            now = time.monotonic()
-            if now - self._last_drop_notice >= self._DROP_NOTICE_INTERVAL_S:
-                self._last_drop_notice = now
-                # stderr directly — going through logging would feed the
-                # very queue that is full.
-                print(
-                    "swarmq: logging queue full — "
-                    f"{self.dropped} record(s) dropped so far",
-                    file=sys.stderr,
-                )
+        except (queue.Full, queue.ShutDown):
+            self._drop()
+
+    def _in_reserve(self) -> bool:
+        """Ab 90 % Fuellstand bleibt der Rest WARNING und hoeher vorbehalten."""
+        maxsize = self.queue.maxsize
+        return maxsize > 0 and self.queue.qsize() * 10 >= maxsize * 9
+
+    def _drop(self) -> None:
+        # ``dropped += 1`` is deliberately lock-free: under
+        # multi-thread contention it may undercount — acceptable for
+        # an observability counter; a lock here would serialize the
+        # hot logging path exactly when it is saturated.
+        global _DROPPED_TOTAL
+        self.dropped += 1
+        _DROPPED_TOTAL += 1
+        now = time.monotonic()
+        if now - self._last_drop_notice >= self._DROP_NOTICE_INTERVAL_S:
+            self._last_drop_notice = now
+            # stderr directly — going through logging would feed the
+            # very queue that is full.
+            print(self._drop_notice(), file=sys.stderr)
+
+    def _drop_notice(self) -> str:
+        """Die Drop-Meldung; im JSON-Modus als vorgerenderte JSON-Zeile (R7)."""
+        if not self.json:
+            return (
+                "swarmq: logging queue full — "
+                f"{self.dropped} record(s) dropped so far"
+            )
+        return jsonlib.dumps(
+            {
+                "event": "log_records_dropped",
+                "count": self.dropped,
+                "level": "warning",
+                "logger": __name__,
+                "timestamp": _add_record_timestamp(None, "", {})["timestamp"],
+            }
+        )
+
+
+def shutdown_logging() -> None:
+    """Schreibt alle Eintraege der Log-Queue und stoppt den Listener (KTD5).
+
+    Der Queue-Handler bleibt installiert; der naechste Eintrag startet den
+    Listener wieder.
+    """
+    for listener in list(_LISTENERS):
+        listener.stop()
+
+
+def _after_fork_in_child() -> None:
+    """Setzt den Queue-Zustand im Kind zurueck (KTD5).
+
+    Die geerbten Records schreibt der Elternprozess; im Kind erschienen sie
+    sonst doppelt. Startet keinen Thread -- das uebernimmt der naechste
+    Eintrag. Ein beim Fork gehaltenes Start-Lock hat im Kind keinen
+    Besitzer mehr und wird ersetzt.
+    """
+    global _LISTENER_LOCK, _DROPPED_TOTAL
+    _LISTENER_LOCK = threading.Lock()
+    _DROPPED_TOTAL = 0
+    for handler in list(_HANDLERS):
+        handler.queue = fresh = _LogQueue(handler.queue.maxsize)
+        handler.dropped = 0
+        handler._last_drop_notice = 0.0
+        if handler.listener is not None:
+            # Der geerbte Listener verweist auf einen Thread, den es im Kind
+            # nicht gibt.
+            handler.listener = _SwarmqQueueListener(fresh, *handler.listener.handlers)
+
+
+os.register_at_fork(after_in_child=_after_fork_in_child)
+
+# Genau einmal, beim Import, ohne Thread (KTD5): dictConfig und
+# ``logging.shutdown`` stoppen keine Listener.
+atexit.register(shutdown_logging)
 
 
 class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
@@ -309,15 +473,13 @@ def build_formatter(json: bool, colors: bool) -> structlog.stdlib.ProcessorForma
     )
 
 
-_ACTIVE_LISTENER: logging.handlers.QueueListener | None = None
-
-
 def setup_logging(
     log_level: str = "INFO", log_json: bool = True
 ) -> logging.handlers.QueueListener:
     """Configure structlog + stdlib logging with QueueHandler/QueueListener.
 
-    Returns the QueueListener so it can be stopped on shutdown.
+    Returns the QueueListener so it can be stopped on shutdown. Er startet
+    lazy beim ersten Eintrag und nach ``shutdown_logging`` erneut (KTD5).
 
     Ein zweiter Aufruf im selben Prozess stoppt den Listener des ersten
     (U4/KTD8): Das Worker-Kind konfiguriert fruehzeitig, damit ein
@@ -326,11 +488,7 @@ def setup_logging(
     Leben, von denen einer nie wieder etwas zu tun bekommt -- die Lehre aus
     B6 (doppelte Logzeilen bei zwei Listenern).
     """
-    global _ACTIVE_LISTENER
-    if _ACTIVE_LISTENER is not None:
-        with contextlib.suppress(Exception):
-            _ACTIVE_LISTENER.stop()
-        _ACTIVE_LISTENER = None
+    shutdown_logging()
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
@@ -366,35 +524,23 @@ def setup_logging(
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(formatter)
 
-    queue_handler = _StructlogQueueHandler(log_queue)
+    queue_handler = _StructlogQueueHandler(log_queue, stream_handler, json=log_json)
+    assert queue_handler.listener is not None  # mit Ziel-Handler immer gesetzt
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.addHandler(queue_handler)
     root_logger.setLevel(getattr(logging, log_level))
 
-    listener = logging.handlers.QueueListener(
-        log_queue, stream_handler, respect_handler_level=False
-    )
-    listener.start()
-    _ACTIVE_LISTENER = listener
-
-    return listener
+    # Der Listener startet lazy beim ersten Eintrag (KTD5).
+    return queue_handler.listener
 
 
-def flush_logging() -> None:
-    """Stoppt den aktiven ``QueueListener`` und leert damit die Log-Queue.
+flush_logging = shutdown_logging
+"""Deprecated: Alias fuer ``shutdown_logging`` (Plan 2026-10-06-0831, U3).
 
-    Vor einem ``SystemExit`` noetig: die Logzeile liegt bis dahin nur in der
-    Queue, und der Listener-Thread kommt nicht mehr dazu, sie zu schreiben.
-    Genau darum stand der Konfigurationsfehler frueher als synchrone
-    stderr-Zeile da -- der strukturierte Logsatz (R21) braucht dieses Flush.
-    """
-    global _ACTIVE_LISTENER
-    if _ACTIVE_LISTENER is not None:
-        with contextlib.suppress(Exception):
-            _ACTIVE_LISTENER.stop()
-        _ACTIVE_LISTENER = None
+Vor einem ``SystemExit`` noetig: die Logzeile liegt bis dahin nur in der
+Queue, und der Listener-Thread kommt nicht mehr dazu, sie zu schreiben."""
 
 
 def sanitize_url(url: str) -> str:

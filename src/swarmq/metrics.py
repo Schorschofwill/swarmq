@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +47,7 @@ try:
         Histogram,
         generate_latest,
     )
+    from prometheus_client.core import CounterMetricFamily
 
     _HAVE_PROMETHEUS = True
 except ImportError:  # pragma: no cover — optional
@@ -56,6 +57,7 @@ except ImportError:  # pragma: no cover — optional
     Gauge = None  # type: ignore[assignment,misc]
     Histogram = None  # type: ignore[assignment,misc]
     generate_latest = None  # type: ignore[assignment]
+    CounterMetricFamily = None  # type: ignore[assignment,misc]
 
     _HAVE_PROMETHEUS = False
 
@@ -90,6 +92,23 @@ class _NoopMetric:
     def dec(self, _amount: float = 1.0) -> None: pass
     def set(self, _value: float) -> None: pass
     def observe(self, _value: float) -> None: pass
+
+
+class _LogRecordsDroppedCollector:
+    """Liest den Drop-Zaehler von ``swarmq.logging`` erst beim Scrape
+    (Plan 2026-10-06-0831, KTD5): Der Logpfad bleibt frei von Metrik-Code."""
+
+    def __init__(self, namespace: str) -> None:
+        self._name = f"{namespace}_log_records_dropped"
+
+    def collect(self) -> Iterator[Any]:
+        from swarmq.logging import dropped_log_records
+
+        yield CounterMetricFamily(
+            self._name,
+            "Log records dropped because the logging queue was full",
+            value=dropped_log_records(),
+        )
 
 
 class Metrics:
@@ -187,6 +206,7 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
             self.registry = None

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 # Task registry reset is handled by root conftest.py (_reset_task_registry).
-import contextlib
-
 import pytest
 
 from tests.unit._log_capture import capture_swarmq_logs
@@ -68,8 +66,8 @@ def _uncache_structlog_module_loggers():
 
 @pytest.fixture(autouse=True)
 def _stop_leftover_log_listener():
-    """Stoppt einen ``QueueListener``, den ein Test ueber ``setup_logging``
-    gestartet hat.
+    """Stoppt per ``shutdown_logging()`` jeden Listener, den ein Test
+    gestartet hat (Plan 2026-10-06-0831, U4 Teil 2).
 
     Der Listener schreibt aus einem eigenen Thread nach ``sys.stderr``, den
     ``capsys`` beim Teardown schliesst — die Folge waere ein
@@ -79,10 +77,6 @@ def _stop_leftover_log_listener():
     zuvor.
     """
     yield
-    from swarmq import logging as swarmq_logging
+    from swarmq.logging import shutdown_logging
 
-    listener = swarmq_logging._ACTIVE_LISTENER
-    if listener is not None:
-        with contextlib.suppress(Exception):
-            listener.stop()
-        swarmq_logging._ACTIVE_LISTENER = None
+    shutdown_logging()
