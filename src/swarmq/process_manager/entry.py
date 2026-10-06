@@ -59,6 +59,18 @@ def _logging_settings(cfg: WorkerConfig) -> LoggingSettings:
     return LoggingSettings(level=cfg.log_level, format=cfg.log_format)
 
 
+def _log_config_error(worker_id: int, exc: BaseException) -> None:
+    """``worker_config_error`` aus dem Kind; der Exit 78 folgt beim Aufrufer."""
+    logger.error(
+        "worker_config_error",
+        source="worker",
+        worker_id=worker_id,
+        error_type=type(exc).__name__,
+        error=f"{type(exc).__name__}: {exc}",
+        hint="fix the configuration and start again; no restart attempted",
+    )
+
+
 def worker_subprocess_entry(
     worker_id: int,
     shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
@@ -94,7 +106,22 @@ def worker_subprocess_entry(
     # Settings (KTD7) -- das Kind liest kein Env. Auch ein
     # Konfigurationsfehler vor dem Bau der App erscheint so im gewaehlten
     # Format. ``SwarmQ`` richtet danach nichts mehr ein.
-    configure_logging(_logging_settings(cfg))
+    settings = _logging_settings(cfg)
+    try:
+        configure_logging(settings)
+    except ConfigurationError as exc:
+        # Ein ``LoggingConfigError``, der erst hier auftritt (die dictConfig
+        # scheitert beim Anwenden), ist ein Konfigurationsfehler wie jeder
+        # andere: Exit 78 statt Exit 1, sonst startete der Supervisor den
+        # Worker in einer Schleife neu (R29). Die Zeile schreibt das
+        # eingebaute Logging (wie ``_setup_fallback_logging`` im Supervisor,
+        # R14) -- ohne es gaebe ``logging.lastResort`` nur den Event-Namen aus.
+        configure_logging(LoggingSettings(format=settings.format))
+        try:
+            _log_config_error(worker_id, exc)
+        finally:
+            shutdown_logging()
+        raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
 
     # Flach statt ``dataclasses.asdict``: das wandelte ``logging_settings``
     # in ein Dict. Namespace callers expect list-typed queues.
@@ -177,14 +204,7 @@ def worker_subprocess_entry(
         # ``ModuleNotFoundError`` (etwa eine fehlende Abhaengigkeit des
         # Task-Moduls) gehoert in dieselbe Klasse: er endete bisher mit
         # Traceback und fuenf Neustarts.
-        logger.error(
-            "worker_config_error",
-            source="worker",
-            worker_id=worker_id,
-            error_type=type(exc).__name__,
-            error=f"{type(exc).__name__}: {exc}",
-            hint="fix the configuration and start again; no restart attempted",
-        )
+        _log_config_error(worker_id, exc)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
     finally:
         # R15: an jedem Exit-Pfad leeren. Ohne das endet der Prozess, bevor

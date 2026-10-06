@@ -767,6 +767,9 @@ class TestLoggingFields:
     - [x] CRITICAL fuer log_level und log_lifecycle_level
     - [x] (U7, KTD7) ``logging_settings``: die Logging-Felder kommen aus dem
           aufgeloesten Objekt und sind von den Env-Overrides ausgenommen
+    - [x] ``logging_settings``: ein ungueltiger Logging-Env-Wert wird nicht
+          mehr geparst (die CLI hat ihn im Supervisor schon ueberstimmt)
+    - [x] ohne ``logging_settings`` wird derselbe Env-Wert weiter geprueft
     """
 
     @staticmethod
@@ -863,3 +866,30 @@ class TestLoggingFields:
 
         assert (cfg.log_json, cfg.configure_logging, cfg.log_queue_size) == (False, False, 7)
         assert (cfg.log_lifecycle_level, cfg.logger_levels) == ("INFO", (("aio_pika", "ERROR"),))
+
+    @pytest.mark.parametrize(
+        ("env_name", "raw"),
+        [
+            ("SWARMQ_LOG_FORMAT", "jsonl"),
+            ("SWARMQ_LOG_QUEUE_SIZE", "many"),
+            ("SWARMQ_LOGGER_LEVELS", "aio_pika"),
+        ],
+    )
+    def test_invalid_logging_env_is_ignored_with_resolved_settings(
+        self, monkeypatch, env_name, raw,
+    ):
+        """Review #5: ``--log-format json`` ueberstimmt im Supervisor ein
+        ``SWARMQ_LOG_FORMAT=jsonl``. Parste der Worker das Env trotzdem,
+        endete jeder Worker mit Exit 78, obwohl die CLI gewonnen hat."""
+        from swarmq.logging_settings import LoggingSettings
+
+        monkeypatch.setenv(env_name, raw)
+
+        cfg = self._cfg(logging_settings=LoggingSettings(format="json", queue_size=7))
+
+        assert (cfg.log_json, cfg.log_queue_size, cfg.logger_levels) == (True, 7, ())
+
+    def test_invalid_logging_env_is_still_rejected_without_settings(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "jsonl")
+        with pytest.raises(ConfigurationError, match=r"SWARMQ_LOG_FORMAT.*'jsonl'"):
+            self._cfg()

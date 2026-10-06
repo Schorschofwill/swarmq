@@ -62,6 +62,25 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _check_logging_settings(args: argparse.Namespace) -> None:
+    """Logging-Einstellungen wie beim Start pruefen (R14).
+
+    Dieselbe Aufloesung wie im Worker-Zweig (``_setup_worker_logging``),
+    nur ohne ``configure_logging``: ``--check`` richtet nichts ein. Die
+    Importe bleiben lokal, damit ``swarmq --help`` schlank bleibt.
+
+    Raises:
+        ConfigurationError: Eine Logging-Einstellung ist ungueltig oder die
+            Logging-Konfigurationsdatei nicht ladbar (``LoggingConfigError``).
+    """
+    from swarmq.logging import load_log_config
+    from swarmq.logging_settings import resolve_logging_settings
+
+    settings = resolve_logging_settings(args, os.environ, None)
+    if settings.log_config is not None:
+        load_log_config(os.path.abspath(settings.log_config))
+
+
 def _run_worker_check(args: argparse.Namespace) -> int:
     """``swarmq worker --check`` dry-run entry-point.
 
@@ -76,7 +95,8 @@ def _run_worker_check(args: argparse.Namespace) -> int:
 
     - ``0`` — all validations passed.
     - ``1`` — any validation error (module unresolvable, missing
-      ``watchfiles`` dep, invalid watch-dir, unexpected exception).
+      ``watchfiles`` dep, invalid watch-dir, invalid logging settings,
+      unexpected exception).
 
     Unexpected exceptions are caught too: a :exc:`PermissionError` from ``importlib.util.find_spec``
     or a ``.pth``-related ``OSError`` must not escape as a raw
@@ -87,6 +107,9 @@ def _run_worker_check(args: argparse.Namespace) -> int:
 
     payload = _seed_check_payload(args)
     try:
+        # R14: ohne diese Pruefung meldete --check "in Ordnung" fuer eine
+        # Logging-Einstellung, an der der Start danach mit Exit 78 scheitert.
+        _check_logging_settings(args)
         result = check_worker_config(
             module=args.module,
             reload=payload["reload"],

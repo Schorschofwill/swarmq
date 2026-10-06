@@ -232,6 +232,15 @@ class SwarmQConfig:
 
     # (Env-Var, Feldname, Parser) — eine Zeile pro Override statt der
     # früheren 27 if-Blöcke; ``__post_init__`` wendet sie der Reihe nach an.
+    #: Die Felder, die ``_apply_logging_settings`` aus ``logging_settings``
+    #: setzt. ``log_queue`` gehoert nicht dazu: ``LoggingSettings`` kennt den
+    #: eingebetteten Opt-in nicht, ``SWARMQ_LOG_QUEUE`` bleibt also die einzige
+    #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
+    _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset({
+        "log_level", "log_json", "log_config", "configure_logging",
+        "logger_levels", "log_queue_size", "log_lifecycle_level",
+    })
+
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
         ("SWARMQ_BROKER_URL", "broker_url", "str"),
         ("SWARMQ_BACKEND_URL", "backend_url", "str"),
@@ -355,9 +364,13 @@ class SwarmQConfig:
         return f"{base}:{self.worker_slot}"
 
     def _apply_env_overrides(self) -> None:
+        # Mit aufgeloesten Settings gilt die CLI-Prioritaet schon (KTD7); ein
+        # ueberstimmter, ungueltiger Env-Wert darf den Worker nicht mehr mit
+        # Exit 78 beenden, also wird er gar nicht erst geparst.
+        skipped = self._SETTINGS_FIELDS if self.logging_settings is not None else ()
         for env_name, field_name, kind in self._ENV_OVERRIDES:
             raw = os.environ.get(env_name, "")
-            if not raw:
+            if not raw or field_name in skipped:
                 continue
             value: object
             if kind == "int":

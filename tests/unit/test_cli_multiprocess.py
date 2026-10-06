@@ -447,3 +447,45 @@ class TestHeadroomExitCode:
         assert rc == 1
         assert payload["error_type"] == "ConfigurationError"
         assert "--max-processes 4" in payload["error"]
+
+
+class TestCheckValidatesLogging:
+    """R14: ``swarmq worker --check`` meldet ungueltige Logging-Einstellungen
+    wie jeden anderen Konfigurationsfehler -- sonst sagte der Dry-Run "in
+    Ordnung" fuer eine Kombination, an der der Start danach scheitert.
+
+    Test-Liste:
+    - [x] fehlende ``--log-config``-Datei
+    - [x] ``--log-format`` zusammen mit ``--log-config``
+    - [x] nicht positive ``--log-queue-size``
+    """
+
+    @staticmethod
+    def _check(capsys, *extra: str) -> tuple[int, dict]:
+        import json
+
+        rc = main(["worker", "--module=json", "--check", *extra])
+        return rc, json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    def test_missing_log_config_file_is_reported(self, capsys, tmp_path):
+        missing = tmp_path / "nonexistent.json"
+        rc, payload = self._check(capsys, "--log-config", str(missing))
+        assert rc == 1
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ConfigurationError"
+        assert str(missing) in payload["error"]
+
+    def test_log_format_with_log_config_is_reported(self, capsys, tmp_path):
+        config = tmp_path / "log.json"
+        config.write_text('{"version": 1}')
+        rc, payload = self._check(capsys, "--log-config", str(config), "--log-format", "json")
+        assert rc == 1
+        assert payload["error_type"] == "ConfigurationError"
+        assert "--log-format" in payload["error"]
+
+    @pytest.mark.parametrize("size", ["0", "-5"])
+    def test_non_positive_log_queue_size_is_reported(self, capsys, size):
+        rc, payload = self._check(capsys, f"--log-queue-size={size}")
+        assert rc == 1
+        assert payload["error_type"] == "ConfigurationError"
+        assert "--log-queue-size" in payload["error"]

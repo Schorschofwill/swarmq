@@ -8,6 +8,9 @@ from __future__ import annotations
 #       App-Import, Env im Kind wirkt nicht; die Namespace traegt das Objekt
 # - [x] ``RecycleAckTimeout``: strukturierte Zeile statt Rohtext, dann Exit 75
 # - [x] Nach dem Ende ist die Log-Queue geleert (``shutdown_logging``)
+# - [x] Review-Rest: scheitert ``configure_logging`` erst im Kind, endet es
+#       mit Exit 78 und ``worker_config_error`` statt Exit 1 und Neustartschleife
+# - [x] ... und die Zeile erscheint ueber das eingebaute Logging mit Fehlertext
 import os
 
 import pytest
@@ -222,6 +225,73 @@ class TestConfigErrorExitCode:
         entry = next(e for e in swarmq_logs if e["event"] == "worker_config_error")
         assert entry["error_type"] == "ConfigurationError"
         assert entry["error"] == "ConfigurationError: no tasks registered"
+
+
+def _broken_log_config_settings(**kwargs):
+    """Settings, deren dictConfig erst beim Anwenden im Kind scheitert."""
+    from swarmq.logging_settings import LoggingSettings
+
+    return LoggingSettings(
+        log_config="/abs/log.json",
+        log_config_json=(
+            '{"version": 1, "disable_existing_loggers": false,'
+            ' "handlers": {"h": {"class": "nope.Missing"}}}'
+        ),
+        **kwargs,
+    )
+
+
+class TestLoggingConfigErrorInTheChild:
+    """Review-Rest: ``configure_logging`` lag ausserhalb der Exit-78-Abbildung.
+    Ein ``LoggingConfigError``, der erst im Kind auftrat, endete mit Exit 1 --
+    der Supervisor startete den Worker dann in einer Schleife neu."""
+
+    @staticmethod
+    def _isolate_dict_config(monkeypatch):
+        import logging
+        import weakref
+
+        # dictConfig schliesst alle bekannten Handler -- auch die von pytest.
+        monkeypatch.setattr(logging, "_handlerList", [])
+        monkeypatch.setattr(logging, "_handlers", weakref.WeakValueDictionary())
+
+    def test_exits_with_config_code_and_reports_the_error(self, monkeypatch):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        async def must_not_run(ns):
+            raise AssertionError("App-Import trotz kaputter Logging-Konfiguration")
+
+        self._isolate_dict_config(monkeypatch)
+        monkeypatch.setattr("swarmq.cli.run_worker_async", must_not_run)
+        events = _capture_entry_logs(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(
+                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+            )
+
+        assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
+        entry = next(e for e in events if e["event"] == "worker_config_error")
+        assert entry["error_type"] == "LoggingConfigError"
+        assert "/abs/log.json" in entry["error"]
+
+    def test_error_line_is_rendered_by_the_builtin_fallback(self, monkeypatch, capfd):
+        """Ohne Rueckfall gab ``logging.lastResort`` nur ``worker_config_error``
+        aus -- ohne Pfad und Ursache, also ohne den Grund des Abbruchs."""
+        self._isolate_dict_config(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(
+                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+            )
+
+        line = next(
+            line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line
+        )
+        assert "LoggingConfigError" in line
+        assert "/abs/log.json" in line
 
 
 class TestHeartbeatWriter:
