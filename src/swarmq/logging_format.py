@@ -81,12 +81,17 @@ def _add_record_timestamp(
     """
     record = event_dict.get("_record")
     created = record.created if record is not None else time.time()
-    event_dict["timestamp"] = (
+    event_dict["timestamp"] = _iso_utc(created)
+    return event_dict
+
+
+def _iso_utc(created: float) -> str:
+    """``created`` (Epochensekunden) als ISO 8601 in UTC mit Suffix ``Z``."""
+    return (
         datetime.datetime.fromtimestamp(created, tz=datetime.UTC)
         .isoformat()
         .replace("+00:00", "Z")
     )
-    return event_dict
 
 
 _EXTRA_ADDER = structlog.stdlib.ExtraAdder()

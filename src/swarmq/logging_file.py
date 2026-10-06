@@ -11,6 +11,7 @@ import json as jsonlib
 import logging
 import logging.handlers
 import threading
+from collections.abc import Iterator
 from typing import Any
 
 from swarmq.exceptions import LoggingConfigError
@@ -53,6 +54,14 @@ def _parse_log_config(path: str, text: str) -> Any:
     return yaml.safe_load(text)
 
 
+def _iter_loggers() -> Iterator[tuple[str, logging.Logger]]:
+    """Name und Logger aller angelegten Logger ohne Root und Platzhalter;
+    ueber eine Kopie, weil andere Threads Logger anlegen koennen."""
+    for name, lg in list(logging.Logger.manager.loggerDict.items()):
+        if isinstance(lg, logging.Logger):
+            yield name, lg
+
+
 def start_queue_listeners() -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
 
@@ -60,10 +69,7 @@ def start_queue_listeners() -> None:
     geleert -- werden sie per ``shutdown_logging``, also auch bei
     Prozessende (``atexit``).
     """
-    loggers = [logging.getLogger()] + [
-        lg for lg in logging.Logger.manager.loggerDict.values()
-        if isinstance(lg, logging.Logger)
-    ]
+    loggers = [logging.getLogger()] + [lg for _, lg in _iter_loggers()]
     for handler in {h for lg in loggers for h in lg.handlers}:
         listener = getattr(handler, "listener", None)
         if (

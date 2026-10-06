@@ -22,9 +22,9 @@ import structlog
 
 from swarmq.exceptions import LoggingConfigError
 from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
+from swarmq.logging_file import _iter_loggers, start_queue_listeners
 from swarmq.logging_file import load_log_config as load_log_config
-from swarmq.logging_file import start_queue_listeners
-from swarmq.logging_format import _add_record_timestamp
+from swarmq.logging_format import _iso_utc
 from swarmq.logging_format import build_formatter as build_formatter
 from swarmq.logging_settings import LoggingSettings
 
@@ -139,6 +139,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         self.json = json
         self.dropped = 0
         self._last_drop_notice = 0.0
+        self._reserve_at = self._reserve_threshold()
         self.listener = _SwarmqQueueListener(queue_, *handlers) if handlers else None
         _HANDLERS.add(self)
 
@@ -160,8 +161,20 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
 
     def _in_reserve(self) -> bool:
         """Ab 90 % Fuellstand bleibt der Rest WARNING und hoeher vorbehalten."""
+        reserve_at = self._reserve_at
+        if reserve_at is None:
+            return False
+        q = self.queue
+        # ``len`` der Deque ohne das Mutex von ``qsize``; Unterklassen koennen
+        # ``_qsize`` ueberschreiben und behalten deshalb ``qsize``.
+        level = len(q.queue) if type(q) is queue.Queue else q.qsize()
+        return level >= reserve_at
+
+    def _reserve_threshold(self) -> int | None:
+        """Fuellstand, ab dem die Reserve gilt: ``ceil(maxsize * 0.9)``,
+        ganzzahlig wie ``qsize * 10 >= maxsize * 9``; ``None`` ohne Grenze."""
         maxsize = self.queue.maxsize
-        return maxsize > 0 and self.queue.qsize() * 10 >= maxsize * 9
+        return -(-maxsize * 9 // 10) if maxsize > 0 else None
 
     def _drop(self) -> None:
         # ``dropped += 1`` is deliberately lock-free: under
@@ -178,6 +191,18 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
             # very queue that is full.
             print(self._drop_notice(), file=sys.stderr)
 
+    def _reset_after_fork(self) -> None:
+        """Frische Queue, Zaehler und Listener im Kind (KTD5)."""
+        self.queue = fresh = _LogQueue(self.queue.maxsize)
+        self._reserve_at = self._reserve_threshold()
+        self.dropped = 0
+        self._last_drop_notice = 0.0
+        if self.listener is not None:
+            # Der geerbte Listener verweist auf einen Thread, den es im Kind
+            # nicht gibt.
+            # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
+            self.listener = type(self.listener)(fresh, *self.listener.handlers)
+
     def _drop_notice(self) -> str:
         """Die Drop-Meldung; im JSON-Modus als vorgerenderte JSON-Zeile (R7)."""
         if not self.json:
@@ -191,7 +216,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
                 "count": self.dropped,
                 "level": "warning",
                 "logger": __name__,
-                "timestamp": _add_record_timestamp(None, "", {})["timestamp"],
+                "timestamp": _iso_utc(time.time()),
             }
         )
 
@@ -427,12 +452,8 @@ def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) ->
 def _reenable_swarmq_loggers() -> int:
     """Schaltet von der App deaktivierte ``swarmq.*``-Logger wieder ein."""
     count = 0
-    for name, lg in list(logging.Logger.manager.loggerDict.items()):
-        if (
-            isinstance(lg, logging.Logger)
-            and lg.disabled
-            and (name == "swarmq" or name.startswith("swarmq."))
-        ):
+    for name, lg in _iter_loggers():
+        if lg.disabled and (name == "swarmq" or name.startswith("swarmq.")):
             lg.disabled = False
             count += 1
     return count
@@ -450,14 +471,7 @@ def _after_fork_in_child() -> None:
     _LISTENER_LOCK = threading.Lock()
     _DROPPED_TOTAL = 0
     for handler in list(_HANDLERS):
-        handler.queue = fresh = _LogQueue(handler.queue.maxsize)
-        handler.dropped = 0
-        handler._last_drop_notice = 0.0
-        if handler.listener is not None:
-            # Der geerbte Listener verweist auf einen Thread, den es im Kind
-            # nicht gibt.
-            # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
-            handler.listener = type(handler.listener)(fresh, *handler.listener.handlers)
+        handler._reset_after_fork()
 
 
 os.register_at_fork(after_in_child=_after_fork_in_child)
@@ -503,8 +517,7 @@ def _merge_contextvars_guarded(
     kwarg an die stdlib-Methode. Felder des Aufrufs haben wie bei
     ``merge_contextvars`` Vorrang.
     """
-    context = structlog.contextvars.merge_contextvars(logger, method_name, {})
-    for key, value in context.items():
+    for key, value in structlog.contextvars.get_contextvars().items():
         if key in structlog.stdlib.LOG_KWARG_NAMES:
             key = f"swarmq_{key}"
         event_dict.setdefault(key, value)

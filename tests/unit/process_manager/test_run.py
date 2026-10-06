@@ -244,7 +244,7 @@ class TestRunMultiProcessWorker:
         )
         env = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
         with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.logging.flush_logging") as flush, \
+             patch("swarmq.logging.shutdown_logging") as flush, \
              patch(
                  "swarmq.process_manager.run.run_multi_process_worker",
                  side_effect=RuntimeError("boom"),

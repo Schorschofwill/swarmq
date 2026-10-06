@@ -270,9 +270,9 @@ def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
 
 def _flush_worker_logging() -> None:
     """Log-Queue leeren (flush-on-exit, KTD8)."""
-    from swarmq.logging import flush_logging
+    from swarmq.logging import shutdown_logging
 
-    flush_logging()
+    shutdown_logging()
 
 
 def _setup_fallback_logging(args: argparse.Namespace) -> None:
@@ -291,7 +291,7 @@ def _log_worker_config_error(exc: BaseException) -> None:
     Eine ungueltige Logging-Konfigurationsdatei nennt zusaetzlich ``path``
     (AE4); die Ursache aus ``__cause__`` steht in ``error``.
     """
-    from swarmq.logging import flush_logging
+    from swarmq.logging import shutdown_logging
 
     path = getattr(exc, "path", None)
     logger.error(
@@ -304,7 +304,7 @@ def _log_worker_config_error(exc: BaseException) -> None:
     )
     # Der Aufrufer beendet den Prozess gleich danach; ohne Flush bliebe die
     # Zeile in der Queue des Listener-Threads liegen.
-    flush_logging()
+    shutdown_logging()
 
 
 def _run_worker_command(args: argparse.Namespace) -> int:
