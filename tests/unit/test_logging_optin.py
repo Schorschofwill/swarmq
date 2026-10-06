@@ -34,7 +34,7 @@ from __future__ import annotations
 #     Opt-in.
 # 14. ``configure_logging`` (eingebaut) deaktiviert einen bereits aktiven
 #     Opt-in und stellt Handler, ``propagate`` und Level wieder her.
-# 15. Nach einem simulierten Fork laeuft der Opt-in weiter an die Handler der
+# 15. Nach einem echten Fork (``os.fork``) laeuft der Opt-in weiter an die Handler der
 #     App, ohne geerbte Records.
 # 16. ``shutdown_logging()`` leert die Opt-in-Queue; der naechste Eintrag
 #     startet den Listener wieder -- in Test 6.
@@ -43,6 +43,10 @@ from __future__ import annotations
 # 17. Ersatz durch die App: swarmq-Logs laufen ueber die Queue an die Handler
 #     der App -- im Worker ``test_logging_app_wins.py`` (R6), im Compute-Kind
 #     ``worker/compute/test_child_logging.py`` (Test 12).
+# 19. Ein Integrations-Hook auf ``Logger.callHandlers`` (Muster von Sentrys
+#     ``LoggingIntegration``) sieht jeden swarmq-Record genau einmal: Der
+#     Listener gibt an die Root-Handler weiter, ohne ``callHandlers``
+#     erneut zu durchlaufen.
 # AE6 mit echtem Forkserver: ``tests/integration/test_compute_child_logging.py``.
 import contextvars
 import io
@@ -65,6 +69,7 @@ from swarmq.logging import (
     shutdown_logging,
 )
 from swarmq.logging_settings import LoggingSettings
+from tests.unit._fork_child import run_in_forked_child
 
 _LOG = get_logger("swarmq.tests.optin")
 
@@ -113,6 +118,21 @@ def app_handler() -> Iterator[_Collect]:
 
 def _listener_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]
+
+
+@pytest.fixture()
+def call_handlers_hook(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Haengt sich wie Sentrys ``LoggingIntegration`` an
+    ``Logger.callHandlers`` und merkt sich die Nachricht je Aufruf."""
+    seen: list[str] = []
+    original = logging.Logger.callHandlers
+
+    def hooked(self: logging.Logger, record: logging.LogRecord) -> None:
+        seen.append(record.getMessage())
+        original(self, record)
+
+    monkeypatch.setattr(logging.Logger, "callHandlers", hooked)
+    return seen
 
 
 def test_listener_starts_on_the_first_record_not_at_construction(
@@ -339,8 +359,6 @@ def test_a_builtin_setup_deactivates_an_active_opt_in(
 def test_after_a_fork_the_opt_in_still_reaches_the_app_without_inherited_records(
     broker: MagicMock, backend: MagicMock, app_handler: _Collect,
 ) -> None:
-    from swarmq.logging import _after_fork_in_child
-
     SwarmQ(broker, backend, log_queue=True)
     blocking = _Blocking()
     logging.getLogger().handlers[:] = [blocking]
@@ -349,13 +367,14 @@ def test_after_a_fork_the_opt_in_still_reaches_the_app_without_inherited_records
         assert blocking.entered.wait(5)
         _LOG.warning("optin_inherited")  # liegt beim Fork noch in der Queue
 
-        _after_fork_in_child()
-        logging.getLogger().handlers[:] = [app_handler]
-        _LOG.warning("optin_child")
-        (handler,) = logging.getLogger("swarmq").handlers
-        handler.listener.stop()  # type: ignore[attr-defined]
+        def child() -> None:
+            logging.getLogger().handlers[:] = [app_handler]
+            _LOG.warning("optin_child")
+            (handler,) = logging.getLogger("swarmq").handlers
+            handler.listener.stop()  # type: ignore[attr-defined]
+            assert app_handler.events() == ["optin_child"]
 
-        assert app_handler.events() == ["optin_child"]
+        assert run_in_forked_child(child) == 0
     finally:
         blocking.release.set()
 
@@ -377,3 +396,16 @@ def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: Magi
         assert dropped_log_records() - before == 3
     finally:
         blocking.release.set()
+
+
+def test_a_call_handlers_hook_sees_each_opt_in_record_once(
+    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    call_handlers_hook: list[str],
+) -> None:
+    SwarmQ(broker, backend, log_queue=True)
+
+    _LOG.warning("optin_hooked")
+
+    shutdown_logging()
+    assert app_handler.events() == ["optin_hooked"]
+    assert call_handlers_hook.count("optin_hooked") == 1

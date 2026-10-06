@@ -10,6 +10,7 @@ from __future__ import annotations
 import json as jsonlib
 import logging
 import logging.handlers
+import queue
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -80,6 +81,26 @@ def start_queue_listeners() -> None:
             listener.start()
             CONFIG_LISTENERS.append(listener)
             _restart_lazily(handler, listener)
+
+
+def stop_queue_listeners() -> None:
+    """Stoppt und leert die gestarteten dictConfig-Listener (KTD5).
+
+    Der stdlib-``stop`` reiht den Sentinel per ``put_nowait`` ein und wirft
+    bei voller Queue ``queue.Full`` -- mitten in ``atexit`` oder einem
+    ``finally``. Dann wird blockierend nachgereicht: Der laufende Listener
+    schafft Platz, wie bei ``_SwarmqQueueListener.enqueue_sentinel``.
+    """
+    while CONFIG_LISTENERS:
+        listener = CONFIG_LISTENERS.pop()
+        try:
+            listener.stop()
+        except queue.Full:
+            listener.queue.put(listener._sentinel)  # type: ignore[attr-defined]
+            thread = getattr(listener, "_thread", None)
+            if thread is not None:
+                thread.join()
+            setattr(listener, "_thread", None)  # noqa: B010
 
 
 _CONFIG_LISTENER_LOCK = threading.Lock()

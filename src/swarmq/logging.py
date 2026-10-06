@@ -22,7 +22,7 @@ import structlog
 
 from swarmq.exceptions import LoggingConfigError
 from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
-from swarmq.logging_file import _iter_loggers, start_queue_listeners
+from swarmq.logging_file import _iter_loggers, start_queue_listeners, stop_queue_listeners
 from swarmq.logging_file import load_log_config as load_log_config
 from swarmq.logging_format import _iso_utc
 from swarmq.logging_format import build_formatter as build_formatter
@@ -108,11 +108,12 @@ _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
 
 
 class _StructlogQueueHandler(logging.handlers.QueueHandler):
-    """QueueHandler that preserves structlog's dict-based record.msg.
+    """QueueHandler, der den Record unveraendert einreiht.
 
-    The default QueueHandler.prepare() calls self.format(record) which
-    stringifies record.msg. structlog's ProcessorFormatter needs
-    record.msg to remain a dict (set by wrap_for_formatter).
+    ``prepare`` ueberspringt ``format()``, die Kopie und das Leeren von
+    ``msg``, ``args`` und ``exc_info`` des Basis-``QueueHandler``: Der
+    Formatter im Listener-Thread sieht den Original-Record samt aller
+    Attribute (Felder, Traceback) und rendert erst dort.
 
     Drops are counted and surfaced. The stdlib path
     (queue.Full → handleError) silently discarded records under burst —
@@ -235,11 +236,22 @@ class _OptinQueueListener(_SwarmqQueueListener):
 
     def handle(self, record: logging.LogRecord) -> None:
         context = record.__dict__.pop(_CONTEXT_ATTR, None)
-        dispatch = logging.getLogger().callHandlers
         if context is None:
-            dispatch(record)
+            _dispatch_to_root(record)
         else:
-            context.run(dispatch, record)
+            context.run(_dispatch_to_root, record)
+
+
+def _dispatch_to_root(record: logging.LogRecord) -> None:
+    """Wie ``Logger.callHandlers`` fuer Root, aber ohne es aufzurufen:
+    Integrationen, die ``callHandlers`` umhaengen (Sentrys
+    ``LoggingIntegration``), sahen den Record dort schon beim Aufrufer und
+    saehen ihn sonst ein zweites Mal. Ohne Root-Handler gilt wie in der
+    stdlib ``lastResort``."""
+    handlers: list[logging.Handler | None] = [*logging.getLogger().handlers]
+    for handler in handlers or [logging.lastResort]:
+        if handler is not None and record.levelno >= handler.level:
+            handler.handle(record)
 
 
 class _OptinQueueHandler(_StructlogQueueHandler):
@@ -355,8 +367,7 @@ def _stop_listeners() -> None:
     freizugeben."""
     for listener in list(_LISTENERS):
         listener.stop()
-    while _CONFIG_LISTENERS:
-        _CONFIG_LISTENERS.pop().stop()
+    stop_queue_listeners()
 
 
 _APP_TAKEOVER_REPORTED = False
@@ -466,10 +477,17 @@ def _after_fork_in_child() -> None:
     sonst doppelt. Startet keinen Thread -- das uebernimmt der naechste
     Eintrag. Ein beim Fork gehaltenes Start-Lock hat im Kind keinen
     Besitzer mehr und wird ersetzt.
+
+    Die geerbten Listener -- eigene wie die der dictConfig -- gehoeren dem
+    Elternprozess: Ihr Thread fehlt im Kind, und ``shutdown_logging``
+    haengte oder wuerfe sonst beim Sentinel auf einer beim Fork vollen
+    Queue-Kopie.
     """
     global _LISTENER_LOCK, _DROPPED_TOTAL
     _LISTENER_LOCK = threading.Lock()
     _DROPPED_TOTAL = 0
+    _LISTENERS.clear()
+    _CONFIG_LISTENERS.clear()
     for handler in list(_HANDLERS):
         handler._reset_after_fork()
 

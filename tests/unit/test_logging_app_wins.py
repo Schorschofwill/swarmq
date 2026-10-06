@@ -27,6 +27,9 @@ from __future__ import annotations
 # 7. [x] Nach dem Ersatz haelt ein blockierender Root-Handler der App einen
 #        swarmq-Logaufruf im Event-Loop nicht auf (R6, Opt-in-Queue KTD10,
 #        U8) -- eingebaut wie im Datei-Modus.
+# 8. [x] Nach dem Ersatz sieht ein Hook auf ``Logger.callHandlers`` (Muster
+#        von Sentrys ``LoggingIntegration``) jeden swarmq-Record genau
+#        einmal.
 import argparse
 import io
 import itertools
@@ -345,3 +348,27 @@ async def test_a_blocking_app_handler_does_not_stall_swarmq_after_the_takeover(
     BlockingAppHandler.RELEASE.set()
     shutdown_logging()
     assert len(_app_events("evt_r6")) == 1
+
+
+@pytest.mark.timeout(5)
+async def test_a_call_handlers_hook_sees_each_swarmq_record_once_after_the_takeover(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    original = logging.Logger.callHandlers
+
+    def hooked(self: logging.Logger, record: logging.LogRecord) -> None:
+        seen.append(record.getMessage())
+        original(self, record)
+
+    monkeypatch.setattr(logging.Logger, "callHandlers", hooked)
+    configure_logging(LoggingSettings(format="json"))
+    module = _app_module(tmp_path, monkeypatch, _REPLACE_ROOT)
+    with pytest.raises(ConfigurationError, match="no tasks registered"):
+        await cli.run_worker_async(_args(module))
+
+    get_logger("swarmq.tests.app_wins").warning("evt_hooked")
+
+    shutdown_logging()
+    assert len(_app_events("evt_hooked")) == 1
+    assert seen.count("evt_hooked") == 1

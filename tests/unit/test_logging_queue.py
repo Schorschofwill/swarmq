@@ -20,10 +20,10 @@ from __future__ import annotations
 #    wieder und wird geschrieben.
 # 8. Ein atexit-Hook ist genau einmal registriert, auch nach mehrfacher
 #    Konfiguration.
-# 9. Nach einem simulierten Fork (Hook direkt aufrufen) ist der Zustand
-#    zurueckgesetzt, der naechste Eintrag startet einen Listener.
-# 10. Ein vor dem simulierten Fork eingereihter Record wird vom Kind nicht
-#     ausgegeben.
+# 9. Nach einem echten Fork (``os.fork``, also ueber den registrierten Hook)
+#    ist der Zustand im Kind zurueckgesetzt, der naechste Eintrag startet
+#    einen Listener.
+# 10. Ein vor dem Fork eingereihter Record wird vom Kind nicht ausgegeben.
 # 11. Zwei Threads, die gleichzeitig den Listener starten (erster Eintrag
 #     gegen expliziten ``start``), starten genau einen Listener.
 #     ``Handler.handle`` serialisiert Eintraege desselben Handlers schon
@@ -37,6 +37,9 @@ from __future__ import annotations
 # 15. Ein beim Fork gehaltenes Start-Lock blockiert das Kind nicht.
 # 16. ``setup_logging`` nutzt den neustartbaren Kern.
 # 17. Der Fork-Hook setzt auch den prozessweiten Drop-Zaehler zurueck (in 9).
+# 18. Im echten Kind stoppt ``shutdown_logging`` den geerbten, beim Fork
+#     laufenden Listener des Elternprozesses nicht: Auf dessen voller
+#     Queue-Kopie haengte der blockierende Sentinel.
 import atexit
 import contextlib
 import io
@@ -51,12 +54,12 @@ from typing import Any
 import pytest
 
 from swarmq.logging import (
-    _after_fork_in_child,
     _StructlogQueueHandler,
     dropped_log_records,
     setup_logging,
     shutdown_logging,
 )
+from tests.unit._fork_child import run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -275,15 +278,16 @@ def test_after_fork_hook_resets_queue_and_drop_state(
 
     assert dropped_log_records() >= 1
 
-    _after_fork_in_child()
+    def child() -> None:
+        assert handler.dropped == 0
+        assert dropped_log_records() == 0
+        assert handler.queue.empty()
+        handler.handle(_record())
+        handler.handle(_record())
+        assert handler.dropped == 1
+        assert "1 record(s) dropped" in capsys.readouterr().err
 
-    assert handler.dropped == 0
-    assert dropped_log_records() == 0
-    assert handler.queue.empty()
-    handler.handle(_record())
-    handler.handle(_record())
-    assert handler.dropped == 1
-    assert "1 record(s) dropped" in capsys.readouterr().err
+    assert run_in_forked_child(child) == 0
 
 
 def test_after_fork_next_record_starts_new_listener_without_inherited_records():
@@ -295,15 +299,16 @@ def test_after_fork_next_record_starts_new_listener_without_inherited_records():
         handler.handle(_record(msg="inherited"))
         parent_listener = handler.listener
 
-        _after_fork_in_child()
+        def child() -> None:
+            handler.handle(_record(msg="child"))
+            child_listener = handler.listener
+            assert child_listener is not parent_listener
+            assert child_listener is not None
+            assert child_listener.running
+            child_listener.stop()
+            assert [r.msg for r in target.records] == ["child"]
 
-        handler.handle(_record(msg="child"))
-        child_listener = handler.listener
-        assert child_listener is not parent_listener
-        assert child_listener is not None
-        assert child_listener.running
-        child_listener.stop()
-        assert [r.msg for r in target.records] == ["child"]
+        assert run_in_forked_child(child) == 0
     finally:
         target.unblock.set()
 
@@ -368,9 +373,11 @@ def test_after_fork_hook_does_not_inherit_a_held_start_lock(
         starter.start()
         inside.wait()
 
-        _after_fork_in_child()
-        handler.handle(_record(msg="child"))
-        assert target.written.wait(timeout=1)
+        def child() -> None:
+            handler.handle(_record(msg="child"))
+            assert target.written.wait(timeout=1)
+
+        assert run_in_forked_child(child) == 0
     finally:
         proceed.set()
         starter.join()
@@ -428,3 +435,18 @@ def test_setup_logging_uses_the_restartable_core():
 
     events = [json.loads(line)["event"] for line in stream.getvalue().splitlines()]
     assert events == ["first", "second"]
+
+
+def test_child_shutdown_skips_the_running_listener_inherited_from_the_parent() -> None:
+    target = _BlockingHandler()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=2), target)
+    try:
+        handler.handle(_record(msg="parent-busy"))
+        target.entered.wait()
+        handler.handle(_record(msg="a"))
+        handler.handle(_record(logging.WARNING, msg="b"))
+        assert handler.queue.full()
+
+        assert run_in_forked_child(shutdown_logging) == 0
+    finally:
+        target.unblock.set()

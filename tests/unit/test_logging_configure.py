@@ -49,11 +49,19 @@ from __future__ import annotations
 #     ``shutdown_logging`` startet der naechste Eintrag den Listener wieder,
 #     das folgende ``shutdown_logging`` leert ihn -- die Leerung pro Job im
 #     wiederverwendeten Compute-Kind.
+# 26. (KTD5) Datei-Modus mit ``QueueHandler``: Im echten Kind gehoert der
+#     beim Fork laufende Listener dem Elternprozess; ``shutdown_logging``
+#     stoppt ihn dort nicht und wirft nicht, auch bei voller Queue-Kopie.
+# 27. (KTD5) Datei-Modus mit ``QueueHandler``: ``shutdown_logging`` auf einer
+#     vollen Queue wirft kein ``queue.Full`` (stdlib-Sentinel per
+#     ``put_nowait``), sondern wartet, bis der Listener Platz schafft, und
+#     schreibt alle Eintraege.
 import io
 import json
 import logging
 import logging.handlers
 import pathlib
+import queue
 import sys
 import threading
 import types
@@ -88,6 +96,33 @@ class RecordingHandler(logging.Handler):
 
 
 _RECORDING = f"{__name__}.RecordingHandler"
+
+FILE_HANDLER_ENTERED = threading.Event()
+FILE_HANDLER_RELEASE = threading.Event()
+
+
+class BlockingRecordingHandler(RecordingHandler):
+    """Haelt den Listener der dictConfig beim ersten Eintrag fest, bis
+    ``FILE_HANDLER_RELEASE`` gesetzt ist."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not FILE_HANDLER_ENTERED.is_set():
+            FILE_HANDLER_ENTERED.set()
+            FILE_HANDLER_RELEASE.wait()
+        super().emit(record)
+
+
+_BLOCKING_RECORDING = f"{__name__}.BlockingRecordingHandler"
+
+
+class ReleasingQueue(queue.Queue[object]):
+    """Gibt den blockierten Listener frei, sobald blockierend eingereiht
+    wird -- ``put_nowait`` (``block=False``) gibt nicht frei."""
+
+    def put(self, item: object, block: bool = True, timeout: float | None = None) -> None:
+        if block:
+            FILE_HANDLER_RELEASE.set()
+        super().put(item, block, timeout)
 
 
 def _config_file(tmp_path: pathlib.Path, config: dict[str, object], name: str = "log.json") -> str:
@@ -576,3 +611,79 @@ def test_file_mode_queue_listener_restarts_after_shutdown_for_the_next_job(
     shutdown_logging()
 
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_job_1", "evt_job_2"]
+
+
+def test_child_shutdown_skips_the_file_mode_listener_inherited_from_the_parent(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+    from tests.unit._fork_child import run_in_forked_child
+
+    FILE_HANDLER_ENTERED.clear()
+    FILE_HANDLER_RELEASE.clear()
+    path = _config_file(
+        tmp_path,
+        {
+            "version": 1,
+            "handlers": {
+                "rec": {"()": _BLOCKING_RECORDING},
+                "q": {
+                    "class": "logging.handlers.QueueHandler",
+                    "handlers": ["rec"],
+                    "queue": {"()": "queue.Queue", "maxsize": 1},
+                },
+            },
+            "root": {"level": "INFO", "handlers": ["q"]},
+        },
+    )
+    configure_logging(LoggingSettings(log_config=path))
+    log = logging.getLogger("swarmq.tests.queued")
+    try:
+        log.warning("evt_parent_busy")
+        assert FILE_HANDLER_ENTERED.wait(5)
+        log.warning("evt_inherited")
+        (handler,) = logging.getLogger().handlers
+        assert handler.queue.full()  # type: ignore[attr-defined]
+
+        assert run_in_forked_child(shutdown_logging) == 0
+    finally:
+        FILE_HANDLER_RELEASE.set()
+
+
+def test_shutdown_waits_for_room_in_a_full_file_mode_queue_instead_of_raising(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    FILE_HANDLER_ENTERED.clear()
+    FILE_HANDLER_RELEASE.clear()
+    FILE_RECORDS.clear()
+    path = _config_file(
+        tmp_path,
+        {
+            "version": 1,
+            "handlers": {
+                "rec": {"()": _BLOCKING_RECORDING},
+                "q": {
+                    "class": "logging.handlers.QueueHandler",
+                    "handlers": ["rec"],
+                    "queue": {"()": f"{__name__}.ReleasingQueue", "maxsize": 1},
+                },
+            },
+            "root": {"level": "INFO", "handlers": ["q"]},
+        },
+    )
+    configure_logging(LoggingSettings(log_config=path))
+    log = logging.getLogger("swarmq.tests.queued")
+    try:
+        log.warning("evt_busy")
+        assert FILE_HANDLER_ENTERED.wait(5)
+        log.warning("evt_queued")
+        (handler,) = logging.getLogger().handlers
+        assert handler.queue.full()  # type: ignore[attr-defined]
+
+        shutdown_logging()
+    finally:
+        FILE_HANDLER_RELEASE.set()
+
+    assert [r.getMessage() for r in FILE_RECORDS] == ["evt_busy", "evt_queued"]
