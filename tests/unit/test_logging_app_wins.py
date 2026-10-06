@@ -45,12 +45,11 @@ import pytest
 from swarmq import cli
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import (
-    _StructlogQueueHandler,
-    _SwarmqQueueListener,
     configure_logging,
     get_logger,
     shutdown_logging,
 )
+from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener
 from swarmq.logging_settings import LoggingSettings
 from swarmq.task import Task
 
@@ -187,7 +186,7 @@ async def test_added_root_handler_is_reported_and_kept(
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     (swarmq_handler,) = (
-        h for h in logging.getLogger().handlers if type(h).__module__ == "swarmq.logging"
+        h for h in logging.getLogger().handlers if isinstance(h, _StructlogQueueHandler)
     )
     module = _app_module(
         tmp_path, monkeypatch,

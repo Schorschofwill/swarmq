@@ -334,7 +334,7 @@ class TestLogRecordsDroppedCounter:
         import logging
         import queue
 
-        from swarmq.logging import _StructlogQueueHandler
+        from swarmq.logging_queue import _StructlogQueueHandler
 
         m = Metrics()
         if not m.enabled:

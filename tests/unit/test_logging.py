@@ -121,7 +121,7 @@ class TestQueueDropVisibility:
         import logging as _logging
         import queue as _queue
 
-        from swarmq.logging import _StructlogQueueHandler
+        from swarmq.logging_queue import _StructlogQueueHandler
 
         q: _queue.Queue = _queue.Queue(maxsize=1)
         handler = _StructlogQueueHandler(q)
@@ -144,7 +144,7 @@ class TestQueueDropVisibility:
         import logging as _logging
         import queue as _queue
 
-        from swarmq.logging import _StructlogQueueHandler
+        from swarmq.logging_queue import _StructlogQueueHandler
 
         q: _queue.Queue = _queue.Queue(maxsize=10)
         handler = _StructlogQueueHandler(q)

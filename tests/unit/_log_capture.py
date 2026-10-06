@@ -79,7 +79,8 @@ def preserved_root_logger() -> Iterator[None]:
     wechseln je Testphase und bleiben, wie pytest sie gerade gesetzt hat --
     zurueckgelegte Handler einer beendeten Phase sammelten sonst weiter.
     """
-    from swarmq.logging import _reset_log_queue, shutdown_logging
+    from swarmq.logging import shutdown_logging
+    from swarmq.logging_queue import _reset_log_queue
 
     root = logging.getLogger()
     own = [h for h in root.handlers if not _is_pytest_handler(h)]

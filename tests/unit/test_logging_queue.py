@@ -1,6 +1,7 @@
-"""Tests fuer den Queue- und Listener-Kern von ``swarmq.logging``.
+"""Tests fuer den Queue- und Listener-Kern (``swarmq.logging_queue``).
 
-Plan 2026-10-06-0831, U3 (R6, R7, R15; KTD5).
+Plan 2026-10-06-0831, U3 (R6, R7, R15; KTD5); ausgelagert in
+Plan 2026-10-06-1811, U1.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ from __future__ import annotations
 # 18. Im echten Kind stoppt ``shutdown_logging`` den geerbten, beim Fork
 #     laufenden Listener des Elternprozesses nicht: Auf dessen voller
 #     Queue-Kopie haengte der blockierende Sentinel.
+# 19. Nach der Auslagerung (Plan 2026-10-06-1811, U1) bleiben die
+#     oeffentlichen Namen aus ``swarmq.logging`` importierbar.
 import atexit
 import contextlib
 import io
@@ -54,11 +57,11 @@ from typing import Any
 import pytest
 
 from swarmq.logging import (
-    _StructlogQueueHandler,
     dropped_log_records,
     setup_logging,
     shutdown_logging,
 )
+from swarmq.logging_queue import _StructlogQueueHandler
 from tests.unit._fork_child import run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
@@ -123,7 +126,7 @@ class _Clock:
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     fake = _Clock()
-    monkeypatch.setattr("swarmq.logging.time.monotonic", fake)
+    monkeypatch.setattr("swarmq.logging_queue.time.monotonic", fake)
     return fake
 
 
@@ -337,7 +340,7 @@ def test_concurrent_first_record_and_start_run_exactly_one_listener(
         threading.Thread(target=handler.listener.start),
     ]
     monkeypatch.setattr(
-        "swarmq.logging.threading", types.SimpleNamespace(Thread=_GatedThread)
+        "swarmq.logging_queue.threading", types.SimpleNamespace(Thread=_GatedThread)
     )
     for writer in writers:
         writer.start()
@@ -367,7 +370,7 @@ def test_after_fork_hook_does_not_inherit_a_held_start_lock(
     assert handler.listener is not None
     starter = threading.Thread(target=handler.listener.start)
     monkeypatch.setattr(
-        "swarmq.logging.threading", types.SimpleNamespace(Thread=_StuckThread, Lock=threading.Lock)
+        "swarmq.logging_queue.threading", types.SimpleNamespace(Thread=_StuckThread, Lock=threading.Lock)
     )
     try:
         starter.start()
@@ -450,3 +453,16 @@ def test_child_shutdown_skips_the_running_listener_inherited_from_the_parent() -
         assert run_in_forked_child(shutdown_logging) == 0
     finally:
         target.unblock.set()
+
+
+def test_public_names_remain_importable_from_swarmq_logging() -> None:
+    import swarmq.logging
+    import swarmq.logging_queue
+
+    for name in (
+        "shutdown_logging",
+        "dropped_log_records",
+        "LISTENER_THREAD_NAME",
+    ):
+        assert getattr(swarmq.logging, name) is getattr(swarmq.logging_queue, name)
+    assert swarmq.logging.flush_logging is swarmq.logging_queue.shutdown_logging
