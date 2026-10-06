@@ -24,8 +24,7 @@ from typing import Any
 from swarmq.logging_drain import Deadline, abandon, write_drain_notice
 from swarmq.logging_file import (
     FileDraining,
-    HandlerErrors,
-    RateLimitedReport,
+    ListenerReports,
     close_queue_listeners,
     reset_queue_listeners_after_fork,
     running_targets,
@@ -63,10 +62,11 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
 
     def __init__(self, queue_: _ListenerQueue, *handlers: logging.Handler) -> None:
         super().__init__(queue_, *handlers)
-        self.errors = HandlerErrors(self._dispatch)
+        self._reports = ListenerReports(self._dispatch)
+        self.errors = self._reports.errors
         # Verworfene Records des zugehoerigen Queue-Handlers; gemeldet aus
         # diesem Thread (Plan 2026-10-06-1811, KTD2).
-        self.drops = RateLimitedReport("log_records_dropped", self.errors.handle)
+        self.drops = self._reports.drops
         # Root-Handler, den der Opt-in-Listener gerade bedient; haengt er,
         # wird er beim Aufgeben ausgetragen (Plan 2026-10-06-1811, KTD3).
         self.current: logging.Handler | None = None
@@ -104,9 +104,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         """Thread-Ziel: Records ausgeben; beim Ende noch nicht gemeldete
         Drops und Handler-Fehler melden, auch innerhalb der Frist (Plan
         2026-10-06-1811, KTD2)."""
-        self._monitor()
-        self.drops.report_due(final=True)
-        self.errors.report_due(final=True)
+        self._reports.serve(self._monitor)
 
     def stop(self) -> None:
         """Wie der Basis-``stop``, aber auf dem eigenen Thread: Zwischen dem
@@ -128,8 +126,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         Der stdlib-``_monitor`` faengt nichts, ein werfender Handler, Filter
         oder Formatter beendete sonst den Thread. Danach meldet er neue
         Drops (KTD2)."""
-        self.errors.handle(record)
-        self.drops.report_due()
+        self._reports.handle(record)
 
     def _dispatch(self, record: logging.LogRecord) -> None:
         super().handle(record)
@@ -289,7 +286,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         # auf stderr zu schreiben, blockierte den Aufrufer -- die Queue ist
         # meist gerade deshalb voll, weil das Ziel blockiert.
         if self.listener is not None:
-            self.listener.drops.count += 1
+            self.listener.drops.add()
 
     def _reset_after_fork(self) -> None:
         """Frische Queue, Zaehler und Listener im Kind (KTD5)."""
@@ -396,12 +393,12 @@ def _enable_log_queue(
     dann auch fuer ``shutdown_logging`` beim Prozessende (Plan
     2026-10-06-1811, KTD3/KTD4).
     """
-    global _OPTIN_HOLDERS, _DRAIN_TIMEOUT
+    global _OPTIN_HOLDERS
     if _CONFIGURED:
         return False
     _OPTIN_HOLDERS += 1
     if drain_timeout is not None:
-        _DRAIN_TIMEOUT = drain_timeout
+        set_drain_timeout(drain_timeout)
     _install_log_queue(level, json=json, queue_size=queue_size)
     return True
 
@@ -477,6 +474,12 @@ es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
 
 _DRAIN_TIMEOUT = 5.0
 """Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
+
+
+def set_drain_timeout(seconds: float) -> None:
+    """Setzt die Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
+    global _DRAIN_TIMEOUT
+    _DRAIN_TIMEOUT = seconds
 
 
 def shutdown_logging(timeout: float | None = None) -> None:

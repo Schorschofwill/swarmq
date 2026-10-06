@@ -15,7 +15,7 @@ import structlog
 
 from swarmq import logging_queue as _queue_core
 from swarmq.exceptions import LoggingConfigError
-from swarmq.logging_file import _iter_loggers, start_queue_listeners
+from swarmq.logging_file import iter_loggers, start_queue_listeners
 from swarmq.logging_file import load_log_config as load_log_config
 from swarmq.logging_format import build_formatter as build_formatter
 from swarmq.logging_queue import LISTENER_THREAD_NAME as LISTENER_THREAD_NAME
@@ -135,7 +135,7 @@ def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[s
     sondern der Pool, einmal je Pool statt einmal je Kind.
     """
     global _FORK_SOURCE_SENTINEL
-    _queue_core._DRAIN_TIMEOUT = settings.drain_timeout
+    _queue_core.set_drain_timeout(settings.drain_timeout)
     sentinel, _FORK_SOURCE_SENTINEL = _FORK_SOURCE_SENTINEL, None
     root = logging.getLogger()
     if sentinel is not None:
@@ -205,7 +205,7 @@ def _app_changes(
 def _reenable_swarmq_loggers() -> int:
     """Schaltet von der App deaktivierte ``swarmq.*``-Logger wieder ein."""
     count = 0
-    for name, lg in _iter_loggers():
+    for name, lg in iter_loggers():
         if lg.disabled and (name == "swarmq" or name.startswith("swarmq.")):
             lg.disabled = False
             count += 1
@@ -370,7 +370,7 @@ def configure_logging(settings: LoggingSettings) -> None:
     """
     # Auch ohne Einrichtung: Die Prozesse gehoeren swarmq, ihr Leeren ist
     # begrenzt (Plan 2026-10-06-1811, KTD3/KTD11).
-    _queue_core._DRAIN_TIMEOUT = settings.drain_timeout
+    _queue_core.set_drain_timeout(settings.drain_timeout)
     if not settings.configure:
         # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
         return

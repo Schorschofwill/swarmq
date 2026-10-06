@@ -8,7 +8,6 @@ ueber alle Listener. Importiert keines der beiden Module.
 from __future__ import annotations
 
 import contextlib
-import datetime
 import json as jsonlib
 import logging
 import os
@@ -18,6 +17,8 @@ import threading
 import time
 import weakref
 from collections.abc import Iterable
+
+from swarmq.logging_format import iso_utc
 
 
 class Deadline:
@@ -52,7 +53,7 @@ def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
             "timeout_s": timeout,
             "level": "warning",
             "logger": "swarmq.logging",
-            "timestamp": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
+            "timestamp": iso_utc(time.time()),
         })
     else:
         line = (
@@ -61,10 +62,7 @@ def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
         )
     data = (line + "\n").encode("utf-8", "replace")
     try:
-        poller = select.poll()
-        poller.register(2, select.POLLOUT)
-        writable = any(events & select.POLLOUT for _, events in poller.poll(0))
-        if writable and len(data) <= select.PIPE_BUF:
+        if _writable_now(2) and len(data) <= select.PIPE_BUF:
             os.write(2, data)
     except OSError:
         pass  # fd 2 geschlossen oder Leser weg: es bleibt beim Zaehler
@@ -178,11 +176,17 @@ def _flushable(stream: object) -> bool:
     if file in _STUCK_FILES:
         return False
     try:
-        poller = select.poll()
-        poller.register(stream.fileno(), select.POLLOUT)  # type: ignore[attr-defined]
-        return any(events & select.POLLOUT for _, events in poller.poll(0))
+        return _writable_now(stream.fileno())  # type: ignore[attr-defined]
     except Exception:
         return False
+
+
+def _writable_now(fd: int) -> bool:
+    """Meldet ``poll`` den fd sofort als beschreibbar? Fehler gibt es an den
+    Aufrufer weiter."""
+    poller = select.poll()
+    poller.register(fd, select.POLLOUT)
+    return any(events & select.POLLOUT for _, events in poller.poll(0))
 
 
 _hard_exit = os._exit
