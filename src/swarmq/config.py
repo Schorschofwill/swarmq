@@ -82,6 +82,30 @@ def _parse_log_format(raw: str, env_var: str) -> bool:
     return log_format == "json"
 
 
+def parse_env_value(kind: str, raw: str, env_name: str) -> object:
+    """Einen ``SWARMQ_*``-Wert nach seiner Art aus ``_ENV_OVERRIDES`` parsen.
+
+    Eine Quelle fuer ``SwarmQConfig`` und die CLI-Aufloesung der Worker-
+    Optionen (``swarmq.cli.worker_options``), damit beide dieselbe Umgebung
+    gleich lesen.
+    """
+    if kind == "int":
+        return _parse_int(raw, env_name)
+    if kind == "float":
+        return _parse_float(raw, env_name)
+    if kind == "bool":
+        return raw.lower() in ("true", "1", "yes")
+    if kind == "csv":
+        return [q.strip() for q in raw.split(",") if q.strip()]
+    if kind == "port":
+        return _parse_port(raw, env_name)
+    if kind == "log_format":
+        return _parse_log_format(raw, env_name)
+    if kind == "logger_levels":
+        return parse_logger_levels(split_csv(raw), env_name)
+    return raw
+
+
 def observability_port_ranges(
     base_metrics: int | None, base_health: int | None, upper: int
 ) -> tuple[list[int] | None, list[int] | None]:
@@ -123,6 +147,11 @@ class SwarmQConfig:
     # sie die Quelle der Logging-Felder oben, und die Env-Overrides gelten
     # fuer diese Felder nicht: die CLI-Prioritaet ist dort schon angewandt.
     logging_settings: LoggingSettings | None = None
+    # Felder, die der Aufrufer schon mit CLI > Env > Default aufgeloest hat
+    # (``swarmq worker``): die Env-Overrides gelten fuer sie nicht, sonst
+    # schluege ``SWARMQ_CONCURRENCY`` im Worker die Option ``--concurrency``.
+    # Eingebettet bleibt die Menge leer -- kwargs, dann Env wie bisher.
+    resolved_fields: tuple[str, ...] = ()
     retry_max_delay: float = 3600.0
     shutdown_timeout: int = 30
     # Obergrenze fuer einen kompletten Publish-Vorgang inklusive aller
@@ -364,32 +393,18 @@ class SwarmQConfig:
         return f"{base}:{self.worker_slot}"
 
     def _apply_env_overrides(self) -> None:
-        # Mit aufgeloesten Settings gilt die CLI-Prioritaet schon (KTD7); ein
-        # ueberstimmter, ungueltiger Env-Wert darf den Worker nicht mehr mit
-        # Exit 78 beenden, also wird er gar nicht erst geparst.
-        skipped = self._SETTINGS_FIELDS if self.logging_settings is not None else ()
+        # Mit aufgeloesten Settings (KTD7) und fuer ``resolved_fields`` gilt die
+        # CLI-Prioritaet schon; ein ueberstimmter, ungueltiger Env-Wert darf
+        # den Worker nicht mehr mit Exit 78 beenden, also wird er gar nicht
+        # erst geparst.
+        skipped = set(self.resolved_fields)
+        if self.logging_settings is not None:
+            skipped |= self._SETTINGS_FIELDS
         for env_name, field_name, kind in self._ENV_OVERRIDES:
             raw = os.environ.get(env_name, "")
             if not raw or field_name in skipped:
                 continue
-            value: object
-            if kind == "int":
-                value = _parse_int(raw, env_name)
-            elif kind == "float":
-                value = _parse_float(raw, env_name)
-            elif kind == "bool":
-                value = raw.lower() in ("true", "1", "yes")
-            elif kind == "csv":
-                value = [q.strip() for q in raw.split(",") if q.strip()]
-            elif kind == "port":
-                value = _parse_port(raw, env_name)
-            elif kind == "log_format":
-                value = _parse_log_format(raw, env_name)
-            elif kind == "logger_levels":
-                value = parse_logger_levels(split_csv(raw), env_name)
-            else:
-                value = raw
-            setattr(self, field_name, value)
+            setattr(self, field_name, parse_env_value(kind, raw, env_name))
 
     def _apply_slot_port_offset(self) -> None:
         """Beobachtungsports sind Basisports; Slot s bindet ``basis + s``

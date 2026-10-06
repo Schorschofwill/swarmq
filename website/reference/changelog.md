@@ -49,8 +49,11 @@ All notable changes to SwarmQ. This project follows
   `module_name`; in general a field whose name collides with a
   `LogRecord` attribute is prefixed with `swarmq_` (`name` →
   `swarmq_name`). Events that report an exception carry `error_type` and
-  `error`; a traceback is attached only for unexpected errors. Grep-based
-  alerts and dashboards need updating.
+  `error`; a traceback is attached only for unexpected errors. This now
+  includes `task_sent_to_dlq` (`error_type` is the class name of the
+  exception that sent the task to the DLQ, `WorkerHungError` when the
+  delivery limit was reached). Grep-based alerts and dashboards need
+  updating.
 - **Log levels follow one rule** (ERROR: data loss or a failed task or
   process; WARNING: degradation that heals itself; INFO: process and task
   lifecycle; DEBUG: diagnosis). `check_backend_failed` and
@@ -65,6 +68,15 @@ All notable changes to SwarmQ. This project follows
   CLI flag > env var > `SwarmQConfig` > default. The supervisor passes
   the resolved settings to its worker subprocesses and compute children,
   which no longer read the environment; a flag now wins in every process.
+
+- **CLI options now win over `SWARMQ_*` environment variables in all processes,
+  for all `swarmq worker` options.** Before, the environment won inside the
+  worker processes for `--queues`, `--concurrency`, `--pool`, `--burst`,
+  `--burst-idle-timeout`, `--priorities`, `--metrics-port` and `--health-port`
+  (e.g. `SWARMQ_CONCURRENCY=5` beat `--concurrency 20`), while the supervisor
+  used the flag. Now every option resolves once as CLI > environment >
+  default, and supervisor, worker processes, compute children and `--check`
+  see the same values. Without the flag the environment variable still applies.
 
 ### Added
 
@@ -116,6 +128,9 @@ All notable changes to SwarmQ. This project follows
   `build_formatter`, `configure_logging`, `shutdown_logging`,
   `load_log_config` and `LoggingConfigError`. New reference page:
   [Logging](logging.md).
+- **More exceptions importable from `swarmq`:** `LoggingConfigError`,
+  `SoftTimeoutError` and `PublishIndeterminate` (the same classes as in
+  `swarmq.exceptions`).
 
 ### Deprecated
 

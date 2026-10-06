@@ -14,9 +14,10 @@ _POOLS = ("io", "cpu")
 def resolve_pool(args: argparse.Namespace) -> str:
     """Pool-Modus aus Flag, sonst ``SWARMQ_POOL``, sonst ``io`` — einmal fuer alle Pfade.
 
-    ``SwarmQConfig`` wendet die Umgebung ebenfalls an; damit CLI-Pruefung,
-    ``--check``, Supervisor und Worker denselben Modus sehen, entscheidet die
-    CLI hier und schreibt das Ergebnis nach ``args.pool`` zurueck.
+    Damit CLI-Pruefung, ``--check``, Supervisor und Worker denselben Modus
+    sehen, entscheidet die CLI hier und schreibt das Ergebnis nach
+    ``args.pool`` zurueck; der Worker uebernimmt es als ``resolved_fields``,
+    ``SWARMQ_POOL`` ueberschreibt es dort nicht mehr.
     """
     pool = getattr(args, "pool", None) or os.environ.get("SWARMQ_POOL", "").strip() or "io"
     if pool not in _POOLS:

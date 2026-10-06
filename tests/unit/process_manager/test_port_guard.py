@@ -10,6 +10,8 @@ Bereichspruefung — er lehnt nur noch ab, was auch mit Versatz nicht geht:
 ein Bereich ueber 65535 hinaus, oder zwei Bereiche, die sich ueberschneiden.
 """
 
+import os
+
 import pytest
 
 from swarmq.exceptions import ConfigurationError
@@ -84,6 +86,15 @@ class TestRejectsRangesThatCannotWork:
 
         assert "SWARMQ_METRICS_PORT" in str(excinfo.value)
 
+    def test_cli_port_wins_over_the_environment(self, monkeypatch):
+        """CLI > Env: die Option ist der Basisport, auch im Worker -- der Guard
+        prueft also den Bereich der Option, nicht den der Umgebung."""
+        monkeypatch.setenv("SWARMQ_METRICS_PORT", "9000")
+
+        result = _check(processes=2, metrics_port=8000)
+
+        assert result["metrics_ports"] == [8000, 8001]
+
 
 class TestPreflightCommandAgrees:
     """``swarmq worker --check`` sagt zu, dass ein erfolgreiches Ergebnis den
@@ -120,6 +131,27 @@ class TestPreflightCommandAgrees:
         assert code == 0
         assert payload["metrics_ports"] == [9000, 9003]
         assert payload["health_ports"] == [9100, 9103]
+
+    def test_checks_the_effective_values_cli_over_environment(self, capsys, monkeypatch):
+        """--check prueft, was der Worker bekommt: ohne Flag das Env, mit
+        Flag die Option (CLI > Env > Default)."""
+        monkeypatch.setenv("SWARMQ_CONCURRENCY", "5")
+        monkeypatch.setenv("SWARMQ_HEALTH_PORT", "9500")
+
+        _, from_env = self._run_check(capsys, processes=2, concurrency=None, pool=None)
+        _, from_flag = self._run_check(
+            capsys, processes=2, concurrency=20, pool=None, health_port=8000,
+        )
+
+        assert (from_env["slots"], from_env["health_ports"]) == (5, [9500, 9501])
+        assert (from_flag["slots"], from_flag["health_ports"]) == (20, [8000, 8001])
+
+    def test_environment_port_is_named_in_the_error(self, capsys, monkeypatch):
+        monkeypatch.setenv("SWARMQ_METRICS_PORT", "9000")
+
+        _, payload = self._run_check(capsys, processes=4, health_port=9001)
+
+        assert "SWARMQ_METRICS_PORT" in payload["error"]
 
     def test_reports_the_overlap_instead_of_ok(self, capsys):
         code, payload = self._run_check(
@@ -166,6 +198,21 @@ class TestRealStartPathEnforcesIt:
             run_multi_process_worker(
                 self._args(processes=4, metrics_port=9000, health_port=9002)
             )
+
+    def test_start_path_names_the_environment_port(self, monkeypatch):
+        """Nach der CLI-Aufloesung steht der Env-Port in ``args``; die Meldung
+        nennt trotzdem die Variable, aus der er kam."""
+        from swarmq.cli.worker_options import resolve_worker_options
+        from swarmq.process_manager.run import run_multi_process_worker
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://x")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://x")
+        monkeypatch.setenv("SWARMQ_METRICS_PORT", "9000")
+        args = self._args(processes=4, health_port=9001)
+        resolve_worker_options(args, os.environ)
+
+        with pytest.raises(ConfigurationError, match="SWARMQ_METRICS_PORT"):
+            run_multi_process_worker(args)
 
 
 class TestHeadroomWidensTheRanges:

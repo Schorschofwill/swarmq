@@ -90,6 +90,7 @@ from swarmq.cli.schedule_cmd import (
     _run_schedule_status,
 )
 from swarmq.cli.worker_cmd import run_worker_async
+from swarmq.cli.worker_options import resolve_worker_options
 from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
@@ -327,6 +328,9 @@ def _run_worker_command(args: argparse.Namespace) -> int:
         return CONFIG_ERROR_EXIT_CODE
 
     try:
+        # CLI > Env > Default fuer alle Worker-Optionen, einmal hier: Supervisor
+        # und Worker sehen danach dieselben Werte.
+        resolve_worker_options(args, os.environ)
         prepare_pool_args(args)
     except ConfigurationError as exc:
         _log_worker_config_error(exc)

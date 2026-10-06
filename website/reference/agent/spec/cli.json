@@ -467,7 +467,7 @@
           "type": "autoscale_range"
         },
         {
-          "default": false,
+          "default": null,
           "flags": [
             "--burst"
           ],
@@ -479,7 +479,7 @@
           "type": "bool"
         },
         {
-          "default": 5.0,
+          "default": null,
           "flags": [
             "--burst-idle-timeout"
           ],
@@ -494,7 +494,7 @@
           "flags": [
             "--check"
           ],
-          "help": "Dry-run validation mode. Verify --module is importable, (with --reload) that 'watchfiles' is installed + watch-dirs resolve, and that multi-process mode is not combined with a fixed --metrics-port/--health-port. Prints a JSON summary to stdout, exits 0 on success or 1 on any validation error. Does NOT connect to broker or backend.",
+          "help": "Dry-run validation mode. Verify --module is importable, (with --reload) that 'watchfiles' is installed + watch-dirs resolve, that the --metrics-port/--health-port ranges across all worker processes stay <= 65535 and do not overlap, the logging settings and --log-config (dictConfig probe), pool constraints (--pool cpu with --autoscale) and the --max-processes headroom. Prints a JSON summary to stdout, exits 0 on success or 1 on any validation error. Does NOT connect to broker or backend.",
           "name": "--check",
           "nargs": 0,
           "positional": false,
@@ -690,7 +690,7 @@
           "type": "str"
         },
         {
-          "default": false,
+          "default": null,
           "flags": [
             "--priorities"
           ],
@@ -707,16 +707,14 @@
             "--processes",
             "-p"
           ],
-          "help": "R4.6: run N worker subprocesses under a supervisor (ProcessManager). Default 1 keeps the legacy in-process behaviour. Subprocesses use multiprocessing spawn — fresh broker/backend connections per worker. The supervisor auto-restarts crashed workers (max 5 restarts per hour), and reloads on SIGHUP via os.execvp().",
+          "help": "R4.6: run N worker subprocesses under a supervisor (ProcessManager). Default 1 still runs under the supervisor. Subprocesses use multiprocessing spawn — fresh broker/backend connections per worker. The supervisor auto-restarts crashed workers (max 5 restarts per hour), and reloads on SIGHUP via os.execvp().",
           "name": "--processes",
           "positional": false,
           "required": false,
           "type": "positive_int"
         },
         {
-          "default": [
-            "default"
-          ],
+          "default": null,
           "flags": [
             "--queues"
           ],
@@ -731,7 +729,7 @@
           "flags": [
             "--reload"
           ],
-          "help": "R5.3: watch task modules for changes and trigger the existing SIGHUP reload pipeline (ProcessManager execvp). Implies --processes (activates the supervisor when no --processes/--autoscale is passed). Developer-only — do not use in production. Requires 'pip install \"swarmq[reload]\"'. Missing dep exits with code 1; invalid --watch-dir exits 2.",
+          "help": "R5.3: watch task modules for changes and trigger the existing SIGHUP reload pipeline (ProcessManager execvp). Implies --processes. Developer-only — do not use in production. Requires 'pip install \"swarmq[reload]\"'. Missing 'watchfiles' exits with code 78 (1 under --check); invalid --watch-dir exits 2.",
           "name": "--reload",
           "nargs": 0,
           "positional": false,

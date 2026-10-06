@@ -52,6 +52,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `LogRecord`-Attribut kollidiert, das Präfix `swarmq_` (`name` →
   `swarmq_name`). Events, die eine Exception melden, tragen `error_type`
   und `error`; einen Traceback gibt es nur bei unerwarteten Fehlern.
+  Das gilt jetzt auch für `task_sent_to_dlq` (`error_type` ist der
+  Klassenname der Exception, die den Task in die DLQ geschickt hat,
+  `WorkerHungError` beim Erreichen des Delivery-Limits).
   Alarme und Dashboards, die Logs per grep auswerten, müssen angepasst
   werden.
 - **Log-Level folgen einer Regel** (ERROR: Datenverlust oder ein
@@ -70,6 +73,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Supervisor gibt die aufgelösten Einstellungen an seine
   Worker-Subprozesse und Rechenkinder weiter, die das Environment nicht
   mehr lesen; ein Flag gewinnt jetzt in jedem Prozess.
+
+- **CLI-Optionen schlagen jetzt in allen Prozessen die `SWARMQ_*`-Umgebung,
+  für alle Optionen von `swarmq worker`.** Bisher gewann in den
+  Worker-Prozessen die Umgebung bei `--queues`, `--concurrency`, `--pool`,
+  `--burst`, `--burst-idle-timeout`, `--priorities`, `--metrics-port` und
+  `--health-port` (z. B. schlug `SWARMQ_CONCURRENCY=5` die Option
+  `--concurrency 20`), während der Supervisor die Option nutzte. Jetzt wird
+  jede Option einmal als CLI > Umgebung > Default aufgelöst, und Supervisor,
+  Worker-Prozesse, Rechenkinder und `--check` sehen dieselben Werte. Ohne
+  Flag gilt die Umgebungsvariable weiterhin.
 
 ### Hinzugefügt
 
@@ -124,6 +137,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `build_formatter`, `configure_logging`, `shutdown_logging`,
   `load_log_config` und `LoggingConfigError`. Neue Referenzseite:
   [Logging](logging.md).
+- **Weitere Exceptions direkt aus `swarmq` importierbar:**
+  `LoggingConfigError`, `SoftTimeoutError` und `PublishIndeterminate`
+  (dieselben Klassen wie in `swarmq.exceptions`).
 
 ### Deprecated
 

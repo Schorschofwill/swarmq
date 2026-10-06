@@ -90,6 +90,7 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     from swarmq.app import SwarmQ
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.cli.worker_options import resolve_worker_options, worker_config_kwargs
     from swarmq.logging_settings import resolve_logging_settings
 
     broker = RabbitMQBroker(broker_url)
@@ -102,7 +103,6 @@ async def run_worker_async(args: argparse.Namespace) -> None:
             # PID zurueck.
             "worker_slot",
             "bind_retry_budget_s",
-            "pool",
             "recycle_rss_mb",
             "recycle_max_tasks",
             "heartbeat_interval_s",
@@ -121,18 +121,16 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     logging_settings = getattr(args, "logging_settings", None) or resolve_logging_settings(
         args, os.environ, None,
     )
+    # CLI > Env > Default: der Supervisor hat die Worker-Optionen aufgeloest;
+    # ``resolved_fields`` haelt das Env im Worker davon fern (wie bei den
+    # Logging-Feldern). Ein Aufrufer ohne Supervisor wird hier aufgeloest.
+    resolve_worker_options(args, os.environ)
     app = SwarmQ(
         broker,
         backend,
-        queues=args.queues,
-        concurrency=args.concurrency,
         **optional_kwargs,
+        **worker_config_kwargs(args),
         logging_settings=logging_settings,
-        burst_mode=args.burst,
-        burst_idle_timeout=args.burst_idle_timeout,
-        priorities=args.priorities,
-        metrics_port=args.metrics_port,
-        health_port=args.health_port,
     )
     configure = getattr(args, "configure", None)
     if configure is not None:

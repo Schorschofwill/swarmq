@@ -106,7 +106,7 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--queues",
         type=_queue_list,
-        default=["default"],
+        default=None,  # aufgeloest in cli.worker_options: Flag > SWARMQ_QUEUES > default
         metavar="A,B,C",
         help="Comma-separated queue names to consume from (default: default).",
     )
@@ -206,6 +206,7 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--burst",
         action="store_true",
+        default=None,  # aufgeloest in cli.worker_options: Flag > SWARMQ_BURST_MODE > aus
         help=(
             "Burst mode (R4.5): exit cleanly once all configured queues "
             "have been idle for --burst-idle-timeout seconds. Useful for "
@@ -239,6 +240,7 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--priorities",
         action="store_true",
+        default=None,  # aufgeloest in cli.worker_options: Flag > SWARMQ_PRIORITIES > aus
         help=(
             "R4.3: auto-declare + consume the high/normal/low triplet "
             "for every --queues base queue, so tasks with "
@@ -255,8 +257,8 @@ def _add_worker_parser(subparsers: Any) -> None:
         metavar="N",
         help=(
             "R4.6: run N worker subprocesses under a supervisor "
-            "(ProcessManager). Default 1 keeps the legacy in-process "
-            "behaviour. Subprocesses use multiprocessing spawn — fresh "
+            "(ProcessManager). Default 1 still runs under the supervisor. "
+            "Subprocesses use multiprocessing spawn — fresh "
             "broker/backend connections per worker. The supervisor "
             "auto-restarts crashed workers (max 5 restarts per hour), "
             "and reloads on SIGHUP via os.execvp()."
@@ -306,11 +308,11 @@ def _add_worker_parser(subparsers: Any) -> None:
         help=(
             "R5.3: watch task modules for changes and trigger the "
             "existing SIGHUP reload pipeline (ProcessManager execvp). "
-            "Implies --processes (activates the supervisor when no "
-            "--processes/--autoscale is passed). Developer-only — do "
+            "Implies --processes. Developer-only — do "
             "not use in production. Requires "
             "'pip install \"swarmq[reload]\"'. "
-            "Missing dep exits with code 1; invalid --watch-dir exits 2."
+            "Missing 'watchfiles' exits with code 78 (1 under --check); "
+            "invalid --watch-dir exits 2."
         ),
     )
     worker.add_argument(
@@ -332,8 +334,11 @@ def _add_worker_parser(subparsers: Any) -> None:
         help=(
             "Dry-run validation mode. Verify --module is importable, "
             "(with --reload) that 'watchfiles' is installed + watch-dirs "
-            "resolve, and that multi-process mode is not combined with a "
-            "fixed --metrics-port/--health-port. Prints a JSON summary to "
+            "resolve, that the --metrics-port/--health-port ranges across "
+            "all worker processes stay <= 65535 and do not overlap, the "
+            "logging settings and --log-config (dictConfig probe), pool "
+            "constraints (--pool cpu with --autoscale) and the "
+            "--max-processes headroom. Prints a JSON summary to "
             "stdout, exits 0 on success or 1 on any validation error. "
             "Does NOT connect to broker or backend."
         ),
@@ -341,7 +346,7 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--burst-idle-timeout",
         type=_positive_float,
-        default=5.0,
+        default=None,  # aufgeloest in cli.worker_options: Flag > SWARMQ_BURST_IDLE_TIMEOUT > 5.0
         metavar="SECONDS",
         help=(
             "Seconds of queue silence required before --burst exits "
