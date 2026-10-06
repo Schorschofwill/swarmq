@@ -125,10 +125,12 @@ Zusätzliche DLQ-Pfade:
 - `TaskInfo.max_age` bei Pickup überschritten → `TASK_EXPIRED`-
   Signal + DLQ. Der Task läuft nie.
 - Lock-Render schlägt fehl (fehlender Kwarg für Template) → DLQ
-  mit `x-swarmq-lock-error: render_failed`.
-- Lock-Konflikt-Cap erreicht → DLQ mit
-  `x-swarmq-lock-error: conflict_cap`.
-- RabbitMQs `x-delivery-limit=20` ausgelöst → broker-native DLQ.
+  mit `x-swarmq-lock-render-error: <Grund>`.
+- Lock-Konflikt-Grenze erreicht (10. Konflikt) → DLQ mit
+  `x-swarmq-lock-conflict-count` und `x-swarmq-lock-name`.
+- Zustell-Limit erreicht (`delivery_limit`, Default 20) → DLQ über das
+  Delivery-Count-Gate des Workers (`task_sent_to_dlq` mit
+  `error_type=WorkerHungError`), broker-native DLQ als letzte Stufe.
 
 ## Wann Signal-Handler vs Middleware?
 

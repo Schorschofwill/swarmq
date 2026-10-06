@@ -64,7 +64,14 @@ itself.
 |---|---|
 | Detect | Daemon thread runs `watchfiles.watch(...)` (Rust `notify` crate under the hood). Events hit a 1.6s debounce window to absorb format-on-save bursts. |
 | Trigger | On the first debounced event, the thread calls `os.kill(os.getpid(), SIGHUP)`. |
-| Reload | The supervisor's existing SIGHUP handler drains children and `os.execvpe`s the startup-argv + startup-env snapshot — in-process mutation of `sys.argv` / `os.environ` cannot influence the re-exec vector (R4.6 hardening). |
+| Reload | The supervisor's existing SIGHUP handler drains children and `os.execvpe`s `sys.executable` with the startup-argv + startup-env snapshot — in-process mutation of `sys.argv` / `os.environ` cannot influence the re-exec vector (R4.6 hardening). The argv snapshot is taken from `sys.orig_argv`, so interpreter flags and `python -m` survive: a supervisor started as `python -m swarmq.cli worker …` reloads into the same command. |
+
+With `--log-config`, the supervisor validates the logging config file
+again before it stops any worker. If the file has become invalid since
+the start, the reload is aborted with a `log_config_reload_failed`
+ERROR (fields `path`, `error_type`, `error`, `hint`); workers and
+logging keep running unchanged. Fix the file and save a task module
+again (or send `SIGHUP`) to retry.
 
 The watcher suppresses re-entrancy: if a reload is already in flight
 when a second change lands, the second event is discarded (the
@@ -109,7 +116,7 @@ Exit code is `0` on success, `1` on any `ConfigurationError`
 
 ## Troubleshooting
 
-### `ConfigurationError: --reload requires the optional 'watchfiles' dependency`
+### `--reload: watchfiles is not installed`
 
 ```bash
 pip install 'swarmq[reload]'

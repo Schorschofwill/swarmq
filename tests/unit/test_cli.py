@@ -136,7 +136,9 @@ class TestBuildParser:
         ns = parser.parse_args(["worker", "--module", "myapp.tasks"])
         assert ns.command == "worker"
         assert ns.module == "myapp.tasks"
-        assert ns.queues == ["default"]
+        # CLI > Env > Default: ohne Flag bleiben die Worker-Optionen offen, die
+        # Aufloesung folgt in cli.worker_options (Flag > SWARMQ_* > Default).
+        assert (ns.queues, ns.burst, ns.burst_idle_timeout, ns.priorities) == (None, None, None, None)
         # Plan 2026-09-03-001 (R3): der Parser laesst --concurrency offen,
         # die Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt danach.
         assert ns.concurrency is None
@@ -598,6 +600,46 @@ class TestRunWorkerAsync:
 
         assert built[0].config.log_level == "INFO"
         assert built[0].config.logging_settings is settings
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(5)
+    async def test_cli_worker_options_win_over_the_worker_env(self, monkeypatch):
+        """CLI > Env auch im Worker: ``SWARMQ_*`` ueberschreibt die
+        aufgeloesten Optionen nicht mehr (vorher gewann im Worker das Env)."""
+        from swarmq.app import SwarmQ
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_precedence_probe", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        for name, value in {
+            "SWARMQ_CONCURRENCY": "5", "SWARMQ_QUEUES": "envq", "SWARMQ_POOL": "cpu",
+            "SWARMQ_BURST_MODE": "false", "SWARMQ_BURST_IDLE_TIMEOUT": "1.0",
+            "SWARMQ_PRIORITIES": "false", "SWARMQ_METRICS_PORT": "9100",
+            "SWARMQ_HEALTH_PORT": "9200",
+        }.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr(SwarmQ, "__aenter__", AsyncMock())
+        monkeypatch.setattr(SwarmQ, "__aexit__", AsyncMock(return_value=False))
+        monkeypatch.setattr(SwarmQ, "start_worker", AsyncMock())
+        built: list = []
+        self._hook_module(monkeypatch, setup=built.append)
+        ns = self._hook_args("swarmq_test_hooks:setup")
+        ns.queues, ns.concurrency, ns.pool = ["cliq"], 20, "io"
+        ns.burst, ns.burst_idle_timeout, ns.priorities = True, 7.0, True
+        ns.metrics_port, ns.health_port = 8000, 8100
+
+        await cli.run_worker_async(ns)
+
+        cfg = built[0].config
+        assert (cfg.queues, cfg.concurrency, cfg.pool) == (["cliq"], 20, "io")
+        assert (cfg.burst_mode, cfg.burst_idle_timeout, cfg.priorities) == (True, 7.0, True)
+        assert (cfg.metrics_port, cfg.health_port) == (8000, 8100)
 
     @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(

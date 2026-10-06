@@ -158,6 +158,35 @@ class TestMainRouting:
             assert ns.concurrency == 10  # aufgeloest, nicht None
             assert rc == 0
 
+    def test_supervisor_sees_environment_values_without_flags(self):
+        """CLI > Env > Default: ohne Flag gilt im Supervisor (Gruppenschluessel,
+        Autoscale-Sampler, Slots) das Env, wie im Worker."""
+        env = self._env() | {
+            "SWARMQ_QUEUES": "envq", "SWARMQ_CONCURRENCY": "5",
+            "SWARMQ_BURST_MODE": "true", "SWARMQ_BURST_IDLE_TIMEOUT": "2.5",
+            "SWARMQ_PRIORITIES": "true", "SWARMQ_METRICS_PORT": "9100",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp:
+            main(["worker", "--module=ignore.me"])
+        ns = rmp.call_args.args[0]
+        assert (ns.queues, ns.concurrency, ns.burst, ns.burst_idle_timeout) == (["envq"], 5, True, 2.5)
+        assert (ns.priorities, ns.metrics_port) == (True, 9100)
+
+    def test_supervisor_flags_win_over_environment(self):
+        env = self._env() | {
+            "SWARMQ_QUEUES": "envq", "SWARMQ_CONCURRENCY": "5",
+            "SWARMQ_BURST_IDLE_TIMEOUT": "2.5", "SWARMQ_METRICS_PORT": "9100",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp:
+            main([
+                "worker", "--module=ignore.me", "--queues", "cliq", "--concurrency", "20",
+                "--burst-idle-timeout", "7", "--metrics-port", "8000",
+            ])
+        ns = rmp.call_args.args[0]
+        assert (ns.queues, ns.concurrency, ns.burst_idle_timeout, ns.metrics_port) == (["cliq"], 20, 7.0, 8000)
+
     def test_processes_gt_one_routes_to_supervisor(self):
         with patch.dict(os.environ, self._env(), clear=False), \
              patch(

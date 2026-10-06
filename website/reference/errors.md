@@ -22,6 +22,7 @@ except SwarmQError as exc:
 | `ConfigurationError` | `SwarmQError` | Bad config at worker start, bad CLI args, missing env vars |
 | `LoggingConfigError` | `ConfigurationError` | Logging config file (`--log-config`) not loadable or invalid |
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
+| `PublishIndeterminate` | `BrokerConnectionError` | A publish broke its deadline; whether it arrived is unknown |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
 | `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
@@ -32,6 +33,14 @@ except SwarmQError as exc:
 | `Retry` | `SwarmQError` | Control flow — raised by task code to request a retry |
 | `NoRetry` | `SwarmQError` | Control flow — raised by task code to bypass retries |
 | `SoftTimeoutError` | `SwarmQError` | Task exceeded `soft_timeout`, asked to wrap up |
+| `WorkflowValidationError` | `SwarmQError` | Workflow topology invalid, or fan-in results incomplete |
+| `WorkflowNotFound` | `SwarmQError` | `app.workflow(id)` or a handle call found no workflow state |
+| `WorkflowResultExpired` | `SwarmQError` | A step or final workflow result expired before it was used |
+| `WorkflowStateConflict` | `SwarmQError` | Worker-internal: workflow state update lost every compare-and-set round |
+
+Every class except `WorkflowStateConflict` can be imported from
+`swarmq` directly (`from swarmq import PublishIndeterminate`); all of
+them also live in `swarmq.exceptions`.
 
 ## `SwarmQError`
 
@@ -57,14 +66,20 @@ the library or the CLI parser detects a misconfigured input.
   [Logging](logging.md#configuration-errors)).
 - `scheduler_lock_ttl < 2 × scheduler_heartbeat_interval`.
 - `--args` / `--kwargs` for `swarmq schedule add` not valid JSON.
-- `swarmq dlq retry` passed both a `task_id` and `--all`.
 
 **Recovery.** Fix the config and restart. The error message names
-the offending field.
+the offending field. `swarmq worker` logs one structured
+`worker_config_error` line and exits `78`:
 
 ```text
-swarmq worker: SWARMQ_BROKER_URL is not set; export it or pass it
-via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
+[error    ] worker_config_error            [swarmq.cli] error='ConfigurationError: SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set' error_type=ConfigurationError hint='fix the configuration and start again; no restart attempted' source=supervisor
+```
+
+`swarmq schedule`, `swarmq dlq` and `swarmq inspect` print one line to
+stderr and exit `1`:
+
+```text
+swarmq schedule list: SWARMQ_BACKEND_URL is not set; export it or pass it via env, e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0
 ```
 
 ## `LoggingConfigError`
@@ -72,8 +87,8 @@ via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
 **When raised.** At the start of `swarmq worker` (and on the
 `--log-config` check before a reload), by `swarmq.logging.load_log_config`
 and `configure_logging`, when the logging config file cannot be used.
-Subclass of `ConfigurationError`, importable from `swarmq.exceptions`
-and `swarmq.logging`.
+Subclass of `ConfigurationError`, importable from `swarmq`,
+`swarmq.exceptions` and `swarmq.logging`.
 
 **Cause.** The file named by `--log-config` / `SWARMQ_LOG_CONFIG`:
 
@@ -123,7 +138,7 @@ host or `nc -vz <host> 5672`. In code, the exception propagates out
 of `async with SwarmQ(...)` — catch it at your startup boundary.
 
 ```python
-from swarmq.exceptions import BrokerConnectionError
+from swarmq import BrokerConnectionError
 
 try:
     async with SwarmQ(broker, backend) as app:
@@ -193,7 +208,7 @@ it was spurious, check your cancel flag TTL — see
 [`app.cancel()`](api.md#cancel) for the stale-flag caveat.
 
 ```python
-from swarmq.exceptions import TaskCancelledError
+from swarmq import TaskCancelledError
 
 try:
     result = await app.get_result(task_id, timeout=60)
@@ -214,7 +229,7 @@ DLQ'd without storing a result, or the task_id is wrong.
 the DLQ if the task is stuck in retry loops.
 
 ```python
-from swarmq.exceptions import ResultNotReadyError
+from swarmq import ResultNotReadyError
 
 try:
     result = await app.get_result(task_id, timeout=5)
@@ -324,7 +339,7 @@ allowed.
 and checkpoint:
 
 ```python
-from swarmq.exceptions import SoftTimeoutError
+from swarmq import SoftTimeoutError
 
 class LongJob(Task):
     task_info = TaskInfo(
@@ -340,6 +355,94 @@ class LongJob(Task):
             await checkpoint()
             raise
 ```
+
+## `PublishIndeterminate`
+
+**When raised.** By `schedule()`, `schedule_many()`, `run()` and
+`apply()` when a publish exceeds `SWARMQ_PUBLISH_TIMEOUT_S` while
+waiting for the broker's publisher confirm. Subclass of
+`BrokerConnectionError`.
+
+**Cause.** The broker or the network stalled after the message was
+sent; the broker may or may not have it.
+
+**Recovery.** Treat delivery as unknown. Retry only when the task is
+idempotent or was submitted with `unique_for` (SwarmQ keeps the dedup
+claim in this case, so a retry within the window is refused instead of
+running twice). See the warning under
+[`BrokerConnectionError`](#brokerconnectionerror).
+
+```python
+from swarmq import BrokerConnectionError, PublishIndeterminate
+
+try:
+    await app.schedule("charge", order_id=42)
+except PublishIndeterminate:
+    # May have been enqueued -- check before sending again.
+    ...
+except BrokerConnectionError:
+    # Nothing was sent; safe to retry.
+    ...
+```
+
+## `WorkflowValidationError`
+
+**When raised.** When building a workflow with `chain`, `group` or
+`chord`, before anything is enqueued (a step built with `sig()` by name
+is checked for `FIRE_AND_FORGET` only at run time). Also at run
+time inside the worker when a group or chord cannot assemble its
+complete result list; the workflow is then marked failed and
+`handle.get()` raises `TaskError`.
+
+**Cause.** Nesting deeper than `max_workflow_depth` (10), a group with
+more than `max_group_size` (1000) members, an empty chain or group, a
+chord header that is not a `group(...)`, or a `FIRE_AND_FORGET` task as
+a step.
+
+**Recovery.** Flatten the topology, split large groups, or switch the
+task to `DeliveryMode.AT_LEAST_ONCE`. See
+[workflow primitives](api.md#workflow-primitives).
+
+## `WorkflowNotFound`
+
+**When raised.** `app.workflow(workflow_id)` and the `WorkflowHandle`
+methods `status()`, `children()` and `get()` when no workflow state
+exists for the id.
+
+**Cause.** The id is wrong, the workflow was never started, or its
+state expired (it lives for `result_ttl` seconds).
+
+**Recovery.** Check the id. For long-running workflows raise
+`result_ttl` (`SWARMQ_RESULT_TTL`) so the state outlives the run and
+the time you need to read the result.
+
+## `WorkflowResultExpired`
+
+**When raised.** By `handle.get()` when the workflow completed but its
+final result has already expired; inside the worker when a step result
+needed for the next step or for fan-in expired, which fails the
+workflow.
+
+**Cause.** A result TTL shorter than the workflow's run time plus the
+time until the result is read.
+
+**Recovery.** Raise `result_ttl` (globally or per task via
+`TaskInfo.result_ttl`) and read workflow results promptly.
+
+## `WorkflowStateConflict`
+
+**When raised.** Only inside the worker, while advancing a workflow:
+the compare-and-set on the workflow state lost all 25 rounds against
+concurrent writers. It never reaches `schedule()` or `handle.get()`.
+
+**Cause.** More branches of one workflow finishing at the same moment
+than the conflict limit allows.
+
+**Recovery.** None needed in application code. The worker logs
+`workflow_advance_backend_error` and redelivers the step message
+(`at_least_once`); the redelivery advances the workflow, and
+deterministic step ids keep it idempotent. Import it from
+`swarmq.exceptions` if you need it in tests.
 
 ## See also
 

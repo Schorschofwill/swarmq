@@ -893,3 +893,20 @@ class TestLoggingFields:
         monkeypatch.setenv("SWARMQ_LOG_FORMAT", "jsonl")
         with pytest.raises(ConfigurationError, match=r"SWARMQ_LOG_FORMAT.*'jsonl'"):
             self._cfg()
+
+
+# === CLI-Vorrang fuer Worker-Optionen (CLI > Env > kwargs > Default) ===
+# Test-Liste:
+# - [x] resolved_fields: Env ueberschreibt ein aufgeloestes Feld nicht
+# - [x] eingebettet ohne resolved_fields: kwargs, dann Env wie bisher
+#       (test_env_var_overrides_programmatic_value und die Env-Tests oben)
+# Die Aufloesung selbst testet tests/unit/test_cli_worker_options.py.
+
+
+def test_resolved_field_is_not_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_CONCURRENCY", "5")
+    cfg = SwarmQConfig(
+        broker_url="amqp://x", backend_url="valkey://x",
+        concurrency=20, resolved_fields=("concurrency",),
+    )
+    assert cfg.concurrency == 20

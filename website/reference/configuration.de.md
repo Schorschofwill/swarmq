@@ -3,8 +3,17 @@
 SwarmQ hat zwei Konfigurationsoberflächen: **Environment-Variablen**,
 die der Worker beim Start liest (und die auch die CLI ehrt), und
 **`TaskInfo`-Felder**, die pro Task-Klasse deklariert werden.
-CLI-Flags haben Vorrang vor Env-Vars; Env-Vars haben Vorrang vor
-`SwarmQConfig`-Werten und -Defaults.
+
+Die Priorität hängt davon ab, wie SwarmQ läuft:
+
+- **`swarmq worker`**: CLI-Flag, dann Env-Var, dann Default, für jede
+  Worker-Option. Der Supervisor löst die Werte einmal auf und gibt sie
+  an seine Worker-Subprozesse und Rechenkinder weiter, die das
+  Environment nicht noch einmal lesen; `swarmq worker --check` prüft
+  dieselben aufgelösten Werte.
+- **Eingebettetes `SwarmQ(...)`**: zuerst die Keyword-Argumente von
+  `SwarmQConfig`, dann überschreiben `SWARMQ_*`-Env-Vars sie; Defaults
+  füllen den Rest.
 
 ## Environment-Variablen
 
@@ -23,7 +32,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | Variable | Default | Beschreibung |
 |---|---|---|
 | `SWARMQ_QUEUES` | `default` | Komma-separierte Queue-Namen, aus denen der Worker konsumiert. |
-| `SWARMQ_CONCURRENCY` | `10` | Maximale Tasks in Flight pro Worker-Prozess. |
+| `SWARMQ_CONCURRENCY` | `10` (io) / zugeteilte CPUs (cpu) | Maximale Tasks in Flight pro Worker-Prozess. Mit `SWARMQ_POOL=cpu` die Zahl der Rechenslots; siehe [`--concurrency`](cli.md#optionen). |
 | `SWARMQ_RESULT_TTL` | `86400` | Sekunden, die gespeicherte Ergebnisse in Valkey leben. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Obergrenze des Retry-Backoffs in Sekunden. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Sekunden, in denen In-Flight-Tasks bei SIGTERM beenden dürfen, bevor Hard-Kill. |
@@ -44,6 +53,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |
 | `SWARMQ_BURST_IDLE_TIMEOUT` | `5.0` | Sekunden Idle, bevor Burst exitet. |
 | `SWARMQ_PRIORITIES` | `false` | Bei `true` werden `.high`/`.normal`/`.low`-Triplets für jede Queue auto-deklariert und konsumiert. |
+| `SWARMQ_MAX_MESSAGE_BODY_BYTES` | `16777216` | Obergrenze für den Body einer eingehenden Task-Nachricht (16 MiB). Muss `> 0` sein. Ein größerer Body wird nicht dekodiert: Der Worker loggt `message_body_too_large` und leitet die Nachricht in die DLQ (`TASK_REJECTED` mit Grund `body_too_large`). |
 
 ### Logging
 
@@ -70,7 +80,9 @@ CPU-Pools. Details, Rezepte und den Event-Katalog findest du in der
 Der Supervisor von `swarmq worker` löst diese Werte einmal auf (CLI-Flag
 vor Env-Var) und gibt das Ergebnis an seine Worker-Subprozesse und
 Rechenkinder weiter, die das Environment nicht noch einmal lesen.
-Ungültige Werte beenden `swarmq worker` mit Exit `78`.
+Dieselbe Reihenfolge CLI > Env > Default gilt für jede andere
+Worker-Option mit Flag (siehe [CLI-Referenz](cli.md)). Ungültige Werte
+beenden `swarmq worker` mit Exit `78`.
 
 ### Scheduler
 
@@ -90,7 +102,30 @@ Ungültige Werte beenden `swarmq worker` mit Exit `78`.
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind-Adresse für den Metrics-Server. `0.0.0.0` setzen, wenn Prometheus von einem anderen Host oder Container scrapt. |
 | `SWARMQ_HEALTH_PORT` | *ungesetzt* | **Basisport** für `/health` und `/ready`, derselbe Slot-Versatz. Muss `1..65535` sein. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind-Adresse für den Health-Server. |
+| `SWARMQ_METRICS_SAMPLE_INTERVAL` | `10.0` | Sekunden zwischen zwei Abtastungen der Gauges `swarmq_queue_depth`, `swarmq_dlq_messages` und `swarmq_worker_uptime_seconds`; derselbe Takt löst `WORKER_HEARTBEAT` aus. Muss `> 0` sein. Der Sampler läuft nur bei eingeschalteten Metriken. |
 | `SWARMQ_WORKER_ID` | Hostname | Basis der Worker-Identität, die als `worker_id` in Signalen, Metrik-Labels und im Logkontext erscheint. Siehe [Worker-Identität](#worker-identitat). |
+
+#### Metrik-Katalog
+
+Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT`,
+`pip install 'swarmq[metrics]'`) stellt diese Reihen unter `/metrics` bereit:
+
+| Metrik | Typ | Labels | Beschreibung |
+|---|---|---|---|
+| `swarmq_tasks_total` | Counter | `task_name`, `queue`, `outcome` | Tasks nach Ausgang: `completed`, `failed`, `cancelled`, `rate_limited`, `duplicate`, `expired`, `dlq`. `failed` zählt jeden gescheiterten Versuch, `dlq` die endgültige Übergabe an die DLQ. |
+| `swarmq_task_duration_seconds` | Histogram | `task_name`, `queue` | Dauer von `run()` bei erfolgreichen Tasks. Buckets von 5 ms bis 300 s. |
+| `swarmq_tasks_active` | Gauge | `queue` | Gerade laufende Tasks. |
+| `swarmq_retries_total` | Counter | `task_name`, `queue` | Eingeplante Retries. |
+| `swarmq_tasks_rejected_total` | Counter | `queue`, `reason` | Nachrichten, die ohne Diagnose-Header an den Broker-DLX gingen (`TASK_REJECTED`), z. B. `body_too_large`, `undecodable`, `unregistered_task`. |
+| `swarmq_recyclings_total` | Counter | `kind`, `reason` | Prozess-Recyclings; `kind` ist `worker` oder `compute_child`. |
+| `swarmq_queue_depth` | Gauge | `queue`, `kind` | Vom Broker gemeldete Nachrichtenzahl (`kind="pending"`), alle `SWARMQ_METRICS_SAMPLE_INTERVAL` abgetastet. |
+| `swarmq_dlq_messages` | Gauge | `queue` | Nachrichten in `{queue}.XQ`, abgetastet. |
+| `swarmq_worker_uptime_seconds` | Gauge | `worker_id` | Sekunden seit Worker-Start, abgetastet. |
+| `swarmq_scheduler_leader` | Gauge | `worker_id` | `1`, solange dieser Worker den Scheduler-Leader-Lock hält, sonst `0`. |
+| `swarmq_log_records_dropped_total` | Counter | keine | Log-Einträge, die verworfen wurden, weil die Log-Queue voll war (siehe [Logging](logging.md#nicht-blockierende-ausgabe-und-verworfene-eintrage)). |
+
+`task_name` und `queue` kommen unverändert aus der Nachricht; halte
+Task-Namen begrenzt, sonst erzeugt jeder neue Wert eine eigene Reihe.
 
 #### Basisports und Slots
 
@@ -186,8 +221,9 @@ app = SwarmQ(
 ```
 
 Feldnamen entsprechen den Env-Vars ohne `SWARMQ_`-Präfix und in
-Kleinbuchstaben. Env-Vars gewinnen immer, wenn beides gesetzt ist
-— übergib kwargs nur, wenn du einen Nicht-Default brauchst, den du
+Kleinbuchstaben. In einer eingebetteten App gewinnen Env-Vars immer,
+wenn beides gesetzt ist (`swarmq worker` löst dagegen CLI-Flags vor
+Env-Vars auf) — übergib kwargs nur, wenn du einen Nicht-Default brauchst, den du
 nicht im Shell-Environment willst. Eine Ausnahme von der Namensregel:
 `SWARMQ_LOG_FORMAT` setzt das Feld `log_json`. `worker_id=` setzt die Basis der
 [Worker-Identität](#worker-identitat); ein eingebetteter Worker hat

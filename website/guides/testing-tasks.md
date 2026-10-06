@@ -100,12 +100,15 @@ Middleware is a plain class; construct one and call its hooks
 with a synthesised `MessageContext`:
 
 ```python
+import logging
+
 import pytest
 from myapp.middleware import TimingMiddleware
 
 
 @pytest.mark.asyncio
 async def test_timing_middleware_logs_duration(caplog):
+    caplog.set_level(logging.INFO, logger="myapp.timing")
     mw = TimingMiddleware()
     message = {
         "task_id": "test-1",
@@ -119,11 +122,20 @@ async def test_timing_middleware_logs_duration(caplog):
     await mw.pre_execute(message)
     await mw.post_execute(message, result="ok")
 
-    assert "task_finished" in caplog.text
+    [record] = [r for r in caplog.records if r.getMessage() == "myapp_task_finished"]
+    assert record.task_id == "test-1"
+    assert record.duration_ms >= 0
 ```
 
 The `message` dict can be constructed literally — `MessageContext`
 is a `TypedDict`, i.e. a plain `dict` at runtime.
+
+`caplog` sees the event because the
+[example middleware](middleware.md#writing-a-middleware) logs through
+`swarmq.logging.get_logger`, which produces ordinary `logging` records:
+the event name is the record message, every field a record attribute.
+A middleware that logs with an unconfigured `structlog.get_logger()`
+prints to stdout instead and never reaches `caplog`.
 
 ## Testing signal handlers
 
@@ -137,23 +149,31 @@ from swarmq.signals import SignalDispatcher
 
 
 @pytest.mark.asyncio
-async def test_on_task_failed_captures_to_sentry():
+async def test_on_task_failed_records_the_attempt():
     dispatcher = SignalDispatcher()
     captured = []
 
     @dispatcher.on_signal(Signal.TASK_FAILED)
-    async def on_failed(task_id, task_name, exception):
+    async def on_failed(task_id, task_name, exception, **kwargs):
         captured.append((task_id, task_name, exception))
 
+    # Dispatch the payload the worker sends: every key, and the
+    # exception as its message string.
     await dispatcher.dispatch(
         Signal.TASK_FAILED,
         task_id="t-1",
         task_name="send_email",
-        exception=RuntimeError("boom"),
+        queue="default",
+        exception="boom",
     )
 
-    assert captured == [("t-1", "send_email", captured[0][2])]
+    assert captured == [("t-1", "send_email", "boom")]
 ```
+
+Dispatch the full payload from the
+[signal table](signals.md#available-signals). A test that leaves out
+`queue` passes even for a handler with a fixed signature, which then
+fails with `TypeError` in the real worker.
 
 ## Integration tests with real infrastructure
 

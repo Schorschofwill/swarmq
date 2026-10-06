@@ -115,7 +115,7 @@ return {"status": "sent", "message_id": message_id, "duration_ms": elapsed}
 
 ## Reserved parameter names
 
-Four parameter names on `run()` are reserved by `Client.schedule()`:
+Four parameter names on `run()` are reserved by `app.schedule()`:
 `delay`, `eta`, `unique_for`, `unique_until`. A task that declares
 one of them raises `ValueError` at class registration, with a
 migration hint:

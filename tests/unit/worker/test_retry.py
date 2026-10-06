@@ -14,13 +14,20 @@ Test-Liste U9 (Plan 2026-10-06-0831, R17/KTD11) — Logs ueber ``swarmq_logs``:
 6. ``dlq_result_store_failed``/``publish_notification_failed`` mit Fehlerfeldern.
 7. ``dlq_publish_failed`` und ``retry_publish_failed`` mit Fehlerfeldern.
 8. ``task_sent_to_dlq`` auf ERROR: der Task ist endgueltig fehlgeschlagen.
+9. ``task_sent_to_dlq`` traegt ``error_type`` (Klassenname der ausloesenden
+   Ausnahme) neben ``error`` — auf allen Pfaden der Retry-Bewertung
+   (``NoRetry``, Retry-Filter, Erschoepfung inkl. ``max_retries=0``).
+10. Delivery-Count-Gate ohne Ausnahme: ``error_type`` ist fest
+    ``WorkerHungError`` (siehe ``test_delivery_count.py``).
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from swarmq.exceptions import BackendConnectionError, WorkflowStateConflict
+import pytest
+
+from swarmq.exceptions import BackendConnectionError, NoRetry, WorkflowStateConflict
 from swarmq.headers import HEADER_WORKFLOW_ID
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
@@ -76,7 +83,7 @@ async def test_fail_mark_backend_error_redelivers_instead_of_dead_lettering(brok
     handler, worker = _handler(broker, backend, config)
     worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
     msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
-    await handler.dead_letter(msg, _ctx(), "boom")
+    await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
     broker.redeliver.assert_awaited_once_with(msg)
     broker.dead_letter.assert_not_awaited()
     for call in worker._signal_dispatcher.dispatch.await_args_list:
@@ -89,7 +96,7 @@ async def test_fail_mark_state_conflict_redelivers_instead_of_dead_lettering(bro
     handler, worker = _handler(broker, backend, config)
     worker._workflow_advancer.fail = AsyncMock(side_effect=WorkflowStateConflict("25 rounds lost"))
     msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
-    await handler.dead_letter(msg, _ctx(), "boom")
+    await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
     broker.redeliver.assert_awaited_once_with(msg)
     broker.dead_letter.assert_not_awaited()
 
@@ -101,7 +108,7 @@ async def test_fail_mark_deterministic_error_still_dead_letters(broker, backend,
     handler, worker = _handler(broker, backend, config)
     worker._workflow_advancer.fail = AsyncMock(side_effect=ValueError("bad state doc"))
     msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
-    await handler.dead_letter(msg, _ctx(), "boom")
+    await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
     broker.dead_letter.assert_awaited_once()
     broker.redeliver.assert_not_awaited()
     dispatched = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
@@ -114,7 +121,7 @@ async def test_fail_mark_backend_error_on_faf_step_emits_no_redeliver(broker, ba
     handler, worker = _handler(broker, backend, config, DlqFafTask)
     worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
     msg = make_message(_default_payload(name="dlq-faf"), headers={HEADER_WORKFLOW_ID: _WF_ID})
-    await handler.dead_letter(msg, _ctx(DlqFafTask), "boom")
+    await handler.dead_letter(msg, _ctx(DlqFafTask), "boom", "RuntimeError")
     broker.redeliver.assert_not_awaited()
     broker.dead_letter.assert_awaited_once()
 
@@ -127,7 +134,7 @@ async def test_fail_mark_error_logs_workflow_id_and_error_fields(broker, backend
     handler, worker = _handler(broker, backend, config)
     worker._workflow_advancer.fail = AsyncMock(side_effect=ValueError("bad state doc"))
     msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
-    await handler.dead_letter(msg, _ctx(), "boom")
+    await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "workflow_fail_mark_failed")
     assert entry["log_level"] == "error" and entry["workflow_id"] == _WF_ID
@@ -138,7 +145,7 @@ async def test_fail_mark_error_logs_workflow_id_and_error_fields(broker, backend
 async def test_result_store_failure_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
     handler, _ = _handler(broker, backend, config)
     backend.store_result = AsyncMock(side_effect=ConnectionError("valkey down"))
-    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom")
+    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "dlq_result_store_failed")
     assert entry["log_level"] == "warning"
@@ -148,7 +155,7 @@ async def test_result_store_failure_logs_warning_with_error_fields(broker, backe
 async def test_notify_failure_in_dead_letter_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
     handler, _ = _handler(broker, backend, config)
     backend.notify_result = AsyncMock(side_effect=ConnectionError("pubsub down"))
-    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom")
+    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "publish_notification_failed")
     assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
@@ -158,7 +165,7 @@ async def test_notify_failure_in_dead_letter_logs_warning_with_error_fields(brok
 async def test_dlq_publish_failure_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
     handler, _ = _handler(broker, backend, config)
     broker.dead_letter = AsyncMock(side_effect=ConnectionError("broker gone"))
-    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom")
+    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "dlq_publish_failed")
     assert entry["log_level"] == "error"
@@ -186,8 +193,47 @@ async def test_retry_publish_failure_logs_error_with_error_fields(broker, backen
 async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs):
     """KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR (bisher WARNING)."""
     handler, _ = _handler(broker, backend, config)
-    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom")
+    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "task_sent_to_dlq")
     assert entry["log_level"] == "error"
     assert entry["error"] == "boom"
+
+
+class _FilteredTask(Task):
+    task_info = TaskInfo(
+        name="filtered-task", queues=["default"], max_retries=3, retry_exceptions=(KeyError,)
+    )
+
+
+class _ZeroRetryTask(Task):
+    task_info = TaskInfo(name="zero-retry-task", queues=["default"], max_retries=0)
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    ("task", "exc", "retry_count"),
+    [
+        (DlqTask, NoRetry("give up"), 0),  # NoRetry -> direkt DLQ
+        (_FilteredTask, ValueError("not listed"), 0),  # nicht in retry_exceptions
+        (_ZeroRetryTask, RuntimeError("boom"), 0),  # max_retries=0
+        (_FilteredTask, KeyError("gone"), 3),  # Retries erschoepft (3 von 3)
+    ],
+)
+async def test_task_sent_to_dlq_carries_error_type_of_triggering_exception(
+    broker, backend, config, swarmq_logs, task, exc, retry_count
+):
+    """U9 (R17): ``task_sent_to_dlq`` folgt dem Fehlerschema der anderen
+    Fehler-Events — ``error_type`` ist der Klassenname der ausloesenden
+    Ausnahme, ``error`` bleibt der Fehlertext der Retry-Bewertung."""
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, task)
+    msg = make_message(
+        _default_payload(name=task.task_info.name), headers={"x-swarmq-retry-count": retry_count}
+    )
+    await handler.evaluate(msg, _ctx(task), exc, "Traceback: boom", {"retry_count": 0}, MiddlewareChain([]))
+
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == type(exc).__name__
+    assert entry["error"] == "Traceback: boom"

@@ -71,7 +71,9 @@ When the worker picks up a message whose lock is held:
 
 - The message is **requeued with a delay**. It does not block the
   worker or fail the task.
-- The `TASK_LOCKED` signal fires so you can observe it.
+- The worker logs `task_lock_conflict` (INFO, with `lock_name` and
+  `lock_conflict_count`) and fires the `TASK_LOCKED` signal so you can
+  observe it.
 - If the task's `max_age` is set, it eventually expires to the DLQ
   rather than retrying forever.
 
@@ -83,7 +85,7 @@ holder does not back up the queue forever.
 
 If the template references a kwarg the message does not carry
 (typo, old message from a renamed task), the render fails and the
-task is routed to the DLQ with an `x-swarmq-lock-error` header. The
+task is routed to the DLQ with an `x-swarmq-lock-render-error` header. The
 failure is surfaced to the operator, not silently swallowed, because
 a broken lock template is a bug — you want it loud.
 
@@ -165,13 +167,19 @@ correctly.
 Every dedup hit fires `TASK_DUPLICATE_DETECTED`:
 
 ```python
+from swarmq import Signal
+from swarmq.logging import get_logger
+
+log = get_logger("myapp.dedup")
+
+
 @app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
 async def on_dup(
     existing_task_id, task_name, dedup_hash, source, **kwargs,
 ):
     batch_index = kwargs.get("batch_index")
     log.info(
-        "dedup_hit",
+        "myapp_dedup_hit",
         task=task_name,
         existing_task_id=existing_task_id,
         source=source,
@@ -217,12 +225,15 @@ Declare a lock, schedule the task from two clients concurrently,
 and inspect worker logs:
 
 ```bash
-swarmq worker --module myapp.tasks --log-level INFO
+swarmq worker --module myapp.tasks --log-level INFO --log-lifecycle-level INFO
 ```
 
-Worker 1 emits `TASK_STARTED` for the first message; worker 2 emits
-`TASK_LOCKED` for the second and requeues. After worker 1's
-`TASK_COMPLETED`, worker 2's redelivered attempt succeeds.
+Worker 1 logs `task_started` for the first message (visible at INFO
+because of `--log-lifecycle-level INFO`; the default level of this
+event is DEBUG). Worker 2 logs `task_lock_conflict` with `lock_name`
+and `lock_conflict_count` for the second message and requeues it with
+a delay. After worker 1's `task_succeeded`, worker 2's redelivered
+attempt runs and logs `task_succeeded` as well.
 
 For dedup, schedule twice:
 

@@ -154,6 +154,8 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "pool",                         # package — --pool / --concurrency Aufloesung (Plan 2026-09-03-001)
         "schedule_cmd",                 # package — schedule subcommand
         "worker_cmd",                   # package — worker command
+        "worker_options",               # package — CLI > Env > Default der Worker-Optionen
+        "resolve_worker_options",       # internal — Aufloesung im Worker-Zweig von main()
     }
 )
 

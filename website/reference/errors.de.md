@@ -23,6 +23,7 @@ except SwarmQError as exc:
 | `ConfigurationError` | `SwarmQError` | Fehlkonfiguration beim Worker-Start, CLI-Args, fehlende Env-Vars |
 | `LoggingConfigError` | `ConfigurationError` | Logging-Konfigurationsdatei (`--log-config`) nicht ladbar oder ungültig |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
+| `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
@@ -33,6 +34,14 @@ except SwarmQError as exc:
 | `Retry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retry anzufordern |
 | `NoRetry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retries zu umgehen |
 | `SoftTimeoutError` | `SwarmQError` | Task überschritt `soft_timeout`, sollte aufräumen |
+| `WorkflowValidationError` | `SwarmQError` | Workflow-Topologie ungültig oder Fan-in-Ergebnisse unvollständig |
+| `WorkflowNotFound` | `SwarmQError` | `app.workflow(id)` oder ein Handle-Aufruf fand keinen Workflow-Zustand |
+| `WorkflowResultExpired` | `SwarmQError` | Ein Schritt- oder End-Ergebnis des Workflows lief ab, bevor es gebraucht wurde |
+| `WorkflowStateConflict` | `SwarmQError` | Worker-intern: Aktualisierung des Workflow-Zustands verlor jede Compare-and-Set-Runde |
+
+Jede Klasse außer `WorkflowStateConflict` lässt sich direkt aus
+`swarmq` importieren (`from swarmq import PublishIndeterminate`); alle
+liegen außerdem in `swarmq.exceptions`.
 
 ## `SwarmQError`
 
@@ -58,14 +67,20 @@ die Library oder der CLI-Parser einen fehlerhaften Input erkennt.
   [Logging](logging.md#konfigurationsfehler)).
 - `scheduler_lock_ttl < 2 × scheduler_heartbeat_interval`.
 - `--args` / `--kwargs` für `swarmq schedule add` kein gültiges JSON.
-- `swarmq dlq retry` mit `task_id` und `--all` zugleich.
 
 **Recovery.** Config fixen und neustarten. Die Fehlermeldung nennt
-das betroffene Feld.
+das betroffene Feld. `swarmq worker` loggt eine strukturierte Zeile
+`worker_config_error` und endet mit Exit `78`:
 
 ```text
-swarmq worker: SWARMQ_BROKER_URL is not set; export it or pass it
-via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
+[error    ] worker_config_error            [swarmq.cli] error='ConfigurationError: SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set' error_type=ConfigurationError hint='fix the configuration and start again; no restart attempted' source=supervisor
+```
+
+`swarmq schedule`, `swarmq dlq` und `swarmq inspect` drucken eine Zeile
+auf stderr und enden mit Exit `1`:
+
+```text
+swarmq schedule list: SWARMQ_BACKEND_URL is not set; export it or pass it via env, e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0
 ```
 
 ## `LoggingConfigError`
@@ -74,8 +89,8 @@ via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
 von `--log-config` vor einem Reload), von
 `swarmq.logging.load_log_config` und `configure_logging`, wenn sich die
 Logging-Konfigurationsdatei nicht verwenden lässt. Subklasse von
-`ConfigurationError`, importierbar aus `swarmq.exceptions` und
-`swarmq.logging`.
+`ConfigurationError`, importierbar aus `swarmq`, `swarmq.exceptions`
+und `swarmq.logging`.
 
 **Ursache.** Die Datei aus `--log-config` / `SWARMQ_LOG_CONFIG`:
 
@@ -131,7 +146,7 @@ Exception aus `async with SwarmQ(...)` — fang sie an deiner
 Startup-Grenze ab.
 
 ```python
-from swarmq.exceptions import BrokerConnectionError
+from swarmq import BrokerConnectionError
 
 try:
     async with SwarmQ(broker, backend) as app:
@@ -206,7 +221,7 @@ War er versehentlich, prüfe die TTL deines Cancel-Flags — siehe
 [`app.cancel()`](api.md#cancel) für den Stale-Flag-Caveat.
 
 ```python
-from swarmq.exceptions import TaskCancelledError
+from swarmq import TaskCancelledError
 
 try:
     result = await app.get_result(task_id, timeout=60)
@@ -227,7 +242,7 @@ in der DLQ ohne Ergebnis zu speichern, oder die `task_id` ist falsch.
 Task in Retry-Loops hängt — die DLQ inspizieren.
 
 ```python
-from swarmq.exceptions import ResultNotReadyError
+from swarmq import ResultNotReadyError
 
 try:
     result = await app.get_result(task_id, timeout=5)
@@ -340,7 +355,7 @@ erlaubte.
 oder abfangen und checkpointen:
 
 ```python
-from swarmq.exceptions import SoftTimeoutError
+from swarmq import SoftTimeoutError
 
 class LongJob(Task):
     task_info = TaskInfo(
@@ -356,6 +371,95 @@ class LongJob(Task):
             await checkpoint()
             raise
 ```
+
+## `PublishIndeterminate`
+
+**Wann geraist.** Von `schedule()`, `schedule_many()`, `run()` und
+`apply()`, wenn ein Publish beim Warten auf das Publisher-Confirm des
+Brokers `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet. Subklasse von
+`BrokerConnectionError`.
+
+**Ursache.** Broker oder Netz sind nach dem Senden der Nachricht
+hängen geblieben; der Broker hat sie vielleicht, vielleicht nicht.
+
+**Recovery.** Die Zustellung als unbekannt behandeln. Nur wiederholen,
+wenn der Task idempotent ist oder mit `unique_for` eingereiht wurde
+(SwarmQ behält in diesem Fall den Dedup-Claim, eine Wiederholung im
+Fenster wird also abgewiesen statt doppelt zu laufen). Siehe die Warnung
+unter [`BrokerConnectionError`](#brokerconnectionerror).
+
+```python
+from swarmq import BrokerConnectionError, PublishIndeterminate
+
+try:
+    await app.schedule("charge", order_id=42)
+except PublishIndeterminate:
+    # Vielleicht eingereiht -- vor erneutem Senden prüfen.
+    ...
+except BrokerConnectionError:
+    # Nichts gesendet; Wiederholen ist sicher.
+    ...
+```
+
+## `WorkflowValidationError`
+
+**Wann geraist.** Beim Bauen eines Workflows mit `chain`, `group` oder
+`chord`, bevor irgendetwas eingereiht wird (ein per Name mit `sig()`
+gebauter Schritt wird erst zur Laufzeit auf `FIRE_AND_FORGET` geprüft).
+Außerdem zur Laufzeit im Worker, wenn eine Group oder ein Chord ihre
+Ergebnisliste nicht vollständig zusammenbekommt; der Workflow wird dann
+als gescheitert markiert und `handle.get()` wirft `TaskError`.
+
+**Ursache.** Verschachtelung tiefer als `max_workflow_depth` (10), eine
+Group mit mehr als `max_group_size` (1000) Mitgliedern, eine leere
+Chain oder Group, ein Chord-Header, der kein `group(...)` ist, oder ein
+`FIRE_AND_FORGET`-Task als Schritt.
+
+**Recovery.** Topologie abflachen, große Groups aufteilen oder den Task
+auf `DeliveryMode.AT_LEAST_ONCE` umstellen. Siehe
+[Workflow-Primitive](api.md#workflow-primitive).
+
+## `WorkflowNotFound`
+
+**Wann geraist.** `app.workflow(workflow_id)` und die
+`WorkflowHandle`-Methoden `status()`, `children()` und `get()`, wenn es
+zur ID keinen Workflow-Zustand gibt.
+
+**Ursache.** Die ID ist falsch, der Workflow wurde nie gestartet, oder
+sein Zustand ist abgelaufen (er lebt `result_ttl` Sekunden).
+
+**Recovery.** ID prüfen. Für lange Workflows `result_ttl`
+(`SWARMQ_RESULT_TTL`) erhöhen, damit der Zustand den Lauf und die Zeit
+bis zum Abholen des Ergebnisses überlebt.
+
+## `WorkflowResultExpired`
+
+**Wann geraist.** Von `handle.get()`, wenn der Workflow fertig ist,
+sein Endergebnis aber schon abgelaufen ist; im Worker, wenn ein
+Schritt-Ergebnis, das der nächste Schritt oder das Fan-in braucht,
+abgelaufen ist — der Workflow scheitert dann.
+
+**Ursache.** Eine Ergebnis-TTL, die kürzer ist als die Laufzeit des
+Workflows plus die Zeit bis zum Abholen.
+
+**Recovery.** `result_ttl` erhöhen (global oder je Task über
+`TaskInfo.result_ttl`) und Workflow-Ergebnisse zeitnah abholen.
+
+## `WorkflowStateConflict`
+
+**Wann geraist.** Nur im Worker, beim Voranbringen eines Workflows: Das
+Compare-and-Set auf den Workflow-Zustand hat alle 25 Runden gegen
+gleichzeitige Schreiber verloren. Erreicht nie `schedule()` oder
+`handle.get()`.
+
+**Ursache.** Mehr Zweige eines Workflows, die im selben Moment fertig
+werden, als die Konfliktgrenze erlaubt.
+
+**Recovery.** Im Anwendungscode keine nötig. Der Worker loggt
+`workflow_advance_backend_error` und stellt die Schritt-Nachricht neu zu
+(`at_least_once`); die Neuzustellung bringt den Workflow voran,
+deterministische Schritt-IDs halten das idempotent. Für Tests aus
+`swarmq.exceptions` importieren.
 
 ## Siehe auch
 

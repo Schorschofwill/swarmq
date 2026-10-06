@@ -105,6 +105,12 @@
       "type": "LoggingSettings | None"
     },
     {
+      "default": [],
+      "env_var": null,
+      "name": "resolved_fields",
+      "type": "tuple[str, ...]"
+    },
+    {
       "default": 3600.0,
       "env_var": "SWARMQ_RETRY_MAX_DELAY",
       "name": "retry_max_delay",

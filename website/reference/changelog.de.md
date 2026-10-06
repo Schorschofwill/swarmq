@@ -6,6 +6,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-06
+
 ### Geändert (breaking)
 
 - **`SwarmQ()` konfiguriert kein Logging mehr.** Eine `SwarmQ`-App lässt
@@ -50,6 +52,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `LogRecord`-Attribut kollidiert, das Präfix `swarmq_` (`name` →
   `swarmq_name`). Events, die eine Exception melden, tragen `error_type`
   und `error`; einen Traceback gibt es nur bei unerwarteten Fehlern.
+  Das gilt jetzt auch für `task_sent_to_dlq` (`error_type` ist der
+  Klassenname der Exception, die den Task in die DLQ geschickt hat,
+  `WorkerHungError` beim Erreichen des Delivery-Limits).
   Alarme und Dashboards, die Logs per grep auswerten, müssen angepasst
   werden.
 - **Log-Level folgen einer Regel** (ERROR: Datenverlust oder ein
@@ -68,6 +73,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Supervisor gibt die aufgelösten Einstellungen an seine
   Worker-Subprozesse und Rechenkinder weiter, die das Environment nicht
   mehr lesen; ein Flag gewinnt jetzt in jedem Prozess.
+
+- **CLI-Optionen schlagen jetzt in allen Prozessen die `SWARMQ_*`-Umgebung,
+  für alle Optionen von `swarmq worker`.** Bisher gewann in den
+  Worker-Prozessen die Umgebung bei `--queues`, `--concurrency`, `--pool`,
+  `--burst`, `--burst-idle-timeout`, `--priorities`, `--metrics-port` und
+  `--health-port` (z. B. schlug `SWARMQ_CONCURRENCY=5` die Option
+  `--concurrency 20`), während der Supervisor die Option nutzte. Jetzt wird
+  jede Option einmal als CLI > Umgebung > Default aufgelöst, und Supervisor,
+  Worker-Prozesse, Rechenkinder und `--check` sehen dieselben Werte. Ohne
+  Flag gilt die Umgebungsvariable weiterhin.
 
 ### Hinzugefügt
 
@@ -122,12 +137,32 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `build_formatter`, `configure_logging`, `shutdown_logging`,
   `load_log_config` und `LoggingConfigError`. Neue Referenzseite:
   [Logging](logging.md).
+- **Weitere Exceptions direkt aus `swarmq` importierbar:**
+  `LoggingConfigError`, `SoftTimeoutError` und `PublishIndeterminate`
+  (dieselben Klassen wie in `swarmq.exceptions`).
 
 ### Deprecated
 
 - `swarmq.logging.setup_logging` (Einstiegspunkte nutzen
   `configure_logging`) und `swarmq.logging.flush_logging` (jetzt ein
   Alias für `shutdown_logging`).
+
+### Behoben
+
+- **Hot-Reload funktioniert nach `python -m swarmq.cli`.** Der Supervisor
+  startete sich mit `sys.argv` neu; nach `-m` steht dort der Pfad von
+  `swarmq/cli/__main__.py`, und das neue Abbild führte die Datei als Skript
+  aus — ohne Arbeitsverzeichnis in `sys.path` (`--module ... cannot be
+  imported`) und mit Workern, die per spawn in der Bootstrapping-Phase
+  scheiterten. Der Neustart nutzt jetzt `sys.orig_argv`, das `-m` und
+  Interpreter-Flags behält; `swarmq/cli/__main__.py` ruft `main()` nur noch
+  als Hauptmodul auf. Der Start über das Kommando `swarmq` ist unverändert.
+
+### Abhängigkeiten
+
+- `structlog` ist jetzt auf `>=24,<27` begrenzt: `swarmq.logging.get_logger`
+  hängt von der Aufruftiefe von `structlog.stdlib.BoundLogger` ab, die die
+  Testsuite für 26.x festhält.
 
 ## [0.7.0] — 2026-09-22
 
@@ -620,7 +655,7 @@ Erstes PyPI-Release. Alles Folgende war darin enthalten.
   Ungültige `SWARMQ_DEFAULT_FORMAT`-Werte (Tippfehler, unbekanntes
   Format, leerer String) werden stillschweigend ignoriert — der
   CLI fällt auf den TTY-basierten Default zurück statt zu
-  fehlen. Siehe [Plan 2026-04-23-001 Unit 5](…).
+  fehlen. Siehe [CLI-Output](configuration.md#cli-output).
 
 ### Hinzugefügt — Phase 5 Welle 2 (Dev Experience)
 

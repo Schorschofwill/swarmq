@@ -38,7 +38,7 @@ there will not change the task's path.
 ### Workflow steps
 
 `pre_enqueue` and `post_enqueue` also run for every workflow step —
-from `Client.apply` for the initial front and from the advancer inside
+from `app.apply()` for the initial front and from the advancer inside
 the worker for every following step. The context of such a step has
 `delivery_mode="at_least_once"` regardless of the task's declaration
 and two extra keys, `workflow_id` and `step_path`, that ordinary
@@ -56,11 +56,11 @@ steps.
 
 ```python title="myapp/middleware.py"
 import time
-import structlog
 
 from swarmq import Middleware, MessageContext
+from swarmq.logging import get_logger
 
-log = structlog.get_logger("myapp.timing")
+log = get_logger("myapp.timing")
 
 
 class TimingMiddleware(Middleware):
@@ -80,7 +80,7 @@ class TimingMiddleware(Middleware):
         start = self._starts.pop(message["task_id"], None)
         if start is not None:
             log.info(
-                "task_finished",
+                "myapp_task_finished",
                 task_id=message["task_id"],
                 task_name=message["task_name"],
                 duration_ms=(time.perf_counter() - start) * 1000,
@@ -92,13 +92,30 @@ class TimingMiddleware(Middleware):
         start = self._starts.pop(message["task_id"], None)
         if start is not None:
             log.warning(
-                "task_failed",
+                "myapp_task_errored",
                 task_id=message["task_id"],
                 task_name=message["task_name"],
                 duration_ms=(time.perf_counter() - start) * 1000,
-                error=repr(exception),
+                error_type=type(exception).__name__,
+                error=str(exception),
             )
 ```
+
+The example only illustrates a hook pair with shared state: SwarmQ
+itself already logs `task_succeeded` and `task_failed` with
+`duration_ms` on the `swarmq.task` logger (see
+[task lifecycle events](../reference/logging.md#task-lifecycle-events)).
+Give your own events names of their own (`myapp_…`) so they do not
+collide with the built-in ones.
+
+`swarmq.logging.get_logger(name)` hands events to stdlib `logging`
+under `name`, with the keyword arguments as record fields, in every
+setup. `structlog.get_logger()` also works, but only the built-in setup
+of `swarmq worker` routes it through the worker's formatter. With
+`--log-config`, with `--no-configure-logging`, or embedded in an app
+that has not configured structlog, its events bypass `logging` and go
+to stdout with structlog's defaults (see
+[worker processes](../reference/logging.md#worker-processes)).
 
 `MessageContext` is a `TypedDict`; at runtime it is a plain `dict`.
 Access fields with `message["task_id"]`, `message["task_name"]`, and
@@ -173,7 +190,7 @@ Add your middleware, start the worker with `--log-level DEBUG` and
 `--log-format human`, and schedule one task:
 
 ```bash
-swarmq worker --module myapp.tasks --log-level DEBUG
+swarmq worker --module myapp.tasks --log-level DEBUG --log-format human
 ```
 
 You should see the hook emit log entries on every task. If nothing

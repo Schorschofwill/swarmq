@@ -88,18 +88,24 @@ Hook `Signal.TASK_RATE_LIMITED` to record when limits are active:
 
 ```python
 from swarmq import Signal
+from swarmq.logging import get_logger
+
+log = get_logger("myapp.rate_limit")
+
 
 @app.on_signal(Signal.TASK_RATE_LIMITED)
 async def on_rate_limit(
     task_id, task_name, retry_after_ms, remaining, rate_limit_count,
+    **kwargs,
 ):
-    log.info(
-        "rate_limited",
-        task_id=task_id, task_name=task_name,
-        retry_after_ms=retry_after_ms,
-        remaining=remaining,
-        bounce_count=rate_limit_count,
-    )
+    # A message that keeps bouncing means the limit is far below demand.
+    if rate_limit_count >= 10:
+        log.warning(
+            "myapp_rate_limit_bouncing",
+            task_id=task_id, task_name=task_name,
+            retry_after_ms=retry_after_ms,
+            bounce_count=rate_limit_count,
+        )
 ```
 
 Payload fields:
@@ -108,6 +114,12 @@ Payload fields:
 - `remaining` — estimated remaining budget in the current window.
 - `rate_limit_count` — how many times this exact message has been
   requeued by the rate limiter (a bounce counter for operator alerts).
+
+You do not need a handler just to see deferrals: the worker logs every
+one itself as a `task_rate_limited` line (INFO, logger
+`swarmq.worker.gates.rate_limit`) with `retry_after_ms`, `remaining`
+and `rate_limit_count`. End the handler's parameter list with
+`**kwargs` so it keeps working when a release adds a key.
 
 When `swarmq[metrics]` is installed and `--metrics-port` is set,
 rate-limit events are exported as Prometheus counters as well.
@@ -139,8 +151,8 @@ swarmq inspect --module myapp.tasks
 
 The `RATE_LIMIT` column lists the declared string for every task.
 Then schedule a burst larger than the limit and watch the worker
-logs: some messages complete immediately, others show
-`TASK_RATE_LIMITED` entries with `retry_after_ms` and reappear
+logs: some messages complete immediately (`task_succeeded`), others
+show `task_rate_limited` lines with `retry_after_ms` and reappear
 after the delay.
 
 ## See also

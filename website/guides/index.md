@@ -28,6 +28,9 @@ listings, see the [reference](../reference/index.md).
   declared as `"100/m"` on `TaskInfo`.
 - [Locking and deduplication](locking-and-dedup.md) — serialise
   executions (lock) or collapse redundant enqueues (unique task).
+- [Workflows](workflows.md) — compose tasks into `chain`, `group`
+  and `chord`, start them with `app.apply()` and wait for, inspect or
+  cancel them through a `WorkflowHandle`.
 
 ## Operations
 

@@ -63,3 +63,15 @@ async def test_dead_letter_path_keeps_the_app_context(app_log_context):
     await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}), _ctx())
 
     assert structlog.contextvars.get_contextvars() == app_log_context
+
+
+@pytest.mark.timeout(5)
+async def test_dead_letter_reports_worker_hung_error_type():
+    """Plan 2026-10-06-0831, R17: ohne ausloesende Ausnahme meldet der
+    Gate-Pfad den festen Typ ``WorkerHungError`` — er landet als
+    ``error_type`` im Event ``task_sent_to_dlq``."""
+    gate, dead_letter = _gate(limit=20)
+
+    await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}), _ctx())
+
+    assert dead_letter.await_args.args[3] == "WorkerHungError"

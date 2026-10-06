@@ -2,7 +2,7 @@
 
 You want to control **when** a task runs and **how many times** it is
 retried on failure. Both live on `TaskInfo` (defaults for every
-execution) and on `Client.schedule()` (per-call overrides).
+execution) and on `app.schedule()` (per-call overrides).
 
 ## Prerequisites
 
@@ -210,8 +210,9 @@ task_info = TaskInfo(
 )
 ```
 
-On pickup, if `now - enqueued_at > max_age`, the worker routes the
-message to the DLQ with a `TASK_EXPIRED` signal and does not call
+On pickup, if `now - enqueued_at >= max_age`, the worker logs
+`task_expired` (WARNING, with `age_s` and `max_age_s`), fires the
+`TASK_EXPIRED` signal, routes the message to the DLQ and does not call
 `run()`.
 
 ## Cancellation
@@ -250,9 +251,14 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The worker log shows a `TASK_ENQUEUED` immediately and a
-`TASK_STARTED` / `TASK_RETRYING` / `TASK_COMPLETED` sequence with
-the configured delays between attempts.
+The client logs nothing for the enqueue; `scheduled <task_id>` is
+your own `print`. After the two-second delay the worker log shows,
+for every failed attempt, a `task_failed` line (with `error_type` and
+`error`) followed by `task_retrying` (with `retry_count`,
+`max_retries` and `delay_ms`), with the configured delays between
+the attempts, and `task_succeeded` once an attempt succeeds. Add
+`--log-lifecycle-level INFO` to the worker to also see `task_received`
+and `task_started` for every attempt.
 
 ## See also
 

@@ -23,6 +23,7 @@ fixture and the assertion cannot drift::
 from __future__ import annotations
 
 import io
+import re
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -81,3 +82,28 @@ def test_help_output_matches_fixture(
         f"from fixture {fixture_name}. If the change is intentional, "
         f"regenerate fixtures per the docstring of this test file."
     )
+
+
+def test_worker_help_describes_current_supervisor_reload_and_check_semantics() -> None:
+    """Die Hilfetexte folgen dem Verhalten (Release 0.8.0): der Supervisor
+    laeuft immer, ein fehlendes ``watchfiles`` endet mit Exit 78 (1 nur
+    unter ``--check``), und ``--check`` erlaubt feste Basis-Ports im
+    Mehrprozessbetrieb, prueft aber Port-Bereiche, Logging und Pool."""
+    # argparse bricht auch an Bindestrichen um ("in-\nprocess"): Whitespace
+    # zusammenfassen und den Umbruch nach einem Wort-Bindestrich entfernen.
+    text = re.sub(r"(?<=\w-) ", "", " ".join(_capture_help(("worker",)).split()))
+
+    # --processes: kein "legacy in-process"-Modus mehr.
+    assert "legacy in-process" not in text
+    assert "Default 1 still runs under the supervisor." in text
+    # --reload: Supervisor ist immer aktiv, Exit-Code 78.
+    assert "activates the supervisor when" not in text
+    assert "Missing dep exits with code 1;" not in text
+    assert "Missing 'watchfiles' exits with code 78 (1 under --check)" in text
+    # --check: Basis-Ports sind erlaubt; beschrieben wird, was geprueft wird.
+    assert "multi-process mode is not combined" not in text
+    assert "port ranges" in text and "65535" in text
+    assert "--log-config" in text and "--max-processes" in text
+    # Neustart per execvpe mit dem sys.orig_argv-Schnappschuss, nicht execvp.
+    assert "os.execvp()" not in text and "execvp)" not in text
+    assert "os.execvpe()" in text

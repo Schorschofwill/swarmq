@@ -108,6 +108,13 @@ def _run_multi_process_worker_configured(
     broker_url = os.environ["SWARMQ_BROKER_URL"]
     backend_url = os.environ["SWARMQ_BACKEND_URL"]
 
+    # Lazy wie in ``entry``: process_manager -> cli ist die erlaubte Kante (KTD7).
+    from swarmq.cli.worker_options import cli_value, resolve_worker_options
+
+    # CLI > Env > Default fuer die Worker-Optionen; idempotent, die CLI hat
+    # schon aufgeloest. Gruppenschluessel, Sampler und Worker sehen dieselben
+    # Werte.
+    resolve_worker_options(args, os.environ)
     reload_enabled = bool(getattr(args, "reload", False))
     watch_dirs_raw = getattr(args, "watch_dir", None) or ()
     max_processes: int | None = getattr(args, "max_processes", None)
@@ -137,8 +144,10 @@ def _run_multi_process_worker_configured(
         processes=int(getattr(args, "processes", 1) or 1),
         autoscale=args.autoscale,
         recycling=bool(os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")),
-        metrics_port=args.metrics_port,
-        health_port=args.health_port,
+        # Nur der Flag-Wert: den Umgebungswert setzt der Guard selbst ein und
+        # nennt dann die Variable statt der Option (CLI > Env, wie im Worker).
+        metrics_port=cli_value(args, "metrics_port"),
+        health_port=cli_value(args, "health_port"),
         # Kontrollkanal (U3): der Spielraum muss Startprozesszahl und
         # Autoscale-Obergrenze decken; im Rechen-Pool zaehlt nur eine
         # ausdrueckliche Nebenlaeufigkeit gegen die CPU-Zuteilung.

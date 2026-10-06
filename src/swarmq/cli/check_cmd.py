@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from swarmq.cli.pool import resolve_pool
+from swarmq.cli.worker_options import cli_value, resolve_worker_options
 from swarmq.exceptions import ConfigurationError
 
 #: Keys that ``--check`` always emits on its JSON payload, regardless of
@@ -117,6 +118,9 @@ def _run_worker_check(args: argparse.Namespace) -> int:
         # R14: ohne diese Pruefung meldete --check "in Ordnung" fuer eine
         # Logging-Einstellung, an der der Start danach mit Exit 78 scheitert.
         _check_logging_settings(args)
+        # Dieselbe Aufloesung wie beim Start (CLI > Env > Default), damit
+        # --check die Werte prueft, die der Worker bekommt.
+        resolve_worker_options(args, os.environ)
         result = check_worker_config(
             module=args.module,
             reload=payload["reload"],
@@ -128,8 +132,10 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             # Pre-Flight des Supervisors impliziert (R5).
             processes=int(getattr(args, "processes", 1) or 1),
             autoscale=getattr(args, "autoscale", None),
-            metrics_port=getattr(args, "metrics_port", None),
-            health_port=getattr(args, "health_port", None),
+            # Nur der Flag-Wert: den Umgebungswert setzt der Guard selbst ein
+            # und nennt dann die Variable statt der Option.
+            metrics_port=cli_value(args, "metrics_port"),
+            health_port=cli_value(args, "health_port"),
             pool=resolve_pool(args),
             concurrency=getattr(args, "concurrency", None),
             recycling=bool(

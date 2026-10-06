@@ -99,22 +99,22 @@ def _effective_port(
 ) -> tuple[int | None, str] | None:
     """Aufgeloester Port samt Herkunft, oder ``None`` wenn keiner wirkt.
 
-    Bildet die Vorrangregel der Konfiguration nach: ``_apply_env_overrides``
-    schreibt den Umgebungswert bedingungslos ueber den uebergebenen — die
-    Umgebung schlaegt also die Option. Ein Guard auf den Kommandozeilen-
-    argumenten allein liesse ``SWARMQ_METRICS_PORT=9000 swarmq worker
-    --processes 4`` durch, also genau den Fall, den er abfangen soll
-    (Plan 2026-08-28-001, R5).
+    Bildet die Vorrangregel von ``swarmq worker`` nach: CLI > Env > Default,
+    in Supervisor und Worker gleich (``cli.worker_options``). Die Option
+    schlaegt also die Umgebung; ohne Option zaehlt aber der Umgebungswert --
+    ein Guard auf den Kommandozeilenargumenten allein liesse
+    ``SWARMQ_METRICS_PORT=9000 swarmq worker --processes 4`` durch, also genau
+    den Fall, den er abfangen soll (Plan 2026-08-28-001, R5).
     """
     import os
 
     from swarmq.config import _parse_port
 
+    if cli_value is not None:
+        return cli_value, cli_flag
     raw = os.environ.get(env_name, "")
     if raw:
         return _parse_port(raw, env_name), env_name
-    if cli_value is not None:
-        return cli_value, cli_flag
     return None
 
 

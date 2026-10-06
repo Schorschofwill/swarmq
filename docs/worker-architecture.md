@@ -429,9 +429,9 @@ def worker_entry(shutdown_event):
 | **SIGINT im Worker ignorieren** | Nur Parent reagiert auf Ctrl+C | Verhindert doppeltes Shutdown |
 | **Shutdown-Reihenfolge** | Worker-Tasks zuerst, dann Consumer/Heartbeats | Broker-Connection bleibt offen waehrend Drain |
 | **Message-Requeuing** | Unverarbeitete Messages aktiv zurueck in Queue | Keine Message-Verluste bei Shutdown |
-| **execvp fuer Reload** | `os.execvp()` bei SIGHUP statt Fork-Neustart | Code-Reload ohne PID-Wechsel |
+| **exec fuer Reload** | `os.execvpe(sys.executable, [sys.executable] + argv, env)` bei SIGHUP statt Fork-Neustart; argv ist eine Momentaufnahme von `sys.orig_argv[1:]` beim Supervisor-Start (bleibt bei `python -m swarmq.cli` korrekt), env eine Kopie von `os.environ` | Code-Reload ohne PID-Wechsel |
 | **Python 3.14 Start-Method** | Expliziter Umgang mit forkserver-Default | Zukunftssicher |
-| **Zentralisiertes Logging** | stdout/stderr ueber Pipe zum Master | Keine Log-Vermischung |
+| ~~Zentralisiertes Logging~~ | Nicht uebernommen: Dramatiq leitet stdout/stderr ueber eine Pipe zum Master. SwarmQ richtet das Logging stattdessen je Prozess ein (Supervisor, Worker-Subprozess, Compute-Kind), jeder schreibt selbst nach stderr — siehe 7.5 | — |
 
 ## 8.2 Von TaskIQ uebernehmen
 
@@ -492,6 +492,13 @@ Nach Worker-Exit (`asyncio.run()` abgeschlossen) dauert der `spawn`-Prozess-Tear
 ---
 
 # 10. Konkrete Implementierungsempfehlung fuer SwarmQ
+
+> **Historischer Entwurf (Stand 2026-04).** Dieser Abschnitt beschreibt die
+> damalige Empfehlung, nicht die heutige Implementierung. Datei- und
+> Klassennamen sowie die Parameter in 10.4 existieren so nicht. Die
+> tatsaechlichen Optionen stehen in der Nutzerdoku:
+> `website/reference/cli.md` (`swarmq worker`) und
+> `website/reference/configuration.md`.
 
 ## 10.1 Dateien und Klassen
 
@@ -571,6 +578,10 @@ def worker_entry(worker_id, shutdown_event, config):
 ```
 
 ## 10.4 Konfigurierbare Parameter
+
+Historische Vorschlagsliste — keiner dieser Namen ist eine heutige Option
+(heute z. B. `--processes`, `--concurrency`, `SWARMQ_SHUTDOWN_TIMEOUT`; der
+Supervisor erlaubt 5 Neustarts pro Stunde).
 
 | Parameter | Default | Beschreibung |
 |-----------|---------|-------------|

@@ -16,47 +16,75 @@ Use the `@app.on_signal(...)` decorator:
 
 ```python
 from swarmq import SwarmQ, Signal
+from swarmq.logging import get_logger
 
 app = SwarmQ(broker, backend)
+log = get_logger("myapp.signals")
 
 
 @app.on_signal(Signal.TASK_FAILED)
-async def on_task_failed(task_id, task_name, exception):
+async def on_task_failed(task_id, task_name, exception, **kwargs):
     log.error(
-        "task_failed",
+        "myapp_task_attempt_failed",
         task_id=task_id, task_name=task_name,
-        error=repr(exception),
+        error=exception,
     )
 ```
 
 The handler must be async. It runs inline after the event is
 dispatched — no separate event loop, no worker thread.
 
+Always end the parameter list with `**kwargs`. The worker passes every
+key from the table below — `TASK_FAILED` also carries `queue` — and a
+handler with a fixed signature fails with `TypeError` on each dispatch
+(caught and logged as `signal_handler_error`, so the handler silently
+never does its job). New keys can appear in later releases.
+
+`swarmq.logging.get_logger(name)` returns a logger that hands events to
+stdlib `logging` under `name`, with the keyword arguments as record
+fields — the same mechanism SwarmQ uses for its own events (see
+[Logging](../reference/logging.md)). Give your own events names that do
+not collide with SwarmQ's built-in ones (`task_failed`,
+`task_succeeded`, …), otherwise you cannot tell them apart in the log.
+
+!!! note "`exception` is a string"
+    `TASK_FAILED` carries `exception=str(exc)`, the message of the
+    exception, not the exception object. You cannot `isinstance()` it or
+    hand it to an error tracker as an exception. When you need the
+    object (class, traceback), use a [middleware](middleware.md)
+    `on_error` hook, which receives the real exception — see
+    [Sentry / error aggregator integration](#sentry-error-aggregator-integration).
+
 ## Available signals
 
 | Signal | Fires | Kwargs |
 |---|---|---|
 | `TASK_ENQUEUED` | After a successful `schedule()` | `task_id`, `task_name`, `queue` |
-| `TASK_STARTED` | Before `run()` is called | `task_id`, `task_name` |
-| `TASK_COMPLETED` | After `run()` succeeds | `task_id`, `task_name`, `duration_ms` |
-| `TASK_FAILED` | After `run()` raises, on the last attempt | `task_id`, `task_name`, `exception` |
-| `TASK_RETRYING` | Before a retry is published | `task_id`, `retry_count`, `delay` |
-| `TASK_CANCELLED` | When a cancel flag is observed mid-run | `task_id`, `task_name` |
-| `TASK_EXPIRED` | When `max_age` is exceeded at pickup | `task_id`, `task_name`, `age_seconds` |
-| `TASK_LOCKED` | When a task's lock acquisition is in progress | `task_id`, `task_name`, `lock_name` |
+| `TASK_STARTED` | Before `run()` is called | `task_id`, `task_name`, `queue` |
+| `TASK_COMPLETED` | After `run()` succeeds | `task_id`, `task_name`, `queue`, `duration_ms` |
+| `TASK_FAILED` | After **every** failed attempt (`run()` raised or timed out), before the retry-or-DLQ decision | `task_id`, `task_name`, `queue`, `exception` (string) |
+| `TASK_RETRYING` | Before a retry is published | `task_id`, `task_name`, `queue`, `retry_count` (the upcoming attempt's retry number), `delay` (seconds) |
+| `TASK_CANCELLED` | When a cancel flag is observed mid-run | `task_id`, `task_name`, `queue` |
+| `TASK_EXPIRED` | When `max_age` is exceeded at pickup; the message goes to the DLQ | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` |
+| `TASK_LOCKED` | When the task's lock is held by another execution at pickup (lock conflict); the message is requeued with a delay | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |
 | `TASK_RATE_LIMITED` | When the rate limiter defers a message | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | When a unique-task SETNX loses the race | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
 | `TASK_DLQ` | Once, when a message is terminally dead-lettered by the worker (retry exhaustion, `NoRetry`, delivery limit reached) | `task_id`, `task_name`, `queue`, `error` |
 | `TASK_REJECTED` | When the worker hands a message to the broker's dead-letter exchange without diagnostic headers: oversized body, undecodable body, unregistered task, broken middleware-chain factory, failed dead-letter publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
-| `WORKFLOW_STEP_ENQUEUED` | After each workflow step is published (by `Client.apply` or the advancer in the worker), in addition to `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
-| `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | Worker lifecycle | `worker_id` |
+| `WORKFLOW_STEP_ENQUEUED` | After each workflow step is published (by `app.apply()` or the advancer in the worker), in addition to `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
+| `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker lifecycle | `worker_id` |
+| `WORKER_HEARTBEAT` | Periodic liveness tick of the worker's metrics sampler | `worker_id`, `uptime_seconds` |
 | `WORKER_RECYCLING` | A compute child (`kind="compute_child"`) or the worker itself (`kind="worker"`) is recycled by RSS or task count | `worker_id`, `kind`, `slot`, `reason` (`rss`/`tasks`/`forced`), `value` |
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler leader transitions | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader swap sources | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up after downtime skipped cron occurrences | `worker_id`, `schedule_name`, `skipped_count` |
 
-Handlers should accept `**kwargs` defensively. The
-`TASK_DUPLICATE_DETECTED` signal's `batch_index` key is present only
+`TASK_FAILED` is per attempt: a task with `max_retries=3` that always
+fails fires it four times, interleaved with three `TASK_RETRYING`. To
+react only when the work is given up, subscribe to `TASK_DLQ`, which
+fires once at the terminal hand-off to the DLQ.
+
+The `TASK_DUPLICATE_DETECTED` signal's `batch_index` key is present only
 when the source is `client.schedule_many` — use
 `kwargs.get("batch_index")` to avoid `KeyError`.
 
@@ -92,14 +120,15 @@ not abort the task or the worker.
 
 ```python
 @app.on_signal(Signal.TASK_COMPLETED)
-async def broken(task_id, task_name, duration_ms):
+async def broken(task_id, task_name, duration_ms, **kwargs):
     raise RuntimeError("this is fine")
 ```
 
-The library emits:
+The library logs a WARNING on the `swarmq.signals` logger, with the
+traceback attached (`--log-format human`):
 
 ```text
-signal_handler_error signal=task_completed handler=broken error=...
+2026-10-06T10:02:13.511204Z [warning  ] signal_handler_error           [swarmq.signals] error='this is fine' error_type=RuntimeError handler=broken signal=task_completed
 ```
 
 and moves on. This is intentional — a buggy metrics handler must not
@@ -110,14 +139,14 @@ be able to poison task execution.
 Register as many as you need. Handlers run in registration order:
 
 ```python
-@app.on_signal(Signal.TASK_FAILED)
-async def to_sentry(task_id, task_name, exception):
-    await sentry.capture(exception, tags={"task": task_name})
+@app.on_signal(Signal.TASK_DLQ)
+async def to_slack(task_id, task_name, error, **kwargs):
+    await slack.post(channel="#ops", text=f"{task_name} dead-lettered: {error}")
 
 
-@app.on_signal(Signal.TASK_FAILED)
-async def to_pagerduty(task_id, task_name, exception):
-    if isinstance(exception, DatabaseDown):
+@app.on_signal(Signal.TASK_DLQ)
+async def to_pagerduty(task_id, task_name, error, **kwargs):
+    if task_name in ("charge_card", "send_invoice"):
         await pagerduty.trigger(task_id)
 ```
 
@@ -132,29 +161,49 @@ The two mechanisms overlap. Use this heuristic:
   and do not need to wrap each task lifecycle. Handlers are simpler
   to reason about than full middleware.
 
-When in doubt: if the code only looks at `task_id` and `exception`,
-it is a signal handler. If it needs `pre_execute` + `post_execute`
-symmetry, it is a middleware.
+When in doubt: if the code only looks at `task_id` and the error
+message, it is a signal handler. If it needs the exception object or
+`pre_execute` + `post_execute` symmetry, it is a middleware.
 
 ## Typical uses
 
 ### Sentry / error aggregator integration
 
+An error tracker wants the exception object with its traceback. The
+signal only carries the message, so use a middleware `on_error` hook
+instead; it runs on every failed attempt with the real exception:
+
 ```python
-@app.on_signal(Signal.TASK_FAILED)
-async def capture(task_id, task_name, exception):
-    await sentry.capture(exception, tags={"task": task_name})
+import sentry_sdk
+
+from swarmq import Middleware, MessageContext
+
+
+class SentryMiddleware(Middleware):
+    async def on_error(
+        self, message: MessageContext, exception: BaseException,
+    ) -> None:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("task", message["task_name"])
+            scope.set_tag("queue", message["queue"])
+            sentry_sdk.capture_exception(exception)
+
+
+app.add_middleware(SentryMiddleware())
 ```
 
 ### Slack notification for DLQ drops
 
+`TASK_DLQ` fires once per dead-lettered message, after the retries
+are used up (or on `NoRetry`); `error` is the error message:
+
 ```python
-@app.on_signal(Signal.TASK_FAILED)
-async def alert(task_id, task_name, exception):
+@app.on_signal(Signal.TASK_DLQ)
+async def alert(task_id, task_name, queue, error, **kwargs):
     if task_name in ("charge_card", "send_invoice"):
         await slack.post(
             channel="#ops",
-            text=f":fire: {task_name} failed: {task_id}",
+            text=f":fire: {task_name} dead-lettered on {queue}: {task_id} ({error})",
         )
 ```
 
@@ -182,7 +231,7 @@ With `swarmq[metrics]` the same events are counted in
 
 ```python
 @app.on_signal(Signal.TASK_CANCELLED)
-async def audit(task_id, task_name):
+async def audit(task_id, task_name, **kwargs):
     await audit_log.insert(
         event="task_cancelled",
         task_id=task_id, task_name=task_name,
@@ -192,14 +241,17 @@ async def audit(task_id, task_name):
 ### Prometheus counters without the exporter
 
 If you are not using `swarmq[metrics]`, you can emit Prometheus
-metrics from handlers directly:
+metrics from handlers directly. This counts failed attempts, not
+failed tasks:
 
 ```python
-FAILURES = Counter("task_failures", "Task failures", ["task"])
+from prometheus_client import Counter
+
+FAILED_ATTEMPTS = Counter("task_failed_attempts", "Failed task attempts", ["task"])
 
 @app.on_signal(Signal.TASK_FAILED)
-async def count(task_id, task_name, exception):
-    FAILURES.labels(task=task_name).inc()
+async def count(task_id, task_name, exception, **kwargs):
+    FAILED_ATTEMPTS.labels(task=task_name).inc()
 ```
 
 ## What not to do in handlers
@@ -216,14 +268,17 @@ async def count(task_id, task_name, exception):
 
 ## Verify
 
-Register one handler, schedule a task, watch the worker log:
+Register one handler for `TASK_COMPLETED` that logs an event of its
+own, schedule a task, watch the worker log:
 
 ```bash
 swarmq worker --module myapp.tasks --log-level INFO --log-format human
 ```
 
-Your handler's `log.info("...")` line appears immediately after
-`TASK_COMPLETED`, in the same log stream.
+Your handler's line appears right after the worker's `task_succeeded`
+line for that task, in the same log stream. Signals themselves are not
+log lines: `TASK_COMPLETED` is the hook, `task_succeeded` is the log
+event the worker writes just before dispatching it.
 
 ## See also
 
