@@ -4,6 +4,10 @@ Plan 2026-10-06-1811, U9 (KTD9):
 - [x] Vor dem Forkserver-Start steht die aufgeloeste ``configure_logging``-
   Einstellung als ``SWARMQ_FORKSERVER_LOG_SENTINEL`` (``"1"``/``"0"``) in der
   Umgebung -- der Preload liest sie dort.
+
+Plan 2026-10-06-1811, U10 (KTD7):
+- [x] Der ``/ready``-Grund eines ungesunden Pools nennt auch eine verworfene
+  Kindquelle (``forkserver_restarted_multithreaded``).
 """
 
 from __future__ import annotations
@@ -123,6 +127,16 @@ async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path)
     assert ok is False and "unhealthy" in (reason or "")
     worker._executor.pool_healthy = True
     assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)
+
+
+async def test_forkserver_ready_names_a_rejected_fork_source_as_a_cause(monkeypatch, tmp_path):
+    """Plan 2026-10-06-1811, KTD7: Ein still neu gestarteter, mehrfaediger
+    Forkserver macht den Pool dauerhaft ungesund; der ``/ready``-Grund nennt
+    diese Ursache neben Handshake-Fehlern und blockierten Slots."""
+    monkeypatch.setattr(wiring, "forkserver_pid", lambda: None)
+    worker = SimpleNamespace(_compute_handle=object(), _executor=SimpleNamespace(pool_healthy=False))
+    _, reason = await wiring.forkserver_ready(worker, proc_root=tmp_path)
+    assert "fork source rejected" in (reason or "")
 
 
 def test_preload_includes_the_child_runtime_modules():

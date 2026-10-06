@@ -64,17 +64,38 @@ itself.
 |---|---|
 | Detect | Daemon thread runs `watchfiles.watch(...)` (Rust `notify` crate under the hood). Events hit a 1.6s debounce window to absorb format-on-save bursts. |
 | Trigger | On the first debounced event, the thread calls `os.kill(os.getpid(), SIGHUP)`. |
-| Reload | The supervisor's existing SIGHUP handler drains children and `os.execvpe`s `sys.executable` with the startup-argv + startup-env snapshot — in-process mutation of `sys.argv` / `os.environ` cannot influence the re-exec vector (R4.6 hardening). The argv snapshot is taken from `sys.orig_argv`, so interpreter flags and `python -m` survive: a supervisor started as `python -m swarmq.cli worker …` reloads into the same command. |
+| Reload | The supervisor's SIGHUP handler only records the request; its monitor loop (every 0.5 s) carries it out: it drains children, flushes its log queue within `log_drain_timeout` and `os.execvpe`s `sys.executable` with the startup-argv + startup-env snapshot — in-process mutation of `sys.argv` / `os.environ` cannot influence the re-exec vector (R4.6 hardening). The argv snapshot is taken from `sys.orig_argv`, so interpreter flags and `python -m` survive: a supervisor started as `python -m swarmq.cli worker …` reloads into the same command. |
 
 With `--log-config`, the supervisor validates the logging config file
-again before it stops any worker. If the file has become invalid since
-the start, the reload is aborted with a `log_config_reload_failed`
-ERROR (fields `path`, `error_type`, `error`, `hint`); workers and
-logging keep running unchanged. Fix the file and save a task module
-again (or send `SIGHUP`) to retry.
+again before it stops any worker. The check runs `dictConfig` in a
+separate interpreter, in its own process group, and the monitor loop
+polls it; restarting dead or hung workers, autoscaling and the control
+channel carry on meanwhile. Several `SIGHUP`s during a check lead to
+exactly one check. The outcome:
 
-The watcher suppresses re-entrancy: if a reload is already in flight
-when a second change lands, the second event is discarded (the
+- valid: the reload proceeds;
+- the file has become invalid since the start: the reload is aborted
+  with a `log_config_reload_failed` ERROR (fields `path`, `error_type`,
+  `error`, `hint`);
+- the check has not finished after 30 seconds, for example because a
+  handler blocks on its target (syslog over TCP): the reload is aborted
+  with a `log_config_reload_probe_timeout` ERROR (fields `path`,
+  `timeout_s`, `hint`) — this does not mean the file is invalid.
+
+When aborted, workers and logging keep running unchanged. Fix the file
+or its target and save a task module again (or send `SIGHUP`) to retry.
+
+`SIGTERM` (and `SIGINT`) always win over a reload: during a check, after
+the reload was decided while the workers are stopping, and when a
+`SIGHUP` arrives right after the `SIGTERM`. The supervisor then shuts
+down without re-executing itself; a check still running is killed. A
+`SIGTERM` that arrives in the last moment before `os.execvpe` stays
+pending and ends the new supervisor as soon as it has set up its signal
+handlers.
+
+The watcher suppresses re-entrancy: if a reload is already pending, being
+checked or in flight when a second change lands, the second event is
+discarded (the
 already-running reload will pick up the newer code anyway). A crashed
 watcher thread logs `watch_thread_crashed` and exits silently — the
 supervisor keeps running without reload until the next restart.

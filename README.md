@@ -251,8 +251,9 @@ result = await (await app.apply(
   Bring your own `dictConfig` file (`--log-config`, JSON or YAML), leave
   logging to your app (`--no-configure-logging`), set per-logger levels
   (`--logger-level aio_pika=WARNING`), size the queue
-  (`--log-queue-size`) and raise the `task_received`/`task_started`
-  events (`--log-lifecycle-level`). Task lifecycle events go to the
+  (`--log-queue-size`), bound every flush of the queue
+  (`--log-drain-timeout`, default 5 s) and raise the
+  `task_received`/`task_started` events (`--log-lifecycle-level`). Task lifecycle events go to the
   `swarmq.task` logger; every event inside a task carries `task_id`,
   `task_name`, `queue`, `worker_id`, `workflow_id`, `attempt` (and
   `compute_child` in CPU mode); exceptions are reported as `error_type`
@@ -298,7 +299,8 @@ Worker behaviour is configured via env vars and CLI flags.
 Other flags: `--processes`, `--autoscale`, `--max-processes`,
 `--group`, `--pool`, `--metrics-port`, `--health-port`, `--burst`,
 `--burst-idle-timeout`, `--priorities`, `--reload`, `--watch-dir`,
-`--configure`, `--check`, `--log-queue-size`, `--log-lifecycle-level`.
+`--configure`, `--check`, `--log-queue-size`, `--log-lifecycle-level`,
+`--log-drain-timeout`.
 
 Most worker-behaviour flags have an env-var twin (`SWARMQ_QUEUES`,
 `SWARMQ_CONCURRENCY`, `SWARMQ_POOL`, `SWARMQ_LOG_FORMAT`, …); `--module`,

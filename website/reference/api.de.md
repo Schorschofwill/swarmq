@@ -86,6 +86,12 @@ Verbindet zuerst `broker`, dann `backend` beim Enter; schließt
 beides beim Exit. Scheitert die Backend-Verbindung, wird die
 Broker-Verbindung zurückgerollt, bevor die Exception propagiert.
 
+Mit `log_queue=True` hängt die letzte Instanz beim Exit die
+[Opt-in-Log-Queue](logging.md#opt-in-log-queue) sofort ab und wartet
+dann, ohne den Event-Loop anzuhalten, auf deren restliche Einträge,
+höchstens `log_drain_timeout` Sekunden (Vorgabe 5). Was bis dahin nicht
+geschrieben ist, gilt als verworfen.
+
 ### `schedule()`
 
 ```python

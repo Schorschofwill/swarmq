@@ -67,6 +67,7 @@ swarmq worker --module DOTTED.PATH
               [--log-config PATH | --no-configure-logging]
               [--logger-level NAME=LEVEL]...
               [--log-queue-size N] [--log-lifecycle-level LEVEL]
+              [--log-drain-timeout SECONDS]
               [--burst] [--burst-idle-timeout SECONDS]
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
@@ -92,12 +93,13 @@ swarmq worker --module DOTTED.PATH
 | `--logger-level NAME=LEVEL` | none | Level for one logger, e.g. `aio_pika=WARNING` or `swarmq.task=WARNING`. Repeatable; applied last. Env var: `SWARMQ_LOGGER_LEVELS` (comma-separated). |
 | `--log-queue-size N` | `10000` | Capacity of the in-process log queue; when it is full, records are dropped instead of blocking. Env var: `SWARMQ_LOG_QUEUE_SIZE`. |
 | `--log-lifecycle-level LEVEL` | `DEBUG` | Level of the `task_received` and `task_started` events. Env var: `SWARMQ_LOG_LIFECYCLE_LEVEL`. |
+| `--log-drain-timeout SECONDS` | `5` | Upper bound for every flush of the log queues: at exit, before a reload, before each compute result. Records not written in time count as dropped. Must be greater than 0 and at most `threading.TIMEOUT_MAX`, otherwise exit `78`. Env var: `SWARMQ_LOG_DRAIN_TIMEOUT`. See [Logging](logging.md#bounded-flushing). |
 | `--burst` | off | Exit cleanly once all queues have been idle for `--burst-idle-timeout` seconds. Env var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. |
 | `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). A configuration error in any worker ends the run after a single attempt with exit `78`. |
+| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
 | `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
 | `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. See [control channel](#control-channel). |
 | `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |

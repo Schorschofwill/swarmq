@@ -164,21 +164,34 @@ app = SwarmQ(broker, backend, log_queue=True, log_level="INFO")
 ```
 
 - SwarmQ hängt einen eigenen Queue-Handler an den Logger `swarmq`. Ein
-  Hintergrund-Thread namens `swarmq-log-listener` gibt jeden Record zum
+  Hintergrund-Thread namens `swarmq-log-lsnr` gibt jeden Record zum
   Ausgabezeitpunkt an deine **Root**-Handler weiter. Handler-Level
   gelten, später hinzugefügte Handler (Sentry, OpenTelemetry, uvicorn)
   bekommen die Records, und ohne Handler greift weiterhin `lastResort`.
 - Die Kontextvariablen des Aufrufers stehen den Filtern deiner Handler
   zur Verfügung, als liefen sie im Aufrufer.
-- `log_level` setzt das Level des Loggers `swarmq`. `log_json` hat hier
-  keine Wirkung: Deine Handler formatieren jeden Record, auch die
-  Meldung [`log_records_dropped`](#nicht-blockierende-ausgabe-und-verworfene-eintrage).
+- `log_level` setzt das Level des Loggers `swarmq`. Deine Handler
+  formatieren jeden Record, auch die Meldung
+  [`log_records_dropped`](#nicht-blockierende-ausgabe-und-verworfene-eintrage);
+  `log_json` wählt nur das Format der Zeile
+  [`log_drain_timeout_exceeded`](#begrenztes-leeren).
   `log_queue_size` (Vorgabe `10000`) begrenzt die Queue.
 - Handler, die du direkt an den Logger `swarmq` hängst, bleiben synchron.
   Sentrys `LoggingIntegration` läuft weiterhin im Aufrufer.
-- Der Thread startet mit dem ersten Record, nicht in `SwarmQ(...)`. Die
-  letzte `SwarmQ`-Instanz, die `async with` verlässt, stellt den Logger
-  `swarmq` wieder her (Handler, `propagate`, Level).
+- Der Thread startet mit dem ersten Record, nicht in `SwarmQ(...)`. Im
+  Forkserver eines CPU-Pools startet er nie: Records, die dort beim
+  Import geloggt werden, gehen synchron an deine Root-Handler (ohne
+  Handler erreichen WARNING und höher `lastResort`); jedes Rechenkind
+  startet mit seinem ersten Record einen eigenen Thread.
+- Die letzte `SwarmQ`-Instanz, die `async with` verlässt, stellt den
+  Logger `swarmq` sofort wieder her (Handler, `propagate`, Level).
+  Danach wartet sie, ohne den Event-Loop anzuhalten, bis der Thread die
+  restlichen Records geschrieben hat, höchstens
+  [`log_drain_timeout`](#begrenztes-leeren) Sekunden (Vorgabe 5); was
+  bis dahin nicht geschrieben ist, gilt als verworfen. Eine neue
+  `SwarmQ(log_queue=True)`-Instanz, die in dieser Zeit entsteht, bekommt
+  eine frische Queue. Das `log_drain_timeout` der App begrenzt auch das
+  Leeren beim Prozessende.
 - Die Option ist standardmäßig aus und wirkt nicht in Prozessen, die
   `swarmq worker` konfiguriert (eingebauter Modus oder `--log-config`);
   unter `--no-configure-logging` gilt sie.
@@ -216,6 +229,7 @@ Einrichtung schreibt über eine Queue und einen Hintergrund-Thread nach
 | `--logger-level NAME=LEVEL` (wiederholbar) | `SWARMQ_LOGGER_LEVELS="aio_pika=WARNING,valkey=ERROR"` | keine | Level einzelner Logger, zuletzt angewandt (auch nach einer dictConfig). |
 | `--log-queue-size N` | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Kapazität der prozessinternen Log-Queue; eine positive ganze Zahl. |
 | `--log-lifecycle-level LEVEL` | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level von `task_received` und `task_started` ([Lebenszyklus-Events](#lebenszyklus-events-der-tasks)). |
+| `--log-drain-timeout SECONDS` | `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Obergrenze für jedes Leeren der Log-Queues ([begrenztes Leeren](#begrenztes-leeren)); eine Zahl größer als 0. |
 
 `CRITICAL` ist überall erlaubt, wo ein Level erwartet wird.
 
@@ -238,6 +252,8 @@ zusätzlich `path`). Das betrifft:
 - ein ungültiges Level, Format, einen ungültigen `NAME=LEVEL`-Eintrag
   oder eine ungültige Queue-Größe (die Meldung nennt Flag oder Variable,
   aus der der Wert stammt);
+- eine Frist zum Leeren, die keine endliche Zahl größer als 0 und
+  höchstens `threading.TIMEOUT_MAX` ist;
 - `--log-config` zusammen mit einem ausdrücklichen Format —
   `--log-format`, `SWARMQ_LOG_FORMAT` oder `SWARMQ_LOG_JSON` —, weil die
   Datei das Format festlegt;
@@ -259,7 +275,15 @@ statt der eingebauten Einrichtung an.
   stummschalten (SwarmQs, `aio_pika`).
 - SwarmQ startet die Listener der `QueueHandler` aus der Datei
   (`dictConfig` legt sie an, startet sie aber nicht) und stoppt sie beim
-  Prozessende, wobei die Queue geleert wird.
+  Prozessende, wobei die Queue innerhalb von
+  [`log_drain_timeout`](#begrenztes-leeren) geleert wird. Ein Handler,
+  Filter oder Formatter, der wirft, stoppt einen solchen Listener nicht,
+  einen gestorbenen Listener-Thread startet der nächste Record neu, und
+  eine volle begrenzte Queue verwirft den Record, statt im Aufrufer
+  einen Traceback auszugeben — wie in der eingebauten Einrichtung.
+- Task-Code darf forken (`os.fork()`, `multiprocessing` mit `fork`): Im
+  Kind schreiben diese Queue-Handler weiter
+  ([Fork aus Task-Code](#fork-aus-task-code)).
 - Ein ausdrückliches `--log-level` setzt nach der Datei zusätzlich das
   Root-Level; auch `--logger-level`-Einträge gelten danach.
 - Der Supervisor löst den Pfad auf, lädt und prüft die Datei einmal und
@@ -267,9 +291,14 @@ statt der eingebauten Einrichtung an.
   lesen die Datei nie; weder ein anderes Arbeitsverzeichnis noch eine
   spätere Änderung der Datei wirkt sich dort aus.
 - Bei einem Reload (`SIGHUP`, `--reload`) prüft der laufende Supervisor
-  die Datei erneut, **bevor** er einen Worker stoppt. Ist sie inzwischen
-  ungültig, bricht er den Reload mit `log_config_reload_failed` ab;
-  Worker und Logging laufen unverändert weiter.
+  die Datei erneut in einem eigenen Interpreter, **bevor** er einen
+  Worker stoppt; die Überwachung der Worker läuft währenddessen weiter.
+  Ist die Datei inzwischen ungültig, bricht er den Reload mit
+  `log_config_reload_failed` ab; endet die Prüfung nicht binnen 30
+  Sekunden (ein Handler kann an seinem Ziel hängen), mit
+  `log_config_reload_probe_timeout`. In beiden Fällen laufen Worker und
+  Logging unverändert weiter. Details im
+  [Hot-Reload-Guide](../guides/hot-reload.md#wie-es-funktioniert).
 - In diesem Modus konfiguriert SwarmQ structlog für deinen Task-Code
   nicht; nutzen deine Tasks `structlog.get_logger()`, konfigurierst du
   structlog selbst.
@@ -327,9 +356,13 @@ WARNING und höher `lastResort`. In diesem Modus gilt die
 
 ### Wenn ein Task-Modul das Logging konfiguriert
 
-Ein Worker-Subprozess richtet das Logging ein, **bevor** er dein
-Task-Modul importiert. Ändert das Modul (oder ein `--configure`-Hook)
-danach das Logging, gewinnt deine App:
+IO- und CPU-Pool folgen derselben Regel. Ein Worker-Subprozess richtet
+das Logging ein, **bevor** er dein Task-Modul importiert. Im CPU-Pool
+importiert der Forkserver deine Task-Module; vorher hängt er einen
+Platzhalter-Handler an den Root-Logger (er startet keinen Thread und
+gibt WARNING und höher an `lastResort` weiter), und jedes Rechenkind
+vergleicht beim Einrichten des Loggings mit ihm. Ändert dein Modul
+(oder ein `--configure`-Hook) das Logging, gewinnt deine App:
 
 - **Sie ersetzt die Root-Handler** (etwa mit einer eigenen `dictConfig`):
   SwarmQ tritt zurück und hält seine eigenen Events trotzdem aus dem
@@ -341,11 +374,33 @@ danach das Logging, gewinnt deine App:
   SwarmQ entfernt nichts und loggt `logging_handlers_added_by_app` als
   WARNING mit den Handler-Typen.
 - **`logging.basicConfig(...)` in einem Task-Modul wirkt nicht** unter
-  `swarmq worker`, weil der Root-Logger schon einen Handler hat.
+  `swarmq worker`, in keinem der beiden Pools, weil der Root-Logger
+  schon einen Handler hat. `--log-format`, `--log-level` und
+  `--log-config` gelten deshalb auch in den Rechenkindern.
 
-Im CPU-Pool gilt dieselbe Regel für die Rechenkinder: Handler, die dein
-Modul beim Import einrichtet, erben sie vom Forkserver, und diese
-gewinnen; `logging_reconfigured_by_app` erscheint dann einmal pro Pool.
+Im CPU-Pool erben die Rechenkinder, was dein Modul im Forkserver
+eingerichtet hat. `logging_reconfigured_by_app` und
+`logging_handlers_added_by_app` erscheinen dann einmal pro Pool, vom
+Logger `swarmq.worker.compute.pool`. Enthalten deine Handler einen
+`QueueHandler`, dessen `QueueListener` noch nicht gestartet ist — das
+Muster aus dem Logging-Cookbook mit `listener.start()` im
+`--configure`-Hook, der im Worker-Prozess läuft, nicht aber im
+Forkserver —, startet SwarmQ diesen Listener in jedem Rechenkind; deren
+Zeilen gehen also nicht verloren. Ein beim Import gestarteter Listener
+macht den Forkserver mehrfädig: Der Worker startet dann nicht (Exit
+`78`), und die Meldung nennt den Thread und empfiehlt, ihn lazy oder im
+`--configure`-Hook zu starten.
+
+Unter `--no-configure-logging` gibt es keinen Platzhalter, und
+`basicConfig` in einem Task-Modul wirkt in beiden Pools.
+
+!!! note "Per Pfad gestartetes Hauptmodul"
+    Ein per Pfad gestartetes Hauptmodul (`python app.py`, etwa eine
+    eingebettete App mit CPU-Pool) importiert der Forkserver vor SwarmQs
+    Vorladen. Logging, das dieses Modul beim Import einrichtet, gewinnt
+    in den Rechenkindern, und ein Record daraus kann im Forkserver einen
+    Listener-Thread starten. Garantiert gilt die Regel oben mit dem
+    Befehl `swarmq` und mit `python -m`.
 
 Willst du das Logging ganz selbst besitzen, nimm `--log-config` oder
 `--no-configure-logging`, statt beim Import Logging zu konfigurieren.
@@ -355,8 +410,11 @@ Willst du das Logging ganz selbst besitzen, nimm `--log-config` oder
 Betreibt eine eingebettete App einen CPU-Pool (`pool="cpu"`), startet
 SwarmQ die Rechenkinder selbst. Sie loggen nach **stderr**, gemäß den
 `SwarmQConfig`-Feldern `log_level`, `log_json` (Vorgabe `true`),
-`log_config`, `configure_logging`, `logger_levels` und `log_queue_size`
-— nicht über die Handler deiner App.
+`log_config`, `configure_logging`, `logger_levels`, `log_queue_size` und
+`log_drain_timeout` — nicht über die Handler deiner App. Logging, das
+deine Task-Module beim Import einrichten, folgt
+[derselben Regel wie unter `swarmq worker`](#wenn-ein-task-modul-das-logging-konfiguriert),
+einschließlich der Grenze für ein per Pfad gestartetes Hauptmodul.
 
 ## Nicht blockierende Ausgabe und verworfene Einträge
 
@@ -377,15 +435,90 @@ verwirft SwarmQ Einträge, statt zu blockieren:
   `{"event": "log_records_dropped", "count": N, "level": "warning", "logger": "swarmq.logging", "timestamp": …}`.
 - Wirft ein Handler, Filter oder Formatter, läuft der Listener weiter.
   Die Fehler werden gezählt und auf dieselbe Weise als
-  `log_handler_errors` (Feld `count`) gemeldet; lässt sich auch diese
-  Meldung nicht schreiben, geht sie direkt nach stderr. Ein dennoch
-  gestorbener Listener-Thread startet mit dem nächsten Record neu.
+  `log_handler_errors` (Feld `count`) gemeldet: höchstens einmal pro
+  Sekunde — ein zurückgehaltener Stand kommt mit dem nächsten Record
+  nach Ablauf dieser Sekunde, auch mit einem fehlerfreien — und noch
+  einmal beim Stoppen des Listeners. Lässt sich auch diese Meldung nicht
+  schreiben, geht sie direkt nach stderr. Ein dennoch gestorbener
+  Listener-Thread startet mit dem nächsten Record neu.
 - Der Worker exportiert den Zähler als Prometheus-Metrik
   `swarmq_log_records_dropped_total`. Sie umfasst nur den
   Worker-Prozess; Verluste in Rechenkindern zeigt deren Meldungszeile.
 
-Auf jedem geordneten Exit-Pfad wird die Queue geleert. Ein per `SIGKILL`
-beendeter Prozess verliert die Einträge, die noch in seiner Queue liegen.
+### Begrenztes Leeren
+
+Auf jedem geordneten Exit-Pfad werden die Queues geleert, und jedes
+Leeren ist durch `log_drain_timeout` begrenzt (Vorgabe 5 Sekunden;
+`--log-drain-timeout`, `SWARMQ_LOG_DRAIN_TIMEOUT` oder das
+`SwarmQConfig`-Feld). Das gilt beim Prozessende (`atexit`), am Ende
+eines Worker-Subprozesses, im Supervisor, bevor er sich für einen Reload
+neu ausführt, in einem Rechenkind vor jedem Ergebnis, für die Listener
+einer `--log-config`-Datei und in `SwarmQ.__aexit__`. Alle Listener
+eines Prozesses teilen sich eine Frist und werden parallel gestoppt;
+ein blockiertes Ziel hält die anderen also nicht auf. Was bis dahin
+nicht geschrieben ist, gilt als verworfen (in `dropped_log_records()`
+und der Metrik). Für die Listener einer dictConfig-Datei ist die Zahl
+eine Obergrenze: Der aufgegebene Thread kann einige dieser Records
+später doch noch schreiben.
+
+Ist die Frist abgelaufen:
+
+- SwarmQ gibt den Listener-Thread auf. Seine Handler werden aus der
+  Liste ausgetragen, die `logging.shutdown()` beim Prozessende leert;
+  auch der Interpreter wartet also nicht auf sie. Solange der Thread
+  hängt, werden neue Records für diese Handler als verworfen gezählt,
+  statt eingereiht.
+- Eine Abschlusszeile `log_drain_timeout_exceeded` (Felder `count`,
+  `timeout_s`) geht direkt auf Dateideskriptor 2, aber nur, wenn stderr
+  sie annimmt, ohne zu blockieren; sonst bleibt es beim Zähler. Sie ist
+  JSON, wenn die aufgegebene Queue zu einer JSON-Einrichtung gehört
+  (eingebautes Format `json` oder `log_json` bei der Opt-in-Queue),
+  sonst die Textzeile
+  `swarmq: log_drain_timeout_exceeded — N log record(s) not written within T s, counted as dropped`.
+- Prozesse, die SwarmQ selbst startet — der Befehl `swarmq` mit seinem
+  Supervisor, die Worker-Subprozesse und die Rechenkinder —, enden hart
+  per `os._exit` mit dem Exit-Code, mit dem sie ohnehin geendet hätten,
+  wenn nach dem Leeren noch ein aufgegebener Log-Thread hängt. Sonst
+  bricht der Interpreter beim Beenden ab (`Fatal Python error`, Exit
+  `134`) oder hängt, wenn ein Thread beim Schreiben nach stderr
+  feststeckt. Registrierte `atexit`-Funktionen, die noch nicht gelaufen
+  sind, laufen dann nicht mehr. stdout und stderr werden vorher geleert,
+  sofern das nicht blockiert — stdout nicht, wenn es dieselbe Datei
+  oder Pipe ist wie der hängende Stream (etwa bei `2>&1` oder unter
+  journald).
+- Eine App, die SwarmQ einbettet, wird nie hart beendet. Ist ihr stderr
+  beim Prozessende noch blockiert, kann der Interpreter dort weiterhin
+  hängen oder abbrechen; dieses Risiko bleibt.
+
+Der Befehl `swarmq` (und `python -m swarmq.cli`) startet über
+`swarmq.cli:console_main`. Code, der `swarmq.cli.main()` direkt
+aufruft, bekommt kein hartes Ende.
+
+Ein Record, der während des Herunterfahrens des Interpreters entsteht,
+etwa aus einem `__del__` nach dem Leeren beim Prozessende, wird synchron
+geschrieben, statt einen Logging-Fehler auszulösen. Ein per `SIGKILL`
+beendeter Prozess verliert die Einträge, die noch in seiner Queue
+liegen.
+
+### Fork aus Task-Code
+
+Task-Code darf `os.fork()` aufrufen (oder `multiprocessing` mit der
+Startmethode `fork` nutzen), in der eingebauten Einrichtung ebenso wie
+mit den Queue-Handlern einer `--log-config`-Datei:
+
+- Im Kind bekommt jeder solche Queue-Handler eine frische, leere Queue
+  gleichen Typs und gleicher Größe. Records, die beim Fork noch in der
+  Queue liegen, schreibt der Elternprozess, nicht noch einmal das Kind,
+  und die Verluste des Elternprozesses werden nicht erneut gemeldet. Der
+  Listener-Thread des Kindes startet mit seinem ersten Record.
+- `multiprocessing`-Queues und Queues anderer Klassen (etwa eine eigene
+  Unterklasse, per `"()"` in der Datei angelegt) bleiben unverändert;
+  SwarmQ erneuert nur `queue.Queue` und `queue.SimpleQueue`.
+- Vor dem Fork wartet ein Hook insgesamt höchstens 50 ms auf
+  Listener-Threads, die gerade schreiben; so erbt das Kind keinen halb
+  geschriebenen Datensatz. Ein Ziel, das länger belegt ist, oder Code,
+  der am Lock des Handlers vorbei in denselben Stream schreibt, kann im
+  Kind dennoch einen halb geschriebenen Datensatz hinterlassen.
 
 ## Task-Kontext-Felder
 
@@ -450,11 +583,13 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry`, `swarmq.process_manager.supervisor` | ERROR | Konfigurationsfehler, Exit `78`. Aus `swarmq.cli` (Elternprozess) und `swarmq.process_manager.entry` (Worker-Kind): Felder `source` (`supervisor`/`worker`), `error_type`, `error`, `hint`, dazu `path` bei kaputter Konfigurationsdatei und `worker_id` im Kind. Aus `swarmq.process_manager.supervisor`, wenn ein Kind mit `78` endete: Felder `worker_id`, `pid`, `exitcode`, `hint`. Traceback auf stderr nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
 | `worker_connection_error` | `swarmq.cli` | ERROR | Broker oder Backend beim Start nicht erreichbar, Exit `1`. Traceback nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
 | `worker_recycle_ack_timeout` | `swarmq.process_manager.entry` | ERROR | Ein recycelnder Worker bekam keine Bestätigung und endet mit `75`. |
-| `log_config_reload_failed` | `swarmq.process_manager.run` | ERROR | Reload abgebrochen; Felder `path`, `error_type`, `error`, `hint`. |
+| `log_config_reload_failed` | `swarmq.process_manager.reload` | ERROR | Reload abgebrochen, die `--log-config`-Datei ist jetzt ungültig; Felder `path`, `error_type`, `error`, `hint`. |
+| `log_config_reload_probe_timeout` | `swarmq.process_manager.reload` | ERROR | Reload abgebrochen, die Prüfung der `--log-config`-Datei dauerte länger als 30 s; die Worker laufen weiter. Felder `path`, `timeout_s`, `hint`. |
 | `logging_reconfigured_by_app` | `swarmq.logging`, `swarmq.worker.compute.pool` | INFO | Deine App hat die Root-Handler ersetzt; Feld `reenabled_loggers`. |
-| `logging_handlers_added_by_app` | `swarmq.logging` | WARNING | Feld `handler_types`. |
+| `logging_handlers_added_by_app` | `swarmq.logging`, `swarmq.worker.compute.pool` | WARNING | Deine App hat neben SwarmQs Handlern Root-Handler hinzugefügt; Feld `handler_types`. |
 | `log_records_dropped` | `swarmq.logging` | WARNING | Feld `count`; aus dem Listener-Thread, höchstens einmal pro Sekunde und noch einmal beim Stoppen. |
-| `log_handler_errors` | `swarmq.logging` | WARNING | Ein Handler, Filter oder Formatter hat geworfen; Feld `count`; höchstens einmal pro Sekunde. |
+| `log_handler_errors` | `swarmq.logging` | WARNING | Ein Handler, Filter oder Formatter hat geworfen; Feld `count`; höchstens einmal pro Sekunde und noch einmal beim Stoppen des Listeners. |
+| `log_drain_timeout_exceeded` | `swarmq.logging` | WARNING | Kein Log-Record: eine Zeile direkt auf stderr, wenn ein Leeren `log_drain_timeout` überschritten hat, nur wenn stderr nicht blockiert. Felder `count`, `timeout_s`. |
 | `log_record_unformattable` | Logger des Records | Level des Records | Feld `error`. |
 | `task_retrying` | `swarmq.worker.retry` | INFO | Felder `retry_count`, `max_retries`, `delay_ms`. |
 | `task_sent_to_dlq` | `swarmq.worker.retry` | ERROR | Der Task ging in die DLQ. Felder `error_type` (Exception-Klasse; `WorkerHungError` bei erreichtem Zustelllimit) und `error`. |
@@ -481,6 +616,7 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `reload_execvp_failed` | `swarmq.process_manager.supervisor` | ERROR | Der Neustart per `SIGHUP` ist gescheitert; der Supervisor endet mit `1`. |
 | `hot_reload_enabled` | `swarmq.process_manager.supervisor` | WARNING | `--reload` ist aktiv (nur Entwicklung). Feld `watch_dirs`. |
 | `compute_pool_unhealthy` | `swarmq.worker.compute.pool` | ERROR | Kein Rechenkind nutzbar; `/ready` meldet den Pool als down. |
+| `forkserver_restarted_multithreaded` | `swarmq.worker.compute.forkserver` | ERROR | Ein still neu gestarteter Forkserver hat mehr als einen Thread; der Pool verwirft ihn und bleibt ungesund (`/ready`). Felder `pid`, `threads`, `thread_names`, `hint`. |
 | `compute_child_unreaped` | `swarmq.worker.compute.pool` | ERROR | Ein Rechenkind hat SIGKILL überlebt; sein Slot bleibt gesperrt. Felder `slot`, `pid`, `reason`. |
 | `setpoint_applied` | `swarmq.process_manager.setpoint` | INFO | Kontrollkanal: neue Grenzen gelten. Felder `group`, `effective`. |
 | `setpoint_rejected` | `swarmq.process_manager.setpoint` | WARNING | Kontrollkanal: Sollwert abgelehnt, die bisherigen Grenzen bleiben. Felder `group`, `reason`. |
@@ -499,8 +635,8 @@ Alles in `swarmq.logging`:
 |---|---|
 | `get_logger(name)` | Ein Logger im SwarmQ-Stil (structlog-`BoundLogger`), der Events unter `name` an das stdlib-`logging` übergibt; unabhängig von `structlog.configure`. |
 | `build_formatter(json, colors)` | Der [oben](#build_formatter) beschriebene Formatter. |
-| `configure_logging(settings)` | Richtet das Logging eines Prozesses so ein wie `swarmq worker`; `settings` ist ein `swarmq.logging_settings.LoggingSettings` (siehe unten). Für Einstiegspunkte gedacht, die Library ruft es nie auf. Ein zweiter Aufruf im selben Prozess ist wirkungslos. |
-| `shutdown_logging()` | Leert die Log-Queues und stoppt die Listener-Threads; ein späteres `configure_logging()` baut neu auf. Läuft beim Prozessende automatisch. |
+| `configure_logging(settings)` | Richtet das Logging eines Prozesses so ein wie `swarmq worker`; `settings` ist ein `swarmq.logging_settings.LoggingSettings` (siehe unten). Für Einstiegspunkte gedacht, die Library ruft es nie auf. Ein zweiter Aufruf im selben Prozess ist wirkungslos. Sofern `configure` nicht `False` ist, hebt es eine aktive [Opt-in-Log-Queue](#opt-in-log-queue) auf; dieses Leeren begrenzt `settings.drain_timeout`. |
+| `shutdown_logging(timeout=None)` | Leert die Log-Queues und stoppt die Listener-Threads, höchstens `timeout` Sekunden lang (Vorgabe: das von `configure_logging()` oder einer `SwarmQ`-Instanz mit Opt-in gesetzte [`log_drain_timeout`](#begrenztes-leeren), sonst 5); was bis dahin nicht geschrieben ist, gilt als verworfen. Ein späteres `configure_logging()` baut neu auf. Läuft beim Prozessende automatisch. |
 | `load_log_config(path)` | Lädt und prüft eine dictConfig-Datei (JSON, oder YAML mit PyYAML) und gibt sie als JSON-String zurück, mit `disable_existing_loggers` auf `false`, sofern die Datei es nicht setzt. Wendet nichts an; wirft `LoggingConfigError`. |
 | `dropped_log_records()` | Zahl der in diesem Prozess wegen voller Queue verworfenen Log-Einträge; der Wert hinter `swarmq_log_records_dropped_total`. |
 | `LoggingConfigError` | Ungültige Logging-Konfigurationsdatei; siehe [Fehlerkatalog](errors.md#loggingconfigerror). |
@@ -519,6 +655,7 @@ Default:
 | `logger_levels` | `()` | Paare `(("aio_pika", "WARNING"), ...)`, zuletzt angewandt. |
 | `queue_size` | `10000` | Kapazität der Log-Queue. |
 | `lifecycle_level` | `"DEBUG"` | Level von `task_received` und `task_started`. |
+| `drain_timeout` | `5.0` | Obergrenze in Sekunden für das Leeren der Log-Queues ([begrenztes Leeren](#begrenztes-leeren)); gilt auch, wenn `configure` `False` ist. |
 
 ```python
 from swarmq.logging import configure_logging, load_log_config

@@ -6,6 +6,158 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **CPU pool: `logging.basicConfig()` in a task module no longer takes
+  effect, and `--log-format`, `--log-level` and `--log-config` apply in
+  the compute children.** Both pools now follow the same "app wins"
+  rule. Before, the forkserver imported your task modules with an
+  unconfigured root logger, so a `basicConfig()` at import time won in
+  every compute child: against `--log-format json` (plain-text lines in
+  the JSON stream), against `--log-config` (task lines in the app's
+  format) and against `--log-level` (INFO lines lost when `basicConfig`
+  set no level). Now the forkserver attaches a placeholder handler to the
+  root logger before it imports your modules (it starts no thread and
+  passes WARNING and above on to `lastResort`), and each compute child
+  applies the rule of the IO worker: `basicConfig` has no effect, a
+  module that replaces the root handlers (for example with
+  `logging.config.dictConfig`) wins, and added handlers write next to
+  SwarmQ's. `logging_reconfigured_by_app` and
+  `logging_handlers_added_by_app` appear once per pool, from the logger
+  `swarmq.worker.compute.pool`. Under `--no-configure-logging`
+  (`configure_logging=False`) `basicConfig` takes effect in both pools.
+  The same applies to the compute children of an embedded CPU pool. A
+  main module started by path (`python app.py`) is imported by the
+  forkserver before SwarmQ's preload, so its import-time logging still
+  wins there; the rule is guaranteed with the `swarmq` command and
+  `python -m`. **Migration:** put the format you set with `basicConfig`
+  into a `--log-config` file, or pass `--no-configure-logging` if your
+  module should own logging in every process. If your app logs through
+  its own `QueueHandler`, start its `QueueListener` in the `--configure`
+  hook rather than at import time; SwarmQ then starts it in every
+  compute child. Details:
+  [Logging](logging.md#when-a-task-module-configures-logging).
+
+### Changed
+
+- **The listener thread is now called `swarmq-log-lsnr`** (was
+  `swarmq-log-listener`): Linux keeps 15 characters of a thread name,
+  and the forkserver check recognises the thread by that name. Only code
+  that looks the thread up by name is affected.
+- **`log_records_dropped` is an ordinary record from the listener
+  thread** (logger `swarmq.logging`, level WARNING, field `count`),
+  written through the listener's own handlers at most once per second
+  and once more when it stops. Before, the code that logged printed the
+  notice to stderr itself. With the opt-in log queue your handlers
+  format it; `log_json` there only selects the format of the new
+  `log_drain_timeout_exceeded` line.
+- **`log_config_reload_failed` now comes from the logger
+  `swarmq.process_manager.reload`** (was `swarmq.process_manager.run`).
+  A check of the `--log-config` file that runs into its 30-second limit
+  is reported as `log_config_reload_probe_timeout` instead.
+- **The `swarmq` command starts through `swarmq.cli:console_main`**
+  (was `swarmq.cli:main`), like `python -m swarmq.cli`. It ends the
+  process hard when a log thread is still stuck after the final flush
+  (see Added). `swarmq.cli.main()` is unchanged and never exits hard.
+
+### Added
+
+- **`log_drain_timeout`** (`--log-drain-timeout SECONDS`,
+  `SWARMQ_LOG_DRAIN_TIMEOUT`, `SwarmQConfig(log_drain_timeout=...)`,
+  `LoggingSettings.drain_timeout`; default 5; precedence CLI > env >
+  config > default): upper bound for every flush of the log queues — at
+  process exit, when a worker subprocess ends, before the supervisor
+  re-executes itself for a reload, in a compute child before each
+  result, for the listeners of a `--log-config` file and in
+  `SwarmQ.__aexit__`. All listeners of a process share the deadline and
+  are stopped in parallel; records not written by then count as dropped.
+  A value that is not a finite number greater than 0 and at most
+  `threading.TIMEOUT_MAX` ends `swarmq worker` with exit `78` (a
+  `ConfigurationError` for `SwarmQConfig`). `shutdown_logging()` takes
+  an optional `timeout`.
+- **Hard exit of SwarmQ's own processes.** If a given-up log thread is
+  still stuck after the flush, the `swarmq` command, worker subprocesses
+  and compute children end via `os._exit` with the exit code they would
+  have had, instead of aborting with `Fatal Python error` (exit `134`)
+  or hanging. Registered `atexit` functions that have not run yet do
+  not run then; stdout is not flushed when it shares the stuck file or
+  pipe (`2>&1`, journald). Apps that embed SwarmQ are never ended hard.
+- **New events:** `log_handler_errors` (a handler, filter or formatter
+  raised; field `count`), `log_drain_timeout_exceeded` (a line written
+  directly to stderr when a flush exceeded the deadline, only if stderr
+  does not block; fields `count`, `timeout_s`),
+  `log_config_reload_probe_timeout` (fields `path`, `timeout_s`,
+  `hint`) and `forkserver_restarted_multithreaded` (ERROR; fields `pid`,
+  `threads`, `thread_names`, `hint`).
+- **The forkserver thread check names the threads** it found and the
+  likely cause: the opt-in log queue, a logging `QueueListener` of your
+  app started at import time, or else a BLAS/OpenMP computation. It
+  also runs after a silent restart of the forkserver; a restarted
+  forkserver with more than one thread is rejected, and `/ready` reports
+  the pool as unhealthy from then on.
+
+### Fixed
+
+- **A full log queue no longer stalls the code that logs.** With a
+  blocked stderr the drop notice was written by the caller — on the
+  event loop — which stood still for seconds (2.9 s measured; without a
+  reader of stderr indefinitely). With a closed stderr a log call raised
+  `ValueError` into application code. The caller now only counts.
+- **A raising handler, filter or formatter no longer kills the listener
+  thread.** Afterwards every record was silently dropped, and the flush
+  at exit hung forever. The same applied to the queue handlers of a
+  `--log-config` file, where a full bounded queue also printed a
+  traceback in the caller. Errors are now caught and counted
+  (`log_handler_errors`), and a dead listener restarts with the next
+  record.
+- **Flushing the log queues can no longer hang a process.** A blocked
+  stderr or a slow handler made every flush last as long as the target:
+  the exit of every SwarmQ process, the supervisor before a reload (its
+  workers were already stopped), and a compute child, whose result then
+  never arrived. Every flush is now bounded by `log_drain_timeout`.
+- **`SwarmQ.__aexit__` with `log_queue=True` no longer blocks the event
+  loop** while the opt-in queue drains (up to 12 s measured with a slow
+  handler).
+- **CPU pool with the opt-in log queue:** a `swarmq.*` record logged at
+  import time while `SwarmQ(log_queue=True)` or `SWARMQ_LOG_QUEUE=1` was
+  active (also from calling `setup_dishka()` twice) started a listener
+  thread in the forkserver. The worker then refused to start with exit
+  `78` and a hint that blamed a BLAS computation. The forkserver now
+  writes such records synchronously.
+- **CPU pool with your own logging `QueueHandler`:** a `QueueListener`
+  started at import time made the worker refuse to start with the same
+  misleading hint; one started in the `--configure` hook was never
+  started in the compute children, so all their lines were lost although
+  `logging_reconfigured_by_app` was reported. SwarmQ now starts it in
+  every child, and the startup message names the app listener.
+- **CPU pool logging matched neither the IO pool nor the
+  documentation** (`basicConfig` won against `--log-format json`,
+  `--log-config` and `--log-level`); see Changed (breaking).
+- **A silently restarted forkserver was never checked for threads.**
+- **Hot reload with `--log-config`:** the file was checked inside the
+  `SIGHUP` signal handler, which froze supervision for up to 30 seconds
+  (dead workers were not replaced, autoscaling and the control channel
+  paused). A `SIGTERM` during the check turned into a restart instead of
+  a shutdown, a second `SIGHUP` started a second check in parallel, and
+  the file watcher triggered again during the check. A check that ran
+  into its time limit, or was interrupted by Ctrl-C, was reported as an
+  invalid configuration. The check now runs outside the signal handler,
+  in its own process group; several `SIGHUP`s lead to one check.
+- **`SIGTERM` always ends the supervisor.** A `SIGHUP` that arrived
+  shortly after a `SIGTERM` restarted the supervisor instead of shutting
+  it down — in every deployment, with or without `--log-config`. A
+  `SIGTERM` during the worker stop for a reload is honoured as well.
+- **Forking from task code:** after `os.fork()` the queue handlers of a
+  `--log-config` file lost every record in the child (with a bounded
+  queue, each record printed a `Logging error`). A fork while a listener
+  was writing could leave the child with `RuntimeError: reentrant call`
+  on every record. The child now gets fresh queues, and the fork waits
+  up to 50 ms for running writes.
+- **Records logged while the interpreter shuts down** (for example
+  "Future exception was never retrieved" or from a `__del__`) caused a
+  `--- Logging error ---` and were lost; they are now written
+  synchronously.
+
 ## [0.8.0] — 2026-10-06
 
 ### Changed (breaking)

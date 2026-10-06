@@ -74,6 +74,7 @@ Details, recipes and the event catalog:
 | `SWARMQ_LOGGER_LEVELS` | unset | Comma-separated `NAME=LEVEL` pairs, e.g. `aio_pika=WARNING,valkey=ERROR`. |
 | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Capacity of the in-process log queue. |
 | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level of `task_received` and `task_started`. |
+| `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Upper bound in seconds for every flush of the log queues (at exit, before a reload, before each compute result, in `SwarmQ.__aexit__`); records not written in time count as dropped. Greater than 0 and at most `threading.TIMEOUT_MAX`. See [bounded flushing](logging.md#bounded-flushing). |
 | `SWARMQ_LOG_QUEUE` | `false` | Embedded apps: route `swarmq.*` events through a SwarmQ background thread to your root handlers ([opt-in log queue](logging.md#opt-in-log-queue)). |
 
 The supervisor of `swarmq worker` resolves these values once (CLI flag
@@ -229,10 +230,13 @@ so `metrics_port` and `health_port` are bound as given.
 
 `SwarmQ(...)` does not configure logging. The logging fields
 (`log_level`, `log_json`, `log_config`, `configure_logging`,
-`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`)
-steer only the [opt-in log queue](logging.md#opt-in-log-queue), the
-lifecycle level of an embedded worker and the compute children of an
-embedded CPU pool.
+`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`,
+`log_drain_timeout`) steer only the
+[opt-in log queue](logging.md#opt-in-log-queue), the lifecycle level of
+an embedded worker and the compute children of an embedded CPU pool.
+With `log_queue=True`, `log_drain_timeout` bounds the flush in
+`__aexit__` and at process exit; an invalid value raises
+`ConfigurationError`.
 
 ## `TaskInfo` fields
 

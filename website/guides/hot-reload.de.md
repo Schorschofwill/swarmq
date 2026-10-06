@@ -69,18 +69,40 @@ endlos loopen.
 |---|---|
 | Detect | Daemon-Thread läuft `watchfiles.watch(...)` (Rust-`notify`-Crate darunter). Events treffen ein 1,6s-Debounce-Fenster, um Format-on-Save-Bursts zu absorbieren. |
 | Trigger | Beim ersten debounceden Event ruft der Thread `os.kill(os.getpid(), SIGHUP)` auf. |
-| Reload | Der bestehende SIGHUP-Handler des Supervisors drained Children und `os.execvpe`t `sys.executable` mit dem Startup-argv + Startup-env-Snapshot — In-Process-Mutation von `sys.argv` / `os.environ` kann den Re-Exec-Vektor nicht beeinflussen (R4.6-Hardening). Der argv-Snapshot stammt aus `sys.orig_argv`, Interpreter-Flags und `python -m` bleiben also erhalten: Ein als `python -m swarmq.cli worker …` gestarteter Supervisor lädt mit demselben Kommando neu. |
+| Reload | Der SIGHUP-Handler des Supervisors merkt die Anforderung nur vor; sein Überwachungs-Loop (alle 0,5 s) führt sie aus: Er drained Children, leert seine Log-Queue innerhalb von `log_drain_timeout` und `os.execvpe`t `sys.executable` mit dem Startup-argv + Startup-env-Snapshot — In-Process-Mutation von `sys.argv` / `os.environ` kann den Re-Exec-Vektor nicht beeinflussen (R4.6-Hardening). Der argv-Snapshot stammt aus `sys.orig_argv`, Interpreter-Flags und `python -m` bleiben also erhalten: Ein als `python -m swarmq.cli worker …` gestarteter Supervisor lädt mit demselben Kommando neu. |
 
 Mit `--log-config` prüft der Supervisor die Logging-Konfigurationsdatei
-erneut, bevor er einen Worker stoppt. Ist die Datei seit dem Start
-ungültig geworden, bricht der Reload mit einem ERROR
-`log_config_reload_failed` ab (Felder `path`, `error_type`, `error`,
-`hint`); Worker und Logging laufen unverändert weiter. Korrigiere die
-Datei und speichere erneut ein Task-Modul (oder sende `SIGHUP`), um es
-noch einmal zu versuchen.
+erneut, bevor er einen Worker stoppt. Die Prüfung führt `dictConfig` in
+einem eigenen Interpreter und einer eigenen Prozessgruppe aus, und der
+Überwachungs-Loop fragt sie ab; Neustarts toter oder hängender Worker,
+Autoskalierung und Kontrollkanal laufen währenddessen weiter. Mehrere
+`SIGHUP`s während einer Prüfung führen zu genau einer Prüfung. Das
+Ergebnis:
 
-Der Watcher unterdrückt Re-Entrancy: Läuft bereits ein Reload,
-wenn eine zweite Änderung landet, wird das zweite Event verworfen
+- gültig: Der Reload läuft weiter;
+- die Datei ist seit dem Start ungültig geworden: Der Reload bricht mit
+  einem ERROR `log_config_reload_failed` ab (Felder `path`,
+  `error_type`, `error`, `hint`);
+- die Prüfung ist nach 30 Sekunden nicht fertig, etwa weil ein Handler
+  an seinem Ziel hängt (Syslog über TCP): Der Reload bricht mit einem
+  ERROR `log_config_reload_probe_timeout` ab (Felder `path`,
+  `timeout_s`, `hint`) — das heißt nicht, dass die Datei ungültig ist.
+
+Bei einem Abbruch laufen Worker und Logging unverändert weiter.
+Korrigiere die Datei oder ihr Ziel und speichere erneut ein Task-Modul
+(oder sende `SIGHUP`), um es noch einmal zu versuchen.
+
+`SIGTERM` (und `SIGINT`) gewinnen immer gegen einen Reload: während
+einer Prüfung, nach dem Beschluss zum Reload, während die Worker
+stoppen, und wenn kurz nach dem `SIGTERM` ein `SIGHUP` eintrifft. Der
+Supervisor fährt dann herunter, ohne sich neu auszuführen; eine noch
+laufende Prüfung wird beendet. Ein `SIGTERM`, das im letzten Moment vor
+`os.execvpe` eintrifft, bleibt anhängig und beendet den neuen Supervisor,
+sobald dieser seine Signal-Handler eingerichtet hat.
+
+Der Watcher unterdrückt Re-Entrancy: Ist bereits ein Reload
+vorgemerkt, in Prüfung oder im Gange, wenn eine zweite Änderung landet,
+wird das zweite Event verworfen
 (der laufende Reload nimmt den neueren Code ohnehin auf). Ein
 gecrashter Watcher-Thread loggt `watch_thread_crashed` und exitet
 still — der Supervisor läuft ohne Reload bis zum nächsten Restart

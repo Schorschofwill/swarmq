@@ -85,6 +85,12 @@ Connects `broker` then `backend` on enter; closes both on exit. If
 the backend fails to connect, the broker connection is rolled back
 before the exception propagates.
 
+With `log_queue=True`, the last instance to exit detaches the
+[opt-in log queue](logging.md#opt-in-log-queue) at once and then waits
+for its remaining records without blocking the event loop, at most
+`log_drain_timeout` seconds (default 5). Records not written by then
+count as dropped.
+
 ### `schedule()`
 
 ```python

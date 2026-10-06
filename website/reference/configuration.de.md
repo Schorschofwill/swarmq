@@ -75,6 +75,7 @@ CPU-Pools. Details, Rezepte und den Event-Katalog findest du in der
 | `SWARMQ_LOGGER_LEVELS` | nicht gesetzt | Komma-separierte `NAME=LEVEL`-Paare, z. B. `aio_pika=WARNING,valkey=ERROR`. |
 | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Kapazität der prozessinternen Log-Queue. |
 | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level von `task_received` und `task_started`. |
+| `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Obergrenze in Sekunden für jedes Leeren der Log-Queues (beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds, in `SwarmQ.__aexit__`); nicht rechtzeitig geschriebene Einträge gelten als verworfen. Größer als 0 und höchstens `threading.TIMEOUT_MAX`. Siehe [begrenztes Leeren](logging.md#begrenztes-leeren). |
 | `SWARMQ_LOG_QUEUE` | `false` | Eingebettete Apps: `swarmq.*`-Events über einen Hintergrund-Thread von SwarmQ an deine Root-Handler leiten ([Opt-in-Log-Queue](logging.md#opt-in-log-queue)). |
 
 Der Supervisor von `swarmq worker` löst diese Werte einmal auf (CLI-Flag
@@ -232,10 +233,13 @@ gebunden.
 
 `SwarmQ(...)` konfiguriert kein Logging. Die Logging-Felder
 (`log_level`, `log_json`, `log_config`, `configure_logging`,
-`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`)
-steuern nur die [Opt-in-Log-Queue](logging.md#opt-in-log-queue), das
-Lebenszyklus-Level eines eingebetteten Workers und die Rechenkinder
-eines eingebetteten CPU-Pools.
+`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`,
+`log_drain_timeout`) steuern nur die
+[Opt-in-Log-Queue](logging.md#opt-in-log-queue), das Lebenszyklus-Level
+eines eingebetteten Workers und die Rechenkinder eines eingebetteten
+CPU-Pools. Mit `log_queue=True` begrenzt `log_drain_timeout` das Leeren
+in `__aexit__` und beim Prozessende; ein ungültiger Wert wirft
+`ConfigurationError`.
 
 ## `TaskInfo`-Felder
 
