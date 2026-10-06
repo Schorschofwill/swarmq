@@ -9,8 +9,6 @@ import json as _json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Literal
 
-import structlog
-
 if TYPE_CHECKING:
     from datetime import datetime
 
@@ -22,9 +20,6 @@ from swarmq.exceptions import (
     ResultNotReadyError,
 )
 from swarmq.progress import ProgressInfo
-
-logger = structlog.get_logger()
-
 
 # Default TTL for the cancel flag. 24h is wide enough to outlive the
 # typical retry-horizon + redelivery window while still self-healing

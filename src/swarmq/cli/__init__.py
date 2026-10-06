@@ -96,6 +96,7 @@ from swarmq.exceptions import (
     ConfigurationError,
 )
 from swarmq.locking import SCHEDULER_LOCK_KEY  # noqa: F401
+from swarmq.logging import get_logger
 from swarmq.scheduler import (
     ScheduleDefinition,  # noqa: F401
     ScheduleStore,  # noqa: F401
@@ -109,6 +110,8 @@ from swarmq.serialization import compute_dedup_hash  # noqa: F401
 # subcommand handlers that actually need ``SwarmQ`` import it locally.
 from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 from swarmq.task import Task  # noqa: F401
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy surface — heavy re-exports that must not trigger at import time.
@@ -242,8 +245,7 @@ def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
     """Logging fuer den Worker-Zweig einrichten (Plan 2026-10-06-0831, U7).
 
     Der Supervisor loest die Einstellungen genau einmal auf (CLI > Env >
-    Default, KTD7) und gibt sie aufgeloest an seine Kinder weiter. Lazy
-    importiert, damit ``swarmq --help`` ohne ``swarmq.logging`` auskommt.
+    Default, KTD7) und gibt sie aufgeloest an seine Kinder weiter.
 
     Raises:
         ConfigurationError: Eine Logging-Einstellung ist ungueltig.
@@ -267,7 +269,7 @@ def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
 
 
 def _flush_worker_logging() -> None:
-    """Log-Queue leeren; lazy importiert wie ``_setup_worker_logging``."""
+    """Log-Queue leeren (flush-on-exit, KTD8)."""
     from swarmq.logging import flush_logging
 
     flush_logging()
@@ -289,10 +291,10 @@ def _log_worker_config_error(exc: BaseException) -> None:
     Eine ungueltige Logging-Konfigurationsdatei nennt zusaetzlich ``path``
     (AE4); die Ursache aus ``__cause__`` steht in ``error``.
     """
-    from swarmq.logging import flush_logging, get_logger
+    from swarmq.logging import flush_logging
 
     path = getattr(exc, "path", None)
-    get_logger("swarmq.cli").error(
+    logger.error(
         "worker_config_error",
         source="supervisor",
         error_type=type(exc).__name__,
@@ -373,9 +375,7 @@ def _run_worker_command(args: argparse.Namespace) -> int:
         # Verbindungsfehler bleiben 1: hier ist "gleich nochmal" richtig.
         # U7 (R15): als strukturierte Zeile im gewaehlten Format; das
         # ``finally`` leert die Queue vor dem Exit.
-        from swarmq.logging import get_logger
-
-        get_logger("swarmq.cli").error(
+        logger.error(
             "worker_connection_error",
             source="supervisor",
             error_type=type(exc).__name__,

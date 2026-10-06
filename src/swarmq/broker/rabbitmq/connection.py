@@ -13,7 +13,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aio_pika
-import structlog
 from aio_pika.exceptions import (
     AMQPChannelError,
     ChannelClosed,
@@ -23,9 +22,9 @@ from aio_pika.exceptions import (
 
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
-from swarmq.logging import sanitize_url
+from swarmq.logging import _error_fields, get_logger, sanitize_url
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 # How long to wait for the connection/channel to become ready again
 # during a reconnect before surfacing BrokerConnectionError. U1.1
@@ -436,12 +435,12 @@ class RabbitMQConnection:
             async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
                 if not channel.is_closed:
                     await channel.close()
-        except Exception:
+        except Exception as exc:
             # Best effort — nie eskalieren, aber auch nicht verschweigen: Ein
             # systematischer Fehlschlag bedeutet, dass aiormq die offene
             # Confirmation-Future nie freigibt, und das waere auf DEBUG genau
             # im Diagnosefall unsichtbar.
-            logger.warning("publish_channel_close_incomplete", exc_info=True)
+            logger.warning("publish_channel_close_incomplete", **_error_fields(exc), exc_info=True)
 
     async def _ensure_publish_channel(self) -> aio_pika.abc.AbstractChannel:
         """Return a ready publish channel; recreate if dropped.

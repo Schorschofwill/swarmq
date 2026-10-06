@@ -6,9 +6,9 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any, NotRequired, TypedDict
 
-import structlog
+from swarmq.logging import _error_fields, get_logger
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class MessageContext(TypedDict):
@@ -78,6 +78,7 @@ async def _swallow(
             "middleware_hook_failed",
             hook=hook_name,
             middleware=type(middleware).__name__,
+            **_error_fields(exc),
             exc_info=exc,
         )
 

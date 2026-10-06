@@ -14,15 +14,15 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-import structlog
 import valkey.asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import ValkeyConnection
 from swarmq.exceptions import BackendConnectionError
+from swarmq.logging import _error_fields, get_logger
 from swarmq.lua import load_script
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 # Polling-Rückfall, wenn Pub/Sub die Benachrichtigung verpasst (Client-Erbe).
 _FALLBACK_POLL_S = 0.005
@@ -116,8 +116,8 @@ class ValkeyResults(ValkeyConnection):
     async def notify_result(self, task_id: str) -> None:
         try:
             await self._require_client().publish(self.notify_channel_name(task_id), "done")
-        except (BackendConnectionError, ValkeyError, OSError):
-            logger.warning("publish_notification failed", task_id=task_id, exc_info=True)
+        except (BackendConnectionError, ValkeyError, OSError) as exc:
+            logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
     async def _pubsub_window(
         self,
@@ -241,8 +241,8 @@ class ValkeyResults(ValkeyConnection):
         """
         try:
             await self._require_client().publish(self.progress_channel_name(task_id), payload)
-        except (BackendConnectionError, ValkeyError, OSError):
-            logger.warning("publish_progress_failed", task_id=task_id, exc_info=True)
+        except (BackendConnectionError, ValkeyError, OSError) as exc:
+            logger.warning("publish_progress_failed", task_id=task_id, **_error_fields(exc))
 
     async def watch_progress(self, task_id: str) -> AsyncIterator[bytes]:
         """Fortschritts-Payloads (JSON der HASH-Felder) bis zum Abbruch.
@@ -333,7 +333,7 @@ class ValkeyResults(ValkeyConnection):
         try:
             await self._run("clear_cancel_flag", self._require_client().delete(self._cancel_key(task_id)), op_timeout)
         except BackendConnectionError as exc:
-            logger.warning("cancel_flag_delete_failed", task_id=task_id, error=str(exc))
+            logger.warning("cancel_flag_delete_failed", task_id=task_id, **_error_fields(exc))
 
     # ------------------------------------------------------------------
     # R4.1 Workflow — Zustand, Cancel-Flag, Benachrichtigung
@@ -395,8 +395,8 @@ class ValkeyResults(ValkeyConnection):
         Best-effort: failures are logged and swallowed."""
         try:
             await self._require_client().publish(self.workflow_notify_channel(wf_id), "done")
-        except (BackendConnectionError, ValkeyError, OSError):
-            logger.warning("publish_workflow_notification failed", wf_id=wf_id, exc_info=True)
+        except (BackendConnectionError, ValkeyError, OSError) as exc:
+            logger.warning("publish_workflow_notification_failed", workflow_id=wf_id, **_error_fields(exc))
 
     async def wait_for_workflow(self, wf_id: str, *, timeout: float) -> bool:
         """``True`` bei Benachrichtigung vor Ablauf, sonst ``False``."""
@@ -462,7 +462,7 @@ class ValkeyResults(ValkeyConnection):
                 "unique_release", script(keys=[self._unique_key(dedup_hash)], args=[owner]), op_timeout
             )
         except BackendConnectionError as exc:
-            logger.warning("unique_release_backend_error", dedup_hash=dedup_hash, task_id=owner, error=str(exc))
+            logger.warning("unique_release_backend_error", dedup_hash=dedup_hash, task_id=owner, **_error_fields(exc))
             return False
         return int(result) == 1
 

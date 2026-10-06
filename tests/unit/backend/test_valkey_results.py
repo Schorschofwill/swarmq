@@ -13,6 +13,7 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.exceptions import BackendConnectionError
@@ -266,3 +267,95 @@ class TestCompareAndStoreWorkflowState:
         backend = ValkeyBackend("valkey://127.0.0.1:1/0")
         with pytest.raises(BackendConnectionError):
             await backend.compare_and_store_workflow_state("wf-1", b"{}", ttl_ms=5_000, expected_version=0)
+
+
+# ---------------------------------------------------------------------------
+# Logging (Plan 2026-10-06-0831, U9: R2, R17, R18)
+# ---------------------------------------------------------------------------
+# Test list:
+# 1. Scheitert ``notify_result``, loggt das ``publish_notification_failed``
+#    (vorher ``"publish_notification failed"``) auf WARNING ueber den Logger
+#    ``swarmq.backend.valkey.results`` mit ``task_id``, ``error_type``, ``error``.
+# 2. Scheitert ``notify_workflow``, loggt das
+#    ``publish_workflow_notification_failed`` mit ``workflow_id`` (vorher
+#    ``wf_id``) und Fehlerfeldern.
+# 3. Scheitert ``publish_progress``, loggt ``publish_progress_failed`` die
+#    Fehlerfelder.
+# 4. Scheitert ``clear_cancel_flag``, loggt ``cancel_flag_delete_failed`` die
+#    Fehlerfelder.
+# 5. Scheitert ``release_unique``, loggt ``unique_release_backend_error`` die
+#    Fehlerfelder.
+
+
+def _results_entry(entries: list[dict], event: str) -> dict:
+    [entry] = [e for e in entries if e["event"] == event and e["logger"] == "swarmq.backend.valkey.results"]
+    return entry
+
+
+class TestResultsLogging:
+    @pytest.mark.timeout(5)
+    async def test_failed_notify_result_logs_publish_notification_failed(self, swarmq_logs) -> None:
+        backend, client, _ = _backend(None)
+        client.publish = AsyncMock(side_effect=ValkeyError("publish down"))
+
+        await backend.notify_result("task-1")
+
+        entry = _results_entry(swarmq_logs, "publish_notification_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["task_id"] == "task-1"
+        assert entry["error_type"] == "ValkeyError"
+        assert entry["error"] == "publish down"
+
+    @pytest.mark.timeout(5)
+    async def test_failed_notify_workflow_logs_publish_workflow_notification_failed(self, swarmq_logs) -> None:
+        backend, client, _ = _backend(None)
+        client.publish = AsyncMock(side_effect=OSError("socket closed"))
+
+        await backend.notify_workflow("wf-1")
+
+        entry = _results_entry(swarmq_logs, "publish_workflow_notification_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["workflow_id"] == "wf-1"
+        assert "wf_id" not in entry
+        assert entry["error_type"] == "OSError"
+        assert entry["error"] == "socket closed"
+
+    @pytest.mark.timeout(5)
+    async def test_failed_publish_progress_logs_error_fields(self, swarmq_logs) -> None:
+        backend, client, _ = _backend(None)
+        client.publish = AsyncMock(side_effect=ValkeyError("publish down"))
+
+        await backend.publish_progress("task-1", b"{}")
+
+        entry = _results_entry(swarmq_logs, "publish_progress_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["task_id"] == "task-1"
+        assert entry["error_type"] == "ValkeyError"
+        assert entry["error"] == "publish down"
+
+    @pytest.mark.timeout(5)
+    async def test_failed_clear_cancel_flag_logs_error_fields(self, swarmq_logs) -> None:
+        backend, client, _ = _backend(None)
+        client.delete = AsyncMock(side_effect=ValkeyError("delete down"))
+
+        await backend.clear_cancel_flag("task-1")
+
+        entry = _results_entry(swarmq_logs, "cancel_flag_delete_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["task_id"] == "task-1"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert "delete down" in entry["error"]
+
+    @pytest.mark.timeout(5)
+    async def test_failed_release_unique_logs_error_fields(self, swarmq_logs) -> None:
+        backend, client, _ = _backend(None)
+        client.register_script = Mock(return_value=AsyncMock(side_effect=ValkeyError("script down")))
+
+        assert await backend.release_unique("hash-1", "task-1") is False
+
+        entry = _results_entry(swarmq_logs, "unique_release_backend_error")
+        assert entry["log_level"] == "warning"
+        assert entry["dedup_hash"] == "hash-1"
+        assert entry["task_id"] == "task-1"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert "script down" in entry["error"]

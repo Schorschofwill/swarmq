@@ -25,6 +25,8 @@ import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from swarmq.logging import get_logger
+
 try:  # pragma: no cover - branch exercised via patch.dict in tests
     import dishka as _dishka  # noqa: F401
 
@@ -34,6 +36,8 @@ except ImportError:  # pragma: no cover - exercised via patch.dict in tests
 
 if TYPE_CHECKING:
     from dishka import AsyncContainer
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +101,7 @@ def setup_dishka(container: AsyncContainer) -> None:
     """
     global _container
     if _container is not _MISSING and _container is not container:
-        import structlog
-
-        structlog.get_logger().warning(
+        logger.warning(
             "dishka_container_replaced",
             hint=(
                 "setup_dishka() was already called with a different "
@@ -142,9 +144,7 @@ def _key_resolvable(container: object, key: object) -> bool:
         # Introspection surface changed across dishka versions — degrade to
         # presence-only (the container-registered check already passed). Log
         # the degradation rather than silently skipping resolvability.
-        import structlog
-
-        structlog.get_logger().warning(
+        logger.warning(
             "dishka_resolvability_introspection_unavailable",
             detail=(
                 "dishka registry introspection API not as expected; "

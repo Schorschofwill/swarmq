@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import structlog
 import valkey.asyncio
 from valkey.asyncio.retry import Retry
 from valkey.backoff import ExponentialBackoff
@@ -20,8 +19,6 @@ from valkey.exceptions import ValkeyError
 
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BackendConnectionError, ConfigurationError
-
-logger = structlog.get_logger()
 
 # Transient transport errors that should be retried transparently by the
 # valkey-py client. Application-level errors (ResponseError, DataError,

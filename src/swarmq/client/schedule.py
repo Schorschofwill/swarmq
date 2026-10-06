@@ -11,8 +11,6 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-import structlog
-
 if TYPE_CHECKING:
     from swarmq.middleware import MiddlewareChain
     from swarmq.registry import TaskRegistry
@@ -29,6 +27,7 @@ from swarmq.headers import (
     HEADER_UNIQUE_HASH,
     HEADER_UNIQUE_UNTIL,
 )
+from swarmq.logging import _error_fields, get_logger
 from swarmq.middleware import (
     MessageContext,
 )
@@ -40,7 +39,7 @@ from swarmq.serialization import (
 from swarmq.signals import Signal
 from swarmq.task import UniqueUntil
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 class ClientBroker(Publisher, Protocol):
     """Broker-Bedarf des Clients (U15): publish + Verbindungs-Lifecycle."""
@@ -179,7 +178,7 @@ class ClientScheduling:
         await self._signal_dispatcher.dispatch(
             Signal.TASK_DUPLICATE_DETECTED, **payload,
         )
-        logger.info("swarmq.dedup.detected", **payload)
+        logger.info("dedup_detected", **payload)
         return dedup_hash, existing
 
     async def _rollback_unique_claim(
@@ -201,10 +200,10 @@ class ClientScheduling:
             )
         except Exception as exc:
             logger.warning(
-                "swarmq.dedup.rollback_failed",
+                "dedup_rollback_failed",
                 dedup_hash=dedup_hash,
                 task_id=task_id,
-                error=str(exc),
+                **_error_fields(exc),
             )
 
     def _ensure_schedule_store(self) -> ScheduleStore:
@@ -512,7 +511,7 @@ class ClientScheduling:
         await self._signal_dispatcher.dispatch(
             Signal.TASK_DUPLICATE_DETECTED, **payload,
         )
-        logger.info("swarmq.dedup.detected", **payload)
+        logger.info("dedup_detected", **payload)
 
     async def _batch_publish_and_finalize(
         self,
