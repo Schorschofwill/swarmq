@@ -32,7 +32,7 @@ def _worker(pool: str = "cpu", **cfg):
     dispatcher = MagicMock()
     dispatcher.dispatch = AsyncMock()
     return SimpleNamespace(
-        _config=config, _registry=_Registry({"t": _T}), _gate_deps=MagicMock(),
+        _config=config, _registry=_Registry({"t": _T}), _gate_deps=MagicMock(config=config),
         _signal_dispatcher=dispatcher, _executor="original",
     )
 

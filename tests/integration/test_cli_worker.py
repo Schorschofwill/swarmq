@@ -212,13 +212,42 @@ def test_configure_hook_middleware_runs_for_every_task() -> None:
     assert asyncio.run(_results_ok(queue, tids)) == 3
 
 
-async def _enqueue_hook_tasks(queue: str, n: int) -> list[str]:
+def test_lifecycle_events_of_one_task_id_in_json_at_debug() -> None:
+    """U11 (Plan 2026-10-06-0831, R16, KTD12): Mit ``--log-format json
+    --log-level DEBUG`` stehen ``task_received``, ``task_started``,
+    ``task_failed`` und ``task_succeeded`` einer Task-ID im Log -- der erste
+    Versuch scheitert, der Retry gelingt."""
+    import json
+
+    queue = f"cli-life-{uuid.uuid4().hex[:8]}"
+    [tid] = asyncio.run(_enqueue_hook_tasks(queue, 1, task_name="cli_flaky"))
+    proc = _run_worker_cli(
+        "--module", "tests.integration._cli_fixture_tasks",
+        "--queues", queue, "--burst", "--burst-idle-timeout", "4",
+        "--log-format", "json", "--log-level", "DEBUG",
+        env_extra={"CLI_TEST_QUEUE": queue},
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    entries = [json.loads(line) for line in proc.stderr.splitlines() if line.startswith("{")]
+    lifecycle = [
+        (entry["event"], entry["level"]) for entry in entries
+        if entry.get("logger") == "swarmq.task" and entry.get("task_id") == tid
+    ]
+    assert lifecycle == [
+        ("task_received", "debug"), ("task_started", "debug"), ("task_failed", "info"),
+        ("task_received", "debug"), ("task_started", "debug"), ("task_succeeded", "info"),
+    ], proc.stderr[-3000:]
+
+
+async def _enqueue_hook_tasks(queue: str, n: int, *, task_name: str = "cli_echo") -> list[str]:
     os.environ["CLI_TEST_QUEUE"] = queue
-    ensure_fixture_registered("tests.integration._cli_fixture_tasks", "cli_echo")
+    ensure_fixture_registered("tests.integration._cli_fixture_tasks", task_name)
+    args = ("ping",) if task_name == "cli_echo" else ()
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         await app.broker.declare_queue(queue)
-        return [await app.schedule("cli_echo", "ping", queue=queue) for _ in range(n)]
+        return [await app.schedule(task_name, *args, queue=queue) for _ in range(n)]
 
 
 async def _results_ok(queue: str, tids: list[str]) -> int:

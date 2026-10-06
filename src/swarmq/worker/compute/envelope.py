@@ -91,6 +91,8 @@ class ResultEnvelope:
     rss_mb: float | None = None
     duration_s: float = 0.0
     slot: int | None = None
+    # PID des rechnenden Kinds: ``compute_child`` der Lebenszyklus-Events (U11).
+    pid: int | None = None
 
     def error(self) -> BaseException | None:
         """Die Exception fuer den Fehlerpfad des Loop-Prozesses (KTD5)."""

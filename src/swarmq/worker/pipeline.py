@@ -44,7 +44,7 @@ from swarmq.scheduler import SchedulerLoop
 from swarmq.signals import SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import decode
-from swarmq.worker.execution import TaskExecutor
+from swarmq.worker.execution import TaskExecutor, lifecycle_level, task_logger
 from swarmq.worker.gates import (
     GateContext,
     GateDeps,
@@ -161,6 +161,7 @@ class Worker(WorkerLifecycle):
             gate_deps, dead_letter=lambda d, c, m: self._retry_handler.dead_letter(d, c, m))
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
+        self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)
         self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         # Phase 3b.3: detached lock-release tasks. The shield pattern
@@ -595,6 +596,7 @@ class Worker(WorkerLifecycle):
             workflow_id=self._extract_valid_workflow_id(message),
         )
         with self._log_context(message, ctx):
+            task_logger.log(self._lifecycle_level, "task_received")
             await self._process_message(message, ctx)
 
     async def _process_message(self, message: Any, ctx: GateContext) -> None:

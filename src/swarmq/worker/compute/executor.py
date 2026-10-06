@@ -21,7 +21,6 @@ from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, Can
 from swarmq.exceptions import SoftTimeoutError
 from swarmq.logging import _error_fields, get_logger, load_log_config
 from swarmq.logging_settings import LoggingSettings
-from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
 from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable
@@ -124,13 +123,10 @@ class ComputeExecutor(TaskExecutor):
         )
 
     async def execute(self, ctx: GateContext, message_dict: Any, chain: Any) -> ExecutionResult:
-        deps = self._deps
         task_info = ctx.task_info
         assert task_info is not None
         await chain.run_pre_execute(message_dict)
-        await deps.signals.dispatch(
-            Signal.TASK_STARTED, task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue
-        )
+        await self._emit_started(ctx)
         start_time = time.monotonic()
         result = ExecutionResult(
             result_value=None, is_error=False, is_cancelled=False, error_message="", task_exception=None
@@ -222,6 +218,7 @@ class ComputeExecutor(TaskExecutor):
     def _apply_envelope(
         envelope: ResultEnvelope, result: ExecutionResult, fail: Callable[[BaseException, str], None]
     ) -> None:
+        result.compute_child = envelope.pid
         if envelope.ok:
             result.result_value = envelope.value
             return

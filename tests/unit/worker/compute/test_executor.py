@@ -339,3 +339,44 @@ async def test_job_carries_the_workflow_id_of_the_delivery(setup):
     await ex.execute(ctx, {"retry_count": 0}, MiddlewareChain([]))
 
     assert pool.job.workflow_id == "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
+
+
+# Lebenszyklus-Events im Compute-Pool (Plan 2026-10-06-0831, U11, KTD12):
+# - task_started (Lebenszyklus-Level) vor task_succeeded (INFO) von swarmq.task.
+# - task_succeeded/task_failed tragen compute_child, die PID aus dem Envelope.
+def _lifecycle(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["logger"] == "swarmq.task"]
+
+
+@pytest.mark.timeout(5)
+async def test_compute_pool_reports_started_then_succeeded(setup, swarmq_logs):
+    _, _, ex = setup
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+
+    started, succeeded = _lifecycle(swarmq_logs)
+    assert (started["event"], started["log_level"]) == ("task_started", "debug")
+    assert (succeeded["event"], succeeded["log_level"]) == ("task_succeeded", "info")
+    assert succeeded["duration_ms"] >= 0
+
+
+@pytest.mark.timeout(5)
+async def test_compute_pool_succeeded_carries_the_pid_of_the_child(setup, swarmq_logs):
+    _, pool, ex = setup
+    pool.behaviour = success_envelope("t1", 42, slot=0, pid=4242)
+
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+
+    [succeeded] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_succeeded"]
+    assert succeeded["compute_child"] == 4242
+
+
+@pytest.mark.timeout(5)
+async def test_compute_pool_failed_carries_error_fields_and_the_pid_of_the_child(setup, swarmq_logs):
+    _, pool, ex = setup
+    pool.behaviour = error_envelope("t1", ValueError("boom"), slot=0, pid=4242)
+
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+
+    [failed] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_failed"]
+    assert (failed["log_level"], failed["error_type"], failed["error"]) == ("info", "ValueError", "boom")
+    assert failed["compute_child"] == 4242

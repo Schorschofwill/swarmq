@@ -141,7 +141,7 @@ def _job_log_context(job: ComputeJob) -> Any:
 
 async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnvelope:
     started = time.monotonic()
-    meta: dict[str, Any] = {"slot": slot}
+    meta: dict[str, Any] = {"slot": slot, "pid": os.getpid()}
     try:
         task_class = _lookup_task_class(job.task_name)
     except LookupError as exc:
