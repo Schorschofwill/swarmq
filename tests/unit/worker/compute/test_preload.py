@@ -10,6 +10,15 @@ Plan 2026-10-06-1811, U6 (R6, KTD6):
 - Der Import markiert den Prozess als Fork-Quelle, bevor das Hauptmodul
   importiert wird: Ein Hauptmodul, das die Opt-in-Queue einschaltet und
   danach auf ``swarmq.*`` loggt, startet keinen Listener-Thread.
+Plan 2026-10-06-1811, U9 (R12, KTD9) -- Sentinel an Root:
+- [x] Mit SWARMQ_FORKSERVER_LOG_SENTINEL=1 ist ``basicConfig`` im Hauptmodul
+  wirkungslos: kein StreamHandler an Root, Root-Level unveraendert.
+- [x] Ein WARNING aus dem Forkserver erscheint genau einmal auf stderr
+  (ueber ``logging.lastResort``), ein INFO nicht; kein Thread startet.
+- [x] Ohne die Variable (``configure_logging=False``) gibt es keinen Sentinel:
+  ``basicConfig`` im Hauptmodul wirkt.
+- [x] Hat Root schon Handler (eigenes Hauptmodul per Pfad, KTD6-Grenze),
+  haengt der Preload keinen Sentinel an.
 """
 
 from __future__ import annotations
@@ -27,6 +36,8 @@ PRELOAD = "swarmq.worker.compute.preload"
 FIXTURE_MAIN = "u8_main_fixture"
 FIXTURE_PKG = "u8_pkg"
 FIXTURE_OPTIN_MAIN = "u6_optin_main_fixture"
+FIXTURE_BASICCONFIG_MAIN = "u9_basicconfig_main_fixture"
+SENTINEL_ENV = "SWARMQ_FORKSERVER_LOG_SENTINEL"
 
 
 @pytest.fixture
@@ -40,6 +51,14 @@ def fresh_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[N
         "logging.getLogger('swarmq.tests.preload').info('main_imported')\n",
         encoding="utf-8",
     )
+    (tmp_path / f"{FIXTURE_BASICCONFIG_MAIN}.py").write_text(
+        "import logging\n"
+        "logging.basicConfig(level=logging.INFO, format='APPFMT|%(message)s')\n"
+        "logging.getLogger('u9.forkserver').setLevel(logging.DEBUG)\n"
+        "logging.getLogger('u9.forkserver').warning('fs_warning')\n"
+        "logging.getLogger('u9.forkserver').info('fs_info')\n",
+        encoding="utf-8",
+    )
     (tmp_path / FIXTURE_PKG).mkdir()
     (tmp_path / FIXTURE_PKG / "__init__.py").write_text("", encoding="utf-8")
     (tmp_path / FIXTURE_PKG / "__main__.py").write_text(
@@ -47,7 +66,9 @@ def fresh_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[N
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
-    stale = (PRELOAD, FIXTURE_MAIN, FIXTURE_OPTIN_MAIN, FIXTURE_PKG, f"{FIXTURE_PKG}.__main__")
+    stale = (
+        PRELOAD, FIXTURE_MAIN, FIXTURE_OPTIN_MAIN, FIXTURE_BASICCONFIG_MAIN, FIXTURE_PKG, f"{FIXTURE_PKG}.__main__",
+    )
     for name in stale:
         sys.modules.pop(name, None)
     try:
@@ -103,3 +124,63 @@ def test_import_marks_the_fork_source_before_the_main_module_logs(fresh_modules,
 
     assert seen == ["main_imported"]
     assert not [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]
+
+
+def _forkserver_root() -> logging.Logger:
+    """Root ohne Handler, wie im frischen Forkserver -- im Testkoerper, denn
+    pytest haengt seine Handler erst zur Call-Phase an."""
+    root = logging.getLogger()
+    root.handlers[:] = []
+    return root
+
+
+def test_with_the_sentinel_a_basicconfig_in_the_main_module_has_no_effect(fresh_modules, monkeypatch):
+    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_BASICCONFIG_MAIN)
+    monkeypatch.setenv(SENTINEL_ENV, "1")
+    root = _forkserver_root()
+    level = root.level
+
+    importlib.import_module(PRELOAD)
+
+    assert not [h for h in root.handlers if isinstance(h, logging.StreamHandler)]
+    assert root.level == level
+
+
+def test_the_sentinel_passes_a_forkserver_warning_to_last_resort_exactly_once(fresh_modules, monkeypatch, capsys):
+    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_BASICCONFIG_MAIN)
+    monkeypatch.setenv(SENTINEL_ENV, "1")
+    _forkserver_root()
+    threads = threading.active_count()
+
+    importlib.import_module(PRELOAD)
+
+    err = capsys.readouterr().err
+    assert err.count("fs_warning") == 1
+    assert "fs_info" not in err
+    assert threading.active_count() == threads
+
+
+def test_without_the_sentinel_variable_a_basicconfig_in_the_main_module_applies(fresh_modules, monkeypatch):
+    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_BASICCONFIG_MAIN)
+    monkeypatch.setenv(SENTINEL_ENV, "0")  # --no-configure-logging
+    root = _forkserver_root()
+
+    importlib.import_module(PRELOAD)
+
+    [handler] = root.handlers
+    assert isinstance(handler, logging.StreamHandler)
+    assert root.level == logging.INFO
+
+
+def test_root_handlers_from_a_main_module_started_by_path_get_no_sentinel(fresh_modules, monkeypatch):
+    """KTD6-Grenze: ``python app.py`` importiert das Hauptmodul vor dem
+    Preload; hat es Root schon eingerichtet, gewinnt es wie bisher."""
+    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_MAIN)
+    monkeypatch.setenv(SENTINEL_ENV, "1")
+    root = _forkserver_root()
+    app_handler = logging.StreamHandler()
+    root.addHandler(app_handler)
+
+    importlib.import_module(PRELOAD)
+
+    assert root.handlers == [app_handler]

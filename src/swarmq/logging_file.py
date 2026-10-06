@@ -262,19 +262,24 @@ gestartet hat, mit dem Drop-Zaehler des Listeners; der Fork-Hook setzt sie im
 Kind zurueck (Plan 2026-10-06-1811, KTD10)."""
 
 
-def start_queue_listeners(on_drop: Callable[[], None]) -> None:
+def start_queue_listeners(
+    on_drop: Callable[[], None], *, skip: tuple[type[logging.Handler], ...] = ()
+) -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
 
     ``dictConfig`` legt sie an, startet sie aber nicht. Gestoppt -- und damit
     geleert -- werden sie per ``shutdown_logging``, also auch bei
     Prozessende (``atexit``). ``on_drop`` zaehlt einen wegen voller Queue
-    verworfenen Eintrag (Plan 2026-10-06-1811, KTD1).
+    verworfenen Eintrag (Plan 2026-10-06-1811, KTD1). Handler der Typen
+    ``skip`` -- swarmqs eigene, deren Listener lazy starten -- bleiben aussen
+    vor (Plan 2026-10-06-1811, U9).
     """
     loggers = [logging.getLogger()] + [lg for _, lg in _iter_loggers()]
     for handler in {h for lg in loggers for h in lg.handlers}:
         listener = getattr(handler, "listener", None)
         if (
             isinstance(handler, logging.handlers.QueueHandler)
+            and not isinstance(handler, skip)
             and isinstance(listener, logging.handlers.QueueListener)
             and getattr(listener, "_thread", None) is None
         ):

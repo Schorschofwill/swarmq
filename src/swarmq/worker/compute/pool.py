@@ -42,6 +42,12 @@ from swarmq.worker.compute.forkserver import ForkSourceUnsafe
 
 logger = get_logger(__name__)
 
+_APP_LOGGING_REPORTS = {
+    "logging_reconfigured_by_app": "info",
+    "logging_handlers_added_by_app": "warning",  # wie im Worker (react_to_app_logging)
+}
+"""Meldungen der Kinder ueber das Logging der App, mit ihrem Level."""
+
 RecycleHook = Callable[[int, str, float], Awaitable[None]]
 ProgressSink = Callable[[tuple[Any, ...]], Awaitable[None]]
 
@@ -139,7 +145,7 @@ class SlotPool:
         # Diagnose (Messnachweis M0): (Dauer process.start(), Zeit bis Ready) je Spawn in ms.
         self.recent_spawn_ms: deque[tuple[float, float]] = deque(maxlen=256)
         self.unhealthy_after = 3 * slots
-        self._app_logging_reported = False
+        self._app_logging_reported: set[str] = set()
 
     @property
     def healthy(self) -> bool:
@@ -407,16 +413,17 @@ class SlotPool:
             child.pending.set_result(envelope)
         elif kind in ("progress", "publish"):
             self._forward_progress(msg)
-        elif kind == "logging_reconfigured_by_app":
-            self._report_app_logging(child, msg[1])
+        elif kind in _APP_LOGGING_REPORTS:
+            self._report_app_logging(child, kind, msg[1])
 
-    def _report_app_logging(self, child: _Child, fields: dict[str, Any]) -> None:
-        """Die App hat das Logging der Kinder (KTD14): einmal je Pool melden,
-        nicht je Kind -- jedes Kind erbt dieselbe Einrichtung vom Forkserver."""
-        if self._app_logging_reported:
+    def _report_app_logging(self, child: _Child, event: str, fields: dict[str, Any]) -> None:
+        """Was die App am Logging der Kinder geaendert hat (KTD14; Plan
+        2026-10-06-1811, KTD9): je Event einmal je Pool melden, nicht je Kind
+        -- jedes Kind erbt dieselbe Einrichtung vom Forkserver."""
+        if event in self._app_logging_reported:
             return
-        self._app_logging_reported = True
-        logger.info("logging_reconfigured_by_app", compute_slot=child.slot, pid=child.pid, **fields)
+        self._app_logging_reported.add(event)
+        getattr(logger, _APP_LOGGING_REPORTS[event])(event, compute_slot=child.slot, pid=child.pid, **fields)
 
     def _on_decode_error(self, child: _Child, exc: Exception) -> None:
         self.stats.undecodable += 1

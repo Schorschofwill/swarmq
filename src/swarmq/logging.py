@@ -35,6 +35,45 @@ from swarmq.logging_settings import LoggingSettings
 # Kern, weil ``shutdown_logging`` sie zuruecksetzt.
 
 
+class _ForkSourceSentinel(logging.Handler):
+    """Platzhalter an Root im Forkserver (Plan 2026-10-06-1811, U9, KTD9).
+
+    Haengt vor jedem App-Import an Root: Ein ``basicConfig`` der App findet
+    dann einen Handler vor und bleibt wirkungslos -- wie im IO-Worker, der
+    vor dem App-Import einrichtet. Ohne Thread (KTD6).
+
+    Kein reiner NullHandler: Records ab ``logging.lastResort.level`` gibt er
+    an ``logging.lastResort`` weiter. Warnungen aus dem Forkserver und aus
+    dem Kind vor ``configure_child_logging`` bleiben so sichtbar -- genau
+    einmal, denn mit einem Handler an Root greift ``lastResort`` selbst nicht.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        last = logging.lastResort
+        if last is not None and record.levelno >= last.level:
+            last.handle(record)
+
+
+def install_fork_source_sentinel() -> None:
+    """Haengt den Sentinel an Root (``swarmq.worker.compute.preload``).
+
+    Hat Root schon Handler, hat ein vorher importiertes Hauptmodul (Start per
+    Pfad, KTD6-Grenze) das Logging eingerichtet: Es gewinnt wie bisher, und
+    es gibt keinen Sentinel.
+    """
+    global _FORK_SOURCE_SENTINEL
+    root = logging.getLogger()
+    if not root.handlers:
+        _FORK_SOURCE_SENTINEL = _ForkSourceSentinel()
+        root.addHandler(_FORK_SOURCE_SENTINEL)
+
+
+_FORK_SOURCE_SENTINEL: _ForkSourceSentinel | None = None
+"""Der vom Forkserver geerbte Sentinel; ``configure_child_logging`` vergleicht
+mit ihm wie ``react_to_app_logging`` mit dem Schnappschuss vor dem App-Import.
+Auch dann bekannt, wenn die App ihn von Root entfernt hat."""
+
+
 def root_handler_snapshot() -> tuple[logging.Handler, ...]:
     """Die Root-Handler vor dem App-Import (Regel "App gewinnt", KTD4)."""
     return tuple(logging.getLogger().handlers)
@@ -53,8 +92,7 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
     if not _queue_core._CONFIGURED:
         # Nichts eingerichtet (R12): das Logging gehoert ganz der App.
         return
-    current = logging.getLogger().handlers
-    replaced = any(handler not in current for handler in before)
+    replaced, added = _app_changes(before, tuple(logging.getLogger().handlers))
     reenabled = _reenable_swarmq_loggers()
     if (replaced or reenabled) and not _queue_core._APP_TAKEOVER_REPORTED:
         if replaced:
@@ -62,7 +100,6 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
             _activate_swarmq_queue_after_app_takeover(**_queue_options(before))
         _queue_core._APP_TAKEOVER_REPORTED = True
         get_logger(__name__).info("logging_reconfigured_by_app", reenabled_loggers=reenabled)
-    added = [handler for handler in current if handler not in before]
     if added and not replaced:
         # Neben swarmqs Handler: beide schreiben -- swarmq entfernt nichts.
         get_logger(__name__).warning(
@@ -79,22 +116,36 @@ def _queue_options(handlers: tuple[logging.Handler, ...]) -> dict[str, Any]:
     return {"json": False, "queue_size": LoggingSettings().queue_size}
 
 
-def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
+def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[str, Any]]]:
     """Einstiegspunkt Compute-Kind (Plan 2026-10-06-0831, U7, KTD4, KTD14).
 
-    Wie ``configure_logging``, aber mit der Regel "App gewinnt": Root-Handler,
-    die das Kind schon vorfindet, stammen aus dem Vorladen der App im
-    Forkserver -- swarmq richtet dort nie etwas ein. Sie bleiben, und die
-    swarmq-Logs laufen wie im Worker an die Handler der App.
+    Wie ``configure_logging``, aber mit der Regel "App gewinnt" des Workers
+    (Plan 2026-10-06-1811, U9, KTD9): Verglichen wird mit dem Sentinel, den
+    der Forkserver vor dem App-Import an Root gehaengt hat.
 
-    Liefert dann die Felder fuer ``logging_reconfigured_by_app``, sonst
-    ``None``. Das Event schreibt nicht das Kind, sondern der Pool, einmal je
-    Pool statt einmal je Kind.
+    - nur der Sentinel: swarmq richtet ein, eingebaut oder per ``log_config``;
+    - zusaetzliche Handler daneben: swarmq richtet ein und behaelt sie;
+    - Sentinel ersetzt: Die Handler der App bleiben, und die swarmq-Logs
+      laufen wie im Worker an sie.
+
+    Ohne Sentinel (eigenes Hauptmodul per Pfad, KTD6-Grenze) gewinnen
+    vorgefundene Root-Handler wie bisher.
+
+    Liefert die Meldungen ``(event, felder)``. Sie schreibt nicht das Kind,
+    sondern der Pool, einmal je Pool statt einmal je Kind.
     """
+    global _FORK_SOURCE_SENTINEL
     _queue_core._DRAIN_TIMEOUT = settings.drain_timeout
+    sentinel, _FORK_SOURCE_SENTINEL = _FORK_SOURCE_SENTINEL, None
+    root = logging.getLogger()
+    if sentinel is not None:
+        replaced, added = _app_changes((sentinel,), tuple(root.handlers))
+        root.removeHandler(sentinel)
+        if not replaced:
+            return _configure_next_to_app_handlers(settings, added)
     if not settings.configure or not root_handler_snapshot():
         configure_logging(settings)
-        return None
+        return []
     _queue_core._CONFIGURED = _queue_core._APP_TAKEOVER_REPORTED = True
     if settings.log_config is None:
         # Wie im Worker, der structlog vor dem App-Import einrichtet: Nutzer-
@@ -103,10 +154,52 @@ def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
     # Ausdrueckliche Level je Logger gelten weiter; Root-Handler und
     # Root-Level gehoeren der App.
     _apply_named_levels(settings)
+    # Geerbte, ungestartete Queue-Listener der App (Cookbook-Muster, Start
+    # im ``--configure``-Hook, der nur im Worker laeuft): ohne Start gingen
+    # alle Kindzeilen verloren (R13).
+    _start_app_queue_listeners()
     _activate_swarmq_queue_after_app_takeover(
         json=settings.format == "json", queue_size=settings.queue_size
     )
-    return {"reenabled_loggers": _reenable_swarmq_loggers()}
+    return [("logging_reconfigured_by_app", {"reenabled_loggers": _reenable_swarmq_loggers()})]
+
+
+def _configure_next_to_app_handlers(
+    settings: LoggingSettings, added: list[logging.Handler]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Die App hat Root nicht ersetzt: swarmq richtet ein, und Handler, die
+    sie daneben angehaengt hat, schreiben weiter mit -- wie im Worker."""
+    root = logging.getLogger()
+    for handler in added:
+        root.removeHandler(handler)
+    configure_logging(settings)
+    for handler in added:
+        root.addHandler(handler)
+    if not settings.configure:
+        return []
+    # Ungestartete Queue-Listener der App-Handler (R13), wie bei der Uebernahme.
+    _start_app_queue_listeners()
+    reports: list[tuple[str, dict[str, Any]]] = []
+    if reenabled := _reenable_swarmq_loggers():
+        reports.append(("logging_reconfigured_by_app", {"reenabled_loggers": reenabled}))
+    if added:
+        reports.append(("logging_handlers_added_by_app", {"handler_types": [type(h).__name__ for h in added]}))
+    return reports
+
+
+def _start_app_queue_listeners() -> None:
+    """Startet geerbte, ungestartete Queue-Listener der App (R13); swarmqs
+    eigene Listener starten weiter lazy beim ersten Eintrag (KTD5)."""
+    start_queue_listeners(on_drop=_queue_core.count_dropped, skip=(_StructlogQueueHandler,))
+
+
+def _app_changes(
+    before: tuple[logging.Handler, ...], current: tuple[logging.Handler, ...]
+) -> tuple[bool, list[logging.Handler]]:
+    """Regel "App gewinnt" (KTD4, KTD9): Hat die App einen Root-Handler aus
+    ``before`` ersetzt, und welche hat sie hinzugefuegt?"""
+    replaced = any(handler not in current for handler in before)
+    return replaced, [handler for handler in current if handler not in before]
 
 
 def _reenable_swarmq_loggers() -> int:

@@ -703,6 +703,11 @@ async def test_spawn_timings_are_recorded_for_diagnostics(ctx, signals):
 # 1. [x] Melden mehrere Kinder, dass die App das Logging hat, erscheint
 #        ``logging_reconfigured_by_app`` einmal je Pool, mit den Feldern aus
 #        der ersten Meldung.
+# Plan 2026-10-06-1811, U9 (KTD9):
+# 2. [x] Melden mehrere Kinder, dass die App neben swarmq Root-Handler
+#        angehaengt hat, erscheint ``logging_handlers_added_by_app`` (WARNING)
+#        einmal je Pool mit den Handler-Typen -- unabhaengig von einer
+#        Uebernahme-Meldung.
 
 
 @pytest.mark.timeout(5)
@@ -723,6 +728,25 @@ async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals, swar
     ]
     assert len(reports) == 1
     assert reports[0]["reenabled_loggers"] == 2
+
+
+@pytest.mark.timeout(5)
+async def test_app_handlers_added_next_to_swarmq_are_reported_once_per_pool(ctx, signals, swarmq_logs):
+    p = await _make_pool(ctx, slots=1)
+    for n, tid in enumerate(("a", "b"), start=1):
+        task = asyncio.create_task(p.run(_job(tid), use_di=False))
+        proc = await _started(n)
+        await _ready(p, proc, 0)
+        proc.channel.send(("logging_reconfigured_by_app", {"reenabled_loggers": 1}))
+        proc.channel.send(("logging_handlers_added_by_app", {"handler_types": ["StreamHandler"]}))
+        proc.channel.send(("result", _result(tid, 0)))
+        await task
+        proc.die()
+    await p.aclose()
+    pool_events = [e for e in swarmq_logs if e["logger"] == "swarmq.worker.compute.pool"]
+    added = [e for e in pool_events if e["event"] == "logging_handlers_added_by_app"]
+    assert [(e["log_level"], e["handler_types"]) for e in added] == [("warning", ["StreamHandler"])]
+    assert len([e for e in pool_events if e["event"] == "logging_reconfigured_by_app"]) == 1
 
 
 # Plan 2026-10-06-1811, U6 (R7, KTD7) -- Test-Liste:

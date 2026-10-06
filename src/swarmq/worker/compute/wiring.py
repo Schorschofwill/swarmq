@@ -38,6 +38,7 @@ _RUNTIME_PRELOAD = ("swarmq.logging", "swarmq.worker.compute.child")
 # damit ``spawn._fixup_main_from_name`` es nicht je Kind erneut ausfuehrt (B13).
 _PRELOAD_MODULE = PRELOAD_MODULE
 _MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"  # gelesen von preload.py im Forkserver
+_SENTINEL_ENV = "SWARMQ_FORKSERVER_LOG_SENTINEL"  # dito (Plan 2026-10-06-1811, U9, KTD9)
 
 
 def _main_module_name() -> str:
@@ -53,6 +54,18 @@ def _main_module_name() -> str:
     if not name or name == "__main__" or name.endswith(".__main__"):
         return "__main__"
     return str(name)
+
+
+def prepare_forkserver_env(*, configure_logging: bool) -> None:
+    """Umgebung fuer ``preload.py`` setzen, vor dem Forkserver-Start.
+
+    Die Umgebung ist der einzige Weg in den Forkserver. U8 (KTD10): der
+    Hauptmodulname. Plan 2026-10-06-1811, U9 (KTD9): ob swarmq das Logging
+    der Kinder konfiguriert -- nur dann haengt der Preload vor dem App-Import
+    den Sentinel an Root, und ``basicConfig`` der App bleibt wirkungslos.
+    """
+    os.environ[_MAIN_MODULE_ENV] = _main_module_name()
+    os.environ[_SENTINEL_ENV] = "1" if configure_logging else "0"
 
 
 def preload_modules(registry: Any) -> list[str]:
@@ -72,9 +85,7 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
     if cfg.pool != "cpu":
         return None
     preload = preload_modules(worker._registry)
-    # U8 (KTD10): die Umgebung ist der einzige Weg in den Forkserver — preload.py liest
-    # den Namen beim Import und registriert das Modul dort einmal als ``__main__``.
-    os.environ[_MAIN_MODULE_ENV] = _main_module_name()
+    prepare_forkserver_env(configure_logging=cfg.configure_logging)
     handle: ForkserverHandle = start_forkserver(
         preload,
         thread_limit=cfg.compute_thread_limit,
@@ -162,6 +173,7 @@ __all__ = [
     "close_compute_executor",
     "forkserver_ready",
     "preload_modules",
+    "prepare_forkserver_env",
     "start_compute_executor",
     "warn_hard_timeout_over_consumer_timeout",
 ]

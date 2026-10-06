@@ -38,6 +38,27 @@ Test-Liste:
 15. [x] Plan 2026-10-06-1811, U4: stderr blockiert; das Ergebnis
         kommt trotzdem nach der Frist ``log_drain_timeout`` aus dem Job.
 16. [x] ... und am Ende endet das Kind hart, weil der Log-Thread haengt.
+Plan 2026-10-06-1811, U9 (R12, R13, KTD9) -- der Forkserver haengt vor dem
+App-Import den Sentinel an Root, das Kind vergleicht nach der Regel von
+``react_to_app_logging``:
+17. [x] Sentinel, dann ``basicConfig(format=...)`` der App: Root bleibt
+        unveraendert, das Kind richtet swarmq eingebaut ein (JSON aus dem
+        Job), ohne Meldung; der Sentinel ist danach weg.
+18. [x] Sentinel und ``addHandler`` der App: swarmq richtet ein, behaelt den
+        App-Handler, und das Kind meldet ``logging_handlers_added_by_app``.
+19. [x] Sentinel und ``log_config``: die Datei aus dem Job wird angewendet.
+20. [x] Sentinel von einer dictConfig der App ersetzt: App gewinnt,
+        ``logging_reconfigured_by_app``.
+21. [x] Uebernahme mit geerbtem, ungestartetem ``QueueListener`` der App
+        (Cookbook-Muster, Start erst im ``--configure``-Hook): Er wird
+        gestartet, und die Kindzeilen kommen an (R13).
+22. [x] Unter ``configure=False`` wird ein geerbter Sentinel entfernt; die
+        Handler der App bleiben unberuehrt.
+23. [x] Sentinel bleibt, aber eine dictConfig der App ohne Root hat
+        ``swarmq.*``-Logger stummgeschaltet: swarmq richtet ein, schaltet sie
+        wieder ein und meldet die Zahl wie im Worker.
+24. [x] Ein ungestarteter ``QueueListener`` hinter einem App-Handler neben
+        dem Sentinel wird ebenfalls gestartet; seine Kindzeilen kommen an (R13).
 """
 
 from __future__ import annotations
@@ -45,6 +66,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import logging.config
+import logging.handlers
 import os
 import threading
 import weakref
@@ -516,3 +539,160 @@ def test_a_blocked_stderr_delays_the_result_at_most_by_the_drain_timeout(
     finally:
         stderr.opened.set()
         worker.join(1)
+
+
+def _sentinel_root() -> logging.Logger:
+    """Root wie im Forkserver mit Sentinel (KTD9), vor dem Vorladen der App."""
+    from swarmq.logging import install_fork_source_sentinel
+
+    _forkserver_root()
+    install_fork_source_sentinel()
+    return logging.getLogger()
+
+
+def _stderr_lines(events: list[Any]) -> list[str]:
+    return [item[1] for item in events if isinstance(item, tuple) and item[0] == "stderr"]
+
+
+def _json_event_names(lines: list[str]) -> list[str]:
+    return [json.loads(line)["event"] for line in lines if line.startswith("{")]
+
+
+def _reports(events: list[Any]) -> list[tuple[str, Any]]:
+    return [e for e in events if isinstance(e, tuple) and e[0].startswith("logging_")]
+
+
+@pytest.mark.timeout(5)
+def test_basicconfig_next_to_the_sentinel_has_no_effect_and_the_child_configures(
+    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _sentinel_root()
+    _register_logging_task()
+    logging.basicConfig(level=logging.INFO, format="APPFMT|%(message)s")  # beim Vorladen
+    _capture_stderr(monkeypatch, events)
+
+    child.child_once(_job(log_json=True), _Channel(events), 0)
+
+    lines = _stderr_lines(events)
+    assert "task_line t1" in _json_event_names(lines)
+    assert not [line for line in lines if "APPFMT" in line or not line.startswith("{")]
+    assert _reports(events) == []
+    assert not [h for h in root.handlers if type(h).__name__ == "_ForkSourceSentinel"]
+
+
+@pytest.mark.timeout(5)
+def test_a_handler_added_next_to_the_sentinel_is_kept_and_reported(
+    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _sentinel_root()
+    _register_logging_task()
+    app_handler = CollectingHandler()
+    root.addHandler(app_handler)  # beim Vorladen
+    _capture_stderr(monkeypatch, events)
+
+    child.child_once(_job(log_json=True), _Channel(events), 0)
+
+    assert "task_line t1" in _json_event_names(_stderr_lines(events))
+    assert app_handler in root.handlers
+    assert [r.getMessage() for r in RECORDS] == ["task_line t1"]
+    assert _reports(events) == [("logging_handlers_added_by_app", {"handler_types": ["CollectingHandler"]})]
+
+
+@pytest.mark.timeout(5)
+def test_with_the_sentinel_the_log_config_of_the_job_applies(events: list[Any]) -> None:
+    root = _sentinel_root()
+    _register_logging_task()
+    logging.basicConfig(level=logging.INFO, format="APPFMT|%(message)s")  # beim Vorladen, wirkungslos
+
+    child.child_once(_job(log_config="/does/not/exist.json", log_config_json=_FILE_CONFIG), _Channel(events), 0)
+
+    assert [r.getMessage() for r in RECORDS] == ["task_line t1"]
+    assert [type(h).__name__ for h in root.handlers] == ["CollectingHandler"]
+    assert _reports(events) == []
+
+
+def _app_dictconfig(handlers: dict[str, Any], root_handlers: list[str]) -> None:
+    """dictConfig der App beim Vorladen im Forkserver: ersetzt Root."""
+    logging.config.dictConfig({
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": handlers,
+        "root": {"level": "WARNING", "handlers": root_handlers},
+    })
+
+
+@pytest.mark.timeout(5)
+def test_a_dictconfig_replacing_the_sentinel_wins_and_is_reported(events: list[Any]) -> None:
+    root = _sentinel_root()
+    _register_logging_task()
+    _app_dictconfig({"collect": {"()": _COLLECTING}}, ["collect"])
+
+    child.child_once(_job(log_json=True), _Channel(events), 0)
+
+    assert [type(h).__name__ for h in root.handlers] == ["CollectingHandler"]
+    assert [r.getMessage() for r in RECORDS] == ["task_line t1"]
+    assert _reports(events) == [("logging_reconfigured_by_app", {"reenabled_loggers": 0})]
+
+
+@pytest.mark.timeout(5)
+def test_an_inherited_unstarted_app_queue_listener_is_started_on_takeover(events: list[Any]) -> None:
+    """Cookbook-Muster: Die App startet ihren Listener erst im
+    ``--configure``-Hook, also nur im Worker -- das Kind erbt ihn ungestartet."""
+    _sentinel_root()
+    _register_logging_task()
+    _app_dictconfig(
+        {"collect": {"()": _COLLECTING}, "q": {"class": "logging.handlers.QueueHandler", "handlers": ["collect"]}},
+        ["q"],
+    )
+
+    child.child_once(_job(log_json=True), _Channel(events), 0)
+
+    assert "task_line t1" in [r.getMessage() for r in RECORDS]
+
+
+@pytest.mark.timeout(5)
+def test_without_swarmq_setup_an_inherited_sentinel_is_removed(events: list[Any]) -> None:
+    root = _sentinel_root()
+    _register_logging_task()
+    app_handler = CollectingHandler()
+    root.addHandler(app_handler)
+
+    child.child_once(_job(configure_logging=False), _Channel(events), 0)
+
+    assert root.handlers == [app_handler]
+    assert [r.getMessage() for r in RECORDS] == ["task_line t1"]
+    assert _reports(events) == []
+
+
+@pytest.mark.timeout(5)
+def test_next_to_the_sentinel_disabled_swarmq_loggers_are_reenabled_and_reported(
+    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _sentinel_root()
+    _register_logging_task()
+    muted = logging.getLogger("swarmq.tests.child_muted_u9")
+    monkeypatch.setattr(muted, "disabled", True)  # dictConfig der App ohne Root
+    disabled = sum(
+        1 for name, lg in logging.Logger.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger) and lg.disabled and name.startswith("swarmq")
+    )
+
+    child.child_once(_job(), _Channel(events), 0)
+
+    assert not muted.disabled
+    assert _reports(events) == [("logging_reconfigured_by_app", {"reenabled_loggers": disabled})]
+
+
+@pytest.mark.timeout(5)
+def test_an_unstarted_app_queue_listener_next_to_the_sentinel_is_started(events: list[Any]) -> None:
+    import queue
+
+    root = _sentinel_root()
+    _register_logging_task()
+    app_handler = logging.handlers.QueueHandler(queue.Queue())
+    app_handler.listener = logging.handlers.QueueListener(app_handler.queue, CollectingHandler())
+    root.addHandler(app_handler)  # beim Vorladen, Start erst im --configure-Hook
+
+    child.child_once(_job(log_json=True), _Channel(events), 0)
+
+    assert "task_line t1" in [r.getMessage() for r in RECORDS]

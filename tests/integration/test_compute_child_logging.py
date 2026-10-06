@@ -31,6 +31,13 @@ Plan 2026-10-06-1811, U6 (R6, KTD6) -- Treiber mit der Produktions-Preload-Liste
 8. [x] Wie 7, Opt-in per ``SWARMQ_LOG_QUEUE=1`` statt Argument.
 9. [x] Wie 7, ``setup_dishka`` zweimal (die Bibliothek loggt
        ``dishka_container_replaced``).
+Plan 2026-10-06-1811, U9 (R12, R13, KTD9) -- Sentinel im Forkserver:
+10. [x] ``basicConfig(level=INFO, format=...)`` beim Vorladen ist wirkungslos:
+        Jede Task-Zeile ist JSON nach dem Job, INFO erscheint, das App-Format
+        nie, und es gibt keine Uebernahme-Meldung.
+11. [x] Cookbook-Muster: Die dictConfig der App beim Vorladen legt einen
+        ``QueueHandler`` an, dessen Listener erst ein ``--configure``-Hook
+        startete (nur im Worker). Die Kindzeilen aller Jobs kommen an.
 """
 
 from __future__ import annotations
@@ -268,3 +275,44 @@ def test_replacing_the_dishka_container_at_import_starts_no_thread_in_the_forkse
     )
 
     _assert_single_thread_and_each_line_once(out, stderr)
+
+
+def test_a_basicconfig_in_the_preloaded_app_has_no_effect_in_the_children(tmp_path: Path) -> None:
+    app_setup = """
+    logging.basicConfig(level=logging.INFO, format="APPFMT|%(name)s|%(message)s")
+    """
+
+    out, stderr = _run(
+        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "INFO"}}, app_setup,
+    )
+
+    assert out["threads"] in (1, None)
+    assert out["results"] == ["j0", "j1", "j2"]
+    events = _json_events(stderr)
+    assert sorted(e for e in events if "_line_" in e) == sorted(
+        f"{kind}_line_j{i}" for i in range(3) for kind in ("task", "info")
+    )
+    assert "APPFMT" not in stderr
+    assert "logging_reconfigured_by_app" not in events
+
+
+def test_an_unstarted_app_queue_listener_from_the_preload_delivers_the_child_lines(tmp_path: Path) -> None:
+    app_log = tmp_path / "app.log"
+    app_setup = f"""
+    logging.config.dictConfig({{
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {{"plain": {{"format": "%(message)s"}}}},
+        "handlers": {{
+            "file": {{"class": "logging.FileHandler", "filename": {str(app_log)!r}, "formatter": "plain"}},
+            "queue_handler": {{"class": "logging.handlers.QueueHandler", "handlers": ["file"]}},
+        }},
+        "root": {{"level": "WARNING", "handlers": ["queue_handler"]}},
+    }})
+    """
+
+    out, _ = _run(tmp_path, {"use_di": [False, False, True], "job": {"log_json": True}}, app_setup)
+
+    assert out["results"] == ["j0", "j1", "j2"]
+    lines = [line for line in app_log.read_text().splitlines() if "_line_" in line]
+    assert sorted(lines) == [f"task_line_j{i}" for i in range(3)]

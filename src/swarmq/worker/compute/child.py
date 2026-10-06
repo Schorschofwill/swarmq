@@ -260,9 +260,8 @@ def _configure_child_logging(job: ComputeJob, channel: Any) -> None:
     """
     from swarmq.logging import configure_child_logging
 
-    takeover = configure_child_logging(_child_logging_settings(job))
-    if takeover is not None:
-        channel.send(("logging_reconfigured_by_app", takeover))
+    for report in configure_child_logging(_child_logging_settings(job)):
+        channel.send(report)
 
 
 def _send_result(channel: Any, envelope: ResultEnvelope) -> None:

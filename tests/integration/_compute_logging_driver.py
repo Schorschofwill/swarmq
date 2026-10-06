@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import types
 
@@ -25,15 +24,16 @@ def main() -> None:
     from swarmq.worker.compute.envelope import ComputeJob
     from swarmq.worker.compute.forkserver import start_forkserver
     from swarmq.worker.compute.pool import SlotPool
-    from swarmq.worker.compute.wiring import _main_module_name, preload_modules
+    from swarmq.worker.compute.wiring import preload_modules, prepare_forkserver_env
 
     module, spec = sys.argv[1], json.loads(sys.argv[2])
     configure_logging(LoggingSettings(format="json"))
     # Wie ``start_compute_executor``: Registry mit der Task des Moduls,
-    # Hauptmodulname per Umgebung an den Forkserver.
+    # Hauptmodulname und configure-Einstellung (Sentinel, Plan 2026-10-06-1811,
+    # U9) per Umgebung an den Forkserver.
     task = type("ChildLoggingTask", (), {"__module__": module})
     registry = types.SimpleNamespace(get_all=lambda: {"child_logging_task": task})
-    os.environ["SWARMQ_MAIN_MODULE"] = _main_module_name()
+    prepare_forkserver_env(configure_logging=spec["job"].get("configure_logging", True))
     handle = start_forkserver(preload_modules(registry))
 
     async def run() -> list[object]:

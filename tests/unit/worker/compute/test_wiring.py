@@ -1,4 +1,10 @@
-"""Tests fuer swarmq.worker.compute.wiring (U7)."""
+"""Tests fuer swarmq.worker.compute.wiring (U7).
+
+Plan 2026-10-06-1811, U9 (KTD9):
+- [x] Vor dem Forkserver-Start steht die aufgeloeste ``configure_logging``-
+  Einstellung als ``SWARMQ_FORKSERVER_LOG_SENTINEL`` (``"1"``/``"0"``) in der
+  Umgebung -- der Preload liest sie dort.
+"""
 
 from __future__ import annotations
 
@@ -174,3 +180,21 @@ def test_preload_list_never_contains_the_configure_hook():
     w._config.configure = "tests.integration._cli_hook_module:setup"
     preload = wiring.preload_modules(w._registry)
     assert not any("hook" in name for name in preload), preload
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(("configure", "expected"), [(True, "1"), (False, "0")])
+async def test_cpu_pool_passes_the_configure_setting_to_the_forkserver(monkeypatch, configure, expected):
+    import os
+
+    monkeypatch.delenv("SWARMQ_FORKSERVER_LOG_SENTINEL", raising=False)
+    seen: dict[str, object] = {}
+
+    def fake_start(preload, **kw):
+        seen["env"] = os.environ.get("SWARMQ_FORKSERVER_LOG_SENTINEL")
+        return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
+
+    monkeypatch.setattr(wiring, "start_forkserver", fake_start)
+    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    await wiring.start_compute_executor(_worker(configure_logging=configure))
+    assert seen["env"] == expected

@@ -430,7 +430,7 @@ def test_in_a_compute_child_where_the_app_wins_the_drain_is_bounded_too() -> Non
 
     gate = _Gate()
     logging.getLogger().addHandler(gate)  # Root-Handler der App aus dem Vorladen
-    assert configure_child_logging(LoggingSettings(drain_timeout=0.05)) is not None
+    assert configure_child_logging(LoggingSettings(drain_timeout=0.05))  # App gewinnt
     log = logging.getLogger("swarmq.tests.drain")
     try:
         log.warning("first")
