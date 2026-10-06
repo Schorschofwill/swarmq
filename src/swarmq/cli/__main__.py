@@ -17,8 +17,15 @@ Tests and chaos harnesses launch the CLI as a subprocess via
 
 Without this file the invocation fails with
 ``'swarmq.cli' is a package and cannot be directly executed``.
+
+The ``__name__`` guard below is still needed: multiprocessing's spawn
+start method re-imports the parent's main module in every child as
+``__mp_main__``. Without the guard that import ran ``main()`` again and
+the child died with "An attempt has been made to start a new process
+before the current process has finished its bootstrapping phase".
 """
 
 from swarmq.cli import main
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

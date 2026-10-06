@@ -273,7 +273,10 @@ class ProcessManager:
         # or mutating os.environ['PYTHONPATH']) cannot change the
         # re-exec vector. Both are shallow copies; argv is list[str]
         # (strings are immutable) and env is dict[str, str].
-        self._startup_argv: list[str] = list(sys.argv)
+        # orig_argv statt argv: unter ``python -m`` ist argv[0] der Pfad von
+        # __main__.py (das neue Abbild liefe ihn als Skript, ohne cwd auf
+        # sys.path); orig_argv behaelt ``-m`` und Flags, [0] wird sys.executable.
+        self._startup_argv: list[str] = list(sys.orig_argv[1:])
         self._startup_env: dict[str, str] = dict(os.environ)
 
         # R5.3 Unit 6: optional file-watch hot-reload trigger. The
