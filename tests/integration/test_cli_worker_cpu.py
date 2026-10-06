@@ -6,6 +6,11 @@ Prozess, KTD16), reiht einen Task ein und prueft Startlog und Ergebnis.
 Plan 2026-09-08-001, U8 (R28, AE13): jeder Start laeuft mit ``RuntimeWarning``
 als Fehler — ein Rechenkind, das das Hauptmodul per ``runpy`` erneut
 ausfuehrt (B13), stirbt dann statt nur zu warnen.
+
+Plan 2026-10-06-1811, U6 (R6, KTD6) -- Test-Liste:
+- Ein Task-Modul erzeugt beim Import ``SwarmQ(log_queue=True)`` und loggt
+  danach INFO auf ``swarmq.*``: Der Worker startet (kein Exit 78) und
+  verarbeitet einen Task.
 """
 
 from __future__ import annotations
@@ -44,8 +49,10 @@ def _console_script() -> list[str] | None:
     return [exe] if exe else None
 
 
-def _spawn_cpu_worker(queue: str, module: str, launcher: list[str]) -> subprocess.Popen[str]:
-    env = dict(os.environ)
+def _spawn_cpu_worker(
+    queue: str, module: str, launcher: list[str], extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    env = dict(os.environ, **(extra_env or {}))
     env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
     env["SWARMQ_BACKEND_URL"] = valkey_db_url()
     env["CPU_FIXTURE_QUEUE"] = queue
@@ -133,3 +140,15 @@ def test_python_m_user_main_runs_without_runtime_warning_and_without_second_main
         assert probe["main_spec_name"] == "tests.integration._cli_cpu_main", probe
         assert probe["main_is_module"] is True, probe
         assert probe["executions"] == 1, f"Hauptmodul im Rechenkind erneut ausgefuehrt: {probe}"
+
+
+def test_task_module_with_opt_in_log_queue_and_import_time_log_starts_and_processes():
+    queue = f"cli-cpu-{uuid.uuid4().hex[:8]}"
+    module = "tests.integration._cli_cpu_optin_tasks"
+    (tid,) = asyncio.run(_enqueue(queue, module, "cpu_optin_echo", 21))
+    proc = _spawn_cpu_worker(queue, module, _PYTHON_M_CLI, {"CPU_OPTIN_FIXTURE_APP": "1"})
+    output = _wait_for_exit(proc)
+    assert proc.returncode == 0, output[-4000:]
+    assert "compute_pool_started" in output, output[-4000:]
+    (result,) = asyncio.run(_fetch(queue, [tid]))
+    assert result == 42

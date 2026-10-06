@@ -13,17 +13,22 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import get_logger
+from swarmq.logging import LISTENER_THREAD_NAME, get_logger
 
 logger = get_logger(__name__)
 
 _PROC_ROOT = Path("/proc")
+
+#: Erstes Preload-Modul (U8, Plan 2026-10-06-1811 U6/KTD6): markiert den
+#: Forkserver als Fork-Quelle, bevor ein App-Modul importiert wird.
+PRELOAD_MODULE = "swarmq.worker.compute.preload"
 
 #: Bibliotheken, die ueber OpenMP/BLAS eigene Threadpools aufspannen (R15).
 THREAD_LIMIT_VARS: tuple[str, ...] = (
@@ -33,6 +38,11 @@ THREAD_LIMIT_VARS: tuple[str, ...] = (
     "NUMEXPR_NUM_THREADS",
     "MAGICK_THREAD_LIMIT",
 )
+
+
+class ForkSourceUnsafe(RuntimeError):
+    """Ein still neu gestarteter Forkserver hat mehr als einen Thread
+    (Plan 2026-10-06-1811, KTD7): Der Pool verwirft diese Kindquelle."""
 
 
 def _noop() -> None:  # pragma: no cover - laeuft nur im Aufwaerm-Kind
@@ -61,8 +71,10 @@ class ForkserverHandle:
         """KTD4: hat ``ensure_running()`` den Forkserver still neu gestartet?
 
         Vergleicht die aktuelle Forkserver-PID mit der beim Bootstrap
-        gemerkten. Ein Neustart fuehrt den Preload erneut aus, ohne dass die
-        Thread-Pruefung wiederholt wurde — der Aufrufer prueft dann nach.
+        gemerkten. Ein Neustart fuehrt den Preload erneut aus; die
+        Thread-Pruefung laeuft dann erneut (Plan 2026-10-06-1811, KTD7).
+        Mehr als ein Thread: ``forkserver_restarted_multithreaded`` und
+        ``ForkSourceUnsafe``.
         """
         current = forkserver_pid()
         if current is None or current == self.pid:
@@ -71,7 +83,18 @@ class ForkserverHandle:
             "forkserver_restarted", previous_pid=self.pid, current_pid=current
         )
         self.pid = current
-        self.threads = check_forkserver_threads(current, proc_root=self.proc_root)
+        self.threads = threads = check_forkserver_threads(current, proc_root=self.proc_root)
+        if threads is not None and threads != 1:
+            names = forkserver_thread_names(current, proc_root=self.proc_root)
+            hint = _thread_hint(names)
+            logger.error(
+                "forkserver_restarted_multithreaded",
+                pid=current, threads=threads, thread_names=names, hint=hint,
+            )
+            raise ForkSourceUnsafe(
+                f"restarted forkserver has {threads} threads {names!r} after "
+                f"preloading {list(self.preload)!r}; {hint}"
+            )
         return True
 
 
@@ -131,6 +154,60 @@ def check_forkserver_threads(pid: int, *, proc_root: Path = _PROC_ROOT) -> int |
     return None
 
 
+def forkserver_thread_names(pid: int, *, proc_root: Path = _PROC_ROOT) -> list[str]:
+    """Thread-Namen aus ``/proc/<pid>/task/*/comm`` (auf 15 Zeichen
+    gekuerzt); leer ohne ``/proc`` (Plan 2026-10-06-1811, KTD7)."""
+    try:
+        tasks = sorted((proc_root / str(pid) / "task").iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
+    names: list[str] = []
+    for task in tasks:
+        try:
+            names.append((task / "comm").read_text(encoding="utf-8").strip())
+        except (OSError, UnicodeDecodeError):
+            continue
+    return names
+
+
+_HINT_OPTIN = (
+    f"the swarmq opt-in log queue started its listener thread ({LISTENER_THREAD_NAME!r}): "
+    "a swarmq.* record was logged at import time while SwarmQ(log_queue=True) or "
+    "SWARMQ_LOG_QUEUE=1 was active. Start the worker with the swarmq command or "
+    "'python -m', where the forkserver preload keeps that record synchronous, "
+    "or log after startup instead of at import time."
+)
+_HINT_APP_QUEUE_LISTENER = (
+    "an application logging QueueListener was started at import time (its "
+    "thread runs QueueListener._monitor). Start it lazily or in the "
+    "--configure hook, which runs in the worker process, not in the forkserver."
+)
+_HINT_BLAS = (
+    "the preload must import but never compute (a warm-up computation "
+    "starts BLAS/OpenMP threads and makes the fork source unsafe). "
+    "Remove the computation from module import time."
+)
+
+
+#: Standardname eines stdlib-``QueueListener``-Threads, ``Thread-N (_monitor)``,
+#: in ``comm`` auf 15 Zeichen gekuerzt.
+_STDLIB_LISTENER = re.compile(r"Thread-\d+ \((?P<target>_m.*)")
+
+
+def _is_stdlib_queue_listener(name: str) -> bool:
+    match = _STDLIB_LISTENER.fullmatch(name)
+    return match is not None and "_monitor)".startswith(match["target"])
+
+
+def _thread_hint(names: Sequence[str]) -> str:
+    """Hinweis nach dem Verursacher der zusaetzlichen Threads (KTD7)."""
+    if LISTENER_THREAD_NAME in names:
+        return _HINT_OPTIN
+    if any(_is_stdlib_queue_listener(name) for name in names):
+        return _HINT_APP_QUEUE_LISTENER
+    return _HINT_BLAS
+
+
 def _require_forkserver_support(available: Sequence[str]) -> None:
     if os.name != "posix" or "forkserver" not in available:
         raise ConfigurationError(
@@ -168,6 +245,8 @@ def start_forkserver(
         malloc_trim_threshold=malloc_trim_threshold,
         malloc_arena_max=malloc_arena_max,
     )
+    # KTD6: das Preload-Modul zuerst, auch fuer Aufrufer ohne es.
+    preload = [PRELOAD_MODULE, *(m for m in preload if m != PRELOAD_MODULE)]
     ctx = context_factory("forkserver")
     ctx.set_forkserver_preload(list(preload))
 
@@ -190,11 +269,11 @@ def start_forkserver(
             hint="no /proc or no forkserver pid available; cannot verify single-threaded preload",
         )
     elif threads != 1:
+        assert pid is not None
+        names = forkserver_thread_names(pid, proc_root=proc_root)
         raise ConfigurationError(
-            f"forkserver has {threads} threads after preloading {list(preload)!r}; "
-            "the preload must import but never compute (a warm-up computation "
-            "starts BLAS/OpenMP threads and makes the fork source unsafe). "
-            "Remove the computation from module import time."
+            f"forkserver has {threads} threads {names!r} after preloading "
+            f"{list(preload)!r}; {_thread_hint(names)}"
         )
     logger.info(
         "forkserver_started",

@@ -38,6 +38,7 @@ from typing import Any
 from swarmq.logging import _error_fields, get_logger
 from swarmq.worker.compute.child import child_loop, child_once
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
+from swarmq.worker.compute.forkserver import ForkSourceUnsafe
 
 logger = get_logger(__name__)
 
@@ -125,6 +126,7 @@ class SlotPool:
         self._on_recycle = on_recycle
         self._progress_sink = progress_sink
         self._restart_check = restart_check
+        self._rejected_source: str | None = None  # KTD7: unsichere Kindquelle, endgueltig
         self._slots = [_Slot(index=i) for i in range(slots)]
         self._free: asyncio.Queue[int] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -144,7 +146,10 @@ class SlotPool:
         """``False``, wenn der Handshake dauerhaft ausbleibt (toter Forkserver o. ae.)
         oder jeder Slot blockiert ist: ``/ready`` meldet den Pool dann als Ausfall,
         statt dass jede Nachricht bis zum Delivery-Limit requeued wird."""
-        return self.consecutive_unavailable < self.unhealthy_after and self._usable_slots() > 0
+        return (
+            self.consecutive_unavailable < self.unhealthy_after and self._usable_slots() > 0
+            and self._rejected_source is None
+        )
 
     def _usable_slots(self) -> int:
         return self.size - len(self.stats.blocked_slots)
@@ -209,8 +214,7 @@ class SlotPool:
         child: _Child | None = None
         fut: asyncio.Future[ResultEnvelope] = asyncio.get_running_loop().create_future()
         try:
-            if self._restart_check is not None and self._restart_check():
-                logger.warning("forkserver_restarted_before_dispatch", slot=index)
+            self._check_fork_source(index)
             if use_di:
                 child = await self._ensure_reuse_child(slot)
                 child.current_task_id = job.task_id
@@ -242,6 +246,19 @@ class SlotPool:
             slot.active = None
             if not slot.blocked and not self._closing:
                 self._free.put_nowait(index)
+
+    def _check_fork_source(self, index: int) -> None:
+        """KTD4: still neu gestarteter Forkserver? Ist er mehrfaedig
+        (Plan 2026-10-06-1811, KTD7), verwirft der Pool die Kindquelle
+        endgueltig: ``SlotUnavailable`` und ``/ready`` meldet den Ausfall."""
+        if self._rejected_source is None and self._restart_check is not None:
+            try:
+                if self._restart_check():
+                    logger.warning("forkserver_restarted_before_dispatch", slot=index)
+            except ForkSourceUnsafe as exc:
+                self._rejected_source = str(exc)
+        if self._rejected_source is not None:
+            raise SlotUnavailable(f"compute fork source rejected: {self._rejected_source}")
 
     async def _send_job(self, child: _Child, job: ComputeJob) -> None:
         assert child.job_conn is not None

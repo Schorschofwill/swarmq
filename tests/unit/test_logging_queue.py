@@ -63,6 +63,13 @@ from __future__ import annotations
 # 28. Ratenbegrenzung: hoechstens eine Meldung pro Sekunde (Zeit gemockt),
 #     die Zaehlung stimmt.
 # 29. Beim Stoppen meldet der Listener noch nicht gemeldete Drops.
+# Plan 2026-10-06-1811, U6 (R6, R7; KTD6, KTD7) -- kein Log-Thread im
+# Fork-Quellprozess:
+# 30. Als Fork-Quelle markiert, Opt-in aktiv, ein Record auf ``swarmq.*``:
+#     kein Listener-Thread, der Record kommt synchron im Root-Handler an.
+# 31. Nach einem echten Fork (Hook ``_after_fork_in_child``) startet der
+#     naechste Record im Kind genau einen Listener.
+# 32. ``LISTENER_THREAD_NAME`` hat hoechstens 15 Zeichen (``comm`` kuerzt).
 import atexit
 import collections
 import contextlib
@@ -83,12 +90,12 @@ from swarmq.logging import (
     shutdown_logging,
 )
 from swarmq.logging_format import build_formatter
-from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener
+from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener, mark_fork_source
 from tests.unit._fork_child import run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
 
-_LISTENER_THREAD = "swarmq-log-listener"
+_LISTENER_THREAD = "swarmq-log-lsnr"
 
 
 class _RecordingHandler(logging.Handler):
@@ -763,3 +770,41 @@ def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:
             event.set()
 
     assert [r.count for r in _drop_reports(target)] == [1, 2]  # type: ignore[attr-defined]
+
+
+def test_fork_source_emits_opt_in_records_synchronously_without_a_thread() -> None:
+    from swarmq.logging import _enable_log_queue
+
+    root_target = _RecordingHandler()
+    logging.getLogger().addHandler(root_target)
+    mark_fork_source()
+    _enable_log_queue("INFO")
+
+    logging.getLogger("swarmq.tests.fork_source").info("in_fork_source")
+
+    assert not _listener_threads()
+    assert [r.getMessage() for r in root_target.records] == ["in_fork_source"]
+    assert root_target.threads == [threading.current_thread().name]
+
+
+def test_forked_child_of_the_fork_source_starts_exactly_one_listener() -> None:
+    from swarmq.logging import _enable_log_queue
+
+    root_target = _RecordingHandler()
+    logging.getLogger().addHandler(root_target)
+    mark_fork_source()
+    _enable_log_queue("INFO")
+
+    def in_child() -> None:
+        logging.getLogger("swarmq.tests.fork_source").info("in_child")
+        logging.getLogger("swarmq.tests.fork_source").info("in_child_again")
+        assert len(_listener_threads()) == 1
+        assert root_target.written.wait(timeout=1)
+
+    assert run_in_forked_child(in_child) == 0
+
+
+def test_listener_thread_name_survives_the_comm_truncation() -> None:
+    from swarmq.logging import LISTENER_THREAD_NAME
+
+    assert len(LISTENER_THREAD_NAME) <= 15

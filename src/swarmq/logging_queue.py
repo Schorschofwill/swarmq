@@ -30,8 +30,10 @@ from swarmq.logging_file import (
     close_queue_listeners,
 )
 
-LISTENER_THREAD_NAME = "swarmq-log-listener"
-"""Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests."""
+LISTENER_THREAD_NAME = "swarmq-log-lsnr"
+"""Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests.
+Hoechstens 15 Zeichen: So steht er ungekuerzt in ``/proc/<pid>/task/*/comm``,
+woran die Forkserver-Pruefung ihn erkennt (Plan 2026-10-06-1811, KTD7)."""
 
 
 _LogQueue = queue.Queue[logging.LogRecord]
@@ -160,6 +162,21 @@ def count_dropped(count: int = 1) -> None:
     _DROPPED_TOTAL += count
 
 
+_IN_FORK_SOURCE = False
+"""Ist dieser Prozess eine Fork-Quelle (Forkserver)? Dann startet kein
+Listener-Thread (Plan 2026-10-06-1811, KTD6)."""
+
+
+def mark_fork_source() -> None:
+    """Markiert den Prozess als Fork-Quelle: Queue-Handler geben synchron
+    ueber die Ziel-Handler aus, statt einen Listener-Thread zu starten, und
+    der Forkserver bleibt einfaedig (Plan 2026-10-06-1811, KTD6). Gesetzt
+    von ``swarmq.worker.compute.preload``; der Fork-Hook hebt es im Kind
+    auf."""
+    global _IN_FORK_SOURCE
+    _IN_FORK_SOURCE = True
+
+
 _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
 """Alle lebenden Queue-Handler des Prozesses; der Fork-Hook setzt sie zurueck."""
 
@@ -214,9 +231,11 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
                 return
             self._abandoned = None
         listener = self.listener
-        if listener is not None and sys.is_finalizing():
-            # Finalisierung (KTD5): Kein neuer Thread startet mehr, und ein
-            # laufender kommt nicht mehr dran -- synchron ausgeben.
+        if listener is not None and (_IN_FORK_SOURCE or sys.is_finalizing()):
+            # Fork-Quelle (KTD6): kein Thread, der Forkserver bleibt
+            # einfaedig. Finalisierung (KTD5): Kein neuer Thread startet
+            # mehr, und ein laufender kommt nicht mehr dran -- synchron
+            # ausgeben.
             listener.handle(record)
             return
         if listener is not None and not listener.running:
@@ -576,9 +595,12 @@ def _after_fork_in_child() -> None:
     haengte oder wuerfe sonst beim Sentinel auf einer beim Fork vollen
     Queue-Kopie.
     """
-    global _LISTENER_LOCK, _DROPPED_TOTAL
+    global _LISTENER_LOCK, _DROPPED_TOTAL, _IN_FORK_SOURCE
     _LISTENER_LOCK = threading.Lock()
     _DROPPED_TOTAL = 0
+    # Das Kind ist keine Fork-Quelle mehr (KTD6): Der naechste Eintrag
+    # startet seinen Listener.
+    _IN_FORK_SOURCE = False
     _LISTENERS.clear()
     _CONFIG_LISTENERS.clear()
     for handler in list(_HANDLERS):

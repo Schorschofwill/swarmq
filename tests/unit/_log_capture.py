@@ -98,6 +98,9 @@ def preserved_root_logger() -> Iterator[None]:
         # Eine im Test eingerichtete Frist (Plan 2026-10-06-1811, U4) gilt
         # nicht fuer den naechsten.
         _queue_core._DRAIN_TIMEOUT = LoggingSettings().drain_timeout
+        # Ein im Test als Fork-Quelle markierter Prozess (U6, KTD6) startet
+        # sonst keinen Listener mehr.
+        _queue_core._IN_FORK_SOURCE = False
         root.handlers[:] = own + [h for h in root.handlers if _is_pytest_handler(h)]
         root.setLevel(level)
         swarmq_logger.handlers[:], swarmq_level, swarmq_logger.propagate = swarmq_state

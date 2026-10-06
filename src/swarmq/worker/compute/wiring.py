@@ -16,7 +16,7 @@ from typing import Any
 from swarmq.logging import get_logger
 from swarmq.signals import Signal
 from swarmq.worker.compute.executor import ComputeExecutor
-from swarmq.worker.compute.forkserver import ForkserverHandle, forkserver_pid, start_forkserver
+from swarmq.worker.compute.forkserver import PRELOAD_MODULE, ForkserverHandle, forkserver_pid, start_forkserver
 from swarmq.worker.compute.pool import SlotPool
 
 logger = get_logger(__name__)
@@ -36,7 +36,7 @@ _RUNTIME_PRELOAD = ("swarmq.logging", "swarmq.worker.compute.child")
 # U8 (R28, KTD10): erstes Preload-Modul. Registriert im Forkserver das per ``python -m``
 # gestartete Hauptmodul (Name aus ``SWARMQ_MAIN_MODULE``) als ``sys.modules["__main__"]``,
 # damit ``spawn._fixup_main_from_name`` es nicht je Kind erneut ausfuehrt (B13).
-_PRELOAD_MODULE = "swarmq.worker.compute.preload"
+_PRELOAD_MODULE = PRELOAD_MODULE
 _MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"  # gelesen von preload.py im Forkserver
 
 

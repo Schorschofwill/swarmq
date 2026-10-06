@@ -723,3 +723,29 @@ async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals, swar
     ]
     assert len(reports) == 1
     assert reports[0]["reenabled_loggers"] == 2
+
+
+# Plan 2026-10-06-1811, U6 (R7, KTD7) -- Test-Liste:
+# 1. Meldet die Neustart-Pruefung eine unsichere Kindquelle
+#    (``ForkSourceUnsafe``), verwirft der Pool sie: ``SlotUnavailable``, kein
+#    Kind, ``healthy`` ist falsch -- auch beim naechsten Job, obwohl die
+#    Pruefung dann nichts Neues mehr meldet.
+@pytest.mark.timeout(5)
+async def test_unsafe_restarted_fork_source_is_rejected_for_good(ctx, signals):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    checks = iter([ForkSourceUnsafe("restarted forkserver has 2 threads")])
+
+    def restart_check() -> bool:
+        exc = next(checks, None)
+        if exc is not None:
+            raise exc
+        return False
+
+    p = await _make_pool(ctx, slots=1, restart_check=restart_check)
+    for tid in ("a", "b"):
+        with pytest.raises(SlotUnavailable, match="2 threads"):
+            await p.run(_job(tid), use_di=False)
+    assert FakeCtx.started == []
+    assert not p.healthy
+    await p.aclose()

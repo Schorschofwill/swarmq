@@ -4,13 +4,19 @@ Aufruf: ``python -m tests.integration._compute_logging_driver <preload-modul> <s
 Eigener Prozess, weil der Forkserver ein Singleton je Prozess ist und die Kinder
 sein stderr erben. Der Elternprozess richtet sich eingebaut mit JSON ein, wie ein
 Worker; auf stdout steht am Ende eine JSON-Zeile mit Thread-Zahl und Ergebnissen.
+
+Die Preload-Liste kommt wie im Worker aus ``wiring.preload_modules`` (samt
+``swarmq.worker.compute.preload`` und Hauptmodul), damit der Forkserver hier
+dasselbe vorlaedt wie in Produktion (Plan 2026-10-06-1811, U6, R5-Fund).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import types
 
 
 def main() -> None:
@@ -19,10 +25,16 @@ def main() -> None:
     from swarmq.worker.compute.envelope import ComputeJob
     from swarmq.worker.compute.forkserver import start_forkserver
     from swarmq.worker.compute.pool import SlotPool
+    from swarmq.worker.compute.wiring import _main_module_name, preload_modules
 
     module, spec = sys.argv[1], json.loads(sys.argv[2])
     configure_logging(LoggingSettings(format="json"))
-    handle = start_forkserver(["swarmq.logging", "swarmq.worker.compute.child", module])
+    # Wie ``start_compute_executor``: Registry mit der Task des Moduls,
+    # Hauptmodulname per Umgebung an den Forkserver.
+    task = type("ChildLoggingTask", (), {"__module__": module})
+    registry = types.SimpleNamespace(get_all=lambda: {"child_logging_task": task})
+    os.environ["SWARMQ_MAIN_MODULE"] = _main_module_name()
+    handle = start_forkserver(preload_modules(registry))
 
     async def run() -> list[object]:
         pool = SlotPool(handle.context, 1, recycle_rss_mb=None, recycle_max_tasks=None, end_grace_s=5.0)
