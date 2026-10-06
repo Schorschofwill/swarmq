@@ -20,11 +20,14 @@ from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
     ConfigurationError,
+    LoggingConfigError,
     NoRetry,
+    PublishIndeterminate,
     ResultExpiredError,
     ResultNotReadyError,
     ResultSerializationError,
     Retry,
+    SoftTimeoutError,
     SwarmQError,
     TaskCancelledError,
     TaskError,
@@ -115,6 +118,7 @@ __all__ = [
     # Health
     "HealthChecker",
     "HealthServer",
+    "LoggingConfigError",
     # Middleware
     "MessageContext",
     # Metrics
@@ -124,6 +128,7 @@ __all__ = [
     "NoRetry",
     # Progress
     "ProgressInfo",
+    "PublishIndeterminate",
     # Heavy lazy surface (resolved via __getattr__)
     "RabbitMQBroker",
     "ResultExpiredError",
@@ -135,6 +140,7 @@ __all__ = [
     "SignalDispatcher",
     # Workflow primitives
     "Signature",
+    "SoftTimeoutError",
     # Core API
     "SwarmQ",
     "SwarmQError",

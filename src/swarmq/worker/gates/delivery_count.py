@@ -22,7 +22,12 @@ logger = get_logger(__name__)
 
 DELIVERY_COUNT_HEADER = "x-delivery-count"
 
-DeadLetter = Callable[[Any, GateContext, str], Awaitable[None]]
+# (delivery, ctx, error_message, error_type) — siehe ``RetryHandler.dead_letter``.
+DeadLetter = Callable[[Any, GateContext, str, str], Awaitable[None]]
+
+# Fester ``error_type`` fuer ``task_sent_to_dlq``: auf diesem Pfad gibt es
+# keine ausloesende Ausnahme, nur den Zustellzaehler des Brokers.
+WORKER_HUNG_ERROR_TYPE = "WorkerHungError"
 
 
 class DeliveryCountGate:
@@ -42,7 +47,7 @@ class DeliveryCountGate:
         if count < limit - 1:
             return Continue
         message = (
-            f"WorkerHungError: delivered {count} times without acknowledgement "
+            f"{WORKER_HUNG_ERROR_TYPE}: delivered {count} times without acknowledgement "
             f"(delivery limit {limit}); no consumer completed this message "
             "(hung worker, killed compute child or unavailable compute slot)"
         )
@@ -51,7 +56,7 @@ class DeliveryCountGate:
             task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue,
             delivery_count=count, delivery_limit=limit,
         )
-        await self._dead_letter(delivery, ctx, message)
+        await self._dead_letter(delivery, ctx, message, WORKER_HUNG_ERROR_TYPE)
         return Terminal.already_released()
 
 

@@ -85,10 +85,10 @@ options:
                         Without this flag, priority-tagged tasks publish to
                         {queue}.high/.low which are never consumed.
   --processes, -p N     R4.6: run N worker subprocesses under a supervisor
-                        (ProcessManager). Default 1 keeps the legacy in-
-                        process behaviour. Subprocesses use multiprocessing
-                        spawn — fresh broker/backend connections per worker.
-                        The supervisor auto-restarts crashed workers (max 5
+                        (ProcessManager). Default 1 still runs under the
+                        supervisor. Subprocesses use multiprocessing spawn —
+                        fresh broker/backend connections per worker. The
+                        supervisor auto-restarts crashed workers (max 5
                         restarts per hour), and reloads on SIGHUP via
                         os.execvp().
   --autoscale MIN,MAX   R4.7: enable autoscaling between MIN..MAX workers
@@ -112,22 +112,25 @@ options:
                         --queues.
   --reload              R5.3: watch task modules for changes and trigger the
                         existing SIGHUP reload pipeline (ProcessManager
-                        execvp). Implies --processes (activates the supervisor
-                        when no --processes/--autoscale is passed). Developer-
-                        only — do not use in production. Requires 'pip install
-                        "swarmq[reload]"'. Missing dep exits with code 1;
-                        invalid --watch-dir exits 2.
+                        execvp). Implies --processes. Developer-only — do not
+                        use in production. Requires 'pip install
+                        "swarmq[reload]"'. Missing 'watchfiles' exits with
+                        code 78 (1 under --check); invalid --watch-dir exits
+                        2.
   --watch-dir PATH      R5.3: directory to watch (repeatable). Without this
                         flag, the parent directory of --module's resolved
                         source file is used. Ignored without --reload (a
                         WARNING is logged).
   --check               Dry-run validation mode. Verify --module is
                         importable, (with --reload) that 'watchfiles' is
-                        installed + watch-dirs resolve, and that multi-process
-                        mode is not combined with a fixed --metrics-
-                        port/--health-port. Prints a JSON summary to stdout,
-                        exits 0 on success or 1 on any validation error. Does
-                        NOT connect to broker or backend.
+                        installed + watch-dirs resolve, that the --metrics-
+                        port/--health-port ranges across all worker processes
+                        stay <= 65535 and do not overlap, the logging settings
+                        and --log-config (dictConfig probe), pool constraints
+                        (--pool cpu with --autoscale) and the --max-processes
+                        headroom. Prints a JSON summary to stdout, exits 0 on
+                        success or 1 on any validation error. Does NOT connect
+                        to broker or backend.
   --burst-idle-timeout SECONDS
                         Seconds of queue silence required before --burst exits
                         (default: 5.0). The idle clock starts at worker-ready

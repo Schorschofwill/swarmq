@@ -158,7 +158,7 @@ class Worker(WorkerLifecycle):
         self._rate_limit_gate = RateLimitGate(gate_deps)
         self._lock_gate = LockGate(gate_deps)
         self._delivery_count_gate = DeliveryCountGate(
-            gate_deps, dead_letter=lambda d, c, m: self._retry_handler.dead_letter(d, c, m))
+            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t))
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)

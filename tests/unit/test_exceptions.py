@@ -99,3 +99,17 @@ def test_task_cancelled_error_without_task_id():
 def test_all_exceptions_catchable_with_except_swarmq_error(exc_class):
     with pytest.raises(SwarmQError):
         raise exc_class()
+
+
+def test_remaining_exceptions_are_exported_from_package_root():
+    """LoggingConfigError, SoftTimeoutError und PublishIndeterminate sind
+    öffentlich: Import über ``swarmq`` liefert dieselben Klassenobjekte."""
+    import swarmq
+    from swarmq import LoggingConfigError, PublishIndeterminate, SoftTimeoutError, exceptions
+
+    assert LoggingConfigError is exceptions.LoggingConfigError
+    assert SoftTimeoutError is exceptions.SoftTimeoutError
+    assert PublishIndeterminate is exceptions.PublishIndeterminate
+    assert {"LoggingConfigError", "SoftTimeoutError", "PublishIndeterminate"} <= set(
+        swarmq.__all__
+    )

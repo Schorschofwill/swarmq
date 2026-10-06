@@ -79,12 +79,12 @@ class RetryHandler:
 
         # 1. NoRetry -> direct DLQ
         if isinstance(exc, NoRetry):
-            await self.dead_letter(delivery, ctx, error_message)
+            await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
             return Redelivered
 
         # 2. Check retry_exceptions filter
         if task_info.retry_exceptions is not None and not isinstance(exc, task_info.retry_exceptions):
-            await self.dead_letter(delivery, ctx, error_message)
+            await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
             return Redelivered
 
         # 3. Read retry count from message headers
@@ -92,7 +92,7 @@ class RetryHandler:
 
         # 4. Check if retries exhausted
         if retry_count >= task_info.max_retries:
-            await self.dead_letter(delivery, ctx, error_message)
+            await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
             return Redelivered
 
         # 5. Calculate delay
@@ -136,8 +136,13 @@ class RetryHandler:
         logger.info("task_retrying", retry_count=retry_count + 1, max_retries=task_info.max_retries, delay_ms=delay_ms)
         return Redelivered
 
-    async def dead_letter(self, delivery: Any, ctx: GateContext, error_message: str) -> None:
-        """Store error result in backend, dead-letter, and ack the original."""
+    async def dead_letter(self, delivery: Any, ctx: GateContext, error_message: str, error_type: str) -> None:
+        """Store error result in backend, dead-letter, and ack the original.
+
+        ``error_type`` ist der Klassenname der ausloesenden Ausnahme (R17):
+        ``task_sent_to_dlq`` traegt damit dasselbe Fehlerschema wie
+        ``_error_fields``; ``error`` bleibt der Fehlertext ``error_message``.
+        """
         deps = self._deps
         task_id, task_name, queue = ctx.task_id, ctx.task_name, ctx.queue
         # Store error result so callers of get_result() get a response
@@ -238,4 +243,4 @@ class RetryHandler:
             # Non-terminal — leave the flag so the redelivery's terminal
             # path releases it. No release here.
         # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
-        logger.error("task_sent_to_dlq", error=error_message)
+        logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
