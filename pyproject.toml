@@ -21,12 +21,13 @@ requires-python = ">=3.14"
 # without our lockfile. msgpack>=1.0 pins the safe default-limit
 # semantics decode_result relies on; aio-pika>=9 the robust-connection
 # API; valkey>=6 the asyncio client surface; msgspec>=0.18 the
-# Struct/JSON APIs; structlog>=24 contextvars/testing surfaces;
+# Struct/JSON APIs; structlog>=24 contextvars/testing surfaces (<27:
+# get_logger relies on stdlib.BoundLogger frame depth, KTD1/KTD2);
 # croniter>=2 tz-aware get_next/get_prev.
 dependencies = [
     "msgspec>=0.18",
     "msgpack>=1.0",
-    "structlog>=24",
+    "structlog>=24,<27",
     "aio-pika>=9",
     # Plain valkey (no [libvalkey] extra): libvalkey is a C accelerator
     # that ships no cp314 wheels (sdist-only on PyPI), so a hard extra

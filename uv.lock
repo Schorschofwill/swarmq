@@ -1668,7 +1668,7 @@ requires-dist = [
     { name = "pytest-rerunfailures", marker = "extra == 'test'" },
     { name = "pytest-timeout", marker = "extra == 'test'" },
     { name = "ruff", marker = "extra == 'test'" },
-    { name = "structlog", specifier = ">=24" },
+    { name = "structlog", specifier = ">=24,<27" },
     { name = "valkey", specifier = ">=6" },
     { name = "watchfiles", marker = "extra == 'reload'", specifier = ">=0.21" },
 ]

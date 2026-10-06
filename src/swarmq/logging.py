@@ -113,6 +113,123 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
         return substitute
 
 
+_RESERVED_RECORD_KEYS = frozenset(
+    (
+        *logging.LogRecord("", 0, "", 0, "", None, None).__dict__,
+        "message",
+        "asctime",
+    )
+) - frozenset(structlog.stdlib.LOG_KWARG_NAMES)
+"""Felder, die ``Logger.makeRecord`` als ``extra`` ablehnt (``KeyError``).
+``exc_info``/``stack_info``/``stacklevel`` sind ausgenommen: Als Aufruf-
+kwargs gehen sie bestimmungsgemaess an die stdlib-Logmethode."""
+
+
+def _guard_reserved_keys(
+    _: Any, __: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """Benennt LogRecord-Attributnamen in ``swarmq_<key>`` um.
+
+    Ohne das wirft ``log.info("evt", name=...)`` im stdlib-``makeRecord``
+    einen ``KeyError`` statt zu loggen.
+    """
+    for key in _RESERVED_RECORD_KEYS.intersection(event_dict):
+        event_dict[f"swarmq_{key}"] = event_dict.pop(key)
+    return event_dict
+
+
+def _merge_contextvars_guarded(
+    logger: Any, method_name: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """``merge_contextvars`` mit Schutz der stdlib-Logkwargs.
+
+    Eine Kontextvariable ``exc_info``/``stack_info``/``stacklevel`` ist ein
+    Feld der App, kein Argument dieses Aufrufs: Sie wird als
+    ``swarmq_<key>`` gemergt, sonst laege sie ``render_to_log_kwargs`` als
+    kwarg an die stdlib-Methode. Felder des Aufrufs haben wie bei
+    ``merge_contextvars`` Vorrang.
+    """
+    context = structlog.contextvars.merge_contextvars(logger, method_name, {})
+    for key, value in context.items():
+        if key in structlog.stdlib.LOG_KWARG_NAMES:
+            key = f"swarmq_{key}"
+        event_dict.setdefault(key, value)
+    return event_dict
+
+
+_CALLER_STACKLEVEL = 4
+"""Abstand von ``Logger._log`` zum Aufrufer: ``BoundLogger.<methode>`` ->
+``BoundLogger._proxy_to_logger`` -> ``BoundLoggerBase._proxy_to_logger``
+-> stdlib-Logmethode (ermittelt fuer structlog 26.1)."""
+
+
+def _set_caller_stacklevel(
+    logger: Any, __: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """Laesst ``funcName``/``lineno`` auf den Aufrufer zeigen statt auf
+    structlogs Weiterleitung.
+
+    Nur fuer Logger mit dem ``findCaller`` der stdlib: Hat die App per
+    ``structlog.stdlib.LoggerFactory`` die Logger-Klasse umgestellt,
+    ueberspringt deren ``findCaller`` die structlog-Frames schon selbst,
+    und ein zusaetzlicher ``stacklevel`` schoesse ueber den Aufrufer hinaus.
+    """
+    if getattr(logger.findCaller, "__func__", None) is logging.Logger.findCaller:
+        event_dict["stacklevel"] = _CALLER_STACKLEVEL
+    return event_dict
+
+
+LOGGER_PROCESSORS: list[Any] = [
+    structlog.stdlib.filter_by_level,
+    _merge_contextvars_guarded,
+    _guard_reserved_keys,
+    _set_caller_stacklevel,
+    structlog.stdlib.render_to_log_kwargs,
+]
+"""Aufruferseitige Prozessorkette der Bibliotheks-Logger (Plan
+2026-10-06-0831, KTD2). Nur billige Schritte; gerendert wird erst im
+Handler der App bzw. im Listener-Thread."""
+
+
+class _LazyStdlibLogger:
+    """Holt den stdlib-Logger erst beim ersten Logaufruf (KTD1).
+
+    Beim Modulimport angelegt, bliebe der Logger ein "existing logger", den
+    eine dictConfig der App mit dem Default ``disable_existing_loggers=True``
+    stumm schaltet. Attributzugriffe (``isEnabledFor``, ``info`` ...) gehen
+    an den echten Logger; der liefert gebundene Methoden, also entsteht
+    kein zusaetzlicher Stack-Frame.
+    """
+
+    __slots__ = ("_logger", "_name")
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._logger: logging.Logger | None = None
+
+    def __getattr__(self, attr: str) -> Any:
+        logger = self._logger
+        if logger is None:
+            logger = self._logger = logging.getLogger(self._name)
+        return getattr(logger, attr)
+
+
+def get_logger(name: str) -> Any:
+    """Liefert den Bibliotheks-Logger ``name`` (Plan 2026-10-06-0831, U1).
+
+    KTD1: ``structlog.wrap_logger`` mit expliziten ``processors`` und
+    ``wrapper_class`` -- ein ``structlog.configure`` der App greift damit
+    nicht. Uebergeben wird ans Standard-``logging``: Der Event-Name wird
+    zur Nachricht, alle Felder werden zu LogRecord-Attributen (R2, R3).
+    """
+    return structlog.wrap_logger(
+        _LazyStdlibLogger(name),
+        processors=LOGGER_PROCESSORS,
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+
 _ACTIVE_LISTENER: logging.handlers.QueueListener | None = None
 
 
