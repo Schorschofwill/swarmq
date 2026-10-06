@@ -170,8 +170,9 @@ app = SwarmQ(broker, backend, log_queue=True, log_level="INFO")
   bekommen die Records, und ohne Handler greift weiterhin `lastResort`.
 - Die Kontextvariablen des Aufrufers stehen den Filtern deiner Handler
   zur Verfügung, als liefen sie im Aufrufer.
-- `log_level` setzt das Level des Loggers `swarmq`. `log_json` wählt nur
-  das Format der Meldung [`log_records_dropped`](#nicht-blockierende-ausgabe-und-verworfene-eintrage).
+- `log_level` setzt das Level des Loggers `swarmq`. `log_json` hat hier
+  keine Wirkung: Deine Handler formatieren jeden Record, auch die
+  Meldung [`log_records_dropped`](#nicht-blockierende-ausgabe-und-verworfene-eintrage).
   `log_queue_size` (Vorgabe `10000`) begrenzt die Queue.
 - Handler, die du direkt an den Logger `swarmq` hängst, bleiben synchron.
   Sentrys `LoggingIntegration` läuft weiterhin im Aufrufer.
@@ -366,11 +367,19 @@ verwirft SwarmQ Einträge, statt zu blockieren:
 - Ab 90 % Füllstand werden nur noch Einträge unterhalb von WARNING
   verworfen; WARNING und höher nutzen die restlichen 10 % und gehen erst
   bei vollständig voller Queue verloren.
-- Verworfene Einträge werden pro Prozess gezählt. Höchstens einmal pro
-  Sekunde geht eine Meldung direkt nach stderr: im JSON-Modus als
-  JSON-Zeile
-  `{"event": "log_records_dropped", "count": N, "level": "warning", "logger": "swarmq.logging", "timestamp": …}`,
-  im Textmodus als Zeile `swarmq: logging queue full — N record(s) dropped so far`.
+- Verworfene Einträge werden pro Prozess gezählt. Der loggende Code
+  schreibt die Meldung nie selbst und wirft nie, auch nicht bei
+  geschlossenem stderr. Der Listener-Thread meldet die Verluste
+  höchstens einmal pro Sekunde und noch einmal beim Stoppen: als
+  gewöhnlichen Record `log_records_dropped` (Logger `swarmq.logging`,
+  Level WARNING, Feld `count`) über seine eigenen Handler. Die Meldung
+  hat damit dasselbe Format wie jede andere Zeile, im JSON-Modus etwa
+  `{"event": "log_records_dropped", "count": N, "level": "warning", "logger": "swarmq.logging", "timestamp": …}`.
+- Wirft ein Handler, Filter oder Formatter, läuft der Listener weiter.
+  Die Fehler werden gezählt und auf dieselbe Weise als
+  `log_handler_errors` (Feld `count`) gemeldet; lässt sich auch diese
+  Meldung nicht schreiben, geht sie direkt nach stderr. Ein dennoch
+  gestorbener Listener-Thread startet mit dem nächsten Record neu.
 - Der Worker exportiert den Zähler als Prometheus-Metrik
   `swarmq_log_records_dropped_total`. Sie umfasst nur den
   Worker-Prozess; Verluste in Rechenkindern zeigt deren Meldungszeile.
@@ -444,7 +453,8 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `log_config_reload_failed` | `swarmq.process_manager.run` | ERROR | Reload abgebrochen; Felder `path`, `error_type`, `error`, `hint`. |
 | `logging_reconfigured_by_app` | `swarmq.logging`, `swarmq.worker.compute.pool` | INFO | Deine App hat die Root-Handler ersetzt; Feld `reenabled_loggers`. |
 | `logging_handlers_added_by_app` | `swarmq.logging` | WARNING | Feld `handler_types`. |
-| `log_records_dropped` | — (direkte stderr-Zeile) | warning | Feld `count`; höchstens einmal pro Sekunde. |
+| `log_records_dropped` | `swarmq.logging` | WARNING | Feld `count`; aus dem Listener-Thread, höchstens einmal pro Sekunde und noch einmal beim Stoppen. |
+| `log_handler_errors` | `swarmq.logging` | WARNING | Ein Handler, Filter oder Formatter hat geworfen; Feld `count`; höchstens einmal pro Sekunde. |
 | `log_record_unformattable` | Logger des Records | Level des Records | Feld `error`. |
 | `task_retrying` | `swarmq.worker.retry` | INFO | Felder `retry_count`, `max_retries`, `delay_ms`. |
 | `task_sent_to_dlq` | `swarmq.worker.retry` | ERROR | Der Task ging in die DLQ. Felder `error_type` (Exception-Klasse; `WorkerHungError` bei erreichtem Zustelllimit) und `error`. |
