@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, ClassVar
 
 from swarmq.exceptions import LoggingConfigError
 from swarmq.logging_drain import Deadline, abandon
@@ -39,6 +39,11 @@ class RateLimitedReport:
 
     INTERVAL_S = 1.0
 
+    clock: ClassVar[Callable[[], float]] = time.monotonic
+    """Uhr der Ratenbegrenzung; Tests ersetzen sie hier, ohne
+    ``time.monotonic`` prozessweit umzuhaengen (die Frist des Leerens,
+    ``Deadline``, laeuft weiter auf der echten Uhr)."""
+
     def __init__(self, event: str, emit: Callable[[logging.LogRecord], None]) -> None:
         self.event = event
         self.count = 0
@@ -54,7 +59,7 @@ class RateLimitedReport:
         count = self.count
         if count <= self.reported:
             return False
-        now = time.monotonic()
+        now = type(self).clock()  # ueber die Klasse: eine Funktion bindet nicht
         if not final and now - self._last_report < self.INTERVAL_S:
             return False
         self._last_report = now
@@ -91,17 +96,25 @@ class HandlerErrors:
         return self._report.count
 
     def handle(self, record: logging.LogRecord) -> None:
-        """Gibt den Record weiter; eine ``Exception`` wird gezaehlt."""
+        """Gibt den Record weiter; eine ``Exception`` wird gezaehlt. Danach
+        meldet er einen zurueckgehaltenen Fehlerstand, sobald die Frist
+        abgelaufen ist -- auch wenn keine Fehler mehr folgen."""
         try:
             self._dispatch(record)
         except Exception:
             self.failed()
+        else:
+            self.report_due()
 
     def failed(self) -> None:
         """Zaehlt einen Fehler und meldet, sobald die Frist abgelaufen ist."""
         self._report.count += 1
+        self.report_due()
+
+    def report_due(self, *, final: bool = False) -> None:
+        """Meldet den Fehlerstand wie :meth:`RateLimitedReport.report_due`."""
         count = self.count
-        if self._report.report_due() and self.count != count:
+        if self._report.report_due(final=final) and self.count != count:
             with contextlib.suppress(Exception):
                 print(
                     f"swarmq: log_handler_errors — {count} error(s) in log handlers so far",
@@ -358,9 +371,10 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
 
     def serve() -> None:
         # Thread-Ziel des stdlib-``start``: beim Ende noch nicht gemeldete
-        # Drops melden, auch innerhalb der Frist.
+        # Drops und Handler-Fehler melden, auch innerhalb der Frist.
         monitor()
         drops.report_due(final=True)
+        errors.report_due(final=True)
 
     dequeue = listener.dequeue
 
@@ -381,7 +395,7 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
 
 _CONFIG_LISTENER_LOCK = threading.Lock()
 """Schuetzt den Wiederstart der dictConfig-Listener; eigenes Lock, weil ein
-``_SwarmqQueueListener`` aus ``swarmq.logging`` in der Datei beim Start
+``_SwarmqQueueListener`` aus ``swarmq.logging_queue`` in der Datei beim Start
 dessen ``_LISTENER_LOCK`` nimmt."""
 
 

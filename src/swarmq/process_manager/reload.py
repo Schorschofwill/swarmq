@@ -9,6 +9,7 @@ Der SIGHUP-Handler setzt nur einen ausstehenden Reload; die Pruefung einer
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import time
 from collections.abc import Callable
@@ -147,17 +148,44 @@ def reexec(pm: Any, retcode: int) -> int:
     try:
         logger.info("process_manager_reload_execvp")
         shutdown_logging()  # R15: die Queue vor dem neuen Abbild leeren
-        # KTD8: SIGTERM waehrend Stopp oder Leeren -- oder schon, waehrend der
-        # Loop den Reload beschloss (der Handler laeuft zwischen Bytecodes).
-        if not pm._reload_requested or pm._shutdown_signal is not None:
-            pm._log_shutdown_signal()
-            return retcode
-        # Use the argv AND env snapshots captured in ``__init__``. execvpe
-        # closes the env side of the trust boundary so in-process os.environ
-        # mutation (e.g., a library flipping PYTHONPATH) cannot influence the
-        # re-exec'd interpreter's import resolution.
-        os.execvpe(sys.executable, [sys.executable, *pm._startup_argv], pm._startup_env)
+        # Ab hier bis ``execve`` bleibt ein SIGTERM anhaengig, statt dass der
+        # Handler nach der Pruefung unbemerkt Flags setzt: Maske und
+        # anhaengiges Signal ueberleben ``execve``, der neue Supervisor
+        # bekommt es, sobald ``ProcessManager.run`` die Signale freigibt.
+        saved = _block_shutdown_signals()
+        try:
+            # KTD8: SIGTERM waehrend Stopp oder Leeren -- oder schon, waehrend
+            # der Loop den Reload beschloss.
+            if not pm._reload_requested or pm._shutdown_signal is not None:
+                pm._log_shutdown_signal()
+                return retcode
+            # Use the argv AND env snapshots captured in ``__init__``.
+            # execvpe closes the env side of the trust boundary so in-process
+            # os.environ mutation (e.g., a library flipping PYTHONPATH) cannot
+            # influence the re-exec'd interpreter's import resolution.
+            os.execvpe(sys.executable, [sys.executable, *pm._startup_argv], pm._startup_env)
+        finally:
+            _restore_signal_mask(saved)  # nur ohne ``execve`` erreicht
     except OSError as exc:
         logger.error("reload_execvp_failed", **_error_fields(exc))
         return 1
     return retcode
+
+
+_SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+
+def _block_shutdown_signals() -> set[int | signal.Signals] | None:
+    """Blockiert SIGTERM und SIGINT; liefert die alte Maske (``None`` ohne
+    ``pthread_sigmask``)."""
+    try:
+        return signal.pthread_sigmask(signal.SIG_BLOCK, _SHUTDOWN_SIGNALS)
+    except (AttributeError, OSError):
+        return None
+
+
+def _restore_signal_mask(saved: set[int | signal.Signals] | None) -> None:
+    """Stellt die alte Maske her; ein inzwischen anhaengiges SIGTERM wird
+    dabei zugestellt."""
+    if saved is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, saved)

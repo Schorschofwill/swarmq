@@ -95,9 +95,11 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
 
     def _serve(self) -> None:
         """Thread-Ziel: Records ausgeben; beim Ende noch nicht gemeldete
-        Drops melden, auch innerhalb der Frist (Plan 2026-10-06-1811, KTD2)."""
+        Drops und Handler-Fehler melden, auch innerhalb der Frist (Plan
+        2026-10-06-1811, KTD2)."""
         self._monitor()
         self.drops.report_due(final=True)
+        self.errors.report_due(final=True)
 
     def stop(self) -> None:
         """Wie der Basis-``stop``, aber auf dem eigenen Thread: Zwischen dem
@@ -482,18 +484,25 @@ def shutdown_logging(timeout: float | None = None) -> None:
 def _stop_listeners(timeout: float | None = None) -> None:
     """Leert und stoppt alle Listener des Prozesses, ohne den Eigentuemer
     freizugeben: erst alle schliessen, dann gemeinsam bis zur Frist warten
-    (KTD3), damit ein haengender die anderen nicht aufhaelt."""
+    (KTD3), damit ein haengender die anderen nicht aufhaelt. Wiederholt,
+    solange inzwischen neue Listener laufen. Nach der Frist gibt jede Runde
+    die noch laufenden auf; deren Handler starten keinen neuen, solange der
+    alte Thread lebt -- die Schleife endet auch bei ununterbrochenem
+    Loggen."""
     seconds = _DRAIN_TIMEOUT if timeout is None else timeout
     deadline = Deadline(seconds)
-    owners = {id(h.listener): h for h in list(_HANDLERS) if h.listener is not None}
-    closing = [_close(listener, owners.get(id(listener))) for listener in list(_LISTENERS)]
+    closing = _close_running()
     file_closing = close_queue_listeners()
-    given_up = [d for d in closing if d is not None and not d.wait(deadline)]
+    given_up: list[_Draining] = []
     file_given_up: list[FileDraining] = []
-    while file_closing:
+    while closing or file_closing:
+        given_up += [d for d in closing if not d.wait(deadline)]
         file_given_up += [d for d in file_closing if not d.wait(deadline)]
-        # Ein Eintrag im Fenster zwischen Ende und Vergessen startet einen
-        # neuen Thread (KTD1); auch er wird geschlossen, nicht verwaist.
+        # Records, die andere Threads waehrend des Leerens loggen, landen in
+        # der frischen Queue und starten deren Listener; ein Eintrag im
+        # Fenster zwischen Ende und Vergessen startet einen neuen Thread
+        # (KTD1). Auch sie werden geschlossen und abgewartet, nicht verwaist.
+        closing = _close_running()
         file_closing = close_queue_listeners()
     file_lost = sum(d.lost for d in file_given_up)
     count_dropped(file_lost)
@@ -502,6 +511,13 @@ def _stop_listeners(timeout: float | None = None) -> None:
             sum(d.lost for d in given_up) + file_lost, seconds,
             json=any(d.handler is not None and d.handler.json for d in given_up),
         )
+
+
+def _close_running() -> list[_Draining]:
+    """Schliesst alle laufenden eingebauten Listener (KTD3)."""
+    owners = {id(h.listener): h for h in list(_HANDLERS) if h.listener is not None}
+    closing = (_close(listener, owners.get(id(listener))) for listener in list(_LISTENERS))
+    return [d for d in closing if d is not None]
 
 
 class _Draining:

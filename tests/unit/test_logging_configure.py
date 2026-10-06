@@ -72,6 +72,9 @@ from __future__ import annotations
 #     Meldung ``log_records_dropped`` ueber die Handler des Listeners.
 # 33. Beim Stoppen meldet der Datei-Modus-Listener noch nicht gemeldete
 #     Drops, auch innerhalb der Frist (Zeit gemockt).
+# Review A5:
+# 34. [x] Beim Stoppen meldet der Datei-Modus-Listener einen von der
+#     Ratenbegrenzung zurueckgehaltenen Fehlerstand (Zeit gemockt).
 import io
 import json
 import logging
@@ -749,6 +752,24 @@ def test_a_raising_filter_does_not_kill_the_file_mode_listener(
     assert [r.getMessage() for r in FILE_RECORDS] == ["log_handler_errors", "evt_after"]
 
 
+def test_stopping_a_file_mode_listener_reports_held_back_handler_errors(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import shutdown_logging
+    from swarmq.logging_file import RateLimitedReport
+
+    monkeypatch.setattr(RateLimitedReport, "clock", lambda: 100.0)
+    configure_logging(LoggingSettings(log_config=_config_file(tmp_path, _queue_config())))
+    log = logging.getLogger("swarmq.tests.queued")
+
+    log.warning("evt_poison")
+    log.warning("evt_poison")
+    shutdown_logging()
+
+    reports = [r for r in FILE_RECORDS if r.getMessage() == "log_handler_errors"]
+    assert [r.count for r in reports] == [1, 2]  # type: ignore[attr-defined]
+
+
 def test_a_dead_file_mode_listener_thread_restarts_on_the_next_record(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -911,8 +932,9 @@ def test_stopping_a_file_mode_listener_reports_held_back_drops(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq.logging import shutdown_logging
+    from swarmq.logging_file import RateLimitedReport
 
-    monkeypatch.setattr("swarmq.logging_file.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr(RateLimitedReport, "clock", lambda: 100.0)
     FILE_RECORDS.clear()
     config = _bounded_blocking_queue_config()
     config["handlers"]["rec"] = {"()": f"{__name__}.GateRecordingHandler"}

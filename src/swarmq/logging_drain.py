@@ -26,8 +26,11 @@ class Deadline:
         self._end = time.monotonic() + seconds
 
     def remaining(self) -> float:
-        """Restzeit in Sekunden, nie negativ."""
-        return max(0.0, self._end - time.monotonic())
+        """Restzeit in Sekunden, nie negativ und hoechstens
+        ``threading.TIMEOUT_MAX``: Mehr liesse ``Thread.join`` mit
+        ``OverflowError`` scheitern. Ein Rueckhalt -- die Einstellungen
+        lassen solche Fristen gar nicht erst zu."""
+        return min(threading.TIMEOUT_MAX, max(0.0, self._end - time.monotonic()))
 
 
 def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
@@ -74,6 +77,11 @@ _STUCK_STREAMS: set[int] = set()
 """``id`` der Streams aufgegebener Ziel-Handler: Ihr Lock haelt womoeglich
 der haengende Thread, ein ``flush`` blockierte."""
 
+_STUCK_FILES: set[tuple[int, int]] = set()
+"""``(st_dev, st_ino)`` hinter diesen Streams: Ein anderer Stream auf
+derselben Datei -- etwa stdout auf derselben Pipe wie stderr (``2>&1``,
+Journal) -- blockierte beim ``flush`` ebenso."""
+
 
 def abandon(thread: threading.Thread, handlers: Iterable[logging.Handler]) -> None:
     """Gibt einen Listener-Thread auf, der seine Frist ueberschritten hat.
@@ -95,9 +103,20 @@ def _stream_of(handler: logging.Handler | None) -> object:
         return None
 
 
+def _file_of(stream: object) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` der Datei hinter ``stream``, sonst ``None``."""
+    try:
+        info = os.fstat(stream.fileno())  # type: ignore[attr-defined]
+    except Exception:  # kein fd (StringIO), geschlossen, fremde Klasse
+        return None
+    return info.st_dev, info.st_ino
+
+
 def _forget(handlers: set[logging.Handler]) -> None:
-    streams = {id(s) for h in handlers if (s := _stream_of(h)) is not None}
+    stuck = [s for h in handlers if (s := _stream_of(h)) is not None]
+    streams = {id(s) for s in stuck}
     _STUCK_STREAMS.update(streams)
+    _STUCK_FILES.update(f for s in stuck if (f := _file_of(s)) is not None)
     with logging._lock:  # type: ignore[attr-defined]
         refs = logging._handlerList  # type: ignore[attr-defined]
         refs[:] = [
@@ -118,15 +137,35 @@ def exit_if_log_thread_stuck(code: int) -> None:
     Finalisierung bricht dann mit "Fatal Python error:
     _enter_buffered_busy" ab (Exit 134) oder haengt. Spaetere
     atexit-Funktionen laufen nicht; stdout und stderr werden vorher geleert,
-    soweit kein haengender Thread an ihnen schreibt.
+    soweit das nicht blockiert (:func:`_flushable`).
     """
     if not any(thread.is_alive() for thread in _ABANDONED):
         return
     for stream in (sys.stdout, sys.stderr):
-        if stream is not None and id(stream) not in _STUCK_STREAMS:
+        if _flushable(stream):
             with contextlib.suppress(Exception):
                 stream.flush()
     _hard_exit(code)
+
+
+def _flushable(stream: object) -> bool:
+    """Blockiert ``flush`` nicht? Nicht, wenn ein haengender Thread an
+    diesem Stream oder derselben Datei schreibt -- stdout teilt sich etwa
+    mit stderr die Pipe --, und nur, wenn ``poll`` den fd sofort als
+    beschreibbar meldet (wie :func:`write_drain_notice`)."""
+    if stream is None or id(stream) in _STUCK_STREAMS:
+        return False
+    file = _file_of(stream)
+    if file is None:
+        return True  # ohne fd blockiert kein ``write(2)``
+    if file in _STUCK_FILES:
+        return False
+    try:
+        poller = select.poll()
+        poller.register(stream.fileno(), select.POLLOUT)  # type: ignore[attr-defined]
+        return any(events & select.POLLOUT for _, events in poller.poll(0))
+    except Exception:
+        return False
 
 
 _hard_exit = os._exit

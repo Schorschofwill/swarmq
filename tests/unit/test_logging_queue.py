@@ -59,7 +59,9 @@ from __future__ import annotations
 # 25. Nach dem Freigeben kommt genau eine Meldung ``log_records_dropped``
 #     ueber den Listener an (Logger ``swarmq.logging``, WARNING, ``count``).
 # 26. JSON-Modus: Die Meldung ist gueltiges JSON mit ``event`` und ``count``.
-# 27. ``sys.stderr`` geschlossen: Ein Drop wirft nicht und wird gezaehlt.
+# 27. ``sys.stderr`` geschlossen: Ein Drop wirft nicht und wird gezaehlt;
+#     die Meldung geht auch an einen Ziel-Handler auf dem geschlossenen
+#     stderr, ohne den Listener zu beenden (Review B2).
 # 28. Ratenbegrenzung: hoechstens eine Meldung pro Sekunde (Zeit gemockt),
 #     die Zaehlung stimmt.
 # 29. Beim Stoppen meldet der Listener noch nicht gemeldete Drops.
@@ -70,6 +72,12 @@ from __future__ import annotations
 # 31. Nach einem echten Fork (Hook ``_after_fork_in_child``) startet der
 #     naechste Record im Kind genau einen Listener.
 # 32. ``LISTENER_THREAD_NAME`` hat hoechstens 15 Zeichen (``comm`` kuerzt).
+# Review A5 -- zurueckgehaltene Handler-Fehler gehen nicht verloren:
+# 33. [x] Nach Ablauf der Sekunde meldet der naechste fehlerfreie Record den
+#         zurueckgehaltenen Fehlerstand.
+# 34. [x] Beim Ende des Listeners wird ein zurueckgehaltener Fehlerstand
+#         gemeldet, auch innerhalb der Sekunde (Datei-Modus: 34 in
+#         ``test_logging_configure.py``).
 import atexit
 import collections
 import contextlib
@@ -89,6 +97,7 @@ from swarmq.logging import (
     setup_logging,
     shutdown_logging,
 )
+from swarmq.logging_file import RateLimitedReport
 from swarmq.logging_format import build_formatter
 from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener, mark_fork_source
 from tests.unit._fork_child import run_in_forked_child
@@ -154,8 +163,10 @@ class _Clock:
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """Nur die Uhr der Ratenbegrenzung: ``time.monotonic`` bleibt echt, die
+    Frist des Leerens laeuft also weiter ab (Review B1)."""
     fake = _Clock()
-    monkeypatch.setattr("swarmq.logging_file.time.monotonic", fake)
+    monkeypatch.setattr(RateLimitedReport, "clock", fake)
     return fake
 
 
@@ -543,6 +554,32 @@ def test_handler_errors_are_counted_and_reported_at_most_once_per_second(
     assert reports[0].levelno == logging.WARNING
 
 
+def test_held_back_handler_errors_are_reported_with_the_next_good_record(
+    clock: _Clock,
+) -> None:
+    target = _RaisingOnPoison()
+    listener = _SwarmqQueueListener(queue.Queue(), target)
+    listener.handle(_record(msg="poison"))
+    clock.now += 0.5
+    listener.handle(_record(msg="poison"))
+
+    clock.now += 0.5
+    listener.handle(_record(msg="fine"))
+
+    assert [r.count for r in _reports(target)] == [1, 2]  # type: ignore[attr-defined]
+
+
+def test_stopping_reports_handler_errors_the_rate_limit_held_back(clock: _Clock) -> None:
+    target = _RaisingOnPoison()
+    handler = _StructlogQueueHandler(queue.Queue(), target)
+    handler.handle(_record(msg="poison"))
+    handler.handle(_record(msg="poison"))
+
+    shutdown_logging()
+
+    assert [r.count for r in _reports(target)] == [1, 2]  # type: ignore[attr-defined]
+
+
 def test_a_stop_racing_a_restart_leaves_no_orphaned_listener_thread() -> None:
     target = _RecordingHandler()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
@@ -669,17 +706,32 @@ def test_json_mode_drop_report_is_a_valid_json_line(
 def test_a_drop_with_closed_stderr_neither_raises_nor_goes_uncounted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Die Drop-Meldung geht aus dem Listener auch an einen Ziel-Handler auf
+    dem geschlossenen stderr (Review B2): Der Listener ueberlebt das."""
+    thread_errors: list[Any] = []
+    monkeypatch.setattr(threading, "excepthook", thread_errors.append)
     closed = io.StringIO()
     closed.close()
     monkeypatch.setattr(sys, "stderr", closed)
-    handler = _StructlogQueueHandler(queue.Queue(maxsize=1))
+    blocker = _BlockingHandler()
+    recorder = _RecordingHandler()
+    handler = _StructlogQueueHandler(
+        queue.Queue(maxsize=1), blocker, recorder, logging.StreamHandler(sys.stderr),
+    )
     log = logging.Logger("swarmq.tests.u3")
     log.addHandler(handler)
+    log.warning("held")
+    assert blocker.entered.wait(timeout=1)
 
     log.warning("fills-the-queue")
     log.warning("dropped")
+    blocker.unblock.set()
+    shutdown_logging()
 
     assert handler.dropped == 1
+    assert [r.count for r in _drop_reports(recorder)] == [1]  # type: ignore[attr-defined]
+    assert _reports(recorder)  # der Handler auf dem geschlossenen stderr warf
+    assert thread_errors == []
 
 
 class _AliveThread(_DeadThread):

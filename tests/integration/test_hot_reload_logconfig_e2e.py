@@ -16,6 +16,10 @@ legt der Test erst unmittelbar vor dem SIGHUP an, so schlaeft nur die Probe.
 # - [x] SIGTERM, dann SIGHUP: Ende ohne Neustart (Szenario E)
 # - [x] SIGTERM, waehrend die Worker fuer einen beschlossenen Reload stoppen:
 #       Ende ohne Neustart
+# Echte Probe (aus ``tests/unit/process_manager/test_reload.py`` verschoben,
+# Review B3: sie starten einen Interpreter):
+# - [x] Die echte Probe meldet einen Handler-Tippfehler als Fehlertext
+# - [x] Ohne Fabrik prueft die echte Probe die Datei
 
 from __future__ import annotations
 
@@ -223,3 +227,30 @@ def test_sigterm_while_workers_stop_for_an_accepted_reload_ends_without_restart(
     tail = "".join(sup.lines[mark:])
     assert sup.count("process_manager_start") == 1, tail
     assert sup.count("process_manager_reload_execvp") == 0, tail
+
+
+def test_the_real_probe_reports_a_handler_typo() -> None:
+    """AE4 beim Reload: Der Tippfehler faellt erst in ``dictConfig`` auf."""
+    from swarmq.logging_file import DictConfigProbe
+
+    probe = DictConfigProbe(json.dumps({
+        "version": 1,
+        "handlers": {"err": {"class": "logging.StreamHandlr"}},
+        "root": {"handlers": ["err"]},
+    }))
+    assert probe.wait(timeout=5) == 1
+    assert probe.poll() == 1
+    assert "StreamHandlr" in probe.error()
+
+
+def test_by_default_the_real_probe_checks_the_file(tmp_path: Path) -> None:
+    from swarmq.process_manager.reload import ReloadController
+
+    log_config = tmp_path / "log.json"
+    log_config.write_text('{"version": 1}')
+    ctl = ReloadController(str(log_config))
+    ctl.request()
+    deadline = time.monotonic() + 5
+    while not ctl.step():
+        assert ctl.busy and time.monotonic() < deadline
+        time.sleep(0.01)

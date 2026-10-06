@@ -7,7 +7,7 @@ und gibt es aufgeloest an seine Kinder weiter.
 
 from __future__ import annotations
 
-import math
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -180,14 +180,30 @@ def _positive_int(picked: _Picked) -> int:
     return number
 
 
+def valid_drain_timeout(seconds: float) -> bool:
+    """Eine gueltige Frist fuers Leeren der Log-Queues (Plan 2026-10-06-1811,
+    KTD11): groesser 0 und hoechstens ``threading.TIMEOUT_MAX``.
+
+    ``nan`` hoebe die Frist auf (jedes Leeren gaebe sofort auf), ``inf`` und
+    alles ueber ``TIMEOUT_MAX`` liessen ``Thread.join`` mit ``OverflowError``
+    scheitern -- das Leeren bricht ab, und ein Compute-Kind schickt sein
+    Ergebnis nie. Die Grenze ist die technische, keine willkuerliche: Wer
+    "praktisch unbegrenzt" will, bekommt das bis dorthin.
+    """
+    return 0 < seconds <= threading.TIMEOUT_MAX
+
+
 def _positive_seconds(picked: _Picked) -> float:
-    """Endliche Sekunden > 0; ``nan`` und ``inf`` hoben die Frist auf."""
+    """Sekunden nach :func:`valid_drain_timeout`."""
     try:
         seconds = float(str(picked.value).strip())
     except ValueError:
         seconds = 0.0
-    if not (0 < seconds < math.inf):
-        msg = f"{picked.source} must be a positive number of seconds, got {picked.value!r}"
+    if not valid_drain_timeout(seconds):
+        msg = (
+            f"{picked.source} must be a positive number of seconds up to "
+            f"{threading.TIMEOUT_MAX:g}, got {picked.value!r}"
+        )
         raise ConfigurationError(msg)
     return seconds
 

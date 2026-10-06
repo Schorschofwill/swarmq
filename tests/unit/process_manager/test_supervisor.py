@@ -7,6 +7,10 @@ Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 # 2. Supervisor-Fehler-Events tragen ``error_type``/``error``.
 # 3. KTD11: ``worker_died`` ist bei sauberem Ende (Exit 0) und bei
 #    erwartetem Ende INFO (Lebenszyklus), bei einem Absturz WARNING.
+# Review A6:
+# 4. Ein Supervisor, der mit blockiertem SIGTERM/SIGINT startet (von
+#    ``reexec`` ueber ``execve`` geerbt), gibt sie nach dem Einrichten der
+#    Handler frei (Charakterisierung: ``run`` tat das schon).
 
 from __future__ import annotations
 
@@ -369,6 +373,30 @@ class TestProcessManagerRestart:
             pm.run()
             execvp.assert_called_once()
 
+
+    def test_a_supervisor_started_with_blocked_shutdown_signals_unblocks_them(self):
+        """Review A6: ``reexec`` blockiert SIGTERM/SIGINT ueber ``execve``
+        hinweg. Der neue Supervisor muss sie nach dem Einrichten der Handler
+        freigeben, sonst bliebe SIGTERM fuer immer anhaengig."""
+        seen: list[set[signal.Signals]] = []
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        before = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+        try:
+            with patch.object(pm, "_start_all_workers"), \
+                 patch.object(pm, "_setup_signals"), \
+                 patch.object(
+                     pm, "_monitor_loop",
+                     side_effect=lambda: seen.append(signal.pthread_sigmask(signal.SIG_BLOCK, set())) or 0,
+                 ), \
+                 patch.object(pm, "_shutdown_all_workers"), \
+                 patch.object(pm, "_collect_zombies"):
+                pm.run()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, before)
+
+        [mask] = seen
+        assert not ({signal.SIGTERM, signal.SIGINT} & set(mask))
 
     def test_reload_writes_the_log_queue_before_execvpe(self):
         """U7 (R15): ``process_manager_reload_execvp`` ist geschrieben, bevor

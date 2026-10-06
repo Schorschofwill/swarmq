@@ -773,6 +773,10 @@ class TestLoggingFields:
     - [x] (Plan 2026-10-06-1811, U4) ``log_drain_timeout``: Default 5.0, Env
           ``SWARMQ_LOG_DRAIN_TIMEOUT``, <= 0 ist ein Fehler, aus
           ``logging_settings`` uebernommen
+    - [x] (Review A1) ``log_drain_timeout`` ``inf``, ``nan`` oder groesser
+          ``threading.TIMEOUT_MAX`` -- als Argument wie per Env: Fehler.
+          Sonst wuerfe ``Thread.join`` im Compute-Kind ``OverflowError``
+          (``nan``: jedes Leeren gaebe sofort auf)
     """
 
     @staticmethod
@@ -835,6 +839,17 @@ class TestLoggingFields:
     def test_non_positive_drain_timeout_is_a_configuration_error(self, seconds):
         with pytest.raises(ConfigurationError, match="log_drain_timeout must be > 0"):
             self._cfg(log_drain_timeout=seconds)
+
+    @pytest.mark.parametrize("raw", ["inf", "nan", "1e10"])
+    @pytest.mark.parametrize("via", ["argument", "env"])
+    def test_unbounded_drain_timeout_is_a_configuration_error(self, monkeypatch, raw, via):
+        kwargs = {}
+        if via == "env":
+            monkeypatch.setenv("SWARMQ_LOG_DRAIN_TIMEOUT", raw)
+        else:
+            kwargs["log_drain_timeout"] = float(raw)
+        with pytest.raises(ConfigurationError, match="log_drain_timeout must be > 0"):
+            self._cfg(**kwargs)
 
     def test_logger_level_pairs_are_validated_and_normalised(self):
         assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (

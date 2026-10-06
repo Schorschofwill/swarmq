@@ -45,6 +45,23 @@ from __future__ import annotations
 #         ``os._exit(code)`` nur, wenn ein aufgegebener Thread noch lebt.
 # 16. [x] ``exit_code_for``: der Exit-Code, mit dem der Prozess ohnehin
 #         endete -- 0 ohne Ausnahme, der Code eines ``SystemExit``, sonst 1.
+# 17. [x] (Review A1) Eine Frist ueber ``threading.TIMEOUT_MAX``: Das Leeren
+#         wartet hoechstens ``TIMEOUT_MAX`` statt mit ``OverflowError`` aus
+#         ``Thread.join`` abzubrechen.
+# 18. [x] (Review A3) Ein Record, den ein anderer Thread waehrend des Leerens
+#         loggt, ist geschrieben, wenn ``shutdown_logging`` zurueckkehrt --
+#         auch ohne zweites Leeren (Compute-Kind endet per ``os._exit``).
+# 19. [x] (Review A3) Loggt ein Thread ununterbrochen weiter, endet das
+#         Leeren trotzdem kurz nach der Frist (ohne eigenes Rot: Nach der
+#         Frist gibt ``_Draining.settle`` einen noch lebenden Listener auf,
+#         der Handler startet dann keinen neuen -- die Schleife endet).
+# Review B4 -- Austragen beim Aufgeben und Leeren vor dem harten Ende
+# (Charakterisierung bestehenden Verhaltens, ohne eigenes Rot):
+# 20. [x] ``abandon`` traegt den Ziel-Handler und jeden anderen Handler auf
+#         demselben Stream (etwa ``logging.lastResort``) aus
+#         ``logging._handlerList`` aus; Handler auf anderen Streams bleiben.
+# 21. [x] ``exit_if_log_thread_stuck`` leert stdout, aber nicht den Stream,
+#         an dem der aufgegebene Thread schreibt.
 import contextlib
 import fcntl
 import io
@@ -133,6 +150,17 @@ def test_a_drain_against_a_blocked_target_returns_and_counts_the_rest() -> None:
         assert dropped_log_records() == before + 3
     finally:
         gate.opened.set()
+
+
+def test_a_deadline_beyond_timeout_max_still_drains() -> None:
+    gate = _Gate()
+    gate.opened.set()
+    handler = _StructlogQueueHandler(queue.Queue(), gate)
+    handler.handle(_record("kept"))
+
+    shutdown_logging(timeout=threading.TIMEOUT_MAX * 10)
+
+    assert gate.messages == ["kept"]
 
 
 def _notices(err: str) -> list[str]:
@@ -263,6 +291,60 @@ def test_records_logged_while_draining_land_in_a_fresh_queue() -> None:
 
     assert gate.messages == ["before", "during"]
     assert handler.dropped == 0
+
+
+class _SlowGate(_Gate):
+    """Wie ``_Gate``; ``late`` braucht danach noch 50 ms."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage() == "late":
+            threading.Event().wait(0.05)
+        super().emit(record)
+
+
+def test_a_drain_returns_only_after_records_logged_while_draining_are_written() -> None:
+    gate = _SlowGate()
+    old_queue = _SignallingQueue(maxsize=10)
+    handler = _StructlogQueueHandler(old_queue, gate)
+    handler.handle(_record("before"))
+    assert gate.entered.wait(1)
+    drained = threading.Event()
+
+    def drain() -> None:
+        shutdown_logging(timeout=2)
+        drained.set()
+
+    threading.Thread(target=drain, daemon=True).start()
+    try:
+        assert old_queue.closing.wait(1)
+        handler.handle(_record("late"))
+    finally:
+        gate.opened.set()
+    assert drained.wait(2)
+
+    assert gate.messages == ["before", "late"]
+    assert handler.dropped == 0
+
+
+def test_a_drain_ends_soon_after_its_deadline_while_a_thread_keeps_logging() -> None:
+    gate = _Gate()
+    gate.opened.set()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=100), gate)
+    stop = threading.Event()
+
+    def keep_logging() -> None:
+        while not stop.is_set():
+            handler.handle(_record("chatter"))
+
+    logger = threading.Thread(target=keep_logging, daemon=True)
+    logger.start()
+    try:
+        assert gate.entered.wait(1)
+        assert _returns_within(lambda: shutdown_logging(timeout=0.05), seconds=1)
+    finally:
+        stop.set()
+        logger.join(1)
+    assert _returns_within(lambda: shutdown_logging(timeout=1))
 
 
 def _listener_threads() -> list[threading.Thread]:
@@ -625,3 +707,59 @@ def test_the_hard_exit_keeps_the_exit_code_the_process_would_have_had(
     from swarmq.logging_drain import exit_code_for
 
     assert exit_code_for(exc) == code
+
+
+class _FlushRecorder(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed = 0
+
+    def flush(self) -> None:
+        self.flushed += 1
+
+
+@contextlib.contextmanager
+def _hanging_thread() -> Iterator[threading.Thread]:
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    try:
+        yield thread
+    finally:
+        release.set()
+        thread.join(1)
+
+
+def test_abandoning_forgets_every_handler_on_the_stuck_stream() -> None:
+    from swarmq.logging_drain import abandon
+
+    stuck, other = _FlushRecorder(), _FlushRecorder()
+    target = logging.StreamHandler(stuck)
+    same_stream = logging.StreamHandler(stuck)  # wie ``lastResort`` auf stderr
+    elsewhere = logging.StreamHandler(other)
+
+    with _hanging_thread() as thread:
+        abandon(thread, [target])
+
+    registered = [ref() for ref in logging._handlerList]  # type: ignore[attr-defined]
+    assert target not in registered
+    assert same_stream not in registered
+    assert elsewhere in registered
+
+
+def test_the_hard_exit_flushes_stdout_but_not_the_stuck_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging_drain import abandon, exit_if_log_thread_stuck
+
+    stdout, stderr = _FlushRecorder(), _FlushRecorder()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr("swarmq.logging_drain._hard_exit", _fake_exit)
+
+    with _hanging_thread() as thread:
+        abandon(thread, [logging.StreamHandler(stderr)])
+        with pytest.raises(_Exited):
+            exit_if_log_thread_stuck(3)
+
+    assert (stdout.flushed, stderr.flushed) == (1, 0)

@@ -1,6 +1,8 @@
 """Reload-Zustandsmaschine des Supervisors (Plan 2026-10-06-1811, U8, KTD8).
 
-Alle Tests mit gefaelschter Probe-Fabrik und Uhr, ohne echte Signale.
+Alle Tests mit gefaelschter Probe-Fabrik und Uhr, ohne echte Prozesse; die
+Tests der echten Probe stehen in
+``tests/integration/test_hot_reload_logconfig_e2e.py`` (Review B3).
 """
 
 # Test list (U8):
@@ -20,19 +22,30 @@ Alle Tests mit gefaelschter Probe-Fabrik und Uhr, ohne echte Signale.
 # - [x] Probe nicht startbar (OSError): ``log_config_reload_failed``
 # - [x] Die echte Probe laeuft in eigener Sitzung (``start_new_session=True``)
 # - [x] Die echte Probe meldet einen Handler-Tippfehler als Fehlertext
+#       (echter Prozess: in ``tests/integration/test_hot_reload_logconfig_e2e.py``)
 # - [x] Die echte Probe wird beim Beenden auch eingesammelt
-# - [x] Ohne Fabrik prueft die echte Probe die Datei
+# - [x] Ohne Fabrik prueft die echte Probe die Datei (ebenda)
 # - [x] Requests waehrend einer Probe, die in die Frist laeuft: keine zweite
+# Review A6 -- ``reexec``: ein SIGTERM nach der letzten Pruefung geht nicht
+# verloren:
+# - [x] ``execvpe`` laeuft mit blockiertem SIGTERM und SIGINT (Maske und
+#       anhaengiges Signal ueberleben ``execve``)
+# - [x] ohne ``execvpe`` (SIGTERM schon da, ``execvpe`` scheitert) ist die
+#       Maske danach wieder die alte; ein waehrenddessen eingetroffenes
+#       SIGTERM wird dann zugestellt (Rot per Mutation geprueft: die
+#       Wiederherstellung kam mit der Obvious Implementation des ersten Tests)
 
 from __future__ import annotations
 
 import json
-import time
+import os
+import signal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from swarmq.process_manager.reload import ReloadController
+from swarmq.process_manager.reload import ReloadController, reexec
 from tests.unit.process_manager._helpers import FakeClock as _Clock
 from tests.unit.process_manager._helpers import FakeProbe as _Probe
 from tests.unit.process_manager._helpers import FakeProbeFactory as _Factory
@@ -216,20 +229,6 @@ def test_the_real_probe_runs_in_its_own_session():
     popen.return_value.stdin.close.assert_called_once()
 
 
-def test_the_real_probe_reports_a_handler_typo():
-    """AE4 beim Reload: Der Tippfehler faellt erst in ``dictConfig`` auf."""
-    from swarmq.logging_file import DictConfigProbe
-
-    probe = DictConfigProbe(json.dumps({
-        "version": 1,
-        "handlers": {"err": {"class": "logging.StreamHandlr"}},
-        "root": {"handlers": ["err"]},
-    }))
-    assert probe.wait(timeout=5) == 1
-    assert probe.poll() == 1
-    assert "StreamHandlr" in probe.error()
-
-
 def test_killing_the_real_probe_also_reaps_it():
     from swarmq.logging_file import DictConfigProbe
 
@@ -240,10 +239,61 @@ def test_killing_the_real_probe_also_reaps_it():
     proc.wait.assert_called_once()
 
 
-def test_by_default_the_real_probe_checks_the_file(log_config):
-    ctl = ReloadController(log_config)
-    ctl.request()
-    deadline = time.monotonic() + 5
-    while not ctl.step():
-        assert ctl.busy and time.monotonic() < deadline
-        time.sleep(0.01)
+def _blocked() -> set[signal.Signals]:
+    return set(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+
+
+@pytest.fixture
+def signal_mask():
+    """Stellt Maske und SIGTERM-Handler wieder her; ein anhaengiges SIGTERM
+    landet beim Freigeben im Rekorder statt den Testprozess zu beenden."""
+    received: list[int] = []
+    old_handler = signal.signal(signal.SIGTERM, lambda signum, _frame: received.append(signum))
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    try:
+        yield received
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        signal.signal(signal.SIGTERM, old_handler)
+
+
+def _pm(**kwargs):
+    defaults = {
+        "workers": {}, "_reload_requested": True, "_shutdown_signal": None,
+        "_startup_argv": ["-m", "swarmq.cli"], "_startup_env": {},
+        "_log_shutdown_signal": lambda: None,
+    }
+    return SimpleNamespace(**{**defaults, **kwargs})
+
+
+def test_execvpe_runs_with_sigterm_and_sigint_blocked(signal_mask):
+    seen: list[set[signal.Signals]] = []
+    with patch("swarmq.process_manager.reload.shutdown_logging"), \
+         patch("swarmq.process_manager.reload.os.execvpe", side_effect=lambda *a: seen.append(_blocked())):
+        reexec(_pm(), 0)
+
+    [mask] = seen
+    assert {signal.SIGTERM, signal.SIGINT} <= mask
+
+
+def test_without_execvpe_the_mask_is_restored_and_a_held_sigterm_delivered(signal_mask):
+    before = _blocked()
+    pm = _pm(
+        _shutdown_signal="SIGTERM",
+        # SIGTERM im blockierten Fenster: bleibt anhaengig bis zur Rueckgabe.
+        _log_shutdown_signal=lambda: os.kill(os.getpid(), signal.SIGTERM),
+    )
+    with patch("swarmq.process_manager.reload.shutdown_logging"):
+        assert reexec(pm, 3) == 3
+
+    assert _blocked() == before
+    assert signal_mask == [signal.SIGTERM]
+
+
+def test_a_failed_execvpe_restores_the_mask(signal_mask):
+    before = _blocked()
+    with patch("swarmq.process_manager.reload.shutdown_logging"), \
+         patch("swarmq.process_manager.reload.os.execvpe", side_effect=OSError("gone")):
+        assert reexec(_pm(), 0) == 1
+
+    assert _blocked() == before

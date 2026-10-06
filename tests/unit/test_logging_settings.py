@@ -21,6 +21,8 @@ Test-Liste:
 Plan 2026-10-06-1811, U4 (R14, KTD11) -- ``log_drain_timeout``:
 - [x] Prioritaet CLI > Env > SwarmQConfig > Default 5.0; Bruchteile erlaubt
 - [x] Wert <= 0, nicht numerisch oder nicht endlich: ConfigurationError mit Quelle
+- [x] Wert > ``threading.TIMEOUT_MAX`` (etwa ``1e10``): ConfigurationError --
+      ``Thread.join`` wuerfe sonst ``OverflowError`` (Review A1)
 """
 
 from __future__ import annotations
@@ -240,7 +242,7 @@ class TestValidation:
         with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_QUEUE_SIZE.*{raw!r}"):
             resolve_logging_settings(_cli(), {"SWARMQ_LOG_QUEUE_SIZE": raw}, None)
 
-    @pytest.mark.parametrize("raw", ["0", "-1", "abc", "nan", "inf"])
+    @pytest.mark.parametrize("raw", ["0", "-1", "abc", "nan", "inf", "1e10"])
     def test_non_positive_non_numeric_or_infinite_drain_timeout_is_a_configuration_error(
         self, raw: str,
     ) -> None:

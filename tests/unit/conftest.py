@@ -59,6 +59,17 @@ def _no_hard_exit_from_logging(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_abandoned_log_threads(monkeypatch):
+    """Review B4: Aufgegebene Threads und steckende Streams sind
+    Prozesszustand von ``swarmq.logging_drain``. Jeder Test beginnt ohne sie,
+    damit keiner von den Resten eines frueheren abhaengt (etwa ein
+    uebersprungenes ``flush`` oder ein vermeintlich haengender Thread)."""
+    monkeypatch.setattr("swarmq.logging_drain._ABANDONED", [])
+    monkeypatch.setattr("swarmq.logging_drain._STUCK_STREAMS", set())
+    monkeypatch.setattr("swarmq.logging_drain._STUCK_FILES", set())
+
+
+@pytest.fixture(autouse=True)
 def _restore_logging_state():
     """Gibt das Logging nach jedem Test frei und stellt Root wieder her
     (Plan 2026-10-06-0831, U4 Teil 2, U6).

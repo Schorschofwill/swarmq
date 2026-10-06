@@ -14,6 +14,7 @@ from swarmq.logging_settings import (
     LoggingSettings,
     parse_logger_levels,
     split_csv,
+    valid_drain_timeout,
     validate_logger_levels,
 )
 
@@ -345,7 +346,6 @@ class SwarmQConfig:
         "malloc_arena_max",
         "compute_thread_limit",
         "log_queue_size",
-        "log_drain_timeout",
     )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
     # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
@@ -469,6 +469,13 @@ class SwarmQConfig:
                 )
                 raise ConfigurationError(msg)
         self.logger_levels = validate_logger_levels(self.logger_levels, "logger_levels")
+        if not valid_drain_timeout(self.log_drain_timeout):
+            # Nicht unter ``_POSITIVE_FIELDS``: ``inf``/``nan`` bestehen ``<= 0``.
+            msg = (
+                "log_drain_timeout must be > 0 and at most threading.TIMEOUT_MAX "
+                f"seconds, got {self.log_drain_timeout}"
+            )
+            raise ConfigurationError(msg)
         if self.log_config is not None and not self.configure_logging:
             msg = (
                 "log_config cannot be combined with configure_logging=False: "
