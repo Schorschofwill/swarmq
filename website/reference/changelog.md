@@ -6,6 +6,8 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-06
+
 ### Changed (breaking)
 
 - **`SwarmQ()` no longer configures logging.** Creating a `SwarmQ` app
@@ -120,6 +122,23 @@ All notable changes to SwarmQ. This project follows
 - `swarmq.logging.setup_logging` (entry points use `configure_logging`)
   and `swarmq.logging.flush_logging` (now an alias of
   `shutdown_logging`).
+
+### Fixed
+
+- **Hot reload works after `python -m swarmq.cli`.** The supervisor
+  re-executed itself from `sys.argv`; after `-m` that is the path of
+  `swarmq/cli/__main__.py`, so the new image ran the file as a script —
+  without the working directory on `sys.path` (`--module ... cannot be
+  imported`) and with spawned workers failing in the bootstrapping phase.
+  The re-exec now uses `sys.orig_argv`, which keeps `-m` and interpreter
+  flags; `swarmq/cli/__main__.py` only calls `main()` as the main module.
+  Starting through the `swarmq` command is unchanged.
+
+### Dependencies
+
+- `structlog` is now constrained to `>=24,<27`: `swarmq.logging.get_logger`
+  depends on the call depth of `structlog.stdlib.BoundLogger`, which the
+  test suite pins for 26.x.
 
 ## [0.7.0] — 2026-09-22
 
