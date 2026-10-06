@@ -707,7 +707,7 @@
             "--processes",
             "-p"
           ],
-          "help": "R4.6: run N worker subprocesses under a supervisor (ProcessManager). Default 1 still runs under the supervisor. Subprocesses use multiprocessing spawn — fresh broker/backend connections per worker. The supervisor auto-restarts crashed workers (max 5 restarts per hour), and reloads on SIGHUP via os.execvp().",
+          "help": "R4.6: run N worker subprocesses under a supervisor (ProcessManager). Default 1 still runs under the supervisor. Subprocesses use multiprocessing spawn — fresh broker/backend connections per worker. The supervisor auto-restarts crashed workers (max 5 restarts per hour), and reloads on SIGHUP via os.execvpe() with the startup sys.orig_argv snapshot.",
           "name": "--processes",
           "positional": false,
           "required": false,
@@ -729,7 +729,7 @@
           "flags": [
             "--reload"
           ],
-          "help": "R5.3: watch task modules for changes and trigger the existing SIGHUP reload pipeline (ProcessManager execvp). Implies --processes. Developer-only — do not use in production. Requires 'pip install \"swarmq[reload]\"'. Missing 'watchfiles' exits with code 78 (1 under --check); invalid --watch-dir exits 2.",
+          "help": "R5.3: watch task modules for changes and trigger the existing SIGHUP reload pipeline (supervisor re-exec). Implies --processes. Developer-only — do not use in production. Requires 'pip install \"swarmq[reload]\"'. Missing 'watchfiles' exits with code 78 (1 under --check); invalid --watch-dir exits 2.",
           "name": "--reload",
           "nargs": 0,
           "positional": false,

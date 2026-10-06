@@ -90,7 +90,7 @@ options:
                         fresh broker/backend connections per worker. The
                         supervisor auto-restarts crashed workers (max 5
                         restarts per hour), and reloads on SIGHUP via
-                        os.execvp().
+                        os.execvpe() with the startup sys.orig_argv snapshot.
   --autoscale MIN,MAX   R4.7: enable autoscaling between MIN..MAX workers
                         based on queue depth. Scale-up when pending tasks
                         exceed 50 * active workers; scale-down after 60s of
@@ -111,12 +111,11 @@ options:
                         setpoint, each on its own. Default: the sorted set of
                         --queues.
   --reload              R5.3: watch task modules for changes and trigger the
-                        existing SIGHUP reload pipeline (ProcessManager
-                        execvp). Implies --processes. Developer-only — do not
-                        use in production. Requires 'pip install
-                        "swarmq[reload]"'. Missing 'watchfiles' exits with
-                        code 78 (1 under --check); invalid --watch-dir exits
-                        2.
+                        existing SIGHUP reload pipeline (supervisor re-exec).
+                        Implies --processes. Developer-only — do not use in
+                        production. Requires 'pip install "swarmq[reload]"'.
+                        Missing 'watchfiles' exits with code 78 (1 under
+                        --check); invalid --watch-dir exits 2.
   --watch-dir PATH      R5.3: directory to watch (repeatable). Without this
                         flag, the parent directory of --module's resolved
                         source file is used. Ignored without --reload (a

@@ -261,7 +261,8 @@ def _add_worker_parser(subparsers: Any) -> None:
             "Subprocesses use multiprocessing spawn — fresh "
             "broker/backend connections per worker. The supervisor "
             "auto-restarts crashed workers (max 5 restarts per hour), "
-            "and reloads on SIGHUP via os.execvp()."
+            "and reloads on SIGHUP via os.execvpe() with the startup "
+            "sys.orig_argv snapshot."
         ),
     )
     worker.add_argument(
@@ -307,7 +308,7 @@ def _add_worker_parser(subparsers: Any) -> None:
         action="store_true",
         help=(
             "R5.3: watch task modules for changes and trigger the "
-            "existing SIGHUP reload pipeline (ProcessManager execvp). "
+            "existing SIGHUP reload pipeline (supervisor re-exec). "
             "Implies --processes. Developer-only — do "
             "not use in production. Requires "
             "'pip install \"swarmq[reload]\"'. "
