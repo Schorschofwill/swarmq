@@ -1,10 +1,14 @@
 usage: swarmq worker [-h] --module DOTTED.PATH [--configure MODULE:CALLABLE]
                      [--queues A,B,C] [--concurrency N] [--pool {io,cpu}]
-                     [--log-level {DEBUG,INFO,WARNING,ERROR}]
-                     [--log-format {human,json}] [--burst]
-                     [--metrics-port PORT] [--health-port PORT] [--priorities]
-                     [--processes N] [--autoscale MIN,MAX] [--max-processes N]
-                     [--group LABEL] [--reload] [--watch-dir PATH] [--check]
+                     [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+                     [--log-format {human,json}] [--log-config PATH]
+                     [--no-configure-logging] [--logger-level NAME=LEVEL]
+                     [--log-queue-size N]
+                     [--log-lifecycle-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+                     [--burst] [--metrics-port PORT] [--health-port PORT]
+                     [--priorities] [--processes N] [--autoscale MIN,MAX]
+                     [--max-processes N] [--group LABEL] [--reload]
+                     [--watch-dir PATH] [--check]
                      [--burst-idle-timeout SECONDS]
 
 Import a Python module so its Task subclasses register, then connect to broker
@@ -37,12 +41,32 @@ options:
                         hard_timeout and cancel kill the child, --concurrency
                         means compute slots. POSIX only; not combinable with
                         --autoscale.
-  --log-level {DEBUG,INFO,WARNING,ERROR}
+  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Log verbosity (default: INFO). DEBUG also surfaces
-                        full tracebacks on CLI errors.
+                        full tracebacks on CLI errors. Overrides
+                        SWARMQ_LOG_LEVEL.
   --log-format {human,json}
                         Log output format (default: human). 'json' for
-                        agent/log-aggregator consumption.
+                        agent/log-aggregator consumption. Overrides
+                        SWARMQ_LOG_FORMAT (and its alias SWARMQ_LOG_JSON).
+  --log-config PATH     Logging dictConfig file (JSON; YAML with PyYAML
+                        installed) applied in every swarmq process instead of
+                        the built-in setup. Not combinable with --log-format
+                        or --no-configure-logging. Overrides
+                        SWARMQ_LOG_CONFIG.
+  --no-configure-logging
+                        Do not set up logging in any swarmq process. Overrides
+                        SWARMQ_CONFIGURE_LOGGING.
+  --logger-level NAME=LEVEL
+                        Level for one logger, e.g. aio_pika=WARNING
+                        (repeatable). Overrides SWARMQ_LOGGER_LEVELS (comma-
+                        separated NAME=LEVEL).
+  --log-queue-size N    Capacity of the in-process log queue (default: 10000).
+                        Overrides SWARMQ_LOG_QUEUE_SIZE.
+  --log-lifecycle-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        Level of the task_received/task_started lifecycle
+                        events (default: DEBUG). Overrides
+                        SWARMQ_LOG_LIFECYCLE_LEVEL.
   --burst               Burst mode (R4.5): exit cleanly once all configured
                         queues have been idle for --burst-idle-timeout
                         seconds. Useful for batch / cron-style deployments

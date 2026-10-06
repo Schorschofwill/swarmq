@@ -110,3 +110,39 @@ class TestControlChannelFields:
         cfg = _make_test_cfg(max_processes=16, group="orders-eu")
         restored = pickle.loads(pickle.dumps(cfg))
         assert (restored.max_processes, restored.group) == (16, "orders-eu")
+
+
+class TestLoggingSettingsTransport:
+    """Plan 2026-10-06 U5 (R13/KTD7): Der Supervisor gibt die aufgeloesten
+    Logging-Einstellungen ueber ``WorkerConfig`` an die Kinder weiter.
+
+    Test-Liste:
+    - [x] CRITICAL ist ein gueltiges Level
+    - [x] Default ohne Settings ist ``None``
+    - [x] WorkerConfig mit Settings uebersteht pickle
+    - [x] Ein Dict statt Settings wird abgelehnt
+    """
+
+    def test_critical_is_a_valid_log_level(self):
+        assert _make_test_cfg(log_level="CRITICAL").log_level == "CRITICAL"
+
+    def test_settings_default_to_none(self):
+        assert _make_test_cfg().logging_settings is None
+
+    def test_settings_survive_pickle(self):
+        import pickle
+
+        from swarmq.logging_settings import LoggingSettings
+
+        settings = LoggingSettings(
+            level="CRITICAL", format="json",
+            logger_levels=(("aio_pika", "WARNING"),), queue_size=500,
+        )
+        cfg = _make_test_cfg(logging_settings=settings)
+        restored = pickle.loads(pickle.dumps(cfg))
+        assert restored == cfg
+        assert restored.logging_settings == settings
+
+    def test_a_plain_dict_is_rejected(self):
+        with pytest.raises(TypeError, match="logging_settings must be pickle-safe"):
+            _make_test_cfg(logging_settings={"level": "INFO"})

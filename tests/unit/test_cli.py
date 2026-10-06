@@ -141,8 +141,10 @@ class TestBuildParser:
         # die Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt danach.
         assert ns.concurrency is None
         assert ns.pool is None  # aufgeloest in cli.pool.resolve_pool (Flag > SWARMQ_POOL > io)
-        assert ns.log_level == "INFO"
-        assert ns.log_format == "human"
+        # Plan 2026-10-06 U5 (KTD7): ohne Flag bleibt der Wert offen, damit
+        # Env und SwarmQConfig darunter greifen koennen.
+        assert ns.log_level is None
+        assert ns.log_format is None
 
     def test_worker_subcommand_with_all_args(self):
         parser = cli._build_parser()

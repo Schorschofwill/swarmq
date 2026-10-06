@@ -11,13 +11,15 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 import structlog
 
+from swarmq.logging_settings import VALID_LOG_LEVELS as _VALID_LOG_LEVELS
+from swarmq.logging_settings import LoggingSettings
+
 logger = structlog.get_logger()
 
 
-_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
-
-
-_PICKLE_SAFE_TYPES = (str, int, float, bool, tuple, type(None))
+# ``LoggingSettings`` ist selbst eingefroren und besteht nur aus diesen
+# Typen; die geparste dictConfig reist darin als JSON-String (KTD9).
+_PICKLE_SAFE_TYPES = (str, int, float, bool, tuple, type(None), LoggingSettings)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,6 +80,10 @@ class WorkerConfig:
     # den Kanal ein; ``group`` ist der fertig gebildete Gruppenschluessel.
     max_processes: int | None = None
     group: str | None = None
+    # Plan 2026-10-06 (KTD7): die einmal im Supervisor aufgeloesten
+    # Logging-Einstellungen; Kinder lesen kein Env mehr. ``None`` haelt
+    # Bestandsaufrufer unveraendert, bis die Einstiegspunkte sie setzen (U7).
+    logging_settings: LoggingSettings | None = None
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):

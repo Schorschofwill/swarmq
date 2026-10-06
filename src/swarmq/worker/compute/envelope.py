@@ -57,6 +57,13 @@ class ComputeJob:
     result_ttl_ms: int = 86_400_000
     log_level: str = "INFO"
     log_json: bool = True
+    # Plan 2026-10-06 (R13/KTD7/KTD9): die fuers Kind relevanten, bereits
+    # aufgeloesten Logging-Einstellungen. Die dictConfig reist als geprueft
+    # geparster JSON-String -- das Kind liest die Datei nie.
+    log_config_json: str | None = None
+    configure_logging: bool = True
+    logger_levels: tuple[tuple[str, str], ...] = ()
+    log_queue_size: int = 10_000
     worker_id: str = ""
 
 

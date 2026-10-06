@@ -14,6 +14,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 import structlog
 
 from swarmq.exceptions import ConfigurationError
+from swarmq.logging_settings import cli_level_and_format
 from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
@@ -133,12 +134,13 @@ def _run_multi_process_worker_configured(
     sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
     shutdown_grace_s = float(sq_config.shutdown_timeout)
 
+    log_level, log_format = cli_level_and_format(args)
     worker_cfg = WorkerConfig(
         module=args.module,
         queues=tuple(args.queues),
         concurrency=args.concurrency,
-        log_level=args.log_level,
-        log_format=args.log_format,
+        log_level=log_level,
+        log_format=log_format,
         burst=args.burst,
         burst_idle_timeout=args.burst_idle_timeout,
         priorities=args.priorities,

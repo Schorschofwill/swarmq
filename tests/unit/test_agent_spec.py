@@ -133,6 +133,7 @@ def test_config_spec_env_vars_match_source_and_naming_rule() -> None:
     # vergibt allein der Supervisor, eine Env-Var waere ein zweiter Weg zur
     # selben Groesse. Solche Optionen tragen ``env_var: null``.
     spec_env = {o["env_var"] for o in spec["options"] if o["env_var"] is not None}
+    spec_env |= {a for o in spec["options"] for a in o.get("env_var_aliases", ())}
     # The naming rule (SWARMQ_<UPPER>) is applied uniformly...
     for o in spec["options"]:
         if o["env_var"] is not None:
@@ -148,6 +149,16 @@ def test_config_spec_marks_fields_without_env_var() -> None:
     by_name = {o["name"]: o for o in build_config_spec()["options"]}
     assert by_name["worker_slot"]["env_var"] is None
     assert by_name["worker_id"]["env_var"] == "SWARMQ_WORKER_ID"
+
+
+def test_config_spec_lists_log_format_as_env_alias_of_log_json() -> None:
+    """Plan 2026-10-06 U5 (KTD8): ``SWARMQ_LOG_FORMAT`` setzt ``log_json`` und
+    hat Vorrang vor ``SWARMQ_LOG_JSON``. Die Namensregel bleibt fuer
+    ``env_var``, der zweite Name steht in ``env_var_aliases``."""
+    by_name = {o["name"]: o for o in build_config_spec()["options"]}
+    assert by_name["log_json"]["env_var"] == "SWARMQ_LOG_JSON"
+    assert by_name["log_json"]["env_var_aliases"] == ["SWARMQ_LOG_FORMAT"]
+    assert "env_var_aliases" not in by_name["log_level"]
 
 
 def test_config_spec_defaults_are_json_native() -> None:
@@ -166,10 +177,12 @@ def test_config_spec_enum_choices_match_validation() -> None:
         "CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING",
     ]
     assert by_name["queue_type"]["choices"] == ["classic", "quorum"]
+    assert by_name["log_lifecycle_level"]["choices"] == by_name["log_level"]["choices"]
     # The documented choices are exactly what the config accepts/rejects.
     base = dict(broker_url="amqp://x", backend_url="valkey://x")
     for level in by_name["log_level"]["choices"]:
         SwarmQConfig(**base, log_level=level)  # no raise
+        SwarmQConfig(**base, log_lifecycle_level=level)
     with pytest.raises(ConfigurationError):
         SwarmQConfig(**base, log_level="TRACE")
     for qt in by_name["queue_type"]["choices"]:

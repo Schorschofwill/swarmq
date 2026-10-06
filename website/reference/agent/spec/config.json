@@ -49,7 +49,53 @@
     {
       "default": true,
       "env_var": "SWARMQ_LOG_JSON",
+      "env_var_aliases": [
+        "SWARMQ_LOG_FORMAT"
+      ],
       "name": "log_json",
+      "type": "bool"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_LOG_CONFIG",
+      "name": "log_config",
+      "type": "str | None"
+    },
+    {
+      "default": true,
+      "env_var": "SWARMQ_CONFIGURE_LOGGING",
+      "name": "configure_logging",
+      "type": "bool"
+    },
+    {
+      "default": [],
+      "env_var": "SWARMQ_LOGGER_LEVELS",
+      "name": "logger_levels",
+      "type": "tuple[tuple[str, str], ...]"
+    },
+    {
+      "default": 10000,
+      "env_var": "SWARMQ_LOG_QUEUE_SIZE",
+      "name": "log_queue_size",
+      "type": "int"
+    },
+    {
+      "choices": [
+        "CRITICAL",
+        "DEBUG",
+        "ERROR",
+        "INFO",
+        "WARNING"
+      ],
+      "default": "DEBUG",
+      "env_var": "SWARMQ_LOG_LIFECYCLE_LEVEL",
+      "name": "log_lifecycle_level",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "env_var": "SWARMQ_LOG_QUEUE",
+      "name": "log_queue",
       "type": "bool"
     },
     {

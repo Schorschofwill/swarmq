@@ -239,6 +239,7 @@ def build_error_catalog() -> dict[str, Any]:
 # without updating here goes red.
 _CONFIG_CHOICES: dict[str, list[str]] = {
     "log_level": ["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"],
+    "log_lifecycle_level": ["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"],
     "queue_type": ["classic", "quorum"],
 }
 
@@ -253,7 +254,15 @@ def build_config_spec() -> dict[str, Any]:
     # aus einer Namensregel: seit U2 gibt es Felder, die bewusst kein Env
     # haben (``worker_slot`` vergibt allein der Supervisor). Eine erfundene
     # Env-Var stuende sonst in der Spezifikation, ohne dass sie jemand liest.
-    env_by_field = {field: env for env, field, _kind in SwarmQConfig._ENV_OVERRIDES}
+    # Mehrere Env-Namen je Feld (``SWARMQ_LOG_FORMAT`` fuer ``log_json``,
+    # KTD8): der erste in der Tabelle ist ``env_var``, weitere sind Aliase.
+    env_by_field: dict[str, str] = {}
+    aliases_by_field: dict[str, list[str]] = {}
+    for env, field, _kind in SwarmQConfig._ENV_OVERRIDES:
+        if field in env_by_field:
+            aliases_by_field.setdefault(field, []).append(env)
+        else:
+            env_by_field[field] = env
     options: list[dict[str, Any]] = []
     for f in dataclasses.fields(SwarmQConfig):
         default = f.default_factory() if f.default_factory is not dataclasses.MISSING else f.default
@@ -263,6 +272,8 @@ def build_config_spec() -> dict[str, Any]:
             "default": default,
             "env_var": env_by_field.get(f.name),
         }
+        if f.name in aliases_by_field:
+            entry["env_var_aliases"] = aliases_by_field[f.name]
         if f.name in _CONFIG_CHOICES:
             entry["choices"] = _CONFIG_CHOICES[f.name]
         options.append(entry)

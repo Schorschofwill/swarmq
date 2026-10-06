@@ -211,6 +211,18 @@ class TestCheckDetectionRobustness:
             ["worker", "--log-level", "DEBUG", "--check"]
         ) is True
 
+    @pytest.mark.parametrize(
+        "flag",
+        ["--log-config", "--logger-level", "--log-queue-size", "--log-lifecycle-level"],
+    )
+    def test_logging_option_value_is_not_read_as_check(self, flag: str) -> None:
+        """Plan 2026-10-06 U5: die neuen wertnehmenden Logging-Optionen stehen
+        im Spiegel des Detektors -- ``--check`` als ihr Wert ist kein Flag."""
+        from swarmq.cli.check_cmd import _is_check_invocation
+
+        assert _is_check_invocation(["worker", flag, "--check"]) is False
+        assert _is_check_invocation(["worker", flag, "x", "--check"]) is True
+
     def test_none_argv_uses_sys_argv(self) -> None:
         """Passing ``None`` reads from ``sys.argv[1:]`` — behaviour must
         be preserved (backwards compat for callers relying on it)."""

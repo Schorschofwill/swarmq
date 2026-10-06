@@ -83,6 +83,7 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     from swarmq.app import SwarmQ
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.logging_settings import cli_level_and_format
 
     broker = RabbitMQBroker(broker_url)
     backend = ValkeyBackend(backend_url)
@@ -106,14 +107,15 @@ async def run_worker_async(args: argparse.Namespace) -> None:
         )
         if (value := getattr(args, name, None)) is not None
     }
+    log_level, log_format = cli_level_and_format(args)
     app = SwarmQ(
         broker,
         backend,
         queues=args.queues,
         concurrency=args.concurrency,
         **optional_kwargs,
-        log_level=args.log_level,
-        log_json=(args.log_format == "json"),
+        log_level=log_level,
+        log_json=(log_format == "json"),
         burst_mode=args.burst,
         burst_idle_timeout=args.burst_idle_timeout,
         priorities=args.priorities,

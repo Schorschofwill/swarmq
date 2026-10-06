@@ -244,11 +244,10 @@ def _setup_worker_logging(args: argparse.Namespace) -> None:
     auskommt.
     """
     from swarmq.logging import setup_logging
+    from swarmq.logging_settings import cli_level_and_format
 
-    setup_logging(
-        getattr(args, "log_level", "INFO"),
-        getattr(args, "log_format", "human") == "json",
-    )
+    level, log_format = cli_level_and_format(args)
+    setup_logging(level, log_format == "json")
 
 
 def _flush_worker_logging() -> None:

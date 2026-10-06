@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from swarmq.exceptions import ConfigurationError
+from swarmq.logging_settings import VALID_LOG_FORMATS, VALID_LOG_LEVELS
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
@@ -57,8 +58,10 @@ def resolve_format(explicit: str | None) -> str:
         return override
     return "table" if sys.stdout.isatty() else "json"
 
-_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
-_VALID_LOG_FORMATS = ("human", "json")
+# Eine Quelle fuer CLI, SwarmQConfig und WorkerConfig; CRITICAL gilt
+# ueberall (Plan 2026-10-06, KTD8).
+_VALID_LOG_LEVELS = VALID_LOG_LEVELS
+_VALID_LOG_FORMATS = VALID_LOG_FORMATS
 
 
 def _positive_int(raw: str) -> int:
