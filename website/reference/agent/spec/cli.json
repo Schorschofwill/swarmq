@@ -557,6 +557,17 @@
           "type": "str"
         },
         {
+          "default": null,
+          "flags": [
+            "--log-drain-timeout"
+          ],
+          "help": "Upper bound for flushing the log queues at exit, before a reload and before each compute result (default: 5). Records not written in time are counted as dropped. Overrides SWARMQ_LOG_DRAIN_TIMEOUT.",
+          "name": "--log-drain-timeout",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
           "choices": [
             "human",
             "json"

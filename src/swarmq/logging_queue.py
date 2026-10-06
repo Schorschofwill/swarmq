@@ -15,13 +15,19 @@ import logging
 import logging.handlers
 import os
 import queue
+import sys
 import threading
 import weakref
-from collections.abc import Callable
 from typing import Any
 
+from swarmq.logging_drain import Deadline, abandon, write_drain_notice
 from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
-from swarmq.logging_file import HandlerErrors, RateLimitedReport, stop_queue_listeners
+from swarmq.logging_file import (
+    FileDraining,
+    HandlerErrors,
+    RateLimitedReport,
+    close_queue_listeners,
+)
 
 LISTENER_THREAD_NAME = "swarmq-log-listener"
 """Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests."""
@@ -56,7 +62,15 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         # Verworfene Records des zugehoerigen Queue-Handlers; gemeldet aus
         # diesem Thread (Plan 2026-10-06-1811, KTD2).
         self.drops = RateLimitedReport("log_records_dropped", self.errors.handle)
+        # Root-Handler, den der Opt-in-Listener gerade bedient; haengt er,
+        # wird er beim Aufgeben ausgetragen (Plan 2026-10-06-1811, KTD3).
+        self.current: logging.Handler | None = None
         _LISTENERS.add(self)
+
+    def targets(self) -> tuple[logging.Handler, ...]:
+        """Die Ziel-Handler, an denen ein aufgegebener Thread haengen kann."""
+        current = self.current
+        return (*self.handlers, *(() if current is None else (current,)))
 
     @property
     def running(self) -> bool:
@@ -138,11 +152,11 @@ def dropped_log_records() -> int:
     return _DROPPED_TOTAL
 
 
-def count_dropped() -> None:
-    """Zaehlt einen verworfenen Eintrag, auch aus den Datei-Modus-Queues
-    (Plan 2026-10-06-1811, KTD1)."""
+def count_dropped(count: int = 1) -> None:
+    """Zaehlt verworfene Eintraege, auch aus den Datei-Modus-Queues
+    (Plan 2026-10-06-1811, KTD1) und beim Aufgeben eines Leerens (KTD3)."""
     global _DROPPED_TOTAL
-    _DROPPED_TOTAL += 1
+    _DROPPED_TOTAL += count
 
 
 _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
@@ -182,6 +196,8 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         self.dropped = 0
         self._reserve_at = self._reserve_threshold()
         self.listener = _SwarmqQueueListener(queue_, *handlers) if handlers else None
+        # Aufgegebener Listener-Thread (Plan 2026-10-06-1811, KTD3).
+        self._abandoned: threading.Thread | None = None
         _HANDLERS.add(self)
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
@@ -189,9 +205,25 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         return record
 
     def enqueue(self, record: logging.LogRecord) -> None:
+        abandoned = self._abandoned
+        if abandoned is not None:
+            if abandoned.is_alive():
+                # Ziel haengt noch (KTD3): zaehlen statt einreihen.
+                self._drop()
+                return
+            self._abandoned = None
         listener = self.listener
+        if listener is not None and sys.is_finalizing():
+            # Finalisierung (KTD5): Kein neuer Thread startet mehr, und ein
+            # laufender kommt nicht mehr dran -- synchron ausgeben.
+            listener.handle(record)
+            return
         if listener is not None and not listener.running:
-            listener.start()
+            try:
+                listener.start()
+            except PythonFinalizationError:
+                listener.handle(record)
+                return
         if record.levelno < logging.WARNING and self._in_reserve():
             self._drop()
             return
@@ -232,12 +264,18 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
 
     def _reset_after_fork(self) -> None:
         """Frische Queue, Zaehler und Listener im Kind (KTD5)."""
+        self._swap_queue()
+        self.dropped = 0
+
+    def _swap_queue(self) -> None:
+        """Frische Queue und frischer, noch nicht gestarteter Listener: im
+        Kind nach dem Fork (KTD5) und beim Leeren (Plan 2026-10-06-1811,
+        KTD3)."""
         self.queue = fresh = _LogQueue(self.queue.maxsize)
         self._reserve_at = self._reserve_threshold()
-        self.dropped = 0
         if self.listener is not None:
-            # Der geerbte Listener verweist auf einen Thread, den es im Kind
-            # nicht gibt.
+            # Der alte Listener verweist auf einen Thread, den es im Kind
+            # nicht gibt oder der die alte Queue leert.
             # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
             self.listener = type(self.listener)(fresh, *self.listener.handlers)
 
@@ -257,12 +295,12 @@ class _OptinQueueListener(_SwarmqQueueListener):
     def _dispatch(self, record: logging.LogRecord) -> None:
         context = record.__dict__.pop(_CONTEXT_ATTR, None)
         if context is None:
-            _dispatch_to_root(record, self.errors.failed)
+            _dispatch_to_root(record, self)
         else:
-            context.run(_dispatch_to_root, record, self.errors.failed)
+            context.run(_dispatch_to_root, record, self)
 
 
-def _dispatch_to_root(record: logging.LogRecord, on_error: Callable[[], None]) -> None:
+def _dispatch_to_root(record: logging.LogRecord, listener: _SwarmqQueueListener) -> None:
     """Wie ``Logger.callHandlers`` fuer Root, aber ohne es aufzurufen:
     Integrationen, die ``callHandlers`` umhaengen (Sentrys
     ``LoggingIntegration``), sahen den Record dort schon beim Aufrufer und
@@ -273,10 +311,12 @@ def _dispatch_to_root(record: logging.LogRecord, on_error: Callable[[], None]) -
         if handler is not None and record.levelno >= handler.level:
             # Pro Handler (KTD1): Ein werfender App-Handler haelt den Record
             # nicht von den uebrigen fern.
+            listener.current = handler
             try:
                 handler.handle(record)
             except Exception:
-                on_error()
+                listener.errors.failed()
+            listener.current = None
 
 
 class _OptinQueueHandler(_StructlogQueueHandler):
@@ -376,23 +416,98 @@ _CONFIGURED = False
 es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
 
 
-def shutdown_logging() -> None:
-    """Schreibt alle Eintraege der Log-Queue und stoppt den Listener (KTD5).
+_DRAIN_TIMEOUT = 5.0
+"""Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
+
+
+def shutdown_logging(timeout: float | None = None) -> None:
+    """Schreibt die Eintraege der Log-Queues und stoppt die Listener (KTD5),
+    hoechstens ``timeout`` Sekunden lang (Plan 2026-10-06-1811, KTD3).
 
     Der Queue-Handler bleibt installiert; der naechste Eintrag startet den
     Listener wieder. Ein folgendes ``configure_logging`` baut neu auf (KTD4).
+    Was bis zur Frist nicht geschrieben ist, gilt als verworfen.
     """
     global _CONFIGURED, _APP_TAKEOVER_REPORTED
     _CONFIGURED = _APP_TAKEOVER_REPORTED = False
-    _stop_listeners()
+    _stop_listeners(timeout)
 
 
-def _stop_listeners() -> None:
+def _stop_listeners(timeout: float | None = None) -> None:
     """Leert und stoppt alle Listener des Prozesses, ohne den Eigentuemer
-    freizugeben."""
-    for listener in list(_LISTENERS):
-        listener.stop()
-    stop_queue_listeners()
+    freizugeben: erst alle schliessen, dann gemeinsam bis zur Frist warten
+    (KTD3), damit ein haengender die anderen nicht aufhaelt."""
+    seconds = _DRAIN_TIMEOUT if timeout is None else timeout
+    deadline = Deadline(seconds)
+    owners = {id(h.listener): h for h in list(_HANDLERS) if h.listener is not None}
+    closing = [_close(listener, owners.get(id(listener))) for listener in list(_LISTENERS)]
+    file_closing = close_queue_listeners()
+    given_up = [d for d in closing if d is not None and not d.wait(deadline)]
+    file_given_up: list[FileDraining] = []
+    while file_closing:
+        file_given_up += [d for d in file_closing if not d.wait(deadline)]
+        # Ein Eintrag im Fenster zwischen Ende und Vergessen startet einen
+        # neuen Thread (KTD1); auch er wird geschlossen, nicht verwaist.
+        file_closing = close_queue_listeners()
+    file_lost = sum(d.lost for d in file_given_up)
+    count_dropped(file_lost)
+    if given_up or file_given_up:
+        write_drain_notice(
+            sum(d.lost for d in given_up) + file_lost, seconds,
+            json=any(d.handler is not None and d.handler.json for d in given_up),
+        )
+
+
+class _Draining:
+    """Ein geschlossener Listener, dessen Thread seine alte Queue leert."""
+
+    def __init__(
+        self, listener: _SwarmqQueueListener, thread: threading.Thread,
+        handler: _StructlogQueueHandler | None,
+    ) -> None:
+        self.listener = listener
+        self.thread = thread
+        self.queue = listener.queue
+        self.handler = handler
+        self.lost = 0
+
+    def wait(self, deadline: Deadline) -> bool:
+        """Bis zur Frist warten; danach aufgeben und den Rest zaehlen.
+        ``False``, wenn aufgegeben wurde."""
+        self.thread.join(deadline.remaining())
+        if not self.thread.is_alive():
+            return True
+        self.lost = lost = self.queue.qsize()
+        # Sofort schliessen: Der Rest ist verworfen, auch wenn der Thread
+        # spaeter doch noch frei kommt -- die Zaehlung bleibt genau.
+        self.queue.shutdown(immediate=True)
+        count_dropped(lost)
+        if self.handler is not None:
+            self.handler.dropped += lost
+            # Solange der alte Thread lebt, startet auf diesem Handler kein
+            # neuer Listener: Im wiederverwendeten Compute-Kind haeuften sich
+            # sonst haengende Threads an.
+            self.handler._abandoned = self.thread
+        abandon(self.thread, self.listener.targets())
+        # Das naechste Leeren wartet nicht noch einmal auf ihn.
+        _LISTENERS.discard(self.listener)
+        return False
+
+
+def _close(
+    listener: _SwarmqQueueListener, handler: _StructlogQueueHandler | None,
+) -> _Draining | None:
+    """Schliesst die Queue eines laufenden Listeners, ohne zu blockieren
+    (``Queue.shutdown``). Zuvor bekommt sein Handler eine frische Queue und
+    einen frischen Listener: Records anderer Threads gehen waehrend des
+    Leerens nicht verloren (KTD3)."""
+    thread = listener._thread
+    if thread is None or not thread.is_alive():
+        return None
+    if handler is not None:
+        handler._swap_queue()
+    listener.queue.shutdown()
+    return _Draining(listener, thread, handler)
 
 
 _APP_TAKEOVER_REPORTED = False

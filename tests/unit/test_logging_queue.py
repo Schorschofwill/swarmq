@@ -207,16 +207,18 @@ class _BlockingHandler(_RecordingHandler):
 
 
 class _ReleasingQueue(queue.Queue[logging.LogRecord]):
-    """Gibt den blockierten Listener frei, sobald blockierend eingereiht wird."""
+    """Gibt den blockierten Listener frei, sobald das Leeren die Queue
+    schliesst. Bewusst geaendert (Plan 2026-10-06-1811, U4): Das Leeren
+    reiht keinen blockierenden Sentinel mehr ein, sondern schliesst per
+    ``Queue.shutdown``."""
 
     def __init__(self, maxsize: int, unblock: threading.Event) -> None:
         super().__init__(maxsize)
         self._unblock = unblock
 
-    def put(self, item, block=True, timeout=None):  # type: ignore[no-untyped-def]
-        if block:
-            self._unblock.set()
-        super().put(item, block, timeout)
+    def shutdown(self, immediate: bool = False) -> None:
+        super().shutdown(immediate)
+        self._unblock.set()
 
 
 def test_shutdown_logging_writes_every_queued_record_and_is_repeatable():

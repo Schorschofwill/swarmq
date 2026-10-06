@@ -7,7 +7,9 @@ dotted path alive:
 
 - ``swarmq.process_manager`` does ``from swarmq.cli import
   run_worker_async`` (process_manager.py:754).
-- ``pyproject.toml`` console script is ``swarmq = "swarmq.cli:main"``.
+- ``pyproject.toml`` console script is ``swarmq = "swarmq.cli:console_main"``
+  (``main`` plus hartes Ende bei haengendem Log-Thread, Plan
+  2026-10-06-1811, U4).
 - Tests patch via string paths:
   ``patch("swarmq.cli.run_worker_async", ...)``,
   ``patch("swarmq.cli.asyncio.run", ...)``,
@@ -51,7 +53,8 @@ import swarmq.cli
 _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
     {
         # --- public CLI entry points -----------------------------------------
-        "main",                         # public — swarmq = "swarmq.cli:main"
+        "main",                         # public — CLI-Logik; Tests rufen es direkt
+        "console_main",                 # public — swarmq = "swarmq.cli:console_main" (Plan 2026-10-06-1811, U4)
         "run_worker_async",             # public — process_manager.py:754
         # --- internal helpers (patch targets / direct imports in tests) ------
         "_DLQNotFound",                 # internal
@@ -430,5 +433,7 @@ class TestMainModuleGuard:
         monkeypatch.setattr("swarmq.cli.main", fake_main)
         with pytest.raises(SystemExit) as exc_info:
             runpy.run_module("swarmq.cli.__main__", run_name="__main__")
-        fake_main.assert_called_once_with()
+        # Bewusst geaendert (Plan 2026-10-06-1811, U4): ``__main__`` geht
+        # ueber ``console_main``, das ``main`` mit ``argv=None`` ruft.
+        fake_main.assert_called_once_with(None)
         assert exc_info.value.code == 3

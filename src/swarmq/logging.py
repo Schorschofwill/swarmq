@@ -90,6 +90,7 @@ def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
     ``None``. Das Event schreibt nicht das Kind, sondern der Pool, einmal je
     Pool statt einmal je Kind.
     """
+    _queue_core._DRAIN_TIMEOUT = settings.drain_timeout
     if not settings.configure or not root_handler_snapshot():
         configure_logging(settings)
         return None
@@ -273,6 +274,9 @@ def configure_logging(settings: LoggingSettings) -> None:
         LoggingConfigError: Die Konfigurationsdatei ist nicht ladbar oder
             ungueltig; ``path`` nennt sie, ``__cause__`` die Ursache.
     """
+    # Auch ohne Einrichtung: Die Prozesse gehoeren swarmq, ihr Leeren ist
+    # begrenzt (Plan 2026-10-06-1811, KTD3/KTD11).
+    _queue_core._DRAIN_TIMEOUT = settings.drain_timeout
     if not settings.configure:
         # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
         return

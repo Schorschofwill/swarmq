@@ -60,6 +60,7 @@ class TestLoggingOptions:
     - [x] Ohne Flags sind alle Logging-Werte ``None`` (Prioritaet KTD7)
     - [x] Alle Optionen werden gelesen, ``--logger-level`` wiederholbar
     - [x] CRITICAL fuer ``--log-level`` und ``--log-lifecycle-level``
+    - [x] ``--log-drain-timeout`` (Plan 2026-10-06-1811, U4) in beiden Tests oben
     """
 
     @staticmethod
@@ -73,7 +74,8 @@ class TestLoggingOptions:
         assert (
             args.log_level, args.log_format, args.log_config, args.configure_logging,
             args.logger_levels, args.log_queue_size, args.log_lifecycle_level,
-        ) == (None,) * 7
+            args.log_drain_timeout,
+        ) == (None,) * 8
 
     def test_all_options_are_read_and_logger_level_repeats(self):
         args = self._parse(
@@ -83,12 +85,14 @@ class TestLoggingOptions:
             "--logger-level", "valkey=ERROR",
             "--log-queue-size", "500",
             "--log-lifecycle-level", "INFO",
+            "--log-drain-timeout", "0.5",
         )
         assert args.log_config == "logging.json"
         assert args.configure_logging is False
         assert args.logger_levels == ["aio_pika=WARNING", "valkey=ERROR"]
         assert args.log_queue_size == "500"
         assert args.log_lifecycle_level == "INFO"
+        assert args.log_drain_timeout == "0.5"
 
     def test_repeated_logger_level_resolves_like_the_env_form(self):
         from swarmq.logging_settings import resolve_logging_settings

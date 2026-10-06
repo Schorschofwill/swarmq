@@ -770,6 +770,9 @@ class TestLoggingFields:
     - [x] ``logging_settings``: ein ungueltiger Logging-Env-Wert wird nicht
           mehr geparst (die CLI hat ihn im Supervisor schon ueberstimmt)
     - [x] ohne ``logging_settings`` wird derselbe Env-Wert weiter geprueft
+    - [x] (Plan 2026-10-06-1811, U4) ``log_drain_timeout``: Default 5.0, Env
+          ``SWARMQ_LOG_DRAIN_TIMEOUT``, <= 0 ist ein Fehler, aus
+          ``logging_settings`` uebernommen
     """
 
     @staticmethod
@@ -784,13 +787,16 @@ class TestLoggingFields:
         assert cfg.log_queue_size == 10_000
         assert cfg.log_lifecycle_level == "DEBUG"
         assert cfg.log_queue is False
+        assert cfg.log_drain_timeout == 5.0
 
     def test_env_overrides_apply(self, monkeypatch):
         monkeypatch.setenv("SWARMQ_LOG_CONFIG", "/etc/swarmq/logging.json")
         monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "500")
         monkeypatch.setenv("SWARMQ_LOG_LIFECYCLE_LEVEL", "INFO")
         monkeypatch.setenv("SWARMQ_LOG_QUEUE", "true")
+        monkeypatch.setenv("SWARMQ_LOG_DRAIN_TIMEOUT", "0.5")
         cfg = self._cfg()
+        assert cfg.log_drain_timeout == 0.5
         assert cfg.log_config == "/etc/swarmq/logging.json"
         assert cfg.log_queue_size == 500
         assert cfg.log_lifecycle_level == "INFO"
@@ -825,6 +831,11 @@ class TestLoggingFields:
         with pytest.raises(ConfigurationError, match="log_queue_size must be > 0"):
             self._cfg(log_queue_size=size)
 
+    @pytest.mark.parametrize("seconds", [0, -1.5])
+    def test_non_positive_drain_timeout_is_a_configuration_error(self, seconds):
+        with pytest.raises(ConfigurationError, match="log_drain_timeout must be > 0"):
+            self._cfg(log_drain_timeout=seconds)
+
     def test_logger_level_pairs_are_validated_and_normalised(self):
         assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (
             ("aiormq", "ERROR"),
@@ -857,13 +868,15 @@ class TestLoggingFields:
 
         monkeypatch.setenv("SWARMQ_LOG_FORMAT", "json")
         monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "5")
+        monkeypatch.setenv("SWARMQ_LOG_DRAIN_TIMEOUT", "9")
         settings = LoggingSettings(
             format="human", configure=False, queue_size=7, lifecycle_level="INFO",
-            logger_levels=(("aio_pika", "ERROR"),),
+            logger_levels=(("aio_pika", "ERROR"),), drain_timeout=0.25,
         )
 
         cfg = self._cfg(logging_settings=settings)
 
+        assert cfg.log_drain_timeout == 0.25
         assert (cfg.log_json, cfg.configure_logging, cfg.log_queue_size) == (False, False, 7)
         assert (cfg.log_lifecycle_level, cfg.logger_levels) == ("INFO", (("aio_pika", "ERROR"),))
 

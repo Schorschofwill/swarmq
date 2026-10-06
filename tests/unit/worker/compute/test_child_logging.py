@@ -35,6 +35,9 @@ Test-Liste:
         ``attempt`` (Plan 2026-10-06-0831, KTD13).
 14. [x] U10: Ein wiederverwendetes Kind traegt beim zweiten Job keinen
         Kontext des ersten (``workflow_id`` nur am ersten Job).
+15. [x] Plan 2026-10-06-1811, U4: stderr blockiert; das Ergebnis
+        kommt trotzdem nach der Frist ``log_drain_timeout`` aus dem Job.
+16. [x] ... und am Ende endet das Kind hart, weil der Log-Thread haengt.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ import io
 import json
 import logging
 import os
+import threading
 import weakref
 from collections.abc import Iterator
 from typing import Any
@@ -471,3 +475,44 @@ def test_reused_child_carries_no_context_of_the_previous_job(events: list[Any]) 
     assert second.__dict__["compute_child"] == os.getpid()
     job_r.close()
     job_w.close()
+
+
+class _BlockedStderr(io.StringIO):
+    """stderr auf einer vollen Pipe: ``write`` haengt bis ``opened``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened = threading.Event()
+
+    def write(self, text: str) -> int:
+        self.opened.wait()
+        return super().write(text)
+
+
+@pytest.mark.timeout(5)
+def test_a_blocked_stderr_delays_the_result_at_most_by_the_drain_timeout(
+    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _forkserver_root()
+    _register_logging_task()
+    stderr = _BlockedStderr()
+    monkeypatch.setattr("sys.stderr", stderr)
+    monkeypatch.setattr(
+        child, "exit_if_log_thread_stuck", lambda code: events.append(("exit", code)), raising=False,
+    )
+    done = threading.Event()
+
+    def run() -> None:
+        child.child_once(_job(log_drain_timeout=0.05), _Channel(events), 0)
+        done.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        assert done.wait(2)
+        assert "result:t1" in _kinds(events)
+        # Das Kind gehoert swarmq: Haengt der Log-Thread, endet es hart.
+        assert events[-1] == ("exit", 0)
+    finally:
+        stderr.opened.set()
+        worker.join(1)

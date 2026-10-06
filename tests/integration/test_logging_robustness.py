@@ -16,6 +16,19 @@ beendet es mit Exit 1 und Stack, falls es doch haengt.
 # - [x] fd 2 auf einer vollen, nie geleerten Pipe: Jeder Logaufruf dauert im
 #       Kind unter 100 ms (ueber stdout gemeldet); nach dem Leeren der Pipe
 #       erscheint ``log_records_dropped`` als JSON-Zeile.
+# Test list (U4, echte Prozesse; Vorlagen ``s2c_blocked_stderr_shutdown``,
+# ``s2b_filemode``, ``repro_final2``):
+# - [x] ``swarmq``-Befehl, fd 2 auf einer nie geleerten Pipe: Der Prozess
+#       endet innerhalb von Frist plus Puffer mit seinem Exit-Code (78) --
+#       ueber ``os._exit``, weil der Listener im Schreiben haengt.
+# - [x] fd 2 auf einer Pipe, die erst nach Ablauf der Frist geleert wird:
+#       kein Exit 134, kein "Fatal Python error".
+# - [x] Eingebettet (Opt-in, blockierter App-Handler): kein ``os._exit`` --
+#       spaetere atexit-Funktionen laufen, die App endet mit ihrem Code.
+# - [x] Datei-Modus mit begrenzter Queue und werfendem Handler: Ende
+#       innerhalb der Frist mit Exit 0.
+# - [x] Record aus ``__del__`` waehrend der Finalisierung: kein
+#       ``--- Logging error ---``, die Zeile erscheint.
 
 from __future__ import annotations
 
@@ -158,3 +171,214 @@ def test_log_calls_return_at_once_while_stderr_is_a_full_pipe() -> None:
     reports = [json.loads(line) for line in output.splitlines() if "log_records_dropped" in line]
     assert [report["count"] for report in reports] == [int(dropped)]
     assert reports[0]["logger"] == "swarmq.logging"
+
+
+_DRAIN_S = 0.5
+"""``--log-drain-timeout`` der U4-Kinder; der Puffer steckt im Prozess-Timeout."""
+
+
+def test_the_swarmq_command_ends_with_its_exit_code_while_stderr_never_drains(
+    tmp_path: Path,
+) -> None:
+    dump = tmp_path / "hang.txt"
+    child = (
+        "import faulthandler, sys\n"
+        f"faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True,"
+        f" file=open({str(dump)!r}, 'w'))\n"
+        "from swarmq.cli import console_main\n"
+        "raise SystemExit(console_main(sys.argv[1:]))\n"
+    )
+    env = dict(
+        os.environ,
+        SWARMQ_BROKER_URL="amqp://guest:guest@127.0.0.1:1/",
+        SWARMQ_BACKEND_URL="valkey://127.0.0.1:1/0",
+    )
+    r, w = _full_pipe()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child, "worker", "--module", "no_such_module_u4",
+             "--log-drain-timeout", str(_DRAIN_S)],
+            cwd=_REPO, env=env, stdout=subprocess.DEVNULL, stderr=w,
+        )
+        os.close(w)
+        try:
+            returncode = proc.wait(timeout=_DRAIN_S + 15)
+        finally:
+            proc.kill()
+            proc.wait()
+    finally:
+        os.close(r)  # erst jetzt: Die Pipe wird nie geleert
+
+    hang = dump.read_text() if dump.exists() else ""
+    assert returncode == 78, hang
+
+
+_LATE_DRAIN_CHILD = f"""
+import faulthandler, logging, sys
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True, file=open(sys.argv[1], "w"))
+
+from swarmq.logging import configure_logging, shutdown_logging
+from swarmq.logging_drain import exit_if_log_thread_stuck
+from swarmq.logging_settings import LoggingSettings
+
+configure_logging(LoggingSettings(format="json", drain_timeout={_DRAIN_S}))
+log = logging.getLogger("swarmq.tests.robustness")
+for i in range(20):
+    log.warning("pending %d", i)
+shutdown_logging()  # laeuft in die Frist: die Pipe ist voll
+print("deadline_passed", flush=True)
+sys.stdin.readline()  # der Test leert die Pipe jetzt -- mitten ins Ende
+exit_if_log_thread_stuck(3)
+raise SystemExit(3)
+"""
+
+
+def test_a_pipe_drained_only_after_the_deadline_ends_without_a_fatal_error(
+    tmp_path: Path,
+) -> None:
+    dump = tmp_path / "hang.txt"
+    r, w = _full_pipe()
+    with os.fdopen(r, "rb") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _LATE_DRAIN_CHILD, str(dump)],
+            cwd=_REPO, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=w,
+        )
+        os.close(w)
+        try:
+            assert proc.stdout is not None and proc.stdin is not None
+            ready, _, _ = select.select([proc.stdout], [], [], _HANG_DEADLINE_S + 5)
+            assert ready, "Kind meldet nichts: das Leeren haengt"
+            assert proc.stdout.readline().strip() == b"deadline_passed"
+            proc.stdin.write(b"\n")
+            proc.stdin.flush()
+            output = stderr.read().decode(errors="replace")
+            returncode = proc.wait(timeout=_HANG_DEADLINE_S + 5)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    assert returncode == 3, dump.read_text() if dump.exists() else output[-2000:]
+    assert "Fatal Python error" not in output
+
+
+_EMBEDDED_CHILD = f"""
+import atexit, faulthandler, logging, sys, threading
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True)
+# Vor swarmq registriert, laeuft also nach dessen ``shutdown_logging``: Ein
+# hartes Ende dort liesse diese Zeile aus.
+atexit.register(lambda: print("late_atexit_ran", flush=True))
+
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+
+entered = threading.Event()
+
+
+class Stuck(logging.Handler):
+    def emit(self, record):
+        entered.set()
+        threading.Event().wait()  # Log-Versand antwortet nie
+
+
+logging.getLogger().handlers[:] = [Stuck()]
+SwarmQ(
+    RabbitMQBroker("amqp://guest:guest@localhost:5699/"),
+    ValkeyBackend("valkey://localhost:6399/0"),
+    log_queue=True,
+)
+log = logging.getLogger("swarmq.tests.robustness")
+log.warning("first")
+entered.wait()
+log.warning("pending")
+sys.exit(7)
+"""
+
+
+def test_an_embedded_app_is_never_ended_hard_and_keeps_its_exit_code() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _EMBEDDED_CHILD],
+        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 20,
+    )
+
+    assert proc.returncode == 7, proc.stderr[-2000:]
+    assert "late_atexit_ran" in proc.stdout
+
+
+_FILE_MODE_CHILD = f"""
+import faulthandler, json, logging
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True)
+
+from swarmq.logging import configure_logging
+from swarmq.logging_settings import LoggingSettings
+
+config = {{
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {{
+        "bad": {{"class": "tests.integration._blocking_log_handler.AlwaysRaises"}},
+        "q": {{
+            "class": "logging.handlers.QueueHandler",
+            "handlers": ["bad"],
+            "queue": {{"()": "queue.Queue", "maxsize": 20}},
+        }},
+    }},
+    "root": {{"handlers": ["q"], "level": "INFO"}},
+}}
+configure_logging(LoggingSettings(
+    log_config="logging.json", log_config_json=json.dumps(config), drain_timeout={_DRAIN_S},
+))
+log = logging.getLogger("swarmq.tests.robustness")
+for i in range(40):
+    log.warning("record %d", i)
+# Ende: ``atexit`` leert innerhalb der Frist.
+"""
+
+
+def test_file_mode_with_a_bounded_queue_and_a_raising_handler_ends_in_time() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _FILE_MODE_CHILD],
+        cwd=_REPO, capture_output=True, text=True, timeout=_DRAIN_S + 15,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "Logging error" not in proc.stderr
+
+
+_FINALIZATION_CHILD = f"""
+import faulthandler, gc, logging
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True)
+
+from swarmq.logging import configure_logging
+from swarmq.logging_settings import LoggingSettings
+
+configure_logging(LoggingSettings(format="json"))
+_log = logging.getLogger("app.final")
+
+
+class Cycle:
+    # Nur ueber einen Zyklus erreichbar: Der Finalizer laeuft erst in der
+    # Garbage Collection der Finalisierung, nach ``atexit``.
+    def __init__(self):
+        self.me = self
+
+    def __del__(self, _log=_log):
+        _log.warning("cycle_finalized_at_shutdown")
+
+
+gc.disable()
+Cycle()
+_log.warning("normal_line")
+"""
+
+
+def test_a_record_from_a_finalizer_at_shutdown_is_written_without_a_logging_error() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _FINALIZATION_CHILD],
+        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 20,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "--- Logging error ---" not in proc.stderr
+    assert "normal_line" in proc.stderr
+    assert "cycle_finalized_at_shutdown" in proc.stderr

@@ -11,6 +11,11 @@ from __future__ import annotations
 # - [x] Review-Rest: scheitert ``configure_logging`` erst im Kind, endet es
 #       mit Exit 78 und ``worker_config_error`` statt Exit 1 und Neustartschleife
 # - [x] ... und die Zeile erscheint ueber das eingebaute Logging mit Fehlertext
+# - [x] Plan 2026-10-06-1811, U4: nach dem begrenzten Leeren endet der Prozess
+#       hart mit seinem Exit-Code, falls ein Log-Thread haengt
+#       (``exit_if_log_thread_stuck`` als letzter Schritt)
+# - [x] ... der Rueckfall nach einer kaputten dictConfig behaelt die Frist
+#       ``log_drain_timeout`` aus den Settings
 import os
 
 import pytest
@@ -467,3 +472,92 @@ class TestEntryLogging:
 
         assert "evt_before_exit" in stderr.getvalue()
         assert not [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]
+
+
+class TestHardExitAfterTheDrain:
+    """Plan 2026-10-06-1811, U4 (KTD3): Der Worker-Subprozess gehoert swarmq.
+    Haengt nach dem Leeren noch ein Log-Thread, endet er per ``os._exit``
+    mit dem Code, mit dem er ohnehin endete -- sonst bricht die
+    Finalisierung ab (Exit 134) oder haengt."""
+
+    @staticmethod
+    def _record_order(monkeypatch) -> list[object]:
+        calls: list[object] = []
+        monkeypatch.setattr(
+            "swarmq.process_manager.entry.shutdown_logging",
+            lambda *a, **k: calls.append("shutdown_logging"),
+        )
+        monkeypatch.setattr(
+            "swarmq.process_manager.entry.exit_if_log_thread_stuck",
+            lambda code: calls.append(("exit_if_log_thread_stuck", code)),
+        )
+        return calls
+
+    def test_a_config_error_hands_its_exit_code_to_the_hard_exit(self, monkeypatch):
+        from swarmq.exceptions import ConfigurationError
+
+        async def boom(ns):
+            raise ConfigurationError("broken")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        _capture_entry_logs(monkeypatch)
+        calls = self._record_order(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+
+        assert calls[-2:] == ["shutdown_logging", ("exit_if_log_thread_stuck", 78)]
+
+    def test_a_broken_logging_config_in_the_child_hands_78_to_the_hard_exit(self, monkeypatch):
+        async def must_not_run(ns):
+            raise AssertionError("App-Import trotz kaputter Logging-Konfiguration")
+
+        TestLoggingConfigErrorInTheChild._isolate_dict_config(monkeypatch)
+        monkeypatch.setattr("swarmq.cli.run_worker_async", must_not_run)
+        _capture_entry_logs(monkeypatch)
+        calls = self._record_order(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(
+                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+            )
+
+        assert calls[-2:] == ["shutdown_logging", ("exit_if_log_thread_stuck", 78)]
+
+    def test_the_fallback_after_a_broken_logging_config_keeps_the_drain_timeout(
+        self, monkeypatch,
+    ):
+        import io
+        import sys
+        import threading
+
+        class BlockedStderr(io.StringIO):
+            opened = threading.Event()
+
+            def write(self, text: str) -> int:
+                self.opened.wait()
+                return super().write(text)
+
+        TestLoggingConfigErrorInTheChild._isolate_dict_config(monkeypatch)
+        stderr = BlockedStderr()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        monkeypatch.setattr(
+            "swarmq.process_manager.entry.exit_if_log_thread_stuck", lambda code: None,
+        )
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        settings = _broken_log_config_settings(drain_timeout=0.05)
+        ended = threading.Event()
+
+        def run() -> None:
+            try:
+                worker_subprocess_entry(0, shutdown_event, _make_test_cfg(logging_settings=settings))
+            except SystemExit:
+                ended.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        try:
+            assert ended.wait(2)
+        finally:
+            stderr.opened.set()

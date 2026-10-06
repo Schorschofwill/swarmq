@@ -1317,3 +1317,27 @@ class TestDlqNotFoundExitCode:
         monkeypatch.setattr(cli, "_run_dlq_async", raiser)
         rc = cli.main(["dlq", "inspect", "nope", "--queue", "x"])
         assert rc == 3
+
+
+class TestConsoleEntryHardExit:
+    """Plan 2026-10-06-1811, U4 (KTD3): Der ``swarmq``-Befehl gehoert
+    swarmq. Haengt nach dem begrenzten Leeren noch ein Log-Thread, endet er
+    per ``os._exit`` mit dem Exit-Code von ``main`` -- ``main`` selbst
+    bleibt fuer Tests und Aufrufer im Prozess ohne hartes Ende.
+
+    Test-Liste:
+    - [x] ``console_main`` gibt den Code von ``main`` an das harte Ende und
+      liefert ihn zurueck
+    """
+
+    def test_console_main_hands_the_exit_code_of_main_to_the_hard_exit(self, monkeypatch):
+        calls: list[object] = []
+        monkeypatch.setattr(cli, "main", lambda argv=None: calls.append(("main", argv)) or 78)
+        monkeypatch.setattr(
+            "swarmq.logging_drain.exit_if_log_thread_stuck",
+            lambda code: calls.append(("exit_if_log_thread_stuck", code)),
+        )
+
+        assert cli.console_main(["worker"]) == 78
+
+        assert calls == [("main", ["worker"]), ("exit_if_log_thread_stuck", 78)]

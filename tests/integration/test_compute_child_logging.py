@@ -20,6 +20,10 @@ Test-Liste:
        Modulebene -- der Thread-Check besteht, und jede Task-Zeile erscheint
        genau einmal (der eingebaut konfigurierende Einstiegspunkt im Kind hebt
        den geerbten Opt-in auf).
+6. [x] Plan 2026-10-06-1811, U4: Ein Ziel-Handler der Job-dictConfig kehrt
+       nie zurueck. Die Ergebnisse kommen trotzdem an -- im frischen und im
+       wiederverwendeten Kind --, nach hoechstens ``log_drain_timeout`` je
+       Job plus Puffer (Prozess-Timeout statt Wanduhr).
 """
 
 from __future__ import annotations
@@ -161,3 +165,28 @@ def test_preloaded_swarmq_with_log_queue_keeps_the_forkserver_single_threaded(tm
     assert out["results"] == ["j0", "j1", "j2"]
     task_lines = [e for e in _json_events(stderr) if e.startswith(("task_line", "info_line"))]
     assert sorted(task_lines) == ["task_line_j0", "task_line_j1", "task_line_j2"]
+
+
+def test_a_never_returning_log_target_does_not_hold_back_the_results(tmp_path: Path) -> None:
+    config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {
+            "stuck": {"class": "tests.integration._blocking_log_handler.NeverReturns"},
+            "q": {
+                "class": "logging.handlers.QueueHandler",
+                "handlers": ["stuck"],
+                "queue": {"()": "queue.Queue", "maxsize": 5},
+            },
+        },
+        "root": {"level": "INFO", "handlers": ["q"]},
+    }
+    job = {
+        "log_config": "/never/read.json",
+        "log_config_json": json.dumps(config),
+        "log_drain_timeout": 0.3,
+    }
+
+    out, _ = _run(tmp_path, {"use_di": [False, True, True], "job": job})
+
+    assert out["results"] == ["j0", "j1", "j2"]

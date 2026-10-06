@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from swarmq.exceptions import LoggingConfigError
+from swarmq.logging_drain import Deadline, abandon
 
 CONFIG_LISTENERS: list[logging.handlers.QueueListener] = []
 """Von ``configure_logging`` gestartete Listener aus einer dictConfig-Datei;
@@ -261,32 +262,83 @@ def start_queue_listeners(on_drop: Callable[[], None]) -> None:
             _restart_lazily(handler, listener, on_drop, drops)
 
 
-def stop_queue_listeners() -> None:
-    """Stoppt und leert die gestarteten dictConfig-Listener (KTD5).
+class FileDraining:
+    """Ein dictConfig-Listener, der beim Leeren seine Queue abarbeitet
+    (Plan 2026-10-06-1811, KTD3): Sentinel per ``put(timeout)``, Warten per
+    ``join(timeout)`` -- beides innerhalb der gemeinsamen Frist.
 
-    Der stdlib-``stop`` reiht den Sentinel per ``put_nowait`` ein und wirft
-    bei voller Queue ``queue.Full`` -- mitten in ``atexit`` oder einem
-    ``finally``. Dann wird blockierend nachgereicht: Der laufende Listener
-    schafft Platz, wie bei ``_SwarmqQueueListener.enqueue_sentinel``.
+    Wer aufgibt, kann die Queue einer fremden Klasse nicht schliessen. Was
+    in ihr liegt, zaehlt als verworfen; schreibt der Thread spaeter doch noch,
+    ist die Zahl eine Obergrenze.
+    """
+
+    def __init__(self, listener: logging.handlers.QueueListener, thread: threading.Thread) -> None:
+        self.listener = listener
+        self.thread = thread
+        self.lost = 0
+        self.sentinel_pending = not _offer_sentinel(listener, 0)
+
+    def wait(self, deadline: Deadline) -> bool:
+        """Bis zur Frist warten; ``False``, wenn aufgegeben wurde."""
+        if self.sentinel_pending:
+            self.sentinel_pending = not _offer_sentinel(self.listener, deadline.remaining())
+        if self.sentinel_pending:
+            # Ohne Sentinel liefe der Thread nach dem Abarbeiten ewig weiter:
+            # Er endet stattdessen an der leeren Queue (``_report_from_listener``).
+            setattr(self.listener, "_swarmq_stop", True)  # noqa: B010
+            self.sentinel_pending = not _offer_sentinel(self.listener, 0)
+        self.thread.join(deadline.remaining())
+        if not self.thread.is_alive():
+            with _CONFIG_LISTENER_LOCK:
+                if getattr(self.listener, "_thread", None) is self.thread:
+                    setattr(self.listener, "_thread", None)  # noqa: B010
+            return True
+        self.lost = _qsize(self.listener.queue)
+        # Solange der Thread lebt, startet ``enqueue_restarting`` keinen
+        # neuen auf dieser Queue und zaehlt neue Records als verworfen.
+        setattr(self.listener, "_swarmq_abandoned", self)  # noqa: B010
+        abandon(self.thread, self.listener.handlers)
+        return False
+
+
+def _offer_sentinel(listener: logging.handlers.QueueListener, timeout: float) -> bool:
+    """Reiht den Sentinel ein, hoechstens ``timeout`` Sekunden lang; ``False``
+    bei voller Queue. ``put_nowait`` des stdlib-``stop`` wuerfe dort."""
+    sentinel = listener._sentinel  # type: ignore[attr-defined]
+    target: Any = listener.queue  # ``_QueueLike`` kennt nur ``put_nowait``/``get``
+    try:
+        if timeout > 0:
+            target.put(sentinel, True, timeout)
+        else:
+            target.put_nowait(sentinel)
+    except queue.Full:
+        return False
+    return True
+
+
+def _qsize(queue_: Any) -> int:
+    try:
+        return int(queue_.qsize())
+    except (NotImplementedError, AttributeError):  # etwa ``multiprocessing`` auf macOS
+        return 0
+
+
+def close_queue_listeners() -> list[FileDraining]:
+    """Schliesst die gestarteten dictConfig-Listener, ohne zu warten (KTD5,
+    Plan 2026-10-06-1811 KTD3); gewartet wird gemeinsam mit den eingebauten.
 
     Wie der stdlib-``stop``, aber auf dem eigenen Thread: Zwischen dessen
     Ende und dem Vergessen kann ein Eintrag schon einen neuen gestartet haben
-    (KTD1). Der bleibt eingetragen und wird in dieser Schleife gestoppt,
+    (KTD1). Der bleibt eingetragen und wird in dieser Schleife geschlossen,
     statt verwaist weiterzulaufen.
     """
+    closing: list[FileDraining] = []
     while CONFIG_LISTENERS:
         listener = CONFIG_LISTENERS.pop()
         thread: threading.Thread | None = getattr(listener, "_thread", None)
-        if thread is None:
-            continue
-        try:
-            listener.enqueue_sentinel()
-        except queue.Full:
-            listener.queue.put(listener._sentinel)  # type: ignore[attr-defined]
-        thread.join()
-        with _CONFIG_LISTENER_LOCK:
-            if getattr(listener, "_thread", None) is thread:
-                setattr(listener, "_thread", None)  # noqa: B010
+        if thread is not None and thread.is_alive():
+            closing.append(FileDraining(listener, thread))
+    return closing
 
 
 def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimitedReport:
@@ -310,8 +362,20 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
         monitor()
         drops.report_due(final=True)
 
+    dequeue = listener.dequeue
+
+    def dequeue_or_stop(block: bool) -> Any:
+        # Beim Aufgeben ohne Platz fuer den Sentinel (KTD3): an der leeren
+        # Queue enden. ``queue.Empty`` statt Sentinel -- dessen ``task_done``
+        # waere einer zu viel.
+        source: Any = listener.queue
+        if getattr(listener, "_swarmq_stop", False) and source.empty():
+            raise queue.Empty
+        return dequeue(block)
+
     setattr(listener, "handle", handle)  # noqa: B010
     setattr(listener, "_monitor", serve)  # noqa: B010
+    setattr(listener, "dequeue", dequeue_or_stop)  # noqa: B010
     return drops
 
 
@@ -325,6 +389,17 @@ def _alive(listener: logging.handlers.QueueListener) -> bool:
     """Lebt der Thread des Listeners? ``running`` des eingebauten (KTD1)."""
     thread: threading.Thread | None = getattr(listener, "_thread", None)
     return thread is not None and thread.is_alive()
+
+
+def _still_abandoned(listener: logging.handlers.QueueListener) -> bool:
+    """Haengt der aufgegebene Thread noch (KTD3)?"""
+    draining: FileDraining | None = getattr(listener, "_swarmq_abandoned", None)
+    if draining is None:
+        return False
+    if not draining.thread.is_alive():
+        setattr(listener, "_swarmq_abandoned", None)  # noqa: B010
+        return False
+    return True
 
 
 def _restart_lazily(
@@ -345,13 +420,27 @@ def _restart_lazily(
     enqueue = handler.enqueue
 
     def enqueue_restarting(record: logging.LogRecord) -> None:
+        if _still_abandoned(listener):
+            on_drop()
+            drops.count += 1
+            return
+        if sys.is_finalizing():
+            # Finalisierung (Plan 2026-10-06-1811, KTD5): synchron ausgeben.
+            listener.handle(record)
+            return
         if not _alive(listener):
             with _CONFIG_LISTENER_LOCK:
                 if not _alive(listener):
                     # Ein toter Thread zaehlt wie keiner (KTD1); der
                     # stdlib-``start`` wirft sonst. Die Queue bleibt.
                     setattr(listener, "_thread", None)  # noqa: B010
-                    listener.start()
+                    setattr(listener, "_swarmq_stop", False)  # noqa: B010
+                    try:
+                        listener.start()
+                    except PythonFinalizationError:
+                        setattr(listener, "_thread", None)  # noqa: B010
+                        listener.handle(record)
+                        return
                     CONFIG_LISTENERS.append(listener)
         try:
             enqueue(record)

@@ -141,6 +141,8 @@ class SwarmQConfig:
     logger_levels: tuple[tuple[str, str], ...] = ()
     log_queue_size: int = 10_000
     log_lifecycle_level: str = "DEBUG"
+    # Frist fuer jedes Leeren der Log-Queues (Plan 2026-10-06-1811, KTD11).
+    log_drain_timeout: float = 5.0
     # Opt-in-Queue fuer eingebettete Apps (KTD10), standardmaessig aus.
     log_queue: bool = False
     # Die im Supervisor aufgeloesten Einstellungen (U7, KTD7). Gesetzt, sind
@@ -267,7 +269,7 @@ class SwarmQConfig:
     #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
     _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset({
         "log_level", "log_json", "log_config", "configure_logging",
-        "logger_levels", "log_queue_size", "log_lifecycle_level",
+        "logger_levels", "log_queue_size", "log_lifecycle_level", "log_drain_timeout",
     })
 
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
@@ -283,6 +285,7 @@ class SwarmQConfig:
         ("SWARMQ_LOG_CONFIG", "log_config", "str"),
         ("SWARMQ_LOG_QUEUE_SIZE", "log_queue_size", "int"),
         ("SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "str"),
+        ("SWARMQ_LOG_DRAIN_TIMEOUT", "log_drain_timeout", "float"),
         ("SWARMQ_LOG_QUEUE", "log_queue", "bool"),
         ("SWARMQ_CONFIGURE_LOGGING", "configure_logging", "bool"),
         ("SWARMQ_LOGGER_LEVELS", "logger_levels", "logger_levels"),
@@ -342,6 +345,7 @@ class SwarmQConfig:
         "malloc_arena_max",
         "compute_thread_limit",
         "log_queue_size",
+        "log_drain_timeout",
     )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
     # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
@@ -512,6 +516,7 @@ class SwarmQConfig:
         self.logger_levels = settings.logger_levels
         self.log_queue_size = settings.queue_size
         self.log_lifecycle_level = settings.lifecycle_level
+        self.log_drain_timeout = settings.drain_timeout
 
     def __post_init__(self) -> None:
         self._apply_env_overrides()

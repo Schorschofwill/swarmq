@@ -482,3 +482,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"unknown command: {args.command!r}")
 
     return _run_command(runner, error_prefix, args)
+
+
+def console_main(argv: Sequence[str] | None = None) -> int:
+    """Einstieg des ``swarmq``-Befehls und von ``python -m swarmq.cli``.
+
+    Wie :func:`main`; haengt danach noch ein aufgegebener Log-Thread (Plan
+    2026-10-06-1811, KTD3), endet der Prozess hart mit dem Exit-Code von
+    ``main`` -- die Finalisierung bricht sonst ab (Exit 134) oder haengt.
+    ``main`` selbst bleibt ohne hartes Ende: Tests und Aufrufer im Prozess
+    rufen es direkt.
+    """
+    from swarmq.logging_drain import exit_if_log_thread_stuck
+
+    code = main(argv)
+    exit_if_log_thread_stuck(code)
+    return code

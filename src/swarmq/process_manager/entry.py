@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import signal as _signal
+import sys
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,7 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import configure_logging, get_logger, shutdown_logging
+from swarmq.logging_drain import exit_code_for, exit_if_log_thread_stuck
 from swarmq.logging_settings import LoggingSettings
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.supervision import (
@@ -116,11 +118,14 @@ def worker_subprocess_entry(
         # Worker in einer Schleife neu (R29). Die Zeile schreibt das
         # eingebaute Logging (wie ``_setup_fallback_logging`` im Supervisor,
         # R14) -- ohne es gaebe ``logging.lastResort`` nur den Event-Namen aus.
-        configure_logging(LoggingSettings(format=settings.format))
+        configure_logging(
+            LoggingSettings(format=settings.format, drain_timeout=settings.drain_timeout),
+        )
         try:
             _log_config_error(worker_id, exc)
         finally:
             shutdown_logging()
+            exit_if_log_thread_stuck(CONFIG_ERROR_EXIT_CODE)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
 
     # Flach statt ``dataclasses.asdict``: das wandelte ``logging_settings``
@@ -209,5 +214,8 @@ def worker_subprocess_entry(
     finally:
         # R15: an jedem Exit-Pfad leeren. Ohne das endet der Prozess, bevor
         # der Listener-Thread die letzten Zeilen geschrieben hat -- der
-        # Supervisor saehe im Fehlerfall nur den Exit-Code.
+        # Supervisor saehe im Fehlerfall nur den Exit-Code. Begrenzt (Plan
+        # 2026-10-06-1811, KTD3); haengt danach noch ein Log-Thread, endet
+        # der Prozess hart mit dem Code, mit dem er ohnehin endete.
         shutdown_logging()
+        exit_if_log_thread_stuck(exit_code_for(sys.exception()))

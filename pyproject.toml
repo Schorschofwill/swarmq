@@ -82,7 +82,7 @@ docs = [
 ]
 
 [project.scripts]
-swarmq = "swarmq.cli:main"
+swarmq = "swarmq.cli:console_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swarmq"]

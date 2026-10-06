@@ -18,6 +18,7 @@ _SWARMQ_LOGGING_ENV_VARS = (
     "SWARMQ_LOG_QUEUE_SIZE",
     "SWARMQ_LOG_LIFECYCLE_LEVEL",
     "SWARMQ_LOG_QUEUE",
+    "SWARMQ_LOG_DRAIN_TIMEOUT",
 )
 
 
@@ -41,6 +42,20 @@ def swarmq_logs():
     """
     with capture_swarmq_logs() as entries:
         yield entries
+
+
+@pytest.fixture(autouse=True)
+def _no_hard_exit_from_logging(monkeypatch):
+    """Plan 2026-10-06-1811, U4: Haengt ein aufgegebener Listener-Thread
+    eines Tests noch, wenn ein anderer Test einen Einstiegspunkt durchlaeuft,
+    beendete ``exit_if_log_thread_stuck`` sonst den Testprozess. Stattdessen
+    scheitert der Test."""
+
+    def refuse(code: int) -> None:
+        msg = f"unexpected hard exit({code}) from swarmq.logging_drain"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr("swarmq.logging_drain._hard_exit", refuse)
 
 
 @pytest.fixture(autouse=True)

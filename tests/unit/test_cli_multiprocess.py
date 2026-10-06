@@ -487,6 +487,10 @@ class TestCheckValidatesLogging:
     - [x] fehlende ``--log-config``-Datei
     - [x] ``--log-format`` zusammen mit ``--log-config``
     - [x] nicht positive ``--log-queue-size``
+    - [x] nicht positive oder nicht numerische ``--log-drain-timeout`` (Plan
+      2026-10-06-1811, U4; ohne eigenen Produktionscode, die Aufloesung ist
+      dieselbe)
+    - [x] dieselbe ``--log-drain-timeout`` beim Start: Exit 78
     - [x] ``--log-config``, die erst ``dictConfig`` ablehnt (Handler-Tippfehler)
     """
 
@@ -519,6 +523,22 @@ class TestCheckValidatesLogging:
         assert rc == 1
         assert payload["error_type"] == "ConfigurationError"
         assert "--log-queue-size" in payload["error"]
+
+    @pytest.mark.parametrize("seconds", ["0", "-1", "soon"])
+    def test_invalid_log_drain_timeout_is_reported(self, capsys, seconds):
+        rc, payload = self._check(capsys, f"--log-drain-timeout={seconds}")
+        assert rc == 1
+        assert payload["error_type"] == "ConfigurationError"
+        assert "--log-drain-timeout" in payload["error"]
+
+    def test_invalid_log_drain_timeout_ends_the_start_with_the_config_code(self, capsys):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        with patch("swarmq.process_manager.run.run_multi_process_worker") as run:
+            rc = main(["worker", "--module=json", "--log-drain-timeout=0"])
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        assert "--log-drain-timeout" in capsys.readouterr().err
+        run.assert_not_called()
 
     def test_log_config_rejected_by_dict_config_is_reported(self, capsys, tmp_path):
         """AE4: Ein Tippfehler in der Handler-Klasse ist gueltiges JSON und

@@ -93,6 +93,12 @@
       "type": "str"
     },
     {
+      "default": 5.0,
+      "env_var": "SWARMQ_LOG_DRAIN_TIMEOUT",
+      "name": "log_drain_timeout",
+      "type": "float"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_LOG_QUEUE",
       "name": "log_queue",

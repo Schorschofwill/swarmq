@@ -79,8 +79,10 @@ def preserved_root_logger() -> Iterator[None]:
     wechseln je Testphase und bleiben, wie pytest sie gerade gesetzt hat --
     zurueckgelegte Handler einer beendeten Phase sammelten sonst weiter.
     """
+    import swarmq.logging_queue as _queue_core
     from swarmq.logging import shutdown_logging
     from swarmq.logging_queue import _reset_log_queue
+    from swarmq.logging_settings import LoggingSettings
 
     root = logging.getLogger()
     own = [h for h in root.handlers if not _is_pytest_handler(h)]
@@ -93,6 +95,9 @@ def preserved_root_logger() -> Iterator[None]:
     finally:
         _reset_log_queue()
         shutdown_logging()
+        # Eine im Test eingerichtete Frist (Plan 2026-10-06-1811, U4) gilt
+        # nicht fuer den naechsten.
+        _queue_core._DRAIN_TIMEOUT = LoggingSettings().drain_timeout
         root.handlers[:] = own + [h for h in root.handlers if _is_pytest_handler(h)]
         root.setLevel(level)
         swarmq_logger.handlers[:], swarmq_level, swarmq_logger.propagate = swarmq_state

@@ -7,6 +7,7 @@ und gibt es aufgeloest an seine Kinder weiter.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -34,6 +35,9 @@ class LoggingSettings:
     logger_levels: tuple[tuple[str, str], ...] = ()
     queue_size: int = 10_000
     lifecycle_level: str = "DEBUG"
+    # Gesamtfrist in Sekunden fuer jedes Leeren der Log-Queues (Plan
+    # 2026-10-06-1811, KTD3/KTD11); Rest gilt als verworfen.
+    drain_timeout: float = 5.0
 
 
 def fallback_log_format(cli: object | None, env: Mapping[str, str]) -> str:
@@ -70,6 +74,10 @@ def resolve_logging_settings(
         "log_lifecycle_level", "--log-lifecycle-level",
         "SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "DEBUG",
     )
+    drain_timeout = sources.pick(
+        "log_drain_timeout", "--log-drain-timeout",
+        "SWARMQ_LOG_DRAIN_TIMEOUT", "log_drain_timeout", 5.0,
+    )
     log_config = sources.pick(
         "log_config", "--log-config", "SWARMQ_LOG_CONFIG", "log_config", None,
     )
@@ -89,6 +97,7 @@ def resolve_logging_settings(
         logger_levels=_logger_levels(cli, env, config),
         queue_size=_positive_int(queue_size),
         lifecycle_level=_level(lifecycle_level),
+        drain_timeout=_positive_seconds(drain_timeout),
     )
 
 
@@ -169,6 +178,18 @@ def _positive_int(picked: _Picked) -> int:
         msg = f"{picked.source} must be a positive integer, got {picked.value!r}"
         raise ConfigurationError(msg)
     return number
+
+
+def _positive_seconds(picked: _Picked) -> float:
+    """Endliche Sekunden > 0; ``nan`` und ``inf`` hoben die Frist auf."""
+    try:
+        seconds = float(str(picked.value).strip())
+    except ValueError:
+        seconds = 0.0
+    if not (0 < seconds < math.inf):
+        msg = f"{picked.source} must be a positive number of seconds, got {picked.value!r}"
+        raise ConfigurationError(msg)
+    return seconds
 
 
 def _logger_levels(

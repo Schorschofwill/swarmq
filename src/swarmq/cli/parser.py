@@ -195,6 +195,17 @@ def _add_worker_parser(subparsers: Any) -> None:
         ),
     )
     worker.add_argument(
+        "--log-drain-timeout",
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Upper bound for flushing the log queues at exit, before a "
+            "reload and before each compute result (default: 5). Records "
+            "not written in time are counted as dropped. "
+            "Overrides SWARMQ_LOG_DRAIN_TIMEOUT."
+        ),
+    )
+    worker.add_argument(
         "--log-lifecycle-level",
         choices=_VALID_LOG_LEVELS,
         default=None,
