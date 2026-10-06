@@ -22,13 +22,15 @@ import weakref
 from typing import Any
 
 from swarmq.logging_drain import Deadline, abandon, write_drain_notice
-from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
 from swarmq.logging_file import (
     FileDraining,
     HandlerErrors,
     RateLimitedReport,
     close_queue_listeners,
+    reset_queue_listeners_after_fork,
+    running_targets,
 )
+from swarmq.logging_fork import forget_handler_locks, hold_handler_locks, release_handler_locks
 
 LISTENER_THREAD_NAME = "swarmq-log-lsnr"
 """Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests.
@@ -74,6 +76,11 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         """Die Ziel-Handler, an denen ein aufgegebener Thread haengen kann."""
         current = self.current
         return (*self.handlers, *(() if current is None else (current,)))
+
+    def fork_targets(self) -> list[logging.Handler]:
+        """Die Handler, in die der Thread schreibt; ihre Locks nimmt der
+        ``before``-Hook vor einem Fork (Plan 2026-10-06-1811, KTD10)."""
+        return list(self.handlers)
 
     @property
     def running(self) -> bool:
@@ -313,6 +320,10 @@ class _OptinQueueListener(_SwarmqQueueListener):
     Gibt jeden Record zum Ausgabezeitpunkt an die Handler von Root weiter,
     also die Elternkette von ``swarmq`` -- ohne Schnappschuss.
     """
+
+    def fork_targets(self) -> list[logging.Handler]:
+        """Die Root-Handler: an sie gibt der Thread weiter."""
+        return list(logging.getLogger().handlers)
 
     def _dispatch(self, record: logging.LogRecord) -> None:
         context = record.__dict__.pop(_CONTEXT_ATTR, None)
@@ -609,7 +620,9 @@ def _after_fork_in_child() -> None:
     Die geerbten Listener -- eigene wie die der dictConfig -- gehoeren dem
     Elternprozess: Ihr Thread fehlt im Kind, und ``shutdown_logging``
     haengte oder wuerfe sonst beim Sentinel auf einer beim Fork vollen
-    Queue-Kopie.
+    Queue-Kopie. Die dictConfig-Listener bekommen eine frische Queue (Plan
+    2026-10-06-1811, KTD10); die vom ``before``-Hook gehaltenen Handler-Locks
+    setzt die stdlib im Kind schon selbst zurueck.
     """
     global _LISTENER_LOCK, _DROPPED_TOTAL, _IN_FORK_SOURCE
     _LISTENER_LOCK = threading.Lock()
@@ -618,12 +631,24 @@ def _after_fork_in_child() -> None:
     # startet seinen Listener.
     _IN_FORK_SOURCE = False
     _LISTENERS.clear()
-    _CONFIG_LISTENERS.clear()
+    forget_handler_locks()
+    reset_queue_listeners_after_fork()
     for handler in list(_HANDLERS):
         handler._reset_after_fork()
 
 
-os.register_at_fork(after_in_child=_after_fork_in_child)
+def _before_fork() -> None:
+    """Haelt die Ziel-Handler laufender Listener an, damit kein halb
+    geschriebener Datensatz ins Kind gelangt (Plan 2026-10-06-1811, KTD10)."""
+    builtin = [h for lsnr in list(_LISTENERS) if lsnr.running for h in lsnr.fork_targets()]
+    hold_handler_locks([*builtin, *running_targets()])
+
+
+os.register_at_fork(
+    before=_before_fork,
+    after_in_parent=release_handler_locks,
+    after_in_child=_after_fork_in_child,
+)
 
 # Genau einmal, beim Import, ohne Thread (KTD5): dictConfig und
 # ``logging.shutdown`` stoppen keine Listener.

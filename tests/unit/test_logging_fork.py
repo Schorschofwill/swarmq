@@ -1,0 +1,412 @@
+"""Fork-Sicherheit der Log-Listener (Plan 2026-10-06-1811, U7; R8, KTD10).
+
+Ein ``os.fork()`` aus Task-Code: Im Kind schreiben die Queue-Handler der
+dictConfig (Datei-Modus) weiter, ohne die geerbten Records des
+Elternprozesses ein zweites Mal auszugeben, und kein Ziel-Handler steckt in
+einem halb geschriebenen Datensatz. Geprueft wird ueber echte Forks
+(``tests.unit._fork_child``): So laufen die registrierten Fork-Hooks wie im
+Betrieb, statt dass ein Test den privaten Hook aufruft.
+"""
+
+from __future__ import annotations
+
+# Test list:
+# 1. [x] Datei-Modus, Listener im Elternprozess blockiert, ein Record wartet
+#        in der Queue: Das Kind gibt den geerbten Record nicht aus, sein
+#        eigener kommt an.
+# 2. [x] Multiprocessing-Queue: Das Kind behaelt dieselbe Queue (kein Ersatz).
+# 3. [x] Eigene Queue-Klasse (nicht rekonstruierbares ``"()"``): bleibt.
+# 4. [x] ``queue.SimpleQueue``: wird wie ``queue.Queue`` ersetzt.
+# 5. [x] ``before``-Hook: Der fork-ende Thread erwirbt das Lock des
+#        Ziel-Handlers eines laufenden Datei-Modus-Listeners und gibt es im
+#        Elternprozess wieder frei.
+# 6. [x] Ebenso fuer den eingebauten Listener.
+# 7. [x] Opt-in-Listener: die Root-Handler, an die er weitergibt.
+# 8. [x] Ein Lock, das ein anderer Thread haelt: Der Fork laeuft nach dem
+#        Budget trotzdem, das Kind lebt.
+# 9. [x] Das Budget gilt ueber alle Handler zusammen, nicht pro Handler.
+# 10. [x] Ein aufgegebener Ziel-Handler (KTD3) wird gar nicht erst versucht.
+# 11. [x] Ein Thread haelt ``logging._lock`` und will danach ein Ziel-Lock
+#         (Reihenfolge von ``dictConfig``): kein Deadlock beim Fork.
+# 12. [x] Ein beim Fork gehaltenes Wiederstart-Lock der Datei-Modus-Listener
+#         haelt das Kind nicht auf.
+# 13. [x] Das Kind kann selbst wieder forken, ohne dass ein Hook wirft
+#         (Fund waehrend Zyklus 11).
+# 14. [x] Drops des Elternprozesses meldet das Kind nicht noch einmal (Fund
+#         im Prozesstest mit begrenzter Queue).
+import json
+import logging
+import logging.handlers
+import pathlib
+import queue
+import sys
+import threading
+import time
+import weakref
+from collections.abc import Iterator
+from unittest.mock import MagicMock
+
+import pytest
+
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.logging import configure_logging, shutdown_logging
+from swarmq.logging_settings import LoggingSettings
+from tests.unit._fork_child import run_in_forked_child
+
+pytestmark = pytest.mark.timeout(5)
+
+RECORDS: list[logging.LogRecord] = []
+"""Ziel des ``RecordingHandler`` aus den dictConfig-Dateien der Tests."""
+
+ENTERED = threading.Event()
+RELEASE = threading.Event()
+
+
+class RecordingHandler(logging.Handler):
+    """Per dictConfig (``"()"``) referenzierbarer Sammel-Handler."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        RECORDS.append(record)
+
+
+class BlockingHandler(RecordingHandler):
+    """Haelt den Listener beim ersten Record fest, bis ``RELEASE`` gesetzt
+    ist -- im Elternprozess. Im Kind ist ``ENTERED`` schon gesetzt."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not ENTERED.is_set():
+            ENTERED.set()
+            RELEASE.wait()
+        super().emit(record)
+
+
+class SpyLock:
+    """``RLock``, das jeden Aufruf mit dem Thread des Aufrufers festhaelt."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.calls: list[tuple[str, int]] = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.calls.append(("acquire", threading.get_ident()))
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self.calls.append(("release", threading.get_ident()))
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+    def _at_fork_reinit(self) -> None:
+        self._lock._at_fork_reinit()  # type: ignore[attr-defined]
+
+    def by_this_thread(self) -> list[str]:
+        me = threading.get_ident()
+        return [op for op, ident in self.calls if ident == me]
+
+
+def _spy_on(handler: logging.Handler) -> SpyLock:
+    spy = SpyLock()
+    handler.lock = spy  # type: ignore[assignment]
+    return spy
+
+
+@pytest.fixture(autouse=True)
+def isolated_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """``dictConfig`` schliesst alle bekannten Handler: Die Registry wird fuer
+    den Test geleert. Root und ``shutdown_logging`` uebernimmt das
+    Autouse-Fixture der Unit-Tests; ein blockierter Listener wird am Ende
+    freigegeben."""
+    monkeypatch.setattr(logging, "_handlerList", [])
+    monkeypatch.setattr(logging, "_handlers", weakref.WeakValueDictionary())
+    RECORDS.clear()
+    ENTERED.clear()
+    RELEASE.clear()
+    yield
+    RELEASE.set()
+
+
+def _configure_file_mode(
+    tmp_path: pathlib.Path, handler: str = "RecordingHandler", **queue_handler: object,
+) -> logging.handlers.QueueHandler:
+    config = {
+        "version": 1,
+        "handlers": {
+            "rec": {"()": f"{__name__}.{handler}"},
+            "q": {"class": "logging.handlers.QueueHandler", "handlers": ["rec"], **queue_handler},
+        },
+        "root": {"level": "INFO", "handlers": ["q"]},
+    }
+    path = tmp_path / "log.json"
+    path.write_text(json.dumps(config))
+    configure_logging(LoggingSettings(log_config=str(path)))
+    (handler_,) = logging.getLogger().handlers
+    assert isinstance(handler_, logging.handlers.QueueHandler)
+    return handler_
+
+
+def _messages() -> list[str]:
+    return [r.getMessage() for r in RECORDS]
+
+
+@pytest.mark.parametrize(
+    "queue_config",
+    [{}, {"queue": {"()": "queue.SimpleQueue"}}],
+    ids=["queue.Queue", "queue.SimpleQueue"],
+)
+def test_the_child_does_not_replay_records_inherited_in_the_file_mode_queue(
+    tmp_path: pathlib.Path, queue_config: dict[str, object],
+) -> None:
+    _configure_file_mode(tmp_path, "BlockingHandler", **queue_config)
+    log = logging.getLogger("app")
+    log.warning("evt_parent_busy")
+    assert ENTERED.wait(2)
+    log.warning("evt_inherited")
+
+    def child() -> None:
+        log.warning("evt_child")
+        shutdown_logging()
+        assert _messages() == ["evt_child"]
+
+    assert run_in_forked_child(child) == 0
+
+
+def test_a_multiprocessing_queue_is_kept_in_the_child(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
+    inherited = handler.queue
+    # Ein werfender Fork-Hook ("Exception ignored in atfork callback") bricht
+    # den Reset der uebrigen Handler ab.
+    hook_errors: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", hook_errors.append)
+
+    def child() -> None:
+        assert hook_errors == []
+        assert handler.queue is inherited
+
+    assert run_in_forked_child(child) == 0
+
+
+class AppQueue(queue.Queue[object]):
+    """Eigene Queue-Klasse der App: Ihren Konstruktor kennt swarmq nicht."""
+
+
+def test_an_app_queue_class_is_kept_in_the_child(tmp_path: pathlib.Path) -> None:
+    handler = _configure_file_mode(tmp_path, queue={"()": f"{__name__}.AppQueue", "maxsize": 3})
+    inherited = handler.queue
+
+    def child() -> None:
+        assert handler.queue is inherited
+
+    assert run_in_forked_child(child) == 0
+
+
+def test_fork_holds_the_target_lock_of_a_running_file_mode_listener(
+    tmp_path: pathlib.Path,
+) -> None:
+    handler = _configure_file_mode(tmp_path)
+    (target,) = handler.listener.handlers  # type: ignore[union-attr]
+    spy = _spy_on(target)
+
+    assert run_in_forked_child(lambda: None) == 0
+
+    assert spy.by_this_thread() == ["acquire", "release"]
+
+
+def test_a_target_lock_held_by_a_stuck_emit_does_not_stop_the_fork(
+    tmp_path: pathlib.Path,
+) -> None:
+    _configure_file_mode(tmp_path, "BlockingHandler")
+    logging.getLogger("app").warning("evt_stuck")
+    assert ENTERED.wait(2)
+
+    started = time.monotonic()
+    assert run_in_forked_child(lambda: None) == 0
+
+    assert time.monotonic() - started < 1.0
+
+
+def _hold_in_other_thread(locks: list[threading.RLock]) -> threading.Thread:
+    """Haelt ``locks`` in einem eigenen Thread, bis ``RELEASE`` gesetzt ist."""
+    holding = threading.Event()
+
+    def hold() -> None:
+        for lock in locks:
+            lock.acquire()
+        holding.set()
+        RELEASE.wait()
+        for lock in locks:
+            lock.release()
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert holding.wait(2)
+    return holder
+
+
+def test_the_lock_budget_covers_all_targets_together(tmp_path: pathlib.Path) -> None:
+    names = [f"rec{i}" for i in range(10)]
+    config = {
+        "version": 1,
+        "handlers": {
+            **{name: {"()": f"{__name__}.RecordingHandler"} for name in names},
+            "q": {"class": "logging.handlers.QueueHandler", "handlers": names},
+        },
+        "root": {"level": "INFO", "handlers": ["q"]},
+    }
+    path = tmp_path / "log.json"
+    path.write_text(json.dumps(config))
+    configure_logging(LoggingSettings(log_config=str(path)))
+    (handler,) = logging.getLogger().handlers
+    targets = handler.listener.handlers  # type: ignore[attr-defined]
+    holder = _hold_in_other_thread([t.lock for t in targets])
+
+    started = time.monotonic()
+    assert run_in_forked_child(lambda: None) == 0
+    elapsed = time.monotonic() - started
+
+    RELEASE.set()
+    holder.join(2)
+    # Pro Handler waeren es mindestens 10 x 50 ms.
+    assert elapsed < 0.3
+
+
+def test_fork_holds_the_target_lock_of_the_running_builtin_listener() -> None:
+    configure_logging(LoggingSettings())
+    (handler,) = logging.getLogger().handlers
+    (target,) = handler.listener.handlers  # type: ignore[attr-defined]
+    logging.getLogger("app").warning("evt_starts_the_listener")
+    spy = _spy_on(target)
+
+    assert run_in_forked_child(lambda: None) == 0
+
+    assert spy.by_this_thread() == ["acquire", "release"]
+
+
+def test_fork_holds_the_root_handler_locks_of_the_running_optin_listener() -> None:
+    root_handlers = [RecordingHandler(), RecordingHandler()]
+    logging.getLogger().handlers[:] = root_handlers
+    broker = MagicMock(spec=RabbitMQBroker, _url="amqp://guest:guest@localhost/")
+    backend = MagicMock(spec=ValkeyBackend, _url="valkey://localhost:6379/0")
+    SwarmQ(broker, backend, log_queue=True)
+    logging.getLogger("swarmq.tests.fork").warning("evt_starts_the_listener")
+    spies = [_spy_on(h) for h in root_handlers]
+
+    assert run_in_forked_child(lambda: None) == 0
+
+    assert [spy.by_this_thread() for spy in spies] == [["acquire", "release"]] * 2
+
+
+def test_an_abandoned_target_is_not_even_tried(tmp_path: pathlib.Path) -> None:
+    handler = _configure_file_mode(tmp_path, "BlockingHandler")
+    logging.getLogger("app").warning("evt_stuck")
+    assert ENTERED.wait(2)
+    shutdown_logging(timeout=0.05)  # gibt den haengenden Thread auf (KTD3)
+    (target,) = handler.listener.handlers  # type: ignore[union-attr]
+    spy = _spy_on(target)
+
+    assert run_in_forked_child(lambda: None) == 0
+
+    assert spy.by_this_thread() == []
+
+
+class SignallingLock(SpyLock):
+    """Meldet, sobald der Thread ``owner`` das Lock erwirbt."""
+
+    def __init__(self, owner: int) -> None:
+        super().__init__()
+        self.owner = owner
+        self.taken_by_owner = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        acquired = super().acquire(blocking, timeout)
+        if acquired and threading.get_ident() == self.owner:
+            self.taken_by_owner.set()
+        return acquired
+
+
+def test_fork_does_not_deadlock_with_a_thread_holding_the_logging_lock(
+    tmp_path: pathlib.Path,
+) -> None:
+    handler = _configure_file_mode(tmp_path)
+    (target,) = handler.listener.handlers  # type: ignore[union-attr]
+    lock = SignallingLock(owner=threading.get_ident())
+    target.lock = lock  # type: ignore[assignment]
+    holds_module_lock = threading.Event()
+
+    def reconfigure() -> None:
+        # Wie ``dictConfig``: erst ``logging._lock``, dann die Handler-Locks
+        # (``logging.shutdown`` der alten Handler).
+        with logging._lock:  # type: ignore[attr-defined]
+            holds_module_lock.set()
+            lock.taken_by_owner.wait(0.15)
+            with lock:
+                pass
+
+    other = threading.Thread(target=reconfigure, daemon=True)
+    other.start()
+    assert holds_module_lock.wait(2)
+
+    started = time.monotonic()
+    assert run_in_forked_child(lambda: None) == 0
+    elapsed = time.monotonic() - started
+
+    other.join(2)
+    assert elapsed < 2.0
+
+
+def test_the_child_can_fork_again_without_hook_errors(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_file_mode(tmp_path)
+    hook_errors: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", hook_errors.append)
+
+    def child() -> None:
+        logging.getLogger("app").warning("evt_starts_the_child_listener")
+        assert run_in_forked_child(lambda: None) == 0
+        assert hook_errors == []
+
+    assert run_in_forked_child(child) == 0
+
+
+def test_a_restart_lock_held_at_fork_does_not_block_the_child(tmp_path: pathlib.Path) -> None:
+    import swarmq.logging_file
+
+    _configure_file_mode(tmp_path)
+    # Ein anderer Thread startet gerade einen Datei-Modus-Listener neu.
+    holder = _hold_in_other_thread([swarmq.logging_file._CONFIG_LISTENER_LOCK])  # type: ignore[list-item]
+
+    def child() -> None:
+        logging.getLogger("app").warning("evt_child")
+        shutdown_logging()
+        assert _messages() == ["evt_child"]
+
+    try:
+        assert run_in_forked_child(child) == 0
+    finally:
+        RELEASE.set()
+        holder.join(2)
+
+
+def test_the_child_does_not_report_the_drops_of_the_parent(tmp_path: pathlib.Path) -> None:
+    _configure_file_mode(tmp_path, "BlockingHandler", queue={"()": "queue.Queue", "maxsize": 1})
+    log = logging.getLogger("app")
+    log.warning("evt_parent_busy")
+    assert ENTERED.wait(2)
+    log.warning("evt_queued")
+    log.warning("evt_dropped_in_the_parent")
+
+    def child() -> None:
+        log.warning("evt_child")
+        shutdown_logging()
+        assert _messages() == ["evt_child"]
+
+    assert run_in_forked_child(child) == 0

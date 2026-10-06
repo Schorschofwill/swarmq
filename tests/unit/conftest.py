@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 # Task registry reset is handled by root conftest.py (_reset_task_registry).
+import weakref
+
 import pytest
 
 from tests.unit._log_capture import capture_swarmq_logs, preserved_root_logger
@@ -65,6 +67,7 @@ def _fresh_abandoned_log_threads(monkeypatch):
     damit keiner von den Resten eines frueheren abhaengt (etwa ein
     uebersprungenes ``flush`` oder ein vermeintlich haengender Thread)."""
     monkeypatch.setattr("swarmq.logging_drain._ABANDONED", [])
+    monkeypatch.setattr("swarmq.logging_drain._STUCK_HANDLERS", weakref.WeakKeyDictionary())
     monkeypatch.setattr("swarmq.logging_drain._STUCK_STREAMS", set())
     monkeypatch.setattr("swarmq.logging_drain._STUCK_FILES", set())
 

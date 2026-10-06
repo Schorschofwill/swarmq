@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator
 from typing import Any, ClassVar
 
@@ -253,6 +254,14 @@ def _iter_loggers() -> Iterator[tuple[str, logging.Logger]]:
             yield name, lg
 
 
+_STARTED_HANDLERS: weakref.WeakKeyDictionary[logging.handlers.QueueHandler, RateLimitedReport] = (
+    weakref.WeakKeyDictionary()
+)
+"""Die Queue-Handler, deren Listener ``start_queue_listeners`` gepatcht und
+gestartet hat, mit dem Drop-Zaehler des Listeners; der Fork-Hook setzt sie im
+Kind zurueck (Plan 2026-10-06-1811, KTD10)."""
+
+
 def start_queue_listeners(on_drop: Callable[[], None]) -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
 
@@ -273,6 +282,50 @@ def start_queue_listeners(on_drop: Callable[[], None]) -> None:
             listener.start()
             CONFIG_LISTENERS.append(listener)
             _restart_lazily(handler, listener, on_drop, drops)
+            _STARTED_HANDLERS[handler] = drops
+
+
+def running_targets() -> Iterator[logging.Handler]:
+    """Die Ziel-Handler der laufenden dictConfig-Listener; ihre Locks nimmt
+    der ``before``-Hook vor einem Fork (Plan 2026-10-06-1811, KTD10)."""
+    for handler in list(_STARTED_HANDLERS.keys()):
+        listener = handler.listener
+        if listener is not None and _alive(listener):
+            yield from listener.handlers
+
+
+def reset_queue_listeners_after_fork() -> None:
+    """Im Kind nach ``os.fork()`` (Plan 2026-10-06-1811, KTD10): Die
+    geerbten Listener gehoeren dem Elternprozess, ihr Thread fehlt im Kind.
+    Jeder gestartete Queue-Handler bekommt eine frische Queue, sein Listener
+    gilt als nicht gestartet; der naechste Record startet ihn. Die geerbten
+    Records schreibt der Elternprozess -- im Kind erschienen sie doppelt.
+    Ein beim Fork gehaltenes Wiederstart-Lock hat im Kind keinen Besitzer
+    mehr und wird ersetzt."""
+    global _CONFIG_LISTENER_LOCK
+    _CONFIG_LISTENER_LOCK = threading.Lock()
+    CONFIG_LISTENERS.clear()
+    for handler, drops in list(_STARTED_HANDLERS.items()):
+        # Die Drops des Elternprozesses meldet der Elternprozess.
+        drops.count = drops.reported = 0
+        listener = handler.listener
+        fresh = _fresh_queue(handler.queue)
+        if listener is None or fresh is None:
+            continue
+        handler.queue = listener.queue = fresh
+        setattr(listener, "_thread", None)  # noqa: B010
+
+
+def _fresh_queue(inherited: object) -> Any:
+    """Leere Queue gleichen Typs und gleicher ``maxsize`` (KTD10); ``None``
+    fuer Queues, die swarmq nicht nachbauen kann oder darf: eine
+    ``multiprocessing``-Queue verbindet das Kind mit dem Elternprozess, eine
+    eigene Klasse der App hat einen unbekannten Konstruktor."""
+    if type(inherited) is queue.SimpleQueue:
+        return queue.SimpleQueue()
+    if type(inherited) is queue.Queue:
+        return queue.Queue(inherited.maxsize)
+    return None
 
 
 class FileDraining:

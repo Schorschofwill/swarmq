@@ -16,6 +16,7 @@ import select
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Iterable
 
 
@@ -73,6 +74,12 @@ _ABANDONED: list[threading.Thread] = []
 """Aufgegebene Listener-Threads (KTD3); ein haengender bleibt eingetragen,
 bis er endet."""
 
+_STUCK_HANDLERS: weakref.WeakKeyDictionary[logging.Handler, threading.Thread] = (
+    weakref.WeakKeyDictionary()
+)
+"""Ziel-Handler aufgegebener Threads und der Thread, der an ihnen haengt;
+der Fork-Hook laesst sie aus (Plan 2026-10-06-1811, KTD10)."""
+
 _STUCK_STREAMS: set[int] = set()
 """``id`` der Streams aufgegebener Ziel-Handler: Ihr Lock haelt womoeglich
 der haengende Thread, ein ``flush`` blockierte."""
@@ -93,7 +100,17 @@ def abandon(thread: threading.Thread, handlers: Iterable[logging.Handler]) -> No
     """
     _ABANDONED[:] = [t for t in _ABANDONED if t.is_alive()]
     _ABANDONED.append(thread)
-    _forget(set(handlers))
+    targets = set(handlers)
+    for handler in targets:
+        _STUCK_HANDLERS[handler] = thread
+    _forget(targets)
+
+
+def is_stuck(handler: logging.Handler) -> bool:
+    """Haengt ein aufgegebener Thread noch an ``handler``? Sein Lock ist
+    dann womoeglich auf Dauer belegt."""
+    thread = _STUCK_HANDLERS.get(handler)
+    return thread is not None and thread.is_alive()
 
 
 def _stream_of(handler: logging.Handler | None) -> object:
