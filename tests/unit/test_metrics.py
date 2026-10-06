@@ -319,3 +319,34 @@ class TestRejectedCounter:
             task_id=None, task_name=None, error="x",
         )
         assert m.tasks_total.labels(task_name="", queue="q", outcome="dlq")._value.get() == 0
+
+
+# ---------------------------------------------------------------------------
+# Log-Drop-Zaehler (Plan 2026-10-06-0831, U3, KTD5)
+# ---------------------------------------------------------------------------
+
+
+class TestLogRecordsDroppedCounter:
+    """Verworfene Logeintraege des Worker-Prozesses als Prometheus-Zaehler
+    (R7, AE7)."""
+
+    def test_counter_rises_with_dropped_log_records(self):
+        import logging
+        import queue
+
+        from swarmq.logging import _StructlogQueueHandler
+
+        m = Metrics()
+        if not m.enabled:
+            return
+        assert m.registry is not None
+        name = "swarmq_log_records_dropped_total"
+        before = m.registry.get_sample_value(name)
+        assert before is not None
+
+        handler = _StructlogQueueHandler(queue.Queue(maxsize=1))
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, "m", None, None)
+        for _ in range(3):
+            handler.enqueue(record)
+
+        assert m.registry.get_sample_value(name) == before + 2

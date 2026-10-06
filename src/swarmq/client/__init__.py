@@ -8,8 +8,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import structlog
-
 from swarmq.middleware import MiddlewareChain, coerce_middleware_chain_factory
 from swarmq.registry import TaskRegistry
 from swarmq.signals import SignalDispatcher
@@ -23,8 +21,6 @@ from swarmq.client.schedule import _MISSING as _MISSING  # Re-Export (app.py)
 from swarmq.client.schedule import ClientScheduling
 from swarmq.client.schedule import _MissingType as _MissingType
 from swarmq.client.workflows import ClientWorkflows
-
-logger = structlog.get_logger()
 
 
 class Client(ClientScheduling, ClientResults, ClientWorkflows):

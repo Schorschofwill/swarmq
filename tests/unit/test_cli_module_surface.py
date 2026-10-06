@@ -68,8 +68,13 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         # ``process_manager`` kennt.
         "CONFIG_ERROR_EXIT_CODE",       # ambient — aus swarmq.supervision
         "_log_worker_config_error",     # internal — worker_config_error (R19)
-        "_setup_worker_logging",        # internal — setup_logging als erster Schritt (KTD8)
+        "_setup_worker_logging",        # internal — Settings aufloesen + configure_logging (KTD8, U7)
+        "_setup_fallback_logging",      # internal — Fallback-Renderer fuer worker_config_error (U7, R14)
         "_flush_worker_logging",        # internal — flush-on-exit (KTD8)
+        # Plan 2026-10-06-0831, U9 (KTD1): Modul-Logger statt Inline-
+        # ``get_logger("swarmq.cli")`` — Patch-Ziel fuer Tests.
+        "logger",                       # internal — Modul-Logger ``swarmq.cli``
+        "get_logger",                   # ambient — aus swarmq.logging
         "_autoscale_range",             # internal — test_cli_multiprocess.py
         "prepare_pool_args",            # internal — Pool-Modus + --concurrency Aufloesung (Plan 2026-09-03-001)
         "_backend_from_env",            # internal

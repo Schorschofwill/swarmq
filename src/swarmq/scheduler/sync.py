@@ -7,14 +7,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 import msgspec
-import structlog
 from croniter import croniter
 
 from swarmq.exceptions import BackendConnectionError
+from swarmq.logging import _error_fields, get_logger
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
 from swarmq.task import Task
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class SchedulerCronSync:
@@ -76,7 +76,7 @@ class SchedulerCronSync:
                 logger.warning(
                     "scheduler_sync_hget_failed",
                     schedule_name=schedule_name,
-                    error=str(exc),
+                    **_error_fields(exc),
                 )
                 continue
 
@@ -90,7 +90,7 @@ class SchedulerCronSync:
                     logger.warning(
                         "scheduler_sync_add_failed",
                         schedule_name=schedule_name,
-                        error=str(exc),
+                        **_error_fields(exc),
                     )
                 continue
 
@@ -108,7 +108,7 @@ class SchedulerCronSync:
                 logger.error(
                     "scheduler_sync_decode_error_skipped",
                     schedule_name=schedule_name,
-                    error=str(exc),
+                    **_error_fields(exc),
                     hint=(
                         "run 'swarmq schedule remove --permanent <name>' "
                         "to clear the malformed entry, then redeploy"
@@ -149,5 +149,5 @@ class SchedulerCronSync:
                 logger.warning(
                     "scheduler_sync_update_failed",
                     schedule_name=schedule_name,
-                    error=str(exc),
+                    **_error_fields(exc),
                 )

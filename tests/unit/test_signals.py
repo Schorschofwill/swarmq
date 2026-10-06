@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-import structlog.testing
 
 from swarmq.signals import Signal, SignalDispatcher
 
@@ -229,7 +228,7 @@ async def test_multiple_handlers_called_in_registration_order():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_handler_exception_is_logged_and_next_runs():
+async def test_handler_exception_is_logged_and_next_runs(swarmq_logs):
     dispatcher = SignalDispatcher()
     calls: list[str] = []
 
@@ -243,8 +242,8 @@ async def test_handler_exception_is_logged_and_next_runs():
     dispatcher.connect(Signal.TASK_FAILED, failing)
     dispatcher.connect(Signal.TASK_FAILED, succeeding)
 
-    with structlog.testing.capture_logs() as logs:
-        await dispatcher.dispatch(Signal.TASK_FAILED)
+    await dispatcher.dispatch(Signal.TASK_FAILED)
+    logs = [entry for entry in swarmq_logs if entry["logger"] == "swarmq.signals"]
 
     # Both handlers ran — exception did not abort the dispatch loop
     assert calls == ["failing", "succeeding"]
@@ -258,7 +257,9 @@ async def test_handler_exception_is_logged_and_next_runs():
     entry = warning_entries[0]
     assert entry["event"] == "signal_handler_error"
     assert entry["signal"] == Signal.TASK_FAILED.value
-    assert "RuntimeError" in entry["error"]
+    # R17 (Plan 2026-10-06-0831, U9): Typ und Text als eigene Felder.
+    assert entry["error_type"] == "RuntimeError"
+    assert entry["error"] == "boom"
 
 
 @pytest.mark.asyncio

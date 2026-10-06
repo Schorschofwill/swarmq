@@ -22,3 +22,20 @@ class CliEchoTask(Task):
 
     async def run(self, value: str) -> str:
         return f"echoed:{value}"
+
+
+_flaky_seen: set[str] = set()
+
+
+class CliFlakyTask(Task):
+    """Scheitert beim ersten Versuch je Task-ID, danach Erfolg (Plan
+    2026-10-06-0831, U11): eine Task-ID durchlaeuft so alle vier
+    Lebenszyklus-Events."""
+
+    task_info = TaskInfo(name="cli_flaky", queues=[_QUEUE], max_retries=1, retry_base_delay=0.1)
+
+    async def run(self) -> str:
+        if self._task_id not in _flaky_seen:
+            _flaky_seen.add(self._task_id)
+            raise RuntimeError("first attempt fails")
+        return "ok"

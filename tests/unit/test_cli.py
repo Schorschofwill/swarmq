@@ -141,8 +141,10 @@ class TestBuildParser:
         # die Aufloesung (10 fuer io, zugeteilte CPUs fuer cpu) folgt danach.
         assert ns.concurrency is None
         assert ns.pool is None  # aufgeloest in cli.pool.resolve_pool (Flag > SWARMQ_POOL > io)
-        assert ns.log_level == "INFO"
-        assert ns.log_format == "human"
+        # Plan 2026-10-06 U5 (KTD7): ohne Flag bleibt der Wert offen, damit
+        # Env und SwarmQConfig darunter greifen koennen.
+        assert ns.log_level is None
+        assert ns.log_format is None
 
     def test_worker_subcommand_with_all_args(self):
         parser = cli._build_parser()
@@ -293,6 +295,22 @@ class TestMainErrorRendering:
         )
         assert rc == CONFIG_ERROR_EXIT_CODE
         assert "boom" in err
+        assert "Traceback" in err
+
+    def test_env_debug_log_level_includes_traceback_on_config_error(self, capsys, monkeypatch):
+        """KTD7: Exit 78 richtet sich nach dem aufgeloesten Level (CLI > Env),
+        wie Exit 1 -- ``SWARMQ_LOG_LEVEL=DEBUG`` ohne Flag zeigt den
+        Traceback ebenfalls."""
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+        with patch(
+            "swarmq.process_manager.run.run_multi_process_worker",
+            side_effect=ConfigurationError("boom"),
+        ):
+            rc = cli.main(["worker", "--module", "myapp"])
+        err = capsys.readouterr().err
+        assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" in err
 
     def test_keyboard_interrupt_exits_zero(self, capsys):
@@ -540,6 +558,46 @@ class TestRunWorkerAsync:
         )
         await cli.run_worker_async(ns)
         assert built["kwargs"]["worker_slot"] == 4
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(5)
+    async def test_resolved_log_level_wins_over_the_worker_env(self, monkeypatch):
+        """U7 (KTD7): Mit ``--log-level INFO`` zeigt ``app.config.log_level``
+        im Worker INFO, auch wenn ``SWARMQ_LOG_LEVEL=DEBUG`` gesetzt ist."""
+        from swarmq.app import SwarmQ
+        from swarmq.logging import configure_logging
+        from swarmq.logging_settings import LoggingSettings
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+            task_info = TaskInfo(name="cli_settings_probe", queues=["default"])
+
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+        # Kein Netz: Verbinden und Worker-Start sind ersetzt.
+        monkeypatch.setattr(SwarmQ, "__aenter__", AsyncMock())
+        monkeypatch.setattr(SwarmQ, "__aexit__", AsyncMock(return_value=False))
+        monkeypatch.setattr(SwarmQ, "start_worker", AsyncMock())
+        built: list = []
+
+        def setup(app):
+            built.append(app)
+
+        self._hook_module(monkeypatch, setup=setup)
+        settings = LoggingSettings(level="INFO", level_explicit=True)
+        configure_logging(settings)  # wie das Entry vor dem App-Import
+        ns = self._hook_args("swarmq_test_hooks:setup")
+        ns.log_level = None
+        ns.logging_settings = settings
+
+        await cli.run_worker_async(ns)
+
+        assert built[0].config.log_level == "INFO"
+        assert built[0].config.logging_settings is settings
 
     @pytest.mark.asyncio
     async def test_missing_broker_url_raises_configuration_error(

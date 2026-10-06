@@ -348,11 +348,12 @@ class TestDoubleSetupWarning:
         _reset_container()
         c1, c2 = MagicMock(), MagicMock()
         try:
-            with patch("structlog.get_logger") as gl:
+            with patch("swarmq.dishka.logger") as logger:
                 setup_dishka(c1)
-                gl.return_value.warning.assert_not_called()
+                logger.warning.assert_not_called()
                 setup_dishka(c2)
-                gl.return_value.warning.assert_called_once()
+                logger.warning.assert_called_once()
+                assert logger.warning.call_args.args == ("dishka_container_replaced",)
         finally:
             _reset_container()
 
@@ -364,10 +365,10 @@ class TestDoubleSetupWarning:
         _reset_container()
         c1 = MagicMock()
         try:
-            with patch("structlog.get_logger") as gl:
+            with patch("swarmq.dishka.logger") as logger:
                 setup_dishka(c1)
                 setup_dishka(c1)  # idempotent re-registration
-                gl.return_value.warning.assert_not_called()
+                logger.warning.assert_not_called()
         finally:
             _reset_container()
 

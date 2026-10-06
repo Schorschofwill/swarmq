@@ -624,8 +624,11 @@ class TestUpdateProgress:
         assert fields["eta_seconds"] == ""
 
     @pytest.mark.timeout(5)
-    async def test_backend_hset_failure_swallowed(self):
-        """Valkey blip must NOT crash the task body (R3.7 best-effort contract)."""
+    async def test_backend_hset_failure_swallowed(self, swarmq_logs):
+        """Valkey blip must NOT crash the task body (R3.7 best-effort contract).
+
+        Plan 2026-10-06-0831, U9: geloggt ueber ``swarmq.task`` mit
+        ``error_type``/``error`` (R17)."""
         import time as _time
         from unittest.mock import AsyncMock
         t = Task()
@@ -637,9 +640,17 @@ class TestUpdateProgress:
         await t.update_progress(1, 10)
         # Publish is skipped when HSET failed.
         t._backend.publish_progress.assert_not_awaited()
+        [entry] = [
+            e for e in swarmq_logs
+            if e["event"] == "update_progress_hset_failed" and e["logger"] == "swarmq.task"
+        ]
+        assert entry["log_level"] == "warning"
+        assert entry["task_id"] == "x"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "valkey down"
 
     @pytest.mark.timeout(5)
-    async def test_publish_failure_swallowed(self):
+    async def test_publish_failure_swallowed(self, swarmq_logs):
         import time as _time
         from unittest.mock import AsyncMock
         t = Task()
@@ -652,6 +663,13 @@ class TestUpdateProgress:
         # Should not raise.
         await t.update_progress(1, 10)
         t._backend.set_progress.assert_awaited_once()
+        [entry] = [
+            e for e in swarmq_logs
+            if e["event"] == "update_progress_publish_failed" and e["logger"] == "swarmq.task"
+        ]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "pubsub down"
 
     @pytest.mark.timeout(5)
     async def test_final_flush_emitted_only_once(self):

@@ -1,5 +1,11 @@
 """Unit tests for the shared stdlib HTTP helper (ce-review PS-01 / T-01)."""
 
+# Test list (Plan 2026-10-06-0831, U9, Logging):
+# 1. Start loggt ``http_server_started`` mit ``server`` (Label), ``host``, ``port``.
+# 2. Stop loggt ``http_server_stopped`` mit ``server``.
+# 3. Handler-Fehler loggt ``http_server_request_failed`` auf ERROR mit
+#    ``server``.
+
 from __future__ import annotations
 
 import asyncio
@@ -207,3 +213,48 @@ class TestAsyncHttpServer:
             await writer2.wait_closed()
         finally:
             await server.stop()
+
+
+class TestAsyncHttpServerLogging:
+    async def test_start_logs_server_host_and_port(self, swarmq_logs):
+        port = _free_port()
+        server = AsyncHttpServer(
+            AsyncMock(), host="127.0.0.1", port=port, label="metrics_server",
+        )
+        await server.start()
+        await server.stop()
+        [entry] = [e for e in swarmq_logs if e["event"] == "http_server_started"]
+        assert entry["log_level"] == "info"
+        assert entry["server"] == "metrics_server"
+        assert entry["host"] == "127.0.0.1"
+        assert entry["port"] == port
+
+    async def test_stop_logs_server(self, swarmq_logs):
+        server = AsyncHttpServer(
+            AsyncMock(), host="127.0.0.1", port=_free_port(), label="health_server",
+        )
+        await server.start()
+        await server.stop()
+        [entry] = [e for e in swarmq_logs if e["event"] == "http_server_stopped"]
+        assert entry["log_level"] == "info"
+        assert entry["server"] == "health_server"
+
+    async def test_handler_exception_logs_request_failed_as_error(self, swarmq_logs):
+        port = _free_port()
+        server = AsyncHttpServer(
+            AsyncMock(side_effect=RuntimeError("boom")),
+            host="127.0.0.1", port=port, label="metrics_server",
+        )
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            await writer.drain()
+            await reader.read(10)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+        [entry] = [e for e in swarmq_logs if e["event"] == "http_server_request_failed"]
+        assert entry["log_level"] == "error"
+        assert entry["server"] == "metrics_server"

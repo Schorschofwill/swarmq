@@ -16,13 +16,12 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import structlog
-
+from swarmq.logging import get_logger
 from swarmq.signals import Signal
 from swarmq.supervision import current_channel
 from swarmq.worker.compute.child import rss_mb
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 RECYCLE_ACK_TIMEOUT_S = 10.0
 RECYCLE_DRAIN_BUFFER_S = 30.0

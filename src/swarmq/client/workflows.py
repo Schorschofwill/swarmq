@@ -7,8 +7,6 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 if TYPE_CHECKING:
     from swarmq.client.schedule import ClientBackend, ClientBroker
     from swarmq.middleware import MiddlewareChain
@@ -40,9 +38,6 @@ from swarmq.workflow_orchestration import (
     initial_frontier,
     workflow_step_task_id,
 )
-
-logger = structlog.get_logger()
-
 
 # R4.1 Workflow state TTL. Workflow topology/status must outlive the
 # longest step + retry horizon so reattach (R14) and fan-in (R6) stay

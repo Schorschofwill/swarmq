@@ -752,3 +752,144 @@ class TestPortsPerSlot:
             broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000, worker_slot=0,
         )
         assert cfg.metrics_port == 9000
+
+
+class TestLoggingFields:
+    """Plan 2026-10-06, U5 (R13/KTD7/KTD8): jede Logging-Einstellung gibt es
+    auch als ``SwarmQConfig``-Feld mit eigener Umgebungsvariable.
+
+    Test-Liste:
+    - [x] Defaults der neuen Felder
+    - [x] Env-Overrides je Feld (inkl. SWARMQ_LOGGER_LEVELS als CSV)
+    - [x] SWARMQ_LOG_FORMAT setzt log_json und gewinnt gegen SWARMQ_LOG_JSON
+    - [x] Ungueltige Werte: ConfigurationError
+    - [x] log_config zusammen mit configure_logging=False: ConfigurationError
+    - [x] CRITICAL fuer log_level und log_lifecycle_level
+    - [x] (U7, KTD7) ``logging_settings``: die Logging-Felder kommen aus dem
+          aufgeloesten Objekt und sind von den Env-Overrides ausgenommen
+    - [x] ``logging_settings``: ein ungueltiger Logging-Env-Wert wird nicht
+          mehr geparst (die CLI hat ihn im Supervisor schon ueberstimmt)
+    - [x] ohne ``logging_settings`` wird derselbe Env-Wert weiter geprueft
+    """
+
+    @staticmethod
+    def _cfg(**kwargs):
+        return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)
+
+    def test_defaults(self):
+        cfg = self._cfg()
+        assert cfg.log_config is None
+        assert cfg.configure_logging is True
+        assert cfg.logger_levels == ()
+        assert cfg.log_queue_size == 10_000
+        assert cfg.log_lifecycle_level == "DEBUG"
+        assert cfg.log_queue is False
+
+    def test_env_overrides_apply(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_LOG_CONFIG", "/etc/swarmq/logging.json")
+        monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "500")
+        monkeypatch.setenv("SWARMQ_LOG_LIFECYCLE_LEVEL", "INFO")
+        monkeypatch.setenv("SWARMQ_LOG_QUEUE", "true")
+        cfg = self._cfg()
+        assert cfg.log_config == "/etc/swarmq/logging.json"
+        assert cfg.log_queue_size == 500
+        assert cfg.log_lifecycle_level == "INFO"
+        assert cfg.log_queue is True
+
+    def test_env_can_switch_off_configuring(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_CONFIGURE_LOGGING", "false")
+        assert self._cfg().configure_logging is False
+
+    def test_env_logger_levels_are_parsed_into_pairs(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_LOGGER_LEVELS", "aio_pika=WARNING,valkey=error")
+        assert self._cfg().logger_levels == (("aio_pika", "WARNING"), ("valkey", "ERROR"))
+
+    def test_env_log_format_sets_log_json_and_wins_over_log_json(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "human")
+        monkeypatch.setenv("SWARMQ_LOG_JSON", "true")
+        assert self._cfg().log_json is False
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "json")
+        assert self._cfg(log_json=False).log_json is True
+
+    def test_unknown_env_log_format_is_a_configuration_error(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "xml")
+        with pytest.raises(ConfigurationError, match=r"SWARMQ_LOG_FORMAT.*'xml'"):
+            self._cfg()
+
+    def test_unknown_lifecycle_level_is_a_configuration_error(self):
+        with pytest.raises(ConfigurationError, match=r"log_lifecycle_level.*'LOUD'"):
+            self._cfg(log_lifecycle_level="LOUD")
+
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_non_positive_queue_size_is_a_configuration_error(self, size):
+        with pytest.raises(ConfigurationError, match="log_queue_size must be > 0"):
+            self._cfg(log_queue_size=size)
+
+    def test_logger_level_pairs_are_validated_and_normalised(self):
+        assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (
+            ("aiormq", "ERROR"),
+        )
+        with pytest.raises(ConfigurationError, match=r"logger_levels.*'LOUD'"):
+            self._cfg(logger_levels=(("aio_pika", "LOUD"),))
+
+    def test_log_config_without_configuring_is_a_configuration_error(self):
+        with pytest.raises(ConfigurationError, match=r"log_config.*configure_logging"):
+            self._cfg(log_config="logging.json", configure_logging=False)
+
+    def test_critical_is_accepted(self):
+        cfg = self._cfg(log_level="CRITICAL", log_lifecycle_level="CRITICAL")
+        assert (cfg.log_level, cfg.log_lifecycle_level) == ("CRITICAL", "CRITICAL")
+
+    def test_resolved_settings_win_over_the_env(self, monkeypatch):
+        """KTD7: ``--log-level INFO`` gilt im Worker auch bei
+        ``SWARMQ_LOG_LEVEL=DEBUG`` -- ``app.config.log_level`` zeigt den
+        tatsaechlich wirksamen Wert."""
+        from swarmq.logging_settings import LoggingSettings
+
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+
+        cfg = self._cfg(logging_settings=LoggingSettings(level="INFO", level_explicit=True))
+
+        assert cfg.log_level == "INFO"
+
+    def test_every_logging_field_comes_from_the_settings(self, monkeypatch):
+        from swarmq.logging_settings import LoggingSettings
+
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "json")
+        monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "5")
+        settings = LoggingSettings(
+            format="human", configure=False, queue_size=7, lifecycle_level="INFO",
+            logger_levels=(("aio_pika", "ERROR"),),
+        )
+
+        cfg = self._cfg(logging_settings=settings)
+
+        assert (cfg.log_json, cfg.configure_logging, cfg.log_queue_size) == (False, False, 7)
+        assert (cfg.log_lifecycle_level, cfg.logger_levels) == ("INFO", (("aio_pika", "ERROR"),))
+
+    @pytest.mark.parametrize(
+        ("env_name", "raw"),
+        [
+            ("SWARMQ_LOG_FORMAT", "jsonl"),
+            ("SWARMQ_LOG_QUEUE_SIZE", "many"),
+            ("SWARMQ_LOGGER_LEVELS", "aio_pika"),
+        ],
+    )
+    def test_invalid_logging_env_is_ignored_with_resolved_settings(
+        self, monkeypatch, env_name, raw,
+    ):
+        """Review #5: ``--log-format json`` ueberstimmt im Supervisor ein
+        ``SWARMQ_LOG_FORMAT=jsonl``. Parste der Worker das Env trotzdem,
+        endete jeder Worker mit Exit 78, obwohl die CLI gewonnen hat."""
+        from swarmq.logging_settings import LoggingSettings
+
+        monkeypatch.setenv(env_name, raw)
+
+        cfg = self._cfg(logging_settings=LoggingSettings(format="json", queue_size=7))
+
+        assert (cfg.log_json, cfg.log_queue_size, cfg.logger_levels) == (True, 7, ())
+
+    def test_invalid_logging_env_is_still_rejected_without_settings(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "jsonl")
+        with pytest.raises(ConfigurationError, match=r"SWARMQ_LOG_FORMAT.*'jsonl'"):
+            self._cfg()

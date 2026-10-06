@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import structlog
+
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
@@ -351,9 +353,46 @@ class TestSchedfireGateOutcomes:
         ttl_ms = backend.schedules.claim_fire.await_args.args[1]
         assert ttl_ms == max(config.scheduler_inflight_ttl, 900 + 30) * 1000
 
+    async def test_completed_check_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17, KTD11): Redelivery erholt sich selbst."""
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.schedules.is_fire_completed = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_dedup_backend_error"]
+        assert entry["logger"] == "swarmq.worker.gates.schedfire"
+        assert entry["log_level"] == "warning" and entry["stage"] == "completed_check"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_inflight_claim_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_dedup_backend_error"]
+        assert entry["log_level"] == "warning" and entry["stage"] == "inflight_claim"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
 
 class LongTask(Task):
     task_info = TaskInfo(name="long", queues=["default"], hard_timeout=900)
 
     async def run(self) -> None:
         return None
+
+
+class TestSchedfireGateLogContext:
+    """Plan 2026-10-06-0831, U10 (KTD13): frueh endende Pfade hinterlassen
+    keinen Task-Kontext und lassen Variablen der App stehen."""
+
+    async def test_completed_duplicate_keeps_the_app_context(self, worker, backend, app_log_context):
+        backend.schedules.is_fire_completed = AsyncMock(return_value=True)
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        await worker._handle_message(msg)
+
+        assert structlog.contextvars.get_contextvars() == app_log_context

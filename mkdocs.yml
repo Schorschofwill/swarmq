@@ -158,6 +158,7 @@ plugins:
             API: API
             CLI: CLI
             Configuration: Konfiguration
+            Logging: Logging
             Error catalog: Fehlerkatalog
             Changelog: Changelog
             Agent reference: Agent-Referenz
@@ -192,6 +193,7 @@ nav:
       - API: reference/api.md
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
+      - Logging: reference/logging.md
       - Error catalog: reference/errors.md
       - Changelog: reference/changelog.md
       - Agent reference:

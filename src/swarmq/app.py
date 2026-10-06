@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from swarmq.workflow_orchestration import WorkflowHandle
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import setup_logging
+from swarmq.logging import _disable_log_queue, _enable_log_queue
 from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.progress import ProgressInfo
 from swarmq.registry import TaskRegistry
@@ -59,7 +59,13 @@ class SwarmQ:
         self.registry = TaskRegistry()
         for task_class in Task._registered_tasks:
             self.registry.register(task_class)
-        self._log_listener = setup_logging(self.config.log_level, self.config.log_json)
+        # R1 (KTD4): Die Bibliothek konfiguriert nie. Nur auf Wunsch leitet
+        # sie ``swarmq.*`` ueber eine eigene Hintergrund-Queue (R5, KTD10).
+        self._log_queue_held = self.config.log_queue and _enable_log_queue(
+            self.config.log_level,
+            json=self.config.log_json,
+            queue_size=self.config.log_queue_size,
+        )
         self._middlewares: list[Middleware] = []
         self._signal_dispatcher = SignalDispatcher()
         self.client = Client(
@@ -109,7 +115,7 @@ class SwarmQ:
         # Staged try/finally: broker.close() may raise
         # by design on the injected path (channel.close() errors are NOT
         # swallowed there); without the finally-chain that left the
-        # Valkey client open and the log-listener thread running. Every
+        # Valkey client open and the opt-in log queue held. Every
         # teardown step always runs; when several raise, Python's
         # finally semantics propagate the LAST one (earlier exceptions
         # are visible via __context__).
@@ -119,7 +125,9 @@ class SwarmQ:
             try:
                 await self.backend.close()
             finally:
-                self._log_listener.stop()
+                if self._log_queue_held:
+                    self._log_queue_held = False
+                    _disable_log_queue()
 
     async def schedule_many(
         self,

@@ -1,6 +1,13 @@
 """Supervisor-Tests (Plan U21) — verbatim: Restart-Budget, Autoscale,
 Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 
+# Test list (Plan 2026-10-06-0831, U9, R17):
+# 1. ``autoscale_sample_failed`` traegt ``error_type`` und ein bereinigtes
+#    ``error`` (keine Zugangsdaten).
+# 2. Supervisor-Fehler-Events tragen ``error_type``/``error``.
+# 3. KTD11: ``worker_died`` ist bei sauberem Ende (Exit 0) und bei
+#    erwartetem Ende INFO (Lebenszyklus), bei einem Absturz WARNING.
+
 from __future__ import annotations
 
 import multiprocessing
@@ -297,6 +304,17 @@ class TestProcessManagerRestart:
         assert pm._shutting_down is True
         assert pm.shutdown_event.is_set()
 
+    def test_failed_reload_precheck_keeps_workers_running(self):
+        """U7 (KTD9): Der Supervisor prueft vor dem Stoppen der Worker (etwa
+        eine inzwischen ungueltige ``--log-config``); scheitert das, bleibt
+        alles, wie es ist -- kein Reload, kein Stopp."""
+        pm = self._pm()
+        pm.reload_precheck = lambda: False
+        pm._on_reload_signal(signal.SIGHUP, None)
+        assert pm._reload_requested is False
+        assert pm._shutting_down is False
+        assert not pm.shutdown_event.is_set()
+
     def test_sigterm_sets_shutdown_flag_no_reload(self):
         pm = self._pm()
         pm._on_shutdown_signal(signal.SIGTERM, None)
@@ -316,6 +334,68 @@ class TestProcessManagerRestart:
              patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
             pm.run()
             execvp.assert_called_once()
+
+
+    def test_reload_writes_the_log_queue_before_execvpe(self):
+        """U7 (R15): ``process_manager_reload_execvp`` ist geschrieben, bevor
+        ``execvpe`` das Prozessabbild ersetzt -- danach schreibt kein
+        Listener-Thread mehr."""
+        calls: list[str] = []
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        log = MagicMock()
+        log.info.side_effect = lambda event, **kw: calls.append(event)
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.supervisor.logger", log), \
+             patch(
+                 "swarmq.process_manager.supervisor.shutdown_logging",
+                 side_effect=lambda: calls.append("shutdown_logging"),
+             ), \
+             patch(
+                 "swarmq.process_manager.supervisor.os.execvpe",
+                 side_effect=lambda *a: calls.append("execvpe"),
+             ):
+            pm.run()
+        assert calls[-3:] == ["process_manager_reload_execvp", "shutdown_logging", "execvpe"]
+
+    def test_failed_execvpe_logs_error_fields_and_exits_one(self, swarmq_logs):
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.supervisor.shutdown_logging"), \
+             patch(
+                 "swarmq.process_manager.supervisor.os.execvpe",
+                 side_effect=PermissionError("python not executable"),
+             ):
+            assert pm.run() == 1
+        [entry] = [e for e in swarmq_logs if e["event"] == "reload_execvp_failed"]
+        assert entry["log_level"] == "error"
+        assert entry["error_type"] == "PermissionError" and entry["error"] == "python not executable"
+
+    def test_file_watcher_stop_failure_logs_error_fields(self, swarmq_logs):
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._file_watcher = MagicMock()
+        pm._file_watcher.stop.side_effect = RuntimeError("inotify stuck")
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"):
+            assert pm.run() == 0
+        [entry] = [e for e in swarmq_logs if e["event"] == "file_watcher_stop_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "inotify stuck"
 
 
 class TestCrashLoopExhaustion:
@@ -467,6 +547,18 @@ class TestProcessManagerAutoscale:
         # scenarios exercise the decision logic, not the age gate.
         pm.SCALE_MIN_AGE_S = 0.0
         return pm
+
+    def test_sample_failure_logs_sanitized_error_fields(self, swarmq_logs):
+        pm = self._pm(depth_values=[])
+
+        def failing_depth() -> int:
+            raise ConnectionError("amqp://user:s3cret@rabbit/vh")
+
+        pm._queue_depth_fn = failing_depth
+        pm._autoscale_tick()
+        [entry] = [e for e in swarmq_logs if e["event"] == "autoscale_sample_failed"]
+        assert entry["log_level"] == "warning" and entry["error_type"] == "ConnectionError"
+        assert entry["error"] == "amqp://user:***@rabbit/vh"
 
     def test_scale_up_when_depth_exceeds_threshold(self):
         pm = self._pm(depth_values=[500], min_w=1, max_w=5)
@@ -1022,21 +1114,18 @@ class TestConfigErrorNoRestart:
         assert pm._monitor_loop() == CONFIG_ERROR_EXIT_CODE
         pm._shutdown_all_workers.assert_called_once()
 
-    def test_recycle_noack_exit_is_logged_and_restarted(self):
+    def test_recycle_noack_exit_is_logged_and_restarted(self, swarmq_logs):
         """R20: Exit 75 bleibt ein Neustart im Budget, bekommt aber einen
         eigenen Logsatz -- vorher war er vom gewoehnlichen Absturz nicht zu
         unterscheiden."""
-        import structlog
-
         from swarmq.supervision import RECYCLE_NOACK_EXIT_CODE
 
         pm = self._pm()
         pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
         dead = _fake_process(alive=False, exitcode=RECYCLE_NOACK_EXIT_CODE, pid=5)
         pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
-        with structlog.testing.capture_logs() as logs:
-            pm._check_dead_workers()
-        assert "worker_recycle_noack" in [entry["event"] for entry in logs]
+        pm._check_dead_workers()
+        assert "worker_recycle_noack" in [entry["event"] for entry in swarmq_logs]
         assert 500 in pm.workers  # Neustart im Budget wie bisher
         assert pm._config_error is False
 
@@ -1072,6 +1161,30 @@ class TestCleanExitIsNotRefilled:
         assert pm._current_target() == 1
         assert list(pm.workers) == [6]
         pm._ctx.Process.assert_not_called()
+
+    def test_clean_exit_logs_worker_died_as_info(self, swarmq_logs):
+        pm = self._pm(n=2)
+        pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=5), worker_id=0)}
+        pm._check_dead_workers()
+        [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
+        assert entry["log_level"] == "info" and entry["exitcode"] == 0
+
+    def test_expected_shutdown_logs_worker_died_as_info(self, swarmq_logs):
+        pm = self._pm(n=2)
+        info = WorkerInfo(process=_fake_process(alive=False, exitcode=-15, pid=5), worker_id=0)
+        info.expected_shutdown = True
+        pm.workers = {5: info}
+        pm._check_dead_workers()
+        [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
+        assert entry["log_level"] == "info" and entry["expected"] is True
+
+    def test_crash_logs_worker_died_as_warning(self, swarmq_logs):
+        pm = self._pm(n=2)
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=1, pid=5), worker_id=0)}
+        pm._check_dead_workers()
+        [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
+        assert entry["log_level"] == "warning" and entry["exitcode"] == 1
 
     def test_expected_shutdown_does_not_count_as_clean_exit(self):
         pm = self._pm(n=2)

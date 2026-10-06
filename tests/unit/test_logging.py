@@ -9,6 +9,10 @@ from __future__ import annotations
 # 4. Log output is JSON when log_json=True
 # 5. Log level filtering works (DEBUG not output at INFO level)
 # 6. contextvars binding: bind task_id, verify it appears in log output
+# 7./8. Fehlerfelder (R17): ueber die emittierten Events der Module geprueft,
+#    nicht am privaten Helfer -- error = Text etwa in
+#    ``process_manager/test_supervisor.py``, error = Klassenname bei leerer
+#    Nachricht in ``worker/test_lifecycle.py`` (``scheduler_stop_failed``).
 import io
 import json
 import logging
@@ -246,3 +250,4 @@ class TestSingleListenerPerProcess:
             assert len(stdlib_logging.getLogger().handlers) == 1
         finally:
             second.stop()
+

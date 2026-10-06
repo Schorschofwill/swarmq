@@ -18,11 +18,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import structlog
-
 from swarmq.exceptions import ConfigurationError
+from swarmq.logging import get_logger
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 _PROC_ROOT = Path("/proc")
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 
 from swarmq.config import SwarmQConfig
 from swarmq.task import TaskInfo
@@ -51,3 +52,14 @@ async def test_limit_two_dead_letters_on_first_redelivery():
     gate, _dead_letter = _gate(limit=2)
     assert await gate.apply(SimpleNamespace(headers={"x-delivery-count": 0}), _ctx()) is Continue
     assert isinstance(await gate.apply(SimpleNamespace(headers={"x-delivery-count": 1}), _ctx()), Terminal)
+
+
+@pytest.mark.timeout(5)
+async def test_dead_letter_path_keeps_the_app_context(app_log_context):
+    """Plan 2026-10-06-0831, U10 (KTD13): der Gate-Pfad laesst Variablen
+    der App stehen; den Task-Kontext stellt der Scope der Pipeline wieder her."""
+    gate, _dead_letter = _gate(limit=20)
+
+    await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}), _ctx())
+
+    assert structlog.contextvars.get_contextvars() == app_log_context

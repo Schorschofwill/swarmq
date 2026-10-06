@@ -17,8 +17,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import build_error_result_dict
 from swarmq.exceptions import (
@@ -29,6 +27,7 @@ from swarmq.exceptions import (
     WorkflowStateConflict,
 )
 from swarmq.headers import HEADER_WORKFLOW_ID
+from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
@@ -39,7 +38,7 @@ from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 if TYPE_CHECKING:
     from swarmq.middleware import MessageContext, MiddlewareChain
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class RetryHandler:
@@ -73,7 +72,7 @@ class RetryHandler:
         # Redelivery ohne Retry-Zaehler; das Delivery-Limit begrenzt die Schleife.
         if isinstance(exc, SlotUnavailable):
             logger.warning(
-                "compute_slot_unavailable_redeliver", task_id=ctx.task_id, error=error_message,
+                "compute_slot_unavailable_redeliver", task_id=ctx.task_id, **_error_fields(exc),
             )
             await deps.broker.redeliver(delivery)
             return Redelivered
@@ -128,7 +127,7 @@ class RetryHandler:
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
         except Exception as broker_exc:
-            logger.error("retry_publish_failed", error=str(broker_exc))
+            logger.error("retry_publish_failed", **_error_fields(broker_exc))
             try:
                 await deps.broker.redeliver(delivery)
             except Exception:
@@ -154,9 +153,9 @@ class RetryHandler:
             try:
                 await deps.backend.notify_result(task_id)
             except Exception as exc:
-                logger.warning("publish_notification_failed", error=str(exc), task_id=task_id)
+                logger.warning("publish_notification_failed", **_error_fields(exc), task_id=task_id)
         except Exception as store_exc:
-            logger.warning("dlq_result_store_failed", error=str(store_exc))
+            logger.warning("dlq_result_store_failed", **_error_fields(store_exc))
 
         # R4.1 fail-fast + liveness (U6): if this terminally-failed message is
         # a workflow step, mark the whole workflow failed synchronously and
@@ -191,7 +190,7 @@ class RetryHandler:
                 )
                 logger.error(
                     "workflow_fail_mark_failed", workflow_id=wf_id,
-                    error=str(wf_exc), redelivered=at_least_once,
+                    **_error_fields(wf_exc), redelivered=at_least_once,
                 )
                 if at_least_once:
                     try:
@@ -206,7 +205,7 @@ class RetryHandler:
                 # Delivery-Limit, ohne dass die Markierung je gelingt.
                 logger.error(
                     "workflow_fail_mark_failed", workflow_id=wf_id,
-                    error=str(wf_exc), redelivered=False,
+                    **_error_fields(wf_exc), redelivered=False,
                 )
 
         # R3.5 Unit 11: preserve all inbound headers so a message that
@@ -231,11 +230,12 @@ class RetryHandler:
                 Signal.TASK_DLQ, task_id=task_id, task_name=task_name, queue=queue, error=error_message
             )
         except Exception as broker_exc:
-            logger.error("dlq_publish_failed", error=str(broker_exc))
+            logger.error("dlq_publish_failed", **_error_fields(broker_exc))
             try:
                 await deps.broker.redeliver(delivery)
             except Exception:
                 pass
             # Non-terminal — leave the flag so the redelivery's terminal
             # path releases it. No release here.
-        logger.warning("task_sent_to_dlq", error=error_message)
+        # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
+        logger.error("task_sent_to_dlq", error=error_message)

@@ -27,7 +27,7 @@ import argparse
 import asyncio
 import importlib
 import json  # noqa: F401
-import os  # noqa: F401
+import os
 import re  # noqa: F401
 import sys
 import time  # noqa: F401
@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from swarmq.backend.valkey.control import ValkeySetpointStore
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.logging_settings import LoggingSettings
 
 import msgspec  # noqa: F401
 
@@ -95,6 +96,7 @@ from swarmq.exceptions import (
     ConfigurationError,
 )
 from swarmq.locking import SCHEDULER_LOCK_KEY  # noqa: F401
+from swarmq.logging import get_logger
 from swarmq.scheduler import (
     ScheduleDefinition,  # noqa: F401
     ScheduleStore,  # noqa: F401
@@ -108,6 +110,8 @@ from swarmq.serialization import compute_dedup_hash  # noqa: F401
 # subcommand handlers that actually need ``SwarmQ`` import it locally.
 from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 from swarmq.task import Task  # noqa: F401
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy surface — heavy re-exports that must not trigger at import time.
@@ -237,42 +241,70 @@ def _parse_args_for_mode(
         return _emit_argparse_check_error(argparse_err.getvalue())
 
 
-def _setup_worker_logging(args: argparse.Namespace) -> None:
-    """Logging fuer den Worker-Zweig konfigurieren (KTD8).
+def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
+    """Logging fuer den Worker-Zweig einrichten (Plan 2026-10-06-0831, U7).
 
-    Lazy importiert, damit ``swarmq --help`` weiter ohne ``swarmq.logging``
-    auskommt.
+    Der Supervisor loest die Einstellungen genau einmal auf (CLI > Env >
+    Default, KTD7) und gibt sie aufgeloest an seine Kinder weiter.
+
+    Raises:
+        ConfigurationError: Eine Logging-Einstellung ist ungueltig.
     """
-    from swarmq.logging import setup_logging
+    import dataclasses
 
-    setup_logging(
-        getattr(args, "log_level", "INFO"),
-        getattr(args, "log_format", "human") == "json",
-    )
+    from swarmq.logging import configure_logging, load_log_config
+    from swarmq.logging_settings import resolve_logging_settings
+
+    settings = resolve_logging_settings(args, os.environ, None)
+    if settings.log_config is not None:
+        # KTD9: einmal hier absolut aufloesen und pruefen; die Kinder bekommen
+        # die gepruefte Konfiguration und lesen die Datei nie -- weder ein
+        # anderes Arbeitsverzeichnis noch eine spaetere Aenderung wirkt dort.
+        path = os.path.abspath(settings.log_config)
+        settings = dataclasses.replace(
+            settings, log_config=path, log_config_json=load_log_config(path),
+        )
+    configure_logging(settings)
+    return settings
 
 
 def _flush_worker_logging() -> None:
-    """Log-Queue leeren; lazy importiert wie ``_setup_worker_logging``."""
-    from swarmq.logging import flush_logging
+    """Log-Queue leeren (flush-on-exit, KTD8)."""
+    from swarmq.logging import shutdown_logging
 
-    flush_logging()
+    shutdown_logging()
+
+
+def _setup_fallback_logging(args: argparse.Namespace) -> None:
+    """Fallback-Renderer, wenn die Logging-Einstellungen selbst ungueltig sind
+    (U7, R14): eingebaut, Format aus CLI oder Env, sonst ``human``."""
+    from swarmq.logging import configure_logging, shutdown_logging
+    from swarmq.logging_settings import LoggingSettings, fallback_log_format
+
+    shutdown_logging()
+    configure_logging(LoggingSettings(format=fallback_log_format(args, os.environ)))
 
 
 def _log_worker_config_error(exc: BaseException) -> None:
-    """``worker_config_error`` aus dem Elternprozess (R19/KTD8)."""
-    import structlog
+    """``worker_config_error`` aus dem Elternprozess (R19/KTD8).
 
-    from swarmq.logging import flush_logging
+    Eine ungueltige Logging-Konfigurationsdatei nennt zusaetzlich ``path``
+    (AE4); die Ursache aus ``__cause__`` steht in ``error``.
+    """
+    from swarmq.logging import shutdown_logging
 
-    structlog.get_logger().error(
+    path = getattr(exc, "path", None)
+    logger.error(
         "worker_config_error",
         source="supervisor",
+        error_type=type(exc).__name__,
         error=f"{type(exc).__name__}: {exc}",
         hint="fix the configuration and start again; no restart attempted",
+        **({} if path is None else {"path": path}),
     )
     # Der Aufrufer beendet den Prozess gleich danach; ohne Flush bliebe die
     # Zeile in der Queue des Listener-Threads liegen.
-    flush_logging()
+    shutdown_logging()
 
 
 def _run_worker_command(args: argparse.Namespace) -> int:
@@ -287,7 +319,12 @@ def _run_worker_command(args: argparse.Namespace) -> int:
     # KTD8: Logging als ERSTES konfigurieren, damit auch ein Fehler vor dem
     # Bau der Konfiguration als strukturierte Zeile im gewaehlten Format
     # erscheint statt als roher stderr-Text.
-    _setup_worker_logging(args)
+    try:
+        logging_settings = _setup_worker_logging(args)
+    except ConfigurationError as exc:
+        _setup_fallback_logging(args)
+        _log_worker_config_error(exc)
+        return CONFIG_ERROR_EXIT_CODE
 
     try:
         prepare_pool_args(args)
@@ -321,6 +358,7 @@ def _run_worker_command(args: argparse.Namespace) -> int:
     try:
         return run_multi_process_worker(
             args, admin_factory=_admin_factory, setpoint_store_factory=_setpoint_store_factory,
+            logging_settings=logging_settings,
         )
     except KeyboardInterrupt:
         return 0
@@ -330,14 +368,22 @@ def _run_worker_command(args: argparse.Namespace) -> int:
         # mit 1 fuer alle Startfehler startete sie einen kaputt
         # konfigurierten Worker endlos neu.
         _log_worker_config_error(exc)
-        if getattr(args, "log_level", "INFO") == "DEBUG":
+        # KTD7: das aufgeloeste Level (CLI > Env) wie bei Exit 1, nicht nur
+        # das rohe Flag.
+        if logging_settings.level == "DEBUG":
             traceback.print_exc(file=sys.stderr)
         return CONFIG_ERROR_EXIT_CODE
     except (BrokerConnectionError, BackendConnectionError) as exc:
         # Verbindungsfehler bleiben 1: hier ist "gleich nochmal" richtig.
-        sys.stderr.write(f"swarmq worker: {exc}\n")
-        if getattr(args, "log_level", "INFO") == "DEBUG":
-            traceback.print_exc(file=sys.stderr)
+        # U7 (R15): als strukturierte Zeile im gewaehlten Format; das
+        # ``finally`` leert die Queue vor dem Exit.
+        logger.error(
+            "worker_connection_error",
+            source="supervisor",
+            error_type=type(exc).__name__,
+            error=f"{type(exc).__name__}: {exc}",
+            exc_info=logging_settings.level == "DEBUG",
+        )
         return 1
     finally:
         # Flush-on-exit: der Listener-Thread schreibt sonst nichts mehr,

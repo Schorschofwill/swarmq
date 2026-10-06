@@ -465,3 +465,68 @@ class TestCancelGateOutcomes:
         msg = make_message(_default_payload())
         assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
         broker.redeliver.assert_awaited_once_with(msg)
+
+
+class TestCancelGateLogging:
+    """Plan 2026-10-06-0831, U9 (R17, KTD11): Backend-Fehler fuehren zur
+    Redelivery -- Degradierung mit automatischer Erholung, also WARNING mit
+    ``error_type``/``error``."""
+
+    WF_ID = "0190b6f2-1234-7abc-8def-0123456789ab"
+
+    def _ctx(self):
+        return GateContext(task_id="abc-123", task_name="add", queue="default")
+
+    @staticmethod
+    def _entry(logs, event):
+        [entry] = [e for e in logs if e["logger"] == "swarmq.worker.gates.cancel" and e["event"] == event]
+        return entry
+
+    async def test_cancel_check_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+        backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
+
+        entry = self._entry(swarmq_logs, "cancel_check_backend_error")
+        assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_workflow_cancel_check_backend_error_is_a_warning_with_error_fields(
+        self, worker, backend, swarmq_logs
+    ):
+        backend.is_workflow_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-workflow-id": self.WF_ID})
+        await worker._cancel_gate.apply(msg, self._ctx())
+
+        entry = self._entry(swarmq_logs, "workflow_cancel_check_backend_error")
+        assert entry["log_level"] == "warning" and entry["workflow_id"] == self.WF_ID
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_cancel_store_result_failure_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.store_result = AsyncMock(side_effect=BackendConnectionError("write failed"))
+        await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
+
+        entry = self._entry(swarmq_logs, "cancel_store_result_failed")
+        assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "write failed"
+
+    async def test_notify_failure_logs_warning_with_error_fields(self, worker, backend, swarmq_logs):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.notify_result = AsyncMock(side_effect=ConnectionError("pubsub down"))
+        await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
+
+        entry = self._entry(swarmq_logs, "publish_notification_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+
+
+class TestCancelGateLogContext:
+    """Plan 2026-10-06-0831, U10 (KTD13): frueh endende Pfade hinterlassen
+    keinen Task-Kontext und lassen Variablen der App stehen."""
+
+    async def test_pre_start_cancel_keeps_the_app_context(self, worker, backend, app_log_context):
+        backend.is_cancelled = AsyncMock(return_value=True)
+
+        await worker._handle_message(make_message(_default_payload()))
+
+        assert structlog.contextvars.get_contextvars() == app_log_context

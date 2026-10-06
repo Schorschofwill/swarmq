@@ -11,6 +11,8 @@ Test-Liste U5 (Pruefregeln R10, Lesen beim Start):
 - Abgelehnter Sollwert: Gruppe faehrt mit Startargumenten hoch (AE12).
 - Nicht erreichbarer Speicher: Startargumente, Lage „ungelesen" (AE7).
 - Unlesbarer Sollwert wird wie ein abgelehnter behandelt.
+- Plan 2026-10-06-0831, U9: die Ablehnung kommt ueber den Bibliotheks-Logger
+  als ``setpoint_rejected`` (WARNING) mit Gruppe, Sollwert und Grund an.
 """
 
 from __future__ import annotations
@@ -138,6 +140,13 @@ class TestReadAtStart:
         assert pm.effective_bounds == (2, 4)
         assert len(pm.workers) == 2
         assert pm._setpoint.rejection is not None and "headroom 4" in pm._setpoint.rejection
+
+    def test_rejection_is_logged_as_warning_with_reason(self, swarmq_logs):
+        pm = _pm(n=2, store=FakeStore(Setpoint(2, 8)), autoscale=(2, 4), queue_depth_fn=lambda: 0, max_processes=4)
+        setpoint.read_at_start(pm)
+        [entry] = [e for e in swarmq_logs if e["event"] == "setpoint_rejected"]
+        assert entry["log_level"] == "warning" and entry["logger"] == "swarmq.process_manager.setpoint"
+        assert entry["group"] == pm.group and entry["setpoint"] == [2, 8] and "headroom 4" in entry["reason"]
 
     def test_unreachable_store_keeps_the_start_arguments_and_marks_unread(self):
         """Covers AE7 (erster Teil)."""

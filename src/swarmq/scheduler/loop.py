@@ -12,12 +12,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import msgspec
-import structlog
 from croniter import croniter
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_NAME
+from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import compute_dedup_hash, encode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
@@ -31,7 +31,7 @@ from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
 from swarmq.scheduler.sync import SchedulerCronSync
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class SchedulerBackend(Protocol):
@@ -195,7 +195,7 @@ class SchedulerLoop(SchedulerCronSync):
             except BackendConnectionError as exc:
                 logger.warning(
                     "scheduler_handover_marker_failed",
-                    error=str(exc),
+                    **_error_fields(exc),
                 )
             # Transition state BEFORE release — closes the window
             # where poll_loop runs as leader while the lock is gone.
@@ -205,7 +205,7 @@ class SchedulerLoop(SchedulerCronSync):
                 await self._lock_manager.release(self._lock_token)
             except BackendConnectionError as exc:
                 logger.warning(
-                    "scheduler_lock_release_failed", error=str(exc)
+                    "scheduler_lock_release_failed", **_error_fields(exc)
                 )
 
         # Idempotent — the leader path above already set this; this
@@ -264,7 +264,7 @@ class SchedulerLoop(SchedulerCronSync):
                     raise
                 except Exception as exc:
                     logger.warning(
-                        "scheduler_election_tick_error", error=str(exc)
+                        "scheduler_election_tick_error", **_error_fields(exc)
                     )
                 await self._sleep_until_stop(interval)
         except asyncio.CancelledError:
@@ -287,7 +287,7 @@ class SchedulerLoop(SchedulerCronSync):
                 self._renew_failures += 1
                 logger.warning(
                     "scheduler_renew_error",
-                    error=str(exc),
+                    **_error_fields(exc),
                     consecutive_failures=self._renew_failures,
                     step_down_at=self._renew_failure_limit,
                 )
@@ -327,7 +327,7 @@ class SchedulerLoop(SchedulerCronSync):
                 is not None
             )
         except BackendConnectionError as exc:
-            logger.warning("scheduler_acquire_error", error=str(exc))
+            logger.warning("scheduler_acquire_error", **_error_fields(exc))
             return
 
         if not acquired:
@@ -341,7 +341,7 @@ class SchedulerLoop(SchedulerCronSync):
             )
         except BackendConnectionError as exc:
             logger.warning(
-                "scheduler_handover_marker_read_failed", error=str(exc)
+                "scheduler_handover_marker_read_failed", **_error_fields(exc)
             )
             had_handover = False
 
@@ -357,7 +357,7 @@ class SchedulerLoop(SchedulerCronSync):
             await self.sync_taskinfo_crons()
         except Exception as exc:
             logger.warning(
-                "scheduler_sync_taskinfo_crons_failed", error=str(exc)
+                "scheduler_sync_taskinfo_crons_failed", **_error_fields(exc)
             )
 
     # ---- poll loop ------------------------------------------------------
@@ -373,7 +373,7 @@ class SchedulerLoop(SchedulerCronSync):
                         raise
                     except Exception as exc:
                         logger.warning(
-                            "scheduler_poll_tick_error", error=str(exc)
+                            "scheduler_poll_tick_error", **_error_fields(exc)
                         )
                 await self._sleep_until_stop(interval)
         except asyncio.CancelledError:
@@ -384,7 +384,7 @@ class SchedulerLoop(SchedulerCronSync):
         try:
             due = await self._store.poll_due(now_ms, limit=100)
         except BackendConnectionError as exc:
-            logger.warning("scheduler_poll_due_failed", error=str(exc))
+            logger.warning("scheduler_poll_due_failed", **_error_fields(exc))
             return
 
         for schedule_name, score_ms, definition in due:
@@ -479,7 +479,7 @@ class SchedulerLoop(SchedulerCronSync):
                     logger.warning(
                         "scheduler_unique_setnx_failed",
                         schedule_name=schedule_name,
-                        error=str(exc),
+                        **_error_fields(exc),
                     )
                     return  # Retry on next poll; commit not called.
 
@@ -490,7 +490,7 @@ class SchedulerLoop(SchedulerCronSync):
                         dedup_hash=dedup_hash,
                     )
                     logger.info(
-                        "swarmq.dedup.detected",
+                        "dedup_detected",
                         existing_task_id=existing,
                         task_name=definition.task_name,
                         dedup_hash=dedup_hash,
@@ -510,7 +510,7 @@ class SchedulerLoop(SchedulerCronSync):
                 logger.warning(
                     "scheduler_publish_failed",
                     schedule_name=schedule_name,
-                    error=str(exc),
+                    **_error_fields(exc),
                 )
                 return  # Do NOT commit — retry on the next poll tick.
 
@@ -566,7 +566,7 @@ class SchedulerLoop(SchedulerCronSync):
             logger.warning(
                 "scheduler_commit_failed",
                 schedule_name=schedule_name,
-                error=str(exc),
+                **_error_fields(exc),
                 dup_detected=dup_detected,
             )
             # On dup: next poll will re-observe the same score and re-emit
@@ -623,7 +623,7 @@ class SchedulerLoop(SchedulerCronSync):
             logger.warning(
                 "scheduler_duplicate_signal_dispatch_error",
                 task_name=task_name,
-                error=str(exc),
+                **_error_fields(exc),
             )
 
     # ---- static-cron sync (Fork 1) -------------------------------------
@@ -649,7 +649,7 @@ class SchedulerLoop(SchedulerCronSync):
             logger.warning(
                 "scheduler_signal_dispatch_error",
                 signal=signal.value,
-                error=str(exc),
+                **_error_fields(exc),
             )
 
     @staticmethod

@@ -385,7 +385,16 @@ Signal kann zwischen `Process.start()` und Handler-Setup eintreffen. **Loesung:*
 
 ## 7.5 Logging in spawn-Prozessen
 
-Bei `spawn` wird ein frischer Interpreter gestartet — Logging muss im Worker neu konfiguriert werden (`logging.basicConfig(force=True)`). Fuer zentralisiertes Logging: `QueueHandler` + `QueueListener` verwenden.
+Bei `spawn` wird ein frischer Interpreter gestartet — Logging muss in jedem Kind neu eingerichtet werden. Umsetzung in SwarmQ (Plan 2026-10-06-0831):
+
+- **Die Bibliothek konfiguriert nie.** `SwarmQ()` laesst Root-Handler, Root-Level und structlog-Konfiguration unberuehrt. Konfiguriert wird nur in den Einstiegspunkten, je Prozess genau einmal per `swarmq.logging.configure_logging(settings)`: im Supervisor (`swarmq worker`), im Worker-Subprozess (`process_manager/entry.py`, **vor** dem App-Import) und im Compute-Kind (`worker/compute/child.py`). Ein zweiter Aufruf im selben Prozess ist ein No-op; neu aufgebaut wird nur ueber `shutdown_logging()` und danach `configure_logging()`.
+- **Einmal aufloesen, aufgeloest weitergeben.** Der Supervisor loest die Einstellungen einmal auf (CLI > Env > `SwarmQConfig` > Default) und gibt sie als pickle-sicheres `LoggingSettings` ueber `WorkerConfig` bzw. `ComputeJob` weiter. Die Kinder lesen kein Env. Eine `--log-config`-Datei prueft der Supervisor einmal und reicht die gepruefte Konfiguration als JSON-String weiter; Kinder lesen die Datei nie. Vor einem Reload (`SIGHUP`) prueft der laufende Supervisor die Datei erneut, ungueltig → `log_config_reload_failed`, kein `execvpe`.
+- **Nicht blockierend.** Eingebaut schreibt Root ueber einen `QueueHandler` mit begrenzter Queue (`--log-queue-size`, Vorgabe 10000) an einen `QueueListener`-Thread (`swarmq-log-listener`), der rendert und nach stderr schreibt. Der Listener startet lazy beim ersten Eintrag — der Forkserver bleibt so single-threaded. Volle Queue → Eintrag verwerfen statt blockieren (WARNING+ haben 10 % Reserve), Meldung `log_records_dropped` hoechstens 1/s, Metrik `swarmq_log_records_dropped_total`. `os.register_at_fork` setzt Queue und Listener im Kind zurueck.
+- **Leeren vor jedem Exit.** `shutdown_logging()` (auch per `atexit`) leert die Queue vor `execvpe`, vor Exit 78/75 und pro Job im wiederverwendeten Compute-Kind. Bei SIGKILL ist verloren, was in der Queue liegt.
+- **"App gewinnt".** Ersetzt das Task-Modul oder ein `--configure`-Hook die Root-Handler, stoppt SwarmQ seinen Root-Listener und leitet `swarmq.*` ueber eine eigene Queue an die Handler der App (`logging_reconfigured_by_app`); hinzugefuegte Handler → `logging_handlers_added_by_app`. Im CPU-Pool erben die Kinder die Handler aus dem Vorladen im Forkserver; die gewinnen ebenso.
+- **Dateirotation nur ausserhalb.** Mit `--log-config` wenden alle Prozesse dieselbe dictConfig an — nur Stream-Handler verwenden, Rotation per journald/logrotate (`copytruncate`)/Collector.
+
+Nutzerdoku: `website/reference/logging.md`.
 
 ## 7.6 `asyncio.shield()` schuetzt NICHT bei Shutdown
 
@@ -530,8 +539,9 @@ def main():
 ```python
 def worker_entry(worker_id, shutdown_event, config):
     """Wird in neuem Prozess via spawn ausgefuehrt."""
-    # 1. Logging neu konfigurieren (spawn = frisch)
-    setup_logging()
+    # 1. Logging neu konfigurieren (spawn = frisch), aus den im Supervisor
+    #    aufgeloesten Settings und vor dem App-Import (siehe 7.5)
+    configure_logging(config.logging_settings)
 
     # 2. SIGINT ignorieren
     signal.signal(signal.SIGINT, signal.SIG_IGN)

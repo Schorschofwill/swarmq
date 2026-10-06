@@ -51,3 +51,23 @@ def test_module_level_exception_with_unpicklable_state_is_rebuilt_by_type():
 def test_reconstruct_non_exception_target_falls_back():
     info = env.RemoteExceptionInfo(module="swarmq.exceptions", qualname="__doc__", message="x", traceback_text="")
     assert isinstance(env.reconstruct_exception(info), env.RemoteTaskError)
+
+
+def test_compute_job_carries_the_child_logging_settings_across_pickle():
+    """Plan 2026-10-06 U5 (R13/KTD7): Rechenkinder richten ihr Logging nach den
+    aufgeloesten Einstellungen des Loop-Prozesses ein; die Defaults entsprechen
+    dem bisherigen Verhalten (eingebaute Einrichtung)."""
+    plain = env.ComputeJob("t1", "task", "q", (), {})
+    assert (
+        plain.log_config_json, plain.configure_logging, plain.logger_levels, plain.log_queue_size,
+    ) == (None, True, (), 10_000)
+
+    job = env.ComputeJob(
+        "t1", "task", "q", (), {},
+        log_level="CRITICAL",
+        log_config_json='{"version": 1}',
+        configure_logging=False,
+        logger_levels=(("aio_pika", "WARNING"),),
+        log_queue_size=500,
+    )
+    assert pickle.loads(pickle.dumps(job)) == job

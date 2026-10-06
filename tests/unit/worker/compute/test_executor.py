@@ -183,6 +183,19 @@ async def test_progress_sink_forwards_to_backend(setup):
 
 
 @pytest.mark.timeout(5)
+async def test_progress_sink_failure_logs_warning_with_error_type_and_error(setup, swarmq_logs):
+    deps, _, ex = setup
+    deps.backend.set_progress = AsyncMock(side_effect=ConnectionError("valkey down"))
+    await ex.progress_sink(("progress", "t1", {"current": "1"}, 5000))
+    [entry] = [
+        e for e in swarmq_logs
+        if e["logger"] == "swarmq.worker.compute.executor" and e["event"] == "compute_progress_forward_failed"
+    ]
+    assert entry["log_level"] == "warning"
+    assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+
+
+@pytest.mark.timeout(5)
 async def test_start_and_aclose_delegate_to_pool(setup):
     _, pool, ex = setup
     await ex.start()
@@ -218,3 +231,152 @@ async def test_slot_unavailable_on_fire_and_forget_logs_the_dedicated_loss_messa
     events = [call.args[0] for call in fake_logger.error.call_args_list]
     assert "compute_slot_unavailable_fire_and_forget_dropped" in events
     assert "fire_and_forget_error" not in events
+
+
+def _executor_logs(entries: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
+    return [e for e in entries if e["logger"] == "swarmq.worker.compute.executor" and e["event"] == event]
+
+
+@pytest.mark.timeout(5)
+async def test_fire_and_forget_error_logs_error_type_and_error(setup, swarmq_logs):
+    """Plan 2026-10-06-0831, U9 (R17): einheitliches Fehlerschema."""
+    _, pool, ex = setup
+    pool.behaviour = ChildDied("pid 7 exited without result")
+    await ex.execute(
+        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+    )
+    [entry] = _executor_logs(swarmq_logs, "fire_and_forget_error")
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "ChildDied"
+    assert entry["error"] == "pid 7 exited without result"
+
+
+# --------------------------------------------------------------------------- Logging der Kinder
+# Plan 2026-10-06-0831, U7 Teil b (KTD7, KTD9, KTD14). Test-Liste:
+# 1. [x] Unter ``swarmq worker`` traegt der Job die im Supervisor aufgeloesten
+#        Einstellungen aus ``SwarmQConfig.logging_settings``.
+# 2. [x] Eingebettet (ohne Settings-Objekt) stammen sie aus den Logging-Feldern
+#        von ``SwarmQConfig``.
+# 3. [ ] Eingebettet mit ``log_config`` laedt der Executor die Datei einmal und
+#        gibt sie als JSON mit; die Kinder lesen sie nie.
+
+
+@pytest.mark.timeout(5)
+async def test_job_carries_the_supervisor_resolved_logging_settings():
+    from swarmq.logging_settings import LoggingSettings
+
+    settings = LoggingSettings(
+        level="DEBUG", level_explicit=True, log_config="/abs/logging.json",
+        log_config_json='{"version": 1}', logger_levels=(("aio_pika", "WARNING"),), queue_size=500,
+    )
+    pool = FakePool()
+    ex = ComputeExecutor(_deps(logging_settings=settings), pool, worker_id="w1")  # type: ignore[arg-type]
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    job = pool.job
+    assert (job.log_level, job.log_level_explicit, job.log_config, job.log_config_json) == (
+        "DEBUG", True, "/abs/logging.json", '{"version": 1}',
+    )
+    assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
+        True, (("aio_pika", "WARNING"),), 500,
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
+    pool = FakePool()
+    deps = _deps(
+        log_level="WARNING", log_json=False, configure_logging=False,
+        logger_levels=(("aio_pika", "ERROR"),), log_queue_size=200,
+    )
+    ex = ComputeExecutor(deps, pool, worker_id="w1")  # type: ignore[arg-type]
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    job = pool.job
+    assert (job.log_level, job.log_json, job.log_config, job.log_config_json) == ("WARNING", False, None, None)
+    assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
+        False, (("aio_pika", "ERROR"),), 200,
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_embedded_log_config_is_loaded_once_and_travels_as_json(tmp_path):
+    import json
+
+    path = tmp_path / "logging.json"
+    path.write_text(json.dumps({"version": 1, "root": {"level": "INFO"}}))
+    pool = FakePool()
+    ex = ComputeExecutor(_deps(log_config=str(path)), pool, worker_id="w1")  # type: ignore[arg-type]
+    path.unlink()  # danach liest niemand mehr die Datei
+
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    job = pool.job
+    assert job.log_config == str(path)
+    assert json.loads(job.log_config_json) == {
+        "version": 1, "root": {"level": "INFO"}, "disable_existing_loggers": False,
+    }
+
+
+@pytest.mark.timeout(5)
+async def test_slot_unavailable_on_fire_and_forget_logs_error_type_and_error(setup, swarmq_logs):
+    _, pool, ex = setup
+    pool.behaviour = SlotUnavailable("compute child for slot 0 sent no ready signal")
+    await ex.execute(
+        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+    )
+    [entry] = _executor_logs(swarmq_logs, "compute_slot_unavailable_fire_and_forget_dropped")
+    assert entry["error_type"] == "SlotUnavailable"
+    assert entry["error"] == "compute child for slot 0 sent no ready signal"
+    assert entry["task_id"] and "hint" in entry
+
+
+@pytest.mark.timeout(5)
+async def test_job_carries_the_workflow_id_of_the_delivery(setup):
+    """Plan 2026-10-06-0831, U10 (KTD13): das Kind bindet ``workflow_id``
+    in seinen Logkontext und braucht sie deshalb im Job."""
+    _, pool, ex = setup
+    ctx = _ctx()
+    ctx.workflow_id = "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
+
+    await ex.execute(ctx, {"retry_count": 0}, MiddlewareChain([]))
+
+    assert pool.job.workflow_id == "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
+
+
+# Lebenszyklus-Events im Compute-Pool (Plan 2026-10-06-0831, U11, KTD12):
+# - task_started (Lebenszyklus-Level) vor task_succeeded (INFO) von swarmq.task.
+# - task_succeeded/task_failed tragen compute_child, die PID aus dem Envelope.
+def _lifecycle(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["logger"] == "swarmq.task"]
+
+
+@pytest.mark.timeout(5)
+async def test_compute_pool_reports_started_then_succeeded(setup, swarmq_logs):
+    _, _, ex = setup
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+
+    started, succeeded = _lifecycle(swarmq_logs)
+    assert (started["event"], started["log_level"]) == ("task_started", "debug")
+    assert (succeeded["event"], succeeded["log_level"]) == ("task_succeeded", "info")
+    assert succeeded["duration_ms"] >= 0
+
+
+@pytest.mark.timeout(5)
+async def test_compute_pool_succeeded_carries_the_pid_of_the_child(setup, swarmq_logs):
+    _, pool, ex = setup
+    pool.behaviour = success_envelope("t1", 42, slot=0, pid=4242)
+
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+
+    [succeeded] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_succeeded"]
+    assert succeeded["compute_child"] == 4242
+
+
+@pytest.mark.timeout(5)
+async def test_compute_pool_failed_carries_error_fields_and_the_pid_of_the_child(setup, swarmq_logs):
+    _, pool, ex = setup
+    pool.behaviour = error_envelope("t1", ValueError("boom"), slot=0, pid=4242)
+
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+
+    [failed] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_failed"]
+    assert (failed["log_level"], failed["error_type"], failed["error"]) == ("info", "ValueError", "boom")
+    assert failed["compute_child"] == 4242

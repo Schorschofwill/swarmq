@@ -8,24 +8,35 @@ danach Retry/Dead-Letter bzw. den Ergebnis-Tail.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
 from swarmq.dishka import _MISSING, TaskContext, get_registered_container, request_container
 from swarmq.exceptions import SoftTimeoutError
+from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.gates import GateContext, GateDeps
 
 if TYPE_CHECKING:
+    from swarmq.config import SwarmQConfig
     from swarmq.middleware import MessageContext, MiddlewareChain
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
+# Lebenszyklus-Events (Plan 2026-10-06-0831, KTD12): eigener Logger, damit
+# ``--logger-level swarmq.task=WARNING`` sie abschaltet, ohne die uebrigen
+# Events dieses Moduls zu verlieren.
+task_logger = get_logger("swarmq.task")
+
+
+def lifecycle_level(config: SwarmQConfig) -> int:
+    """Level von ``task_received``/``task_started`` (KTD8), einmal beim
+    Aufbau des Workers aus den aufgeloesten Einstellungen gelesen."""
+    return logging.getLevelNamesMapping()[config.log_lifecycle_level]
 
 
 @dataclass
@@ -41,11 +52,19 @@ class ExecutionResult:
     # CPU-Modus (KTD4): der Ready-Handshake blieb vor der Job-Uebergabe aus —
     # kein Kindtod, die Nachricht wird ohne Retry-Zaehler erneut zugestellt.
     slot_unavailable: bool = False
+    # CPU-Modus: PID des Kinds, das den Task-Koerper rechnete (U11).
+    compute_child: int | None = None
+
+
+def _child_field(result: ExecutionResult) -> dict[str, int]:
+    """``compute_child`` nur, wenn ein Rechenkind den Task ausfuehrte."""
+    return {} if result.compute_child is None else {"compute_child": result.compute_child}
 
 
 class TaskExecutor:
     def __init__(self, deps: GateDeps) -> None:
         self._deps = deps
+        self._lifecycle_level = lifecycle_level(deps.config)
 
     def _prepare_task_instance(self, ctx: GateContext) -> Any:
         """Task-Instanz bauen und das R3.7-Progress-Wiring setzen.
@@ -190,6 +209,13 @@ class TaskExecutor:
             except asyncio.CancelledError:
                 pass
 
+    async def _emit_started(self, ctx: GateContext) -> None:
+        """``TASK_STARTED``-Signal und ``task_started``-Event (KTD12), fuer beide Pools."""
+        await self._deps.signals.dispatch(
+            Signal.TASK_STARTED, task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue
+        )
+        task_logger.log(self._lifecycle_level, "task_started")
+
     async def _emit_terminal_hooks(
         self,
         ctx: GateContext,
@@ -203,10 +229,14 @@ class TaskExecutor:
         if result.is_cancelled:
             # Cancel bypasses the error/success pipeline: no on_error, no
             # post_execute hooks — only the TASK_CANCELLED signal fires.
+            task_logger.info("task_cancelled", duration_ms=duration_ms)
             await deps.signals.dispatch(
                 Signal.TASK_CANCELLED, task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue
             )
         elif result.is_error and result.task_exception is not None:
+            task_logger.info(
+                "task_failed", duration_ms=duration_ms, **_error_fields(result.task_exception), **_child_field(result)
+            )
             await chain.run_on_error(message_dict, exception=result.task_exception)
             await deps.signals.dispatch(
                 Signal.TASK_FAILED,
@@ -216,6 +246,7 @@ class TaskExecutor:
                 exception=str(result.task_exception),
             )
         else:
+            task_logger.info("task_succeeded", duration_ms=duration_ms, **_child_field(result))
             await chain.run_post_execute(message_dict, result=result.result_value)
             await deps.signals.dispatch(
                 Signal.TASK_COMPLETED,
@@ -225,14 +256,11 @@ class TaskExecutor:
     async def execute(
         self, ctx: GateContext, message_dict: MessageContext, chain: MiddlewareChain
     ) -> ExecutionResult:
-        deps = self._deps
         task_info = ctx.task_info
         assert task_info is not None
         # Pre-execute hooks
         await chain.run_pre_execute(message_dict)
-        await deps.signals.dispatch(
-            Signal.TASK_STARTED, task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue
-        )
+        await self._emit_started(ctx)
         start_time = time.monotonic()
 
         task_instance = self._prepare_task_instance(ctx)
@@ -249,7 +277,7 @@ class TaskExecutor:
             result.error_message = message
             result.task_exception = exc
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                logger.error("fire_and_forget_error", error=message)
+                logger.error("fire_and_forget_error", **_error_fields(exc))
 
         try:
             await task_instance.pre_execution()
@@ -311,6 +339,6 @@ class TaskExecutor:
                 # Handler finally cancels us explicitly — propagate.
                 raise
             except Exception as exc:
-                logger.warning("cancel_monitor_error", task_id=task_id, error=str(exc))
+                logger.warning("cancel_monitor_error", task_id=task_id, **_error_fields(exc))
                 # Fall through — the next iteration's asyncio.wait already
                 # waits poll_interval, so no extra sleep is needed.

@@ -10,14 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
-
 from swarmq.limits import parse_rate_limit
+from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class RateLimitGate:
@@ -54,7 +53,7 @@ class RateLimitGate:
             # nack(requeue=True) so the broker hands the message to the
             # next worker that may have a healthier client. Important:
             # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
-            logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc))
+            logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc))
             await deps.broker.redeliver(delivery)
             return Redelivered
 
@@ -95,7 +94,9 @@ class RateLimitGate:
             # requeue=True keeps the original in flight for retry; the
             # delay-queue copy may still arrive but the rate-limit check
             # on the next consume cycle will naturally serialize them.
-            logger.error("rate_limit_requeue_failed", task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc))
+            logger.error(
+                "rate_limit_requeue_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc)
+            )
             await deps.broker.redeliver(delivery)
 
         return Redelivered

@@ -6,6 +6,121 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`SwarmQ()` no longer configures logging.** Creating a `SwarmQ` app
+  leaves root handlers, root level and the structlog configuration
+  untouched (before, it installed its own root handler and called
+  `structlog.configure`). SwarmQ logs through named loggers
+  `swarmq.<module>` into stdlib `logging`: the event name is the record
+  message, the fields are `LogRecord` attributes. Without any logging
+  configuration, WARNING and above still reach Python's `lastResort`
+  handler — SwarmQ deliberately installs no `NullHandler`. An app whose
+  root level is WARNING and that relied on `SwarmQ()` for its log output
+  no longer sees SwarmQ's INFO events. **Migration:**
+    - Plain stdlib app: configure logging yourself, e.g.
+      `logging.basicConfig(level=logging.INFO)`, with a formatter that
+      shows the fields — a JSON formatter that reads the record
+      attributes, or `swarmq.logging.build_formatter(json=True, colors=False)`.
+    - structlog app: add `structlog.stdlib.ExtraAdder()` to the
+      `foreign_pre_chain` of your `ProcessorFormatter`. Without it,
+      SwarmQ's fields are silently dropped.
+    - `log_level` and `log_json` of `SwarmQConfig` keep working as fields
+      but now only steer the new opt-in log queue (`log_level` sets the
+      level of the `swarmq` logger, `log_json` the format of the drop
+      notice).
+
+    Recipes: [Logging reference](logging.md#integrating-with-your-app).
+
+- **Log output contract.** Every line from processes that `swarmq worker`
+  starts carries the new key `logger` next to `event`, `level` and
+  `timestamp`. Renamed events: `swarmq.dedup.detected` → `dedup_detected`,
+  `swarmq.dedup.rollback_failed` → `dedup_rollback_failed`,
+  `publish_notification failed` → `publish_notification_failed`,
+  `publish_workflow_notification failed` →
+  `publish_workflow_notification_failed` (field `wf_id` → `workflow_id`),
+  `health_server_started`/`_stopped`/`_request_failed` and
+  `metrics_server_started`/`_stopped`/`_request_failed` →
+  `http_server_started`/`http_server_stopped`/`http_server_request_failed`
+  with the field `server` (`health_server`/`metrics_server`). In
+  `watch_dir_inside_venv_or_stdlib` the field `module` is now
+  `module_name`; in general a field whose name collides with a
+  `LogRecord` attribute is prefixed with `swarmq_` (`name` →
+  `swarmq_name`). Events that report an exception carry `error_type` and
+  `error`; a traceback is attached only for unexpected errors. Grep-based
+  alerts and dashboards need updating.
+- **Log levels follow one rule** (ERROR: data loss or a failed task or
+  process; WARNING: degradation that heals itself; INFO: process and task
+  lifecycle; DEBUG: diagnosis). `check_backend_failed` and
+  `check_broker_failed` INFO → WARNING; `task_sent_to_dlq` WARNING →
+  ERROR; cases healed by a TTL ERROR → WARNING:
+  `shutdown_lock_release_failed`, `scheduler_stop_failed`,
+  `lock_release_failed`, `cancel_check_backend_error`,
+  `workflow_cancel_check_backend_error`, `cancel_store_result_failed`,
+  `schedfire_dedup_backend_error`. `worker_died` is INFO for a clean exit
+  or an expected shutdown, WARNING otherwise.
+- **Logging settings resolve once, in the supervisor.** Precedence is
+  CLI flag > env var > `SwarmQConfig` > default. The supervisor passes
+  the resolved settings to its worker subprocesses and compute children,
+  which no longer read the environment; a flag now wins in every process.
+
+### Added
+
+- **Logging options for `swarmq worker`:** `--log-config PATH`
+  (`SWARMQ_LOG_CONFIG`; a `dictConfig` file in JSON, YAML with PyYAML;
+  `disable_existing_loggers` defaults to `false`; validated once by the
+  supervisor and re-validated before a reload, which is aborted with
+  `log_config_reload_failed` if the file became invalid),
+  `--no-configure-logging` (`SWARMQ_CONFIGURE_LOGGING=false`),
+  `--logger-level NAME=LEVEL` (repeatable; `SWARMQ_LOGGER_LEVELS`),
+  `--log-queue-size N` (`SWARMQ_LOG_QUEUE_SIZE`, default 10000),
+  `--log-lifecycle-level LEVEL` (`SWARMQ_LOG_LIFECYCLE_LEVEL`, default
+  DEBUG) and `SWARMQ_LOG_FORMAT` (wins over the alias `SWARMQ_LOG_JSON`).
+  `CRITICAL` is accepted for every level. Invalid values or
+  contradicting combinations (`--log-config` with an explicit format or
+  with `--no-configure-logging`) end the run with exit 78 and one
+  `worker_config_error` line; a broken config file raises the new
+  `LoggingConfigError`.
+- **Task lifecycle events** on the logger `swarmq.task`: `task_received`
+  and `task_started` (lifecycle level, default DEBUG), `task_succeeded`,
+  `task_failed` and `task_cancelled` (INFO, with `duration_ms`;
+  `task_failed` with `error_type`/`error`; `compute_child` for results
+  from the CPU pool). Silence them with
+  `--logger-level swarmq.task=WARNING`.
+- **Task context on every event inside a task:** `task_id`, `task_name`,
+  `queue`, `worker_id`, plus the new `workflow_id` (when valid) and
+  `attempt` (`retry_count + 1`), and `compute_child` in compute children.
+  The context is bound per message and restored afterwards; context
+  variables of your app are no longer cleared.
+- **Opt-in log queue for embedded apps:** `SwarmQConfig(log_queue=True)`
+  / `SWARMQ_LOG_QUEUE=true` routes `swarmq.*` events through the
+  background thread `swarmq-log-listener` to the app's root handlers, so
+  slow handlers no longer block the event loop. Off by default.
+- **"App wins" rule:** a task module or `--configure` hook that replaces
+  the root handlers keeps them; SwarmQ routes its own events through its
+  queue to them and logs `logging_reconfigured_by_app` (re-enabling
+  `swarmq.*` loggers the app's `dictConfig` disabled). Added handlers are
+  reported as WARNING `logging_handlers_added_by_app`.
+- **Dropped log records are visible:** a full log queue drops instead of
+  blocking (WARNING and above keep 10 % headroom), reports
+  `log_records_dropped` at most once per second (a JSON line in JSON
+  mode) and counts the drops in the metric
+  `swarmq_log_records_dropped_total`.
+- **New events** `worker_connection_error`, `worker_recycle_ack_timeout`
+  (exit 75), `log_config_reload_failed`, `logging_reconfigured_by_app`,
+  `logging_handlers_added_by_app`, `log_records_dropped`, each as a
+  structured line in the configured format.
+- **Public logging API** in `swarmq.logging`: `get_logger`,
+  `build_formatter`, `configure_logging`, `shutdown_logging`,
+  `load_log_config` and `LoggingConfigError`. New reference page:
+  [Logging](logging.md).
+
+### Deprecated
+
+- `swarmq.logging.setup_logging` (entry points use `configure_logging`)
+  and `swarmq.logging.flush_logging` (now an alias of
+  `shutdown_logging`).
+
 ## [0.7.0] — 2026-09-22
 
 ### Added

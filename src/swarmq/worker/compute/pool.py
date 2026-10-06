@@ -35,12 +35,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-import structlog
-
+from swarmq.logging import _error_fields, get_logger
 from swarmq.worker.compute.child import child_loop, child_once
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 RecycleHook = Callable[[int, str, float], Awaitable[None]]
 ProgressSink = Callable[[tuple[Any, ...]], Awaitable[None]]
@@ -138,6 +137,7 @@ class SlotPool:
         # Diagnose (Messnachweis M0): (Dauer process.start(), Zeit bis Ready) je Spawn in ms.
         self.recent_spawn_ms: deque[tuple[float, float]] = deque(maxlen=256)
         self.unhealthy_after = 3 * slots
+        self._app_logging_reported = False
 
     @property
     def healthy(self) -> bool:
@@ -361,7 +361,7 @@ class SlotPool:
             try:
                 msg = pickle.loads(raw)
             except Exception as exc:  # Dekodierfehler trifft nur dieses Kind
-                self._loop.call_soon_threadsafe(self._on_decode_error, child, repr(exc))
+                self._loop.call_soon_threadsafe(self._on_decode_error, child, exc)
                 continue
             self._loop.call_soon_threadsafe(self._on_message, child, msg)
         self._loop.call_soon_threadsafe(self._on_eof, child)
@@ -390,13 +390,23 @@ class SlotPool:
             child.pending.set_result(envelope)
         elif kind in ("progress", "publish"):
             self._forward_progress(msg)
+        elif kind == "logging_reconfigured_by_app":
+            self._report_app_logging(child, msg[1])
 
-    def _on_decode_error(self, child: _Child, error: str) -> None:
+    def _report_app_logging(self, child: _Child, fields: dict[str, Any]) -> None:
+        """Die App hat das Logging der Kinder (KTD14): einmal je Pool melden,
+        nicht je Kind -- jedes Kind erbt dieselbe Einrichtung vom Forkserver."""
+        if self._app_logging_reported:
+            return
+        self._app_logging_reported = True
+        logger.info("logging_reconfigured_by_app", compute_slot=child.slot, pid=child.pid, **fields)
+
+    def _on_decode_error(self, child: _Child, exc: Exception) -> None:
         self.stats.undecodable += 1
-        logger.error("compute_result_undecodable", slot=child.slot, pid=child.pid, error=error)
+        logger.error("compute_result_undecodable", slot=child.slot, pid=child.pid, **_error_fields(exc))
         if child.pending is not None and not child.pending.done():
             child.pending.set_exception(
-                ChildDied(f"compute child pid={child.pid} sent an undecodable result: {error}")
+                ChildDied(f"compute child pid={child.pid} sent an undecodable result: {exc!r}")
             )
 
     def _on_eof(self, child: _Child) -> None:

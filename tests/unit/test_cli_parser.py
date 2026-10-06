@@ -51,3 +51,57 @@ class TestConfigureHookOption:
 
         args = _build_parser().parse_args(["worker", "--module", "app.tasks"])
         assert args.configure is None
+
+
+class TestLoggingOptions:
+    """Plan 2026-10-06 U5 (R13/KTD7/KTD8): Logging-Optionen des Workers.
+
+    Test-Liste:
+    - [x] Ohne Flags sind alle Logging-Werte ``None`` (Prioritaet KTD7)
+    - [x] Alle Optionen werden gelesen, ``--logger-level`` wiederholbar
+    - [x] CRITICAL fuer ``--log-level`` und ``--log-lifecycle-level``
+    """
+
+    @staticmethod
+    def _parse(*extra: str):
+        from swarmq.cli.parser import _build_parser
+
+        return _build_parser().parse_args(["worker", "--module", "app.tasks", *extra])
+
+    def test_all_logging_values_default_to_none(self):
+        args = self._parse()
+        assert (
+            args.log_level, args.log_format, args.log_config, args.configure_logging,
+            args.logger_levels, args.log_queue_size, args.log_lifecycle_level,
+        ) == (None,) * 7
+
+    def test_all_options_are_read_and_logger_level_repeats(self):
+        args = self._parse(
+            "--log-config", "logging.json",
+            "--no-configure-logging",
+            "--logger-level", "aio_pika=WARNING",
+            "--logger-level", "valkey=ERROR",
+            "--log-queue-size", "500",
+            "--log-lifecycle-level", "INFO",
+        )
+        assert args.log_config == "logging.json"
+        assert args.configure_logging is False
+        assert args.logger_levels == ["aio_pika=WARNING", "valkey=ERROR"]
+        assert args.log_queue_size == "500"
+        assert args.log_lifecycle_level == "INFO"
+
+    def test_repeated_logger_level_resolves_like_the_env_form(self):
+        from swarmq.logging_settings import resolve_logging_settings
+
+        args = self._parse("--logger-level", "aio_pika=WARNING", "--logger-level", "valkey=ERROR")
+        from_cli = resolve_logging_settings(args, {}, None)
+        from_env = resolve_logging_settings(
+            None, {"SWARMQ_LOGGER_LEVELS": "aio_pika=WARNING,valkey=ERROR"}, None,
+        )
+        assert from_cli.logger_levels == from_env.logger_levels == (
+            ("aio_pika", "WARNING"), ("valkey", "ERROR"),
+        )
+
+    def test_critical_is_accepted(self):
+        args = self._parse("--log-level", "CRITICAL", "--log-lifecycle-level", "CRITICAL")
+        assert (args.log_level, args.log_lifecycle_level) == ("CRITICAL", "CRITICAL")

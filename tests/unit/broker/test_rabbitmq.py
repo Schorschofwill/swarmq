@@ -7,6 +7,7 @@ import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
+from tests.support.rabbitmq_faults import hanging_publish
 
 
 class TestRabbitMQBrokerInit:
@@ -701,3 +702,59 @@ class TestRabbitMQBrokerPublishToDeadLetterQueue:
         publish_call = mock_exchange.publish.call_args
         publish_call.args[0]
         assert publish_call.kwargs["routing_key"] == "tasks.XQ"
+
+
+# ---------------------------------------------------------------------------
+# Logging (Plan 2026-10-06-0831, U9: R2, R17)
+# ---------------------------------------------------------------------------
+# Test list:
+# 1. Scheitert das Abbestellen eines Consumers, loggt ``consumer_cancel_failed``
+#    auf WARNING ueber ``swarmq.broker.rabbitmq.delivery`` mit ``consumer_tag``,
+#    ``error_type`` und ``error``.
+# 2. Scheitert das entkoppelte Schliessen eines Publish-Kanals, loggt
+#    ``publish_channel_close_incomplete`` auf WARNING ueber
+#    ``swarmq.broker.rabbitmq.connection`` mit ``error_type`` und ``error``.
+
+
+class TestBrokerLogging:
+    @pytest.mark.timeout(5)
+    async def test_failed_consumer_cancel_logs_error_fields(self, swarmq_logs):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._consume_channel = AsyncMock(is_closed=False)
+        broker._connection = AsyncMock()
+        queue = AsyncMock()
+        queue.consume.return_value = "tag-1"
+        queue.cancel.side_effect = RuntimeError("channel gone")
+        broker._consume_channel.get_queue.return_value = queue
+        await broker.consume("q1", AsyncMock(), concurrency=1)
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.cancel_consume()
+
+        [entry] = [
+            e for e in swarmq_logs
+            if e["event"] == "consumer_cancel_failed" and e["logger"] == "swarmq.broker.rabbitmq.delivery"
+        ]
+        assert entry["log_level"] == "warning"
+        assert entry["consumer_tag"] == "tag-1"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "channel gone"
+
+    @pytest.mark.timeout(5)
+    async def test_failed_detached_channel_close_logs_error_fields(self, swarmq_logs):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._connection = AsyncMock()
+        broker.publish_timeout_s = 0.05
+        with hanging_publish(broker) as channel:
+            channel.close = AsyncMock(side_effect=RuntimeError("close failed"))  # type: ignore[method-assign]
+            with pytest.raises(BrokerConnectionError):
+                await broker.publish("tasks", b"{}")
+        await broker.close()  # sammelt den nebenlaeufigen Schliess-Task ein
+
+        [entry] = [
+            e for e in swarmq_logs
+            if e["event"] == "publish_channel_close_incomplete" and e["logger"] == "swarmq.broker.rabbitmq.connection"
+        ]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "close failed"

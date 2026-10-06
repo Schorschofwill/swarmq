@@ -8,6 +8,11 @@ here we cover the pure helpers, msgspec round-trips, and the
 insert-if-absent vs. update-static branches that live in Python.
 """
 
+# Test list (Plan 2026-10-06-0831, U9, R17):
+# 1. ``disable_schedule`` auf kaputtem Eintrag loggt
+#    ``schedule_def_malformed_skipped`` mit ``error_type``/``error``.
+# 2. ``list_schedules`` ebenso.
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -253,6 +258,14 @@ class TestScheduleStoreRemoveAndDisable:
         assert await store.disable_schedule("corrupt") is False
         schedules.disable.assert_not_awaited()
 
+    async def test_disable_schedule_malformed_logs_error_fields(self, swarmq_logs):
+        store, _ = _make_store(hget_return=b"{not valid json")
+        await store.disable_schedule("corrupt")
+        [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_skipped"]
+        assert entry["log_level"] == "warning" and entry["schedule_name"] == "corrupt"
+        assert entry["error_type"] == "DecodeError" and entry["error"]
+        assert "hint" in entry
+
     async def test_disable_schedule_passes_updated_def_with_disabled_true(self):
         """Unit 8 / M-14: die atomare HSET+ZREM-Schreibpaarung läuft im Store
         (``sched_disable.lua``); hier wird nur dekodiert, ``disabled=True``
@@ -287,6 +300,14 @@ class TestScheduleStoreListSchedules:
         store, schedules = _make_store()
         schedules.list_all.return_value = {"good": good, "bad": b"{not valid json"}
         assert {d.schedule_name for d in await store.list_schedules()} == {"good"}
+
+    async def test_list_schedules_malformed_logs_error_fields(self, swarmq_logs):
+        store, schedules = _make_store()
+        schedules.list_all.return_value = {"bad": b"{not valid json"}
+        await store.list_schedules()
+        [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_skipped"]
+        assert entry["log_level"] == "warning" and entry["schedule_name"] == "bad"
+        assert entry["error_type"] == "DecodeError" and entry["error"]
 
     async def test_list_schedules_skips_incompatible_schema(self):
         good = msgspec.json.encode(_def(schedule_name="good"))

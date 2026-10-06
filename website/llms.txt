@@ -12,6 +12,7 @@ The spec files under `reference/agent/spec/` are generated from the code and kep
 - [Error catalog](reference/agent/error-catalog-machine.md): exceptions, retriable, dlq_on_uncaught (prose form of errors.json)
 - [CLI reference](reference/cli.md): commands and flags
 - [Configuration](reference/configuration.md): options, defaults, env vars
+- [Logging](reference/logging.md): log events, fields, formats, levels
 - [API reference](reference/api.md): public classes and methods
 
 ## Machine-readable spec (generated)

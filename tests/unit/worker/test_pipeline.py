@@ -11,7 +11,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -407,22 +406,89 @@ class TestRejectReasons:
         (rejected,) = self._rejections(events)
         assert rejected["task_id"] == payload["task"]["id"]
         assert rejected["task_name"] == "reject-ok-id"
-async def test_log_context_carries_the_worker_identity_as_string():
-    """U2 (R3): Der Logkontext trug ``id(self)`` — eine Speicheradresse als
-    ``int``, die weder ueber Prozesse hinweg vergleichbar noch mit dem
-    ``worker_id`` der Signale identisch war."""
-    broker = MagicMock(spec=RabbitMQBroker)
-    backend = MagicMock(spec=ValkeyBackend)
-    config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", worker_id="phx", worker_slot=2,
+
+    async def test_broken_middleware_chain_factory_logs_error_fields(self, broker, backend, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17)."""
+        class Ok(Task):
+            task_info = TaskInfo(name="reject-ok-log", queues=["default"])
+
+            async def run(self) -> str:
+                return "ok"
+
+        worker, _broker, _events = self._worker_with_spy(broker, backend, Ok)
+
+        def boom():
+            raise RuntimeError("factory exploded")
+
+        worker._middleware_chain_factory = boom
+        msg = make_message(_default_payload(name="reject-ok-log"))
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "middleware_chain_factory_failed"]
+        assert entry["logger"] == "swarmq.worker.pipeline"
+        assert entry["log_level"] == "error"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "factory exploded"
+
+class _LockedForLog(Task):
+    task_info = TaskInfo(name="locked_for_log", queues=["default"], lock="resource", hard_timeout=60)
+
+    async def run(self) -> None:
+        return None
+
+
+async def test_lock_release_failure_is_a_warning_with_error_fields(broker, backend, swarmq_logs) -> None:
+    """Plan 2026-10-06-0831, U9 (R17, KTD11): die Lock-TTL heilt den Fall
+    selbst -- Degradierung mit automatischer Erholung, also WARNING."""
+    registry = TaskRegistry()
+    registry.register(_LockedForLog)
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    worker._lock_manager = MagicMock()
+    worker._lock_manager.acquire = AsyncMock(
+        side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
+            name=name, owner=owner, max_concurrency=max_concurrency
+        )
     )
-    worker = Worker(broker=broker, backend=backend, registry=TaskRegistry(), config=config)
-    try:
-        worker._bind_log_context("t1", "task", "default")
-        bound = structlog.contextvars.get_contextvars()
-        assert bound["worker_id"] == "phx:2"
-    finally:
-        structlog.contextvars.clear_contextvars()
+    worker._lock_manager.release = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+
+    await worker._handle_message(make_message(_default_payload(name="locked_for_log", args=[], kwargs={})))
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "lock_release_failed"]
+    assert entry["logger"] == "swarmq.worker.pipeline"
+    assert entry["log_level"] == "warning"
+    assert entry["lock_name"] == "resource"
+    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+
+class _ScheduledForLog(Task):
+    task_info = TaskInfo(name="scheduled_for_log", queues=["default"])
+
+    async def run(self) -> str:
+        return "ok"
+
+
+async def test_schedfire_finalize_failure_is_a_warning_with_error_fields(broker, backend, swarmq_logs) -> None:
+    """Plan 2026-10-06-0831, U9 (R17): der In-flight-Marker heilt per TTL."""
+    registry = TaskRegistry()
+    registry.register(_ScheduledForLog)
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    backend.schedules.mark_fire_completed.side_effect = BackendConnectionError("valkey down")
+    msg = make_message(
+        _default_payload(name="scheduled_for_log", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
+    )
+
+    await worker._handle_message(msg)
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_finalize_failed"]
+    assert entry["logger"] == "swarmq.worker.pipeline"
+    assert entry["log_level"] == "warning"
+    assert entry["schedfire_key"] == "cron_a:1700000000000" and entry["terminal"] is True
+    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
 
 class _EnqueueRecorder(Middleware):
     """Middleware, die den Enqueue-Pfad protokolliert (U11, AE6)."""

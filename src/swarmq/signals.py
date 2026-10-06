@@ -16,9 +16,9 @@ import enum
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import structlog
+from swarmq.logging import _error_fields, get_logger
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 AsyncHandler = Callable[..., Awaitable[Any]]
@@ -223,6 +223,6 @@ class SignalDispatcher:
                     "signal_handler_error",
                     signal=signal.value,
                     handler=getattr(handler, "__qualname__", repr(handler)),
-                    error=repr(exc),
+                    **_error_fields(exc),
                     exc_info=exc,
                 )

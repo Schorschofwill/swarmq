@@ -2,6 +2,7 @@
 
 
 import asyncio
+import os
 import queue as _queue
 from typing import Any
 
@@ -47,6 +48,22 @@ async def test_run_job_returns_value_and_calls_lifecycle_in_order():
     assert env.ok and env.value == 42
     assert calls == ["pre", "run", "post"]
     assert env.duration_s >= 0
+
+
+@pytest.mark.timeout(5)
+async def test_run_job_envelope_carries_the_pid_of_the_child():
+    """Plan 2026-10-06-0831, U11: ``compute_child`` der Lebenszyklus-Events
+    im Loop-Prozess kommt aus dem Envelope -- auch fuer Fehlerergebnisse."""
+
+    class Plain(Task):
+        task_info = TaskInfo(name="plain", queues=["q"])
+
+        async def run(self) -> int:
+            return 1
+
+    ok = await child.run_job(_job("plain"), _queue.Queue())
+    unknown = await child.run_job(_job("ghost"), _queue.Queue())
+    assert ok.pid == unknown.pid == os.getpid()
 
 
 @pytest.mark.timeout(5)
@@ -184,15 +201,12 @@ def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch)
 # --------------------------------------------------------------------------- Job-Loop (Zweit-Review #8, #9)
 
 
-class _Listener:
-    def stop(self) -> None:
-        return None
-
-
 @pytest.fixture
 def _quiet_child_logging(monkeypatch):
-    monkeypatch.setattr(child, "_configure_child_logging", lambda job: _Listener())
-    monkeypatch.setattr(child, "_bind_job_context", lambda job: None)
+    monkeypatch.setattr(child, "_configure_child_logging", lambda job, channel: None)
+    # Am Kind-Ende laeuft ``logging.shutdown`` -- im Testprozess schloesse es
+    # alle Handler.
+    monkeypatch.setattr(child, "_shutdown_child_logging", lambda: None)
 
 
 @pytest.mark.timeout(5)

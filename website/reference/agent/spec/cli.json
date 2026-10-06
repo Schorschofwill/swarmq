@@ -546,15 +546,26 @@
           "type": "positive_int"
         },
         {
+          "default": null,
+          "flags": [
+            "--log-config"
+          ],
+          "help": "Logging dictConfig file (JSON; YAML with PyYAML installed) applied in every swarmq process instead of the built-in setup. Not combinable with --log-format or --no-configure-logging. Overrides SWARMQ_LOG_CONFIG.",
+          "name": "--log-config",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
           "choices": [
             "human",
             "json"
           ],
-          "default": "human",
+          "default": null,
           "flags": [
             "--log-format"
           ],
-          "help": "Log output format (default: human). 'json' for agent/log-aggregator consumption.",
+          "help": "Log output format (default: human). 'json' for agent/log-aggregator consumption. Overrides SWARMQ_LOG_FORMAT (and its alias SWARMQ_LOG_JSON).",
           "name": "--log-format",
           "positional": false,
           "required": false,
@@ -565,14 +576,55 @@
             "DEBUG",
             "INFO",
             "WARNING",
-            "ERROR"
+            "ERROR",
+            "CRITICAL"
           ],
-          "default": "INFO",
+          "default": null,
           "flags": [
             "--log-level"
           ],
-          "help": "Log verbosity (default: INFO). DEBUG also surfaces full tracebacks on CLI errors.",
+          "help": "Log verbosity (default: INFO). DEBUG also surfaces full tracebacks on CLI errors. Overrides SWARMQ_LOG_LEVEL.",
           "name": "--log-level",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "choices": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL"
+          ],
+          "default": null,
+          "flags": [
+            "--log-lifecycle-level"
+          ],
+          "help": "Level of the task_received/task_started lifecycle events (default: DEBUG). Overrides SWARMQ_LOG_LIFECYCLE_LEVEL.",
+          "name": "--log-lifecycle-level",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "default": null,
+          "flags": [
+            "--log-queue-size"
+          ],
+          "help": "Capacity of the in-process log queue (default: 10000). Overrides SWARMQ_LOG_QUEUE_SIZE.",
+          "name": "--log-queue-size",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "default": null,
+          "flags": [
+            "--logger-level"
+          ],
+          "help": "Level for one logger, e.g. aio_pika=WARNING (repeatable). Overrides SWARMQ_LOGGER_LEVELS (comma-separated NAME=LEVEL).",
+          "name": "--logger-level",
           "positional": false,
           "required": false,
           "type": "str"
@@ -609,6 +661,18 @@
           "positional": false,
           "required": true,
           "type": "dotted_module_name"
+        },
+        {
+          "default": null,
+          "flags": [
+            "--no-configure-logging"
+          ],
+          "help": "Do not set up logging in any swarmq process. Overrides SWARMQ_CONFIGURE_LOGGING.",
+          "name": "--no-configure-logging",
+          "nargs": 0,
+          "positional": false,
+          "required": false,
+          "type": "str"
         },
         {
           "choices": [

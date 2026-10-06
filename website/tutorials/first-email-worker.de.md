@@ -150,7 +150,7 @@ In **Terminal 1**, mit den Env-Vars noch gesetzt:
 swarmq worker --module tasks --queues emails --log-format human
 ```
 
-Der Worker loggt `worker_ready` und wartet. Schließe dieses
+Der Worker loggt `worker_started` und wartet. Schließe dieses
 Terminal nicht.
 
 In **Terminal 2** erzeuge das Client-Skript:
@@ -194,8 +194,10 @@ Du solltest sehen:
 client received: sent to alice@example.com: 'Welcome'
 ```
 
-In Terminal 1 zeigen die Worker-Logs `TASK_STARTED` und
-`TASK_COMPLETED` für dieselbe task_id. Der Roundtrip funktioniert.
+In Terminal 1 zeigt der Worker-Log `task_succeeded` mit derselben
+`task_id` und ihrer `duration_ms`. Der Roundtrip funktioniert.
+(`task_received` und `task_started` werden auf DEBUG geloggt; mit
+`--log-lifecycle-level INFO` siehst du sie auch.)
 
 ### Was passiert ist
 
@@ -426,27 +428,35 @@ import logging
 from swarmq import SwarmQ
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.logging import build_formatter
 
 import tasks
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    # SwarmQ() konfiguriert kein Logging — das macht dein Programm.
+    handler = logging.StreamHandler()
+    handler.setFormatter(build_formatter(json=False, colors=False))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
     broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
     backend = ValkeyBackend("valkey://localhost:6379/0")
 
-    async with SwarmQ(
-        broker, backend,
-        queues=["emails"],
-        log_level="INFO",
-        log_json=False,
-    ) as app:
+    async with SwarmQ(broker, backend, queues=["emails"]) as app:
         tasks.install_handlers(app)
         await app.start_worker()
 
 
 asyncio.run(main())
 ```
+
+Anders als bei `swarmq worker` gehört das Logging einer App, die
+`SwarmQ(...)` einbettet, der App selbst: SwarmQ übergibt seine Events
+nur an deine Handler. Ein nacktes `logging.basicConfig(level=logging.INFO)`
+zeigt nur die Event-Namen; `build_formatter` aus `swarmq.logging` rendert
+auch die Felder (`task_id`, `duration_ms`, …) und deine eigenen
+`tutorial`-Zeilen. Die [Logging-Referenz](../reference/logging.md) hat
+Rezepte für JSON- und structlog-Setups.
 
 Stoppe den CLI-Worker in Terminal 1 und starte stattdessen
 `python worker.py`. Laufe `python burst.py` in Terminal 2 erneut.
@@ -508,7 +518,8 @@ asyncio.run(main())
 "
 ```
 
-Der Worker loggt `TASK_FAILED` und nackt die Nachricht in
+Der Worker loggt `task_failed` und `task_sent_to_dlq` und nackt die
+Nachricht in
 `emails.XQ`. Inspiziere:
 
 ```bash

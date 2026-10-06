@@ -119,6 +119,15 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
         return await app.get_result(task_id, timeout=15)
 
 
+# Test-Liste U7 (Plan 2026-10-06-0831, Einstiegspunkte):
+# - [x] ``--log-format json``: genau eine ``worker_started``-JSON-Zeile je
+#       Worker, keine Duplikate, kein ANSI (AE3)
+# - [x] Ungueltige ``--log-config``: Exit 78, genau eine strukturierte Zeile
+#       mit ``path`` und ``error_type`` (AE4)
+# - [x] ``SWARMQ_QUEUE_TYPE=bogus --log-format json``: eine JSON-Zeile, Exit 78
+#       (AE8/AE9, bestehend)
+
+
 def test_cli_worker_round_trip_then_clean_sigterm() -> None:
     queue = f"cli_e2e_{uuid.uuid4().hex[:10]}"
     proc = _spawn_worker(queue)
@@ -203,13 +212,42 @@ def test_configure_hook_middleware_runs_for_every_task() -> None:
     assert asyncio.run(_results_ok(queue, tids)) == 3
 
 
-async def _enqueue_hook_tasks(queue: str, n: int) -> list[str]:
+def test_lifecycle_events_of_one_task_id_in_json_at_debug() -> None:
+    """U11 (Plan 2026-10-06-0831, R16, KTD12): Mit ``--log-format json
+    --log-level DEBUG`` stehen ``task_received``, ``task_started``,
+    ``task_failed`` und ``task_succeeded`` einer Task-ID im Log -- der erste
+    Versuch scheitert, der Retry gelingt."""
+    import json
+
+    queue = f"cli-life-{uuid.uuid4().hex[:8]}"
+    [tid] = asyncio.run(_enqueue_hook_tasks(queue, 1, task_name="cli_flaky"))
+    proc = _run_worker_cli(
+        "--module", "tests.integration._cli_fixture_tasks",
+        "--queues", queue, "--burst", "--burst-idle-timeout", "4",
+        "--log-format", "json", "--log-level", "DEBUG",
+        env_extra={"CLI_TEST_QUEUE": queue},
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    entries = [json.loads(line) for line in proc.stderr.splitlines() if line.startswith("{")]
+    lifecycle = [
+        (entry["event"], entry["level"]) for entry in entries
+        if entry.get("logger") == "swarmq.task" and entry.get("task_id") == tid
+    ]
+    assert lifecycle == [
+        ("task_received", "debug"), ("task_started", "debug"), ("task_failed", "info"),
+        ("task_received", "debug"), ("task_started", "debug"), ("task_succeeded", "info"),
+    ], proc.stderr[-3000:]
+
+
+async def _enqueue_hook_tasks(queue: str, n: int, *, task_name: str = "cli_echo") -> list[str]:
     os.environ["CLI_TEST_QUEUE"] = queue
-    ensure_fixture_registered("tests.integration._cli_fixture_tasks", "cli_echo")
+    ensure_fixture_registered("tests.integration._cli_fixture_tasks", task_name)
+    args = ("ping",) if task_name == "cli_echo" else ()
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         await app.broker.declare_queue(queue)
-        return [await app.schedule("cli_echo", "ping", queue=queue) for _ in range(n)]
+        return [await app.schedule(task_name, *args, queue=queue) for _ in range(n)]
 
 
 async def _results_ok(queue: str, tids: list[str]) -> int:
@@ -265,3 +303,54 @@ def test_child_config_error_under_two_processes_ends_the_supervisor_with_78() ->
     assert len(from_worker) >= 1, proc.stderr[-3000:]
     assert "no tasks registered" in from_worker[0]["error"]
     assert events.count("worker_spawned") <= 2, proc.stderr[-3000:]
+
+
+def test_json_format_writes_one_worker_started_line_per_worker() -> None:
+    """AE3 (U7, R9): Supervisor und Worker richten genau einmal ein -- je
+    Worker genau eine ``worker_started``-Zeile, jede stderr-Zeile ist JSON,
+    kein ANSI."""
+    import json
+
+    queue = f"cli-ae3-{uuid.uuid4().hex[:8]}"
+    proc = _run_worker_cli(
+        "--module", "tests.integration._cli_fixture_tasks",
+        "--queues", queue, "--processes", "2",
+        "--burst", "--burst-idle-timeout", "2", "--log-format", "json",
+        env_extra={"CLI_TEST_QUEUE": queue},
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    lines = [line for line in proc.stderr.splitlines() if line.strip()]
+    entries = [json.loads(line) for line in lines]  # jede Zeile ist JSON
+    started = [entry for entry in entries if entry.get("event") == "worker_started"]
+    assert len(started) == 2, proc.stderr[-3000:]
+    assert len({entry["pid"] for entry in started}) == 2
+    assert "\x1b[" not in proc.stderr
+
+
+def test_invalid_log_config_is_one_structured_line_and_exit_78(tmp_path: Path) -> None:
+    """AE4 (U7, R11/R14): Tippfehler in einem Handler-Schluessel -- der
+    Supervisor endet vor jedem Kind mit 78 und genau einer Zeile mit
+    ``path`` und ``error_type``."""
+    import json
+
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({
+        "version": 1,
+        "handlers": {"err": {"class": "logging.StreamHandlr"}},
+        "root": {"handlers": ["err"]},
+    }))
+    proc = _run_worker_cli(
+        "--module", "tests.integration._cli_fixture_tasks", "--log-config", str(bad),
+        env_extra={"CLI_TEST_QUEUE": "cli-ae4"},
+        timeout=30,
+    )
+    assert proc.returncode == CONFIG_ERROR_EXIT_CODE, proc.stderr[-2000:]
+    lines = [line for line in proc.stderr.splitlines() if line.strip()]
+    assert len(lines) == 1, proc.stderr[-2000:]
+    assert "worker_config_error" in lines[0]
+    assert f"path={bad}" in lines[0]
+    assert "error_type=LoggingConfigError" in lines[0]
+    assert "Unable to configure handler" in lines[0]

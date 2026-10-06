@@ -9,15 +9,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
-import structlog
+from swarmq.logging_settings import VALID_LOG_LEVELS, LoggingSettings
 
-logger = structlog.get_logger()
-
-
-_VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
-
-
-_PICKLE_SAFE_TYPES = (str, int, float, bool, tuple, type(None))
+# ``LoggingSettings`` ist selbst eingefroren und besteht nur aus diesen
+# Typen; die geparste dictConfig reist darin als JSON-String (KTD9).
+_PICKLE_SAFE_TYPES = (str, int, float, bool, tuple, type(None), LoggingSettings)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,6 +74,10 @@ class WorkerConfig:
     # den Kanal ein; ``group`` ist der fertig gebildete Gruppenschluessel.
     max_processes: int | None = None
     group: str | None = None
+    # Plan 2026-10-06 (KTD7): die einmal im Supervisor aufgeloesten
+    # Logging-Einstellungen; Kinder lesen kein Env mehr. ``None`` haelt
+    # Bestandsaufrufer unveraendert, bis die Einstiegspunkte sie setzen (U7).
+    logging_settings: LoggingSettings | None = None
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):
@@ -87,8 +87,8 @@ class WorkerConfig:
                     f"WorkerConfig.{f.name} must be pickle-safe; "
                     f"got {type(value).__name__}",
                 )
-        if self.log_level not in _VALID_LOG_LEVELS:
+        if self.log_level not in VALID_LOG_LEVELS:
             raise ValueError(
                 f"WorkerConfig.log_level must be one of "
-                f"{_VALID_LOG_LEVELS}; got {self.log_level!r}",
+                f"{VALID_LOG_LEVELS}; got {self.log_level!r}",
             )

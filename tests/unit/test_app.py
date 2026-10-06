@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -188,35 +188,35 @@ class TestSwarmQContextManager:
         try/finally — ein werfendes ``broker.close()`` (im Inject-Pfad
         bewusst möglich, siehe test_pool_close_releases_even_if_channel_
         close_raises) ließ den Valkey-Client und den Log-Listener-Thread
-        offen. Backend-Close und Listener-Stop müssen garantiert laufen;
-        die erste Exception propagiert."""
-        app = SwarmQ(broker, backend)
+        offen. Backend-Close und die Freigabe der Opt-in-Log-Queue (U8)
+        müssen garantiert laufen; die erste Exception propagiert."""
+        import logging
+
+        app = SwarmQ(broker, backend, log_queue=True)
         await app.__aenter__()
         broker.close.side_effect = RuntimeError("channel close boom")
-        listener = Mock()
-        app._log_listener = listener
 
         with pytest.raises(RuntimeError, match="channel close boom"):
             await app.__aexit__(None, None, None)
 
         backend.close.assert_awaited_once()
-        listener.stop.assert_called_once()
+        assert logging.getLogger("swarmq").handlers == []
 
     @pytest.mark.anyio()
-    async def test_aexit_stops_listener_even_if_backend_close_raises(
+    async def test_aexit_releases_the_log_queue_even_if_backend_close_raises(
         self, broker, backend,
     ):
-        app = SwarmQ(broker, backend)
+        import logging
+
+        app = SwarmQ(broker, backend, log_queue=True)
         await app.__aenter__()
         backend.close.side_effect = RuntimeError("backend boom")
-        listener = Mock()
-        app._log_listener = listener
 
         with pytest.raises(RuntimeError, match="backend boom"):
             await app.__aexit__(None, None, None)
 
         broker.close.assert_awaited_once()
-        listener.stop.assert_called_once()
+        assert logging.getLogger("swarmq").handlers == []
 
     @pytest.mark.anyio()
     async def test_async_with_syntax(self, broker, backend):
@@ -323,38 +323,61 @@ class TestSwarmQDoubleExit:
 
 
 class TestSwarmQLogging:
-    def test_init_calls_setup_logging(self, broker, backend):
-        with patch("swarmq.app.setup_logging") as mock_setup:
-            mock_listener = MagicMock()
-            mock_setup.return_value = mock_listener
+    """Plan 2026-10-06-0831, U8 (R1, KTD4): Die Bibliothek konfiguriert nie.
 
-            app = SwarmQ(broker, backend)
+    Test-Liste:
+    1. ``SwarmQ(...)`` laesst Root-Handler, Root-Level, ``structlog.get_config()``
+       und die Logger-Klasse unveraendert (AE1).
+    2. ``SwarmQ(...)`` ohne Opt-in startet keinen Thread.
+    3. ``SwarmQ(log_level=..., log_json=...)`` ohne Opt-in wirft nicht und
+       konfiguriert nichts.
+    4. ``__aexit__`` gibt den Opt-in frei, auch wenn ``broker.close()`` bzw.
+       ``backend.close()`` wirft (in ``TestSwarmQContextManager``).
+    """
 
-            mock_setup.assert_called_once_with(
-                app.config.log_level, app.config.log_json
-            )
-            assert app._log_listener is mock_listener
+    def test_init_leaves_root_structlog_and_logger_class_untouched(self, broker, backend):
+        import logging
 
-    def test_init_stores_listener_for_shutdown(self, broker, backend):
-        with patch("swarmq.app.setup_logging") as mock_setup:
-            mock_listener = MagicMock()
-            mock_setup.return_value = mock_listener
+        import structlog
 
-            app = SwarmQ(broker, backend)
+        root = logging.getLogger()
+        app_handler = logging.NullHandler()
+        root.addHandler(app_handler)
+        root.setLevel(logging.WARNING)
+        handlers = list(root.handlers)
+        config = structlog.get_config()
+        logger_class = logging.getLoggerClass()
 
-            assert app._log_listener is mock_listener
+        SwarmQ(broker, backend)
 
-    @pytest.mark.anyio()
-    async def test_aexit_stops_log_listener(self, broker, backend):
-        with patch("swarmq.app.setup_logging") as mock_setup:
-            mock_listener = MagicMock()
-            mock_setup.return_value = mock_listener
+        assert root.handlers == handlers
+        assert root.level == logging.WARNING
+        assert structlog.get_config() == config
+        assert logging.getLoggerClass() is logger_class
 
-            app = SwarmQ(broker, backend)
-            await app.__aenter__()
-            await app.__aexit__(None, None, None)
+    def test_init_without_opt_in_starts_no_thread(self, broker, backend):
+        import threading
 
-            mock_listener.stop.assert_called_once()
+        before = threading.active_count()
+
+        SwarmQ(broker, backend, log_queue=False)
+
+        assert threading.active_count() == before
+
+    def test_log_level_and_log_json_without_opt_in_configure_nothing(self, broker, backend):
+        import logging
+
+        root = logging.getLogger()
+        handlers = list(root.handlers)
+        swarmq_logger = logging.getLogger("swarmq")
+        swarmq_state = (list(swarmq_logger.handlers), swarmq_logger.level, swarmq_logger.propagate)
+
+        SwarmQ(broker, backend, log_level="DEBUG", log_json=False)
+
+        assert root.handlers == handlers
+        assert (
+            list(swarmq_logger.handlers), swarmq_logger.level, swarmq_logger.propagate
+        ) == swarmq_state
 
 
 class TestSwarmQStartWorker:

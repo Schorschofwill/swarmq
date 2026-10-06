@@ -14,17 +14,16 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
-
 from swarmq.cancellation import build_cancel_result_dict
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
+from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class CancelGate:
@@ -36,13 +35,13 @@ class CancelGate:
         task_id, task_name, queue = ctx.task_id, ctx.task_name, ctx.queue
         try:
             is_cancelled = await deps.backend.is_cancelled(task_id, op_timeout=deps.config.backend_op_timeout)
-        except BackendConnectionError:
+        except BackendConnectionError as exc:
             # Observability is via the structured log event only:
             # AMQP nack(requeue=True) redelivers the stored
             # message, so in-memory header mutations would be lost anyway.
-            logger.error("cancel_check_backend_error", task_id=task_id)
+            # KTD11: die Redelivery erholt sich selbst -> WARNING.
+            logger.warning("cancel_check_backend_error", task_id=task_id, **_error_fields(exc))
             await deps.broker.redeliver(delivery)
-            structlog.contextvars.clear_contextvars()
             return Redelivered
 
         workflow_cancel = False
@@ -59,10 +58,11 @@ class CancelGate:
                 wf_cancelled = await deps.backend.is_workflow_cancelled(
                     wf_id, op_timeout=deps.config.backend_op_timeout
                 )
-            except BackendConnectionError:
-                logger.error("workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id)
+            except BackendConnectionError as exc:
+                logger.warning(
+                    "workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id, **_error_fields(exc)
+                )
                 await deps.broker.redeliver(delivery)
-                structlog.contextvars.clear_contextvars()
                 return Redelivered
             if not wf_cancelled:
                 return Continue
@@ -109,7 +109,7 @@ class CancelGate:
                 try:
                     await deps.backend.notify_result(task_id)
                 except Exception as exc:
-                    logger.warning("publish_notification_failed", task_id=task_id, error=str(exc))
+                    logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
             # Clear the flag (log+swallow at backend boundary — Unit 3).
             await deps.backend.clear_cancel_flag(task_id, op_timeout=deps.config.backend_op_timeout)
@@ -131,9 +131,8 @@ class CancelGate:
             # Result-write failure: nack(requeue=True) so a redelivery
             # re-runs this branch. Flag stays in Valkey (that's what
             # triggers the re-cancel on redelivery).
-            logger.error("cancel_store_result_failed", task_id=task_id, error=str(exc))
+            logger.warning("cancel_store_result_failed", task_id=task_id, **_error_fields(exc))
             await deps.broker.redeliver(delivery)
-            structlog.contextvars.clear_contextvars()
             return Redelivered
 
         # Signal AFTER the broker ack so a handler that raises doesn't
@@ -141,5 +140,4 @@ class CancelGate:
         await deps.signals.dispatch(Signal.TASK_CANCELLED, task_id=task_id, task_name=task_name, queue=queue)
 
         logger.info("task_cancelled_pre_start", task_id=task_id, task_name=task_name)
-        structlog.contextvars.clear_contextvars()
         return Terminal.already_released()

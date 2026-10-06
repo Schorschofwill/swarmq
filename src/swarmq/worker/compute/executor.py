@@ -17,20 +17,50 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import structlog
-
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
 from swarmq.exceptions import SoftTimeoutError
-from swarmq.signals import Signal
+from swarmq.logging import _error_fields, get_logger, load_log_config
+from swarmq.logging_settings import LoggingSettings
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
 from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable
 from swarmq.worker.execution import ExecutionResult, TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 RecycleHook = Callable[[int, str, float], Awaitable[None]]
+
+
+def _child_logging_fields(config: Any) -> dict[str, Any]:
+    """Die Logging-Felder des ``ComputeJob`` aus den wirksamen Einstellungen
+    (Plan 2026-10-06-0831, U7, KTD7)."""
+    settings: LoggingSettings | None = config.logging_settings
+    if settings is None:
+        # Eingebettet: die Logging-Felder von ``SwarmQConfig`` sind die Quelle
+        # fuer die Kinder des eingebetteten CPU-Pools (KTD7). Eine
+        # ``log_config``-Datei laedt der Loop-Prozess hier genau einmal; die
+        # Kinder lesen sie nie (KTD9).
+        log_config: str | None = config.log_config
+        settings = LoggingSettings(
+            level=config.log_level,
+            format="json" if config.log_json else "human",
+            log_config=log_config,
+            log_config_json=None if log_config is None else load_log_config(log_config),
+            configure=config.configure_logging,
+            logger_levels=config.logger_levels,
+            queue_size=config.log_queue_size,
+        )
+    return {
+        "log_level": settings.level,
+        "log_level_explicit": settings.level_explicit,
+        "log_json": settings.format == "json",
+        "log_config": settings.log_config,
+        "log_config_json": settings.log_config_json,
+        "configure_logging": settings.configure,
+        "logger_levels": settings.logger_levels,
+        "log_queue_size": settings.queue_size,
+    }
 
 
 class ComputeExecutor(TaskExecutor):
@@ -40,6 +70,7 @@ class ComputeExecutor(TaskExecutor):
         super().__init__(deps)
         self._pool = pool
         self._worker_id = worker_id or deps.config.worker_identity
+        self._log_fields = _child_logging_fields(deps.config)
 
     async def start(self) -> None:
         await self._pool.start()
@@ -65,7 +96,7 @@ class ComputeExecutor(TaskExecutor):
                 _, task_id, payload = msg
                 await deps.backend.publish_progress(task_id, payload)
         except Exception as exc:
-            logger.warning("compute_progress_forward_failed", error=str(exc))
+            logger.warning("compute_progress_forward_failed", **_error_fields(exc))
 
     # ------------------------------------------------------------------ execute
 
@@ -86,19 +117,16 @@ class ComputeExecutor(TaskExecutor):
             kwargs=dict(ctx.kwargs),
             retry_count=int(message_dict.get("retry_count", 0)),
             result_ttl_ms=int(ttl) * 1000,
-            log_level=deps.config.log_level,
-            log_json=deps.config.log_json,
             worker_id=self._worker_id,
+            workflow_id=ctx.workflow_id,
+            **self._log_fields,
         )
 
     async def execute(self, ctx: GateContext, message_dict: Any, chain: Any) -> ExecutionResult:
-        deps = self._deps
         task_info = ctx.task_info
         assert task_info is not None
         await chain.run_pre_execute(message_dict)
-        await deps.signals.dispatch(
-            Signal.TASK_STARTED, task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue
-        )
+        await self._emit_started(ctx)
         start_time = time.monotonic()
         result = ExecutionResult(
             result_value=None, is_error=False, is_cancelled=False, error_message="", task_exception=None
@@ -115,11 +143,11 @@ class ComputeExecutor(TaskExecutor):
                 # kein Task-Fehler — eigene Meldung, damit er nicht als solcher untergeht.
                 logger.error(
                     "compute_slot_unavailable_fire_and_forget_dropped", task_id=ctx.task_id,
-                    error=message, hint="fire-and-forget messages are acked before dispatch; "
+                    **_error_fields(exc), hint="fire-and-forget messages are acked before dispatch; "
                     "the message is lost — check the forkserver and /ready",
                 )
             else:
-                logger.error("fire_and_forget_error", error=message)
+                logger.error("fire_and_forget_error", **_error_fields(exc))
 
         job = self._build_job(ctx, message_dict)
         use_di = bool(getattr(ctx.task_class, "_dishka_injected_keys", None))
@@ -190,6 +218,7 @@ class ComputeExecutor(TaskExecutor):
     def _apply_envelope(
         envelope: ResultEnvelope, result: ExecutionResult, fail: Callable[[BaseException, str], None]
     ) -> None:
+        result.compute_child = envelope.pid
         if envelope.ok:
             result.result_value = envelope.value
             return

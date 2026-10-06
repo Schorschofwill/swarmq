@@ -111,6 +111,13 @@ zu konsumieren.
     und `SIGTERM` mit einem Graceful-Drain — laufende Tasks werden
     abgeschlossen, bevor der Prozess beendet wird.
 
+!!! note
+    `swarmq worker` richtet das Logging für seine eigenen Prozesse ein.
+    Eine App, die `SwarmQ(...)` einbettet, bekommt von SwarmQ keine
+    Logging-Konfiguration — richte sie selbst ein, z. B. mit
+    `logging.basicConfig(level=logging.INFO)`. Siehe
+    [Logging-Referenz](reference/logging.md).
+
 ## Aus deiner App enqueuen
 
 Auf der Client-Seite baust du eine `SwarmQ`-App aus Broker- und
@@ -166,8 +173,8 @@ Mit dem Worker in einem Terminal und dem Enqueue-Skript in einem
 anderen solltest du sehen:
 
 - Der Client gibt `hello, world` aus.
-- Der Worker-Log zeigt ein `TASK_STARTED`/`TASK_COMPLETED`-Paar für
-  den `greet`-Task.
+- Der Worker-Log zeigt eine Zeile `task_succeeded` für den
+  `greet`-Task, mit ihrer `task_id` und `duration_ms`.
 
 Wenn nichts passiert, prüfe, ob die `--queues`-Liste des Workers
 `default` enthält und beide Prozesse auf dieselben Broker- und

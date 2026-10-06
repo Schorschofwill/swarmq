@@ -24,10 +24,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from swarmq.dishka import _Missing, get_registered_container
-from swarmq.logging import sanitize_url
+from swarmq.logging import _error_fields, get_logger, sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
@@ -49,7 +47,7 @@ if TYPE_CHECKING:
     from swarmq.worker.execution import TaskExecutor
     from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 # Lifecycle-Signale (WORKER_ONLINE/HEARTBEAT/SHUTDOWN) laufen mit gedeckeltem
 # Handler-Timeout, damit ein haengender Handler den Shutdown nicht blockiert.
@@ -468,7 +466,7 @@ class WorkerLifecycle:
                 except Exception as exc:
                     logger.warning(
                         "metrics_sampler_iteration_failed",
-                        error=repr(exc),
+                        **_error_fields(exc),
                     )
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -502,7 +500,7 @@ class WorkerLifecycle:
                 logger.warning(
                     "metrics_sample_failed",
                     queue=queue,
-                    error=repr(exc),
+                    **_error_fields(exc),
                 )
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
@@ -589,10 +587,11 @@ class WorkerLifecycle:
                     try:
                         await self._lock_manager.release(token)
                     except Exception as exc:
-                        logger.error(
+                        # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
+                        logger.warning(
                             "shutdown_lock_release_failed",
                             lock_name=token.name,
-                            error=str(exc),
+                            **_error_fields(exc),
                         )
             self._active_handler_locks.clear()
 
@@ -609,9 +608,8 @@ class WorkerLifecycle:
             try:
                 await self._scheduler.stop()
             except Exception as exc:
-                logger.error(
-                    "scheduler_stop_failed", error=str(exc)
-                )
+                # KTD11: Leader-Lock und Marker laufen per TTL ab -> WARNING.
+                logger.warning("scheduler_stop_failed", **_error_fields(exc))
 
         # 3e. Close the Dishka APP container (if one was registered). Runs
         # AFTER the in-flight drain + detached-release wait (so live REQUEST

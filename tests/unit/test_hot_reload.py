@@ -1,7 +1,13 @@
 """R5.3 unit tests for the hot-reload watcher primitives."""
 
+# Test list (Plan 2026-10-06-0831, U9, Logging):
+# 1. Auto-Watch-Dir in installiertem Paket warnt mit ``module_name``.
+# 2. Trigger- und Crash-Fehler des Watcher-Threads kommen als
+#    ``reload_trigger_failed``/``watch_thread_crashed`` auf ERROR an.
+
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -143,6 +149,18 @@ class TestResolveWatchDirs:
             sys.modules.pop("swarmq_ns_test_pkg", None)
 
 
+    def test_installed_package_warns_with_module_name(self, swarmq_logs):
+        """Plan 2026-10-06-0831, U9: ``module`` ist ein reserviertes
+        LogRecord-Attribut -- das Feld heisst ``module_name``."""
+        import structlog
+
+        resolve_watch_dirs("structlog", ())
+        [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_inside_venv_or_stdlib"]
+        assert entry["log_level"] == "warning"
+        assert entry["module_name"] == "structlog"
+        assert entry["resolved_dir"] == os.path.dirname(structlog.__file__)
+
+
 # ---------------------------------------------------------------------------
 # Unit 7: check_watchfiles_available
 # ---------------------------------------------------------------------------
@@ -228,7 +246,7 @@ class TestFileWatcherLifecycle:
         assert trigger.call_count == 0
         w.stop()
 
-    def test_trigger_exception_does_not_kill_thread(self, caplog):
+    def test_trigger_exception_does_not_kill_thread(self, swarmq_logs):
         trigger = MagicMock(side_effect=RuntimeError("boom"))
         fake = _FakeWatch(batches=[self._changes(), self._changes()])
         w = FileWatcher(
@@ -243,12 +261,11 @@ class TestFileWatcherLifecycle:
         # Both batches must have fired the trigger — the first failure
         # must not have prevented the second call.
         assert trigger.call_count == 2
+        failed = [e for e in swarmq_logs if e["event"] == "reload_trigger_failed"]
+        assert [e["log_level"] for e in failed] == ["error", "error"]
         w.stop()
 
-    def test_watch_crash_logged_as_warning(self, caplog):
-        import logging
-
-        caplog.set_level(logging.WARNING)
+    def test_watch_crash_logged_as_error(self, swarmq_logs):
         trigger = MagicMock()
         fake = _FakeWatch(batches=[], raise_on_iter=True)
         w = FileWatcher(
@@ -262,6 +279,8 @@ class TestFileWatcherLifecycle:
         # Supervisor must still be alive — crash contained.
         assert trigger.call_count == 0
         assert w.is_running() is False
+        [entry] = [e for e in swarmq_logs if e["event"] == "watch_thread_crashed"]
+        assert entry["log_level"] == "error"
         w.stop()
 
     def test_double_start_rejected(self):

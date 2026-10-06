@@ -14,12 +14,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import structlog
-
+from swarmq.logging import get_logger
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 DELIVERY_COUNT_HEADER = "x-delivery-count"
 
@@ -53,7 +52,6 @@ class DeliveryCountGate:
             delivery_count=count, delivery_limit=limit,
         )
         await self._dead_letter(delivery, ctx, message)
-        structlog.contextvars.clear_contextvars()
         return Terminal.already_released()
 
 

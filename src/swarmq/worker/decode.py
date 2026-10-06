@@ -11,13 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
-
 from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_WORKFLOW_ID
+from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import decode_json
 from swarmq.worker.gates import GateDeps, route_via_dlx
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def valid_unique_hash(message: Any) -> str | None:
@@ -61,6 +60,19 @@ def valid_workflow_id(message: Any) -> str | None:
         elif c not in "0123456789abcdef":
             return None
     return wf_id
+
+
+def attempt_number(message: Any) -> int | None:
+    """Laufender Versuch fuer den Logkontext (U10): ``retry_count + 1``.
+
+    Der Retry-Header kommt vom Netz; ein Wert, der keine ganze Zahl ist,
+    ergibt ``None`` (das Feld fehlt dann im Kontext), statt die Zustellung
+    scheitern zu lassen.
+    """
+    raw = (message.headers or {}).get("x-swarmq-retry-count", 0)
+    if not isinstance(raw, int):
+        return None
+    return raw + 1
 
 
 async def decode_and_validate(
@@ -108,7 +120,7 @@ async def decode_and_validate(
                 f"task 'kwargs' must be a dict, got {type(kwargs).__name__}"
             )
     except Exception as exc:
-        logger.error("deserialize_failed", error=str(exc))
+        logger.error("deserialize_failed", **_error_fields(exc))
         # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
         # unknown). Accepted limitation — flag self-heals via TTL.
         await route_via_dlx(

@@ -75,6 +75,7 @@ class GateContext:
     kwargs: dict[str, Any] = field(default_factory=dict)
     handler_id: uuid.UUID | None = None
     acquired_locks: list[LockEntry] = field(default_factory=list)
+    workflow_id: str | None = None  # gepruefter Workflow-Header (U10: Logkontext im Kind)
 
 
 @dataclass

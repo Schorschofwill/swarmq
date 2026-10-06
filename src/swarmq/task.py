@@ -12,11 +12,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-import structlog
 from croniter import CroniterBadCronError, croniter
 
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
+from swarmq.logging import _error_fields, get_logger
 
 if TYPE_CHECKING:
     # U11 (KTD7): Vertragstyp statt Implementierung — ``task`` liegt in der
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from swarmq.contracts import ResultBackend
     from swarmq.workflow import Signature
 
-_progress_logger = structlog.get_logger()
+_progress_logger = get_logger(__name__)
 
 # Cron syntax we intentionally do NOT support in v1: L (last), W (nearest
 # weekday), # (nth weekday of month). Rejected at construction so the failure
@@ -456,7 +456,7 @@ class Task:
         except Exception as exc:
             _progress_logger.warning(
                 "update_progress_hset_failed",
-                task_id=self._task_id, error=str(exc),
+                task_id=self._task_id, **_error_fields(exc),
             )
             return  # Skip publish if HSET failed — no point notifying.
 
@@ -468,7 +468,7 @@ class Task:
         except Exception as exc:
             _progress_logger.warning(
                 "update_progress_publish_failed",
-                task_id=self._task_id, error=str(exc),
+                task_id=self._task_id, **_error_fields(exc),
             )
 
 

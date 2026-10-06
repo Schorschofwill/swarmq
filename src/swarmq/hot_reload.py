@@ -31,9 +31,8 @@ from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from swarmq.exceptions import ConfigurationError
+from swarmq.logging import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from watchfiles import BaseFilter
@@ -45,7 +44,7 @@ __all__ = [
     "resolve_watch_dirs",
 ]
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def check_watchfiles_available() -> None:
@@ -132,7 +131,7 @@ def resolve_watch_dirs(
             continue
         logger.warning(
             "watch_dir_inside_venv_or_stdlib",
-            module=module,
+            module_name=module,
             resolved_dir=resolved,
             sys_root=root,
             hint="reload-storms possible on pip install; use --watch-dir",

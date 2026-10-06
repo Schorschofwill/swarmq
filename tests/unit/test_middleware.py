@@ -9,7 +9,9 @@ from __future__ import annotations
 # 4. post_execute reverse order: 3 middlewares -> called in reverse (C, B, A)
 # 5. on_error reverse order
 # 6. on_retry receives retry_count and delay
-# 7. Error in post_execute-hook -> logged, next hook still runs
+# 7. Error in post_execute-hook -> logged, next hook still runs (ueber den
+#    Logger ``swarmq.middleware``; Plan 2026-10-06-0831, U9)
+# 7b. Der Logeintrag traegt ``error_type`` und ``error`` (R17)
 # 8. Error in pre_enqueue -> propagates (raises)
 # 9. Integration: mock middleware with Counter tracks calls to verify order
 # 10. U11: workflow_step_message_context liefert einen MessageContext mit
@@ -17,7 +19,6 @@ from __future__ import annotations
 import inspect
 
 import pytest
-import structlog
 
 from swarmq.middleware import Middleware, MiddlewareChain
 
@@ -215,7 +216,7 @@ class _RaisingMiddleware(Middleware):
             raise self.exc
 
 
-async def test_error_in_post_execute_is_swallowed_and_next_hook_runs():
+async def test_error_in_post_execute_is_swallowed_and_next_hook_runs(swarmq_logs):
     calls: list[tuple[str, str]] = []
     good_a = _RecordingMiddleware("A", calls)
     good_b = _RecordingMiddleware("B", calls)
@@ -226,8 +227,8 @@ async def test_error_in_post_execute_is_swallowed_and_next_hook_runs():
     # then A (still runs).
     chain = MiddlewareChain([good_a, raiser, good_b])
 
-    with structlog.testing.capture_logs() as captured:
-        await chain.run_post_execute({"task": {"id": "t1"}}, result=7)
+    await chain.run_post_execute({"task": {"id": "t1"}}, result=7)
+    captured = [e for e in swarmq_logs if e["logger"] == "swarmq.middleware"]
 
     assert calls == [
         ("B", "post_execute"),
@@ -240,6 +241,20 @@ async def test_error_in_post_execute_is_swallowed_and_next_hook_runs():
         and e.get("hook") == "post_execute"
         for e in errors
     ), f"expected middleware_hook_failed log, got: {captured}"
+
+
+@pytest.mark.timeout(5)
+async def test_middleware_hook_failure_logs_error_fields(swarmq_logs):
+    """R17: Typ und Text des Fehlers als eigene Felder."""
+    chain = MiddlewareChain([_RaisingMiddleware("post_execute", RuntimeError("middleware-boom"))])
+
+    await chain.run_post_execute({"task": {"id": "t1"}}, result=7)
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "middleware_hook_failed"]
+    assert entry["log_level"] == "error"
+    assert entry["middleware"] == "_RaisingMiddleware"
+    assert entry["error_type"] == "RuntimeError"
+    assert entry["error"] == "middleware-boom"
 
 
 # ---------------------------------------------------------------------------

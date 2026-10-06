@@ -104,6 +104,13 @@ finds, connects to the broker and backend, and starts consuming.
     with a graceful drain — in-flight tasks finish before the process
     exits.
 
+!!! note
+    `swarmq worker` sets up logging for its own processes. An app that
+    embeds `SwarmQ(...)` does not get any logging configuration from
+    SwarmQ — configure it yourself, e.g. with
+    `logging.basicConfig(level=logging.INFO)`. See the
+    [Logging reference](reference/logging.md).
+
 ## Enqueue from your app
 
 On the client side, build a `SwarmQ` app from broker and backend
@@ -157,8 +164,8 @@ With the worker running in one terminal and the enqueue script in
 another, you should see:
 
 - The client prints `hello, world`.
-- The worker log shows a `TASK_STARTED` and `TASK_COMPLETED` pair for
-  the `greet` task.
+- The worker log shows a `task_succeeded` line for the `greet` task,
+  with its `task_id` and `duration_ms`.
 
 If nothing happens, check that the worker's `--queues` list contains
 `default` and that both processes point at the same broker and backend

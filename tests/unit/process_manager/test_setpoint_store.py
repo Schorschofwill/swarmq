@@ -9,12 +9,13 @@ Test-Liste (U2):
 - Zeitgrenzen für Lesen und Schreiben liegen zusammen unter der Hälfte des Intervalls.
 - Das Modul importiert nichts aus ``swarmq.backend``.
 - Schreiben der Rückmeldung schließt die Verbindung; ein Fehler liefert False.
+- Plan 2026-10-06-0831, U9 (R17): Lese- und Schreibfehler loggen
+  ``error_type`` und ein bereinigtes ``error``.
 """
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
 
 from swarmq.contracts.control import Setpoint
 from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync, write_status_sync
@@ -60,14 +61,20 @@ class TestReadSetpointSync:
         assert isinstance(result, SetpointUnread)
         assert store.closed is True
 
-    def test_connect_failure_yields_unread_and_logs_once(self):
+    def test_connect_failure_yields_unread_and_logs_once(self, swarmq_logs):
         store = FakeStore(connect_error=ConnectionRefusedError("no route"))
-        with patch("swarmq.process_manager.setpoint_store.logger") as log:
-            result = read_setpoint_sync(lambda: store, "orders")
+        result = read_setpoint_sync(lambda: store, "orders")
         assert isinstance(result, SetpointUnread)
         assert "no route" in result.reason
-        assert log.warning.call_count == 1
-        assert log.warning.call_args.args[0] == "setpoint_read_failed"
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["event"] == "setpoint_read_failed" and entry["group"] == "orders"
+        assert entry["error_type"] == "ConnectionRefusedError" and entry["error"] == "no route"
+
+    def test_read_failure_logs_sanitized_error(self, swarmq_logs):
+        store = FakeStore(connect_error=ConnectionError("valkey://:s3cret@cache:6379"))
+        read_setpoint_sync(lambda: store, "orders")
+        [entry] = [e for e in swarmq_logs if e["event"] == "setpoint_read_failed"]
+        assert entry["error"] == "valkey://:***@cache:6379"
 
     def test_close_failure_does_not_lose_the_read_value(self):
         store = FakeStore(Setpoint(low=1, high=1), close_error=RuntimeError("socket gone"))
@@ -98,24 +105,23 @@ class TestWriteStatusSync:
         assert store.status_writes == [("orders", "host:p1", {"effective": [2, 8]}, 40.0)]
         assert store.closed is True
 
-    def test_failure_returns_false_and_logs_once(self):
-        store = FakeStore(connect_error=OSError("down"))
-        with patch("swarmq.process_manager.setpoint_store.logger") as log:
-            ok = write_status_sync(lambda: store, "orders", "host:p1", {}, ttl_s=40.0)
+    def test_failure_returns_false_and_logs_once(self, swarmq_logs):
+        store = FakeStore(connect_error=OSError("valkey://:s3cret@cache:6379"))
+        ok = write_status_sync(lambda: store, "orders", "host:p1", {}, ttl_s=40.0)
         assert ok is False
-        assert log.warning.call_count == 1
-        assert log.warning.call_args.args[0] == "setpoint_status_write_failed"
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["event"] == "setpoint_status_write_failed" and entry["group"] == "orders"
+        assert entry["error_type"] == "OSError" and entry["error"] == "valkey://:***@cache:6379"
         assert store.closed is True
 
 
 class TestFactoryFailure:
-    def test_factory_raising_yields_unread_instead_of_propagating(self):
+    def test_factory_raising_yields_unread_instead_of_propagating(self, swarmq_logs):
         """Kein Pfad laesst einen Sollwert den Start scheitern (R10): auch die Fabrik nicht."""
 
         def broken_factory():
             raise RuntimeError("no backend url")
 
-        with patch("swarmq.process_manager.setpoint_store.logger"):
-            result = read_setpoint_sync(broken_factory, "orders")
-            assert isinstance(result, SetpointUnread)
-            assert write_status_sync(broken_factory, "orders", "host:p1", {}, ttl_s=1.0) is False
+        result = read_setpoint_sync(broken_factory, "orders")
+        assert isinstance(result, SetpointUnread)
+        assert write_status_sync(broken_factory, "orders", "host:p1", {}, ttl_s=1.0) is False

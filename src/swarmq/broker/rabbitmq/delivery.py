@@ -15,7 +15,6 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 import aio_pika
-import structlog
 from aio_pika.exceptions import DeliveryError
 
 from swarmq.broker.rabbitmq.connection import (
@@ -25,8 +24,9 @@ from swarmq.broker.rabbitmq.connection import (
 )
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from swarmq.logging import _error_fields, get_logger
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def message_of(delivery: object) -> aio_pika.abc.AbstractIncomingMessage:
@@ -280,7 +280,7 @@ class RabbitMQDelivery(RabbitMQConnection):
                 await amqp_queue.cancel(consumer_tag)
             except Exception as exc:
                 errors.append(exc)
-                logger.warning("consumer_cancel_failed", consumer_tag=consumer_tag, error=str(exc))
+                logger.warning("consumer_cancel_failed", consumer_tag=consumer_tag, **_error_fields(exc))
         self._consumer_tags.clear()
         if errors:
             # Surface that cancellation was imperfect, but only after every

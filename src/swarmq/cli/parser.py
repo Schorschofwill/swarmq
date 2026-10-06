@@ -137,14 +137,71 @@ def _add_worker_parser(subparsers: Any) -> None:
     worker.add_argument(
         "--log-level",
         choices=_VALID_LOG_LEVELS,
-        default="INFO",
-        help="Log verbosity (default: INFO). DEBUG also surfaces full tracebacks on CLI errors.",
+        default=None,
+        help=(
+            "Log verbosity (default: INFO). DEBUG also surfaces full tracebacks "
+            "on CLI errors. Overrides SWARMQ_LOG_LEVEL."
+        ),
     )
     worker.add_argument(
         "--log-format",
         choices=_VALID_LOG_FORMATS,
-        default="human",
-        help="Log output format (default: human). 'json' for agent/log-aggregator consumption.",
+        default=None,
+        help=(
+            "Log output format (default: human). 'json' for agent/log-aggregator "
+            "consumption. Overrides SWARMQ_LOG_FORMAT (and its alias SWARMQ_LOG_JSON)."
+        ),
+    )
+    worker.add_argument(
+        "--log-config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Logging dictConfig file (JSON; YAML with PyYAML installed) applied "
+            "in every swarmq process instead of the built-in setup. Not "
+            "combinable with --log-format or --no-configure-logging. "
+            "Overrides SWARMQ_LOG_CONFIG."
+        ),
+    )
+    worker.add_argument(
+        "--no-configure-logging",
+        dest="configure_logging",
+        action="store_const",
+        const=False,
+        default=None,
+        help=(
+            "Do not set up logging in any swarmq process. "
+            "Overrides SWARMQ_CONFIGURE_LOGGING."
+        ),
+    )
+    worker.add_argument(
+        "--logger-level",
+        dest="logger_levels",
+        action="append",
+        default=None,
+        metavar="NAME=LEVEL",
+        help=(
+            "Level for one logger, e.g. aio_pika=WARNING (repeatable). "
+            "Overrides SWARMQ_LOGGER_LEVELS (comma-separated NAME=LEVEL)."
+        ),
+    )
+    worker.add_argument(
+        "--log-queue-size",
+        default=None,
+        metavar="N",
+        help=(
+            "Capacity of the in-process log queue (default: 10000). "
+            "Overrides SWARMQ_LOG_QUEUE_SIZE."
+        ),
+    )
+    worker.add_argument(
+        "--log-lifecycle-level",
+        choices=_VALID_LOG_LEVELS,
+        default=None,
+        help=(
+            "Level of the task_received/task_started lifecycle events "
+            "(default: DEBUG). Overrides SWARMQ_LOG_LIFECYCLE_LEVEL."
+        ),
     )
     worker.add_argument(
         "--burst",

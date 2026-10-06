@@ -1,9 +1,18 @@
 """Cron-Sync-Tests (Plan U11) — verbatim: ``sync_taskinfo_crons``."""
 
+# Test list (Plan 2026-10-06-0831, U9, R17): Fehler-Events des Syncs
+# tragen ``error_type``/``error``.
+# 1. ``scheduler_sync_hget_failed`` (WARNING)
+# 2. ``scheduler_sync_add_failed`` (WARNING)
+# 3. ``scheduler_sync_decode_error_skipped`` (ERROR)
+# 4. ``scheduler_sync_update_failed`` (WARNING)
+
 from __future__ import annotations
 
+import msgspec
 import pytest
 
+from swarmq.exceptions import BackendConnectionError
 from swarmq.scheduler import (
     ScheduleDefinition,
 )
@@ -239,3 +248,55 @@ class TestSyncTaskinfoCrons:
 
         # Both schedules were attempted even though the first failed
         assert store.add_schedule.await_count == 2
+
+
+class TestSyncTaskinfoCronsLogging:
+    @pytest.fixture
+    def loop(self, backend, broker, config, lock_manager, store, signal_dispatcher, _cleanup_tasks):
+        class LoggedCron(Task):
+            task_info = TaskInfo(name="logged", queues=["default"], cron="*/5 * * * *")
+
+            async def run(self):
+                return None
+
+        return _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+    @staticmethod
+    def _entry(logs, event):
+        [entry] = [e for e in logs if e["event"] == event]
+        assert entry["logger"] == "swarmq.scheduler.sync" and entry["schedule_name"] == "logged"
+        return entry
+
+    async def test_hget_failure_logs_error_fields(self, loop, backend, swarmq_logs):
+        backend.schedules.get.side_effect = BackendConnectionError("valkey down")
+        await loop.sync_taskinfo_crons()
+        entry = self._entry(swarmq_logs, "scheduler_sync_hget_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_add_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
+        backend.schedules.get.return_value = None
+        store.add_schedule.side_effect = BackendConnectionError("valkey flap")
+        await loop.sync_taskinfo_crons()
+        entry = self._entry(swarmq_logs, "scheduler_sync_add_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
+
+    async def test_decode_error_logs_error_fields(self, loop, backend, swarmq_logs):
+        backend.schedules.get.return_value = b"{not valid json"
+        await loop.sync_taskinfo_crons()
+        entry = self._entry(swarmq_logs, "scheduler_sync_decode_error_skipped")
+        assert entry["log_level"] == "error" and "hint" in entry
+        assert entry["error_type"] == "DecodeError" and entry["error"]
+
+    async def test_update_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
+        existing = ScheduleDefinition(
+            schedule_name="logged", task_name="logged", args=(), kwargs={},
+            queue="default", cron="*/10 * * * *", fire_ts_ms=1_700_000_000_000, source="static",
+        )
+        backend.schedules.get.return_value = msgspec.json.encode(existing)
+        store.update_static_schedule.side_effect = BackendConnectionError("valkey flap")
+        await loop.sync_taskinfo_crons()
+        entry = self._entry(swarmq_logs, "scheduler_sync_update_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"

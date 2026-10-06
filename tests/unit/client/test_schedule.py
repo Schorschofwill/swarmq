@@ -1364,3 +1364,54 @@ class TestClientPriorityRouting:
             assert call.args[0] == "work.low"
         finally:
             Task._clear_registered_tasks()
+
+
+# ---------------------------------------------------------------------------
+# Logging (Plan 2026-10-06-0831, U9: R2, R17, R18)
+# ---------------------------------------------------------------------------
+# Test list:
+# 1. Ein Duplikat loggt ``dedup_detected`` (vorher ``swarmq.dedup.detected``)
+#    auf INFO ueber den Logger ``swarmq.client.schedule`` mit der Payload des
+#    Signals.
+# 2. Scheitert der Rollback eines Dedup-Claims, loggt das
+#    ``dedup_rollback_failed`` (vorher ``swarmq.dedup.rollback_failed``) auf
+#    WARNING mit ``error_type`` und ``error`` -- der TTL heilt den Claim.
+
+
+def _schedule_events(entries: list[dict], event: str) -> list[dict]:
+    return [e for e in entries if e["event"] == event and e["logger"] == "swarmq.client.schedule"]
+
+
+class TestScheduleLogging:
+    @pytest.mark.timeout(5)
+    async def test_duplicate_logs_dedup_detected(self, broker, backend, registry, swarmq_logs):
+        backend.claim_unique = AsyncMock(return_value="t-existing")
+        client = Client(broker=broker, backend=backend, registry=registry)
+
+        await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+        [entry] = _schedule_events(swarmq_logs, "dedup_detected")
+        assert entry["log_level"] == "info"
+        assert entry["existing_task_id"] == "t-existing"
+        assert entry["task_name"] == "add"
+        assert entry["source"] == "client.schedule"
+        assert len(entry["dedup_hash"]) == 64
+
+    @pytest.mark.timeout(5)
+    async def test_failed_rollback_logs_dedup_rollback_failed_with_error_fields(
+        self, broker, backend, registry, swarmq_logs,
+    ):
+        backend.claim_unique = AsyncMock(return_value=None)
+        backend.release_unique = AsyncMock(side_effect=ConnectionError("valkey down"))
+        broker.publish = AsyncMock(side_effect=RuntimeError("broker down"))
+        client = Client(broker=broker, backend=backend, registry=registry)
+
+        with pytest.raises(RuntimeError, match="broker down"):
+            await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+        [entry] = _schedule_events(swarmq_logs, "dedup_rollback_failed")
+        assert entry["log_level"] == "warning"
+        assert entry["task_id"] == backend.claim_unique.await_args.args[1]
+        assert entry["dedup_hash"] == backend.claim_unique.await_args.args[0]
+        assert entry["error_type"] == "ConnectionError"
+        assert entry["error"] == "valkey down"

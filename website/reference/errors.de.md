@@ -21,6 +21,7 @@ except SwarmQError as exc:
 |---|---|---|
 | `SwarmQError` | `Exception` | Wurzel der Hierarchie |
 | `ConfigurationError` | `SwarmQError` | Fehlkonfiguration beim Worker-Start, CLI-Args, fehlende Env-Vars |
+| `LoggingConfigError` | `ConfigurationError` | Logging-Konfigurationsdatei (`--log-config`) nicht ladbar oder ungültig |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
@@ -52,6 +53,9 @@ die Library oder der CLI-Parser einen fehlerhaften Input erkennt.
 - Fehlende Env-Var (`SWARMQ_BROKER_URL`, `SWARMQ_BACKEND_URL`).
 - Ungültiger Port (`SWARMQ_METRICS_PORT=not-a-number`).
 - `log_level` außerhalb `{DEBUG, INFO, WARNING, ERROR, CRITICAL}`.
+- Widersprüchliche Logging-Einstellungen, etwa `--log-config` zusammen
+  mit `--log-format` oder `--no-configure-logging` (siehe
+  [Logging](logging.md#konfigurationsfehler)).
 - `scheduler_lock_ttl < 2 × scheduler_heartbeat_interval`.
 - `--args` / `--kwargs` für `swarmq schedule add` kein gültiges JSON.
 - `swarmq dlq retry` mit `task_id` und `--all` zugleich.
@@ -63,6 +67,33 @@ das betroffene Feld.
 swarmq worker: SWARMQ_BROKER_URL is not set; export it or pass it
 via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
 ```
+
+## `LoggingConfigError`
+
+**Wann geraist.** Beim Start von `swarmq worker` (und bei der Prüfung
+von `--log-config` vor einem Reload), von
+`swarmq.logging.load_log_config` und `configure_logging`, wenn sich die
+Logging-Konfigurationsdatei nicht verwenden lässt. Subklasse von
+`ConfigurationError`, importierbar aus `swarmq.exceptions` und
+`swarmq.logging`.
+
+**Ursache.** Die Datei aus `--log-config` / `SWARMQ_LOG_CONFIG`:
+
+- lässt sich nicht lesen (fehlt, keine Rechte, kein UTF-8);
+- ist kein gültiges JSON, oder ist YAML, ohne dass PyYAML installiert
+  ist;
+- ist kein Mapping;
+- wird von `logging.config.dictConfig` abgelehnt (Tippfehler in einem
+  Handler-Schlüssel, unbekannte Klasse, ungültiges Level).
+
+Die Exception trägt die Datei in `path`; der ursprüngliche Fehler steht
+in `__cause__` und in der Meldung.
+
+**Recovery.** Datei korrigieren und neu starten. `swarmq worker` endet
+mit `78` und loggt genau eine Zeile `worker_config_error` mit `path`,
+`error_type` und `error`. Bei einem Reload loggt der laufende Supervisor
+stattdessen `log_config_reload_failed` und lässt seine Worker
+weiterlaufen.
 
 ## `BrokerConnectionError`
 
@@ -329,6 +360,7 @@ class LongJob(Task):
 ## Siehe auch
 
 - [API-Referenz](api.md) — die Methoden, die diese Exceptions raisen
+- [Logging](logging.md) — Logging-Einstellungen und `--log-config`
 - [Scheduling und Retries](../guides/scheduling-and-retries.md) —
   wie Retry-Policy mit `Retry` und `NoRetry` interagiert
 - [Dead-Letter-Queues](../guides/dead-letter-queues.md) —

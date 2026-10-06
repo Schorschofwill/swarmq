@@ -62,6 +62,32 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _check_logging_settings(args: argparse.Namespace) -> None:
+    """Logging-Einstellungen wie beim Start pruefen (R14).
+
+    Dieselbe Aufloesung wie im Worker-Zweig (``_setup_worker_logging``),
+    nur ohne ``configure_logging``: ``--check`` richtet nichts ein. Die
+    Importe bleiben lokal, damit ``swarmq --help`` schlank bleibt.
+
+    Raises:
+        ConfigurationError: Eine Logging-Einstellung ist ungueltig oder die
+            Logging-Konfigurationsdatei nicht ladbar bzw. von ``dictConfig``
+            abgelehnt (``LoggingConfigError``).
+    """
+    from swarmq.logging import load_log_config
+    from swarmq.logging_file import probe_dict_config
+    from swarmq.logging_settings import resolve_logging_settings
+
+    settings = resolve_logging_settings(args, os.environ, None)
+    if settings.log_config is not None:
+        path = os.path.abspath(settings.log_config)
+        # Parsen allein reicht nicht: ein Tippfehler in der Handler-Klasse ist
+        # gueltiges JSON und faellt erst in ``dictConfig`` auf. Dieselbe Probe
+        # wie vor dem Hot-Reload, in einem eigenen Interpreter, damit --check
+        # sein eigenes Logging nicht umbaut.
+        probe_dict_config(path, load_log_config(path))
+
+
 def _run_worker_check(args: argparse.Namespace) -> int:
     """``swarmq worker --check`` dry-run entry-point.
 
@@ -76,7 +102,8 @@ def _run_worker_check(args: argparse.Namespace) -> int:
 
     - ``0`` — all validations passed.
     - ``1`` — any validation error (module unresolvable, missing
-      ``watchfiles`` dep, invalid watch-dir, unexpected exception).
+      ``watchfiles`` dep, invalid watch-dir, invalid logging settings,
+      unexpected exception).
 
     Unexpected exceptions are caught too: a :exc:`PermissionError` from ``importlib.util.find_spec``
     or a ``.pth``-related ``OSError`` must not escape as a raw
@@ -87,6 +114,9 @@ def _run_worker_check(args: argparse.Namespace) -> int:
 
     payload = _seed_check_payload(args)
     try:
+        # R14: ohne diese Pruefung meldete --check "in Ordnung" fuer eine
+        # Logging-Einstellung, an der der Start danach mit Exit 78 scheitert.
+        _check_logging_settings(args)
         result = check_worker_config(
             module=args.module,
             reload=payload["reload"],
@@ -181,6 +211,10 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     worker_sub.add_argument("--watch-dir", action="append", default=None)
     worker_sub.add_argument("--log-level", default=None)
     worker_sub.add_argument("--log-format", default=None)
+    worker_sub.add_argument("--log-config", default=None)
+    worker_sub.add_argument("--logger-level", action="append", default=None)
+    worker_sub.add_argument("--log-queue-size", default=None)
+    worker_sub.add_argument("--log-lifecycle-level", default=None)
     worker_sub.add_argument("--check", action="store_true", default=False)
     # Siblings — recognised only so ``parse_known_args`` on their
     # argv prefix does not misclassify them as ``worker``.

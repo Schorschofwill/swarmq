@@ -378,3 +378,26 @@ class TestRateLimitGateOutcomes:
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
         broker.redeliver.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
+
+    async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17)."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
+        await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_check_failed"]
+        assert entry["logger"] == "swarmq.worker.gates.rate_limit"
+        assert entry["log_level"] == "error" and entry["task_id"] == self._ctx().task_id
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+
+    async def test_requeue_failure_logs_error_fields(self, worker, broker, swarmq_logs):
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
+        broker.retry_later = AsyncMock(side_effect=ConnectionError("broker gone"))
+        await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_requeue_failed"]
+        assert entry["log_level"] == "error"
+        assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"

@@ -8,6 +8,14 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from swarmq.exceptions import ConfigurationError
+from swarmq.logging_settings import (
+    VALID_LOG_FORMATS,
+    VALID_LOG_LEVELS,
+    LoggingSettings,
+    parse_logger_levels,
+    split_csv,
+    validate_logger_levels,
+)
 
 # Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
 # connection object is injected (RabbitMQBroker(connection=...) /
@@ -64,6 +72,16 @@ def _parse_float(raw: str, env_var: str) -> float:
         ) from exc
 
 
+def _parse_log_format(raw: str, env_var: str) -> bool:
+    """``human``/``json`` als Wert fuer ``log_json`` (KTD8)."""
+    log_format = raw.strip().lower()
+    if log_format not in VALID_LOG_FORMATS:
+        raise ConfigurationError(
+            f"{env_var} must be one of {list(VALID_LOG_FORMATS)}, got {raw!r}"
+        )
+    return log_format == "json"
+
+
 def observability_port_ranges(
     base_metrics: int | None, base_health: int | None, upper: int
 ) -> tuple[list[int] | None, list[int] | None]:
@@ -87,8 +105,24 @@ class SwarmQConfig:
     result_ttl: int = 86400
     queues: list[str] = field(default_factory=lambda: ["default"])
     concurrency: int = 10
+    # Eingebettet steuern ``log_level``/``log_json`` den Opt-in ``log_queue``
+    # (``swarmq``-Level, Format der Drop-Meldung); ``SwarmQ`` richtet sonst
+    # nichts ein (Plan 2026-10-06-0831, KTD10).
     log_level: str = "INFO"
     log_json: bool = True
+    # Logging-Einstellungen (Plan 2026-10-06, R13/KTD7). Eingebettet sind
+    # sie die Quelle fuer die Prozesse, die die Bibliothek selbst startet.
+    log_config: str | None = None
+    configure_logging: bool = True
+    logger_levels: tuple[tuple[str, str], ...] = ()
+    log_queue_size: int = 10_000
+    log_lifecycle_level: str = "DEBUG"
+    # Opt-in-Queue fuer eingebettete Apps (KTD10), standardmaessig aus.
+    log_queue: bool = False
+    # Die im Supervisor aufgeloesten Einstellungen (U7, KTD7). Gesetzt, sind
+    # sie die Quelle der Logging-Felder oben, und die Env-Overrides gelten
+    # fuer diese Felder nicht: die CLI-Prioritaet ist dort schon angewandt.
+    logging_settings: LoggingSettings | None = None
     retry_max_delay: float = 3600.0
     shutdown_timeout: int = 30
     # Obergrenze fuer einen kompletten Publish-Vorgang inklusive aller
@@ -198,6 +232,15 @@ class SwarmQConfig:
 
     # (Env-Var, Feldname, Parser) — eine Zeile pro Override statt der
     # früheren 27 if-Blöcke; ``__post_init__`` wendet sie der Reihe nach an.
+    #: Die Felder, die ``_apply_logging_settings`` aus ``logging_settings``
+    #: setzt. ``log_queue`` gehoert nicht dazu: ``LoggingSettings`` kennt den
+    #: eingebetteten Opt-in nicht, ``SWARMQ_LOG_QUEUE`` bleibt also die einzige
+    #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
+    _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset({
+        "log_level", "log_json", "log_config", "configure_logging",
+        "logger_levels", "log_queue_size", "log_lifecycle_level",
+    })
+
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
         ("SWARMQ_BROKER_URL", "broker_url", "str"),
         ("SWARMQ_BACKEND_URL", "backend_url", "str"),
@@ -206,6 +249,14 @@ class SwarmQConfig:
         ("SWARMQ_CONCURRENCY", "concurrency", "int"),
         ("SWARMQ_LOG_LEVEL", "log_level", "str"),
         ("SWARMQ_LOG_JSON", "log_json", "bool"),
+        # Nach SWARMQ_LOG_JSON, damit SWARMQ_LOG_FORMAT gewinnt (KTD8).
+        ("SWARMQ_LOG_FORMAT", "log_json", "log_format"),
+        ("SWARMQ_LOG_CONFIG", "log_config", "str"),
+        ("SWARMQ_LOG_QUEUE_SIZE", "log_queue_size", "int"),
+        ("SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "str"),
+        ("SWARMQ_LOG_QUEUE", "log_queue", "bool"),
+        ("SWARMQ_CONFIGURE_LOGGING", "configure_logging", "bool"),
+        ("SWARMQ_LOGGER_LEVELS", "logger_levels", "logger_levels"),
         ("SWARMQ_RETRY_MAX_DELAY", "retry_max_delay", "float"),
         ("SWARMQ_SHUTDOWN_TIMEOUT", "shutdown_timeout", "int"),
         ("SWARMQ_PUBLISH_TIMEOUT_S", "publish_timeout_s", "float"),
@@ -261,6 +312,7 @@ class SwarmQConfig:
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",
+        "log_queue_size",
     )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
     # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
@@ -312,9 +364,13 @@ class SwarmQConfig:
         return f"{base}:{self.worker_slot}"
 
     def _apply_env_overrides(self) -> None:
+        # Mit aufgeloesten Settings gilt die CLI-Prioritaet schon (KTD7); ein
+        # ueberstimmter, ungueltiger Env-Wert darf den Worker nicht mehr mit
+        # Exit 78 beenden, also wird er gar nicht erst geparst.
+        skipped = self._SETTINGS_FIELDS if self.logging_settings is not None else ()
         for env_name, field_name, kind in self._ENV_OVERRIDES:
             raw = os.environ.get(env_name, "")
-            if not raw:
+            if not raw or field_name in skipped:
                 continue
             value: object
             if kind == "int":
@@ -327,6 +383,10 @@ class SwarmQConfig:
                 value = [q.strip() for q in raw.split(",") if q.strip()]
             elif kind == "port":
                 value = _parse_port(raw, env_name)
+            elif kind == "log_format":
+                value = _parse_log_format(raw, env_name)
+            elif kind == "logger_levels":
+                value = parse_logger_levels(split_csv(raw), env_name)
             else:
                 value = raw
             setattr(self, field_name, value)
@@ -366,10 +426,7 @@ class SwarmQConfig:
             msg = f"concurrency must be >= 1, got {self.concurrency}"
             raise ConfigurationError(msg)
 
-        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        if self.log_level not in valid_levels:
-            msg = f"log_level must be one of {sorted(valid_levels)}, got {self.log_level!r}"
-            raise ConfigurationError(msg)
+        self._validate_logging()
 
         valid_queue_types = {"quorum", "classic"}
         if self.queue_type not in valid_queue_types:
@@ -381,6 +438,24 @@ class SwarmQConfig:
             if value <= 0:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
+
+    def _validate_logging(self) -> None:
+        """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""
+        for field_name in ("log_level", "log_lifecycle_level"):
+            value = getattr(self, field_name)
+            if value not in VALID_LOG_LEVELS:
+                msg = (
+                    f"{field_name} must be one of {sorted(VALID_LOG_LEVELS)}, "
+                    f"got {value!r}"
+                )
+                raise ConfigurationError(msg)
+        self.logger_levels = validate_logger_levels(self.logger_levels, "logger_levels")
+        if self.log_config is not None and not self.configure_logging:
+            msg = (
+                "log_config cannot be combined with configure_logging=False: "
+                "a logging config file needs logging to be configured"
+            )
+            raise ConfigurationError(msg)
 
     def _validate_scheduler_relations(self) -> None:
         if self.scheduler_lock_ttl < self.scheduler_heartbeat_interval * 2:
@@ -411,8 +486,21 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
+    def _apply_logging_settings(self) -> None:
+        settings = self.logging_settings
+        if settings is None:
+            return
+        self.log_level = settings.level
+        self.log_json = settings.format == "json"
+        self.log_config = settings.log_config
+        self.configure_logging = settings.configure
+        self.logger_levels = settings.logger_levels
+        self.log_queue_size = settings.queue_size
+        self.log_lifecycle_level = settings.lifecycle_level
+
     def __post_init__(self) -> None:
         self._apply_env_overrides()
+        self._apply_logging_settings()
         self._apply_slot_port_offset()
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the

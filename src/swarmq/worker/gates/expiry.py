@@ -11,17 +11,16 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import structlog
-
 from swarmq.cancellation import build_result_dict
 from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
 from swarmq.headers import HEADER_ENQUEUED_AT
+from swarmq.logging import get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class ExpiryGate:

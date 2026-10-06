@@ -9,6 +9,20 @@ class ConfigurationError(SwarmQError):
     pass
 
 
+class LoggingConfigError(ConfigurationError):
+    """Eine Logging-Konfigurationsdatei ist nicht ladbar oder ungueltig.
+
+    Plan 2026-10-06-0831, U6 (R14, AE4). Traegt den Pfad der Datei; die
+    Ursache steht in ``__cause__``. Als ``ConfigurationError`` endet sie in
+    den Einstiegspunkten mit Exit 78.
+    """
+
+    def __init__(self, path: str, cause: BaseException) -> None:
+        super().__init__(f"invalid logging config {path}: {type(cause).__name__}: {cause}")
+        self.path = path
+        self.__cause__ = cause
+
+
 class BrokerConnectionError(SwarmQError):
     pass
 

@@ -6,17 +6,15 @@ from __future__ import annotations
 import dataclasses
 import os
 import signal as _signal
-import sys
 import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
-import structlog
-
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import flush_logging, setup_logging
+from swarmq.logging import configure_logging, get_logger, shutdown_logging
+from swarmq.logging_settings import LoggingSettings
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.supervision import (
     CONFIG_ERROR_EXIT_CODE as _CONFIG_ERROR_EXIT_CODE,
@@ -29,7 +27,7 @@ from swarmq.supervision import (
     set_current_channel,
 )
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 #: Exit-Code fuer Konfigurationsfehler im Worker-Subprozess (R29, KTD8).
@@ -53,6 +51,26 @@ def _unblock_inherited_signals() -> None:
         pass
 
 
+def _logging_settings(cfg: WorkerConfig) -> LoggingSettings:
+    """Die aufgeloesten Settings; Bestandsaufrufer ohne sie bekommen das
+    eingebaute Logging mit ``log_level``/``log_format`` wie bisher."""
+    if cfg.logging_settings is not None:
+        return cfg.logging_settings
+    return LoggingSettings(level=cfg.log_level, format=cfg.log_format)
+
+
+def _log_config_error(worker_id: int, exc: BaseException) -> None:
+    """``worker_config_error`` aus dem Kind; der Exit 78 folgt beim Aufrufer."""
+    logger.error(
+        "worker_config_error",
+        source="worker",
+        worker_id=worker_id,
+        error_type=type(exc).__name__,
+        error=f"{type(exc).__name__}: {exc}",
+        hint="fix the configuration and start again; no restart attempted",
+    )
+
+
 def worker_subprocess_entry(
     worker_id: int,
     shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
@@ -74,7 +92,6 @@ def worker_subprocess_entry(
     """
     import argparse as _argparse
     import asyncio
-    import logging as _stdlib_logging
 
     # Import a public symbol so a rename in
     # cli.py is detectable via tests rather than a silent subprocess
@@ -84,16 +101,31 @@ def worker_subprocess_entry(
     # error surface.
     from swarmq.cli import run_worker_async
 
-    # KTD8: Logging als ERSTES konfigurieren, damit auch ein
-    # Konfigurationsfehler vor dem Bau der App im konfigurierten Format
-    # erscheint. ``SwarmQ`` konfiguriert danach erneut; ``setup_logging``
-    # stoppt dabei den Listener dieses Aufrufs, so dass genau einer laeuft.
-    _stdlib_logging.basicConfig(level=cfg.log_level)
-    setup_logging(cfg.log_level, cfg.log_format == "json")
+    # KTD4: Logging als ERSTES und genau einmal einrichten, vor dem
+    # App-Import in ``run_worker_async``, aus den im Supervisor aufgeloesten
+    # Settings (KTD7) -- das Kind liest kein Env. Auch ein
+    # Konfigurationsfehler vor dem Bau der App erscheint so im gewaehlten
+    # Format. ``SwarmQ`` richtet danach nichts mehr ein.
+    settings = _logging_settings(cfg)
+    try:
+        configure_logging(settings)
+    except ConfigurationError as exc:
+        # Ein ``LoggingConfigError``, der erst hier auftritt (die dictConfig
+        # scheitert beim Anwenden), ist ein Konfigurationsfehler wie jeder
+        # andere: Exit 78 statt Exit 1, sonst startete der Supervisor den
+        # Worker in einer Schleife neu (R29). Die Zeile schreibt das
+        # eingebaute Logging (wie ``_setup_fallback_logging`` im Supervisor,
+        # R14) -- ohne es gaebe ``logging.lastResort`` nur den Event-Namen aus.
+        configure_logging(LoggingSettings(format=settings.format))
+        try:
+            _log_config_error(worker_id, exc)
+        finally:
+            shutdown_logging()
+        raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
 
-    # asdict converts tuple → list (dataclasses has no tuple-preservation);
-    # Namespace callers expect list-typed queues so we re-wrap explicitly.
-    kwargs = dataclasses.asdict(cfg)
+    # Flach statt ``dataclasses.asdict``: das wandelte ``logging_settings``
+    # in ein Dict. Namespace callers expect list-typed queues.
+    kwargs = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}
     kwargs["queues"] = list(kwargs["queues"])
     # reload/watch_dirs are supervisor-only state.
     # They ride along on WorkerConfig for pipeline-uniformity (R4.6-H
@@ -153,7 +185,14 @@ def worker_subprocess_entry(
     except KeyboardInterrupt:
         return
     except RecycleAckTimeout as exc:
-        sys.stderr.write(f"swarmq worker: {exc}\n")
+        # U7 (R15): strukturiert im gewaehlten Format statt Rohtext, und vor
+        # dem Exit geschrieben.
+        logger.error(
+            "worker_recycle_ack_timeout",
+            worker_id=worker_id,
+            error_type=type(exc).__name__,
+            error=f"{type(exc).__name__}: {exc}",
+        )
         raise SystemExit(RECYCLE_NOACK_EXIT_CODE) from None
     except (ConfigurationError, ModuleNotFoundError) as exc:
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
@@ -165,14 +204,10 @@ def worker_subprocess_entry(
         # ``ModuleNotFoundError`` (etwa eine fehlende Abhaengigkeit des
         # Task-Moduls) gehoert in dieselbe Klasse: er endete bisher mit
         # Traceback und fuenf Neustarts.
-        logger.error(
-            "worker_config_error",
-            source="worker",
-            worker_id=worker_id,
-            error=f"{type(exc).__name__}: {exc}",
-            hint="fix the configuration and start again; no restart attempted",
-        )
-        # Ohne Flush endet der Prozess, bevor der Listener-Thread die Zeile
-        # geschrieben hat -- der Supervisor saehe nur den Exit-Code.
-        flush_logging()
+        _log_config_error(worker_id, exc)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
+    finally:
+        # R15: an jedem Exit-Pfad leeren. Ohne das endet der Prozess, bevor
+        # der Listener-Thread die letzten Zeilen geschrieben hat -- der
+        # Supervisor saehe im Fehlerfall nur den Exit-Code.
+        shutdown_logging()
