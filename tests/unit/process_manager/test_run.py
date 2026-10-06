@@ -444,6 +444,27 @@ class TestSupervisorLoggingSettings:
         assert cfg.logging_settings is settings
         assert (cfg.log_level, cfg.log_format) == ("WARNING", "json")
 
+    def test_invalid_logging_env_is_ignored_with_resolved_settings(self, monkeypatch):
+        """Die CLI hat ``SWARMQ_LOG_FORMAT`` schon zugunsten von ``--log-format``
+        verworfen; die Supervisor-``SwarmQConfig`` darf das ungueltige Env
+        nicht erneut parsen und mit 78 abbrechen."""
+        from swarmq.logging_settings import LoggingSettings
+        from swarmq.process_manager import run_multi_process_worker
+
+        monkeypatch.setenv("SWARMQ_LOG_FORMAT", "jsonl")
+        monkeypatch.setenv("SWARMQ_SHUTDOWN_TIMEOUT", "7")
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with patch.dict(os.environ, _URLS, clear=False), \
+             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
+             patch("swarmq.process_manager.check._validate_module_importable"):
+            rc = run_multi_process_worker(
+                TestReloadRoutingThroughCLI()._args(), logging_settings=LoggingSettings(format="json"),
+            )
+
+        assert rc == 0
+        assert PM.call_args.kwargs["shutdown_grace_s"] == 7.0
+
     def test_broker_connection_error_is_a_structured_line(self, capsys):
         """R15: kein Rohtext mehr auf stderr; die Zeile ist vor dem Exit
         geschrieben."""

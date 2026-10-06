@@ -458,6 +458,7 @@ class TestCheckValidatesLogging:
     - [x] fehlende ``--log-config``-Datei
     - [x] ``--log-format`` zusammen mit ``--log-config``
     - [x] nicht positive ``--log-queue-size``
+    - [x] ``--log-config``, die erst ``dictConfig`` ablehnt (Handler-Tippfehler)
     """
 
     @staticmethod
@@ -489,3 +490,22 @@ class TestCheckValidatesLogging:
         assert rc == 1
         assert payload["error_type"] == "ConfigurationError"
         assert "--log-queue-size" in payload["error"]
+
+    def test_log_config_rejected_by_dict_config_is_reported(self, capsys, tmp_path):
+        """AE4: Ein Tippfehler in der Handler-Klasse ist gueltiges JSON und
+        faellt erst in ``dictConfig`` auf -- der Start endete mit 78, waehrend
+        ``--check`` "in Ordnung" meldete."""
+        import json
+
+        bad = tmp_path / "bad.json"
+        bad.write_text(json.dumps({
+            "version": 1,
+            "handlers": {"err": {"class": "logging.StreamHandlr"}},
+            "root": {"handlers": ["err"]},
+        }))
+        rc, payload = self._check(capsys, "--log-config", str(bad))
+        assert rc == 1
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ConfigurationError"
+        assert str(bad) in payload["error"]
+        assert "Unable to configure handler" in payload["error"]

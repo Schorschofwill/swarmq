@@ -6,8 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import socket
-import subprocess
-import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
@@ -17,6 +15,7 @@ from collections.abc import Callable
 
 from swarmq.exceptions import ConfigurationError, LoggingConfigError
 from swarmq.logging import _error_fields, get_logger, load_log_config
+from swarmq.logging_file import probe_dict_config
 from swarmq.logging_settings import LoggingSettings, resolve_logging_settings
 from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
@@ -76,7 +75,7 @@ def log_config_reload_check(settings: LoggingSettings) -> Callable[[], bool] | N
 
     def _check() -> bool:
         try:
-            _probe_dict_config(path, load_log_config(path))
+            probe_dict_config(path, load_log_config(path))
         except LoggingConfigError as exc:
             logger.error(
                 "log_config_reload_failed",
@@ -88,37 +87,6 @@ def log_config_reload_check(settings: LoggingSettings) -> Callable[[], bool] | N
         return True
 
     return _check
-
-
-_DICT_CONFIG_PROBE = """
-import json, logging.config, sys
-try:
-    logging.config.dictConfig(json.loads(sys.stdin.read()))
-except Exception as exc:
-    cause = exc.__cause__
-    print(f"{exc}" + (f": {cause}" if cause else ""), file=sys.stderr)
-    sys.exit(1)
-"""
-
-
-def _probe_dict_config(path: str, raw: str) -> None:
-    """Wendet die dictConfig in einem eigenen Interpreter an.
-
-    Tippfehler in Handlern oder Formattern sieht erst ``dictConfig``; im
-    laufenden Supervisor angewandt, baute sie dessen Logging um. Das
-    Probe-Kind hat Arbeitsverzeichnis und Env des Supervisors, findet also
-    dieselben Handler-Klassen wie der neu gestartete.
-    """
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _DICT_CONFIG_PROBE],
-            input=raw, capture_output=True, text=True, timeout=30, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise LoggingConfigError(path, exc) from exc
-    if proc.returncode != 0:
-        cause = ValueError(proc.stderr.strip() or f"dictConfig exited {proc.returncode}")
-        raise LoggingConfigError(path, cause) from cause
 
 
 def resolve_group_key(label: str | None, queues: list[str] | tuple[str, ...]) -> str:
@@ -199,7 +167,12 @@ def _run_multi_process_worker_configured(
     # the parent and pass it as the phase-1 grace so a subprocess's
     # graceful-shutdown flow has the budget it was configured for.
     from swarmq.config import SwarmQConfig
-    sq_config = SwarmQConfig(broker_url=broker_url, backend_url=backend_url)
+    # Mit den aufgeloesten Settings ueberspringt SwarmQConfig die Logging-Env:
+    # ein ungueltiges SWARMQ_LOG_FORMAT, das ``--log-format`` schon
+    # ueberstimmt hat, braeche sonst hier mit 78 ab.
+    sq_config = SwarmQConfig(
+        broker_url=broker_url, backend_url=backend_url, logging_settings=logging_settings,
+    )
     shutdown_grace_s = float(sq_config.shutdown_timeout)
 
     worker_cfg = WorkerConfig(

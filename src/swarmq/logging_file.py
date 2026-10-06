@@ -11,6 +11,8 @@ import json as jsonlib
 import logging
 import logging.handlers
 import queue
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -41,6 +43,42 @@ def load_log_config(path: str) -> str:
         raise LoggingConfigError(path, cause) from cause
     config.setdefault("disable_existing_loggers", False)
     return jsonlib.dumps(config)
+
+
+_DICT_CONFIG_PROBE = """
+import json, logging.config, sys
+try:
+    logging.config.dictConfig(json.loads(sys.stdin.read()))
+except Exception as exc:
+    cause = exc.__cause__
+    print(f"{exc}" + (f": {cause}" if cause else ""), file=sys.stderr)
+    sys.exit(1)
+"""
+
+
+def probe_dict_config(path: str, raw: str) -> None:
+    """Wendet die dictConfig in einem eigenen Interpreter an.
+
+    Tippfehler in Handlern oder Formattern sieht erst ``dictConfig``; im
+    pruefenden Prozess angewandt (Supervisor vor dem Hot-Reload,
+    ``swarmq worker --check``), baute sie dessen Logging um. Das Probe-Kind
+    hat Arbeitsverzeichnis und Env des Aufrufers, findet also dieselben
+    Handler-Klassen wie der spaetere Start.
+
+    Raises:
+        LoggingConfigError: ``dictConfig`` lehnt die Konfiguration ab oder
+            das Probe-Kind laesst sich nicht starten.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _DICT_CONFIG_PROBE],
+            input=raw, capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LoggingConfigError(path, exc) from exc
+    if proc.returncode != 0:
+        cause = ValueError(proc.stderr.strip() or f"dictConfig exited {proc.returncode}")
+        raise LoggingConfigError(path, cause) from cause
 
 
 def _parse_log_config(path: str, text: str) -> Any:

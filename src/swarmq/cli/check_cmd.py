@@ -71,14 +71,21 @@ def _check_logging_settings(args: argparse.Namespace) -> None:
 
     Raises:
         ConfigurationError: Eine Logging-Einstellung ist ungueltig oder die
-            Logging-Konfigurationsdatei nicht ladbar (``LoggingConfigError``).
+            Logging-Konfigurationsdatei nicht ladbar bzw. von ``dictConfig``
+            abgelehnt (``LoggingConfigError``).
     """
     from swarmq.logging import load_log_config
+    from swarmq.logging_file import probe_dict_config
     from swarmq.logging_settings import resolve_logging_settings
 
     settings = resolve_logging_settings(args, os.environ, None)
     if settings.log_config is not None:
-        load_log_config(os.path.abspath(settings.log_config))
+        path = os.path.abspath(settings.log_config)
+        # Parsen allein reicht nicht: ein Tippfehler in der Handler-Klasse ist
+        # gueltiges JSON und faellt erst in ``dictConfig`` auf. Dieselbe Probe
+        # wie vor dem Hot-Reload, in einem eigenen Interpreter, damit --check
+        # sein eigenes Logging nicht umbaut.
+        probe_dict_config(path, load_log_config(path))
 
 
 def _run_worker_check(args: argparse.Namespace) -> int:
