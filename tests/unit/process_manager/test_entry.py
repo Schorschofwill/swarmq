@@ -206,6 +206,23 @@ class TestConfigErrorExitCode:
         entry = next(e for e in events if e["event"] == "worker_config_error")
         assert "pandas" in entry["error"]
 
+    def test_config_error_carries_error_type_like_the_supervisor(self, monkeypatch, swarmq_logs):
+        """R17: Fehler erscheinen als ``error_type`` + ``error`` -- die
+        Kind-Variante von ``worker_config_error`` muss dieselben Felder
+        tragen wie die des Supervisors."""
+        from swarmq.exceptions import ConfigurationError
+
+        async def boom(ns):
+            raise ConfigurationError("no tasks registered")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        entry = next(e for e in swarmq_logs if e["event"] == "worker_config_error")
+        assert entry["error_type"] == "ConfigurationError"
+        assert entry["error"] == "ConfigurationError: no tasks registered"
+
 
 class TestHeartbeatWriter:
     """R21/KTD10: der Entry schreibt das Lebenszeichen aus dem Event-Loop."""

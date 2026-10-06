@@ -479,6 +479,8 @@ _LLMS_DOC_LINKS: list[tuple[str, str, str]] = [
     ("CLI reference", "reference/cli.md", "commands and flags"),
     ("Configuration", "reference/configuration.md",
      "options, defaults, env vars"),
+    ("Logging", "reference/logging.md",
+     "log events, fields, formats, levels"),
     ("API reference", "reference/api.md", "public classes and methods"),
 ]
 

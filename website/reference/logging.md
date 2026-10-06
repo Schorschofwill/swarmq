@@ -428,8 +428,8 @@ selection, not every event SwarmQ emits.
 |---|---|---|---|
 | `worker_started` | `swarmq.worker.lifecycle` | INFO | |
 | `worker_died` | `swarmq.process_manager.supervisor` | INFO / WARNING | INFO for a clean exit (`0`) or an expected shutdown, otherwise WARNING. Fields `worker_id`, `pid`, `exitcode`, `expected`, `slot_state`. |
-| `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry` | ERROR | Configuration error, exit `78`. Field `source` (`supervisor`/`worker`). |
-| `worker_connection_error` | `swarmq.cli` | ERROR | Broker or backend unreachable at start, exit `1`. Traceback only with `--log-level DEBUG`. |
+| `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry` | ERROR | Configuration error, exit `78`. Fields `source` (`supervisor`/`worker`), `error_type`, `error`, `hint`. Supervisor: traceback on stderr only at level `DEBUG` (`--log-level` or `SWARMQ_LOG_LEVEL`). |
+| `worker_connection_error` | `swarmq.cli` | ERROR | Broker or backend unreachable at start, exit `1`. Traceback only at level `DEBUG` (`--log-level` or `SWARMQ_LOG_LEVEL`). |
 | `worker_recycle_ack_timeout` | `swarmq.process_manager.entry` | ERROR | A recycling worker got no acknowledgement and exits `75`. |
 | `log_config_reload_failed` | `swarmq.process_manager.run` | ERROR | Reload aborted; fields `path`, `error_type`, `error`, `hint`. |
 | `logging_reconfigured_by_app` | `swarmq.logging`, `swarmq.worker.compute.pool` | INFO | Your app replaced the root handlers; field `reenabled_loggers`. |

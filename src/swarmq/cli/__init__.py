@@ -368,7 +368,9 @@ def _run_worker_command(args: argparse.Namespace) -> int:
         # mit 1 fuer alle Startfehler startete sie einen kaputt
         # konfigurierten Worker endlos neu.
         _log_worker_config_error(exc)
-        if getattr(args, "log_level", "INFO") == "DEBUG":
+        # KTD7: das aufgeloeste Level (CLI > Env) wie bei Exit 1, nicht nur
+        # das rohe Flag.
+        if logging_settings.level == "DEBUG":
             traceback.print_exc(file=sys.stderr)
         return CONFIG_ERROR_EXIT_CODE
     except (BrokerConnectionError, BackendConnectionError) as exc:

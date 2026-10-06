@@ -181,6 +181,7 @@ def worker_subprocess_entry(
             "worker_config_error",
             source="worker",
             worker_id=worker_id,
+            error_type=type(exc).__name__,
             error=f"{type(exc).__name__}: {exc}",
             hint="fix the configuration and start again; no restart attempted",
         )

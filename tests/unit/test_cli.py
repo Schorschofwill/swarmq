@@ -297,6 +297,22 @@ class TestMainErrorRendering:
         assert "boom" in err
         assert "Traceback" in err
 
+    def test_env_debug_log_level_includes_traceback_on_config_error(self, capsys, monkeypatch):
+        """KTD7: Exit 78 richtet sich nach dem aufgeloesten Level (CLI > Env),
+        wie Exit 1 -- ``SWARMQ_LOG_LEVEL=DEBUG`` ohne Flag zeigt den
+        Traceback ebenfalls."""
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        monkeypatch.setenv("SWARMQ_LOG_LEVEL", "DEBUG")
+        with patch(
+            "swarmq.process_manager.run.run_multi_process_worker",
+            side_effect=ConfigurationError("boom"),
+        ):
+            rc = cli.main(["worker", "--module", "myapp"])
+        err = capsys.readouterr().err
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        assert "Traceback" in err
+
     def test_keyboard_interrupt_exits_zero(self, capsys):
         with patch(
             "swarmq.process_manager.run.run_multi_process_worker", side_effect=KeyboardInterrupt()

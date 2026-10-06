@@ -438,8 +438,8 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 |---|---|---|---|
 | `worker_started` | `swarmq.worker.lifecycle` | INFO | |
 | `worker_died` | `swarmq.process_manager.supervisor` | INFO / WARNING | INFO bei sauberem Ende (`0`) oder erwartetem Herunterfahren, sonst WARNING. Felder `worker_id`, `pid`, `exitcode`, `expected`, `slot_state`. |
-| `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry` | ERROR | Konfigurationsfehler, Exit `78`. Feld `source` (`supervisor`/`worker`). |
-| `worker_connection_error` | `swarmq.cli` | ERROR | Broker oder Backend beim Start nicht erreichbar, Exit `1`. Traceback nur mit `--log-level DEBUG`. |
+| `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry` | ERROR | Konfigurationsfehler, Exit `78`. Felder `source` (`supervisor`/`worker`), `error_type`, `error`, `hint`. Supervisor: Traceback auf stderr nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
+| `worker_connection_error` | `swarmq.cli` | ERROR | Broker oder Backend beim Start nicht erreichbar, Exit `1`. Traceback nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
 | `worker_recycle_ack_timeout` | `swarmq.process_manager.entry` | ERROR | Ein recycelnder Worker bekam keine Bestätigung und endet mit `75`. |
 | `log_config_reload_failed` | `swarmq.process_manager.run` | ERROR | Reload abgebrochen; Felder `path`, `error_type`, `error`, `hint`. |
 | `logging_reconfigured_by_app` | `swarmq.logging`, `swarmq.worker.compute.pool` | INFO | Deine App hat die Root-Handler ersetzt; Feld `reenabled_loggers`. |

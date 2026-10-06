@@ -395,6 +395,13 @@ def test_llms_txt_is_well_formed_and_links_every_spec_part() -> None:
         assert f"spec/{path}" in text
 
 
+def test_llms_txt_links_the_logging_reference() -> None:
+    """Die Logging-Referenz (Plan 2026-10-06-0831, U12) beschreibt Events
+    und Felder, die eine Automatisierung auswertet -- sie gehoert in den
+    Index."""
+    assert "(reference/logging.md)" in build_llms_txt()
+
+
 # === U6: drift guard — committed files must match the generators ===
 
 from swarmq.agent_spec import (  # noqa: E402
