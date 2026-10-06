@@ -744,31 +744,32 @@ class TestArgvSnapshot:
     def test_argv_captured_on_init(self, monkeypatch):
         import sys as _sys
         monkeypatch.setattr(
-            _sys, "argv", ["swarmq", "worker", "--module=x"],
+            _sys, "orig_argv", ["python", "/venv/bin/swarmq", "worker", "--module=x"],
         )
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
-        assert pm._startup_argv == ["swarmq", "worker", "--module=x"]
+        # orig_argv[0] (das Interpreter-Wort) ersetzt der Re-Exec durch sys.executable.
+        assert pm._startup_argv == ["/venv/bin/swarmq", "worker", "--module=x"]
 
     def test_sys_argv_mutation_does_not_affect_snapshot(self, monkeypatch):
-        """Post-__init__ mutation of sys.argv must NOT be visible in
+        """Post-__init__ mutation of sys.orig_argv must NOT be visible in
         the snapshot used by execvp."""
         import sys as _sys
-        monkeypatch.setattr(_sys, "argv", ["swarmq", "worker"])
+        monkeypatch.setattr(_sys, "orig_argv", ["python", "swarmq", "worker"])
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
-        _sys.argv[0] = "mutated"
-        _sys.argv.append("--evil")
+        _sys.orig_argv[1] = "mutated"
+        _sys.orig_argv.append("--evil")
         assert pm._startup_argv == ["swarmq", "worker"]
 
     def test_execvp_uses_snapshot_not_live_argv(self, monkeypatch):
         import sys as _sys
         monkeypatch.setattr(
-            _sys, "argv", ["swarmq", "worker", "--module=safe"],
+            _sys, "orig_argv", ["python", "swarmq", "worker", "--module=safe"],
         )
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         pm._reload_requested = True
-        # Mutate sys.argv between __init__ and run():
-        _sys.argv.append("--injected")
+        # Mutate sys.orig_argv between __init__ and run():
+        _sys.orig_argv.append("--injected")
         with patch.object(pm, "_start_all_workers"), \
              patch.object(pm, "_setup_signals"), \
              patch.object(pm, "_monitor_loop", return_value=0), \
@@ -778,9 +779,38 @@ class TestArgvSnapshot:
             pm.run()
             execvpe.assert_called_once()
             _, argv_used, _ = execvpe.call_args.args
-            # argv is [sys.executable, *snapshot] — not live sys.argv.
+            # argv is [sys.executable, *snapshot] — not live sys.orig_argv.
             assert "--injected" not in argv_used
             assert "--module=safe" in argv_used
+
+    def test_execvpe_keeps_python_m_and_interpreter_flags(self, monkeypatch):
+        """Unter ``python -m swarmq.cli`` steht in sys.argv[0] der Pfad von
+        __main__.py -- der Re-Exec muss die Original-Kommandozeile nehmen,
+        sonst laeuft das neue Abbild die Datei als Skript (cwd fehlt auf
+        sys.path, Spawn-Kinder scheitern im Bootstrapping)."""
+        import sys as _sys
+        monkeypatch.setattr(
+            _sys, "orig_argv",
+            ["python", "-X", "dev", "-m", "swarmq.cli", "worker", "--module=safe"],
+        )
+        monkeypatch.setattr(
+            _sys, "argv", ["/venv/swarmq/cli/__main__.py", "worker", "--module=safe"],
+        )
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_monitor_loop", return_value=0), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe:
+            pm.run()
+            path_used, argv_used, _ = execvpe.call_args.args
+            assert path_used == _sys.executable
+            assert argv_used == [
+                _sys.executable, "-X", "dev", "-m", "swarmq.cli", "worker", "--module=safe",
+            ]
 
     def test_env_snapshot_captured_on_init(self, monkeypatch):
         """ce-review SEC-ENV-01: os.environ is snapshotted at init."""

@@ -402,3 +402,31 @@ class TestSubprocessImport:
             f"stderr: {result.stderr}"
         )
         assert "swarmq" in result.stdout.lower()
+
+
+class TestMainModuleGuard:
+    """``swarmq/cli/__main__.py`` braucht den ``__name__``-Guard: Spawn-Kinder
+    importieren das Hauptmodul erneut als ``__mp_main__``. Ohne Guard ruft der
+    Import ``main()`` und das Kind scheitert mit "An attempt has been made to
+    start a new process before the current process has finished its
+    bootstrapping phase" (Hot-Reload unter ``python -m swarmq.cli``)."""
+
+    def test_import_as_non_main_module_does_not_call_main(self, monkeypatch) -> None:
+        import runpy
+        from unittest.mock import MagicMock
+
+        fake_main = MagicMock(return_value=0)
+        monkeypatch.setattr("swarmq.cli.main", fake_main)
+        runpy.run_module("swarmq.cli.__main__", run_name="__mp_main__")
+        fake_main.assert_not_called()
+
+    def test_run_as_main_calls_main_and_exits_with_its_code(self, monkeypatch) -> None:
+        import runpy
+        from unittest.mock import MagicMock
+
+        fake_main = MagicMock(return_value=3)
+        monkeypatch.setattr("swarmq.cli.main", fake_main)
+        with pytest.raises(SystemExit) as exc_info:
+            runpy.run_module("swarmq.cli.__main__", run_name="__main__")
+        fake_main.assert_called_once_with()
+        assert exc_info.value.code == 3
