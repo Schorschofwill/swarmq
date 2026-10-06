@@ -20,6 +20,7 @@ from swarmq.logging_file import load_log_config as load_log_config
 from swarmq.logging_format import build_formatter as build_formatter
 from swarmq.logging_queue import LISTENER_THREAD_NAME as LISTENER_THREAD_NAME
 from swarmq.logging_queue import _activate_swarmq_queue_after_app_takeover, _LogQueue, _reset_log_queue, _stop_listeners
+from swarmq.logging_queue import _await_log_queue_drained as _await_log_queue_drained
 from swarmq.logging_queue import _disable_log_queue as _disable_log_queue
 from swarmq.logging_queue import _enable_log_queue as _enable_log_queue
 from swarmq.logging_queue import _StructlogQueueHandler as _StructlogQueueHandler

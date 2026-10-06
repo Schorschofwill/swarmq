@@ -8,6 +8,7 @@ teilen (``_CONFIGURED``, ``_APP_TAKEOVER_REPORTED``).
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
 import contextvars
@@ -346,7 +347,10 @@ _OPTIN_TAKEOVER = False
 """Haelt die Regel "App gewinnt" (KTD4) den Opt-in in diesem Prozess?"""
 
 
-def _enable_log_queue(level: str | int, *, json: bool = False, queue_size: int = 10_000) -> bool:
+def _enable_log_queue(
+    level: str | int, *, json: bool = False, queue_size: int = 10_000,
+    drain_timeout: float | None = None,
+) -> bool:
     """Leitet ``swarmq.*`` ueber eine eigene Hintergrund-Queue (R5, KTD10).
 
     Mit Referenzzaehlung: Die erste Anforderung installiert den Handler am
@@ -355,22 +359,42 @@ def _enable_log_queue(level: str | int, *, json: bool = False, queue_size: int =
 
     Hat ein Einstiegspunkt eingebaut oder per Datei konfiguriert, ist der
     Opt-in wirkungslos (``False``); unter "nicht konfigurieren" gilt er.
+
+    ``drain_timeout`` ist die Frist der App (``log_drain_timeout``); sie gilt
+    dann auch fuer ``shutdown_logging`` beim Prozessende (Plan
+    2026-10-06-1811, KTD3/KTD4).
     """
-    global _OPTIN_HOLDERS
+    global _OPTIN_HOLDERS, _DRAIN_TIMEOUT
     if _CONFIGURED:
         return False
     _OPTIN_HOLDERS += 1
+    if drain_timeout is not None:
+        _DRAIN_TIMEOUT = drain_timeout
     _install_log_queue(level, json=json, queue_size=queue_size)
     return True
 
 
-def _disable_log_queue() -> None:
-    """Gibt eine Anforderung frei. Die letzte schreibt die Queue und stellt
-    Handler, ``propagate`` und Level von ``swarmq`` wieder her (KTD10)."""
+def _disable_log_queue() -> _Draining | None:
+    """Gibt eine Anforderung frei. Die letzte stellt Handler, ``propagate``
+    und Level von ``swarmq`` wieder her (KTD10) und schliesst die Queue, in
+    O(1) und ohne zu warten (Plan 2026-10-06-1811, KTD4). Das Leeren
+    erwartet danach ``_await_log_queue_drained``."""
     global _OPTIN_HOLDERS
     _OPTIN_HOLDERS = max(_OPTIN_HOLDERS - 1, 0)
     if _OPTIN_HOLDERS == 0 and not _OPTIN_TAKEOVER:
-        _remove_log_queue()
+        return _detach_log_queue()
+    return None
+
+
+async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -> None:
+    """Wartet, ohne den Event-Loop anzuhalten, bis der Listener die
+    geschlossene Opt-in-Queue geleert hat (Plan 2026-10-06-1811, KTD4)."""
+    if draining is None:
+        return
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.to_thread(draining.thread.join, timeout), timeout)
+    if not draining.settle():
+        draining.notify(timeout)
 
 
 def _reset_log_queue() -> None:
@@ -378,7 +402,9 @@ def _reset_log_queue() -> None:
     global _OPTIN_HOLDERS, _OPTIN_TAKEOVER
     _OPTIN_HOLDERS = 0
     _OPTIN_TAKEOVER = False
-    _remove_log_queue()
+    draining = _detach_log_queue()
+    if draining is not None and not draining.wait(Deadline(_DRAIN_TIMEOUT)):
+        draining.notify(_DRAIN_TIMEOUT)
 
 
 def _install_log_queue(level: str | int | None, *, json: bool, queue_size: int) -> None:
@@ -396,19 +422,20 @@ def _install_log_queue(level: str | int | None, *, json: bool, queue_size: int) 
         logger.setLevel(level)
 
 
-def _remove_log_queue() -> None:
-    """Entfernt den Opt-in-Handler, stellt ``swarmq`` wieder her und
-    schreibt die Queue."""
+def _detach_log_queue() -> _Draining | None:
+    """Synchroner Teil des Abbaus (KTD4): Handler entfernen, ``swarmq``
+    wiederherstellen, Queue schliessen. Ein neuer Opt-in bekommt danach
+    einen frischen Handler mit frischer Queue."""
     global _OPTIN_HANDLER
     handler, _OPTIN_HANDLER = _OPTIN_HANDLER, None
     if handler is None:
-        return
+        return None
     logger = logging.getLogger("swarmq")
     logger.removeHandler(handler)
     logger.propagate, level = _OPTIN_SAVED
     logger.setLevel(level)
     assert handler.listener is not None
-    handler.listener.stop()
+    return _close(handler.listener, handler, swap=False)
 
 
 _CONFIGURED = False
@@ -475,6 +502,11 @@ class _Draining:
         """Bis zur Frist warten; danach aufgeben und den Rest zaehlen.
         ``False``, wenn aufgegeben wurde."""
         self.thread.join(deadline.remaining())
+        return self.settle()
+
+    def settle(self) -> bool:
+        """Nach der Frist: Lebt der Thread noch, aufgeben und den Rest
+        zaehlen. ``False``, wenn aufgegeben wurde."""
         if not self.thread.is_alive():
             return True
         self.lost = lost = self.queue.qsize()
@@ -493,9 +525,15 @@ class _Draining:
         _LISTENERS.discard(self.listener)
         return False
 
+    def notify(self, timeout: float) -> None:
+        """Abschlusszeile fuer ein aufgegebenes Leeren (KTD3)."""
+        handler = self.handler
+        write_drain_notice(self.lost, timeout, json=handler is not None and handler.json)
+
 
 def _close(
     listener: _SwarmqQueueListener, handler: _StructlogQueueHandler | None,
+    *, swap: bool = True,
 ) -> _Draining | None:
     """Schliesst die Queue eines laufenden Listeners, ohne zu blockieren
     (``Queue.shutdown``). Zuvor bekommt sein Handler eine frische Queue und
@@ -504,7 +542,7 @@ def _close(
     thread = listener._thread
     if thread is None or not thread.is_alive():
         return None
-    if handler is not None:
+    if handler is not None and swap:
         handler._swap_queue()
     listener.queue.shutdown()
     return _Draining(listener, thread, handler)

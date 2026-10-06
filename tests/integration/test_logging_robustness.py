@@ -29,6 +29,10 @@ beendet es mit Exit 1 und Stack, falls es doch haengt.
 #       innerhalb der Frist mit Exit 0.
 # - [x] Record aus ``__del__`` waehrend der Finalisierung: kein
 #       ``--- Logging error ---``, die Zeile erscheint.
+# Test list (U5, echter Prozess; Vorlage ``s3_aexit_stall``):
+# - [x] Opt-in, langsamer App-Handler, Records in der Queue: Der maximale
+#       Loop-Lag waehrend ``__aexit__`` liegt unter 100 ms (im Kind
+#       gemessen), alle Records kommen an.
 
 from __future__ import annotations
 
@@ -286,6 +290,7 @@ SwarmQ(
     RabbitMQBroker("amqp://guest:guest@localhost:5699/"),
     ValkeyBackend("valkey://localhost:6399/0"),
     log_queue=True,
+    log_drain_timeout={_DRAIN_S},  # gilt auch fuer ``atexit`` (U5)
 )
 log = logging.getLogger("swarmq.tests.robustness")
 log.warning("first")
@@ -382,3 +387,75 @@ def test_a_record_from_a_finalizer_at_shutdown_is_written_without_a_logging_erro
     assert "--- Logging error ---" not in proc.stderr
     assert "normal_line" in proc.stderr
     assert "cycle_finalized_at_shutdown" in proc.stderr
+
+
+_LOOP_LAG_LIMIT_S = 0.1
+"""Obergrenze des Loop-Lags waehrend ``__aexit__`` (Plan 2026-10-06-1811, U5)."""
+
+_AEXIT_CHILD = f"""
+import asyncio, faulthandler, logging, time
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True)
+
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+
+written = []
+
+
+class SlowShipper(logging.Handler):
+    def emit(self, record):
+        time.sleep(0.1)
+        written.append(record.getMessage())
+
+
+logging.getLogger().handlers[:] = [SlowShipper()]
+
+
+async def _no_connection():
+    pass
+
+
+async def main():
+    # Nie verbunden; die Ports sind die der Test-Dienste.
+    broker = RabbitMQBroker("amqp://guest:guest@localhost:5699/")
+    backend = ValkeyBackend("valkey://localhost:6399/0")
+    broker.connect = broker.close = backend.connect = backend.close = _no_connection
+    loop = asyncio.get_running_loop()
+    lag = 0.0
+    ticking = asyncio.Event()
+    leaving = True
+
+    async def heartbeat():
+        nonlocal lag
+        while leaving:
+            ticking.set()
+            t0 = loop.time()
+            await asyncio.sleep(0.01)
+            lag = max(lag, loop.time() - t0 - 0.01)
+
+    async with SwarmQ(broker, backend, log_queue=True):
+        log = logging.getLogger("swarmq.tests.robustness")
+        for i in range(5):
+            log.warning("queued %d", i)
+        beat = asyncio.create_task(heartbeat())
+        await ticking.wait()
+    leaving = False
+    await beat
+    print(lag, len(written), flush=True)
+
+
+asyncio.run(main())
+"""
+
+
+def test_leaving_an_embedded_app_keeps_the_event_loop_responsive() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", _AEXIT_CHILD],
+        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 20,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lag, written = proc.stdout.split()
+    assert float(lag) < _LOOP_LAG_LIMIT_S
+    assert int(written) == 5

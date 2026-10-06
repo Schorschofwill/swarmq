@@ -56,6 +56,24 @@ from __future__ import annotations
 # 22. Wirft jeder Handler der App, erscheint ``log_handler_errors`` best
 #     effort auf stderr -- aus dem Listener-Thread, nie im Aufrufer.
 # Echter Prozess: ``tests/integration/test_logging_robustness.py``.
+# Plan 2026-10-06-1811, U5 (R4, KTD4) -- ``__aexit__`` leert asynchron:
+# 23. Ein App-Handler blockiert, ``__aexit__`` laeuft als Task: Eine zweite
+#     Coroutine (``call_soon``) laeuft, solange der Handler blockiert; nach
+#     dem Freigeben endet ``__aexit__``, alle Records sind angekommen.
+# 24. Handler nie freigegeben, ``log_drain_timeout=0.05``: ``__aexit__``
+#     kehrt zurueck, der Rest ist als verworfen gezaehlt.
+# 25. Abhaengen in O(1): Gleich nach dem synchronen Teil sind Handler,
+#     ``propagate`` und Level von ``swarmq`` wiederhergestellt.
+# 26. Eine neue ``SwarmQ(log_queue=True)`` waehrend des Leerens bekommt
+#     frischen Handler und frische Queue; jede Zeile genau einmal.
+# 27. Default-Executor ausgelastet: ``__aexit__`` kehrt trotzdem spaetestens
+#     nach ``log_drain_timeout`` zurueck.
+# 28. Eingebettet gilt die Frist der App auch fuer ``shutdown_logging``
+#     (atexit).
+# 29. ``configure_logging`` hebt einen Opt-in mit haengendem App-Handler
+#     innerhalb der Frist auf.
+# Echter Prozess (Loop-Lag): ``tests/integration/test_logging_robustness.py``.
+import asyncio
 import contextvars
 import io
 import json
@@ -498,3 +516,178 @@ def test_when_every_app_handler_raises_the_report_reaches_stderr(
     err = capsys.readouterr().err
     assert "log_handler_errors" in err
     assert "Traceback" not in err
+
+
+@pytest.mark.timeout(5)
+async def test_leaving_the_app_drains_without_stalling_the_event_loop(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    app = SwarmQ(broker, backend, log_queue=True)
+    _LOG.warning("optin_drain_1")
+    assert blocking.entered.wait(5)
+    _LOG.warning("optin_drain_2")
+
+    leaving = asyncio.create_task(app.__aexit__(None, None, None))
+    other_ran = asyncio.Event()
+    asyncio.get_running_loop().call_soon(other_ran.set)
+    await other_ran.wait()
+
+    assert not leaving.done()
+    blocking.release.set()
+    await leaving
+    assert blocking.events() == ["optin_drain_1", "optin_drain_2"]
+
+
+@pytest.mark.timeout(5)
+async def test_leaving_the_app_gives_up_at_the_drain_timeout_and_counts_the_rest(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    app = SwarmQ(broker, backend, log_queue=True, log_drain_timeout=0.05)
+    try:
+        _LOG.warning("optin_stuck")
+        assert blocking.entered.wait(5)
+        _LOG.warning("optin_never_written")
+        before = dropped_log_records()
+
+        await app.__aexit__(None, None, None)
+
+        assert dropped_log_records() - before == 1
+    finally:
+        blocking.release.set()
+
+
+@pytest.mark.timeout(5)
+async def test_leaving_the_app_restores_swarmq_before_the_queue_is_drained(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    logging.getLogger("swarmq").setLevel(logging.ERROR)
+    before = _swarmq_state()
+    app = SwarmQ(broker, backend, log_queue=True, log_level="DEBUG")
+    _LOG.warning("optin_detach")
+    assert blocking.entered.wait(5)
+
+    leaving = asyncio.create_task(app.__aexit__(None, None, None))
+    detached = asyncio.Event()
+    asyncio.get_running_loop().call_soon(detached.set)
+    await detached.wait()
+
+    assert not leaving.done()
+    assert _swarmq_state() == before
+    blocking.release.set()
+    await leaving
+
+
+@pytest.mark.timeout(5)
+async def test_a_new_instance_while_draining_gets_a_fresh_handler_and_queue(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    first = SwarmQ(broker, backend, log_queue=True)
+    _LOG.warning("optin_old")
+    assert blocking.entered.wait(5)
+    (old_handler,) = logging.getLogger("swarmq").handlers
+    leaving = asyncio.create_task(first.__aexit__(None, None, None))
+    detached = asyncio.Event()
+    asyncio.get_running_loop().call_soon(detached.set)
+    await detached.wait()
+
+    second = SwarmQ(broker, backend, log_queue=True)
+    _LOG.warning("optin_new")
+
+    (new_handler,) = logging.getLogger("swarmq").handlers
+    assert new_handler is not old_handler
+    blocking.release.set()
+    await leaving
+    await second.__aexit__(None, None, None)
+    assert sorted(blocking.events()) == ["optin_new", "optin_old"]
+
+
+@pytest.mark.timeout(5)
+async def test_leaving_the_app_returns_at_the_drain_timeout_with_a_busy_executor(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from swarmq.logging import dropped_log_records
+
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+    app_work_started = threading.Event()
+    app_work_done = threading.Event()
+
+    def blocking_app_work() -> None:
+        app_work_started.set()
+        app_work_done.wait(5)
+
+    app_work = loop.run_in_executor(None, blocking_app_work)
+    assert app_work_started.wait(5)
+    app = SwarmQ(broker, backend, log_queue=True, log_drain_timeout=0.05)
+    try:
+        _LOG.warning("optin_stuck")
+        assert blocking.entered.wait(5)
+        _LOG.warning("optin_never_written")
+        before = dropped_log_records()
+
+        await app.__aexit__(None, None, None)
+
+        assert not app_work.done()
+        assert dropped_log_records() - before == 1
+    finally:
+        app_work_done.set()
+        blocking.release.set()
+        await app_work
+
+
+@pytest.mark.timeout(5)
+def test_an_embedded_app_sets_the_drain_timeout_of_shutdown_logging(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    SwarmQ(broker, backend, log_queue=True, log_drain_timeout=0.05)
+    try:
+        _LOG.warning("optin_stuck")
+        assert blocking.entered.wait(5)
+        _LOG.warning("optin_never_written")
+        before = dropped_log_records()
+
+        shutdown_logging()  # wie aus ``atexit``
+
+        assert dropped_log_records() - before == 1
+    finally:
+        blocking.release.set()
+
+
+@pytest.mark.timeout(5)
+def test_a_builtin_setup_lifts_an_opt_in_with_a_stuck_app_handler_in_time(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    SwarmQ(broker, backend, log_queue=True)
+    try:
+        _LOG.warning("optin_stuck")
+        assert blocking.entered.wait(5)
+        _LOG.warning("optin_never_written")
+        before = dropped_log_records()
+
+        configure_logging(LoggingSettings(drain_timeout=0.05))
+
+        assert dropped_log_records() - before == 1
+    finally:
+        blocking.release.set()
