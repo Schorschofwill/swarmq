@@ -14,13 +14,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
-
 from swarmq.contracts.control import Setpoint, SetpointRead, SetpointUnreadable
+from swarmq.logging import get_logger
 from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync, write_status_sync
 from swarmq.process_manager.slots import SlotState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def validate(sp: Setpoint, *, headroom: int, autoscaling: bool) -> str | None:

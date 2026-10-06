@@ -27,10 +27,11 @@ with their per-endpoint routing table.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 
-logger = logging.getLogger("swarmq.http")
+from swarmq.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Shared reason map used by :func:`write_http_response`. Adding a new
 # status code once here covers both servers.
@@ -164,8 +165,8 @@ class AsyncHttpServer:
                 f"{exc.strerror or exc}"
             ) from exc
         logger.info(
-            f"{self._label}_started",
-            extra={"host": self._host, "port": self._port},
+            "http_server_started",
+            server=self._label, host=self._host, port=self._port,
         )
 
     async def stop(self) -> None:
@@ -174,7 +175,7 @@ class AsyncHttpServer:
         self._server.close()
         await self._server.wait_closed()
         self._server = None
-        logger.info(f"{self._label}_stopped")
+        logger.info("http_server_stopped", server=self._label)
 
     async def _accept(
         self,
@@ -201,7 +202,7 @@ class AsyncHttpServer:
                 return
             await self._handler(method, path, writer)
         except Exception:
-            logger.exception(f"{self._label}_request_failed")
+            logger.exception("http_server_request_failed", server=self._label)
         finally:
             try:
                 await writer.drain()

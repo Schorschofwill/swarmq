@@ -1,5 +1,9 @@
 """Unit tests for R5.2 health + readiness endpoints."""
 
+# Test list (Plan 2026-10-06-0831, U9, KTD11):
+# 1. ``check_backend_failed`` kommt auf WARNING mit ``error_type``/``error`` an.
+# 2. ``check_broker_failed`` ebenso.
+
 from __future__ import annotations
 
 import asyncio
@@ -123,12 +127,31 @@ class TestHealthChecker:
         assert ok is False
         assert err is not None and "TimeoutError" in err
 
+    async def test_check_backend_failure_logs_warning_with_error_fields(self, swarmq_logs):
+        backend = InMemoryBackend(FakeClock())
+        broker, _ = await self._connected_stubs()
+        await HealthChecker(broker, backend).check_backend()
+        [entry] = [e for e in swarmq_logs if e["event"] == "check_backend_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["logger"] == "swarmq.health"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert "not connected" in entry["error"]
+
     async def test_check_broker_fail_when_closed(self):
         broker, backend = await self._connected_stubs()
         await broker.close()
         ok, err = await HealthChecker(broker, backend).check_broker()
         assert ok is False
         assert err is not None
+
+    async def test_check_broker_failure_logs_warning_with_error_fields(self, swarmq_logs):
+        broker, backend = await self._connected_stubs()
+        await broker.close()
+        await HealthChecker(broker, backend).check_broker()
+        [entry] = [e for e in swarmq_logs if e["event"] == "check_broker_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "not connected"
 
     async def test_check_all_combines_results(self):
         broker, backend = await self._connected_stubs()

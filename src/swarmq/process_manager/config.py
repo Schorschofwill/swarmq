@@ -9,13 +9,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
-import structlog
-
 from swarmq.logging_settings import VALID_LOG_LEVELS as _VALID_LOG_LEVELS
 from swarmq.logging_settings import LoggingSettings
-
-logger = structlog.get_logger()
-
 
 # ``LoggingSettings`` ist selbst eingefroren und besteht nur aus diesen
 # Typen; die geparste dictConfig reist darin als JSON-String (KTD9).

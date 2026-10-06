@@ -15,10 +15,8 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 from collections.abc import Callable
 
-import structlog
-
 from swarmq.exceptions import ConfigurationError, LoggingConfigError
-from swarmq.logging import get_logger, load_log_config
+from swarmq.logging import _error_fields, get_logger, load_log_config
 from swarmq.logging_settings import LoggingSettings, resolve_logging_settings
 from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
@@ -27,7 +25,7 @@ from swarmq.process_manager.sampler import AdminFactory, _make_queue_depth_sampl
 from swarmq.process_manager.setpoint_store import SetpointStoreFactory
 from swarmq.process_manager.supervisor import ProcessManager, QueueDepthFn
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def run_multi_process_worker(
@@ -80,11 +78,10 @@ def log_config_reload_check(settings: LoggingSettings) -> Callable[[], bool] | N
         try:
             _probe_dict_config(path, load_log_config(path))
         except LoggingConfigError as exc:
-            get_logger(__name__).error(
+            logger.error(
                 "log_config_reload_failed",
                 path=path,
-                error_type=type(exc).__name__,
-                error=f"{type(exc).__name__}: {exc}",
+                **_error_fields(exc),
                 hint="fix the logging config and send SIGHUP again; workers keep running",
             )
             return False

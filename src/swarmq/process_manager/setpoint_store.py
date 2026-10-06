@@ -13,12 +13,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import structlog
-
 from swarmq.contracts.control import SetpointRead
-from swarmq.logging import sanitize_url
+from swarmq.logging import _error_fields, get_logger, sanitize_url
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 #: Abtastintervall des Sollwert-Durchlaufs (KTD5): schneller als die Messung
 #: der Queue-Tiefen, weil ein Sollwert eine ausdrückliche Handlung ist.
@@ -74,7 +72,7 @@ def read_setpoint_sync(factory: SetpointStoreFactory, group: str) -> SetpointRea
                 return await store.read_setpoint(group)
         except Exception as exc:
             reason = f"{type(exc).__name__}: {sanitize_url(str(exc))}"
-            logger.warning("setpoint_read_failed", group=group, error=reason)
+            logger.warning("setpoint_read_failed", group=group, **_sanitized_error_fields(exc))
             return SetpointUnread(reason=reason)
         finally:
             await _close_quietly(store)
@@ -102,15 +100,18 @@ def write_status_sync(
                 await store.write_status(group, supervisor_id, status, ttl_s=ttl_s)
                 return True
         except Exception as exc:
-            logger.warning(
-                "setpoint_status_write_failed",
-                group=group, error=f"{type(exc).__name__}: {sanitize_url(str(exc))}",
-            )
+            logger.warning("setpoint_status_write_failed", group=group, **_sanitized_error_fields(exc))
             return False
         finally:
             await _close_quietly(store)
 
     return asyncio.run(_run())
+
+
+def _sanitized_error_fields(exc: BaseException) -> dict[str, str]:
+    """Fehlerschema (R17) ohne Zugangsdaten: Backend-Fehler tragen oft die URL."""
+    fields = _error_fields(exc)
+    return fields | {"error": sanitize_url(fields["error"])}
 
 
 async def _close_quietly(store: SetpointStore | None) -> None:

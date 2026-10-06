@@ -23,17 +23,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from swarmq.logging import _error_fields, get_logger
+
 if TYPE_CHECKING:
     from swarmq.contracts import Publisher, ResultBackend
 
-logger = logging.getLogger("swarmq.health")
+logger = get_logger(__name__)
 
 
 class _DependencyState(TypedDict):
@@ -112,7 +113,7 @@ class HealthChecker:
             await asyncio.wait_for(self._backend.ping(), timeout=self._timeout)
             return True, None
         except Exception as exc:
-            logger.info("check_backend_failed", exc_info=exc)
+            logger.warning("check_backend_failed", **_error_fields(exc))
             return False, self._sanitise_error(exc)
 
     async def check_broker(self) -> tuple[bool, str | None]:
@@ -122,7 +123,7 @@ class HealthChecker:
             await asyncio.wait_for(self._broker.ping(), timeout=self._timeout)
             return True, None
         except Exception as exc:
-            logger.info("check_broker_failed", exc_info=exc)
+            logger.warning("check_broker_failed", **_error_fields(exc))
             return False, self._sanitise_error(exc)
 
     async def check_all(self) -> ReadinessSnapshot:

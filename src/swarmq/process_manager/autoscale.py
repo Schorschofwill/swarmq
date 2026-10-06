@@ -13,12 +13,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import structlog
-
-from swarmq.logging import sanitize_url
+from swarmq.logging import _error_fields, get_logger, sanitize_url
 from swarmq.process_manager.slots import SlotState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def tick(pm: Any) -> None:
@@ -52,9 +50,10 @@ def tick(pm: Any) -> None:
         depth = pm._queue_depth_fn()
     except Exception as exc:
         # sanitize_url strips embedded AMQP
-        # credentials before the exception text reaches structlog.
+        # credentials before the exception text reaches the log.
+        fields = _error_fields(exc)
         logger.warning(
-            "autoscale_sample_failed", error=sanitize_url(str(exc)),
+            "autoscale_sample_failed", **fields | {"error": sanitize_url(fields["error"])},
         )
         return
 

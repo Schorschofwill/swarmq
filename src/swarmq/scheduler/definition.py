@@ -8,14 +8,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
-import structlog
 
 from swarmq.exceptions import BackendConnectionError
+from swarmq.logging import _error_fields, get_logger
 
 if TYPE_CHECKING:
     from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 
@@ -158,7 +158,7 @@ class ScheduleStore:
             logger.warning(
                 "schedule_def_malformed_skipped",
                 schedule_name=schedule_name,
-                error=str(exc),
+                **_error_fields(exc),
                 hint="run 'swarmq schedule remove --permanent <name>' to clear the malformed entry",
             )
             return False
@@ -175,7 +175,7 @@ class ScheduleStore:
             try:
                 result.append(msgspec.json.decode(payload, type=ScheduleDefinition))
             except msgspec.DecodeError as exc:
-                logger.warning("schedule_def_malformed_skipped", schedule_name=name, error=str(exc))
+                logger.warning("schedule_def_malformed_skipped", schedule_name=name, **_error_fields(exc))
         return result
 
     # ---- Poll / commit --------------------------------------------------

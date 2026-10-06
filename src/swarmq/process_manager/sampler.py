@@ -10,11 +10,6 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
-import structlog
-
-logger = structlog.get_logger()
-
-
 SAMPLE_TIMEOUT_S = 5.0
 
 

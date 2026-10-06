@@ -2,6 +2,11 @@
 (``test_process_manager.py``) und ``run_multi_process_worker``-Routing
 (``test_cli_multiprocess.py``)."""
 
+# Test list (Plan 2026-10-06-0831, U9):
+# 1. ``watch_dir_ignored_without_reload`` ueber ``swarmq_logs`` statt
+#    gepatchtem Logger.
+# 2. ``log_config_reload_failed`` traegt ``error`` ohne Klassen-Praefix (R17).
+
 from __future__ import annotations
 
 import argparse
@@ -113,7 +118,7 @@ class TestReloadRoutingThroughCLI:
         ):
             run_multi_process_worker(self._args(reload=True))
 
-    def test_watch_dir_without_reload_logs_warning(self):
+    def test_watch_dir_without_reload_logs_warning(self, swarmq_logs):
         """--watch-dir without --reload must warn (not error)."""
         from swarmq.process_manager import run_multi_process_worker
 
@@ -126,19 +131,13 @@ class TestReloadRoutingThroughCLI:
              ), \
              patch(
                  "swarmq.process_manager.check._validate_module_importable"
-             ), \
-             patch(
-                 "swarmq.process_manager.run.logger"
-             ) as mock_logger:
+             ):
             run_multi_process_worker(
                 self._args(watch_dir=["/tmp"]),
             )
-        # At least one warning call carries the ignore event name.
-        warn_events = [
-            call.args[0] for call in mock_logger.warning.call_args_list
-            if call.args
-        ]
-        assert "watch_dir_ignored_without_reload" in warn_events
+        # At least one warning carries the ignore event name.
+        [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_ignored_without_reload"]
+        assert entry["log_level"] == "warning" and entry["watch_dirs"] == ["/tmp"]
 
 
 class TestRunMultiProcessWorker:
@@ -497,6 +496,8 @@ class TestSupervisorLoggingSettings:
         (event,) = [e for e in swarmq_logs if e["event"] == "log_config_reload_failed"]
         assert event["path"] == str(path)
         assert event["error_type"] == "LoggingConfigError"
+        assert event["error"] and not event["error"].startswith("LoggingConfigError")
+        assert event["log_level"] == "error"
 
     def test_hot_reload_also_catches_a_handler_typo(self, tmp_path, swarmq_logs):
         """AE4 beim Reload: Ein Tippfehler im Handler faellt erst in

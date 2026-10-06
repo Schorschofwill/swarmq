@@ -17,9 +17,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
 
-import structlog
-
-from swarmq.logging import shutdown_logging
+from swarmq.logging import _error_fields, get_logger, shutdown_logging
 from swarmq.process_manager import autoscale, setpoint
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
@@ -34,7 +32,7 @@ from swarmq.supervision import (
     SHUTDOWN_TERM_S as _SHUTDOWN_TERM_S,
 )
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -339,8 +337,8 @@ class ProcessManager:
             if self._file_watcher is not None:
                 try:
                     self._file_watcher.stop()
-                except Exception:
-                    logger.warning("file_watcher_stop_failed", exc_info=True)
+                except Exception as exc:
+                    logger.warning("file_watcher_stop_failed", **_error_fields(exc), exc_info=True)
             self._shutdown_all_workers()
             self._collect_zombies()
 
@@ -382,7 +380,7 @@ class ProcessManager:
                     self._startup_env,
                 )
             except OSError as exc:
-                logger.error("reload_execvp_failed", error=str(exc))
+                logger.error("reload_execvp_failed", **_error_fields(exc))
                 return 1
 
         return retcode
@@ -613,7 +611,8 @@ class ProcessManager:
             del self.workers[pid]
             self._refresh_slot(info.worker_id)  # KTD1: Uebergang → aktiv / frei; Sperre bleibt
 
-            logger.warning(
+            log = logger.info if exitcode == 0 or info.expected_shutdown else logger.warning  # KTD11
+            log(
                 "worker_died",
                 worker_id=info.worker_id,
                 pid=pid,

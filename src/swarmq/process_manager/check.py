@@ -11,12 +11,8 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
-import structlog
-
 from swarmq.exceptions import ConfigurationError
 from swarmq.slots import effective_concurrency, resolve_default_slots, validate_pool_mode
-
-logger = structlog.get_logger()
 
 
 def _validate_module_importable(module: str) -> ModuleSpec:

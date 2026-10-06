@@ -33,7 +33,6 @@ method. Attaching the HTTP exposition server is a worker-side concern
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -63,8 +62,6 @@ except ImportError:  # pragma: no cover — optional
 
 if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
-
-logger = logging.getLogger("swarmq.metrics")
 
 # CONTENT_TYPE used by /metrics endpoint. Falls back to the Prometheus
 # text-exposition default when the client is absent so callers do not
