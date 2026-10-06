@@ -14,12 +14,12 @@ guide covers how to inspect, retry, and purge DLQ messages.
 
 | Trigger | Header on the DLQ message |
 |---|---|
-| Retry exhaustion (`max_retries` reached — incl. `max_retries=0`, where the FIRST failure is already terminal) | `x-swarmq-retry-count` at the limit |
-| `raise NoRetry("reason")` from task body | `x-swarmq-error=no_retry` |
+| Retry exhaustion (`max_retries` reached — incl. `max_retries=0`, where the FIRST failure is already terminal) | `x-swarmq-retry-count` at the limit, `x-swarmq-traceback` with the error message |
+| `raise NoRetry("reason")` from task body | `x-swarmq-traceback` with the error message |
 | `x-delivery-limit=20` tripped by RabbitMQ | `x-death` from broker |
-| `TaskInfo.max_age` exceeded at pickup | `x-swarmq-expired=1` |
-| Lock-render failure (template kwarg missing) | `x-swarmq-lock-error=render_failed` |
-| Lock conflict budget exhausted | `x-swarmq-lock-error=conflict_cap` |
+| `TaskInfo.max_age` exceeded at pickup | none of its own — the message keeps its original headers; the stored error result says `task expired: age …s exceeds max_age …s` |
+| Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message |
+| Lock conflict budget exhausted (10th conflict) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` |
 | Body over the size cap, undecodable body, unregistered task name, broken middleware-chain factory, failed dead-letter publish | none from SwarmQ — only the broker's `x-death` |
 
 The DLQ is a regular RabbitMQ queue — you can inspect it with
@@ -34,7 +34,7 @@ knowing which path fired tells you what to fix.
 
 | Path | Who moves the message | Signal | Metric | Headers |
 |---|---|---|---|---|
-| **Dead-lettering by the worker** — retries exhausted, `NoRetry`, `max_age`, lock errors, delivery limit about to trip | Worker publishes to `.XQ` and acks the original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) | `swarmq_tasks_total{outcome="dlq"}` | full SwarmQ diagnostics (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-error`, …); an error result is stored |
+| **Dead-lettering by the worker** — retries exhausted, `NoRetry`, `max_age`, lock errors, delivery limit about to trip | Worker publishes to `.XQ` and acks the original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) for retries exhausted, `NoRetry` and the delivery limit; `TASK_EXPIRED` for `max_age`; none for lock errors | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ diagnostics (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, see the table above); an error result is stored, except for lock errors |
 | **Rejection by the worker** — the message could not be turned into a task | Worker rejects without requeue; the broker's dead-letter exchange routes it | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | only the broker's `x-death`; `task_id`/`task_name` are `None` when the body never decoded |
 | **Dead-lettering by the broker** — `x-delivery-limit` after repeated worker crashes, message TTL, queue length limit | RabbitMQ itself | none — no worker saw the terminal delivery | `swarmq_dlq_messages{queue}` (depth gauge sampled by the worker) | only `x-death` |
 

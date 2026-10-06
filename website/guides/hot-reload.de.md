@@ -69,7 +69,15 @@ endlos loopen.
 |---|---|
 | Detect | Daemon-Thread läuft `watchfiles.watch(...)` (Rust-`notify`-Crate darunter). Events treffen ein 1,6s-Debounce-Fenster, um Format-on-Save-Bursts zu absorbieren. |
 | Trigger | Beim ersten debounceden Event ruft der Thread `os.kill(os.getpid(), SIGHUP)` auf. |
-| Reload | Der bestehende SIGHUP-Handler des Supervisors drained Children und `os.execvpe`t den Startup-argv + Startup-env-Snapshot — In-Process-Mutation von `sys.argv` / `os.environ` kann den Re-Exec-Vektor nicht beeinflussen (R4.6-Hardening). |
+| Reload | Der bestehende SIGHUP-Handler des Supervisors drained Children und `os.execvpe`t `sys.executable` mit dem Startup-argv + Startup-env-Snapshot — In-Process-Mutation von `sys.argv` / `os.environ` kann den Re-Exec-Vektor nicht beeinflussen (R4.6-Hardening). Der argv-Snapshot stammt aus `sys.orig_argv`, Interpreter-Flags und `python -m` bleiben also erhalten: Ein als `python -m swarmq.cli worker …` gestarteter Supervisor lädt mit demselben Kommando neu. |
+
+Mit `--log-config` prüft der Supervisor die Logging-Konfigurationsdatei
+erneut, bevor er einen Worker stoppt. Ist die Datei seit dem Start
+ungültig geworden, bricht der Reload mit einem ERROR
+`log_config_reload_failed` ab (Felder `path`, `error_type`, `error`,
+`hint`); Worker und Logging laufen unverändert weiter. Korrigiere die
+Datei und speichere erneut ein Task-Modul (oder sende `SIGHUP`), um es
+noch einmal zu versuchen.
 
 Der Watcher unterdrückt Re-Entrancy: Läuft bereits ein Reload,
 wenn eine zweite Änderung landet, wird das zweite Event verworfen
@@ -116,7 +124,7 @@ Backend. Exit-Code `0` bei Erfolg, `1` bei jedem
 
 ## Troubleshooting
 
-### `ConfigurationError: --reload requires the optional 'watchfiles' dependency`
+### `--reload: watchfiles is not installed`
 
 ```bash
 pip install 'swarmq[reload]'

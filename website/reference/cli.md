@@ -6,7 +6,12 @@ environment variables by default; explicit flags win. `swarmq worker`
 resolves its settings once in the supervisor (flag, then env var, then
 default) and passes the resolved values to its worker subprocesses and
 compute children; they do not re-read the environment, so a flag wins
-in every process.
+in every process. This holds for every worker option that has an env
+var twin (queues, concurrency, pool, burst, priorities, ports, logging).
+`swarmq worker --check` resolves the same way and validates exactly the
+values the workers would get. An embedded `SwarmQ(...)` app is not
+affected: there the `SwarmQ`/`SwarmQConfig` keyword arguments apply
+first and `SWARMQ_*` variables override them.
 
 ## Synopsis
 
@@ -23,8 +28,8 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | Code | Meaning |
 |---|---|
 | `0` | Success or graceful shutdown |
-| `1` | Runtime error: broker or backend unreachable, `swarmq dlq`/`schedule` failed at runtime. Retrying later is the right response. |
-| `2` | Bad arguments (argparse-detected usage error) |
+| `1` | Runtime error: broker or backend unreachable, `swarmq dlq`/`schedule` failed at runtime. Retrying later is the right response. Also every configuration error of `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`, invalid `--args`/`--kwargs` JSON, invalid `--cron`/`--at`, `inspect --module` not found or registering no tasks) and every failure of `swarmq worker --check`, including argparse errors. |
+| `2` | Bad arguments (argparse-detected usage error), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
 | `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. |
 
@@ -41,8 +46,11 @@ recycling without getting an acknowledgement logs
 `worker_recycle_noack` and restarts it within the
 budget; it never reaches the caller.
 
-`--log-level DEBUG` adds a full Python traceback to stderr when exit
-code `1` or `78` fires.
+For `swarmq worker`, level `DEBUG` (`--log-level DEBUG` or
+`SWARMQ_LOG_LEVEL=DEBUG`) adds the full Python traceback to connection
+errors (exit `1`) and to configuration errors raised after logging is
+set up (exit `78`). `schedule`, `dlq` and `inspect` have no log level
+and print a single error line.
 
 ## `swarmq worker`
 
@@ -75,7 +83,7 @@ swarmq worker --module DOTTED.PATH
 | `--module DOTTED.PATH` | *required* | Python module containing `Task` subclasses to register (e.g. `myapp.tasks`). Must be importable from the current `PYTHONPATH`. |
 | `--configure MODULE:CALLABLE` | unset | Callable invoked with the `SwarmQ` app after construction and before the worker starts, e.g. `myapp.hooks:setup`. Use it to register middleware and signal handlers without writing your own worker entry point. Runs exactly once per worker process, never in the forkserver and never in `schedule`, `dlq` or `inspect`; an awaitable return value is awaited. Any exception from the hook is a configuration error (exit `78`). See [the example](#registering-middleware-with-configure). |
 | `--queues A,B,C` | `default` | Comma-separated queue names the worker consumes. Env var: `SWARMQ_QUEUES`. |
-| `--concurrency N` | `10` (io) / assigned CPUs (cpu) | Maximum tasks executed in parallel. With `--pool cpu` the number of compute slots; the default is the CPUs assigned to the worker (affinity and cgroup quota) divided by `--processes`. Env var: `SWARMQ_CONCURRENCY`. |
+| `--concurrency N` | `10` (io) / assigned CPUs (cpu) | Maximum tasks executed in parallel. With `--pool cpu` the number of compute slots; the default is the CPUs assigned to the worker (affinity and cgroup quota) divided by `--max-processes` if set, otherwise by `--processes`. Env var: `SWARMQ_CONCURRENCY`. |
 | `--pool {io,cpu}` | `io` | Execution pool. `cpu` runs every task body in a compute child forked from a pre-warmed forkserver: the loop process never computes, `hard_timeout` and cancel kill the child. POSIX only; not combinable with `--autoscale`. See the [CPU mode guide](../guides/cpu-mode.md). |
 | `--log-level LEVEL` | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Root level of every SwarmQ process. Env var: `SWARMQ_LOG_LEVEL`. |
 | `--log-format FORMAT` | `human` | `human` or `json` on stderr. JSON is fit for Loki, Datadog, CloudWatch. Env var: `SWARMQ_LOG_FORMAT` (alias `SWARMQ_LOG_JSON=true/false`; `SWARMQ_LOG_FORMAT` wins). |
@@ -89,13 +97,13 @@ swarmq worker --module DOTTED.PATH
 | `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. |
 | `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` via `os.execvp()`, and exits 0 once all workers ended cleanly (`--burst`). A configuration error in any worker ends the run after a single attempt with exit `78`. |
+| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). A configuration error in any worker ends the run after a single attempt with exit `78`. |
 | `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
 | `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. See [control channel](#control-channel). |
 | `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |
 | `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Ignored without `--reload`. |
-| `--check` | off | Dry-run validation: verify `--module` is importable, that a `--configure` spec has the form `MODULE:CALLABLE` and its module can be found (without importing it), with `--reload` that `watchfiles` is installed + watch-dirs resolve, and that the observability port ranges fit below 65535 and do not overlap. Prints a JSON summary including `metrics_ports` and `health_ports` (the exact ports the slots will bind) and exits `0`/`1` without starting the supervisor or touching broker/backend. Payload: [message formats](agent/message-formats.md#swarmq-worker-check-payload). |
+| `--check` | off | Dry-run validation: verify `--module` is importable, that a `--configure` spec has the form `MODULE:CALLABLE` and its module can be found (without importing it), with `--reload` that `watchfiles` is installed + watch-dirs resolve, that the observability port ranges fit below 65535 and do not overlap, that the logging settings are valid and a `--log-config` file loads and is accepted by `dictConfig` (probed in a separate interpreter), that `--pool cpu` is not combined with `--autoscale`, and that `--max-processes` is not below `--processes` or the `--autoscale` upper bound and does not overbook the assigned CPUs with `--pool cpu`. Prints a JSON summary including `metrics_ports` and `health_ports` (the exact ports the slots will bind) and exits `0`/`1` without starting the supervisor or touching broker/backend. Payload: [message formats](agent/message-formats.md#swarmq-worker-check-payload). |
 
 ### Examples
 
@@ -126,8 +134,11 @@ swarmq worker \
 
 ```python title="myapp/hooks.py"
 from swarmq import Signal, SwarmQ
+from swarmq.logging import get_logger
 
 from myapp.middleware import TimingMiddleware
+
+log = get_logger("myapp.hooks")
 
 
 async def setup(app: SwarmQ) -> None:
@@ -247,8 +258,21 @@ swarmq schedule add NAME
 ```
 
 Creates a new schedule (insert-if-absent). Pass exactly one of
-`--cron` (5-field expression) or `--at` (ISO 8601 one-shot time).
-`--args` and `--kwargs` must be JSON.
+`--cron` (5-field expression) or `--at` (ISO 8601 one-shot time;
+without a timezone it is read as UTC). `--args` (default `[]`) must be
+a JSON array, `--kwargs` (default `{}`) a JSON object; anything else
+exits `1`. `--queue` defaults to `default`. `--task` is not checked
+against the task registry: a typo only surfaces when the schedule fires
+on a worker.
+
+`--unique-for SECONDS` claims a dedup flag over task name + args +
+kwargs before inserting the schedule; its TTL is `SECONDS` plus the time
+until the first fire. A second `schedule add` with the same task, args
+and kwargs while the flag is held is rejected as a duplicate (`json`
+output: `inserted: false`, `duplicate_of: <owner>`). `--unique-until`
+(`completion` by default, `start`) decides whether the flag is released
+when the task reaches a terminal state or when a worker picks it up; it
+only applies together with `--unique-for`.
 
 Example:
 
@@ -277,7 +301,7 @@ swarmq schedule status [--limit N] [--format (table|json)]
 ```
 
 Prints the current leader worker (if any) and the next N schedules
-due within 24 hours.
+due within 24 hours (`--limit`, default `10`).
 
 ## `swarmq dlq`
 
@@ -291,7 +315,8 @@ swarmq dlq list [--queue QUEUE] [--limit N] [--format (table|json)]
 ```
 
 Drain-and-republish scan — shows `task_id`, `task_name`, retry-count
-header, error preview, body size. Repeated calls are safe: messages
+header, error preview, body size. `--queue` defaults to `default` (DLQ
+`default.XQ`), `--limit` to `100`. Repeated calls are safe: messages
 stay in the DLQ. The table output shows `(truncated)` when
 `--limit` is hit; `--format json` includes a `truncated: bool`
 envelope.
@@ -306,7 +331,7 @@ swarmq dlq inspect TASK_ID [--queue QUEUE]
 
 Finds one DLQ message by `task_id` and prints its full headers and
 decoded body. Non-destructive. Exits `3` when the task_id is not
-found (use `--scan-limit` to widen the search).
+found (use `--scan-limit`, default `1000`, to widen the search).
 
 ### `swarmq dlq retry`
 
@@ -317,7 +342,9 @@ swarmq dlq retry (TASK_ID | --all)
 ```
 
 Republishes into the main queue. `--all` moves every message (up to
-`--limit`, default `10000`). The `x-swarmq-retry-count` header is
+`--limit`, default `10000`); a single `TASK_ID` is looked up among the
+first `--scan-limit` messages (default `1000`). Pass exactly one of
+`TASK_ID` and `--all`, otherwise the command exits `2`. The `x-swarmq-retry-count` header is
 reset so the task gets its full retry budget; all other headers
 survive. Exits `3` when a single-task retry finds nothing.
 

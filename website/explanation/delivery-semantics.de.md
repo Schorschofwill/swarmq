@@ -84,12 +84,12 @@ Nachricht entweder oder routet sie in die DLQ:
 |---|---|
 | Worker-Prozess gekillt (`SIGKILL`, OOM, Node-Crash) | Redelivery von RabbitMQ nach Visibility-Timeout |
 | Worker mitten im Task neu gestartet (graceful `SIGTERM`) | Drain der In-Flight-Tasks läuft; pending Messages redelivern an neuen Worker |
-| `Task.run()` raist eine retry-bare Exception, Retries verbleiben | Nack + verzögerte Redelivery über Retry-Exchange |
-| `Task.run()` raist, nachdem `max_retries` erreicht ist | Nack + DLX → `{queue}.XQ` |
-| `raise NoRetry("reason")` | Nack + DLX → `{queue}.XQ` sofort |
+| `Task.run()` raist eine retry-bare Exception, Retries verbleiben | Neue Nachricht in die Delay-Queue, Original bestätigt (`TASK_RETRYING`) |
+| `Task.run()` raist, nachdem `max_retries` erreicht ist | Worker publiziert nach `{queue}.XQ`, Original bestätigt (`TASK_DLQ`) |
+| `raise NoRetry("reason")` | Worker publiziert sofort nach `{queue}.XQ`, Original bestätigt (`TASK_DLQ`) |
 | RabbitMQs `x-delivery-limit=20` erreicht | Broker-native DLQ-Route |
 | Task-Alter übersteigt `max_age` bei Pickup | `TASK_EXPIRED`-Signal + DLQ |
-| Lock-Render-Fehler oder Conflict-Cap erreicht | DLQ-Route mit `x-swarmq-lock-error`-Header |
+| Lock-Render-Fehler oder Conflict-Cap erreicht | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (Conflict-Cap) |
 
 Der Worker ruft auf dem Primär-Retry-Pfad nie `basic.nack(requeue=True)`
 auf. Ein Requeue-an-Ort-und-Stelle würde das Retry-Backoff umgehen

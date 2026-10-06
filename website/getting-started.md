@@ -107,9 +107,26 @@ finds, connects to the broker and backend, and starts consuming.
 !!! note
     `swarmq worker` sets up logging for its own processes. An app that
     embeds `SwarmQ(...)` does not get any logging configuration from
-    SwarmQ — configure it yourself, e.g. with
-    `logging.basicConfig(level=logging.INFO)`. See the
-    [Logging reference](reference/logging.md).
+    SwarmQ — configure it yourself. A bare
+    `logging.basicConfig(level=logging.INFO)` shows only the event
+    names (`INFO:swarmq.task:task_succeeded`); to see the fields
+    (`task_id`, `duration_ms`, …) use SwarmQ's formatter:
+
+    ```python
+    import logging
+
+    from swarmq.logging import build_formatter
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(build_formatter(json=False, colors=False))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    ```
+
+    If slow handlers must not block the event loop, pass
+    `log_queue=True` to `SwarmQ(...)` (see the
+    [opt-in log queue](reference/logging.md#opt-in-log-queue)). The
+    [Logging reference](reference/logging.md) has recipes for JSON and
+    structlog setups.
 
 ## Enqueue from your app
 

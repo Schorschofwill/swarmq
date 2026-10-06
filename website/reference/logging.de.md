@@ -196,7 +196,7 @@ Einrichtung schreibt über eine Queue und einen Hintergrund-Thread nach
   ANSI-Farben nur, wenn stderr ein TTY ist.
 - `--log-format json` schreibt ein JSON-Objekt pro Zeile.
 - Beide tragen die Schlüssel `event`, `level`, `timestamp` und `logger`
-  plus die Felder des Events. `logger` ist in diesem Release neu.
+  plus die Felder des Events. `logger` gibt es seit 0.8.0.
 - `structlog.get_logger()` in deinem Task-Code rendert über dieselbe
   Ausgabe, sofern deine App structlog nicht schon selbst konfiguriert hat.
 
@@ -438,7 +438,7 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 |---|---|---|---|
 | `worker_started` | `swarmq.worker.lifecycle` | INFO | |
 | `worker_died` | `swarmq.process_manager.supervisor` | INFO / WARNING | INFO bei sauberem Ende (`0`) oder erwartetem Herunterfahren, sonst WARNING. Felder `worker_id`, `pid`, `exitcode`, `expected`, `slot_state`. |
-| `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry` | ERROR | Konfigurationsfehler, Exit `78`. Felder `source` (`supervisor`/`worker`), `error_type`, `error`, `hint`. Supervisor: Traceback auf stderr nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
+| `worker_config_error` | `swarmq.cli`, `swarmq.process_manager.entry`, `swarmq.process_manager.supervisor` | ERROR | Konfigurationsfehler, Exit `78`. Aus `swarmq.cli` (Elternprozess) und `swarmq.process_manager.entry` (Worker-Kind): Felder `source` (`supervisor`/`worker`), `error_type`, `error`, `hint`, dazu `path` bei kaputter Konfigurationsdatei und `worker_id` im Kind. Aus `swarmq.process_manager.supervisor`, wenn ein Kind mit `78` endete: Felder `worker_id`, `pid`, `exitcode`, `hint`. Traceback auf stderr nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
 | `worker_connection_error` | `swarmq.cli` | ERROR | Broker oder Backend beim Start nicht erreichbar, Exit `1`. Traceback nur bei Level `DEBUG` (`--log-level` oder `SWARMQ_LOG_LEVEL`). |
 | `worker_recycle_ack_timeout` | `swarmq.process_manager.entry` | ERROR | Ein recycelnder Worker bekam keine Bestätigung und endet mit `75`. |
 | `log_config_reload_failed` | `swarmq.process_manager.run` | ERROR | Reload abgebrochen; Felder `path`, `error_type`, `error`, `hint`. |
@@ -447,7 +447,34 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `log_records_dropped` | — (direkte stderr-Zeile) | warning | Feld `count`; höchstens einmal pro Sekunde. |
 | `log_record_unformattable` | Logger des Records | Level des Records | Feld `error`. |
 | `task_retrying` | `swarmq.worker.retry` | INFO | Felder `retry_count`, `max_retries`, `delay_ms`. |
-| `task_sent_to_dlq` | `swarmq.worker.retry` | ERROR | |
+| `task_sent_to_dlq` | `swarmq.worker.retry` | ERROR | Der Task ging in die DLQ. Felder `error_type` (Exception-Klasse; `WorkerHungError` bei erreichtem Zustelllimit) und `error`. |
+| `task_rate_limited` | `swarmq.worker.gates.rate_limit` | INFO | Felder `retry_after_ms`, `remaining`, `rate_limit_count`. |
+| `task_lock_conflict` | `swarmq.worker.gates.lock` | INFO | Lock anderweitig belegt; Nachricht neu eingereiht. Felder `lock_name`, `lock_conflict_count`. |
+| `task_expired` | `swarmq.worker.gates.expiry` | WARNING | Älter als `max_age`; in die DLQ. Felder `age_s`, `max_age_s`. |
+| `delivery_limit_reached_dead_letter` | `swarmq.worker.gates.delivery_count` | ERROR | `delivery_limit`-mal ohne Bestätigung zugestellt; als `WorkerHungError` in die DLQ. Felder `delivery_count`, `delivery_limit`. |
+| `message_body_too_large` | `swarmq.worker.decode` | ERROR | Body über `SWARMQ_MAX_MESSAGE_BODY_BYTES`; undekodiert an den DLX. Felder `body_bytes`, `cap_bytes`, `hint`. |
+| `deserialize_failed` | `swarmq.worker.decode` | ERROR | Nicht dekodierbarer Body; an den DLX. |
+| `task_not_found` | `swarmq.worker.pipeline` | ERROR | Task-Name in diesem Worker nicht registriert; an den DLX. |
+| `retry_publish_failed` | `swarmq.worker.retry` | ERROR | Retry ließ sich nicht publizieren; die Nachricht wird neu zugestellt. |
+| `dlq_publish_failed` | `swarmq.worker.retry` | ERROR | Publish in die DLQ gescheitert; die Nachricht wird neu zugestellt. |
+| `result_serialization_failed` | `swarmq.worker.results` | ERROR | Task-Ergebnis nicht serialisierbar; als Fehler gespeichert. |
+| `workflow_advance_failed` | `swarmq.worker.results` | ERROR | Unerwarteter Fehler beim Voranbringen eines Workflows; der Workflow wird als gescheitert markiert. Feld `workflow_id`. |
+| `workflow_advance_backend_error`, `workflow_advance_broker_error` | `swarmq.worker.results` | ERROR | Backend-/Broker-Fehler (oder Zustandskonflikt) beim Voranbringen; der Schritt wird neu zugestellt. Feld `workflow_id`. |
+| `middleware_hook_failed` | `swarmq.middleware` | ERROR | Ein Middleware-Hook außer `pre_enqueue` hat geworfen; mit Traceback. Felder `hook`, `middleware`. |
+| `signal_handler_error` | `swarmq.signals` | WARNING | Ein Signal-Handler hat geworfen; mit Traceback. Felder `signal`, `handler`. |
+| `signal_handler_timeout` | `swarmq.signals` | WARNING | Ein Lebenszyklus-Signal-Handler hat sein Zeitbudget überschritten. Felder `signal`, `handler`, `timeout_s`. |
+| `worker_hung` | `swarmq.process_manager.supervisor` | WARNING | Kein Lebenszeichen; der Worker wird ersetzt. Felder `worker_id`, `pid`, `stale_s`, `deadline_s`. |
+| `worker_hung_killed` | `swarmq.process_manager.supervisor` | ERROR | Ein ersetzter Worker hat SIGTERM überlebt und wurde getötet. Felder `worker_id`, `pid`. |
+| `hang_replacement_budget_exhausted` | `swarmq.process_manager.supervisor` | ERROR | Zu viele hängende Worker im Fenster; der Slot wird gesperrt. Felder `limit`, `window_s`, `hint`. |
+| `worker_restart_limit_exceeded` | `swarmq.process_manager.supervisor` | ERROR | Ein Slot ist binnen einer Stunde 5-mal abgestürzt und wird gesperrt. |
+| `all_worker_slots_exhausted` | `swarmq.process_manager.supervisor` | ERROR | Jeder Slot hat das Neustartlimit erreicht; der Supervisor endet. |
+| `reload_execvp_failed` | `swarmq.process_manager.supervisor` | ERROR | Der Neustart per `SIGHUP` ist gescheitert; der Supervisor endet mit `1`. |
+| `hot_reload_enabled` | `swarmq.process_manager.supervisor` | WARNING | `--reload` ist aktiv (nur Entwicklung). Feld `watch_dirs`. |
+| `compute_pool_unhealthy` | `swarmq.worker.compute.pool` | ERROR | Kein Rechenkind nutzbar; `/ready` meldet den Pool als down. |
+| `compute_child_unreaped` | `swarmq.worker.compute.pool` | ERROR | Ein Rechenkind hat SIGKILL überlebt; sein Slot bleibt gesperrt. Felder `slot`, `pid`, `reason`. |
+| `setpoint_applied` | `swarmq.process_manager.setpoint` | INFO | Kontrollkanal: neue Grenzen gelten. Felder `group`, `effective`. |
+| `setpoint_rejected` | `swarmq.process_manager.setpoint` | WARNING | Kontrollkanal: Sollwert abgelehnt, die bisherigen Grenzen bleiben. Felder `group`, `reason`. |
+| `setpoint_store_unreachable` | `swarmq.process_manager.setpoint` | WARNING | Kontrollkanal: Backend nicht erreichbar. Felder `group`, `error`. |
 | `dedup_detected` | `swarmq.client.schedule`, `swarmq.scheduler.loop` | INFO | |
 | `dedup_rollback_failed` | `swarmq.client.schedule` | WARNING | |
 | `http_server_started`, `http_server_stopped` | `swarmq._http` | INFO | Feld `server` (`health_server`/`metrics_server`); beim Start `host`, `port`. |
@@ -462,12 +489,40 @@ Alles in `swarmq.logging`:
 |---|---|
 | `get_logger(name)` | Ein Logger im SwarmQ-Stil (structlog-`BoundLogger`), der Events unter `name` an das stdlib-`logging` übergibt; unabhängig von `structlog.configure`. |
 | `build_formatter(json, colors)` | Der [oben](#build_formatter) beschriebene Formatter. |
-| `configure_logging(settings)` | Richtet das Logging eines Prozesses so ein wie `swarmq worker`; `settings` ist ein `swarmq.logging_settings.LoggingSettings`. Für Einstiegspunkte gedacht, die Library ruft es nie auf. Ein zweiter Aufruf im selben Prozess ist wirkungslos. |
+| `configure_logging(settings)` | Richtet das Logging eines Prozesses so ein wie `swarmq worker`; `settings` ist ein `swarmq.logging_settings.LoggingSettings` (siehe unten). Für Einstiegspunkte gedacht, die Library ruft es nie auf. Ein zweiter Aufruf im selben Prozess ist wirkungslos. |
 | `shutdown_logging()` | Leert die Log-Queues und stoppt die Listener-Threads; ein späteres `configure_logging()` baut neu auf. Läuft beim Prozessende automatisch. |
-| `load_log_config(path)` | Lädt und prüft eine dictConfig-Datei (JSON, oder YAML mit PyYAML); wirft `LoggingConfigError`. |
+| `load_log_config(path)` | Lädt und prüft eine dictConfig-Datei (JSON, oder YAML mit PyYAML) und gibt sie als JSON-String zurück, mit `disable_existing_loggers` auf `false`, sofern die Datei es nicht setzt. Wendet nichts an; wirft `LoggingConfigError`. |
+| `dropped_log_records()` | Zahl der in diesem Prozess wegen voller Queue verworfenen Log-Einträge; der Wert hinter `swarmq_log_records_dropped_total`. |
 | `LoggingConfigError` | Ungültige Logging-Konfigurationsdatei; siehe [Fehlerkatalog](errors.md#loggingconfigerror). |
 
-Deprecated: `setup_logging(log_level, log_json)` (baut die eingebaute
+`LoggingSettings` ist eine eingefrorene Dataclass; jedes Feld hat einen
+Default:
+
+| Feld | Default | Bedeutung |
+|---|---|---|
+| `level` | `"INFO"` | Root-Level. |
+| `level_explicit` | `False` | `level` auch nach einer dictConfig-Datei am Root-Logger setzen (wie ein ausdrückliches `--log-level`). |
+| `format` | `"human"` | `"human"` oder `"json"` für die eingebaute Einrichtung. |
+| `log_config` | `None` | Pfad einer dictConfig-Datei; ersetzt die eingebaute Einrichtung. |
+| `log_config_json` | `None` | Inhalt der Datei, wie `load_log_config()` ihn liefert. Gesetzt, wird die Datei nicht noch einmal gelesen. |
+| `configure` | `True` | `False` lässt `configure_logging()` nichts tun. |
+| `logger_levels` | `()` | Paare `(("aio_pika", "WARNING"), ...)`, zuletzt angewandt. |
+| `queue_size` | `10000` | Kapazität der Log-Queue. |
+| `lifecycle_level` | `"DEBUG"` | Level von `task_received` und `task_started`. |
+
+```python
+from swarmq.logging import configure_logging, load_log_config
+from swarmq.logging_settings import LoggingSettings
+
+path = "/etc/myapp/logging.json"
+configure_logging(LoggingSettings(
+    log_config=path,
+    log_config_json=load_log_config(path),  # einmal prüfen, früh scheitern
+    logger_levels=(("aio_pika", "WARNING"),),
+))
+```
+
+Veraltet: `setup_logging(log_level, log_json)` (baut die eingebaute
 Einrichtung bei jedem Aufruf neu auf) und `flush_logging()` (ein Alias
 für `shutdown_logging()`).
 
@@ -477,5 +532,5 @@ für `shutdown_logging()`).
 - [Konfiguration](configuration.md#logging) — die Logging-Env-Vars und
   `SwarmQConfig`-Felder
 - [Fehlerkatalog](errors.md#loggingconfigerror) — `LoggingConfigError`
-- [Changelog](changelog.md#unreleased) — Migration vom bisherigen
+- [Changelog](changelog.md#080-2026-10-06) — Migration vom bisherigen
   Verhalten

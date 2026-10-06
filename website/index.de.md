@@ -66,8 +66,8 @@ Roundtrip — Installation, Broker, Worker, Client, Ergebnis.
 
     ---
 
-    Sechs Middleware-Hooks mit Stack-Semantik, vierzehn
-    Lifecycle-Signals und ein `@on_signal`-Decorator.
+    Sechs Middleware-Hooks mit Stack-Semantik, 23 Lifecycle-Signals
+    und ein `@on_signal`-Decorator.
 
 - :material-speedometer:{ .lg .middle } **Rate-Limiting**
 
@@ -88,7 +88,26 @@ Roundtrip — Installation, Broker, Worker, Client, Ergebnis.
     ---
 
     `swarmq worker --module myapp.tasks`. Graceful `SIGTERM`-Drain,
-    JSON-Logs für Aggregatoren, kein Boilerplate.
+    ein Supervisor, der abgestürzte Worker neu startet, mehrere
+    Prozesse, Autoscaling und ein CPU-Pool für rechenlastige Tasks.
+
+- :material-sitemap:{ .lg .middle } **Workflows**
+
+    ---
+
+    Tasks mit `chain`, `group` und `chord` komponieren. Die Worker
+    schalten den Workflow weiter; `app.apply(...)` liefert ein Handle,
+    auf das du warten, das du abbrechen oder per `workflow_id` wieder
+    aufnehmen kannst. Siehe den
+    [Workflow-Guide](guides/workflows.md).
+
+- :material-text-box-search:{ .lg .middle } **Strukturiertes Logging**
+
+    ---
+
+    Human- oder JSON-Ausgabe über eine nicht blockierende Queue,
+    Task-Kontext an jedem Event, auf Wunsch deine eigene `dictConfig`.
+    Siehe die [Logging-Referenz](reference/logging.md).
 
 </div>
 
@@ -133,8 +152,10 @@ Roundtrip — Installation, Broker, Worker, Client, Ergebnis.
 ---
 
 !!! info "Pre-Release"
-    SwarmQ ist aktuell in v0.1 und in aktiver Entwicklung. Der Core-
+    SwarmQ ist aktuell in v0.8 und in aktiver Entwicklung. Der Core-
     Roundtrip, Retries, DLQ, Middleware, Signals, Rate-Limiting,
-    Locking, Deduplizierung und der Scheduler sind drin. APIs
-    können sich vor v1.0 noch verschieben — siehe den
-    [Changelog](reference/changelog.md) für Breaking Changes.
+    Locking, Deduplizierung, der Scheduler, Workflows, der
+    CPU-Worker-Modus, strukturiertes Logging, Metriken und
+    Health-Endpunkte sind drin. APIs können sich vor v1.0 noch
+    verschieben — siehe den [Changelog](reference/changelog.md) für
+    Breaking Changes.

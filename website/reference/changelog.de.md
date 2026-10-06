@@ -655,7 +655,7 @@ Erstes PyPI-Release. Alles Folgende war darin enthalten.
   Ungültige `SWARMQ_DEFAULT_FORMAT`-Werte (Tippfehler, unbekanntes
   Format, leerer String) werden stillschweigend ignoriert — der
   CLI fällt auf den TTY-basierten Default zurück statt zu
-  fehlen. Siehe [Plan 2026-04-23-001 Unit 5](…).
+  fehlen. Siehe [CLI-Output](configuration.md#cli-output).
 
 ### Hinzugefügt — Phase 5 Welle 2 (Dev Experience)
 

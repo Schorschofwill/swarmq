@@ -622,7 +622,7 @@ First PyPI release. Everything below shipped with it.
   Invalid `SWARMQ_DEFAULT_FORMAT` values (typo, unknown format,
   empty string) are silently ignored — the CLI falls back to the
   TTY-aware default rather than failing. See
-  [plan 2026-04-23-001 Unit 5](https://github.com/…).
+  [CLI output](configuration.md#cli-output).
 
 ### Added — Phase 5 Wave 2 (Dev Experience)
 

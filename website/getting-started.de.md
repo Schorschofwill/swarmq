@@ -114,9 +114,26 @@ zu konsumieren.
 !!! note
     `swarmq worker` richtet das Logging für seine eigenen Prozesse ein.
     Eine App, die `SwarmQ(...)` einbettet, bekommt von SwarmQ keine
-    Logging-Konfiguration — richte sie selbst ein, z. B. mit
-    `logging.basicConfig(level=logging.INFO)`. Siehe
-    [Logging-Referenz](reference/logging.md).
+    Logging-Konfiguration — richte sie selbst ein. Ein nacktes
+    `logging.basicConfig(level=logging.INFO)` zeigt nur die Event-Namen
+    (`INFO:swarmq.task:task_succeeded`); um die Felder (`task_id`,
+    `duration_ms`, …) zu sehen, nutze den Formatter von SwarmQ:
+
+    ```python
+    import logging
+
+    from swarmq.logging import build_formatter
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(build_formatter(json=False, colors=False))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    ```
+
+    Sollen langsame Handler die Event-Loop nicht blockieren, übergib
+    `log_queue=True` an `SwarmQ(...)` (siehe
+    [Opt-in-Log-Queue](reference/logging.md#opt-in-log-queue)). Die
+    [Logging-Referenz](reference/logging.md) hat Rezepte für JSON- und
+    structlog-Setups.
 
 ## Aus deiner App enqueuen
 

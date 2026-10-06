@@ -150,6 +150,7 @@ plugins:
             Signals: Signals
             Rate limiting: Rate-Limiting
             Locking and deduplication: Locking und Deduplizierung
+            Workflows: Workflows
             Dead letter queues: Dead-Letter-Queues
             Hot reload (dev-only): Hot Reload (nur Dev)
             CPU mode: CPU-Modus
@@ -184,6 +185,7 @@ nav:
       - Signals: guides/signals.md
       - Rate limiting: guides/rate-limiting.md
       - Locking and deduplication: guides/locking-and-dedup.md
+      - Workflows: guides/workflows.md
       - Dead letter queues: guides/dead-letter-queues.md
       - Hot reload (dev-only): guides/hot-reload.md
       - CPU mode: guides/cpu-mode.md

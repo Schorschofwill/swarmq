@@ -66,8 +66,8 @@ round-trip — install, broker, worker, client, result.
 
     ---
 
-    Six middleware hooks with stack semantics, fourteen lifecycle
-    signals, and an `@on_signal` decorator.
+    Six middleware hooks with stack semantics, 23 lifecycle signals,
+    and an `@on_signal` decorator.
 
 - :material-speedometer:{ .lg .middle } **Rate limiting**
 
@@ -88,7 +88,25 @@ round-trip — install, broker, worker, client, result.
     ---
 
     `swarmq worker --module myapp.tasks`. Graceful `SIGTERM` drain,
-    JSON logs for aggregators, no boilerplate.
+    a supervisor that restarts crashed workers, multi-process,
+    autoscaling and a CPU pool for compute-bound tasks.
+
+- :material-sitemap:{ .lg .middle } **Workflows**
+
+    ---
+
+    Compose tasks with `chain`, `group` and `chord`. Workers advance the
+    workflow; `app.apply(...)` returns a handle you can wait on, cancel
+    or reattach by `workflow_id`. See the
+    [workflows guide](guides/workflows.md).
+
+- :material-text-box-search:{ .lg .middle } **Structured logging**
+
+    ---
+
+    Human or JSON output through a non-blocking queue, task context on
+    every event, your own `dictConfig` if you want it. See the
+    [logging reference](reference/logging.md).
 
 </div>
 
@@ -132,8 +150,9 @@ round-trip — install, broker, worker, client, result.
 ---
 
 !!! info "Pre-release"
-    SwarmQ is currently v0.1 and under active development. The core
+    SwarmQ is currently v0.8 and under active development. The core
     round-trip, retries, DLQ, middleware, signals, rate limiting,
-    locking, deduplication, and the scheduler are in. APIs may still
-    shift before v1.0 — see the [changelog](reference/changelog.md) for
-    breaking changes.
+    locking, deduplication, the scheduler, workflows, the CPU worker
+    mode, structured logging, metrics and health endpoints are in. APIs
+    may still shift before v1.0 — see the
+    [changelog](reference/changelog.md) for breaking changes.

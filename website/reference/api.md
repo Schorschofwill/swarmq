@@ -9,22 +9,35 @@ does I/O is a coroutine.
 
 ```python
 from swarmq import (
-    SwarmQ,              # Application entry point
-    Task, TaskInfo,      # Task definition
-    DeliveryMode,        # at_least_once | fire_and_forget
-    Middleware,          # Middleware base class
-    MessageContext,      # TypedDict passed to middleware hooks
-    Signal,              # Lifecycle event enum
-    SignalDispatcher,    # Signal registry
-    ProgressInfo,        # Task progress snapshot
-    Retry, NoRetry,      # Task-side control flow
-    SwarmQError,         # Base exception
+    SwarmQ,                    # Application entry point
+    RabbitMQBroker,            # Broker (same class as swarmq.broker.rabbitmq)
+    ValkeyBackend,             # Backend (same class as swarmq.backend.valkey)
+    Task, TaskInfo,            # Task definition
+    DeliveryMode,              # at_least_once | fire_and_forget
+    Middleware,                # Middleware base class
+    MessageContext,            # TypedDict passed to middleware hooks
+    Signal,                    # Lifecycle event enum
+    SignalDispatcher,          # Signal registry
+    ProgressInfo,              # Task progress snapshot
+    chain, group, chord,       # Workflow primitives
+    sig, Signature,            # Bound task call for workflows
+    WorkflowHandle,            # Handle returned by app.apply() / app.workflow()
+    setup_dishka, SwarmQProvider, TaskContext,   # Optional Dishka DI
+    HealthChecker, HealthServer, serve_health,   # /health + /ready
+    Metrics, MetricsServer, serve_metrics,       # Prometheus /metrics
+    install_signal_collectors,
+    Retry, NoRetry,            # Task-side control flow
+    SwarmQError,               # Base exception
     # ...and the rest of the exception hierarchy
 )
-
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
 ```
+
+Everything above is in `swarmq.__all__`. The heavy names (`SwarmQ`,
+`RabbitMQBroker`, `ValkeyBackend`, `Task`, `Signal`, the health and
+metrics classes, the Dishka names, ...) are loaded lazily on first
+access, so `import swarmq` stays cheap; they are the same objects as
+in their home modules (`from swarmq.broker.rabbitmq import
+RabbitMQBroker` keeps working).
 
 ## `class SwarmQ`
 
@@ -231,7 +244,7 @@ prior `cancel()` call is still in flight.
     before the worker cleared the flag), the stale flag cancels the
     next delivery too. Mitigations: let SwarmQ generate UUIDv7 task
     IDs (the default), or pass a shorter `ttl_ms` directly through
-    `Client.cancel()`.
+    the underlying client: `await app.client.cancel(task_id, ttl_ms=...)`.
 
 ### `get_progress()` / `watch_progress()`
 
@@ -260,6 +273,55 @@ async for info in app.watch_progress(task_id):
         break
 ```
 
+### `apply()`
+
+```python
+async def apply(
+    workflow: Signature | Chain | Group | Chord,
+) -> WorkflowHandle
+```
+
+Start a workflow built with `chain`, `group`, `chord` or a single
+`Signature` and return a [`WorkflowHandle`](#class-workflowhandle).
+Fire-and-forget: the topology and initial state are written to Valkey,
+the first steps are enqueued as `at_least_once` messages, and the
+workers advance the rest. The call returns immediately; the workflow
+does not depend on the calling process. The workflow state lives for
+`result_ttl` seconds.
+
+`pre_enqueue` middleware runs for every initial step before any state
+is written, so a rejecting middleware leaves nothing behind. Each step
+fires `TASK_ENQUEUED` and `WORKFLOW_STEP_ENQUEUED`.
+
+**Raises.** `WorkflowValidationError` (from the primitives, at
+construction), `BrokerConnectionError` when the initial steps cannot
+be published (the workflow is then marked failed), anything a
+`pre_enqueue` hook raises.
+
+### `workflow()`
+
+```python
+async def workflow(workflow_id: str) -> WorkflowHandle
+```
+
+Reattach to a running or finished workflow by id, e.g. from another
+process. **Raises** `WorkflowNotFound` when no state exists for the id
+(never started or expired).
+
+**Example.**
+
+```python
+from swarmq import chain, chord, group, sig
+
+handle = await app.apply(
+    chord(group(sig("fetch", url) for url in urls), sig("merge"))
+)
+print(handle.workflow_id)
+
+same = await app.workflow(handle.workflow_id)
+merged = await same.get(timeout=60)
+```
+
 ### `add_middleware()`
 
 ```python
@@ -283,10 +345,24 @@ are logged at WARNING and do not abort the dispatch loop.
 **Example.**
 
 ```python
+from swarmq.logging import get_logger
+
+log = get_logger("myapp.signals")
+
+
 @app.on_signal(Signal.TASK_FAILED)
-async def on_failure(task_id, task_name, exception):
-    await sentry.capture(exception, tags={"task": task_name})
+async def on_failure(task_id, task_name, exception, **kwargs):
+    # ``exception`` is the message string (str(exc)), not the exception
+    # object. For the real exception use Middleware.on_error.
+    log.warning("myapp_task_failed", task_id=task_id, task_name=task_name, reason=exception)
 ```
+
+Accept `**kwargs` in every handler: payloads gain fields over time
+(`queue` was added to the task signals), and a fixed signature then
+raises `TypeError`. A raising handler is logged as
+`signal_handler_error` (WARNING, logger `swarmq.signals`, with
+`error_type` and `error`); a worker lifecycle handler that exceeds its
+time budget is logged as `signal_handler_timeout`.
 
 ### `start_worker()`
 
@@ -364,6 +440,21 @@ class Task:
   update (`current == total`) always flushes. Safe no-op outside a
   worker context (unit tests).
 
+### Workflow signatures
+
+```python
+@classmethod
+def s(cls, *args, **kwargs) -> Signature
+@classmethod
+def si(cls, *args, **kwargs) -> Signature
+```
+
+Build a [`Signature`](#workflow-primitives) of this task for `chain`,
+`group` and `chord`. `s()` is mutable: inside a chain the previous
+step's result is passed as the first positional argument. `si()` is
+immutable: the bound arguments are used as they are. Both reject a
+`FIRE_AND_FORGET` task at workflow construction.
+
 ### What you do not override
 
 Everything else — the registry hook, the worker-wiring instance
@@ -423,8 +514,10 @@ about.
 
 - `pre_enqueue` exceptions **propagate** — a raising middleware
   aborts the enqueue.
-- All other hooks **swallow** exceptions: errors are logged at
-  ERROR level via structlog and the chain continues.
+- All other hooks **swallow** exceptions: each error is logged as
+  `middleware_hook_failed` (ERROR, logger `swarmq.middleware`, fields
+  `hook`, `middleware`, `error_type`, `error` and the traceback) and
+  the chain continues.
 
 **Registration order.**
 
@@ -455,7 +548,7 @@ class MessageContext(TypedDict):
 (`pre_enqueue`, `post_enqueue`). Treat it as optional.
 
 Workflow steps pass through `pre_enqueue` and `post_enqueue` as well
-(from `Client.apply` and from the advancer inside the worker). Their
+(from `app.apply()` and from the advancer inside the worker). Their
 context always has `delivery_mode="at_least_once"` and two extra keys,
 `workflow_id` and `step_path`, that plain `schedule()` calls do not
 carry — read them with `.get()`.
@@ -465,33 +558,96 @@ carry — read them with `.get()`.
 Lifecycle events emitted by SwarmQ. Register handlers with
 `@app.on_signal(Signal.FOO)`.
 
-| Signal | Payload (kwargs) |
-|---|---|
-| `TASK_ENQUEUED` | `task_id`, `task_name`, `queue` |
-| `TASK_STARTED` | `task_id`, `task_name` |
-| `TASK_COMPLETED` | `task_id`, `task_name`, `duration_ms` |
-| `TASK_FAILED` | `task_id`, `task_name`, `exception` |
-| `TASK_RETRYING` | `task_id`, `retry_count`, `delay` |
-| `TASK_CANCELLED` | `task_id`, `task_name` |
-| `TASK_EXPIRED` | `task_id`, `task_name`, `age_seconds` |
-| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name` |
-| `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
-| `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
-| `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` |
-| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` |
-| `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
-| `WORKER_ONLINE` / `WORKER_SHUTDOWN` / `WORKER_HEARTBEAT` | `worker_id` |
-| `WORKER_RECYCLING` | `worker_id`, `kind`, `slot`, `reason`, `value` |
-| `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | `worker_id` |
-| `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` |
-| `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` |
+| Signal | Payload (kwargs) | Fires |
+|---|---|---|
+| `TASK_ENQUEUED` | `task_id`, `task_name`, `queue` | After a publish (`schedule`, `schedule_many`, each workflow step). |
+| `TASK_STARTED` | `task_id`, `task_name`, `queue` | Before `run()`. |
+| `TASK_COMPLETED` | `task_id`, `task_name`, `queue`, `duration_ms` | After a successful `run()`. |
+| `TASK_FAILED` | `task_id`, `task_name`, `queue`, `exception` | After **every** failed attempt, also when a retry follows. `exception` is `str(exc)`. |
+| `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | A retry was scheduled; `retry_count` is the new count, `delay` in seconds. |
+| `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Cancelled before or during execution. |
+| `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Picked up older than `max_age`; routed to the DLQ. |
+| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | The task's lock was held by another execution (lock conflict); the message is requeued, or dead-lettered at the conflict cap. |
+| `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate limit hit; message delayed. |
+| `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | `unique_for` dedup hit. |
+| `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Terminal: the task was dead-lettered (retries exhausted or not retryable). Fires once. |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | A message went to the broker DLX without diagnostic headers (`body_too_large`, `undecodable`, `unregistered_task`, `middleware_chain_factory`, `dlq_publish_failed`). |
+| `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` | After each workflow step publish, in addition to `TASK_ENQUEUED`. |
+| `WORKER_ONLINE` / `WORKER_SHUTDOWN` | `worker_id` | Worker start / graceful shutdown. |
+| `WORKER_HEARTBEAT` | `worker_id`, `uptime_seconds` | Every `SWARMQ_METRICS_SAMPLE_INTERVAL` seconds; only while metrics are enabled. |
+| `WORKER_RECYCLING` | `worker_id`, `kind`, `slot`, `reason`, `value` | A worker (`kind="worker"`) or compute child (`kind="compute_child"`) is recycled; `reason` is `rss`, `tasks` or `forced`. |
+| `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | `worker_id` | Leader election and renewal. |
+| `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` | Leader hands over on shutdown / takes over after an expired lock. |
+| `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Catch-up after downtime skipped cron occurrences. |
 
-Handlers must accept `**kwargs` (or name every field explicitly).
-Use `kwargs.get("batch_index")` for the
+Handlers must accept `**kwargs`. Use `kwargs.get("batch_index")` for the
 `TASK_DUPLICATE_DETECTED`-only field, since non-batch sources do
 not include it. `worker_id` is `<base>:<slot>` under the supervisor
 and `<base>:p<pid>` embedded; see
 [worker identity](configuration.md#worker-identity).
+
+## Workflow primitives
+
+```python
+from swarmq import Signature, chain, chord, group, sig
+
+sig(task_name: str, *args, immutable: bool = False, **kwargs) -> Signature
+chain(*steps) -> Chain              # also: a | b | c
+group(*members) -> Group            # or group(iterable)
+chord(header: Group, body) -> Chord # also: group(...) | body
+```
+
+| Primitive | Result |
+|---|---|
+| `Signature` | One bound task call. Build it with `Task.s()` / `Task.si()` (task class known) or `sig("task_name", ...)` (by name, no import needed). `immutable=True` / `si()` suppresses result injection. |
+| `chain(a, b, c)` | Runs the steps one after another; each mutable step receives the previous result as its first argument. The workflow result is the last step's result. |
+| `group(a, b, c)` | Runs the members in parallel. The result is the list of member results in definition order, not completion order. |
+| `chord(group(...), body)` | Runs the header group, then `body` exactly once with the ordered list of header results. |
+
+Steps may themselves be chains, groups or chords. Limits, checked at
+construction and raising `WorkflowValidationError`:
+
+- nesting depth at most `10` (`max_workflow_depth`);
+- at most `1000` members per group (`max_group_size`);
+- no empty chain or group; a chord header must be a `group(...)`;
+- no `FIRE_AND_FORGET` task as a step (`Task.s()`/`si()` check this at
+  construction, `sig()` by name at run time).
+
+Start a workflow with [`app.apply()`](#apply).
+
+## `class WorkflowHandle`
+
+Returned by `app.apply()` and `app.workflow(workflow_id)`. Holds only
+the `workflow_id`; every call reads the state from Valkey, so a handle
+can be rebuilt in any process.
+
+```python
+class WorkflowHandle:
+    workflow_id: str
+
+    async def status(self) -> str: ...
+    async def children(self) -> dict[str, Any]: ...
+    async def cancel(self) -> bool: ...
+    async def get(self, timeout: float = 30.0) -> Any: ...
+```
+
+- `status()` — `"running"`, `"completed"`, `"failed"` or `"cancelled"`.
+- `children()` — map of every enqueued step's topology path to
+  `{"task_id", "status", "result"?}` with `status` `running`,
+  `completed` or `failed`. Empty before any step is enqueued.
+- `cancel()` — sets the workflow cancel flag. `get()` raises promptly;
+  steps not yet picked up finish as cancelled; a step that is already
+  running completes, but no further steps are enqueued. Returns `True`
+  when the flag was newly set.
+- `get(timeout=30.0)` — waits for a terminal status and returns the
+  final result.
+
+**Raises.** `WorkflowNotFound` when the state is gone (`status()`,
+`children()`, `get()`),
+`ResultNotReadyError` when `get()` times out, `TaskError` for a failed
+workflow, `TaskCancelledError` for a cancelled one,
+`WorkflowResultExpired` when the workflow completed but its final
+result expired before retrieval.
 
 ## `class ProgressInfo`
 
@@ -524,10 +680,24 @@ the semantic difference and when each applies.
 ## `class RabbitMQBroker`
 
 ```python
-from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq import RabbitMQBroker
 
-broker = RabbitMQBroker(url: str)
+RabbitMQBroker(
+    url: str | None = None,
+    queue_type: str = "quorum",
+    *,
+    connection: aio_pika.abc.AbstractConnection | None = None,
+    connection_pool: aio_pika.pool.Pool | None = None,
+)
 ```
+
+Pass exactly one of `url`, `connection` or `connection_pool`; none or
+more than one raises `ConfigurationError`. With `url` SwarmQ owns the
+connection. A borrowed `connection` or pool is for the producer path
+only: SwarmQ opens its own channel and never closes the borrowed
+connection, and `start_worker()` rejects such a broker. Inside
+`SwarmQ(...)` the queue type comes from `SwarmQConfig.queue_type`
+(`SWARMQ_QUEUE_TYPE`).
 
 Async AMQP broker wrapping aio-pika. Implements the `Broker` and
 `BrokerAdmin` protocols from `swarmq.contracts` (connect/declare/
@@ -540,10 +710,20 @@ directly from application code.
 ## `class ValkeyBackend`
 
 ```python
-from swarmq.backend.valkey import ValkeyBackend
+from swarmq import ValkeyBackend
 
-backend = ValkeyBackend(url: str)
+ValkeyBackend(
+    url: str | None = None,
+    *,
+    client: valkey.asyncio.Valkey | None = None,
+    pool: valkey.asyncio.ConnectionPool | None = None,
+)
 ```
+
+Pass exactly one of `url`, `client` or `pool`; none or more than one
+raises `ConfigurationError`. A borrowed `client` is never closed by
+SwarmQ, a `pool` keeps its own lifecycle; both are for the producer
+path only (`start_worker()` rejects them).
 
 Async Valkey client backing results, locks, rate limits, cancel
 flags, scheduler state, and leader election. Implements the
@@ -554,9 +734,91 @@ as the second positional argument. Since 0.2.0 the constructor
 signatures of `Worker` and `Client` name these contracts instead of
 the concrete classes — existing code keeps working unchanged.
 
+## Dependency injection (Dishka)
+
+Optional; install with `pip install 'swarmq[dishka]'`.
+
+```python
+from swarmq import SwarmQProvider, TaskContext, setup_dishka
+
+setup_dishka(container: dishka.AsyncContainer) -> None
+```
+
+- `setup_dishka(container)` registers your `AsyncContainer`. Call it
+  at module level in the task module, so every spawned worker process
+  builds its container on import. A second call replaces the first and
+  logs `dishka_container_replaced`.
+- Parameters of `run`, `pre_execution` and `post_execution` annotated
+  with `FromDishka[...]` (from `dishka`) are injected from a REQUEST
+  scope the worker opens per task.
+- `TaskContext` is a frozen dataclass with `task_id`, `task_name`,
+  `queue` and `retry_count` for the running task.
+- `SwarmQProvider` is a Dishka provider that makes `TaskContext`
+  available at REQUEST scope; add it to your container when a provider
+  depends on `TaskContext`. Accessing it without `dishka` installed
+  raises `ImportError`.
+
+```python
+from dishka import FromDishka, make_async_container
+
+from swarmq import SwarmQProvider, Task, TaskContext, TaskInfo, setup_dishka
+
+# AppProvider: your own dishka Provider that provides PaymentClient
+container = make_async_container(SwarmQProvider(), AppProvider())
+setup_dishka(container)
+
+
+class Charge(Task):
+    task_info = TaskInfo(name="charge", queues=["billing"])
+
+    async def run(self, order_id: int, payments: FromDishka[PaymentClient],
+                  ctx: FromDishka[TaskContext]) -> None:
+        await payments.charge(order_id, idempotency_key=ctx.task_id)
+```
+
+## Health and metrics
+
+`swarmq worker --health-port` / `--metrics-port` start these servers
+for you. Use the classes directly only in an embedded worker or your
+own process.
+
+```python
+from swarmq import (
+    HealthChecker, HealthServer, serve_health,
+    Metrics, MetricsServer, serve_metrics, install_signal_collectors,
+)
+
+HealthChecker(broker, backend, *, timeout_s: float = 2.0, compute_check=None)
+HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started=None)
+serve_health(checker, *, host="127.0.0.1", port=8080)       # async context manager
+
+Metrics(registry=None, namespace="swarmq")
+MetricsServer(metrics, host="127.0.0.1", port=9090)
+serve_metrics(metrics, host="127.0.0.1", port=9090)         # async context manager
+install_signal_collectors(dispatcher: SignalDispatcher, metrics: Metrics) -> None
+```
+
+- `HealthChecker.check_all()` pings broker and backend (each bounded
+  by `timeout_s`) and returns `{"ready", "broker", "backend"}` (plus
+  `"compute"` in CPU mode).
+- `HealthServer` serves `/health` (always `200` with `uptime_s`) and
+  `/ready` (`200` or `503` with the `check_all()` snapshot).
+- `Metrics` holds the [metric catalog](configuration.md#metric-catalog)
+  in its own `CollectorRegistry`; without `prometheus_client`
+  (`pip install 'swarmq[metrics]'`) every metric is a no-op.
+- `MetricsServer` serves `/metrics` from a `Metrics` instance.
+- `install_signal_collectors()` registers the signal handlers that
+  update the task counters, gauges and the duration histogram.
+
+Both servers have no authentication and bind to `127.0.0.1` by
+default.
+
 ## Exceptions
 
-All library exceptions descend from `SwarmQError`. Detailed
+All library exceptions descend from `SwarmQError` and can be imported
+from `swarmq` (`from swarmq import TaskError, WorkflowNotFound, ...`).
+`WorkflowStateConflict` is the one exception left out of the
+top-level package; import it from `swarmq.exceptions`. Detailed
 semantics and `When raised` / `Cause` / `Recovery` for each class
 live in the [error catalog](errors.md).
 

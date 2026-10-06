@@ -2,9 +2,17 @@
 
 SwarmQ has two configuration surfaces: **environment variables** that
 the worker reads at startup (and the CLI also honours), and
-**`TaskInfo` fields** declared per task class. CLI flags take
-precedence over env vars; env vars take precedence over
-`SwarmQConfig` values and defaults.
+**`TaskInfo` fields** declared per task class.
+
+Precedence depends on how SwarmQ runs:
+
+- **`swarmq worker`**: CLI flag, then env var, then default, for every
+  worker option. The supervisor resolves the values once and hands them
+  to its worker subprocesses and compute children, which do not read
+  the environment again; `swarmq worker --check` validates the same
+  resolved values.
+- **Embedded `SwarmQ(...)`**: `SwarmQConfig` keyword arguments first,
+  then `SWARMQ_*` env vars override them; defaults fill the rest.
 
 ## Environment variables
 
@@ -23,7 +31,7 @@ The CLI prints a descriptive error if either is missing; see the
 | Variable | Default | Description |
 |---|---|---|
 | `SWARMQ_QUEUES` | `default` | Comma-separated queue names the worker consumes. |
-| `SWARMQ_CONCURRENCY` | `10` | Maximum tasks in flight per worker process. |
+| `SWARMQ_CONCURRENCY` | `10` (io) / assigned CPUs (cpu) | Maximum tasks in flight per worker process. With `SWARMQ_POOL=cpu` the number of compute slots; see [`--concurrency`](cli.md#options). |
 | `SWARMQ_RESULT_TTL` | `86400` | Seconds that stored results live in Valkey. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Cap on retry backoff in seconds. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Seconds to let in-flight tasks finish on SIGTERM before hard-killing. |
@@ -44,6 +52,7 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_BURST_MODE` | `false` | If `true`, worker exits after `SWARMQ_BURST_IDLE_TIMEOUT` seconds of queue silence. |
 | `SWARMQ_BURST_IDLE_TIMEOUT` | `5.0` | Seconds of idle needed before burst exits. |
 | `SWARMQ_PRIORITIES` | `false` | If `true`, auto-declare and consume the `.high`/`.normal`/`.low` triplet for every queue. |
+| `SWARMQ_MAX_MESSAGE_BODY_BYTES` | `16777216` | Upper bound for an incoming task message body (16 MiB). Must be `> 0`. A larger body is not decoded: the worker logs `message_body_too_large` and routes the message to the DLQ (`TASK_REJECTED` with reason `body_too_large`). |
 
 ### Logging
 
@@ -69,8 +78,10 @@ Details, recipes and the event catalog:
 
 The supervisor of `swarmq worker` resolves these values once (CLI flag
 before env var) and hands the result to its worker subprocesses and
-compute children, which do not read the environment again. Invalid
-values end `swarmq worker` with exit `78`.
+compute children, which do not read the environment again. The same
+CLI > env > default order applies to every other worker option with a
+flag (see [CLI reference](cli.md)). Invalid values end `swarmq worker`
+with exit `78`.
 
 ### Scheduler
 
@@ -90,7 +101,30 @@ values end `swarmq worker` with exit `78`.
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind address for the metrics server. Set `0.0.0.0` when Prometheus scrapes from another host or container. |
 | `SWARMQ_HEALTH_PORT` | *unset* | **Base port** for `/health` and `/ready`, same slot offset. Must be `1..65535`. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. |
+| `SWARMQ_METRICS_SAMPLE_INTERVAL` | `10.0` | Seconds between samples of the `swarmq_queue_depth`, `swarmq_dlq_messages` and `swarmq_worker_uptime_seconds` gauges; the same tick dispatches `WORKER_HEARTBEAT`. Must be `> 0`. The sampler only runs when metrics are enabled. |
 | `SWARMQ_WORKER_ID` | hostname | Base of the worker identity that appears as `worker_id` in signals, metric labels and the log context. See [worker identity](#worker-identity). |
+
+#### Metric catalog
+
+Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
+`pip install 'swarmq[metrics]'`) exposes these series on `/metrics`:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `swarmq_tasks_total` | counter | `task_name`, `queue`, `outcome` | Tasks by outcome: `completed`, `failed`, `cancelled`, `rate_limited`, `duplicate`, `expired`, `dlq`. `failed` counts every failed attempt, `dlq` the terminal dead-lettering. |
+| `swarmq_task_duration_seconds` | histogram | `task_name`, `queue` | Duration of `run()` for completed tasks. Buckets from 5 ms to 300 s. |
+| `swarmq_tasks_active` | gauge | `queue` | Tasks currently in flight. |
+| `swarmq_retries_total` | counter | `task_name`, `queue` | Retries scheduled. |
+| `swarmq_tasks_rejected_total` | counter | `queue`, `reason` | Messages handed to the broker DLX without diagnostic headers (`TASK_REJECTED`), e.g. `body_too_large`, `undecodable`, `unregistered_task`. |
+| `swarmq_recyclings_total` | counter | `kind`, `reason` | Process recyclings; `kind` is `worker` or `compute_child`. |
+| `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count (`kind="pending"`), sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`. |
+| `swarmq_dlq_messages` | gauge | `queue` | Messages in `{queue}.XQ`, sampled. |
+| `swarmq_worker_uptime_seconds` | gauge | `worker_id` | Seconds since the worker started, sampled. |
+| `swarmq_scheduler_leader` | gauge | `worker_id` | `1` while this worker holds the scheduler leader lock, else `0`. |
+| `swarmq_log_records_dropped_total` | counter | none | Log records dropped because the log queue was full (see [Logging](logging.md#non-blocking-output-and-dropped-records)). |
+
+`task_name` and `queue` are taken verbatim from the message; keep task
+names bounded, otherwise every distinct value creates its own series.
 
 #### Base ports and slots
 
@@ -185,7 +219,8 @@ app = SwarmQ(
 ```
 
 Field names match the env vars without the `SWARMQ_` prefix and in
-lowercase. Env vars always win when both are set — pass kwargs only
+lowercase. In an embedded app env vars always win when both are set
+(`swarmq worker` resolves CLI flags before env vars instead) — pass kwargs only
 when you need a non-default that you do not want in the shell
 environment. One exception to the naming rule: `SWARMQ_LOG_FORMAT` sets
 the field `log_json`. `worker_id=` sets the base of the

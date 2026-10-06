@@ -290,11 +290,12 @@ asyncio.run(main())
 sehen:
 
 - Einige Tasks beenden beim ersten Versuch.
-- Einige raisen, dann `TASK_RETRYING` mit wachsendem
-  `delay`-Feld, dann schließlich `TASK_COMPLETED` beim Retry.
+- Einige raisen: eine `task_failed`-Zeile (mit `error_type` und
+  `error`), dann `task_retrying` mit wachsendem `delay_ms`-Feld, dann
+  schließlich `task_succeeded` beim Retry.
 - Landen mehr als 5 Tasks in einer Sekunde, erscheinen
-  `TASK_RATE_LIMITED`-Einträge mit `retry_after_ms`, bevor
-  irgendwann `TASK_COMPLETED` folgt.
+  `task_rate_limited`-Zeilen mit `retry_after_ms`, bevor irgendwann
+  `task_succeeded` folgt.
 
 Alle 12 Aufrufe in Terminal 2 drucken irgendwann
 `sent to user-N@example.com: 'Burst message N'` — die Retries und
@@ -328,9 +329,13 @@ class SendEmail(Task):
 ## Kapitel 4 — Einen Signal-Handler für Metriken hinzufügen
 
 Ein Signal-Handler ist der leichtgewichtige Weg, jedes Task-
-Lifecycle-Event zu beobachten. Füge einen für `TASK_FAILED` hinzu
-(der Final-Attempt-Fehlschlag, nach Retries) und einen für
-`TASK_RATE_LIMITED`:
+Lifecycle-Event zu beobachten. Füge einen für `TASK_DLQ` hinzu (der
+Task wird nach seinen Retries aufgegeben und dead-lettered) und einen
+für `TASK_RATE_LIMITED`. `TASK_FAILED` feuerte nach jedem
+fehlgeschlagenen Versuch, Retries eingeschlossen, und ist deshalb der
+falsche Hook für „diese E-Mail wurde nicht verschickt". Schließe die
+Parameterliste jedes Handlers mit `**kwargs` ab: Der Worker übergibt
+mehr Schlüssel, als der Handler nennt (zum Beispiel `queue`).
 
 ```python title="tasks.py"
 import logging
@@ -358,13 +363,14 @@ class SendEmail(Task):
 
 
 def install_handlers(app: SwarmQ) -> None:
-    @app.on_signal(Signal.TASK_FAILED)
-    async def on_failed(task_id, task_name, exception):
-        log.warning("FAILED %s %s: %r", task_name, task_id, exception)
+    @app.on_signal(Signal.TASK_DLQ)
+    async def on_dead_lettered(task_id, task_name, error, **kwargs):
+        log.warning("DEAD_LETTERED %s %s: %s", task_name, task_id, error)
 
     @app.on_signal(Signal.TASK_RATE_LIMITED)
     async def on_limited(
         task_id, task_name, retry_after_ms, remaining, rate_limit_count,
+        **kwargs,
     ):
         log.info(
             "RATE_LIMIT task=%s retry_after_ms=%d remaining=%d bounces=%d",
@@ -462,7 +468,7 @@ Stoppe den CLI-Worker in Terminal 1 und starte stattdessen
 `python worker.py`. Laufe `python burst.py` in Terminal 2 erneut.
 Der Worker-Log enthält jetzt die `RATE_LIMIT`-Zeile und — für den
 kleinen Anteil Tasks, der alle 3 Retries erschöpft — eine
-`FAILED`-Zeile.
+`DEAD_LETTERED`-Zeile.
 
 ### Kumulativer Stand — Ende Kapitel 4
 
@@ -518,9 +524,9 @@ asyncio.run(main())
 "
 ```
 
-Der Worker loggt `task_failed` und `task_sent_to_dlq` und nackt die
-Nachricht in
-`emails.XQ`. Inspiziere:
+Der Worker loggt `task_failed` und `task_sent_to_dlq`, publiziert die
+Nachricht nach `emails.XQ` und bestätigt das Original; dein
+`TASK_DLQ`-Handler ergänzt seine `DEAD_LETTERED`-Zeile. Inspiziere:
 
 ```bash
 swarmq dlq list --queue emails

@@ -30,6 +30,9 @@ Listen siehe die [Referenz](../reference/index.md).
 - [Locking und Deduplizierung](locking-and-dedup.md) — Ausführungen
   serialisieren (Lock) oder redundante Enqueues zusammenklappen
   (Unique Task).
+- [Workflows](workflows.md) — Tasks zu `chain`, `group` und `chord`
+  zusammensetzen, mit `app.apply()` starten und über ein
+  `WorkflowHandle` abwarten, inspizieren oder abbrechen.
 
 ## Operations
 

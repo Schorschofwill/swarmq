@@ -44,9 +44,12 @@ bedeutet, das Feature ist nicht aktiv.
 | `x-swarmq-unique-hash` | `string` (hex) | Client | SHA-256 der kanonischen `(name, args, kwargs)`. |
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | Wann der Worker den Dedup-Flag freigibt. |
 | `x-swarmq-schedfire` | `int` (Unix-ms) | Scheduler | Vorhanden auf scheduler-publishten Nachrichten; Worker dedupt darauf. |
-| `x-swarmq-expired` | `"1"` | Worker (bei Expiry) | Gesetzt, bevor die Nachricht DLQ-geroutet wird. |
-| `x-swarmq-lock-error` | `"render_failed"` \| `"conflict_cap"` | Worker (bei Lock-Fehler) | Surfact Lock-System-Fehler auf DLQ'te Nachrichten. |
-| `x-swarmq-error` | `"no_retry"` | Worker | Vorhanden, wenn `NoRetry` die Nachricht geroutet hat. |
+| `x-swarmq-lock-render-error` | `string` | Worker (Lock-Template-Fehler) | Warum das Lock-Template nicht gerendert werden konnte; die Nachricht geht in die DLQ. |
+| `x-swarmq-lock-conflict-count` | `int` | Worker (Lock-Konflikt) | Bisherige Konflikte; beim 10. geht die Nachricht in die DLQ. |
+| `x-swarmq-lock-name` | `string` | Worker (Lock-Konflikt) | Gerenderter Lock-Name, auf den sich die Konflikte beziehen. |
+| `x-swarmq-rate-limit-count` | `int` | Worker (Rate-Limit) | Wie oft die Nachricht am Rate-Limit abgeprallt ist. |
+| `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow, zu dem die Nachricht gehört (nur Workflow-Schritte). |
+| `x-swarmq-workflow-step` | `string` | Client / Worker | Schrittpfad im Workflow (nur Workflow-Schritte). |
 | `x-death` | `array` | RabbitMQ | Broker-native DLX-Audit-Trail. |
 
 ## Task-Ergebnis (Valkey)
@@ -287,43 +290,47 @@ als *(optional)* markiert sind, können in einigen Quellen fehlen
 ### `TASK_STARTED`
 
 ```jsonc
-{"task_id": "01HV...", "task_name": "send_email"}
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails"}
 ```
 
 ### `TASK_COMPLETED`
 
 ```jsonc
-{"task_id": "01HV...", "task_name": "send_email", "duration_ms": 312}
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails", "duration_ms": 312}
 ```
 
 ### `TASK_FAILED`
 
 ```jsonc
-{"task_id": "01HV...", "task_name": "send_email", "exception": "<Exception>"}
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails", "exception": "smtp connection refused"}
 ```
+
+`exception` ist `str(exc)`, nicht das Exception-Objekt. `TASK_FAILED`
+feuert nach jedem gescheiterten Versuch, auch wenn ein Retry folgt;
+`TASK_DLQ` markiert das endgültige Scheitern.
 
 ### `TASK_RETRYING`
 
 ```jsonc
-{"task_id": "01HV...", "retry_count": 1, "delay": 2.0}
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails", "retry_count": 1, "delay": 2.0}
 ```
 
 ### `TASK_CANCELLED`
 
 ```jsonc
-{"task_id": "01HV...", "task_name": "send_email"}
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails"}
 ```
 
 ### `TASK_EXPIRED`
 
 ```jsonc
-{"task_id": "01HV...", "task_name": "send_email", "age_seconds": 120}
+{"task_id": "01HV...", "task_name": "send_email", "queue": "emails", "age_s": 120, "max_age_s": 60}
 ```
 
 ### `TASK_LOCKED`
 
 ```jsonc
-{"task_id": "01HV...", "task_name": "sync_user", "lock_name": "user-42"}
+{"task_id": "01HV...", "task_name": "sync_user", "lock_name": "user-42", "lock_conflict_count": 1}
 ```
 
 ### `TASK_RATE_LIMITED`

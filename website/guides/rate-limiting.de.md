@@ -92,18 +92,24 @@ greifen:
 
 ```python
 from swarmq import Signal
+from swarmq.logging import get_logger
+
+log = get_logger("myapp.rate_limit")
+
 
 @app.on_signal(Signal.TASK_RATE_LIMITED)
 async def on_rate_limit(
     task_id, task_name, retry_after_ms, remaining, rate_limit_count,
+    **kwargs,
 ):
-    log.info(
-        "rate_limited",
-        task_id=task_id, task_name=task_name,
-        retry_after_ms=retry_after_ms,
-        remaining=remaining,
-        bounce_count=rate_limit_count,
-    )
+    # A message that keeps bouncing means the limit is far below demand.
+    if rate_limit_count >= 10:
+        log.warning(
+            "myapp_rate_limit_bouncing",
+            task_id=task_id, task_name=task_name,
+            retry_after_ms=retry_after_ms,
+            bounce_count=rate_limit_count,
+        )
 ```
 
 Payload-Felder:
@@ -114,6 +120,13 @@ Payload-Felder:
 - `rate_limit_count` — wie oft genau diese Nachricht vom
   Rate-Limiter requeued wurde (ein Bounce-Counter für Operator-
   Alerts).
+
+Um Aufschübe nur zu sehen, brauchst du keinen Handler: Der Worker
+loggt jeden selbst als `task_rate_limited`-Zeile (INFO, Logger
+`swarmq.worker.gates.rate_limit`) mit `retry_after_ms`, `remaining`
+und `rate_limit_count`. Schließe die Parameterliste des Handlers mit
+`**kwargs` ab, damit er weiterläuft, wenn ein Release einen Schlüssel
+ergänzt.
 
 Wenn `swarmq[metrics]` installiert ist und `--metrics-port`
 gesetzt, werden Rate-Limit-Events zusätzlich als Prometheus-Counter
@@ -146,9 +159,9 @@ swarmq inspect --module myapp.tasks
 
 Die `RATE_LIMIT`-Spalte listet den deklarierten String für jeden
 Task. Dann plane einen Burst größer als das Limit und beobachte
-die Worker-Logs: einige Tasks beenden sofort, andere zeigen
-`TASK_RATE_LIMITED`-Einträge mit `retry_after_ms` und erscheinen
-nach der Verzögerung wieder.
+die Worker-Logs: einige Tasks beenden sofort (`task_succeeded`),
+andere zeigen `task_rate_limited`-Zeilen mit `retry_after_ms` und
+erscheinen nach der Verzögerung wieder.
 
 ## Siehe auch
 

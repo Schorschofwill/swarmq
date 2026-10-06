@@ -79,12 +79,12 @@ it to the DLQ:
 |---|---|
 | Worker process killed (`SIGKILL`, OOM, node crash) | Redelivered by RabbitMQ after visibility timeout |
 | Worker restarted mid-task (graceful `SIGTERM`) | Drained in-flight tasks finish; pending messages redeliver to a new worker |
-| `Task.run()` raises a retryable exception, retries remaining | Nack + delayed redelivery via the retry exchange |
-| `Task.run()` raises after `max_retries` reached | Nack + DLX → `{queue}.XQ` |
-| `raise NoRetry("reason")` | Nack + DLX → `{queue}.XQ` immediately |
+| `Task.run()` raises a retryable exception, retries remaining | New message to the delay queue, original acked (`TASK_RETRYING`) |
+| `Task.run()` raises after `max_retries` reached | Worker publishes to `{queue}.XQ`, original acked (`TASK_DLQ`) |
+| `raise NoRetry("reason")` | Worker publishes to `{queue}.XQ` immediately, original acked (`TASK_DLQ`) |
 | RabbitMQ's `x-delivery-limit=20` reached | Broker-native DLQ route |
 | Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
-| Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-error` header |
+| Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (conflict cap) header |
 
 The worker never calls `basic.nack(requeue=True)` with the primary
 retry path. Requeue-in-place would bypass the retry backoff and hot-

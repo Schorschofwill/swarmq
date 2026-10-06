@@ -285,11 +285,12 @@ asyncio.run(main())
 Run `python burst.py`. Watch terminal 1. You should see:
 
 - Some tasks complete on the first attempt.
-- Some raise, then `TASK_RETRYING` with a growing `delay` field,
-  then eventually `TASK_COMPLETED` on retry.
+- Some raise: a `task_failed` line (with `error_type` and `error`),
+  then `task_retrying` with a growing `delay_ms` field, then
+  eventually `task_succeeded` on retry.
 - When more than 5 tasks land in a single second,
-  `TASK_RATE_LIMITED` entries appear with `retry_after_ms` before
-  the eventual `TASK_COMPLETED`.
+  `task_rate_limited` lines appear with `retry_after_ms` before the
+  eventual `task_succeeded`.
 
 All 12 calls in terminal 2 eventually print
 `sent to user-N@example.com: 'Burst message N'` — the retries and
@@ -323,8 +324,12 @@ class SendEmail(Task):
 ## Chapter 4 — Add a signal handler for metrics
 
 A signal handler is the lightweight way to observe every task
-lifecycle event. Add one for `TASK_FAILED` (the final-attempt
-failure, after retries) and one for `TASK_RATE_LIMITED`:
+lifecycle event. Add one for `TASK_DLQ` (the task is given up after
+its retries and dead-lettered) and one for `TASK_RATE_LIMITED`.
+`TASK_FAILED` would fire after every failed attempt, retries
+included, so it is the wrong hook for "this email was not sent".
+End every handler's parameter list with `**kwargs`: the worker passes
+more keys than the handler names (for example `queue`).
 
 ```python title="tasks.py"
 import logging
@@ -352,13 +357,14 @@ class SendEmail(Task):
 
 
 def install_handlers(app: SwarmQ) -> None:
-    @app.on_signal(Signal.TASK_FAILED)
-    async def on_failed(task_id, task_name, exception):
-        log.warning("FAILED %s %s: %r", task_name, task_id, exception)
+    @app.on_signal(Signal.TASK_DLQ)
+    async def on_dead_lettered(task_id, task_name, error, **kwargs):
+        log.warning("DEAD_LETTERED %s %s: %s", task_name, task_id, error)
 
     @app.on_signal(Signal.TASK_RATE_LIMITED)
     async def on_limited(
         task_id, task_name, retry_after_ms, remaining, rate_limit_count,
+        **kwargs,
     ):
         log.info(
             "RATE_LIMIT task=%s retry_after_ms=%d remaining=%d bounces=%d",
@@ -454,7 +460,7 @@ structlog setups.
 Stop the CLI worker in terminal 1 and run `python worker.py`
 instead. Re-run `python burst.py` in terminal 2. The worker log
 now includes the `RATE_LIMIT` line and — for the small fraction of
-tasks that exhaust all 3 retries — a `FAILED` line.
+tasks that exhaust all 3 retries — a `DEAD_LETTERED` line.
 
 ### Cumulative state — end of Chapter 4
 
@@ -510,9 +516,9 @@ asyncio.run(main())
 "
 ```
 
-The worker logs `task_failed` and `task_sent_to_dlq` and nacks the
-message into
-`emails.XQ`. Inspect:
+The worker logs `task_failed` and `task_sent_to_dlq`, publishes the
+message to `emails.XQ` and acks the original; your `TASK_DLQ` handler
+adds its `DEAD_LETTERED` line. Inspect:
 
 ```bash
 swarmq dlq list --queue emails
