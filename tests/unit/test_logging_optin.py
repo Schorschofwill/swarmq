@@ -48,6 +48,14 @@ from __future__ import annotations
 #     Listener gibt an die Root-Handler weiter, ohne ``callHandlers``
 #     erneut zu durchlaufen.
 # AE6 mit echtem Forkserver: ``tests/integration/test_compute_child_logging.py``.
+# Plan 2026-10-06-1811, U2 (R2, KTD1) -- der Listener stirbt nie:
+# 20. Ein Root-Handler der App, dessen ``emit`` wirft: Nach dem Gift-Record
+#     lebt der Listener, der naechste Record erreicht den sammelnden Handler.
+#     Pro Handler gefangen: Der werfende Handler steht vor dem sammelnden.
+# 21. Ein Filter der App, der wirft (fehlende Kontextvariable): dasselbe.
+# 22. Wirft jeder Handler der App, erscheint ``log_handler_errors`` best
+#     effort auf stderr -- aus dem Listener-Thread, nie im Aufrufer.
+# Echter Prozess: ``tests/integration/test_logging_robustness.py``.
 import contextvars
 import io
 import json
@@ -409,3 +417,84 @@ def test_a_call_handlers_hook_sees_each_opt_in_record_once(
     shutdown_logging()
     assert app_handler.events() == ["optin_hooked"]
     assert call_handlers_hook.count("optin_hooked") == 1
+
+
+class _Raising(logging.Handler):
+    """Root-Handler der App, dessen ``emit`` wirft, ohne ``handleError``
+    -- etwa ein Log-Shipper ohne Verbindung (Analyse S2)."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        raise ConnectionError("log shipper down")
+
+
+class _Arrival(_Collect):
+    """Sammelt und setzt ``arrived``, sobald ``event`` ankommt."""
+
+    def __init__(self, event: str) -> None:
+        super().__init__()
+        self.event = event
+        self.arrived = threading.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        super().emit(record)
+        if record.getMessage() == self.event:
+            self.arrived.set()
+
+
+@pytest.mark.timeout(5)
+def test_a_raising_app_handler_does_not_kill_the_listener(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    arrival = _Arrival("optin_after_poison")
+    logging.getLogger().handlers[:] = [_Raising(), arrival]
+    SwarmQ(broker, backend, log_queue=True)
+
+    _LOG.warning("optin_poison")
+    _LOG.warning("optin_after_poison")
+
+    assert arrival.arrived.wait(2), arrival.events()
+
+
+_CORRELATION: contextvars.ContextVar[str] = contextvars.ContextVar("correlation_id")
+
+
+class _NeedsCorrelation(logging.Filter):
+    """Filter der App, der eine Kontextvariable ohne Standardwert liest."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.correlation_id = _CORRELATION.get()
+        return True
+
+
+@pytest.mark.timeout(5)
+def test_a_raising_app_filter_does_not_kill_the_listener(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    arrival = _Arrival("optin_after_poison")
+    strict = _Collect()
+    strict.addFilter(_NeedsCorrelation())
+    logging.getLogger().handlers[:] = [strict, arrival]
+    SwarmQ(broker, backend, log_queue=True)
+
+    _LOG.warning("optin_poison")
+    _LOG.warning("optin_after_poison")
+
+    assert arrival.arrived.wait(2), arrival.events()
+    # Die Meldung entsteht beim Fehler im ersten Handler, also vor dem
+    # Gift-Record im zweiten.
+    assert arrival.events() == ["log_handler_errors", "optin_poison", "optin_after_poison"]
+
+
+@pytest.mark.timeout(5)
+def test_when_every_app_handler_raises_the_report_reaches_stderr(
+    broker: MagicMock, backend: MagicMock, capsys: pytest.CaptureFixture[str],
+) -> None:
+    logging.getLogger().handlers[:] = [_Raising()]
+    SwarmQ(broker, backend, log_queue=True)
+
+    _LOG.warning("optin_poison")
+    shutdown_logging()
+
+    err = capsys.readouterr().err
+    assert "log_handler_errors" in err
+    assert "Traceback" not in err

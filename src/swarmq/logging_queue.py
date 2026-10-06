@@ -20,10 +20,11 @@ import sys
 import threading
 import time
 import weakref
+from collections.abc import Callable
 from typing import Any
 
 from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
-from swarmq.logging_file import stop_queue_listeners
+from swarmq.logging_file import HandlerErrors, stop_queue_listeners
 from swarmq.logging_format import _iso_utc
 
 LISTENER_THREAD_NAME = "swarmq-log-listener"
@@ -55,21 +56,50 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
 
     def __init__(self, queue_: _ListenerQueue, *handlers: logging.Handler) -> None:
         super().__init__(queue_, *handlers)
+        self.errors = HandlerErrors(self._dispatch)
         _LISTENERS.add(self)
 
     @property
     def running(self) -> bool:
-        return self._thread is not None
+        """Der Thread lebt (KTD1): Ein toter Listener gilt nicht als laufend,
+        der naechste Eintrag startet ihn neu. Die Queue bleibt dieselbe, ihre
+        Records gehen weder verloren noch zaehlen sie als verworfen."""
+        thread = self._thread
+        return thread is not None and thread.is_alive()
 
     def start(self) -> None:
         """Idempotent: unter 3.14 wirft der Basis-``start`` beim zweiten Mal."""
         with _LISTENER_LOCK:
-            if self._thread is not None:
+            if self.running:
                 return
             self._thread = thread = threading.Thread(
                 target=self._monitor, name=LISTENER_THREAD_NAME, daemon=True
             )
             thread.start()
+
+    def stop(self) -> None:
+        """Wie der Basis-``stop``, aber auf dem eigenen Thread: Zwischen dem
+        Ende des Threads und dem Vergessen kann ein Eintrag (``running`` ist
+        dann falsch, KTD1) schon einen neuen gestartet haben. Der bleibt
+        eingetragen, sonst liefe er verwaist weiter und naehme dem naechsten
+        ``stop`` den Sentinel weg."""
+        thread = self._thread
+        if thread is None:
+            return
+        self.enqueue_sentinel()
+        thread.join()
+        with _LISTENER_LOCK:
+            if self._thread is thread:
+                self._thread = None
+
+    def handle(self, record: logging.LogRecord) -> None:
+        """Faengt jede ``Exception`` pro Record (Plan 2026-10-06-1811, KTD1):
+        Der stdlib-``_monitor`` faengt nichts, ein werfender Handler, Filter
+        oder Formatter beendete sonst den Thread."""
+        self.errors.handle(record)
+
+    def _dispatch(self, record: logging.LogRecord) -> None:
+        super().handle(record)
 
     def dequeue(self, block: bool) -> Any:
         """Eine per ``Queue.shutdown`` geschlossene, leere Queue beendet den
@@ -99,6 +129,13 @@ def dropped_log_records() -> int:
     Verluste in Compute-Kindern zeigt deren ``log_records_dropped``-Zeile.
     """
     return _DROPPED_TOTAL
+
+
+def count_dropped() -> None:
+    """Zaehlt einen verworfenen Eintrag, auch aus den Datei-Modus-Queues
+    (Plan 2026-10-06-1811, KTD1)."""
+    global _DROPPED_TOTAL
+    _DROPPED_TOTAL += 1
 
 
 _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
@@ -180,9 +217,8 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         # multi-thread contention it may undercount — acceptable for
         # an observability counter; a lock here would serialize the
         # hot logging path exactly when it is saturated.
-        global _DROPPED_TOTAL
         self.dropped += 1
-        _DROPPED_TOTAL += 1
+        count_dropped()
         now = time.monotonic()
         if now - self._last_drop_notice >= self._DROP_NOTICE_INTERVAL_S:
             self._last_drop_notice = now
@@ -233,15 +269,15 @@ class _OptinQueueListener(_SwarmqQueueListener):
     also die Elternkette von ``swarmq`` -- ohne Schnappschuss.
     """
 
-    def handle(self, record: logging.LogRecord) -> None:
+    def _dispatch(self, record: logging.LogRecord) -> None:
         context = record.__dict__.pop(_CONTEXT_ATTR, None)
         if context is None:
-            _dispatch_to_root(record)
+            _dispatch_to_root(record, self.errors.failed)
         else:
-            context.run(_dispatch_to_root, record)
+            context.run(_dispatch_to_root, record, self.errors.failed)
 
 
-def _dispatch_to_root(record: logging.LogRecord) -> None:
+def _dispatch_to_root(record: logging.LogRecord, on_error: Callable[[], None]) -> None:
     """Wie ``Logger.callHandlers`` fuer Root, aber ohne es aufzurufen:
     Integrationen, die ``callHandlers`` umhaengen (Sentrys
     ``LoggingIntegration``), sahen den Record dort schon beim Aufrufer und
@@ -250,7 +286,12 @@ def _dispatch_to_root(record: logging.LogRecord) -> None:
     handlers: list[logging.Handler | None] = [*logging.getLogger().handlers]
     for handler in handlers or [logging.lastResort]:
         if handler is not None and record.levelno >= handler.level:
-            handler.handle(record)
+            # Pro Handler (KTD1): Ein werfender App-Handler haelt den Record
+            # nicht von den uebrigen fern.
+            try:
+                handler.handle(record)
+            except Exception:
+                on_error()
 
 
 class _OptinQueueHandler(_StructlogQueueHandler):

@@ -56,6 +56,17 @@ from __future__ import annotations
 #     vollen Queue wirft kein ``queue.Full`` (stdlib-Sentinel per
 #     ``put_nowait``), sondern wartet, bis der Listener Platz schafft, und
 #     schreibt alle Eintraege.
+# Plan 2026-10-06-1811, U2 (R2, KTD1) -- Datei-Modus-Listener sterben nie:
+# 28. dictConfig-Queue mit werfendem Filter am Ziel-Handler: Der Listener
+#     lebt weiter, der naechste Record kommt an, ``log_handler_errors`` geht
+#     ueber die Handler des Listeners.
+# 29. Ein toter Datei-Modus-Thread (beendet, ohne dass der Listener es merkt)
+#     wird beim naechsten Record neu gestartet; der Record kommt an.
+# 30. Volle begrenzte dictConfig-Queue: Der Drop wird gezaehlt, kein
+#     Traceback auf stderr (kein ``handleError`` im Aufrufer).
+# 31. Ein ``shutdown_logging``, waehrend dessen ein Eintrag den beendeten
+#     Datei-Modus-Thread durch einen neuen ersetzt, laesst den neuen nicht
+#     verwaist weiterlaufen.
 import io
 import json
 import logging
@@ -113,6 +124,34 @@ class BlockingRecordingHandler(RecordingHandler):
 
 
 _BLOCKING_RECORDING = f"{__name__}.BlockingRecordingHandler"
+
+
+class PoisonFilter(logging.Filter):
+    """Filter am Ziel-Handler, der beim Record ``evt_poison`` wirft -- etwa
+    weil eine Kontextvariable fehlt (Analyse S2)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() == "evt_poison":
+            raise KeyError("correlation_id")
+        return True
+
+
+def _queue_config(**queue_handler: object) -> dict[str, object]:
+    """dictConfig mit ``QueueHandler`` an Root vor einem ``RecordingHandler``
+    hinter einem ``PoisonFilter``."""
+    return {
+        "version": 1,
+        "filters": {"poison": {"()": f"{__name__}.PoisonFilter"}},
+        "handlers": {
+            "rec": {"()": _RECORDING, "filters": ["poison"]},
+            "q": {
+                "class": "logging.handlers.QueueHandler",
+                "handlers": ["rec"],
+                **queue_handler,
+            },
+        },
+        "root": {"level": "INFO", "handlers": ["q"]},
+    }
 
 
 class ReleasingQueue(queue.Queue[object]):
@@ -687,3 +726,102 @@ def test_shutdown_waits_for_room_in_a_full_file_mode_queue_instead_of_raising(
         FILE_HANDLER_RELEASE.set()
 
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_busy", "evt_queued"]
+
+
+def test_a_raising_filter_does_not_kill_the_file_mode_listener(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    configure_logging(LoggingSettings(log_config=_config_file(tmp_path, _queue_config())))
+    log = logging.getLogger("swarmq.tests.queued")
+
+    log.warning("evt_poison")
+    log.warning("evt_after")
+    shutdown_logging()
+
+    assert [r.getMessage() for r in FILE_RECORDS] == ["log_handler_errors", "evt_after"]
+
+
+def test_a_dead_file_mode_listener_thread_restarts_on_the_next_record(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    configure_logging(LoggingSettings(log_config=_config_file(tmp_path, _queue_config())))
+    (handler,) = logging.getLogger().handlers
+    listener = handler.listener  # type: ignore[attr-defined]
+    # Den Thread beenden, ohne dass der Listener es merkt: wie nach einer
+    # ``BaseException`` aus einem Handler.
+    listener.queue.put_nowait(listener._sentinel)
+    listener._thread.join()
+
+    logging.getLogger("swarmq.tests.queued").warning("evt_after_death")
+    shutdown_logging()
+
+    assert [r.getMessage() for r in FILE_RECORDS] == ["evt_after_death"]
+
+
+def test_a_full_bounded_file_mode_queue_counts_the_drop_without_a_traceback(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    FILE_HANDLER_ENTERED.clear()
+    FILE_HANDLER_RELEASE.clear()
+    path = _config_file(
+        tmp_path,
+        {
+            "version": 1,
+            "handlers": {
+                "rec": {"()": _BLOCKING_RECORDING},
+                "q": {
+                    "class": "logging.handlers.QueueHandler",
+                    "handlers": ["rec"],
+                    "queue": {"()": "queue.Queue", "maxsize": 1},
+                },
+            },
+            "root": {"level": "INFO", "handlers": ["q"]},
+        },
+    )
+    configure_logging(LoggingSettings(log_config=path))
+    log = logging.getLogger("swarmq.tests.queued")
+    try:
+        log.warning("evt_busy")
+        assert FILE_HANDLER_ENTERED.wait(5)
+        log.warning("evt_queued")
+        before = dropped_log_records()
+
+        log.warning("evt_overflow")
+
+        assert dropped_log_records() - before == 1
+        assert "Traceback" not in capsys.readouterr().err
+    finally:
+        FILE_HANDLER_RELEASE.set()
+
+
+def test_a_shutdown_racing_a_file_mode_restart_leaves_no_orphaned_thread(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    configure_logging(LoggingSettings(log_config=_config_file(tmp_path, _queue_config())))
+    log = logging.getLogger("swarmq.tests.queued")
+    log.warning("evt_first")
+    (handler,) = logging.getLogger().handlers
+    thread = handler.listener._thread  # type: ignore[attr-defined]
+    before = set(threading.enumerate())
+    join = thread.join
+
+    def join_then_log(timeout: float | None = None) -> None:
+        # Der Thread ist beendet, ``stop`` hat ihn aber noch nicht vergessen:
+        # Ein Eintrag aus einem anderen Thread startet hier einen neuen.
+        join(timeout)
+        log.warning("evt_in_window")
+
+    thread.join = join_then_log
+
+    shutdown_logging()
+
+    assert not set(threading.enumerate()) - before
+    assert [r.getMessage() for r in FILE_RECORDS] == ["evt_first", "evt_in_window"]

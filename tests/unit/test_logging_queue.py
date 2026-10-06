@@ -43,6 +43,17 @@ from __future__ import annotations
 #     Queue-Kopie haengte der blockierende Sentinel.
 # 19. Nach der Auslagerung (Plan 2026-10-06-1811, U1) bleiben die
 #     oeffentlichen Namen aus ``swarmq.logging`` importierbar.
+# Plan 2026-10-06-1811, U2 (R2, KTD1) -- der Listener stirbt nie:
+# 20. Ein toter Listener-Thread (Fake mit ``is_alive()`` gleich False): Der
+#     naechste Eintrag startet einen neuen Thread; der Record kommt an, und
+#     die Records in der Queue des toten Listeners gehen nicht verloren und
+#     zaehlen nicht als verworfen.
+# 21. Ein Ziel-Handler, der wirft: Der Listener lebt weiter, der naechste
+#     Record kommt an; kein Aufruf von ``threading.excepthook``.
+# 22. Die Fehler werden gezaehlt; ``log_handler_errors`` erscheint ueber die
+#     Handler des Listeners hoechstens einmal pro Sekunde (Zeit gemockt).
+# 23. Ein ``stop``, waehrend dessen ein Eintrag den beendeten Thread durch
+#     einen neuen ersetzt, laesst den neuen nicht verwaist weiterlaufen.
 import atexit
 import contextlib
 import io
@@ -61,7 +72,7 @@ from swarmq.logging import (
     setup_logging,
     shutdown_logging,
 )
-from swarmq.logging_queue import _StructlogQueueHandler
+from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener
 from tests.unit._fork_child import run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
@@ -466,3 +477,102 @@ def test_public_names_remain_importable_from_swarmq_logging() -> None:
     ):
         assert getattr(swarmq.logging, name) is getattr(swarmq.logging_queue, name)
     assert swarmq.logging.flush_logging is swarmq.logging_queue.shutdown_logging
+
+
+class _DeadThread:
+    """Ein beendeter Listener-Thread, etwa nach einer ``BaseException`` aus
+    einem Handler (Plan 2026-10-06-1811, U2)."""
+
+    def is_alive(self) -> bool:
+        return False
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
+
+
+def test_a_dead_listener_thread_restarts_on_the_next_record() -> None:
+    target = _RecordingHandler()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
+    assert handler.listener is not None
+    handler.listener._thread = _DeadThread()  # type: ignore[assignment]
+    handler.queue.put_nowait(_record(msg="stranded"))
+
+    handler.handle(_record(msg="after-death"))
+    shutdown_logging()
+
+    assert [r.getMessage() for r in target.records] == ["stranded", "after-death"]
+    assert handler.dropped == 0
+
+
+class _RaisingOnPoison(_RecordingHandler):
+    """Ziel-Handler, dessen ``emit`` beim Record ``poison`` wirft, ohne
+    ``handleError`` -- wie ein Log-Shipper ohne Verbindung."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage() == "poison":
+            raise ConnectionError("log shipper down")
+        super().emit(record)
+
+
+def test_a_raising_target_handler_does_not_kill_the_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread_errors: list[Any] = []
+    monkeypatch.setattr(threading, "excepthook", thread_errors.append)
+    target = _RaisingOnPoison()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
+
+    handler.handle(_record(msg="poison"))
+    handler.handle(_record(msg="after-poison"))
+    shutdown_logging()
+
+    messages = [r.getMessage() for r in target.records]
+    assert messages == ["log_handler_errors", "after-poison"]
+    assert thread_errors == []
+
+
+def _reports(target: _RecordingHandler) -> list[logging.LogRecord]:
+    return [r for r in target.records if r.getMessage() == "log_handler_errors"]
+
+
+def test_handler_errors_are_counted_and_reported_at_most_once_per_second(
+    clock: _Clock,
+) -> None:
+    target = _RaisingOnPoison()
+    listener = _SwarmqQueueListener(queue.Queue(), target)
+
+    listener.handle(_record(msg="poison"))
+    clock.now += 0.5
+    listener.handle(_record(msg="poison"))
+    assert [r.count for r in _reports(target)] == [1]  # type: ignore[attr-defined]
+
+    clock.now += 0.5
+    listener.handle(_record(msg="poison"))
+    reports = _reports(target)
+    assert [r.count for r in reports] == [1, 3]  # type: ignore[attr-defined]
+    assert reports[0].name == "swarmq.logging"
+    assert reports[0].levelno == logging.WARNING
+
+
+def test_a_stop_racing_a_restart_leaves_no_orphaned_listener_thread() -> None:
+    target = _RecordingHandler()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
+    handler.handle(_record(msg="first"))
+    assert handler.listener is not None
+    thread = handler.listener._thread
+    assert thread is not None
+    join = thread.join
+
+    def join_then_log(timeout: float | None = None) -> None:
+        # Der Thread ist beendet, ``stop`` hat ihn aber noch nicht vergessen:
+        # Ein Eintrag aus einem anderen Thread startet hier einen neuen.
+        join(timeout)
+        handler.handle(_record(msg="in-window"))
+
+    thread.join = join_then_log  # type: ignore[method-assign]
+
+    handler.listener.stop()
+    shutdown_logging()
+
+    assert not _listener_threads()
+    assert [r.getMessage() for r in target.records] == ["first", "in-window"]

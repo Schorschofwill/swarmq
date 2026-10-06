@@ -304,7 +304,7 @@ def _configure_from_file(settings: LoggingSettings) -> None:
         # dictConfig meldet Tippfehler als ValueError, TypeError,
         # AttributeError oder ImportError -- alle mit Pfad nach oben (AE4).
         raise LoggingConfigError(settings.log_config, exc) from exc
-    start_queue_listeners()
+    start_queue_listeners(on_drop=_queue_core.count_dropped)
 
 
 def _apply_logger_levels(settings: LoggingSettings) -> None:

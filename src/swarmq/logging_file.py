@@ -2,11 +2,13 @@
 
 Ausgelagert aus ``swarmq.logging`` (800-Zeilen-Guard): Laden und Pruefen der
 Datei sowie die Listener der ``QueueHandler``, die ``dictConfig`` anlegt, aber
-nicht startet.
+nicht startet. ``HandlerErrors`` teilen sie mit den eingebauten Listenern in
+``swarmq.logging_queue`` (Plan 2026-10-06-1811, KTD1).
 """
 
 from __future__ import annotations
 
+import contextlib
 import json as jsonlib
 import logging
 import logging.handlers
@@ -14,7 +16,8 @@ import queue
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from swarmq.exceptions import LoggingConfigError
@@ -22,6 +25,54 @@ from swarmq.exceptions import LoggingConfigError
 CONFIG_LISTENERS: list[logging.handlers.QueueListener] = []
 """Von ``configure_logging`` gestartete Listener aus einer dictConfig-Datei;
 ``shutdown_logging`` stoppt und leert sie."""
+
+
+class HandlerErrors:
+    """Fehler aus Handlern, Filtern und Formattern eines Listeners (Plan
+    2026-10-06-1811, KTD1): gefangen, gezaehlt und hoechstens einmal pro
+    Sekunde als ``log_handler_errors`` gemeldet.
+
+    Die Meldung entsteht im Listener-Thread und laeuft ueber dessen eigene
+    Handler, nie ueber die Queue: Der Aufrufer bleibt unberuehrt, und eine
+    volle Queue verschluckt sie nicht. Scheitert sie selbst, zaehlt das als
+    weiterer Fehler; eine Schleife entsteht nicht, weil die Frist dann noch
+    laeuft. Dann geht sie best effort direkt auf stderr, weiterhin aus dem
+    Listener-Thread: Ein blockiertes stderr haelt hoechstens ihn auf, nie
+    einen Aufrufer.
+    """
+
+    REPORT_INTERVAL_S = 1.0
+
+    def __init__(self, dispatch: Callable[[logging.LogRecord], None]) -> None:
+        self.count = 0
+        self._dispatch = dispatch
+        self._last_report = float("-inf")
+
+    def handle(self, record: logging.LogRecord) -> None:
+        """Gibt den Record weiter; eine ``Exception`` wird gezaehlt."""
+        try:
+            self._dispatch(record)
+        except Exception:
+            self.failed()
+
+    def failed(self) -> None:
+        """Zaehlt einen Fehler und meldet, sobald die Frist abgelaufen ist."""
+        self.count += 1
+        now = time.monotonic()
+        if now - self._last_report < self.REPORT_INTERVAL_S:
+            return
+        self._last_report = now
+        report = logging.LogRecord(
+            "swarmq.logging", logging.WARNING, __file__, 0, "log_handler_errors", None, None
+        )
+        report.count = count = self.count
+        self.handle(report)
+        if self.count != count:
+            with contextlib.suppress(Exception):
+                print(
+                    f"swarmq: log_handler_errors — {count} error(s) in log handlers so far",
+                    file=sys.stderr,
+                )
 
 
 def load_log_config(path: str) -> str:
@@ -155,12 +206,13 @@ def _iter_loggers() -> Iterator[tuple[str, logging.Logger]]:
             yield name, lg
 
 
-def start_queue_listeners() -> None:
+def start_queue_listeners(on_drop: Callable[[], None]) -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
 
     ``dictConfig`` legt sie an, startet sie aber nicht. Gestoppt -- und damit
     geleert -- werden sie per ``shutdown_logging``, also auch bei
-    Prozessende (``atexit``).
+    Prozessende (``atexit``). ``on_drop`` zaehlt einen wegen voller Queue
+    verworfenen Eintrag (Plan 2026-10-06-1811, KTD1).
     """
     loggers = [logging.getLogger()] + [lg for _, lg in _iter_loggers()]
     for handler in {h for lg in loggers for h in lg.handlers}:
@@ -170,9 +222,10 @@ def start_queue_listeners() -> None:
             and isinstance(listener, logging.handlers.QueueListener)
             and getattr(listener, "_thread", None) is None
         ):
+            _catch_handler_errors(listener)
             listener.start()
             CONFIG_LISTENERS.append(listener)
-            _restart_lazily(handler, listener)
+            _restart_lazily(handler, listener, on_drop)
 
 
 def stop_queue_listeners() -> None:
@@ -182,17 +235,33 @@ def stop_queue_listeners() -> None:
     bei voller Queue ``queue.Full`` -- mitten in ``atexit`` oder einem
     ``finally``. Dann wird blockierend nachgereicht: Der laufende Listener
     schafft Platz, wie bei ``_SwarmqQueueListener.enqueue_sentinel``.
+
+    Wie der stdlib-``stop``, aber auf dem eigenen Thread: Zwischen dessen
+    Ende und dem Vergessen kann ein Eintrag schon einen neuen gestartet haben
+    (KTD1). Der bleibt eingetragen und wird in dieser Schleife gestoppt,
+    statt verwaist weiterzulaufen.
     """
     while CONFIG_LISTENERS:
         listener = CONFIG_LISTENERS.pop()
+        thread: threading.Thread | None = getattr(listener, "_thread", None)
+        if thread is None:
+            continue
         try:
-            listener.stop()
+            listener.enqueue_sentinel()
         except queue.Full:
             listener.queue.put(listener._sentinel)  # type: ignore[attr-defined]
-            thread = getattr(listener, "_thread", None)
-            if thread is not None:
-                thread.join()
-            setattr(listener, "_thread", None)  # noqa: B010
+        thread.join()
+        with _CONFIG_LISTENER_LOCK:
+            if getattr(listener, "_thread", None) is thread:
+                setattr(listener, "_thread", None)  # noqa: B010
+
+
+def _catch_handler_errors(listener: logging.handlers.QueueListener) -> None:
+    """Der stdlib-``_monitor`` faengt nichts: Ein werfender Handler, Filter
+    oder Formatter beendete den Thread (KTD1). Am Exemplar wie bei
+    ``_restart_lazily``; gefangen und gemeldet wird pro Record."""
+    errors = HandlerErrors(listener.handle)
+    setattr(listener, "handle", errors.handle)  # noqa: B010
 
 
 _CONFIG_LISTENER_LOCK = threading.Lock()
@@ -201,22 +270,40 @@ _CONFIG_LISTENER_LOCK = threading.Lock()
 dessen ``_LISTENER_LOCK`` nimmt."""
 
 
+def _alive(listener: logging.handlers.QueueListener) -> bool:
+    """Lebt der Thread des Listeners? ``running`` des eingebauten (KTD1)."""
+    thread: threading.Thread | None = getattr(listener, "_thread", None)
+    return thread is not None and thread.is_alive()
+
+
 def _restart_lazily(
-    handler: logging.handlers.QueueHandler, listener: logging.handlers.QueueListener
+    handler: logging.handlers.QueueHandler,
+    listener: logging.handlers.QueueListener,
+    on_drop: Callable[[], None],
 ) -> None:
     """Wie beim eingebauten Handler (KTD5): Nach ``shutdown_logging`` startet
     der naechste Eintrag den Listener wieder, und das naechste
     ``shutdown_logging`` leert ihn. Das ist die Leerung pro Job im
-    wiederverwendeten Compute-Kind (KTD14)."""
+    wiederverwendeten Compute-Kind (KTD14). Ebenso startet er einen Listener
+    neu, dessen Thread gestorben ist (Plan 2026-10-06-1811, KTD1).
+
+    Eine volle begrenzte Queue zaehlt als Drop: Der stdlib-``emit`` gaebe
+    ``queue.Full`` an ``handleError`` -- ein Traceback im Aufrufer."""
     enqueue = handler.enqueue
 
     def enqueue_restarting(record: logging.LogRecord) -> None:
-        if getattr(listener, "_thread", None) is None:
+        if not _alive(listener):
             with _CONFIG_LISTENER_LOCK:
-                if getattr(listener, "_thread", None) is None:
+                if not _alive(listener):
+                    # Ein toter Thread zaehlt wie keiner (KTD1); der
+                    # stdlib-``start`` wirft sonst. Die Queue bleibt.
+                    setattr(listener, "_thread", None)  # noqa: B010
                     listener.start()
                     CONFIG_LISTENERS.append(listener)
-        enqueue(record)
+        try:
+            enqueue(record)
+        except queue.Full:
+            on_drop()
 
     # Am Exemplar: die Klasse des Handlers gehoert der dictConfig der App.
     setattr(handler, "enqueue", enqueue_restarting)  # noqa: B010
