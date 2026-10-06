@@ -146,7 +146,7 @@ In **terminal 1**, with the env vars still set:
 swarmq worker --module tasks --queues emails --log-format human
 ```
 
-The worker logs `worker_ready` and waits. Do not close this
+The worker logs `worker_started` and waits. Do not close this
 terminal.
 
 In **terminal 2**, create the client script:
@@ -190,8 +190,10 @@ You should see:
 client received: sent to alice@example.com: 'Welcome'
 ```
 
-In terminal 1, the worker logs show `TASK_STARTED` and
-`TASK_COMPLETED` for the same task_id. The round-trip works.
+In terminal 1, the worker log shows `task_succeeded` with the same
+`task_id` and its `duration_ms`. The round-trip works. (`task_received`
+and `task_started` are logged at DEBUG; add
+`--log-lifecycle-level INFO` to see them too.)
 
 ### What happened
 
@@ -419,27 +421,35 @@ import logging
 from swarmq import SwarmQ
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.logging import build_formatter
 
 import tasks
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    # SwarmQ() does not configure logging — your program does.
+    handler = logging.StreamHandler()
+    handler.setFormatter(build_formatter(json=False, colors=False))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
     broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
     backend = ValkeyBackend("valkey://localhost:6379/0")
 
-    async with SwarmQ(
-        broker, backend,
-        queues=["emails"],
-        log_level="INFO",
-        log_json=False,
-    ) as app:
+    async with SwarmQ(broker, backend, queues=["emails"]) as app:
         tasks.install_handlers(app)
         await app.start_worker()
 
 
 asyncio.run(main())
 ```
+
+Unlike `swarmq worker`, an app that embeds `SwarmQ(...)` owns its
+logging: SwarmQ only hands its events to your handlers. A bare
+`logging.basicConfig(level=logging.INFO)` would show just the event
+names; `build_formatter` from `swarmq.logging` also renders the fields
+(`task_id`, `duration_ms`, …) and your own `tutorial` lines. The
+[Logging reference](../reference/logging.md) has recipes for JSON and
+structlog setups.
 
 Stop the CLI worker in terminal 1 and run `python worker.py`
 instead. Re-run `python burst.py` in terminal 2. The worker log
@@ -500,7 +510,8 @@ asyncio.run(main())
 "
 ```
 
-The worker logs `TASK_FAILED` and nacks the message into
+The worker logs `task_failed` and `task_sent_to_dlq` and nacks the
+message into
 `emails.XQ`. Inspect:
 
 ```bash

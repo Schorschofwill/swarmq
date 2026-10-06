@@ -4,7 +4,7 @@ SwarmQ hat zwei Konfigurationsoberflächen: **Environment-Variablen**,
 die der Worker beim Start liest (und die auch die CLI ehrt), und
 **`TaskInfo`-Felder**, die pro Task-Klasse deklariert werden.
 CLI-Flags haben Vorrang vor Env-Vars; Env-Vars haben Vorrang vor
-`SwarmQConfig`-Defaults.
+`SwarmQConfig`-Werten und -Defaults.
 
 ## Environment-Variablen
 
@@ -24,8 +24,6 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 |---|---|---|
 | `SWARMQ_QUEUES` | `default` | Komma-separierte Queue-Namen, aus denen der Worker konsumiert. |
 | `SWARMQ_CONCURRENCY` | `10` | Maximale Tasks in Flight pro Worker-Prozess. |
-| `SWARMQ_LOG_LEVEL` | `INFO` | Einer aus `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
-| `SWARMQ_LOG_JSON` | `true` | `true`/`1`/`yes` für strukturierte JSON-Logs, alles andere für human-formatierten Output. |
 | `SWARMQ_RESULT_TTL` | `86400` | Sekunden, die gespeicherte Ergebnisse in Valkey leben. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Obergrenze des Retry-Backoffs in Sekunden. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Sekunden, in denen In-Flight-Tasks bei SIGTERM beenden dürfen, bevor Hard-Kill. |
@@ -46,6 +44,33 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |
 | `SWARMQ_BURST_IDLE_TIMEOUT` | `5.0` | Sekunden Idle, bevor Burst exitet. |
 | `SWARMQ_PRIORITIES` | `false` | Bei `true` werden `.high`/`.normal`/`.low`-Triplets für jede Queue auto-deklariert und konsumiert. |
+
+### Logging
+
+Diese Variablen steuern das Logging, das `swarmq worker` in seinen
+eigenen Prozessen einrichtet. Eine App, die `SwarmQ(...)` einbettet,
+konfiguriert ihr Logging selbst; dort wirken die Variablen nur auf die
+[Opt-in-Log-Queue](logging.md#opt-in-log-queue), das Lebenszyklus-Level
+eines eingebetteten Workers und die Rechenkinder eines eingebetteten
+CPU-Pools. Details, Rezepte und den Event-Katalog findest du in der
+[Logging-Referenz](logging.md).
+
+| Variable | Default | Beschreibung |
+|---|---|---|
+| `SWARMQ_LOG_LEVEL` | `INFO` | Einer aus `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Root-Level der SwarmQ-Prozesse; mit `SWARMQ_LOG_QUEUE` das Level des Loggers `swarmq`. |
+| `SWARMQ_LOG_FORMAT` | `human` (CLI) | `human` oder `json`. Gewinnt gegen `SWARMQ_LOG_JSON`. |
+| `SWARMQ_LOG_JSON` | `true` | Alias für das Format: `true`/`1`/`yes` heißt `json`, alles andere `human`. Die Vorgabe `true` ist die von `SwarmQConfig.log_json`; `swarmq worker` nimmt standardmäßig `human`. |
+| `SWARMQ_LOG_CONFIG` | nicht gesetzt | Pfad einer `dictConfig`-Datei (JSON; YAML mit PyYAML) statt der eingebauten Einrichtung. Nicht kombinierbar mit einem ausdrücklichen Format oder `SWARMQ_CONFIGURE_LOGGING=false`. |
+| `SWARMQ_CONFIGURE_LOGGING` | `true` | `false` überlässt das Logging in jedem SwarmQ-Prozess deiner App. |
+| `SWARMQ_LOGGER_LEVELS` | nicht gesetzt | Komma-separierte `NAME=LEVEL`-Paare, z. B. `aio_pika=WARNING,valkey=ERROR`. |
+| `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Kapazität der prozessinternen Log-Queue. |
+| `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level von `task_received` und `task_started`. |
+| `SWARMQ_LOG_QUEUE` | `false` | Eingebettete Apps: `swarmq.*`-Events über einen Hintergrund-Thread von SwarmQ an deine Root-Handler leiten ([Opt-in-Log-Queue](logging.md#opt-in-log-queue)). |
+
+Der Supervisor von `swarmq worker` löst diese Werte einmal auf (CLI-Flag
+vor Env-Var) und gibt das Ergebnis an seine Worker-Subprozesse und
+Rechenkinder weiter, die das Environment nicht noch einmal lesen.
+Ungültige Werte beenden `swarmq worker` mit Exit `78`.
 
 ### Scheduler
 
@@ -153,8 +178,6 @@ app = SwarmQ(
     broker, backend,
     queues=["emails", "reports"],
     concurrency=50,
-    log_level="DEBUG",
-    log_json=True,
     result_ttl=3600,
     shutdown_timeout=60,
     burst_mode=False,
@@ -165,10 +188,18 @@ app = SwarmQ(
 Feldnamen entsprechen den Env-Vars ohne `SWARMQ_`-Präfix und in
 Kleinbuchstaben. Env-Vars gewinnen immer, wenn beides gesetzt ist
 — übergib kwargs nur, wenn du einen Nicht-Default brauchst, den du
-nicht im Shell-Environment willst. `worker_id=` setzt die Basis der
+nicht im Shell-Environment willst. Eine Ausnahme von der Namensregel:
+`SWARMQ_LOG_FORMAT` setzt das Feld `log_json`. `worker_id=` setzt die Basis der
 [Worker-Identität](#worker-identitat); ein eingebetteter Worker hat
 keinen Slot, `metrics_port` und `health_port` werden also unverändert
 gebunden.
+
+`SwarmQ(...)` konfiguriert kein Logging. Die Logging-Felder
+(`log_level`, `log_json`, `log_config`, `configure_logging`,
+`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`)
+steuern nur die [Opt-in-Log-Queue](logging.md#opt-in-log-queue), das
+Lebenszyklus-Level eines eingebetteten Workers und die Rechenkinder
+eines eingebetteten CPU-Pools.
 
 ## `TaskInfo`-Felder
 
@@ -265,6 +296,8 @@ Worker überhaupt startet.
 ## Siehe auch
 
 - [CLI-Referenz](cli.md) — die Flag-Äquivalente für die Worker-Env-Vars
+- [Logging](logging.md) — Logger-Namen, Felder, Events und
+  Integrationsrezepte
 - [API-Referenz](api.md) — `SwarmQ`, `TaskInfo`, `Task`-Signaturen
 - [Tasks definieren](../guides/defining-tasks.md) — Beispiele je
   `TaskInfo`-Feld

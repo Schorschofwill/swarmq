@@ -3,6 +3,10 @@
 Das `swarmq`-Binary wird als Console-Script installiert, wenn du
 `pip install swarmq` aufrufst. Jedes Subcommand liest per Default
 aus `SWARMQ_*`-Environment-Variablen; explizite Flags gewinnen.
+`swarmq worker` löst seine Einstellungen einmal im Supervisor auf
+(Flag, dann Env-Var, dann Default) und gibt die aufgelösten Werte an
+seine Worker-Subprozesse und Rechenkinder weiter; die lesen das
+Environment nicht noch einmal, ein Flag gewinnt also in jedem Prozess.
 
 ## Synopsis
 
@@ -22,7 +26,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `1` | Laufzeitfehler: Broker oder Backend unerreichbar, `swarmq dlq`/`schedule` zur Laufzeit gescheitert. Später erneut versuchen ist die richtige Antwort. |
 | `2` | Ungültige Argumente (argparse-Usage-Fehler) |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` fand keinen passenden DLQ-Eintrag |
-| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig. Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. |
+| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig, ungültige Logging-Einstellungen oder Logging-Konfigurationsdatei (`LoggingConfigError`). Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. |
 
 `78` folgt `sysexits.h`. Jeder Konfigurationsfehler, ob er im
 Elternprozess oder in einem Worker-Subprozess auftritt, beendet den
@@ -33,8 +37,9 @@ nochmal" richtig ist. Unter systemd `RestartPreventExitStatus=78`
 setzen, damit ein kaputtes Deployment nicht in der Schleife neu
 startet; in Kubernetes auf den Exit-Code statt auf Neustarts alarmieren.
 Exit `75` (`EX_TEMPFAIL`) ist intern: Ein Worker-Kind, das Recycling
-angefragt und keine Bestätigung bekommen hat, endet damit, der
-Supervisor loggt `worker_recycle_noack` und startet es im Budget neu;
+angefragt und keine Bestätigung bekommen hat, loggt
+`worker_recycle_ack_timeout` und endet damit, der Supervisor loggt
+`worker_recycle_noack` und startet es im Budget neu;
 den Aufrufer erreicht dieser Code nie.
 
 `--log-level DEBUG` fügt einen vollen Python-Traceback zu stderr
@@ -53,6 +58,9 @@ swarmq worker --module DOTTED.PATH
               [--queues A,B,C]
               [--concurrency N] [--pool {io,cpu}]
               [--log-level LEVEL] [--log-format FORMAT]
+              [--log-config PATH | --no-configure-logging]
+              [--logger-level NAME=LEVEL]...
+              [--log-queue-size N] [--log-lifecycle-level LEVEL]
               [--burst] [--burst-idle-timeout SECONDS]
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
@@ -71,8 +79,13 @@ swarmq worker --module DOTTED.PATH
 | `--queues A,B,C` | `default` | Komma-separierte Queue-Namen zum Konsumieren. Env-Var: `SWARMQ_QUEUES`. |
 | `--concurrency N` | `10` (io) / zugeteilte CPUs (cpu) | Maximal parallel ausgeführte Tasks. Mit `--pool cpu` die Zahl der Rechenslots; Voreinstellung sind die dem Worker zugeteilten CPUs (Affinität und cgroup-Quote) geteilt durch `--processes`. Env-Var: `SWARMQ_CONCURRENCY`. |
 | `--pool {io,cpu}` | `io` | Ausführungspool. `cpu` führt jeden Task-Körper in einem Rechenkind aus einem vorgewärmten Forkserver aus: der Loop-Prozess rechnet nie, `hard_timeout` und Cancel töten das Kind. Nur POSIX; nicht mit `--autoscale` kombinierbar. Siehe [CPU-Modus](../guides/cpu-mode.md). |
-| `--log-level LEVEL` | `INFO` | Einer aus `DEBUG`, `INFO`, `WARNING`, `ERROR`. Env-Var: `SWARMQ_LOG_LEVEL`. |
-| `--log-format FORMAT` | `human` | `human` oder `json`. JSON passt zu Loki, Datadog, CloudWatch. Env-Var: `SWARMQ_LOG_JSON`. |
+| `--log-level LEVEL` | `INFO` | Einer aus `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Root-Level jedes SwarmQ-Prozesses. Env-Var: `SWARMQ_LOG_LEVEL`. |
+| `--log-format FORMAT` | `human` | `human` oder `json` auf stderr. JSON passt zu Loki, Datadog, CloudWatch. Env-Var: `SWARMQ_LOG_FORMAT` (Alias `SWARMQ_LOG_JSON=true/false`; `SWARMQ_LOG_FORMAT` gewinnt). |
+| `--log-config PATH` | nicht gesetzt | Logging-`dictConfig`-Datei (JSON; YAML mit installiertem PyYAML), die in jedem SwarmQ-Prozess statt der eingebauten Einrichtung gilt. Der Supervisor prüft sie einmal. Nicht kombinierbar mit einem ausdrücklichen Format oder `--no-configure-logging`. Env-Var: `SWARMQ_LOG_CONFIG`. Siehe [Logging](logging.md#eigene-dictconfig-datei-log-config). |
+| `--no-configure-logging` | konfigurieren | In keinem SwarmQ-Prozess Logging einrichten; dein Task-Modul oder `--configure`-Hook ist zuständig. Env-Var: `SWARMQ_CONFIGURE_LOGGING=false`. |
+| `--logger-level NAME=LEVEL` | keine | Level eines einzelnen Loggers, z. B. `aio_pika=WARNING` oder `swarmq.task=WARNING`. Wiederholbar; zuletzt angewandt. Env-Var: `SWARMQ_LOGGER_LEVELS` (komma-separiert). |
+| `--log-queue-size N` | `10000` | Kapazität der prozessinternen Log-Queue; ist sie voll, werden Einträge verworfen statt zu blockieren. Env-Var: `SWARMQ_LOG_QUEUE_SIZE`. |
+| `--log-lifecycle-level LEVEL` | `DEBUG` | Level der Events `task_received` und `task_started`. Env-Var: `SWARMQ_LOG_LIFECYCLE_LEVEL`. |
 | `--burst` | aus | Exited sauber, sobald alle Queues `--burst-idle-timeout` Sekunden Idle waren. Env-Var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Sekunden Queue-Stille, bevor `--burst` exited. Env-Var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--priorities` | aus | Auto-Deklaration und Konsum des `{queue}.high`/`.normal`/`.low`-Triplets für jede Queue. Env-Var: `SWARMQ_PRIORITIES`. |
@@ -357,6 +370,7 @@ sync_user      users         at_least_once  2        -           user-{user_id} 
 ## Siehe auch
 
 - [Konfiguration](configuration.md) — die Env-Vars, die diese Flags schatten
+- [Logging](logging.md) — Ausgabeformat, Events und Integrationsrezepte
 - [Dead-Letter-Queues](../guides/dead-letter-queues.md) — Recovery-
   Workflow mit `swarmq dlq`
 - [Hot Reload (nur Dev)](../guides/hot-reload.md) — wann `--reload`

@@ -40,6 +40,15 @@ The worker handles SIGTERM / SIGINT for graceful shutdown. Multiple
 queues: `--queues default,emails,priority`. Structured logs:
 `--log-format json`.
 
+`swarmq worker` sets up logging for its own processes (stderr, `human`
+or `json`). An app that embeds `SwarmQ(...)` keeps full control: SwarmQ
+never configures logging there and only emits events through named
+`swarmq.*` loggers into stdlib `logging`, with the fields as record
+attributes. Configure a handler yourself (for example
+`logging.basicConfig(level=logging.INFO)`); structlog apps add
+`structlog.stdlib.ExtraAdder()` to their `foreign_pre_chain`. Details in
+the logging reference (`website/reference/logging.md`).
+
 ## Hello World — Client side
 
 ```python
@@ -232,11 +241,15 @@ wins where both are set).
 | `SWARMQ_BACKEND_URL` | required | Valkey/Redis URL for results |
 | `--queues a,b,c` | `default` | Queues to consume |
 | `--concurrency N` | `10` | Max parallel tasks per worker |
-| `--log-level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
-| `--log-format` | `human` | `human` or `json` |
+| `--log-level` | `INFO` | DEBUG / INFO / WARNING / ERROR / CRITICAL |
+| `--log-format` | `human` | `human` or `json` (`SWARMQ_LOG_FORMAT`) |
+| `--log-config PATH` | unset | Your own logging `dictConfig` file instead of the built-in setup |
+| `--no-configure-logging` | off | Leave logging entirely to your task module |
+| `--logger-level NAME=LEVEL` | none | Per-logger level, repeatable (e.g. `aio_pika=WARNING`) |
 
 Other flags: `--processes`, `--autoscale`, `--pool`, `--metrics-port`,
-`--health-port`, `--burst`, `--priorities`, `--configure`, `--check`.
+`--health-port`, `--burst`, `--priorities`, `--configure`, `--check`,
+`--log-queue-size`, `--log-lifecycle-level`.
 Every flag has an env-var twin (`SWARMQ_QUEUES`, `SWARMQ_CONCURRENCY`,
 `SWARMQ_POOL`, …); the full list with defaults is in the
 configuration reference (`website/reference/configuration.md`) and the

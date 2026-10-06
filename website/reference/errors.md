@@ -20,6 +20,7 @@ except SwarmQError as exc:
 |---|---|---|
 | `SwarmQError` | `Exception` | Root of the hierarchy |
 | `ConfigurationError` | `SwarmQError` | Bad config at worker start, bad CLI args, missing env vars |
+| `LoggingConfigError` | `ConfigurationError` | Logging config file (`--log-config`) not loadable or invalid |
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
@@ -51,6 +52,9 @@ the library or the CLI parser detects a misconfigured input.
 - Missing env var (`SWARMQ_BROKER_URL`, `SWARMQ_BACKEND_URL`).
 - Invalid port (`SWARMQ_METRICS_PORT=not-a-number`).
 - `log_level` outside `{DEBUG, INFO, WARNING, ERROR, CRITICAL}`.
+- Contradicting logging settings, e.g. `--log-config` together with
+  `--log-format` or `--no-configure-logging` (see
+  [Logging](logging.md#configuration-errors)).
 - `scheduler_lock_ttl < 2 × scheduler_heartbeat_interval`.
 - `--args` / `--kwargs` for `swarmq schedule add` not valid JSON.
 - `swarmq dlq retry` passed both a `task_id` and `--all`.
@@ -62,6 +66,30 @@ the offending field.
 swarmq worker: SWARMQ_BROKER_URL is not set; export it or pass it
 via env, e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/
 ```
+
+## `LoggingConfigError`
+
+**When raised.** At the start of `swarmq worker` (and on the
+`--log-config` check before a reload), by `swarmq.logging.load_log_config`
+and `configure_logging`, when the logging config file cannot be used.
+Subclass of `ConfigurationError`, importable from `swarmq.exceptions`
+and `swarmq.logging`.
+
+**Cause.** The file named by `--log-config` / `SWARMQ_LOG_CONFIG`:
+
+- cannot be read (missing file, permissions, not UTF-8);
+- is not valid JSON, or is YAML while PyYAML is not installed;
+- is not a mapping;
+- is rejected by `logging.config.dictConfig` (typo in a handler key,
+  unknown class, bad level).
+
+The exception carries the file in `path`; the original error is in
+`__cause__` and in the message.
+
+**Recovery.** Fix the file and start again. `swarmq worker` exits with
+`78` and logs one `worker_config_error` line with `path`, `error_type`
+and `error`. During a reload the running supervisor logs
+`log_config_reload_failed` instead and keeps its workers running.
 
 ## `BrokerConnectionError`
 
@@ -316,6 +344,7 @@ class LongJob(Task):
 ## See also
 
 - [API reference](api.md) — the methods that raise these exceptions
+- [Logging](logging.md) — logging settings and `--log-config`
 - [Scheduling and retries](../guides/scheduling-and-retries.md) — how
   retry policy interacts with `Retry` and `NoRetry`
 - [Dead letter queues](../guides/dead-letter-queues.md) — operator

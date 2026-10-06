@@ -11,6 +11,9 @@ the exact signature or behaviour — not when you are learning.
 - [Configuration](configuration.md) — environment variables,
   `SwarmQConfig` kwargs, and every `TaskInfo` field with its
   validation rules.
+- [Logging](logging.md) — logger names, fields, the event catalog,
+  integration recipes for stdlib and structlog apps, and the logging
+  options of `swarmq worker`.
 - [Error catalog](errors.md) — every exception the library raises
   with **When raised**, **Cause**, and **Recovery**.
 - [Changelog](changelog.md) — version-by-version release notes in
