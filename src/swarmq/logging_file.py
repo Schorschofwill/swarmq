@@ -56,12 +56,63 @@ except Exception as exc:
 """
 
 
+class DictConfigProbe:
+    """Laufende ``dictConfig``-Probe in einem eigenen Interpreter.
+
+    Startet sofort und blockiert nie auf das Ende: Der Supervisor pollt sie
+    aus dem Monitor-Loop (Plan 2026-10-06-1811, KTD8). Eigene Sitzung
+    (``start_new_session``), damit ein Ctrl-C an die Vordergrund-Prozessgruppe
+    sie nicht abbricht und als "ungueltig" erscheinen laesst.
+    """
+
+    def __init__(self, raw: str) -> None:
+        self._proc: subprocess.Popen[str] = subprocess.Popen(
+            [sys.executable, "-c", _DICT_CONFIG_PROBE],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
+        assert self._proc.stdin is not None
+        try:
+            self._proc.stdin.write(raw)
+            self._proc.stdin.close()
+        except OSError:
+            pass  # Kind schon tot: ``poll`` liefert seinen Exit-Code
+
+    def poll(self) -> int | None:
+        """Exit-Code oder ``None``, solange die Probe laeuft."""
+        return self._proc.poll()
+
+    def wait(self, timeout: float) -> int:
+        """Auf das Ende warten (``swarmq worker --check``); ``TimeoutExpired``."""
+        return self._proc.wait(timeout=timeout)
+
+    def kill(self) -> None:
+        """Hart beenden und einsammeln; kein Zombie im Supervisor."""
+        self._proc.kill()
+        self._proc.wait()
+        self._close()
+
+    def error(self) -> str:
+        """Fehlertext der beendeten Probe (stderr)."""
+        assert self._proc.stderr is not None
+        try:
+            text: str = self._proc.stderr.read()
+            return text.strip()
+        finally:
+            self._close()
+
+    def _close(self) -> None:
+        if self._proc.stderr is not None:
+            self._proc.stderr.close()
+
+
 def probe_dict_config(path: str, raw: str) -> None:
-    """Wendet die dictConfig in einem eigenen Interpreter an.
+    """Wendet die dictConfig in einem eigenen Interpreter an und wartet darauf.
 
     Tippfehler in Handlern oder Formattern sieht erst ``dictConfig``; im
-    pruefenden Prozess angewandt (Supervisor vor dem Hot-Reload,
-    ``swarmq worker --check``), baute sie dessen Logging um. Das Probe-Kind
+    pruefenden Prozess angewandt (``swarmq worker --check``), baute sie
+    dessen Logging um. Der Supervisor vor dem Hot-Reload wartet nicht,
+    sondern pollt :class:`DictConfigProbe` (KTD8). Das Probe-Kind
     hat Arbeitsverzeichnis und Env des Aufrufers, findet also dieselben
     Handler-Klassen wie der spaetere Start.
 
@@ -70,15 +121,18 @@ def probe_dict_config(path: str, raw: str) -> None:
             das Probe-Kind laesst sich nicht starten.
     """
     try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _DICT_CONFIG_PROBE],
-            input=raw, capture_output=True, text=True, timeout=30, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        probe = DictConfigProbe(raw)
+    except OSError as exc:
         raise LoggingConfigError(path, exc) from exc
-    if proc.returncode != 0:
-        cause = ValueError(proc.stderr.strip() or f"dictConfig exited {proc.returncode}")
+    try:
+        returncode = probe.wait(timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        probe.kill()
+        raise LoggingConfigError(path, exc) from exc
+    if returncode != 0:
+        cause = ValueError(probe.error() or f"dictConfig exited {returncode}")
         raise LoggingConfigError(path, cause) from cause
+    probe.error()  # Pipe schliessen
 
 
 def _parse_log_config(path: str, text: str) -> Any:

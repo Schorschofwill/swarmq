@@ -69,6 +69,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.process_manager": [
         "config", "supervisor", "entry", "sampler", "check", "run",
         "setpoint_store", "setpoint",  # Kontrollkanal U2/U5
+        "reload",  # Plan 2026-10-06-1811, U8
     ],  # U21
 }
 

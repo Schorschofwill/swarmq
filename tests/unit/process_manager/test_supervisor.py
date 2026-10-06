@@ -22,8 +22,12 @@ from swarmq.process_manager import (
     ProcessManager,
     WorkerInfo,
 )
+from swarmq.process_manager.reload import ReloadController
 from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import (
+    FakeClock,
+    FakeProbe,
+    FakeProbeFactory,
     _entry_stub,
     _fake_process,
     _instant_crash_entry,
@@ -297,29 +301,59 @@ class TestProcessManagerRestart:
         pm._check_dead_workers()
         assert 500 in pm.workers
 
-    def test_sighup_sets_reload_flag(self):
+    def test_sighup_only_marks_the_reload_pending(self):
+        """U8 (KTD8): Der Handler prueft nichts und stoppt nichts; die Probe
+        startet erst der Monitor-Loop."""
         pm = self._pm()
+        factory = FakeProbeFactory()
+        pm.reloader = ReloadController("/etc/log.json", probe_factory=factory)
         pm._on_reload_signal(signal.SIGHUP, None)
-        assert pm._reload_requested is True
-        assert pm._shutting_down is True
-        assert pm.shutdown_event.is_set()
-
-    def test_failed_reload_precheck_keeps_workers_running(self):
-        """U7 (KTD9): Der Supervisor prueft vor dem Stoppen der Worker (etwa
-        eine inzwischen ungueltige ``--log-config``); scheitert das, bleibt
-        alles, wie es ist -- kein Reload, kein Stopp."""
-        pm = self._pm()
-        pm.reload_precheck = lambda: False
-        pm._on_reload_signal(signal.SIGHUP, None)
+        assert pm.reloader.pending is True
+        assert factory.raws == []
         assert pm._reload_requested is False
         assert pm._shutting_down is False
         assert not pm.shutdown_event.is_set()
+
+    def test_sighup_after_sigterm_is_ignored(self):
+        """Szenario E (S6): SIGTERM, 50 ms spaeter SIGHUP -- der Supervisor
+        endet, statt neu zu starten."""
+        pm = self._pm()
+        pm._on_shutdown_signal(signal.SIGTERM, None)
+        pm._on_reload_signal(signal.SIGHUP, None)
+        assert pm.reloader.pending is False
+        assert pm.reloader.step() is False
 
     def test_sigterm_sets_shutdown_flag_no_reload(self):
         pm = self._pm()
         pm._on_shutdown_signal(signal.SIGTERM, None)
         assert pm._shutting_down is True
         assert pm._reload_requested is False
+
+    def test_sigterm_cancels_a_pending_and_an_accepted_reload(self):
+        """KTD8 (R10): SIGTERM beendet den Supervisor immer -- ein
+        ausstehender oder schon beschlossener Reload faellt weg."""
+        pm = self._pm()
+        pm.reloader.request()
+        pm._reload_requested = True
+        pm._on_shutdown_signal(signal.SIGTERM, None)
+        assert pm.reloader.pending is False
+        assert pm._reload_requested is False
+        assert pm._shutting_down is True
+
+    def test_the_shutdown_signal_is_logged_by_the_supervisor_not_the_handler(self, swarmq_logs):
+        """KTD8: Loggen aus dem Signal-Handler kann am Queue-Mutex deadlocken;
+        der Handler hinterlegt das Event, ``run`` schreibt es."""
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._on_shutdown_signal(signal.SIGTERM, None)
+        assert [e for e in swarmq_logs if e["event"] == "process_manager_shutdown_signal"] == []
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"):
+            assert pm.run() == 0
+        (event,) = [e for e in swarmq_logs if e["event"] == "process_manager_shutdown_signal"]
+        assert event["signal"] == "SIGTERM"
 
     def test_run_triggers_execvp_on_reload(self):
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
@@ -351,9 +385,9 @@ class TestProcessManagerRestart:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.logger", log), \
+             patch("swarmq.process_manager.reload.logger", log), \
              patch(
-                 "swarmq.process_manager.supervisor.shutdown_logging",
+                 "swarmq.process_manager.reload.shutdown_logging",
                  side_effect=lambda: calls.append("shutdown_logging"),
              ), \
              patch(
@@ -372,7 +406,7 @@ class TestProcessManagerRestart:
              patch.object(pm, "_monitor_loop", return_value=0), \
              patch.object(pm, "_shutdown_all_workers"), \
              patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.shutdown_logging"), \
+             patch("swarmq.process_manager.reload.shutdown_logging"), \
              patch(
                  "swarmq.process_manager.supervisor.os.execvpe",
                  side_effect=PermissionError("python not executable"),
@@ -902,21 +936,15 @@ class TestScaleDownMinAge:
 
 
 class TestReloadReentrancy:
-    """R5.3 ce-review #10: re-entrancy with real SIGHUP dispatch.
+    """R5.3 ce-review #10, seit U8 (KTD8): echte SIGHUP-Zustellung. Der
+    Handler merkt den Reload nur vor; das ``busy`` des Reload-Controllers,
+    das der FileWatcher liest, kippt sofort."""
 
-    The existing static ``is_busy=lambda: True`` unit test covers
-    the watcher contract. These tests exercise the real binding
-    ``_on_reload_signal -> _reload_requested -> is_busy-closure``
-    using actual signal delivery, so a refactor that breaks the
-    closure semantics or removes the handler turns red here.
-    """
-
-    def test_real_sighup_sets_reload_requested_and_flips_closure(
+    def test_real_sighup_marks_the_reload_pending_and_busy(
         self, _restore_default_signals,
     ):
-        """Main-thread SIGHUP flips pm._reload_requested synchronously
-        (CPython delivers pending signals between bytecodes), and the
-        is_busy closure reflects the new value."""
+        """Main-thread SIGHUP runs the handler synchronously (CPython
+        delivers pending signals between bytecodes)."""
         import os as _os
 
         pm = ProcessManager(
@@ -925,30 +953,17 @@ class TestReloadReentrancy:
         )
         pm._setup_signals()  # installs the real handler
 
-        # Mirror the closure that ProcessManager.run() builds.
-        def is_busy():
-            return pm._reload_requested
-
-        assert is_busy() is False
+        assert pm.reloader.busy is False
         _os.kill(_os.getpid(), signal.SIGHUP)
-        # On CPython, pending signals are processed before the next
-        # Python bytecode after os.kill returns.
-        assert pm._reload_requested is True
-        assert is_busy() is True
+        assert pm.reloader.pending is True
+        assert pm.reloader.busy is True
+        assert pm._shutting_down is False
 
     def test_second_sighup_while_busy_is_idempotent(
         self, _restore_default_signals,
     ):
-        """Double-fire raises no exception; state remains in the
-        reload-requested / shutting-down terminal state.
-
-        ce-review pass 2 #12 / T-01: the prior snapshot-vs-second-read
-        comparisons were trivially ``True == True`` because the handler
-        only sets flags, never clears them. The meaningful contract is
-        that the second delivery does not crash and preserves the set
-        flags — not that "second read equals first read", which is
-        tautological for set-only booleans.
-        """
+        """Double-fire raises no exception and keeps exactly one pending
+        reload (KTD8: zusammengefasst)."""
         import os as _os
 
         pm = ProcessManager(
@@ -958,19 +973,10 @@ class TestReloadReentrancy:
         pm._setup_signals()
 
         _os.kill(_os.getpid(), signal.SIGHUP)
-        # Must-be-set invariant before the second delivery.
-        assert pm._reload_requested is True
-        assert pm._shutting_down is True
-        assert pm.shutdown_event.is_set() is True
-
-        # Second delivery must not raise.
         _os.kill(_os.getpid(), signal.SIGHUP)
-
-        # Same invariants still hold — handler is idempotent at the
-        # flag level.
-        assert pm._reload_requested is True
-        assert pm._shutting_down is True
-        assert pm.shutdown_event.is_set() is True
+        assert pm.reloader.pending is True
+        assert pm._reload_requested is False
+        assert pm.shutdown_event.is_set() is False
 
 
 class TestFileWatcherIntegration:
@@ -1036,6 +1042,12 @@ class TestFileWatcherIntegration:
             pm._reload_requested = False
             assert is_busy() is False
             pm._reload_requested = True
+            assert is_busy() is True
+            # U8 (KTD8): auch ein ausstehender Reload bzw. eine laufende
+            # Probe zaehlt -- sonst loeste jede Dateiaenderung waehrend der
+            # Probe ein weiteres SIGHUP aus.
+            pm._reload_requested = False
+            pm.reloader.request()
             assert is_busy() is True
 
             # trigger fires SIGHUP at own PID — wrong signal or wrong
@@ -1641,3 +1653,235 @@ class TestSlotTable:
         assert replacement.worker_id == 1
         assert len(replacement.restart_timestamps) == 2
         assert pm.slot_state(1) is SlotState.ACTIVE
+
+
+class TestReloadStateMachine:
+    """U8 (KTD8, R9-R11): Probe und Reload laufen im Monitor-Loop, mit
+    gefaelschter Probe-Fabrik und Uhr, ohne echte Signale."""
+
+    def _pm(self, tmp_path, *probes: FakeProbe, num_workers: int = 1):
+        pm = ProcessManager(num_workers=num_workers, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        path = tmp_path / "log.json"
+        path.write_text('{"version": 1}')
+        factory = FakeProbeFactory(*probes)
+        pm.reloader = ReloadController(str(path), probe_factory=factory, clock=FakeClock())
+        return pm, factory
+
+    @staticmethod
+    def _run_loop(pm, on_tick):
+        return TestReloadStateMachine._run_loop_via(pm, on_tick, pm._monitor_loop)
+
+    def test_a_tick_starts_the_probe_and_dead_workers_are_still_replaced(self, tmp_path):
+        probe = FakeProbe(rc=None)
+        pm, factory = self._pm(tmp_path, probe)
+        _register(pm, WorkerInfo(process=_fake_process(alive=False, exitcode=-9, pid=5), worker_id=0))
+        pm._on_reload_signal(signal.SIGHUP, None)
+
+        def on_tick(n):
+            if n == 2:
+                pm._on_shutdown_signal(signal.SIGTERM, None)
+
+        assert self._run_loop(pm, on_tick) == 0
+        assert len(factory.raws) == 1
+        assert 500 in pm.workers  # Ersatz, waehrend die Probe lief
+        assert pm._reload_requested is False
+
+    def test_a_valid_probe_ends_the_loop_with_an_accepted_reload(self, tmp_path, swarmq_logs):
+        probe = FakeProbe(rc=None)
+        pm, _ = self._pm(tmp_path, probe)
+        pm._on_reload_signal(signal.SIGHUP, None)
+
+        def on_tick(n):
+            probe.rc = 0
+
+        assert self._run_loop(pm, on_tick) == 0
+        assert pm._reload_requested is True
+        assert pm._shutting_down is True
+        assert pm.shutdown_event.is_set()
+        assert [e["event"] for e in swarmq_logs].count("process_manager_reload_requested") == 1
+
+    @staticmethod
+    def _run(pm, on_tick, shutdown_all=None):
+        """``run`` mit echtem Monitor-Loop; Start, Signale und Worker-Stopp gefaelscht."""
+        execvpe = MagicMock()
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_shutdown_all_workers", side_effect=shutdown_all), \
+             patch.object(pm, "_collect_zombies"), \
+             patch("swarmq.process_manager.reload.shutdown_logging"), \
+             patch("swarmq.process_manager.supervisor.os.execvpe", execvpe):
+            rc = TestReloadStateMachine._run_loop_via(pm, on_tick, pm.run)
+        return rc, execvpe
+
+    @staticmethod
+    def _run_loop_via(pm, on_tick, target):
+        """``target`` mit gefaelschtem ``sleep``; ``on_tick(n)`` nach jedem Tick."""
+        ticks = []
+
+        def fake_sleep(_seconds):
+            ticks.append(1)
+            on_tick(len(ticks))
+            if len(ticks) > 20:
+                raise AssertionError("monitor loop did not end")
+
+        with patch("swarmq.process_manager.supervisor.time.sleep", side_effect=fake_sleep):
+            return target()
+
+    def test_sigterm_during_the_probe_kills_it_and_ends_without_reload(self, tmp_path):
+        probe = FakeProbe(rc=None)
+        pm, _ = self._pm(tmp_path, probe)
+        pm._on_reload_signal(signal.SIGHUP, None)
+
+        def on_tick(n):
+            pm._on_shutdown_signal(signal.SIGTERM, None)
+
+        rc, execvpe = self._run(pm, on_tick)
+        assert rc == 0
+        assert probe.killed is True
+        execvpe.assert_not_called()
+
+    def test_sigterm_while_the_log_queue_drains_before_execvpe_prevents_it(self, tmp_path):
+        """Das Leeren vor ``execvpe`` darf bis ``log_drain_timeout`` dauern;
+        ein SIGTERM in dieser Zeit beendet den Supervisor (Pruefung direkt
+        vor ``execvpe``)."""
+        probe = FakeProbe(rc=0)
+        pm, _ = self._pm(tmp_path, probe)
+        pm._on_reload_signal(signal.SIGHUP, None)
+        execvpe = MagicMock()
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_shutdown_all_workers"), \
+             patch.object(pm, "_collect_zombies"), \
+             patch(
+                 "swarmq.process_manager.reload.shutdown_logging",
+                 side_effect=lambda: pm._on_shutdown_signal(signal.SIGTERM, None),
+             ), \
+             patch("swarmq.process_manager.supervisor.os.execvpe", execvpe):
+            rc = self._run_loop_via(pm, lambda n: None, pm.run)
+        assert rc == 0
+        execvpe.assert_not_called()
+
+    def test_sigterm_while_workers_stop_for_an_accepted_reload_ends_the_supervisor(
+        self, tmp_path, swarmq_logs,
+    ):
+        """Probe gueltig, Reload beschlossen, SIGTERM waehrend des Worker-Stopps:
+        kein ``execvpe``, Ende mit 0, und das Signal steht im Log."""
+        pm, _ = self._pm(tmp_path, FakeProbe(rc=0))
+        pm._on_reload_signal(signal.SIGHUP, None)
+        rc, execvpe = self._run(
+            pm, lambda n: None,
+            shutdown_all=lambda: pm._on_shutdown_signal(signal.SIGTERM, None),
+        )
+        assert rc == 0
+        execvpe.assert_not_called()
+        (event,) = [e for e in swarmq_logs if e["event"] == "process_manager_shutdown_signal"]
+        assert event["signal"] == "SIGTERM"
+
+    def test_sigterm_then_sighup_ends_without_reload(self, tmp_path):
+        """Szenario E (S6) ueber den ganzen Lauf."""
+        factory_probe = FakeProbe(rc=0)
+        pm, factory = self._pm(tmp_path, factory_probe)
+
+        def on_tick(n):
+            pm._on_shutdown_signal(signal.SIGTERM, None)
+            pm._on_reload_signal(signal.SIGHUP, None)
+
+        rc, execvpe = self._run(pm, on_tick)
+        assert rc == 0
+        execvpe.assert_not_called()
+        assert factory.raws == []
+
+    def test_two_sighups_during_a_probe_run_exactly_one_probe(self, tmp_path):
+        probe = FakeProbe(rc=None)
+        pm, factory = self._pm(tmp_path, probe, FakeProbe(rc=1))
+        pm._on_reload_signal(signal.SIGHUP, None)
+
+        def on_tick(n):
+            if n == 1:
+                pm._on_reload_signal(signal.SIGHUP, None)
+                pm._on_reload_signal(signal.SIGHUP, None)
+            elif n == 2:
+                probe.rc = 1
+            elif n == 5:
+                pm._on_shutdown_signal(signal.SIGTERM, None)
+
+        self._run_loop(pm, on_tick)
+        assert len(factory.raws) == 1
+
+    def test_a_probe_past_its_deadline_is_a_timeout_and_workers_keep_running(self, tmp_path, swarmq_logs):
+        probe = FakeProbe(rc=None)
+        pm, _ = self._pm(tmp_path, probe)
+        clock = pm.reloader._clock
+        pm._on_reload_signal(signal.SIGHUP, None)
+
+        def on_tick(n):
+            if n == 1:
+                clock.now += 31.0
+            elif n == 3:
+                assert not pm.shutdown_event.is_set()
+                pm._on_shutdown_signal(signal.SIGTERM, None)
+
+        assert self._run_loop(pm, on_tick) == 0
+        assert probe.killed is True
+        events = [e["event"] for e in swarmq_logs]
+        assert "log_config_reload_probe_timeout" in events
+        assert "log_config_reload_failed" not in events
+        assert "process_manager_reload_requested" not in events
+        assert pm._reload_requested is False
+
+    def test_an_invalid_probe_keeps_the_workers_running(self, tmp_path, swarmq_logs):
+        pm, _ = self._pm(tmp_path, FakeProbe(rc=1, error="Unable to configure handler 'err'"))
+        pm._on_reload_signal(signal.SIGHUP, None)
+
+        def on_tick(n):
+            if n == 3:
+                assert not pm.shutdown_event.is_set()
+                assert pm._shutting_down is False
+                pm._on_shutdown_signal(signal.SIGTERM, None)
+
+        assert self._run_loop(pm, on_tick) == 0
+        events = [e["event"] for e in swarmq_logs]
+        assert "log_config_reload_failed" in events
+        assert "process_manager_reload_requested" not in events
+        assert 500 in pm.workers
+
+    def test_a_valid_probe_reloads_with_the_log_queue_drained_before_execvpe(self, tmp_path):
+        calls: list[str] = []
+        pm, _ = self._pm(tmp_path, FakeProbe(rc=0))
+        pm._on_reload_signal(signal.SIGHUP, None)
+        with patch.object(pm, "_start_all_workers"), \
+             patch.object(pm, "_setup_signals"), \
+             patch.object(pm, "_shutdown_all_workers", side_effect=lambda: calls.append("stop_workers")), \
+             patch.object(pm, "_collect_zombies"), \
+             patch(
+                 "swarmq.process_manager.reload.shutdown_logging",
+                 side_effect=lambda: calls.append("shutdown_logging"),
+             ), \
+             patch(
+                 "swarmq.process_manager.supervisor.os.execvpe",
+                 side_effect=lambda *a: calls.append("execvpe"),
+             ):
+            self._run_loop_via(pm, lambda n: None, pm.run)
+        assert calls == ["stop_workers", "shutdown_logging", "execvpe"]
+
+    def test_sigterm_while_the_loop_accepts_the_reload_prevents_execvpe(self, tmp_path):
+        """Der Handler kann zwischen zwei Bytecodes des Loops laufen -- auch
+        nachdem die Probe gueltig war, aber bevor der Loop den Reload
+        beschliesst. Auch dann gewinnt SIGTERM."""
+        pm, _ = self._pm(tmp_path)
+        probe = FakeProbe(rc=None)
+
+        def poll():
+            pm._on_shutdown_signal(signal.SIGTERM, None)
+            return 0
+
+        probe.poll = poll
+        pm.reloader = ReloadController(
+            pm.reloader.log_config, probe_factory=FakeProbeFactory(probe), clock=FakeClock(),
+        )
+        pm._on_reload_signal(signal.SIGHUP, None)
+        rc, execvpe = self._run(pm, lambda n: None)
+        assert rc == 0
+        execvpe.assert_not_called()

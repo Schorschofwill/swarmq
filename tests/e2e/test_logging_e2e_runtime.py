@@ -202,7 +202,7 @@ def test_reload_with_invalid_log_config_keeps_running_then_reloads_after_fix(rel
     cfg.write_text(_log_config("CFGV2", handler_class="logging.StreamHandlr"))
     proc.send_signal(signal.SIGHUP)
     failed = out.wait_for(lambda line: "log_config_reload_failed" in line, start=armed)
-    assert out.lines[failed] == "CFGV1|swarmq.process_manager.run|log_config_reload_failed"
+    assert out.lines[failed] == "CFGV1|swarmq.process_manager.reload|log_config_reload_failed"
 
     # Worker laufen weiter und arbeiten einen neuen Task ab -- mit der alten
     # Logging-Konfiguration.
@@ -219,7 +219,7 @@ def test_reload_with_invalid_log_config_keeps_running_then_reloads_after_fix(rel
     cfg.write_text(_log_config("CFGV2"))
     proc.send_signal(signal.SIGHUP)
     execvp = out.wait_for(lambda line: line.endswith("|process_manager_reload_execvp"), start=failed)
-    assert out.lines[execvp] == "CFGV1|swarmq.process_manager.supervisor|process_manager_reload_execvp"
+    assert out.lines[execvp] == "CFGV1|swarmq.process_manager.reload|process_manager_reload_execvp"
     restarted = out.wait_for(lambda line: line == "CFGV2|swarmq.worker.lifecycle|worker_started", start=execvp)
     out.wait_for(lambda line: line == "CFGV2|swarmq.process_manager.supervisor|hot_reload_enabled", start=execvp)
     assert asyncio.run(_echo_roundtrip(queue, "after-reload")) == "echoed:after-reload"

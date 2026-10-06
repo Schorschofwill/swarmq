@@ -11,15 +11,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
-from collections.abc import Callable
-
-from swarmq.exceptions import ConfigurationError, LoggingConfigError
-from swarmq.logging import _error_fields, get_logger, load_log_config
-from swarmq.logging_file import probe_dict_config
+from swarmq.exceptions import ConfigurationError
+from swarmq.logging import get_logger
 from swarmq.logging_settings import LoggingSettings, resolve_logging_settings
 from swarmq.process_manager.check import check_worker_config
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
+from swarmq.process_manager.reload import ReloadController
 from swarmq.process_manager.sampler import AdminFactory, _make_queue_depth_sampler
 from swarmq.process_manager.setpoint_store import SetpointStoreFactory
 from swarmq.process_manager.supervisor import ProcessManager, QueueDepthFn
@@ -60,33 +58,6 @@ def run_multi_process_worker(
         args, admin_factory=admin_factory, setpoint_store_factory=setpoint_store_factory,
         logging_settings=logging_settings or resolve_logging_settings(args, os.environ, None),
     )
-
-
-def log_config_reload_check(settings: LoggingSettings) -> Callable[[], bool] | None:
-    """Pruefung vor einem Hot-Reload (Plan 2026-10-06-0831, U7, KTD9).
-
-    Der Reload ist ein ``execvpe`` des Supervisors, der ``--log-config`` dann
-    neu laedt. Ist die Datei inzwischen ungueltig, bricht der Reload ab, bevor
-    ein Worker stoppt: ``log_config_reload_failed`` statt Exit 78.
-    """
-    path = settings.log_config
-    if path is None:
-        return None
-
-    def _check() -> bool:
-        try:
-            probe_dict_config(path, load_log_config(path))
-        except LoggingConfigError as exc:
-            logger.error(
-                "log_config_reload_failed",
-                path=path,
-                **_error_fields(exc),
-                hint="fix the logging config and send SIGHUP again; workers keep running",
-            )
-            return False
-        return True
-
-    return _check
 
 
 def resolve_group_key(label: str | None, queues: list[str] | tuple[str, ...]) -> str:
@@ -223,5 +194,7 @@ def _run_multi_process_worker_configured(
         setpoint_store_factory=setpoint_store_factory if max_processes is not None else None,
         supervisor_id=f"{sq_config.worker_id or socket.gethostname()}:p{os.getpid()}",
     )
-    pm.reload_precheck = log_config_reload_check(logging_settings)
+    # KTD9/KTD8: vor einem Reload prueft der Monitor-Loop --log-config neu;
+    # ungueltig -> ``log_config_reload_failed``, die Worker laufen weiter.
+    pm.reloader = ReloadController(logging_settings.log_config)
     return pm.run()
