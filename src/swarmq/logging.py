@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import logging
 import logging.handlers
 import queue
@@ -230,6 +231,84 @@ def get_logger(name: str) -> Any:
     )
 
 
+def _add_record_timestamp(
+    _: Any, __: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """Zeitstempel aus ``record.created`` statt aus dem Formatierungszeitpunkt.
+
+    Gerendert wird im Listener-Thread; staut sich die Queue, laege die Zeit
+    sonst um den Rueckstau daneben (KTD3). Format wie
+    ``TimeStamper(fmt="iso")``: ISO 8601 in UTC mit Suffix ``Z``. Ohne
+    ``_record`` (Ersatz-Event aus ``_SafeProcessorFormatter``) gilt die
+    aktuelle Zeit.
+    """
+    record = event_dict.get("_record")
+    created = record.created if record is not None else time.time()
+    event_dict["timestamp"] = (
+        datetime.datetime.fromtimestamp(created, tz=datetime.UTC)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    return event_dict
+
+
+_EXTRA_ADDER = structlog.stdlib.ExtraAdder()
+
+_FORMATTER_RECORD_ATTRS = ("message", "asctime")
+"""Setzt ``logging.Formatter.format`` auf dem Record; ein frueherer Handler
+hinterlaesst sie. Felder eines swarmq-Events sind sie nie: ``get_logger``
+benennt gleichnamige Felder in ``swarmq_<key>`` um."""
+
+
+def _add_record_extras(
+    logger: Any, method_name: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """``ExtraAdder`` ohne die Streufelder ``message``/``asctime`` (KTD3)."""
+    event_dict = _EXTRA_ADDER(logger, method_name, event_dict)
+    for key in _FORMATTER_RECORD_ATTRS:
+        event_dict.pop(key, None)
+    return event_dict
+
+
+def build_formatter(json: bool, colors: bool) -> structlog.stdlib.ProcessorFormatter:
+    """Liefert den Formatter fuer swarmq- und Fremd-Records (Plan
+    2026-10-06-0831, U2, KTD3).
+
+    ``json`` waehlt den ``JSONRenderer``, sonst rendert der
+    ``ConsoleRenderer`` mit ANSI-Farben nur bei ``colors``. Records der
+    Bibliotheks-Logger (``get_logger``) tragen ihre Felder als Attribute und
+    laufen wie Fremd-Records durch die ``foreign_pre_chain``; structlog-native
+    Records (``wrap_for_formatter``) bringen Level und Zeitstempel schon mit.
+    Scheitert die Formatierung eines Records, erscheint
+    ``log_record_unformattable`` (R8). In einer dictConfig nutzbar per
+    ``{"()": "swarmq.logging.build_formatter", "json": true, "colors": false}``.
+    """
+    renderer: Any = (
+        structlog.processors.JSONRenderer()
+        if json
+        else structlog.dev.ConsoleRenderer(colors=colors)
+    )
+    return _SafeProcessorFormatter(
+        # Ohne ``remove_processors_meta`` rendert der Formatter seine
+        # eigenen Arbeitsschluessel mit (B6): ``_record`` traegt den
+        # LogRecord, die Nutzlast stand damit zweimal in jeder Zeile. Ueber
+        # einen 24h-Lauf die doppelte Logmenge, und von Hand kaum lesbar
+        # genau im Diagnosefall. Muss VOR dem Renderer stehen; beide
+        # Renderer teilen diese Kette.
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
+        foreign_pre_chain=[
+            structlog.processors.add_log_level,
+            structlog.stdlib.add_logger_name,
+            _add_record_timestamp,
+            _add_record_extras,
+            structlog.processors.format_exc_info,
+        ],
+    )
+
+
 _ACTIVE_LISTENER: logging.handlers.QueueListener | None = None
 
 
@@ -252,17 +331,6 @@ def setup_logging(
         with contextlib.suppress(Exception):
             _ACTIVE_LISTENER.stop()
         _ACTIVE_LISTENER = None
-    # Plan 2026-04-23-001 CLI-03: bind ``colors`` to the TTY state of
-    # stderr at configure time. Keeps ANSI escapes out of piped /
-    # captured stderr (log aggregators, CI output, pytest fixtures).
-    # The decision is static — callers that redirect stderr AFTER
-    # ``setup_logging`` must re-invoke it.
-    renderer = (
-        structlog.processors.JSONRenderer()
-        if log_json
-        else structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
-    )
-
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
@@ -288,20 +356,12 @@ def setup_logging(
     # Non-blocking I/O via QueueHandler + QueueListener
     log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10_000)
 
-    formatter = _SafeProcessorFormatter(
-        processors=[
-            # Ohne diesen Schritt rendert der Formatter seine eigenen
-            # Arbeitsschluessel mit: ``_record`` traegt den LogRecord, dessen
-            # ``msg`` das komplette Ereignis-Dict ist — die Nutzlast stand
-            # damit zweimal in jeder Zeile. Ueber einen 24h-Lauf die doppelte
-            # Logmenge, und von Hand kaum lesbar genau im Diagnosefall.
-            # Muss VOR dem Renderer stehen; beide Renderer teilen diesen
-            # Formatter, der Fix trifft JSON- und Textausgabe zusammen.
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
-        ],
-        foreign_pre_chain=shared_processors,
-    )
+    # Plan 2026-04-23-001 CLI-03: bind ``colors`` to the TTY state of
+    # stderr at configure time. Keeps ANSI escapes out of piped /
+    # captured stderr (log aggregators, CI output, pytest fixtures).
+    # The decision is static — callers that redirect stderr AFTER
+    # ``setup_logging`` must re-invoke it.
+    formatter = build_formatter(log_json, sys.stderr.isatty())
 
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(formatter)
