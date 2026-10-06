@@ -28,6 +28,9 @@ Test-Liste:
         Worker, der structlog vor dem App-Import einrichtet.
 10b. [x] Im Datei-Modus bleibt structlog dabei unkonfiguriert (KTD6).
 11. [x] Mit geerbten App-Handlern gelten die Logger-Level aus dem Job.
+12. [x] Mit geerbten App-Handlern laufen swarmq-Logs ueber die Opt-in-Queue
+        im Listener-Thread an die Handler der App (R6, KTD14, U8); die
+        Leerung pro Job schreibt sie vor dem Ergebnis.
 """
 
 from __future__ import annotations
@@ -368,3 +371,43 @@ def test_inherited_app_handlers_still_get_the_logger_levels_of_the_job(
     child.child_once(_job(logger_levels=(("app.child_noisy", "ERROR"),)), _Channel(events), 0)
 
     assert noisy.level == logging.ERROR
+
+
+
+class _ThreadRecordingHandler(logging.Handler):
+    """Geerbter App-Handler: haelt Nachricht und Thread jedes Records fest."""
+
+    def __init__(self, events: list[Any]) -> None:
+        super().__init__()
+        self.events = events
+
+    def emit(self, record: logging.LogRecord) -> None:
+        import threading
+
+        self.events.append(f"app:{record.getMessage()}@{threading.current_thread().name}")
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.usefixtures("flush_spy")
+def test_swarmq_logs_reach_inherited_app_handlers_via_the_queue_before_the_result(
+    events: list[Any],
+) -> None:
+    from swarmq.logging import LISTENER_THREAD_NAME, get_logger
+
+    _forkserver_root()
+
+    class SwarmqLogging(Task):
+        task_info = TaskInfo(name="logging_task", queues=["q"])
+
+        async def run(self, tag: str) -> str:
+            get_logger("swarmq.tests.child_queue").warning("swarmq_in_task")
+            return "ok"
+
+    logging.getLogger().addHandler(_ThreadRecordingHandler(events))
+
+    child.child_once(_job(), _Channel(events), 0)
+
+    assert _kinds(events)[-5:] == [
+        f"app:swarmq_in_task@{LISTENER_THREAD_NAME}", "flush", "result:t1",
+        "flush", "logging.shutdown",
+    ]

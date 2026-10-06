@@ -43,9 +43,8 @@ from __future__ import annotations
 #     auch ueber eine bestehende Konfiguration hinweg.
 # 23. (U7, KTD8) Datei-Modus: ein ausdrueckliches Level gilt nach der
 #     dictConfig fuer Root; ohne ausdrueckliches Level bleibt das der Datei.
-# 24. (U7) ``logging_is_configured()`` ist nach ``configure_logging`` wahr,
-#     auch mit "nicht konfigurieren"; nach ``shutdown_logging`` und nach dem
-#     deprecated ``setup_logging`` falsch.
+# 24. (U7) entfallen mit U8: ``logging_is_configured()`` war die Bruecke fuer
+#     ``SwarmQ``, das seit U8 nie mehr einrichtet.
 # 25. (U7, KTD5/KTD14) Datei-Modus mit ``QueueHandler``: nach
 #     ``shutdown_logging`` startet der naechste Eintrag den Listener wieder,
 #     das folgende ``shutdown_logging`` leert ihn -- die Leerung pro Job im
@@ -551,44 +550,6 @@ def test_file_mode_keeps_the_file_level_without_an_explicit_level(
     configure_logging(LoggingSettings(log_config=path, level="INFO"))
 
     assert logging.getLogger().level == logging.DEBUG
-
-
-def test_logging_is_configured_after_an_entry_point_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from swarmq.logging import logging_is_configured, shutdown_logging
-
-    _stderr(monkeypatch)
-    assert not logging_is_configured()
-
-    configure_logging(LoggingSettings())
-    assert logging_is_configured()
-
-    shutdown_logging()
-    assert not logging_is_configured()
-
-
-def test_logging_is_configured_also_when_the_entry_point_chose_not_to() -> None:
-    # R12: "nicht konfigurieren" ist eine Entscheidung des Einstiegspunkts;
-    # ``SwarmQ`` darf danach nicht doch noch einrichten.
-    from swarmq.logging import logging_is_configured
-
-    configure_logging(LoggingSettings(configure=False))
-
-    assert logging_is_configured()
-
-
-def test_deprecated_setup_logging_is_no_entry_point_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Eingebettet baut ``SwarmQ`` bis U8 per ``setup_logging`` bei jedem
-    # Aufruf neu auf; das darf ihm selbst nicht als Einstiegspunkt gelten.
-    from swarmq.logging import logging_is_configured, setup_logging
-
-    _stderr(monkeypatch)
-    setup_logging("INFO", True)
-
-    assert not logging_is_configured()
 
 
 def test_file_mode_queue_listener_restarts_after_shutdown_for_the_next_job(

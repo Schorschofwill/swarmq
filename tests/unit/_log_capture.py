@@ -70,7 +70,8 @@ def _is_pytest_handler(handler: logging.Handler) -> bool:
 
 @contextmanager
 def preserved_root_logger() -> Iterator[None]:
-    """Stellt Root-Handler und Root-Level nach dem Block wieder her und gibt
+    """Stellt Root-Handler und Root-Level -- sowie Handler, Level und
+    ``propagate`` des Loggers ``swarmq`` -- nach dem Block wieder her und gibt
     das Logging per ``shutdown_logging()`` frei (Plan 2026-10-06-0831, U4).
 
     Ein ``configure_logging`` im Block ersetzt die Root-Handler; danach baut
@@ -78,14 +79,20 @@ def preserved_root_logger() -> Iterator[None]:
     wechseln je Testphase und bleiben, wie pytest sie gerade gesetzt hat --
     zurueckgelegte Handler einer beendeten Phase sammelten sonst weiter.
     """
-    from swarmq.logging import shutdown_logging
+    from swarmq.logging import _reset_log_queue, shutdown_logging
 
     root = logging.getLogger()
     own = [h for h in root.handlers if not _is_pytest_handler(h)]
     level = root.level
+    # Der Opt-in (U8, KTD10) haengt am Logger ``swarmq``.
+    swarmq_logger = logging.getLogger("swarmq")
+    swarmq_state = (list(swarmq_logger.handlers), swarmq_logger.level, swarmq_logger.propagate)
     try:
         yield
     finally:
+        _reset_log_queue()
         shutdown_logging()
         root.handlers[:] = own + [h for h in root.handlers if _is_pytest_handler(h)]
         root.setLevel(level)
+        swarmq_logger.handlers[:], swarmq_level, swarmq_logger.propagate = swarmq_state
+        swarmq_logger.setLevel(swarmq_level)

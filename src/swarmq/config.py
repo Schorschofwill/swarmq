@@ -105,6 +105,9 @@ class SwarmQConfig:
     result_ttl: int = 86400
     queues: list[str] = field(default_factory=lambda: ["default"])
     concurrency: int = 10
+    # Eingebettet steuern ``log_level``/``log_json`` den Opt-in ``log_queue``
+    # (``swarmq``-Level, Format der Drop-Meldung); ``SwarmQ`` richtet sonst
+    # nichts ein (Plan 2026-10-06-0831, KTD10).
     log_level: str = "INFO"
     log_json: bool = True
     # Logging-Einstellungen (Plan 2026-10-06, R13/KTD7). Eingebettet sind

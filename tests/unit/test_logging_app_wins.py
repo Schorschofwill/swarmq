@@ -24,8 +24,9 @@ from __future__ import annotations
 #        der App bleiben nach ``SwarmQ(...)`` bestehen.
 # 6. [x] Ohne Einrichtung durch swarmq (``--no-configure-logging``) meldet
 #        swarmq nichts und fasst nichts an.
-# Offen fuer U8: Nach dem Ersatz haelt ein blockierender Root-Handler der App
-# einen swarmq-Logaufruf im Event-Loop nicht auf (R6, Opt-in-Queue KTD10).
+# 7. [x] Nach dem Ersatz haelt ein blockierender Root-Handler der App einen
+#        swarmq-Logaufruf im Event-Loop nicht auf (R6, Opt-in-Queue KTD10,
+#        U8) -- eingebaut wie im Datei-Modus.
 import argparse
 import io
 import itertools
@@ -40,7 +41,13 @@ import pytest
 
 from swarmq import cli
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import LISTENER_THREAD_NAME, configure_logging, get_logger
+from swarmq.logging import (
+    _StructlogQueueHandler,
+    _SwarmqQueueListener,
+    configure_logging,
+    get_logger,
+    shutdown_logging,
+)
 from swarmq.logging_settings import LoggingSettings
 from swarmq.task import Task
 
@@ -53,6 +60,17 @@ class AppHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         APP_RECORDS.append(record)
+
+
+class BlockingAppHandler(AppHandler):
+    """Handler der App, der bei ``evt_r6`` blockiert, bis ``RELEASE`` steht."""
+
+    RELEASE = threading.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage() == "evt_r6":
+            self.RELEASE.wait(3)
+        super().emit(record)
 
 
 _APP_HANDLER = f"{__name__}.AppHandler"
@@ -99,8 +117,11 @@ def _args(module: str, configure: str | None = None) -> argparse.Namespace:
     )
 
 
-def _listener_threads() -> list[threading.Thread]:
-    return [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]
+def _root_listener() -> _SwarmqQueueListener:
+    """Der Listener von swarmqs Root-Handler (eingebauter Modus)."""
+    (handler,) = (h for h in logging.getLogger().handlers if isinstance(h, _StructlogQueueHandler))
+    assert handler.listener is not None
+    return handler.listener
 
 
 def _app_events(name: str) -> list[logging.LogRecord]:
@@ -123,13 +144,15 @@ async def test_app_replacing_root_stops_the_listener_and_reports_once(
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     get_logger("swarmq.tests.app_wins").warning("evt_before_import")
-    assert len(_listener_threads()) == 1
+    root_listener = _root_listener()
+    assert root_listener.running
     module = _app_module(tmp_path, monkeypatch, _REPLACE_ROOT)
 
     with pytest.raises(ConfigurationError, match="no tasks registered"):
         await cli.run_worker_async(_args(module))
 
-    assert _listener_threads() == []
+    assert not root_listener.running
+    shutdown_logging()  # die swarmq-Logs laufen jetzt ueber die Opt-in-Queue
     assert len(_app_events("logging_reconfigured_by_app")) == 1
 
 
@@ -147,6 +170,7 @@ async def test_disabled_swarmq_loggers_are_reenabled_and_counted(
     with pytest.raises(ConfigurationError, match="no tasks registered"):
         await cli.run_worker_async(_args(module))
     get_logger("swarmq.tests.app_wins.existing").warning("evt_after_import")
+    shutdown_logging()
 
     assert not existing.disabled
     (event,) = _app_events("logging_reconfigured_by_app")
@@ -218,12 +242,14 @@ async def test_configure_hook_replacing_root_reacts_like_an_import(
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     get_logger("swarmq.tests.app_wins").warning("evt_before_import")
+    root_listener = _root_listener()
     _fake_swarmq(monkeypatch)
     module = _app_module(tmp_path, monkeypatch, _HOOK_REPLACES_ROOT)
 
     await cli.run_worker_async(_args(module, configure=f"{module}:setup"))
 
-    assert _listener_threads() == []
+    assert not root_listener.running
+    shutdown_logging()
     assert len(_app_events("logging_reconfigured_by_app")) == 1
 
 
@@ -237,6 +263,7 @@ async def test_replacement_at_import_and_in_the_hook_is_reported_once(
 
     await cli.run_worker_async(_args(module, configure=f"{module}:setup"))
 
+    shutdown_logging()
     assert len(_app_events("logging_reconfigured_by_app")) == 1
 
 
@@ -281,3 +308,40 @@ async def test_without_swarmq_setup_nothing_is_reported_or_touched(
 
     assert existing.disabled
     assert not [e for e in swarmq_logs if str(e["event"]).startswith("logging_")]
+
+
+def _file_mode_settings(tmp_path: pathlib.Path) -> LoggingSettings:
+    """Datei-Modus mit einem synchronen Root-Handler aus der dictConfig."""
+    import json
+
+    path = tmp_path / "swarmq-logging.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"file_mode": {"class": "logging.NullHandler"}},
+        "root": {"level": "INFO", "handlers": ["file_mode"]},
+    }))
+    return LoggingSettings(log_config=str(path))
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("mode", ["builtin", "file"])
+async def test_a_blocking_app_handler_does_not_stall_swarmq_after_the_takeover(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    BlockingAppHandler.RELEASE.clear()
+    configure_logging(
+        LoggingSettings(format="json") if mode == "builtin" else _file_mode_settings(tmp_path)
+    )
+    module = _app_module(
+        tmp_path, monkeypatch, _REPLACE_ROOT.replace(_APP_HANDLER, f"{__name__}.BlockingAppHandler"),
+    )
+    with pytest.raises(ConfigurationError, match="no tasks registered"):
+        await cli.run_worker_async(_args(module))
+
+    get_logger("swarmq.tests.app_wins").warning("evt_r6")
+
+    assert _app_events("evt_r6") == []  # der Aufruf kehrte zurueck, der Handler blockiert
+    BlockingAppHandler.RELEASE.set()
+    shutdown_logging()
+    assert len(_app_events("evt_r6")) == 1

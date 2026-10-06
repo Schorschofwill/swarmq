@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import datetime
+import contextvars
 import json as jsonlib
 import logging
 import logging.config
@@ -24,6 +24,8 @@ from swarmq.exceptions import LoggingConfigError
 from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
 from swarmq.logging_file import load_log_config as load_log_config
 from swarmq.logging_file import start_queue_listeners
+from swarmq.logging_format import _add_record_timestamp
+from swarmq.logging_format import build_formatter as build_formatter
 from swarmq.logging_settings import LoggingSettings
 
 LISTENER_THREAD_NAME = "swarmq-log-listener"
@@ -194,22 +196,122 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         )
 
 
+_CONTEXT_ATTR = "_swarmq_context"
+"""Record-Attribut mit dem Kontext des Aufrufers (KTD10); nur bis zur
+Weitergabe im Listener."""
+
+
+class _OptinQueueListener(_SwarmqQueueListener):
+    """Listener der Opt-in-Queue (Plan 2026-10-06-0831, KTD10).
+
+    Gibt jeden Record zum Ausgabezeitpunkt an die Handler von Root weiter,
+    also die Elternkette von ``swarmq`` -- ohne Schnappschuss.
+    """
+
+    def handle(self, record: logging.LogRecord) -> None:
+        context = record.__dict__.pop(_CONTEXT_ATTR, None)
+        dispatch = logging.getLogger().callHandlers
+        if context is None:
+            dispatch(record)
+        else:
+            context.run(dispatch, record)
+
+
+class _OptinQueueHandler(_StructlogQueueHandler):
+    """Queue-Handler am Logger ``swarmq`` fuer den Opt-in (KTD10)."""
+
+    def __init__(self, queue_: _LogQueue, *, json: bool = False) -> None:
+        super().__init__(queue_, json=json)
+        self.listener = _OptinQueueListener(queue_)
+
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        """Haengt den Kontext des Aufrufers an (O(1)): Filter der App, die
+        Kontextvariablen lesen, arbeiten im Listener wie im Aufrufer."""
+        record.__dict__[_CONTEXT_ATTR] = contextvars.copy_context()
+        return record
+
+
+_OPTIN_HANDLER: _OptinQueueHandler | None = None
+"""Der installierte Opt-in-Handler am Logger ``swarmq``, sonst ``None``."""
+
+_OPTIN_SAVED: tuple[bool, int] = (True, logging.NOTSET)
+"""``propagate`` und Level von ``swarmq`` vor dem Opt-in."""
+
+_OPTIN_HOLDERS = 0
+"""Referenzzaehler: Mehrere ``SwarmQ``-Instanzen teilen einen Handler."""
+
+_OPTIN_TAKEOVER = False
+"""Haelt die Regel "App gewinnt" (KTD4) den Opt-in in diesem Prozess?"""
+
+
+def _enable_log_queue(level: str | int, *, json: bool = False, queue_size: int = 10_000) -> bool:
+    """Leitet ``swarmq.*`` ueber eine eigene Hintergrund-Queue (R5, KTD10).
+
+    Mit Referenzzaehlung: Die erste Anforderung installiert den Handler am
+    Logger ``swarmq`` und setzt dessen Level; jede weitere zaehlt nur. Kein
+    Thread -- der Listener startet beim ersten Eintrag (AE6).
+
+    Hat ein Einstiegspunkt eingebaut oder per Datei konfiguriert, ist der
+    Opt-in wirkungslos (``False``); unter "nicht konfigurieren" gilt er.
+    """
+    global _OPTIN_HOLDERS
+    if _CONFIGURED:
+        return False
+    _OPTIN_HOLDERS += 1
+    _install_log_queue(level, json=json, queue_size=queue_size)
+    return True
+
+
+def _disable_log_queue() -> None:
+    """Gibt eine Anforderung frei. Die letzte schreibt die Queue und stellt
+    Handler, ``propagate`` und Level von ``swarmq`` wieder her (KTD10)."""
+    global _OPTIN_HOLDERS
+    _OPTIN_HOLDERS = max(_OPTIN_HOLDERS - 1, 0)
+    if _OPTIN_HOLDERS == 0 and not _OPTIN_TAKEOVER:
+        _remove_log_queue()
+
+
+def _reset_log_queue() -> None:
+    """Hebt den Opt-in unabhaengig von der Zahl der Anforderungen auf."""
+    global _OPTIN_HOLDERS, _OPTIN_TAKEOVER
+    _OPTIN_HOLDERS = 0
+    _OPTIN_TAKEOVER = False
+    _remove_log_queue()
+
+
+def _install_log_queue(level: str | int | None, *, json: bool, queue_size: int) -> None:
+    """Installiert den Opt-in-Handler am Logger ``swarmq``, falls noch keiner
+    da ist; ``level=None`` laesst das ``swarmq``-Level unangetastet."""
+    global _OPTIN_HANDLER, _OPTIN_SAVED
+    if _OPTIN_HANDLER is not None:
+        return
+    logger = logging.getLogger("swarmq")
+    _OPTIN_SAVED = (logger.propagate, logger.level)
+    _OPTIN_HANDLER = _OptinQueueHandler(_LogQueue(queue_size), json=json)
+    logger.addHandler(_OPTIN_HANDLER)
+    logger.propagate = False
+    if level is not None:
+        logger.setLevel(level)
+
+
+def _remove_log_queue() -> None:
+    """Entfernt den Opt-in-Handler, stellt ``swarmq`` wieder her und
+    schreibt die Queue."""
+    global _OPTIN_HANDLER
+    handler, _OPTIN_HANDLER = _OPTIN_HANDLER, None
+    if handler is None:
+        return
+    logger = logging.getLogger("swarmq")
+    logger.removeHandler(handler)
+    logger.propagate, level = _OPTIN_SAVED
+    logger.setLevel(level)
+    assert handler.listener is not None
+    handler.listener.stop()
+
+
 _CONFIGURED = False
 """Hat ``configure_logging`` in diesem Prozess eingerichtet? Je Prozess gibt
 es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
-
-_ENTRY_POINT_OWNED = False
-"""Hat ein Einstiegspunkt per ``configure_logging`` ueber das Logging dieses
-Prozesses entschieden -- auch mit "nicht konfigurieren" (R12)?"""
-
-
-def logging_is_configured() -> bool:
-    """Hat ein Einstiegspunkt das Logging dieses Prozesses uebernommen (KTD4)?
-
-    Bis U8 ueberspringt ``SwarmQ`` dann seine eigene Einrichtung, damit sie
-    die des Einstiegspunkts nicht ueberschreibt.
-    """
-    return _ENTRY_POINT_OWNED
 
 
 def shutdown_logging() -> None:
@@ -218,8 +320,8 @@ def shutdown_logging() -> None:
     Der Queue-Handler bleibt installiert; der naechste Eintrag startet den
     Listener wieder. Ein folgendes ``configure_logging`` baut neu auf (KTD4).
     """
-    global _CONFIGURED, _ENTRY_POINT_OWNED, _APP_TAKEOVER_REPORTED
-    _CONFIGURED = _ENTRY_POINT_OWNED = _APP_TAKEOVER_REPORTED = False
+    global _CONFIGURED, _APP_TAKEOVER_REPORTED
+    _CONFIGURED = _APP_TAKEOVER_REPORTED = False
     _stop_listeners()
 
 
@@ -261,7 +363,7 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
     if (replaced or reenabled) and not _APP_TAKEOVER_REPORTED:
         if replaced:
             _stop_listeners()
-            _activate_swarmq_queue_after_app_takeover()
+            _activate_swarmq_queue_after_app_takeover(**_queue_options(before))
         _APP_TAKEOVER_REPORTED = True
         get_logger(__name__).info("logging_reconfigured_by_app", reenabled_loggers=reenabled)
     added = [handler for handler in current if handler not in before]
@@ -271,6 +373,14 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
             "logging_handlers_added_by_app",
             handler_types=[type(handler).__name__ for handler in added],
         )
+
+
+def _queue_options(handlers: tuple[logging.Handler, ...]) -> dict[str, Any]:
+    """Format und Queue-Groesse aus swarmqs ersetztem Root-Handler."""
+    for handler in handlers:
+        if isinstance(handler, _StructlogQueueHandler):
+            return {"json": handler.json, "queue_size": handler.queue.maxsize}
+    return {"json": False, "queue_size": LoggingSettings().queue_size}
 
 
 def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
@@ -285,11 +395,11 @@ def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
     ``None``. Das Event schreibt nicht das Kind, sondern der Pool, einmal je
     Pool statt einmal je Kind.
     """
-    global _CONFIGURED, _ENTRY_POINT_OWNED, _APP_TAKEOVER_REPORTED
+    global _CONFIGURED, _APP_TAKEOVER_REPORTED
     if not settings.configure or not root_handler_snapshot():
         configure_logging(settings)
         return None
-    _CONFIGURED = _ENTRY_POINT_OWNED = _APP_TAKEOVER_REPORTED = True
+    _CONFIGURED = _APP_TAKEOVER_REPORTED = True
     if settings.log_config is None:
         # Wie im Worker, der structlog vor dem App-Import einrichtet: Nutzer-
         # Tasks loggen per structlog an die Handler der App (R10, KTD6).
@@ -297,20 +407,21 @@ def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
     # Ausdrueckliche Level je Logger gelten weiter; Root-Handler und
     # Root-Level gehoeren der App.
     _apply_named_levels(settings)
-    _activate_swarmq_queue_after_app_takeover()
+    _activate_swarmq_queue_after_app_takeover(
+        json=settings.format == "json", queue_size=settings.queue_size
+    )
     return {"reenabled_loggers": _reenable_swarmq_loggers()}
 
 
-def _activate_swarmq_queue_after_app_takeover() -> None:
-    """Nahtstelle fuer KTD4/KTD10: Nach dem Ersatz durch die App laufen die
-    swarmq-Logs ueber die Opt-in-Queue am Logger ``swarmq`` an die Handler
-    der App, damit ein blockierender App-Handler den Event-Loop nicht
-    aufhaelt (R6).
-
-    TODO(U8): Die Opt-in-Queue (KTD10) entsteht erst in U8; bis dahin
-    schreiben die swarmq-Logs nach dem Ersatz synchron ueber die Handler der
-    App.
+def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) -> None:
+    """Nach dem Ersatz durch die App laufen die swarmq-Logs ueber die
+    Opt-in-Queue am Logger ``swarmq`` an die Handler der App (KTD4, KTD10):
+    Ein blockierender App-Handler haelt den Event-Loop nicht auf (R6). Das
+    ``swarmq``-Level bleibt, wie es ist -- die App hat entschieden.
     """
+    global _OPTIN_TAKEOVER
+    _OPTIN_TAKEOVER = True
+    _install_log_queue(None, json=json, queue_size=queue_size)
 
 
 def _reenable_swarmq_loggers() -> int:
@@ -345,7 +456,8 @@ def _after_fork_in_child() -> None:
         if handler.listener is not None:
             # Der geerbte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt.
-            handler.listener = _SwarmqQueueListener(fresh, *handler.listener.handlers)
+            # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
+            handler.listener = type(handler.listener)(fresh, *handler.listener.handlers)
 
 
 os.register_at_fork(after_in_child=_after_fork_in_child)
@@ -353,59 +465,6 @@ os.register_at_fork(after_in_child=_after_fork_in_child)
 # Genau einmal, beim Import, ohne Thread (KTD5): dictConfig und
 # ``logging.shutdown`` stoppen keine Listener.
 atexit.register(shutdown_logging)
-
-
-class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
-    """ProcessorFormatter, der an fremden Records nicht scheitert.
-
-    Plan 2026-09-08-001, U7 (R27, KTD9). ``format`` ruft fuer fremde
-    Records ``record.getMessage()`` — ``msg % args``. Wirft dabei ein
-    ``__repr__`` (so ``aio_pika.tools.OneShotCallback`` in aio-pika 10),
-    landete die Ausnahme in ``Handler.handleError`` und damit als
-    Traceback auf stderr, mitten im Logstrom. Stattdessen rendert dieser
-    Formatter ein Ersatz-Event ``log_record_unformattable`` mit
-    ``logger``, ``level`` und ``error`` durch dieselbe Prozessorkette und
-    denselben Renderer wie jede andere Zeile.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        try:
-            return super().format(record)
-        except Exception as exc:
-            return super().format(self._substitute_record(record, exc))
-
-    def _substitute_record(
-        self, record: logging.LogRecord, exc: Exception
-    ) -> logging.LogRecord:
-        """Baut einen structlog-nativen Record mit dem Ersatz-Event.
-
-        Die ``foreign_pre_chain`` (Level, Zeitstempel) laeuft hier von
-        Hand, weil der Ersatz-Record den structlog-Pfad von ``format``
-        nimmt — dort laeuft sie nicht mehr.
-        """
-        logger = logging.getLogger(record.name)
-        meth_name = record.levelname.lower()
-        ed: Any = {
-            "event": "log_record_unformattable",
-            "logger": record.name,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-        for proc in self.foreign_pre_chain or ():
-            ed = proc(logger, meth_name, ed)
-        args, kwargs = structlog.stdlib.ProcessorFormatter.wrap_for_formatter(
-            logger, meth_name, ed
-        )
-        substitute = logging.LogRecord(
-            record.name,
-            record.levelno,
-            record.pathname,
-            record.lineno,
-            args[0],
-            None,
-            None,
-        )
-        substitute.__dict__.update(kwargs["extra"])
-        return substitute
 
 
 _RESERVED_RECORD_KEYS = frozenset(
@@ -525,84 +584,6 @@ def get_logger(name: str) -> Any:
     )
 
 
-def _add_record_timestamp(
-    _: Any, __: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
-    """Zeitstempel aus ``record.created`` statt aus dem Formatierungszeitpunkt.
-
-    Gerendert wird im Listener-Thread; staut sich die Queue, laege die Zeit
-    sonst um den Rueckstau daneben (KTD3). Format wie
-    ``TimeStamper(fmt="iso")``: ISO 8601 in UTC mit Suffix ``Z``. Ohne
-    ``_record`` (Ersatz-Event aus ``_SafeProcessorFormatter``) gilt die
-    aktuelle Zeit.
-    """
-    record = event_dict.get("_record")
-    created = record.created if record is not None else time.time()
-    event_dict["timestamp"] = (
-        datetime.datetime.fromtimestamp(created, tz=datetime.UTC)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-    return event_dict
-
-
-_EXTRA_ADDER = structlog.stdlib.ExtraAdder()
-
-_FORMATTER_RECORD_ATTRS = ("message", "asctime")
-"""Setzt ``logging.Formatter.format`` auf dem Record; ein frueherer Handler
-hinterlaesst sie. Felder eines swarmq-Events sind sie nie: ``get_logger``
-benennt gleichnamige Felder in ``swarmq_<key>`` um."""
-
-
-def _add_record_extras(
-    logger: Any, method_name: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
-    """``ExtraAdder`` ohne die Streufelder ``message``/``asctime`` (KTD3)."""
-    event_dict = _EXTRA_ADDER(logger, method_name, event_dict)
-    for key in _FORMATTER_RECORD_ATTRS:
-        event_dict.pop(key, None)
-    return event_dict
-
-
-def build_formatter(json: bool, colors: bool) -> structlog.stdlib.ProcessorFormatter:
-    """Liefert den Formatter fuer swarmq- und Fremd-Records (Plan
-    2026-10-06-0831, U2, KTD3).
-
-    ``json`` waehlt den ``JSONRenderer``, sonst rendert der
-    ``ConsoleRenderer`` mit ANSI-Farben nur bei ``colors``. Records der
-    Bibliotheks-Logger (``get_logger``) tragen ihre Felder als Attribute und
-    laufen wie Fremd-Records durch die ``foreign_pre_chain``; structlog-native
-    Records (``wrap_for_formatter``) bringen Level und Zeitstempel schon mit.
-    Scheitert die Formatierung eines Records, erscheint
-    ``log_record_unformattable`` (R8). In einer dictConfig nutzbar per
-    ``{"()": "swarmq.logging.build_formatter", "json": true, "colors": false}``.
-    """
-    renderer: Any = (
-        structlog.processors.JSONRenderer()
-        if json
-        else structlog.dev.ConsoleRenderer(colors=colors)
-    )
-    return _SafeProcessorFormatter(
-        # Ohne ``remove_processors_meta`` rendert der Formatter seine
-        # eigenen Arbeitsschluessel mit (B6): ``_record`` traegt den
-        # LogRecord, die Nutzlast stand damit zweimal in jeder Zeile. Ueber
-        # einen 24h-Lauf die doppelte Logmenge, und von Hand kaum lesbar
-        # genau im Diagnosefall. Muss VOR dem Renderer stehen; beide
-        # Renderer teilen diese Kette.
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
-        ],
-        foreign_pre_chain=[
-            structlog.processors.add_log_level,
-            structlog.stdlib.add_logger_name,
-            _add_record_timestamp,
-            _add_record_extras,
-            structlog.processors.format_exc_info,
-        ],
-    )
-
-
 def configure_logging(settings: LoggingSettings) -> None:
     """Richtet das Logging eines swarmq-Prozesses ein (Plan 2026-10-06-0831,
     U6, KTD4).
@@ -623,17 +604,17 @@ def configure_logging(settings: LoggingSettings) -> None:
         LoggingConfigError: Die Konfigurationsdatei ist nicht ladbar oder
             ungueltig; ``path`` nennt sie, ``__cause__`` die Ursache.
     """
-    global _CONFIGURED, _ENTRY_POINT_OWNED
-    _ENTRY_POINT_OWNED = True
+    global _CONFIGURED
     if not settings.configure:
         # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
         return
     if _CONFIGURED:
         get_logger(__name__).debug("logging_already_configured")
         return
-    # U8 (KTD10): Hier wird ein bereits aktiver Opt-in deaktiviert und
-    # ``swarmq`` wiederhergestellt -- eingebaut und per Datei ist er
-    # wirkungslos.
+    # KTD10: Eingebaut und per Datei ist der Opt-in wirkungslos. Ein bereits
+    # aktiver -- etwa aus dem Vorladen im Forkserver geerbt -- wird
+    # aufgehoben, ``swarmq`` wiederhergestellt.
+    _reset_log_queue()
     if settings.log_config is not None:
         _configure_from_file(settings)
     else:
@@ -729,14 +710,11 @@ def setup_logging(
     Logzeilen bei zwei Listenern). Wie bisher wird structlog dabei immer neu
     konfiguriert, auch ueber eine bestehende Konfiguration hinweg.
     """
-    global _ENTRY_POINT_OWNED
     shutdown_logging()
     structlog.reset_defaults()
     configure_logging(
         LoggingSettings(level=log_level, format="json" if log_json else "human")
     )
-    # Kein Einstiegspunkt: ``SwarmQ`` ruft das bis U8 selbst auf.
-    _ENTRY_POINT_OWNED = False
     handler = logging.getLogger().handlers[0]
     assert isinstance(handler, _StructlogQueueHandler) and handler.listener is not None
     return handler.listener

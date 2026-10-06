@@ -16,6 +16,10 @@ Test-Liste:
        (Leerung pro Job, Listener startet wieder).
 4. [x] Die App richtet beim Vorladen Root-Handler ein: die Kinder behalten
        sie, und ``logging_reconfigured_by_app`` erscheint einmal je Pool.
+5. [x] AE6 (U8): Das Vorlademodul erzeugt ``SwarmQ(log_queue=True)`` auf
+       Modulebene -- der Thread-Check besteht, und jede Task-Zeile erscheint
+       genau einmal (der eingebaut konfigurierende Einstiegspunkt im Kind hebt
+       den geerbten Opt-in auf).
 """
 
 from __future__ import annotations
@@ -133,3 +137,27 @@ def test_app_root_handlers_from_the_preload_win_and_are_reported_once_per_pool(t
     assert sorted(lines) == [f"task_line_j{i}" for i in range(4)]
     assert _json_events(stderr).count("logging_reconfigured_by_app") == 1
     assert not any(e.startswith("task_line") for e in _json_events(stderr))
+
+
+def test_preloaded_swarmq_with_log_queue_keeps_the_forkserver_single_threaded(tmp_path: Path) -> None:
+    app_setup = """
+    from swarmq.app import SwarmQ
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.broker.rabbitmq import RabbitMQBroker
+
+    APP = SwarmQ(
+        RabbitMQBroker("amqp://guest:guest@127.0.0.1:1/"),
+        ValkeyBackend("valkey://127.0.0.1:1/0"),
+        log_queue=True,
+    )
+    """
+
+    out, stderr = _run(
+        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
+        app_setup,
+    )
+
+    assert out["threads"] in (1, None)  # None: kein /proc
+    assert out["results"] == ["j0", "j1", "j2"]
+    task_lines = [e for e in _json_events(stderr) if e.startswith(("task_line", "info_line"))]
+    assert sorted(task_lines) == ["task_line_j0", "task_line_j1", "task_line_j2"]
