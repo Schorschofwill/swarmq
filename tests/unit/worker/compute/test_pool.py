@@ -679,3 +679,29 @@ async def test_spawn_timings_are_recorded_for_diagnostics(ctx, signals):
     spawn_ms, ready_ms = p.recent_spawn_ms[0]
     assert 0 <= spawn_ms <= ready_ms
     await p.aclose()
+
+
+# Plan 2026-10-06-0831, U7 Teil b (KTD14). Test-Liste:
+# 1. [x] Melden mehrere Kinder, dass die App das Logging hat, erscheint
+#        ``logging_reconfigured_by_app`` einmal je Pool, mit den Feldern aus
+#        der ersten Meldung.
+
+
+@pytest.mark.timeout(5)
+async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals):
+    import structlog
+
+    p = await _make_pool(ctx, slots=1)
+    with structlog.testing.capture_logs() as logs:
+        for n, tid in enumerate(("a", "b"), start=1):
+            task = asyncio.create_task(p.run(_job(tid), use_di=False))
+            proc = await _started(n)
+            await _ready(p, proc, 0)
+            proc.channel.send(("logging_reconfigured_by_app", {"reenabled_loggers": 2}))
+            proc.channel.send(("result", _result(tid, 0)))
+            await task
+            proc.die()
+    await p.aclose()
+    reports = [e for e in logs if e["event"] == "logging_reconfigured_by_app"]
+    assert len(reports) == 1
+    assert reports[0]["reenabled_loggers"] == 2

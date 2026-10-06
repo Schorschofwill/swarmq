@@ -59,7 +59,10 @@ class ComputeJob:
     log_json: bool = True
     # Plan 2026-10-06 (R13/KTD7/KTD9): die fuers Kind relevanten, bereits
     # aufgeloesten Logging-Einstellungen. Die dictConfig reist als geprueft
-    # geparster JSON-String -- das Kind liest die Datei nie.
+    # geparster JSON-String -- das Kind liest die Datei nie; ``log_config``
+    # nennt nur den Pfad fuer Fehlermeldungen.
+    log_level_explicit: bool = False
+    log_config: str | None = None
     log_config_json: str | None = None
     configure_logging: bool = True
     logger_levels: tuple[tuple[str, str], ...] = ()

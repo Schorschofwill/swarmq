@@ -21,6 +21,8 @@ import structlog
 
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
 from swarmq.exceptions import SoftTimeoutError
+from swarmq.logging import load_log_config
+from swarmq.logging_settings import LoggingSettings
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
@@ -33,6 +35,37 @@ logger = structlog.get_logger(__name__)
 RecycleHook = Callable[[int, str, float], Awaitable[None]]
 
 
+def _child_logging_fields(config: Any) -> dict[str, Any]:
+    """Die Logging-Felder des ``ComputeJob`` aus den wirksamen Einstellungen
+    (Plan 2026-10-06-0831, U7, KTD7)."""
+    settings: LoggingSettings | None = config.logging_settings
+    if settings is None:
+        # Eingebettet: die Logging-Felder von ``SwarmQConfig`` sind die Quelle
+        # fuer die Kinder des eingebetteten CPU-Pools (KTD7). Eine
+        # ``log_config``-Datei laedt der Loop-Prozess hier genau einmal; die
+        # Kinder lesen sie nie (KTD9).
+        log_config: str | None = config.log_config
+        settings = LoggingSettings(
+            level=config.log_level,
+            format="json" if config.log_json else "human",
+            log_config=log_config,
+            log_config_json=None if log_config is None else load_log_config(log_config),
+            configure=config.configure_logging,
+            logger_levels=config.logger_levels,
+            queue_size=config.log_queue_size,
+        )
+    return {
+        "log_level": settings.level,
+        "log_level_explicit": settings.level_explicit,
+        "log_json": settings.format == "json",
+        "log_config": settings.log_config,
+        "log_config_json": settings.log_config_json,
+        "configure_logging": settings.configure,
+        "logger_levels": settings.logger_levels,
+        "log_queue_size": settings.queue_size,
+    }
+
+
 class ComputeExecutor(TaskExecutor):
     """Fuehrt Task-Koerper ueber den :class:`SlotPool` aus."""
 
@@ -40,6 +73,7 @@ class ComputeExecutor(TaskExecutor):
         super().__init__(deps)
         self._pool = pool
         self._worker_id = worker_id or deps.config.worker_identity
+        self._log_fields = _child_logging_fields(deps.config)
 
     async def start(self) -> None:
         await self._pool.start()
@@ -86,9 +120,8 @@ class ComputeExecutor(TaskExecutor):
             kwargs=dict(ctx.kwargs),
             retry_count=int(message_dict.get("retry_count", 0)),
             result_ttl_ms=int(ttl) * 1000,
-            log_level=deps.config.log_level,
-            log_json=deps.config.log_json,
             worker_id=self._worker_id,
+            **self._log_fields,
         )
 
     async def execute(self, ctx: GateContext, message_dict: Any, chain: Any) -> ExecutionResult:

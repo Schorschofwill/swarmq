@@ -218,3 +218,67 @@ async def test_slot_unavailable_on_fire_and_forget_logs_the_dedicated_loss_messa
     events = [call.args[0] for call in fake_logger.error.call_args_list]
     assert "compute_slot_unavailable_fire_and_forget_dropped" in events
     assert "fire_and_forget_error" not in events
+
+
+# --------------------------------------------------------------------------- Logging der Kinder
+# Plan 2026-10-06-0831, U7 Teil b (KTD7, KTD9, KTD14). Test-Liste:
+# 1. [x] Unter ``swarmq worker`` traegt der Job die im Supervisor aufgeloesten
+#        Einstellungen aus ``SwarmQConfig.logging_settings``.
+# 2. [x] Eingebettet (ohne Settings-Objekt) stammen sie aus den Logging-Feldern
+#        von ``SwarmQConfig``.
+# 3. [ ] Eingebettet mit ``log_config`` laedt der Executor die Datei einmal und
+#        gibt sie als JSON mit; die Kinder lesen sie nie.
+
+
+@pytest.mark.timeout(5)
+async def test_job_carries_the_supervisor_resolved_logging_settings():
+    from swarmq.logging_settings import LoggingSettings
+
+    settings = LoggingSettings(
+        level="DEBUG", level_explicit=True, log_config="/abs/logging.json",
+        log_config_json='{"version": 1}', logger_levels=(("aio_pika", "WARNING"),), queue_size=500,
+    )
+    pool = FakePool()
+    ex = ComputeExecutor(_deps(logging_settings=settings), pool, worker_id="w1")  # type: ignore[arg-type]
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    job = pool.job
+    assert (job.log_level, job.log_level_explicit, job.log_config, job.log_config_json) == (
+        "DEBUG", True, "/abs/logging.json", '{"version": 1}',
+    )
+    assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
+        True, (("aio_pika", "WARNING"),), 500,
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
+    pool = FakePool()
+    deps = _deps(
+        log_level="WARNING", log_json=False, configure_logging=False,
+        logger_levels=(("aio_pika", "ERROR"),), log_queue_size=200,
+    )
+    ex = ComputeExecutor(deps, pool, worker_id="w1")  # type: ignore[arg-type]
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    job = pool.job
+    assert (job.log_level, job.log_json, job.log_config, job.log_config_json) == ("WARNING", False, None, None)
+    assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
+        False, (("aio_pika", "ERROR"),), 200,
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_embedded_log_config_is_loaded_once_and_travels_as_json(tmp_path):
+    import json
+
+    path = tmp_path / "logging.json"
+    path.write_text(json.dumps({"version": 1, "root": {"level": "INFO"}}))
+    pool = FakePool()
+    ex = ComputeExecutor(_deps(log_config=str(path)), pool, worker_id="w1")  # type: ignore[arg-type]
+    path.unlink()  # danach liest niemand mehr die Datei
+
+    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    job = pool.job
+    assert job.log_config == str(path)
+    assert json.loads(job.log_config_json) == {
+        "version": 1, "root": {"level": "INFO"}, "disable_existing_loggers": False,
+    }

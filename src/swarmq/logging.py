@@ -21,6 +21,9 @@ from urllib.parse import urlparse, urlunparse
 import structlog
 
 from swarmq.exceptions import LoggingConfigError
+from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
+from swarmq.logging_file import load_log_config as load_log_config
+from swarmq.logging_file import start_queue_listeners
 from swarmq.logging_settings import LoggingSettings
 
 LISTENER_THREAD_NAME = "swarmq-log-listener"
@@ -191,9 +194,6 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         )
 
 
-_CONFIG_LISTENERS: list[logging.handlers.QueueListener] = []
-"""Von ``configure_logging`` gestartete Listener aus einer dictConfig-Datei."""
-
 _CONFIGURED = False
 """Hat ``configure_logging`` in diesem Prozess eingerichtet? Je Prozess gibt
 es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
@@ -271,6 +271,34 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
             "logging_handlers_added_by_app",
             handler_types=[type(handler).__name__ for handler in added],
         )
+
+
+def configure_child_logging(settings: LoggingSettings) -> dict[str, Any] | None:
+    """Einstiegspunkt Compute-Kind (Plan 2026-10-06-0831, U7, KTD4, KTD14).
+
+    Wie ``configure_logging``, aber mit der Regel "App gewinnt": Root-Handler,
+    die das Kind schon vorfindet, stammen aus dem Vorladen der App im
+    Forkserver -- swarmq richtet dort nie etwas ein. Sie bleiben, und die
+    swarmq-Logs laufen wie im Worker an die Handler der App.
+
+    Liefert dann die Felder fuer ``logging_reconfigured_by_app``, sonst
+    ``None``. Das Event schreibt nicht das Kind, sondern der Pool, einmal je
+    Pool statt einmal je Kind.
+    """
+    global _CONFIGURED, _ENTRY_POINT_OWNED, _APP_TAKEOVER_REPORTED
+    if not settings.configure or not root_handler_snapshot():
+        configure_logging(settings)
+        return None
+    _CONFIGURED = _ENTRY_POINT_OWNED = _APP_TAKEOVER_REPORTED = True
+    if settings.log_config is None:
+        # Wie im Worker, der structlog vor dem App-Import einrichtet: Nutzer-
+        # Tasks loggen per structlog an die Handler der App (R10, KTD6).
+        _configure_structlog_for_user_code()
+    # Ausdrueckliche Level je Logger gelten weiter; Root-Handler und
+    # Root-Level gehoeren der App.
+    _apply_named_levels(settings)
+    _activate_swarmq_queue_after_app_takeover()
+    return {"reenabled_loggers": _reenable_swarmq_loggers()}
 
 
 def _activate_swarmq_queue_after_app_takeover() -> None:
@@ -614,39 +642,6 @@ def configure_logging(settings: LoggingSettings) -> None:
     _CONFIGURED = True
 
 
-def load_log_config(path: str) -> str:
-    """Laedt eine dictConfig-Datei und liefert sie als JSON-String (KTD9).
-
-    Fehlt ``disable_existing_loggers``, gilt ``False``: sonst wuerden
-    bereits importierte ``swarmq.*``- und ``aio_pika``-Logger stumm. Der
-    String ist pickle-sicher und geht an die Kindprozesse, die die Datei
-    selbst nie lesen.
-    """
-    try:
-        with open(path, encoding="utf-8") as fh:
-            config = _parse_log_config(path, fh.read())
-    except (OSError, ValueError, ImportError) as exc:
-        # ValueError deckt JSONDecodeError und UnicodeDecodeError ab.
-        raise LoggingConfigError(path, exc) from exc
-    if not isinstance(config, dict):
-        cause = TypeError(f"expected a mapping, got {type(config).__name__}")
-        raise LoggingConfigError(path, cause) from cause
-    config.setdefault("disable_existing_loggers", False)
-    return jsonlib.dumps(config)
-
-
-def _parse_log_config(path: str, text: str) -> Any:
-    """JSON immer, YAML nur mit installiertem PyYAML (KTD9)."""
-    if not path.endswith((".yaml", ".yml")):
-        return jsonlib.loads(text)
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError as exc:
-        msg = "YAML logging configs need PyYAML (pip install pyyaml)"
-        raise ImportError(msg) from exc
-    return yaml.safe_load(text)
-
-
 def _configure_from_file(settings: LoggingSettings) -> None:
     """Datei-Modus: die dictConfig der App statt der eingebauten Einrichtung
     (R11). structlog bleibt unkonfiguriert (KTD6)."""
@@ -660,29 +655,7 @@ def _configure_from_file(settings: LoggingSettings) -> None:
         # dictConfig meldet Tippfehler als ValueError, TypeError,
         # AttributeError oder ImportError -- alle mit Pfad nach oben (AE4).
         raise LoggingConfigError(settings.log_config, exc) from exc
-    _start_queue_listeners()
-
-
-def _start_queue_listeners() -> None:
-    """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
-
-    ``dictConfig`` legt sie an, startet sie aber nicht. Gestoppt -- und damit
-    geleert -- werden sie per ``shutdown_logging``, also auch bei
-    Prozessende (``atexit``).
-    """
-    loggers = [logging.getLogger()] + [
-        lg for lg in logging.Logger.manager.loggerDict.values()
-        if isinstance(lg, logging.Logger)
-    ]
-    for handler in {h for lg in loggers for h in lg.handlers}:
-        listener = getattr(handler, "listener", None)
-        if (
-            isinstance(handler, logging.handlers.QueueHandler)
-            and isinstance(listener, logging.handlers.QueueListener)
-            and getattr(listener, "_thread", None) is None
-        ):
-            listener.start()
-            _CONFIG_LISTENERS.append(listener)
+    start_queue_listeners()
 
 
 def _apply_logger_levels(settings: LoggingSettings) -> None:
@@ -691,6 +664,10 @@ def _apply_logger_levels(settings: LoggingSettings) -> None:
     auch fuer Root; ein Default ueberschriebe das Level aus der Datei."""
     if settings.log_config is not None and settings.level_explicit:
         logging.getLogger().setLevel(settings.level)
+    _apply_named_levels(settings)
+
+
+def _apply_named_levels(settings: LoggingSettings) -> None:
     for name, level in settings.logger_levels:
         logging.getLogger(name).setLevel(level)
 

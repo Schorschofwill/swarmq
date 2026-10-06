@@ -184,14 +184,12 @@ def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch)
 # --------------------------------------------------------------------------- Job-Loop (Zweit-Review #8, #9)
 
 
-class _Listener:
-    def stop(self) -> None:
-        return None
-
-
 @pytest.fixture
 def _quiet_child_logging(monkeypatch):
-    monkeypatch.setattr(child, "_configure_child_logging", lambda job: _Listener())
+    monkeypatch.setattr(child, "_configure_child_logging", lambda job, channel: None)
+    # Am Kind-Ende laeuft ``logging.shutdown`` -- im Testprozess schloesse es
+    # alle Handler.
+    monkeypatch.setattr(child, "_shutdown_child_logging", lambda: None)
     monkeypatch.setattr(child, "_bind_job_context", lambda job: None)
 
 

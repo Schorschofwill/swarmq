@@ -46,6 +46,10 @@ from __future__ import annotations
 # 24. (U7) ``logging_is_configured()`` ist nach ``configure_logging`` wahr,
 #     auch mit "nicht konfigurieren"; nach ``shutdown_logging`` und nach dem
 #     deprecated ``setup_logging`` falsch.
+# 25. (U7, KTD5/KTD14) Datei-Modus mit ``QueueHandler``: nach
+#     ``shutdown_logging`` startet der naechste Eintrag den Listener wieder,
+#     das folgende ``shutdown_logging`` leert ihn -- die Leerung pro Job im
+#     wiederverwendeten Compute-Kind.
 import io
 import json
 import logging
@@ -585,3 +589,29 @@ def test_deprecated_setup_logging_is_no_entry_point_configuration(
     setup_logging("INFO", True)
 
     assert not logging_is_configured()
+
+
+def test_file_mode_queue_listener_restarts_after_shutdown_for_the_next_job(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    path = _config_file(
+        tmp_path,
+        {
+            "version": 1,
+            "handlers": {
+                "rec": {"()": _RECORDING},
+                "q": {"class": "logging.handlers.QueueHandler", "handlers": ["rec"]},
+            },
+            "root": {"level": "INFO", "handlers": ["q"]},
+        },
+    )
+    configure_logging(LoggingSettings(log_config=path))
+
+    logging.getLogger("swarmq.tests.queued").warning("evt_job_1")
+    shutdown_logging()
+    logging.getLogger("swarmq.tests.queued").warning("evt_job_2")
+    shutdown_logging()
+
+    assert [r.getMessage() for r in FILE_RECORDS] == ["evt_job_1", "evt_job_2"]

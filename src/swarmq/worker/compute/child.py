@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
+import logging
 import os
 import signal
 import time
@@ -214,12 +215,35 @@ def _run_job_with_sigterm(job: ComputeJob, channel: Any, slot: int | None) -> Re
     return asyncio.run(_main())
 
 
-def _configure_child_logging(job: ComputeJob) -> Any:
-    from swarmq.logging import setup_logging
+def _child_logging_settings(job: ComputeJob) -> Any:
+    """Die im Loop-Prozess aufgeloesten Einstellungen aus dem Job (KTD7)."""
+    from swarmq.logging_settings import LoggingSettings
 
-    listener = setup_logging(job.log_level, job.log_json)
+    return LoggingSettings(
+        level=job.log_level,
+        level_explicit=job.log_level_explicit,
+        format="json" if job.log_json else "human",
+        log_config=job.log_config,
+        log_config_json=job.log_config_json,
+        configure=job.configure_logging,
+        logger_levels=job.logger_levels,
+        queue_size=job.log_queue_size,
+    )
+
+
+def _configure_child_logging(job: ComputeJob, channel: Any) -> None:
+    """Einstiegspunkt Compute-Kind (KTD4): genau einmal je Kind einrichten.
+
+    Hat die App beim Vorladen das Logging eingerichtet, gewinnt sie
+    (KTD14); das Kind meldet das ueber den Rueckkanal, und der Pool schreibt
+    ``logging_reconfigured_by_app`` einmal je Pool.
+    """
+    from swarmq.logging import configure_child_logging
+
+    takeover = configure_child_logging(_child_logging_settings(job))
+    if takeover is not None:
+        channel.send(("logging_reconfigured_by_app", takeover))
     _bind_job_context(job)
-    return listener
 
 
 def _bind_job_context(job: ComputeJob) -> None:
@@ -233,19 +257,41 @@ def _bind_job_context(job: ComputeJob) -> None:
     )
 
 
+def _send_result(channel: Any, envelope: ResultEnvelope) -> None:
+    """Erst die Log-Queue leeren, dann das Ergebnis senden (KTD5, KTD14):
+    die Logzeilen des Tasks stehen vor dem Ergebnis im Strom."""
+    from swarmq.logging import shutdown_logging
+
+    shutdown_logging()
+    channel.send(("result", envelope))
+
+
+def _shutdown_child_logging() -> None:
+    """Logging am Kind-Ende abschliessen (R15, KTD14).
+
+    Das Forkserver-Kind ruft nach dem Fork ``atexit._clear()`` auf: Die beim
+    Vorladen registrierten atexit-Funktionen -- ``shutdown_logging`` und
+    ``logging.shutdown`` -- laufen dort nie, also hier ausdruecklich.
+    """
+    from swarmq.logging import shutdown_logging
+
+    shutdown_logging()
+    logging.shutdown()
+
+
 def child_once(job: ComputeJob, channel: Any, slot: int | None = None) -> None:
     """Frisches Kind je Task (R6): binden, Ready melden, rechnen, Envelope, Ende."""
     pdeath = bind_child_process()
     channel.send(("ready", slot, os.getpid(), pdeath))
-    listener = _configure_child_logging(job)
+    _configure_child_logging(job, channel)
     try:
         try:
             envelope = _run_job_with_sigterm(job, channel, slot)
         except asyncio.CancelledError:
             return
-        channel.send(("result", envelope))
+        _send_result(channel, envelope)
     finally:
-        listener.stop()
+        _shutdown_child_logging()
 
 
 def child_loop(slot: int, job_conn: Any, channel: Any) -> None:
@@ -307,14 +353,15 @@ async def _serve_jobs(slot: int, job_conn: Any, channel: Any) -> None:
         loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
     except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
         pass
-    listener: Any = None
+    configured = False
     try:
         while True:
             job = await _recv_job(job_conn, stop)
             if job is None:
                 break
-            if listener is None:
-                listener = _configure_child_logging(job)
+            if not configured:
+                _configure_child_logging(job, channel)
+                configured = True
             else:
                 _bind_job_context(job)
             task = asyncio.ensure_future(run_job(job, channel, slot=slot))
@@ -325,11 +372,10 @@ async def _serve_jobs(slot: int, job_conn: Any, channel: Any) -> None:
                 break
             finally:
                 current[0] = None
-            channel.send(("result", envelope))
+            _send_result(channel, envelope)
     finally:
         await _close_app_container()
-        if listener is not None:
-            listener.stop()
+        _shutdown_child_logging()
 
 
 async def _close_app_container() -> None:
