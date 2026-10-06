@@ -8,8 +8,6 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 if TYPE_CHECKING:
 
     from swarmq.health import HealthServer
@@ -35,7 +33,7 @@ from swarmq.exceptions import (
 from swarmq.headers import (
     HEADER_UNIQUE_UNTIL,
 )
-from swarmq.logging import _error_fields, get_logger
+from swarmq.logging import _error_fields, _task_log_context, get_logger
 from swarmq.middleware import (
     MessageContext,
     MiddlewareChain,
@@ -468,8 +466,8 @@ class Worker(WorkerLifecycle):
         """Ack-sichere Prä-Pipeline-Stufen VOR Semaphore und try/finally:
         2a Schedfire-Dedup (nur ein SETNX), 2b Pre-Start-Cancel, 2c Delivery-
         Count (Plan 2026-09-03-001, KTD10) — alle vor Semaphore, Rate-Limit/
-        Lock und dem FIRE_AND_FORGET-Früh-Ack; die Gates räumen ihren
-        structlog-Kontext auf den behandelten Zweigen selbst auf."""
+        Lock und dem FIRE_AND_FORGET-Früh-Ack. Den Task-Kontext stellt der
+        Scope in ``_handle_message`` wieder her (KTD13), nicht die Gates."""
         for gate in (self._schedfire_gate, self._cancel_gate, self._delivery_count_gate):
             if await gate.apply(message, ctx) is not Continue:
                 return False
@@ -493,14 +491,15 @@ class Worker(WorkerLifecycle):
             )
             return None
 
-    def _bind_log_context(self, task_id: str, task_name: str, queue: str) -> None:
-        """Bind structured context for all log calls during this task."""
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(
-            task_id=task_id,
-            task_name=task_name,
-            queue=queue,
+    def _log_context(self, message: Any, ctx: GateContext) -> Any:
+        """Task-Kontext fuer alle Logaufrufe dieser Zustellung (KTD13)."""
+        return _task_log_context(
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            queue=ctx.queue,
             worker_id=self._config.worker_identity,
+            workflow_id=ctx.workflow_id,
+            attempt=decode.attempt_number(message),
         )
 
     async def _finalize_delivery(
@@ -591,10 +590,16 @@ class Worker(WorkerLifecycle):
         if decoded is None:
             return
         task_id, queue, task_name, args, kwargs = decoded
+        ctx = GateContext(
+            task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs,
+            workflow_id=self._extract_valid_workflow_id(message),
+        )
+        with self._log_context(message, ctx):
+            await self._process_message(message, ctx)
 
-        self._bind_log_context(task_id, task_name, queue)
-
-        ctx = GateContext(task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs)
+    async def _process_message(self, message: Any, ctx: GateContext) -> None:
+        """Gates, Ausfuehrung und Ergebnis-Tail einer dekodierten Zustellung."""
+        task_id, task_name = ctx.task_id, ctx.task_name
         if not await self._pre_pipeline_gates(message, ctx):
             return
 
@@ -741,4 +746,3 @@ class Worker(WorkerLifecycle):
                 await self._detached_lock_release(handler_id, acquired_locks)
             # 12b. Release semaphore
             self._semaphore.release()
-            structlog.contextvars.clear_contextvars()

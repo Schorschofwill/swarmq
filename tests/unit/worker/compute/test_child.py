@@ -190,7 +190,6 @@ def _quiet_child_logging(monkeypatch):
     # Am Kind-Ende laeuft ``logging.shutdown`` -- im Testprozess schloesse es
     # alle Handler.
     monkeypatch.setattr(child, "_shutdown_child_logging", lambda: None)
-    monkeypatch.setattr(child, "_bind_job_context", lambda job: None)
 
 
 @pytest.mark.timeout(5)

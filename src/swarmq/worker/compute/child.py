@@ -121,8 +121,25 @@ async def run_job(job: ComputeJob, channel: Any, *, slot: int | None = None) -> 
     ``pre_execution`` → ``run`` (mit Soft-Timeout) → ``post_execution``,
     Scope-Abbau mit der eingefangenen Exception (R26). Ein Cancel des
     umgebenden Tasks (SIGTERM-Handler) erreicht den Scope als
-    ``CancelledError``, wie im Loop-Prozess.
+    ``CancelledError``, wie im Loop-Prozess. Der Logkontext gilt nur fuer
+    diesen Job (KTD13): ein wiederverwendetes Kind traegt nichts weiter.
     """
+    with _job_log_context(job):
+        return await _run_job(job, channel, slot)
+
+
+def _job_log_context(job: ComputeJob) -> Any:
+    """Task-Kontext je Job, zusaetzlich mit der PID des Kinds (R4, KTD13)."""
+    from swarmq.logging import _task_log_context
+
+    return _task_log_context(
+        task_id=job.task_id, task_name=job.task_name, queue=job.queue,
+        worker_id=job.worker_id, workflow_id=job.workflow_id,
+        attempt=job.retry_count + 1, compute_child=os.getpid(),
+    )
+
+
+async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnvelope:
     started = time.monotonic()
     meta: dict[str, Any] = {"slot": slot}
     try:
@@ -243,18 +260,6 @@ def _configure_child_logging(job: ComputeJob, channel: Any) -> None:
     takeover = configure_child_logging(_child_logging_settings(job))
     if takeover is not None:
         channel.send(("logging_reconfigured_by_app", takeover))
-    _bind_job_context(job)
-
-
-def _bind_job_context(job: ComputeJob) -> None:
-    """Log-Kontext je Job — im wiederverwendeten Kind vor jedem Job neu."""
-    import structlog
-
-    structlog.contextvars.clear_contextvars()
-    structlog.contextvars.bind_contextvars(
-        task_id=job.task_id, task_name=job.task_name, queue=job.queue,
-        worker_id=job.worker_id, compute_child=os.getpid(),
-    )
 
 
 def _send_result(channel: Any, envelope: ResultEnvelope) -> None:
@@ -362,8 +367,6 @@ async def _serve_jobs(slot: int, job_conn: Any, channel: Any) -> None:
             if not configured:
                 _configure_child_logging(job, channel)
                 configured = True
-            else:
-                _bind_job_context(job)
             task = asyncio.ensure_future(run_job(job, channel, slot=slot))
             current[0] = task
             try:

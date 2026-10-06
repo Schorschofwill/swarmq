@@ -68,6 +68,7 @@ class ComputeJob:
     logger_levels: tuple[tuple[str, str], ...] = ()
     log_queue_size: int = 10_000
     worker_id: str = ""
+    workflow_id: str | None = None  # U10 (KTD13): Logkontext im Kind
 
 
 @dataclass(frozen=True, slots=True)

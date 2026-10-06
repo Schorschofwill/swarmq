@@ -326,3 +326,16 @@ async def test_slot_unavailable_on_fire_and_forget_logs_error_type_and_error(set
     assert entry["error_type"] == "SlotUnavailable"
     assert entry["error"] == "compute child for slot 0 sent no ready signal"
     assert entry["task_id"] and "hint" in entry
+
+
+@pytest.mark.timeout(5)
+async def test_job_carries_the_workflow_id_of_the_delivery(setup):
+    """Plan 2026-10-06-0831, U10 (KTD13): das Kind bindet ``workflow_id``
+    in seinen Logkontext und braucht sie deshalb im Job."""
+    _, pool, ex = setup
+    ctx = _ctx()
+    ctx.workflow_id = "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
+
+    await ex.execute(ctx, {"retry_count": 0}, MiddlewareChain([]))
+
+    assert pool.job.workflow_id == "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"

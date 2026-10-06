@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
-
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.worker.gates import GateContext, GateDeps
@@ -53,13 +51,11 @@ class SchedfireGate:
                 **_error_fields(exc),
             )
             await deps.broker.redeliver(delivery)
-            structlog.contextvars.clear_contextvars()
             return Redelivered
 
         if already_completed:
             logger.info("schedfire_completed_duplicate_acked", schedfire_key=header_value)
             await deps.broker.ack(delivery)
-            structlog.contextvars.clear_contextvars()
             return Terminal.never_release()
 
         # Couple the in-flight TTL to the task's maximum
@@ -84,7 +80,6 @@ class SchedfireGate:
                 **_error_fields(exc),
             )
             await deps.broker.redeliver(delivery)
-            structlog.contextvars.clear_contextvars()
             return Redelivered
 
         if claimed:
@@ -96,5 +91,4 @@ class SchedfireGate:
         # Another worker is running it right now.
         logger.info("schedfire_inflight_duplicate_acked", schedfire_key=header_value)
         await deps.broker.ack(delivery)
-        structlog.contextvars.clear_contextvars()
         return Terminal.never_release()

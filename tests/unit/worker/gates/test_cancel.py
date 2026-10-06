@@ -518,3 +518,15 @@ class TestCancelGateLogging:
         entry = self._entry(swarmq_logs, "publish_notification_failed")
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+
+
+class TestCancelGateLogContext:
+    """Plan 2026-10-06-0831, U10 (KTD13): frueh endende Pfade hinterlassen
+    keinen Task-Kontext und lassen Variablen der App stehen."""
+
+    async def test_pre_start_cancel_keeps_the_app_context(self, worker, backend, app_log_context):
+        backend.is_cancelled = AsyncMock(return_value=True)
+
+        await worker._handle_message(make_message(_default_payload()))
+
+        assert structlog.contextvars.get_contextvars() == app_log_context

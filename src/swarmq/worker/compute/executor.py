@@ -119,6 +119,7 @@ class ComputeExecutor(TaskExecutor):
             retry_count=int(message_dict.get("retry_count", 0)),
             result_ttl_ms=int(ttl) * 1000,
             worker_id=self._worker_id,
+            workflow_id=ctx.workflow_id,
             **self._log_fields,
         )
 

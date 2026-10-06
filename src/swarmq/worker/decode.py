@@ -62,6 +62,19 @@ def valid_workflow_id(message: Any) -> str | None:
     return wf_id
 
 
+def attempt_number(message: Any) -> int | None:
+    """Laufender Versuch fuer den Logkontext (U10): ``retry_count + 1``.
+
+    Der Retry-Header kommt vom Netz; ein Wert, der keine ganze Zahl ist,
+    ergibt ``None`` (das Feld fehlt dann im Kontext), statt die Zustellung
+    scheitern zu lassen.
+    """
+    raw = (message.headers or {}).get("x-swarmq-retry-count", 0)
+    if not isinstance(raw, int):
+        return None
+    return raw + 1
+
+
 async def decode_and_validate(
     deps: GateDeps, message: Any
 ) -> tuple[str, str, str, list[Any], dict[str, Any]] | None:

@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
-
 from swarmq.cancellation import build_cancel_result_dict
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.logging import _error_fields, get_logger
@@ -44,7 +42,6 @@ class CancelGate:
             # KTD11: die Redelivery erholt sich selbst -> WARNING.
             logger.warning("cancel_check_backend_error", task_id=task_id, **_error_fields(exc))
             await deps.broker.redeliver(delivery)
-            structlog.contextvars.clear_contextvars()
             return Redelivered
 
         workflow_cancel = False
@@ -66,7 +63,6 @@ class CancelGate:
                     "workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id, **_error_fields(exc)
                 )
                 await deps.broker.redeliver(delivery)
-                structlog.contextvars.clear_contextvars()
                 return Redelivered
             if not wf_cancelled:
                 return Continue
@@ -137,7 +133,6 @@ class CancelGate:
             # triggers the re-cancel on redelivery).
             logger.warning("cancel_store_result_failed", task_id=task_id, **_error_fields(exc))
             await deps.broker.redeliver(delivery)
-            structlog.contextvars.clear_contextvars()
             return Redelivered
 
         # Signal AFTER the broker ack so a handler that raises doesn't
@@ -145,5 +140,4 @@ class CancelGate:
         await deps.signals.dispatch(Signal.TASK_CANCELLED, task_id=task_id, task_name=task_name, queue=queue)
 
         logger.info("task_cancelled_pre_start", task_id=task_id, task_name=task_name)
-        structlog.contextvars.clear_contextvars()
         return Terminal.already_released()

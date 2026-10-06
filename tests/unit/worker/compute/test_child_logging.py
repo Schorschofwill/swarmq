@@ -31,6 +31,10 @@ Test-Liste:
 12. [x] Mit geerbten App-Handlern laufen swarmq-Logs ueber die Opt-in-Queue
         im Listener-Thread an die Handler der App (R6, KTD14, U8); die
         Leerung pro Job schreibt sie vor dem Ergebnis.
+13. [x] U10: Ein Event im Kind traegt ``compute_child``, ``workflow_id`` und
+        ``attempt`` (Plan 2026-10-06-0831, KTD13).
+14. [x] U10: Ein wiederverwendetes Kind traegt beim zweiten Job keinen
+        Kontext des ersten (``workflow_id`` nur am ersten Job).
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import weakref
 from collections.abc import Iterator
 from typing import Any
@@ -411,3 +416,58 @@ def test_swarmq_logs_reach_inherited_app_handlers_via_the_queue_before_the_resul
         f"app:swarmq_in_task@{LISTENER_THREAD_NAME}", "flush", "result:t1",
         "flush", "logging.shutdown",
     ]
+
+
+_WF_ID = "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
+
+
+def _register_context_task() -> None:
+    from swarmq.logging import get_logger
+
+    class ContextTask(Task):
+        task_info = TaskInfo(name="logging_task", queues=["q"])
+
+        async def run(self, tag: str) -> str:
+            get_logger("swarmq.tests.child_context").warning("ctx_line", tag=tag)
+            return "ok"
+
+
+def _ctx_records() -> list[logging.LogRecord]:
+    return [r for r in RECORDS if r.getMessage() == "ctx_line"]
+
+
+@pytest.mark.timeout(5)
+def test_child_event_carries_compute_child_workflow_id_and_attempt(events: list[Any]) -> None:
+    _forkserver_root()
+    _register_context_task()
+    job = _job(log_config="/does/not/exist.json", log_config_json=_FILE_CONFIG, workflow_id=_WF_ID, retry_count=1)
+
+    child.child_once(job, _Channel(events), 0)
+
+    [record] = _ctx_records()
+    assert record.__dict__["compute_child"] == os.getpid()
+    assert record.__dict__["workflow_id"] == _WF_ID
+    assert record.__dict__["attempt"] == 2
+    assert record.__dict__["task_id"] == "t1"
+
+
+@pytest.mark.timeout(5)
+def test_reused_child_carries_no_context_of_the_previous_job(events: list[Any]) -> None:
+    import multiprocessing as mp
+
+    _forkserver_root()
+    _register_context_task()
+    file_mode = {"log_config": "/does/not/exist.json", "log_config_json": _FILE_CONFIG}
+    job_r, job_w = mp.Pipe(duplex=False)
+    for item in (_job("j1", workflow_id=_WF_ID, retry_count=4, **file_mode), _job("j2", **file_mode), None):
+        job_w.send(item)
+
+    child.child_loop(0, job_r, _Channel(events))
+
+    first, second = _ctx_records()
+    assert (first.__dict__["task_id"], first.__dict__["workflow_id"], first.__dict__["attempt"]) == ("j1", _WF_ID, 5)
+    assert (second.__dict__["task_id"], second.__dict__["attempt"]) == ("j2", 1)
+    assert "workflow_id" not in second.__dict__
+    assert second.__dict__["compute_child"] == os.getpid()
+    job_r.close()
+    job_w.close()

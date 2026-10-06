@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import structlog
+
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
@@ -381,3 +383,16 @@ class LongTask(Task):
 
     async def run(self) -> None:
         return None
+
+
+class TestSchedfireGateLogContext:
+    """Plan 2026-10-06-0831, U10 (KTD13): frueh endende Pfade hinterlassen
+    keinen Task-Kontext und lassen Variablen der App stehen."""
+
+    async def test_completed_duplicate_keeps_the_app_context(self, worker, backend, app_log_context):
+        backend.schedules.is_fire_completed = AsyncMock(return_value=True)
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        await worker._handle_message(msg)
+
+        assert structlog.contextvars.get_contextvars() == app_log_context

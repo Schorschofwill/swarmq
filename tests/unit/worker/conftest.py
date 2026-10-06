@@ -6,6 +6,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -80,3 +81,14 @@ def registry():
 def worker(broker, backend, registry, config):
     registry.register(AddTask)
     return Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+
+@pytest.fixture()
+def app_log_context():
+    """Von der App gebundene Kontextvariable ``request_id`` (Plan
+    2026-10-06-0831, U10); nach dem Test wieder entfernt."""
+    tokens = structlog.contextvars.bind_contextvars(request_id="req-7")
+    try:
+        yield {"request_id": "req-7"}
+    finally:
+        structlog.contextvars.reset_contextvars(**tokens)

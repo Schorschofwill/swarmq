@@ -592,6 +592,18 @@ def _error_fields(exc: BaseException) -> dict[str, str]:
     return {"error_type": error_type, "error": str(exc) or error_type}
 
 
+def _task_log_context(**fields: Any) -> contextlib.AbstractContextManager[None]:
+    """Bindet den Task-Kontext fuer einen Block (Plan 2026-10-06-0831, KTD13).
+
+    Beim Verlassen werden die vorigen Werte wiederhergestellt; Variablen
+    der App bleiben unberuehrt. ``None``-Werte entfallen: ein fehlendes
+    ``workflow_id`` fehlt im Eintrag, statt als ``None`` zu erscheinen.
+    """
+    return structlog.contextvars.bound_contextvars(
+        **{key: value for key, value in fields.items() if value is not None}
+    )
+
+
 def configure_logging(settings: LoggingSettings) -> None:
     """Richtet das Logging eines swarmq-Prozesses ein (Plan 2026-10-06-0831,
     U6, KTD4).

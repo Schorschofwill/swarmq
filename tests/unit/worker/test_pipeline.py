@@ -11,7 +11,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import structlog
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -490,23 +489,6 @@ async def test_schedfire_finalize_failure_is_a_warning_with_error_fields(broker,
     assert entry["schedfire_key"] == "cron_a:1700000000000" and entry["terminal"] is True
     assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-
-async def test_log_context_carries_the_worker_identity_as_string():
-    """U2 (R3): Der Logkontext trug ``id(self)`` — eine Speicheradresse als
-    ``int``, die weder ueber Prozesse hinweg vergleichbar noch mit dem
-    ``worker_id`` der Signale identisch war."""
-    broker = MagicMock(spec=RabbitMQBroker)
-    backend = MagicMock(spec=ValkeyBackend)
-    config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", worker_id="phx", worker_slot=2,
-    )
-    worker = Worker(broker=broker, backend=backend, registry=TaskRegistry(), config=config)
-    try:
-        worker._bind_log_context("t1", "task", "default")
-        bound = structlog.contextvars.get_contextvars()
-        assert bound["worker_id"] == "phx:2"
-    finally:
-        structlog.contextvars.clear_contextvars()
 
 class _EnqueueRecorder(Middleware):
     """Middleware, die den Enqueue-Pfad protokolliert (U11, AE6)."""
