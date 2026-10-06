@@ -7,6 +7,7 @@ import contextlib
 import datetime
 import json as jsonlib
 import logging
+import logging.config
 import logging.handlers
 import os
 import queue
@@ -18,6 +19,9 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import structlog
+
+from swarmq.exceptions import LoggingConfigError
+from swarmq.logging_settings import LoggingSettings
 
 LISTENER_THREAD_NAME = "swarmq-log-listener"
 """Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests."""
@@ -187,14 +191,26 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         )
 
 
+_CONFIG_LISTENERS: list[logging.handlers.QueueListener] = []
+"""Von ``configure_logging`` gestartete Listener aus einer dictConfig-Datei."""
+
+_CONFIGURED = False
+"""Hat ``configure_logging`` in diesem Prozess eingerichtet? Je Prozess gibt
+es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
+
+
 def shutdown_logging() -> None:
     """Schreibt alle Eintraege der Log-Queue und stoppt den Listener (KTD5).
 
     Der Queue-Handler bleibt installiert; der naechste Eintrag startet den
-    Listener wieder.
+    Listener wieder. Ein folgendes ``configure_logging`` baut neu auf (KTD4).
     """
+    global _CONFIGURED
+    _CONFIGURED = False
     for listener in list(_LISTENERS):
         listener.stop()
+    while _CONFIG_LISTENERS:
+        _CONFIG_LISTENERS.pop().stop()
 
 
 def _after_fork_in_child() -> None:
@@ -473,67 +489,187 @@ def build_formatter(json: bool, colors: bool) -> structlog.stdlib.ProcessorForma
     )
 
 
-def setup_logging(
-    log_level: str = "INFO", log_json: bool = True
-) -> logging.handlers.QueueListener:
-    """Configure structlog + stdlib logging with QueueHandler/QueueListener.
+def configure_logging(settings: LoggingSettings) -> None:
+    """Richtet das Logging eines swarmq-Prozesses ein (Plan 2026-10-06-0831,
+    U6, KTD4).
 
-    Returns the QueueListener so it can be stopped on shutdown. Er startet
-    lazy beim ersten Eintrag und nach ``shutdown_logging`` erneut (KTD5).
+    Nur fuer Einstiegspunkte: Supervisor, Worker-Subprozess, Compute-Kind.
+    Die Bibliothek selbst ruft das nie auf. Drei Modi:
 
-    Ein zweiter Aufruf im selben Prozess stoppt den Listener des ersten
-    (U4/KTD8): Das Worker-Kind konfiguriert fruehzeitig, damit ein
-    Konfigurationsfehler als strukturierte Zeile erscheint, und ``SwarmQ``
-    konfiguriert danach erneut. Ohne das Stoppen blieben zwei Threads am
-    Leben, von denen einer nie wieder etwas zu tun bekommt -- die Lehre aus
-    B6 (doppelte Logzeilen bei zwei Listenern).
+    - eingebaut: Root schreibt ueber Queue und Listener nach stderr, und
+      ``structlog.get_logger()`` im Nutzercode rendert genauso (R9, R10);
+    - Datei (``log_config``): die dictConfig der App (R11, KTD9);
+    - aus (``configure=False``): nichts (R12).
+
+    Zuletzt gelten die Level je Logger-Name. Ein zweiter Aufruf im selben
+    Prozess ist ein No-op mit DEBUG-Event; neu aufgebaut wird nur ueber
+    ``shutdown_logging()`` und danach ``configure_logging()``.
+
+    Raises:
+        LoggingConfigError: Die Konfigurationsdatei ist nicht ladbar oder
+            ungueltig; ``path`` nennt sie, ``__cause__`` die Ursache.
     """
-    shutdown_logging()
-    shared_processors: list[Any] = [
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.format_exc_info,
+    global _CONFIGURED
+    if not settings.configure:
+        # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
+        return
+    if _CONFIGURED:
+        get_logger(__name__).debug("logging_already_configured")
+        return
+    # U8 (KTD10): Hier wird ein bereits aktiver Opt-in deaktiviert und
+    # ``swarmq`` wiederhergestellt -- eingebaut und per Datei ist er
+    # wirkungslos.
+    if settings.log_config is not None:
+        _configure_from_file(settings)
+    else:
+        _configure_builtin(settings)
+    _apply_logger_levels(settings)
+    _CONFIGURED = True
+
+
+def load_log_config(path: str) -> str:
+    """Laedt eine dictConfig-Datei und liefert sie als JSON-String (KTD9).
+
+    Fehlt ``disable_existing_loggers``, gilt ``False``: sonst wuerden
+    bereits importierte ``swarmq.*``- und ``aio_pika``-Logger stumm. Der
+    String ist pickle-sicher und geht an die Kindprozesse, die die Datei
+    selbst nie lesen.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            config = _parse_log_config(path, fh.read())
+    except (OSError, ValueError, ImportError) as exc:
+        # ValueError deckt JSONDecodeError und UnicodeDecodeError ab.
+        raise LoggingConfigError(path, exc) from exc
+    if not isinstance(config, dict):
+        cause = TypeError(f"expected a mapping, got {type(config).__name__}")
+        raise LoggingConfigError(path, cause) from cause
+    config.setdefault("disable_existing_loggers", False)
+    return jsonlib.dumps(config)
+
+
+def _parse_log_config(path: str, text: str) -> Any:
+    """JSON immer, YAML nur mit installiertem PyYAML (KTD9)."""
+    if not path.endswith((".yaml", ".yml")):
+        return jsonlib.loads(text)
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError as exc:
+        msg = "YAML logging configs need PyYAML (pip install pyyaml)"
+        raise ImportError(msg) from exc
+    return yaml.safe_load(text)
+
+
+def _configure_from_file(settings: LoggingSettings) -> None:
+    """Datei-Modus: die dictConfig der App statt der eingebauten Einrichtung
+    (R11). structlog bleibt unkonfiguriert (KTD6)."""
+    assert settings.log_config is not None
+    # Vom Supervisor geprueft und weitergegeben (KTD9): Kinder lesen die
+    # Datei nie.
+    raw = settings.log_config_json or load_log_config(settings.log_config)
+    try:
+        logging.config.dictConfig(jsonlib.loads(raw))
+    except Exception as exc:
+        # dictConfig meldet Tippfehler als ValueError, TypeError,
+        # AttributeError oder ImportError -- alle mit Pfad nach oben (AE4).
+        raise LoggingConfigError(settings.log_config, exc) from exc
+    _start_queue_listeners()
+
+
+def _start_queue_listeners() -> None:
+    """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
+
+    ``dictConfig`` legt sie an, startet sie aber nicht. Gestoppt -- und damit
+    geleert -- werden sie per ``shutdown_logging``, also auch bei
+    Prozessende (``atexit``).
+    """
+    loggers = [logging.getLogger()] + [
+        lg for lg in logging.Logger.manager.loggerDict.values()
+        if isinstance(lg, logging.Logger)
     ]
+    for handler in {h for lg in loggers for h in lg.handlers}:
+        listener = getattr(handler, "listener", None)
+        if (
+            isinstance(handler, logging.handlers.QueueHandler)
+            and isinstance(listener, logging.handlers.QueueListener)
+            and getattr(listener, "_thread", None) is None
+        ):
+            listener.start()
+            _CONFIG_LISTENERS.append(listener)
 
-    # Reset any cached loggers from previous configure() calls
-    structlog.reset_defaults()
 
-    structlog.configure(
-        processors=[
-            *shared_processors,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-        ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, log_level)
-        ),
-        cache_logger_on_first_use=True,
-    )
+def _apply_logger_levels(settings: LoggingSettings) -> None:
+    """Level je Logger-Name (``--logger-level``) -- zuletzt, damit sie auch
+    nach einer dictConfig gelten (KTD8)."""
+    for name, level in settings.logger_levels:
+        logging.getLogger(name).setLevel(level)
+
+
+def _configure_builtin(settings: LoggingSettings) -> None:
+    """Eingebauter Modus: Root schreibt ueber Queue und Listener nach stderr."""
+    log_json = settings.format == "json"
+    _configure_structlog_for_user_code()
 
     # Non-blocking I/O via QueueHandler + QueueListener
-    log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10_000)
+    log_queue = _LogQueue(maxsize=settings.queue_size)
 
     # Plan 2026-04-23-001 CLI-03: bind ``colors`` to the TTY state of
     # stderr at configure time. Keeps ANSI escapes out of piped /
     # captured stderr (log aggregators, CI output, pytest fixtures).
     # The decision is static — callers that redirect stderr AFTER
-    # ``setup_logging`` must re-invoke it.
+    # configuring must rebuild.
     formatter = build_formatter(log_json, sys.stderr.isatty())
 
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(formatter)
 
+    # Der Listener startet lazy beim ersten Eintrag (KTD5).
     queue_handler = _StructlogQueueHandler(log_queue, stream_handler, json=log_json)
-    assert queue_handler.listener is not None  # mit Ziel-Handler immer gesetzt
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.addHandler(queue_handler)
-    root_logger.setLevel(getattr(logging, log_level))
+    root_logger.setLevel(settings.level)
 
-    # Der Listener startet lazy beim ersten Eintrag (KTD5).
-    return queue_handler.listener
+
+def _configure_structlog_for_user_code() -> None:
+    """``structlog.get_logger()`` in Nutzer-Tasks rendert ueber dieselbe
+    Ausgabe wie swarmq (R10, KTD6).
+
+    Dieselbe schlanke Kette wie die Bibliotheks-Logger: uebergeben wird ans
+    Standard-``logging``, gerendert erst im Listener-Thread. Eine bereits
+    bestehende Konfiguration -- etwa einer im Forkserver vorgeladenen App --
+    bleibt unangetastet.
+    """
+    if structlog.is_configured():
+        return
+    structlog.configure(
+        processors=LOGGER_PROCESSORS,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+
+def setup_logging(
+    log_level: str = "INFO", log_json: bool = True
+) -> logging.handlers.QueueListener:
+    """Deprecated: Einstiegspunkte rufen ``configure_logging`` auf (U6).
+
+    Baut bei jedem Aufruf neu auf -- ``shutdown_logging()`` und danach
+    ``configure_logging()`` im eingebauten Modus -- und liefert den Listener.
+    Ein zweiter Aufruf stoppt damit den Listener des ersten (B6: doppelte
+    Logzeilen bei zwei Listenern). Wie bisher wird structlog dabei immer neu
+    konfiguriert, auch ueber eine bestehende Konfiguration hinweg.
+    """
+    shutdown_logging()
+    structlog.reset_defaults()
+    configure_logging(
+        LoggingSettings(level=log_level, format="json" if log_json else "human")
+    )
+    handler = logging.getLogger().handlers[0]
+    assert isinstance(handler, _StructlogQueueHandler) and handler.listener is not None
+    return handler.listener
 
 
 flush_logging = shutdown_logging

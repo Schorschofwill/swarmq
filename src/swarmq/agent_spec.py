@@ -81,6 +81,12 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["startup", "cli"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "LoggingConfigError": dict(
+        # Ungueltige Logging-Einstellungen enden im Worker mit Exit 78
+        # (Plan 2026-10-06-0831, R14).
+        origin="library", when=["startup", "cli"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=78, transport_field="stderr line",
+    ),
     "BrokerConnectionError": dict(
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",

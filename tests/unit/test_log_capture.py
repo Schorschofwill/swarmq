@@ -17,14 +17,19 @@ from __future__ import annotations
 # 5. Das Fixture ``swarmq_logs`` liefert die erfassten Eintraege.
 # 6. Ein Autouse-Fixture entfernt die Logging-Umgebungsvariablen.
 # 7. Wirft der Block, wird der Zustand trotzdem wiederhergestellt.
+# 8. ``preserved_root_logger`` (Basis des Autouse-Fixtures): nach
+#    ``configure_logging`` sind Root-Handler und Root-Level wieder im
+#    Ausgangszustand, und ein folgendes ``configure_logging`` baut neu auf.
+import io
 import logging
 import os
+import sys
 
 import pytest
 import structlog
 
 from swarmq.logging import get_logger
-from tests.unit._log_capture import capture_swarmq_logs
+from tests.unit._log_capture import capture_swarmq_logs, preserved_root_logger
 
 
 @pytest.fixture(autouse=True)
@@ -121,3 +126,36 @@ def test_logging_env_vars_are_removed_for_unit_tests() -> None:
     ]
 
     assert leaked == []
+
+
+def test_preserved_root_logger_undoes_configure_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import configure_logging, shutdown_logging
+    from swarmq.logging_settings import LoggingSettings
+
+    root = logging.getLogger()
+
+    def own_handlers() -> list[logging.Handler]:
+        # pytest verwaltet seine Capture-Handler je Phase selbst.
+        return [h for h in root.handlers if type(h).__module__ != "_pytest.logging"]
+
+    before = (own_handlers(), root.level)
+    structlog_config = structlog.get_config()
+    structlog_configured = structlog.is_configured()
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    try:
+        with preserved_root_logger():
+            configure_logging(LoggingSettings(level="DEBUG"))
+            first = root.handlers[:]
+        assert (own_handlers(), root.level) == before
+
+        with preserved_root_logger():
+            configure_logging(LoggingSettings())
+            assert root.handlers != first  # neu aufgebaut, kein No-op
+    finally:
+        shutdown_logging()
+        structlog.reset_defaults()
+        if structlog_configured:
+            structlog.configure(**structlog_config)
+    assert (own_handlers(), root.level) == before

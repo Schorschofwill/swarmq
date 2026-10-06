@@ -62,3 +62,30 @@ def capture_swarmq_logs() -> Iterator[list[dict[str, Any]]]:
         logger.removeHandler(handler)
         logger.setLevel(old_level)
         logger.disabled = old_disabled
+
+
+def _is_pytest_handler(handler: logging.Handler) -> bool:
+    return type(handler).__module__ == "_pytest.logging"
+
+
+@contextmanager
+def preserved_root_logger() -> Iterator[None]:
+    """Stellt Root-Handler und Root-Level nach dem Block wieder her und gibt
+    das Logging per ``shutdown_logging()`` frei (Plan 2026-10-06-0831, U4).
+
+    Ein ``configure_logging`` im Block ersetzt die Root-Handler; danach baut
+    ein neues ``configure_logging`` wieder auf. pytests eigene Capture-Handler
+    wechseln je Testphase und bleiben, wie pytest sie gerade gesetzt hat --
+    zurueckgelegte Handler einer beendeten Phase sammelten sonst weiter.
+    """
+    from swarmq.logging import shutdown_logging
+
+    root = logging.getLogger()
+    own = [h for h in root.handlers if not _is_pytest_handler(h)]
+    level = root.level
+    try:
+        yield
+    finally:
+        shutdown_logging()
+        root.handlers[:] = own + [h for h in root.handlers if _is_pytest_handler(h)]
+        root.setLevel(level)

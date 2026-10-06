@@ -5,7 +5,7 @@ from __future__ import annotations
 # Task registry reset is handled by root conftest.py (_reset_task_registry).
 import pytest
 
-from tests.unit._log_capture import capture_swarmq_logs
+from tests.unit._log_capture import capture_swarmq_logs, preserved_root_logger
 from tests.unit._structlog_cache import reset_swarmq_logger_caches
 
 # Logging-Umgebungsvariablen, die swarmq auswertet (Plan 2026-10-06-0831, U4).
@@ -65,18 +65,16 @@ def _uncache_structlog_module_loggers():
 
 
 @pytest.fixture(autouse=True)
-def _stop_leftover_log_listener():
-    """Stoppt per ``shutdown_logging()`` jeden Listener, den ein Test
-    gestartet hat (Plan 2026-10-06-0831, U4 Teil 2).
+def _restore_logging_state():
+    """Gibt das Logging nach jedem Test frei und stellt Root wieder her
+    (Plan 2026-10-06-0831, U4 Teil 2, U6).
 
-    Der Listener schreibt aus einem eigenen Thread nach ``sys.stderr``, den
-    ``capsys`` beim Teardown schliesst — die Folge waere ein
-    ``ValueError: I/O operation on closed file`` als Rauschen in jedem
-    Testlauf, das echte Logging-Fehler verdeckt. Seit U4 konfiguriert der
-    Worker-Zweig der CLI das Logging selbst, also trifft das mehr Tests als
-    zuvor.
+    ``shutdown_logging()`` stoppt jeden Listener, den ein Test gestartet hat:
+    Er schreibt aus einem eigenen Thread nach ``sys.stderr``, den ``capsys``
+    beim Teardown schliesst -- die Folge waere ein ``ValueError: I/O
+    operation on closed file`` als Rauschen in jedem Testlauf. Danach baut
+    ein ``configure_logging`` im naechsten Test neu auf, und Root-Handler
+    sowie Root-Level sind wieder im Ausgangszustand.
     """
-    yield
-    from swarmq.logging import shutdown_logging
-
-    shutdown_logging()
+    with preserved_root_logger():
+        yield
