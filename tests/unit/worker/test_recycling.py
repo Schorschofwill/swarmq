@@ -6,7 +6,6 @@ import asyncio
 import multiprocessing
 
 import pytest
-import structlog
 
 from swarmq import supervision as sv
 from swarmq.signals import Signal
@@ -85,13 +84,12 @@ async def test_missing_ack_marks_failure_and_still_drains(worker, channel, monke
 
 
 @pytest.mark.timeout(10)
-async def test_without_supervisor_recycling_is_a_graceful_exit_with_warning(worker):
+async def test_without_supervisor_recycling_is_a_graceful_exit_with_warning(worker, swarmq_logs):
     _arm(worker, recycle_max_tasks=1)
-    with structlog.testing.capture_logs() as logs:
-        worker._start_recycle_monitor()
-        await worker._signal_dispatcher.dispatch(Signal.TASK_CANCELLED, task_id="t", task_name="n", queue="q")
-        await _wait_for(lambda: worker._state is WorkerState.DRAINING)
-    events = [entry["event"] for entry in logs]
+    worker._start_recycle_monitor()
+    await worker._signal_dispatcher.dispatch(Signal.TASK_CANCELLED, task_id="t", task_name="n", queue="q")
+    await _wait_for(lambda: worker._state is WorkerState.DRAINING)
+    events = [entry["event"] for entry in swarmq_logs if entry["logger"] == "swarmq.worker.recycling"]
     assert "recycling_without_supervisor" in events
     assert "recycle_without_supervisor_exit0" in events
     assert worker._recycle_ack_missing is False

@@ -373,6 +373,24 @@ async def test_sentinel_without_eof_ends_in_child_died_after_the_grace(ctx, sign
 
 
 @pytest.mark.timeout(5)
+async def test_undecodable_result_logs_error_type_and_error(ctx, signals, swarmq_logs):
+    """Plan 2026-10-06-0831, U9 (R17): einheitliches Fehlerschema."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    (await _next_job(proc))
+    proc.channel.send_raw(b"\x80\x05not a pickle at all")
+    with pytest.raises(ChildDied, match="undecodable"):
+        await t1
+    await p.aclose()
+    [entry] = [e for e in swarmq_logs if e["event"] == "compute_result_undecodable"]
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "UnpicklingError"
+    assert entry["error"] and "UnpicklingError" not in entry["error"]
+
+
+@pytest.mark.timeout(5)
 async def test_undecodable_result_fails_only_this_task_and_the_pool_stays_alive(ctx, signals):
     """P0 #1: ein im Elternprozess nicht entpickelbares Ergebnis darf den Pool nicht taub machen."""
     p = await _make_pool(ctx, slots=1)
@@ -688,20 +706,20 @@ async def test_spawn_timings_are_recorded_for_diagnostics(ctx, signals):
 
 
 @pytest.mark.timeout(5)
-async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals):
-    import structlog
-
+async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals, swarmq_logs):
     p = await _make_pool(ctx, slots=1)
-    with structlog.testing.capture_logs() as logs:
-        for n, tid in enumerate(("a", "b"), start=1):
-            task = asyncio.create_task(p.run(_job(tid), use_di=False))
-            proc = await _started(n)
-            await _ready(p, proc, 0)
-            proc.channel.send(("logging_reconfigured_by_app", {"reenabled_loggers": 2}))
-            proc.channel.send(("result", _result(tid, 0)))
-            await task
-            proc.die()
+    for n, tid in enumerate(("a", "b"), start=1):
+        task = asyncio.create_task(p.run(_job(tid), use_di=False))
+        proc = await _started(n)
+        await _ready(p, proc, 0)
+        proc.channel.send(("logging_reconfigured_by_app", {"reenabled_loggers": 2}))
+        proc.channel.send(("result", _result(tid, 0)))
+        await task
+        proc.die()
     await p.aclose()
-    reports = [e for e in logs if e["event"] == "logging_reconfigured_by_app"]
+    reports = [
+        e for e in swarmq_logs
+        if e["event"] == "logging_reconfigured_by_app" and e["logger"] == "swarmq.worker.compute.pool"
+    ]
     assert len(reports) == 1
     assert reports[0]["reenabled_loggers"] == 2

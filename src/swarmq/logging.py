@@ -584,6 +584,14 @@ def get_logger(name: str) -> Any:
     )
 
 
+def _error_fields(exc: BaseException) -> dict[str, str]:
+    """Einheitliches Fehlerschema fuer Logeintraege (R17, KTD11):
+    ``error_type`` ist der Klassenname, ``error`` der Text -- bei leerer
+    Nachricht (``TimeoutError()``) ebenfalls der Klassenname."""
+    error_type = type(exc).__name__
+    return {"error_type": error_type, "error": str(exc) or error_type}
+
+
 def configure_logging(settings: LoggingSettings) -> None:
     """Richtet das Logging eines swarmq-Prozesses ein (Plan 2026-10-06-0831,
     U6, KTD4).

@@ -10,6 +10,15 @@ Test-Liste U10 (Plan 2026-09-08-001, R25/KTD12) — Fail-Mark-Regel:
 4. Fehler-/Cancel-Zweig: dieselbe Regel.
 5. FAF-Guard (``result_ttl=0``): dieselbe Regel.
 6. ``WorkflowStateConflict`` aus ``advance`` → ``Redelivered`` ohne Fail-Mark.
+
+Test-Liste U9 (Plan 2026-10-06-0831, R17/R18) — Logs ueber ``swarmq_logs``:
+
+7. Advance-Bug, Fail-Mark scheitert deterministisch: ``workflow_advance_failed``
+   und ``workflow_fail_mark_error`` mit ``workflow_id``, ``error_type``, ``error``.
+8. Cancel-Zweig: ``workflow_fail_mark_failed`` mit ``redelivered``.
+9. FAF-Guard: ``workflow_faf_fail_mark_error``.
+10. ``result_serialization_failed`` und ``publish_notification_failed`` mit
+    ``error_type``/``error``.
 """
 
 from __future__ import annotations
@@ -243,3 +252,72 @@ async def test_fail_mark_deterministic_error_acks(broker, backend, config):
     assert outcome == Terminal.release_in_finally()
     broker.ack.assert_awaited_once_with(msg)
     broker.redeliver.assert_not_awaited()
+
+
+def _events(logs, event):
+    return [e for e in logs if e["logger"] == "swarmq.worker.results" and e["event"] == event]
+
+
+async def test_advance_bug_and_failed_fail_mark_log_fixed_events_with_error_fields(
+    broker, backend, config, swarmq_logs
+):
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=RuntimeError("advance bug"))
+    worker._workflow_advancer.fail = AsyncMock(side_effect=ValueError("bad state doc"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    await tail.finish(msg, _ctx(), _execution())
+
+    [advance] = _events(swarmq_logs, "workflow_advance_failed")
+    assert advance["log_level"] == "error" and advance["workflow_id"] == _WF_ID
+    assert advance["error_type"] == "RuntimeError" and advance["error"] == "advance bug"
+    [mark] = _events(swarmq_logs, "workflow_fail_mark_error")
+    assert mark["log_level"] == "error" and mark["workflow_id"] == _WF_ID
+    assert mark["error_type"] == "ValueError" and mark["error"] == "bad state doc"
+    assert mark["redelivered"] is False
+
+
+async def test_cancel_branch_fail_mark_error_logs_workflow_fail_mark_failed(broker, backend, config, swarmq_logs):
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    await tail.finish(msg, _ctx(), _execution(is_cancelled=True, result_value=None))
+
+    [entry] = _events(swarmq_logs, "workflow_fail_mark_failed")
+    assert entry["log_level"] == "error" and entry["redelivered"] is True
+    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+
+
+async def test_faf_guard_fail_mark_error_logs_workflow_faf_fail_mark_error(broker, backend, config, swarmq_logs):
+    tail, worker = _tail(broker, backend, config, TailNoStoreTask)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=ValueError("bad state doc"))
+    msg = make_message(
+        _default_payload(name="tail-nostore"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    await tail.finish(msg, _ctx(TailNoStoreTask), _execution(result_value=None))
+
+    [entry] = _events(swarmq_logs, "workflow_faf_fail_mark_error")
+    assert entry["log_level"] == "error" and entry["redelivered"] is False
+    assert entry["workflow_id"] == _WF_ID
+
+
+async def test_notify_failure_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
+    backend.notify_result = AsyncMock(side_effect=ConnectionError("pubsub down"))
+    tail, _ = _tail(broker, backend, config)
+    await tail.finish(make_message(_default_payload(name="tail-task")), _ctx(), _execution())
+
+    [entry] = _events(swarmq_logs, "publish_notification_failed")
+    assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+    assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+
+
+async def test_unserializable_result_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
+    tail, _ = _tail(broker, backend, config)
+    await tail.finish(make_message(_default_payload(name="tail-task")), _ctx(), _execution(result_value=object()))
+
+    [entry] = _events(swarmq_logs, "result_serialization_failed")
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "ResultSerializationError" and entry["error"]

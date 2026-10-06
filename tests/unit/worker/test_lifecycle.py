@@ -411,6 +411,47 @@ class TestShutdownLockDrain:
         assert worker._state is WorkerState.STOPPED
 
     @pytest.mark.asyncio
+    async def test_release_failure_during_drain_is_a_warning_with_error_fields(
+        self, worker, backend, swarmq_logs
+    ):
+        """Plan 2026-10-06-0831, U9 (R17, KTD11): die TTL heilt den Lock
+        selbst -- Degradierung mit automatischer Erholung, also WARNING."""
+        import uuid as _uuid
+
+        worker._state = WorkerState.RUNNING
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.release = AsyncMock(side_effect=ConnectionError("valkey down"))
+        worker._active_handler_locks[_uuid.uuid4()] = [LockToken(name="res-X", owner="tok-X", max_concurrency=1)]
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "shutdown_lock_release_failed"]
+        assert entry["logger"] == "swarmq.worker.lifecycle"
+        assert entry["log_level"] == "warning"
+        assert entry["lock_name"] == "res-X"
+        assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+
+    @pytest.mark.asyncio
+    async def test_scheduler_stop_failure_is_a_warning_with_error_fields(
+        self, worker, backend, swarmq_logs
+    ):
+        """Plan 2026-10-06-0831, U9 (R17, KTD11): der Leader-Lock laeuft per
+        TTL ab, ein Standby uebernimmt -- WARNING statt ERROR."""
+        worker._state = WorkerState.RUNNING
+        worker._scheduler = MagicMock()
+        worker._scheduler.stop = AsyncMock(side_effect=TimeoutError())
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_stop_failed"]
+        assert entry["logger"] == "swarmq.worker.lifecycle"
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "TimeoutError" and entry["error"] == "TimeoutError"
+        backend.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_drain_skipped_when_lock_manager_never_initialised(
         self, worker, broker, backend
     ):
@@ -489,6 +530,24 @@ class TestMetricsSampler:
         # Per-queue error is logged and skipped; the call must not raise.
         await worker._sample_metrics_once()
 
+    async def test_sample_metrics_failure_logs_queue_and_error_fields(self, worker, broker, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17): ``error_type``/``error`` statt ``repr``."""
+        from swarmq.metrics import Metrics
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        broker.queue_depth = AsyncMock(side_effect=RuntimeError("channel in weird state"))
+        broker.dead_letter_depth = AsyncMock(return_value=0)
+
+        await worker._sample_metrics_once()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "metrics_sample_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["queue"] == "default"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "channel in weird state"
+
     async def test_sample_metrics_once_survives_arbitrary_error(
         self, worker, broker,
     ):
@@ -545,6 +604,31 @@ class TestMetricsSampler:
             await task
 
         assert len(calls) >= 2, "sampler loop died after one error"
+
+
+    async def test_metrics_sampler_iteration_failure_logs_error_fields(
+        self, worker, monkeypatch, swarmq_logs,
+    ):
+        """Plan 2026-10-06-0831, U9 (R17)."""
+        from swarmq.metrics import Metrics
+
+        m = Metrics()
+        if not m.enabled:
+            pytest.skip("prometheus_client missing")
+        worker._metrics = m
+        worker._config.metrics_sample_interval = 0.001
+
+        async def _failing_sample():
+            worker._shutdown_event.set()  # der Loop endet nach dieser Iteration
+            raise RuntimeError("transient sampler explosion")
+
+        monkeypatch.setattr(worker, "_sample_metrics_once", _failing_sample)
+
+        await worker._metrics_sampler()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "metrics_sampler_iteration_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "transient sampler explosion"
 
 
 class TestPayloadShapeValidation:

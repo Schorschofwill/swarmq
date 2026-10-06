@@ -183,6 +183,19 @@ async def test_progress_sink_forwards_to_backend(setup):
 
 
 @pytest.mark.timeout(5)
+async def test_progress_sink_failure_logs_warning_with_error_type_and_error(setup, swarmq_logs):
+    deps, _, ex = setup
+    deps.backend.set_progress = AsyncMock(side_effect=ConnectionError("valkey down"))
+    await ex.progress_sink(("progress", "t1", {"current": "1"}, 5000))
+    [entry] = [
+        e for e in swarmq_logs
+        if e["logger"] == "swarmq.worker.compute.executor" and e["event"] == "compute_progress_forward_failed"
+    ]
+    assert entry["log_level"] == "warning"
+    assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+
+
+@pytest.mark.timeout(5)
 async def test_start_and_aclose_delegate_to_pool(setup):
     _, pool, ex = setup
     await ex.start()
@@ -218,6 +231,24 @@ async def test_slot_unavailable_on_fire_and_forget_logs_the_dedicated_loss_messa
     events = [call.args[0] for call in fake_logger.error.call_args_list]
     assert "compute_slot_unavailable_fire_and_forget_dropped" in events
     assert "fire_and_forget_error" not in events
+
+
+def _executor_logs(entries: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
+    return [e for e in entries if e["logger"] == "swarmq.worker.compute.executor" and e["event"] == event]
+
+
+@pytest.mark.timeout(5)
+async def test_fire_and_forget_error_logs_error_type_and_error(setup, swarmq_logs):
+    """Plan 2026-10-06-0831, U9 (R17): einheitliches Fehlerschema."""
+    _, pool, ex = setup
+    pool.behaviour = ChildDied("pid 7 exited without result")
+    await ex.execute(
+        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+    )
+    [entry] = _executor_logs(swarmq_logs, "fire_and_forget_error")
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "ChildDied"
+    assert entry["error"] == "pid 7 exited without result"
 
 
 # --------------------------------------------------------------------------- Logging der Kinder
@@ -282,3 +313,16 @@ async def test_embedded_log_config_is_loaded_once_and_travels_as_json(tmp_path):
     assert json.loads(job.log_config_json) == {
         "version": 1, "root": {"level": "INFO"}, "disable_existing_loggers": False,
     }
+
+
+@pytest.mark.timeout(5)
+async def test_slot_unavailable_on_fire_and_forget_logs_error_type_and_error(setup, swarmq_logs):
+    _, pool, ex = setup
+    pool.behaviour = SlotUnavailable("compute child for slot 0 sent no ready signal")
+    await ex.execute(
+        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+    )
+    [entry] = _executor_logs(swarmq_logs, "compute_slot_unavailable_fire_and_forget_dropped")
+    assert entry["error_type"] == "SlotUnavailable"
+    assert entry["error"] == "compute child for slot 0 sent no ready signal"
+    assert entry["task_id"] and "hint" in entry

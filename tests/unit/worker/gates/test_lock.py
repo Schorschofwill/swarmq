@@ -665,3 +665,84 @@ class TestLockGateOutcomes:
         assert render_lock_name("plain", FormatStringLockTask, [], {}) == "plain"
         with pytest.raises(ValueError, match="failed to render lock name"):
             render_lock_name("user-{missing}", FormatStringLockTask, [7, 1], {})
+
+
+class TestLockGateLogging:
+    """Plan 2026-10-06-0831, U9 (R17, R18): feste Event-Namen, Fehler mit
+    ``error_type``/``error``."""
+
+    def _ctx(self, task_class=LockedTask, **overrides):
+        base = dict(
+            task_id="t1", task_name=task_class.task_info.name, queue="default",
+            task_info=task_class.task_info, task_class=task_class, args=[], kwargs={}, handler_id=uuid.uuid4(),
+        )
+        base.update(overrides)
+        return GateContext(**base)
+
+    @staticmethod
+    def _entry(logs, event):
+        [entry] = [e for e in logs if e["logger"] == "swarmq.worker.gates.lock" and e["event"] == event]
+        return entry
+
+    async def test_render_dlq_failure_logs_fixed_event_with_error_fields(self, worker, broker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
+        await worker._lock_gate.apply(
+            make_message(_default_payload()), self._ctx(FormatStringLockTask, args=[], kwargs={})
+        )
+
+        entry = self._entry(swarmq_logs, "lock_render_dlq_failed")
+        assert entry["log_level"] == "error" and entry["lock_template"] == "user-{user_id}"
+        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+
+    async def test_empty_render_dlq_failure_logs_its_own_fixed_event(self, worker, broker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
+        await worker._lock_gate.apply(
+            make_message(_default_payload()), self._ctx(EmptyRenderingLockTask, args=[], kwargs={"tag": ""})
+        )
+
+        entry = self._entry(swarmq_logs, "lock_empty_render_dlq_failed")
+        assert entry["log_level"] == "error" and entry["lock_template"] == "{tag}"
+        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+
+    async def test_render_failure_logs_error_fields(self, worker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        await worker._lock_gate.apply(
+            make_message(_default_payload()), self._ctx(FormatStringLockTask, args=[], kwargs={})
+        )
+
+        entry = self._entry(swarmq_logs, "lock_name_render_failed")
+        assert entry["log_level"] == "error" and entry["lock_template"] == "user-{user_id}"
+        assert entry["error_type"] == "ValueError" and "failed to render lock name" in entry["error"]
+
+    async def test_acquire_failure_logs_error_fields(self, worker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
+
+        entry = self._entry(swarmq_logs, "lock_acquire_failed")
+        assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_conflict_dlq_failure_at_cap_logs_error_fields(self, worker, broker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(return_value=None)
+        broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1})
+        await worker._lock_gate.apply(msg, self._ctx())
+
+        entry = self._entry(swarmq_logs, "lock_conflict_dlq_failed")
+        assert entry["log_level"] == "error" and entry["lock_conflict_count"] == LOCK_CONFLICT_DLQ_CAP
+        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+        assert "note" in entry
+
+    async def test_conflict_requeue_failure_logs_error_fields(self, worker, broker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(return_value=None)
+        broker.retry_later = AsyncMock(side_effect=BrokerConnectionError("down"))
+        await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
+
+        entry = self._entry(swarmq_logs, "lock_conflict_requeue_failed")
+        assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
+        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"

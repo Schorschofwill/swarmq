@@ -13,14 +13,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import structlog
-
+from swarmq.logging import get_logger
 from swarmq.signals import Signal
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.forkserver import ForkserverHandle, forkserver_pid, start_forkserver
 from swarmq.worker.compute.pool import SlotPool
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 _RECYCLE_DISPATCH_TIMEOUT_S = 5.0  # wie worker.recycling fuer WORKER_RECYCLING des IO-Workers
 

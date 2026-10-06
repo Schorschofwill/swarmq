@@ -10,9 +10,7 @@ Fail-Mark + Ack. publish-then-mark ist seit U20 strukturell über den
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-import structlog
+from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.cancellation import build_error_result_dict, build_result_dict
 from swarmq.exceptions import (
@@ -22,6 +20,7 @@ from swarmq.exceptions import (
     WorkflowStateConflict,
 )
 from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.task import DeliveryMode
 from swarmq.worker.gates import GateContext, GateDeps
@@ -30,7 +29,20 @@ from swarmq.worker.outcome import DeliveryOutcome, Redelivered, Terminal
 if TYPE_CHECKING:
     from swarmq.worker.execution import ExecutionResult
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
+
+_FailMarkEvent = Literal["workflow_faf_fail_mark_error", "workflow_fail_mark_failed", "workflow_fail_mark_error"]
+
+
+def _log_fail_mark_error(event: _FailMarkEvent, **fields: Any) -> None:
+    """R18: Event-Namen bleiben feste Literale -- je Aufrufer von
+    ``_fail_workflow`` ein eigener Name, wie bisher."""
+    if event == "workflow_faf_fail_mark_error":
+        logger.error("workflow_faf_fail_mark_error", **fields)
+    elif event == "workflow_fail_mark_failed":
+        logger.error("workflow_fail_mark_failed", **fields)
+    else:
+        logger.error("workflow_fail_mark_error", **fields)
 
 
 class ResultTail:
@@ -56,7 +68,7 @@ class ResultTail:
         try:
             return encode_result(result_data)
         except ResultSerializationError as exc:
-            logger.error("result_serialization_failed", error=str(exc))
+            logger.error("result_serialization_failed", **_error_fields(exc))
             result_data = build_error_result_dict(
                 task_id=ctx.task_id, queue=ctx.queue, task_name=ctx.task_name,
                 error_message=str(exc),
@@ -119,7 +131,7 @@ class ResultTail:
 
     async def _fail_workflow(
         self, delivery: Any, ctx: GateContext, wf_id: str, advancer: Any,
-        error_type: str, reason: str, *, event: str,
+        error_type: str, reason: str, *, event: _FailMarkEvent,
     ) -> DeliveryOutcome | None:
         """Fehlermarkierung eines Workflows nach R25/KTD12 (U10).
 
@@ -141,12 +153,12 @@ class ResultTail:
             await advancer.fail(wf_id, error_type, reason)
         except (BackendConnectionError, WorkflowStateConflict) as exc:
             at_least_once = task_info.delivery is DeliveryMode.AT_LEAST_ONCE
-            logger.error(event, workflow_id=wf_id, error=str(exc), redelivered=at_least_once)
+            _log_fail_mark_error(event, workflow_id=wf_id, **_error_fields(exc), redelivered=at_least_once)
             if at_least_once:
                 await deps.broker.redeliver(delivery)
                 return Redelivered
         except Exception as exc:
-            logger.error(event, workflow_id=wf_id, error=str(exc), redelivered=False)
+            _log_fail_mark_error(event, workflow_id=wf_id, **_error_fields(exc), redelivered=False)
         return None
 
     async def _advance_workflow(
@@ -206,7 +218,7 @@ class ResultTail:
             # instead of hanging, then ack (no infinite redelivery loop).
             logger.error(
                 "workflow_advance_failed",
-                workflow_id=wf_id, error=str(exc),
+                workflow_id=wf_id, **_error_fields(exc),
             )
             return await self._fail_workflow(
                 delivery, ctx, wf_id, advancer, type(exc).__name__, str(exc),
@@ -247,7 +259,7 @@ class ResultTail:
         except Exception as exc:
             logger.warning(
                 "publish_notification_failed",
-                error=str(exc),
+                **_error_fields(exc),
                 task_id=ctx.task_id,
             )
 

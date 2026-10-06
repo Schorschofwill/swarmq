@@ -13,11 +13,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
 from swarmq.dishka import _MISSING, TaskContext, get_registered_container, request_container
 from swarmq.exceptions import SoftTimeoutError
+from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.gates import GateContext, GateDeps
@@ -25,7 +24,7 @@ from swarmq.worker.gates import GateContext, GateDeps
 if TYPE_CHECKING:
     from swarmq.middleware import MessageContext, MiddlewareChain
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -249,7 +248,7 @@ class TaskExecutor:
             result.error_message = message
             result.task_exception = exc
             if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
-                logger.error("fire_and_forget_error", error=message)
+                logger.error("fire_and_forget_error", **_error_fields(exc))
 
         try:
             await task_instance.pre_execution()
@@ -311,6 +310,6 @@ class TaskExecutor:
                 # Handler finally cancels us explicitly — propagate.
                 raise
             except Exception as exc:
-                logger.warning("cancel_monitor_error", task_id=task_id, error=str(exc))
+                logger.warning("cancel_monitor_error", task_id=task_id, **_error_fields(exc))
                 # Fall through — the next iteration's asyncio.wait already
                 # waits poll_interval, so no extra sleep is needed.

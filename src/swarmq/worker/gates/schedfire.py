@@ -16,10 +16,11 @@ from typing import Any
 import structlog
 
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
+from swarmq.logging import _error_fields, get_logger
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class SchedfireGate:
@@ -45,8 +46,12 @@ class SchedfireGate:
 
         try:
             already_completed = await deps.backend.schedules.is_fire_completed(header_value)
-        except BackendConnectionError:
-            logger.error("schedfire_dedup_backend_error", schedfire_key=header_value, stage="completed_check")
+        except BackendConnectionError as exc:
+            # KTD11: die Redelivery erholt sich selbst -> WARNING.
+            logger.warning(
+                "schedfire_dedup_backend_error", schedfire_key=header_value, stage="completed_check",
+                **_error_fields(exc),
+            )
             await deps.broker.redeliver(delivery)
             structlog.contextvars.clear_contextvars()
             return Redelivered
@@ -73,8 +78,11 @@ class SchedfireGate:
         inflight_ttl_ms = int(inflight_ttl_s * 1000)
         try:
             claimed = await deps.backend.schedules.claim_fire(header_value, inflight_ttl_ms)
-        except BackendConnectionError:
-            logger.error("schedfire_dedup_backend_error", schedfire_key=header_value, stage="inflight_claim")
+        except BackendConnectionError as exc:
+            logger.warning(
+                "schedfire_dedup_backend_error", schedfire_key=header_value, stage="inflight_claim",
+                **_error_fields(exc),
+            )
             await deps.broker.redeliver(delivery)
             structlog.contextvars.clear_contextvars()
             return Redelivered

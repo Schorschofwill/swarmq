@@ -17,11 +17,9 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import structlog
-
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
 from swarmq.exceptions import SoftTimeoutError
-from swarmq.logging import load_log_config
+from swarmq.logging import _error_fields, get_logger, load_log_config
 from swarmq.logging_settings import LoggingSettings
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
@@ -30,7 +28,7 @@ from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable
 from swarmq.worker.execution import ExecutionResult, TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 RecycleHook = Callable[[int, str, float], Awaitable[None]]
 
@@ -99,7 +97,7 @@ class ComputeExecutor(TaskExecutor):
                 _, task_id, payload = msg
                 await deps.backend.publish_progress(task_id, payload)
         except Exception as exc:
-            logger.warning("compute_progress_forward_failed", error=str(exc))
+            logger.warning("compute_progress_forward_failed", **_error_fields(exc))
 
     # ------------------------------------------------------------------ execute
 
@@ -148,11 +146,11 @@ class ComputeExecutor(TaskExecutor):
                 # kein Task-Fehler — eigene Meldung, damit er nicht als solcher untergeht.
                 logger.error(
                     "compute_slot_unavailable_fire_and_forget_dropped", task_id=ctx.task_id,
-                    error=message, hint="fire-and-forget messages are acked before dispatch; "
+                    **_error_fields(exc), hint="fire-and-forget messages are acked before dispatch; "
                     "the message is lost — check the forkserver and /ready",
                 )
             else:
-                logger.error("fire_and_forget_error", error=message)
+                logger.error("fire_and_forget_error", **_error_fields(exc))
 
         job = self._build_job(ctx, message_dict)
         use_di = bool(getattr(ctx.task_class, "_dishka_injected_keys", None))

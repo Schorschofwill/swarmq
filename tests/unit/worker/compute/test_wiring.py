@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import structlog
 
 from swarmq.config import SwarmQConfig
 from swarmq.signals import Signal
@@ -84,10 +83,10 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     wiring.SlotPool.aclose.assert_awaited_once()
 
 
-def test_hard_timeout_over_consumer_timeout_warns():
-    with structlog.testing.capture_logs() as logs:
-        wiring.warn_hard_timeout_over_consumer_timeout(_Registry({"t": _T}), consumer_timeout_s=1800)
-        wiring.warn_hard_timeout_over_consumer_timeout(_Registry({"t": _T}), consumer_timeout_s=7200)
+def test_hard_timeout_over_consumer_timeout_warns(swarmq_logs):
+    wiring.warn_hard_timeout_over_consumer_timeout(_Registry({"t": _T}), consumer_timeout_s=1800)
+    wiring.warn_hard_timeout_over_consumer_timeout(_Registry({"t": _T}), consumer_timeout_s=7200)
+    logs = [entry for entry in swarmq_logs if entry["logger"] == "swarmq.worker.compute.wiring"]
     events = [entry["event"] for entry in logs]
     assert events == ["hard_timeout_exceeds_consumer_timeout"]
     assert logs[0]["tasks"] == ["t(3600s)"]

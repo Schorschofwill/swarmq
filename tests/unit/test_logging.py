@@ -9,6 +9,8 @@ from __future__ import annotations
 # 4. Log output is JSON when log_json=True
 # 5. Log level filtering works (DEBUG not output at INFO level)
 # 6. contextvars binding: bind task_id, verify it appears in log output
+# 7. _error_fields(exc): error_type = Klassenname, error = Text (R17)
+# 8. _error_fields bei leerer Nachricht: error = Klassenname
 import io
 import json
 import logging
@@ -246,3 +248,15 @@ class TestSingleListenerPerProcess:
             assert len(stdlib_logging.getLogger().handlers) == 1
         finally:
             second.stop()
+
+
+def test_error_fields_reports_class_name_and_message():
+    from swarmq.logging import _error_fields
+
+    assert _error_fields(ValueError("x")) == {"error_type": "ValueError", "error": "x"}
+
+
+def test_error_fields_uses_class_name_when_message_is_empty():
+    from swarmq.logging import _error_fields
+
+    assert _error_fields(TimeoutError()) == {"error_type": "TimeoutError", "error": "TimeoutError"}

@@ -35,6 +35,7 @@ from swarmq.exceptions import (
 from swarmq.headers import (
     HEADER_UNIQUE_UNTIL,
 )
+from swarmq.logging import _error_fields, get_logger
 from swarmq.middleware import (
     MessageContext,
     MiddlewareChain,
@@ -72,7 +73,7 @@ from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
 )
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 
@@ -215,10 +216,11 @@ class Worker(WorkerLifecycle):
             try:
                 await self._lock_manager.release(token)
             except Exception as exc:
-                logger.error(
+                # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
+                logger.warning(
                     "lock_release_failed",
                     lock_name=token.name,
-                    error=str(exc),
+                    **_error_fields(exc),
                 )
         # Drop the worker-wide registry entry whether release succeeded
         # or not — anything still held will time out via TTL, and we
@@ -272,7 +274,7 @@ class Worker(WorkerLifecycle):
                 "schedfire_finalize_failed",
                 schedfire_key=schedfire_key,
                 terminal=terminal,
-                error=str(exc),
+                **_error_fields(exc),
             )
 
     @staticmethod
@@ -453,7 +455,7 @@ class Worker(WorkerLifecycle):
         try:
             return self._get_chain()
         except Exception as exc:
-            logger.error("middleware_chain_factory_failed", error=str(exc))
+            logger.error("middleware_chain_factory_failed", **_error_fields(exc))
             if not acked_before_execute:
                 await route_via_dlx(
                     self._gate_deps, message,
