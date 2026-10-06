@@ -11,21 +11,17 @@ from __future__ import annotations
 import atexit
 import contextlib
 import contextvars
-import json as jsonlib
 import logging
 import logging.handlers
 import os
 import queue
-import sys
 import threading
-import time
 import weakref
 from collections.abc import Callable
 from typing import Any
 
 from swarmq.logging_file import CONFIG_LISTENERS as _CONFIG_LISTENERS
-from swarmq.logging_file import HandlerErrors, stop_queue_listeners
-from swarmq.logging_format import _iso_utc
+from swarmq.logging_file import HandlerErrors, RateLimitedReport, stop_queue_listeners
 
 LISTENER_THREAD_NAME = "swarmq-log-listener"
 """Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests."""
@@ -57,6 +53,9 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     def __init__(self, queue_: _ListenerQueue, *handlers: logging.Handler) -> None:
         super().__init__(queue_, *handlers)
         self.errors = HandlerErrors(self._dispatch)
+        # Verworfene Records des zugehoerigen Queue-Handlers; gemeldet aus
+        # diesem Thread (Plan 2026-10-06-1811, KTD2).
+        self.drops = RateLimitedReport("log_records_dropped", self.errors.handle)
         _LISTENERS.add(self)
 
     @property
@@ -73,9 +72,15 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
             if self.running:
                 return
             self._thread = thread = threading.Thread(
-                target=self._monitor, name=LISTENER_THREAD_NAME, daemon=True
+                target=self._serve, name=LISTENER_THREAD_NAME, daemon=True
             )
             thread.start()
+
+    def _serve(self) -> None:
+        """Thread-Ziel: Records ausgeben; beim Ende noch nicht gemeldete
+        Drops melden, auch innerhalb der Frist (Plan 2026-10-06-1811, KTD2)."""
+        self._monitor()
+        self.drops.report_due(final=True)
 
     def stop(self) -> None:
         """Wie der Basis-``stop``, aber auf dem eigenen Thread: Zwischen dem
@@ -95,8 +100,10 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     def handle(self, record: logging.LogRecord) -> None:
         """Faengt jede ``Exception`` pro Record (Plan 2026-10-06-1811, KTD1):
         Der stdlib-``_monitor`` faengt nichts, ein werfender Handler, Filter
-        oder Formatter beendete sonst den Thread."""
+        oder Formatter beendete sonst den Thread. Danach meldet er neue
+        Drops (KTD2)."""
         self.errors.handle(record)
+        self.drops.report_due()
 
     def _dispatch(self, record: logging.LogRecord) -> None:
         super().handle(record)
@@ -153,14 +160,13 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     Drops are counted and surfaced. The stdlib path
     (queue.Full → handleError) silently discarded records under burst —
     a saturated log pipeline looked identical to a quiet one. ``dropped``
-    is the cumulative counter; a rate-limited stderr notice (at most one
-    per second) keeps the drop visible without amplifying the burst.
+    is the cumulative counter. Der Aufrufer zaehlt nur; die Meldung
+    ``log_records_dropped`` (hoechstens einmal pro Sekunde) gibt der
+    Listener ueber seine eigenen Handler aus (Plan 2026-10-06-1811, KTD2).
 
     ``handlers`` sind die Ziele des Listeners (Plan 2026-10-06-0831, KTD5).
     Der Listener startet lazy beim ersten Eintrag.
     """
-
-    _DROP_NOTICE_INTERVAL_S = 1.0
 
     queue: _LogQueue
     listener: _SwarmqQueueListener | None
@@ -174,7 +180,6 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         super().__init__(queue_)
         self.json = json
         self.dropped = 0
-        self._last_drop_notice = 0.0
         self._reserve_at = self._reserve_threshold()
         self.listener = _SwarmqQueueListener(queue_, *handlers) if handlers else None
         _HANDLERS.add(self)
@@ -219,42 +224,22 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         # hot logging path exactly when it is saturated.
         self.dropped += 1
         count_dropped()
-        now = time.monotonic()
-        if now - self._last_drop_notice >= self._DROP_NOTICE_INTERVAL_S:
-            self._last_drop_notice = now
-            # stderr directly — going through logging would feed the
-            # very queue that is full.
-            print(self._drop_notice(), file=sys.stderr)
+        # Gemeldet wird im Listener-Thread (Plan 2026-10-06-1811, KTD2): Hier
+        # auf stderr zu schreiben, blockierte den Aufrufer -- die Queue ist
+        # meist gerade deshalb voll, weil das Ziel blockiert.
+        if self.listener is not None:
+            self.listener.drops.count += 1
 
     def _reset_after_fork(self) -> None:
         """Frische Queue, Zaehler und Listener im Kind (KTD5)."""
         self.queue = fresh = _LogQueue(self.queue.maxsize)
         self._reserve_at = self._reserve_threshold()
         self.dropped = 0
-        self._last_drop_notice = 0.0
         if self.listener is not None:
             # Der geerbte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt.
             # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
             self.listener = type(self.listener)(fresh, *self.listener.handlers)
-
-    def _drop_notice(self) -> str:
-        """Die Drop-Meldung; im JSON-Modus als vorgerenderte JSON-Zeile (R7)."""
-        if not self.json:
-            return (
-                "swarmq: logging queue full — "
-                f"{self.dropped} record(s) dropped so far"
-            )
-        return jsonlib.dumps(
-            {
-                "event": "log_records_dropped",
-                "count": self.dropped,
-                "level": "warning",
-                # Der bisherige Logger-Name, unabhaengig vom Modul (U1).
-                "logger": "swarmq.logging",
-                "timestamp": _iso_utc(time.time()),
-            }
-        )
 
 
 _CONTEXT_ATTR = "_swarmq_context"

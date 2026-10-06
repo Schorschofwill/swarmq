@@ -27,6 +27,45 @@ CONFIG_LISTENERS: list[logging.handlers.QueueListener] = []
 ``shutdown_logging`` stoppt und leert sie."""
 
 
+class RateLimitedReport:
+    """Ein Zaehler, den ein Listener hoechstens einmal pro Sekunde als
+    Record ``event`` meldet (Plan 2026-10-06-1811, KTD1, KTD2).
+
+    Logger ``swarmq.logging``, Level WARNING, Feld ``count``. Der Record geht
+    an ``emit`` -- die eigenen Handler des Listeners, nie die Queue: Der
+    Aufrufer bleibt unberuehrt, und eine volle Queue verschluckt ihn nicht.
+    """
+
+    INTERVAL_S = 1.0
+
+    def __init__(self, event: str, emit: Callable[[logging.LogRecord], None]) -> None:
+        self.event = event
+        self.count = 0
+        self.reported = 0
+        self._emit = emit
+        self._last_report = float("-inf")
+
+    def report_due(self, *, final: bool = False) -> bool:
+        """Meldet den Zaehler, wenn er seit der letzten Meldung gestiegen und
+        die Frist abgelaufen ist; ``True``, wenn gemeldet wurde. ``final``
+        (Ende des Listeners) meldet ohne Frist: Danach kaeme keine Meldung
+        mehr."""
+        count = self.count
+        if count <= self.reported:
+            return False
+        now = time.monotonic()
+        if not final and now - self._last_report < self.INTERVAL_S:
+            return False
+        self._last_report = now
+        self.reported = count
+        report = logging.LogRecord(
+            "swarmq.logging", logging.WARNING, __file__, 0, self.event, None, None
+        )
+        report.count = count
+        self._emit(report)
+        return True
+
+
 class HandlerErrors:
     """Fehler aus Handlern, Filtern und Formattern eines Listeners (Plan
     2026-10-06-1811, KTD1): gefangen, gezaehlt und hoechstens einmal pro
@@ -41,12 +80,14 @@ class HandlerErrors:
     einen Aufrufer.
     """
 
-    REPORT_INTERVAL_S = 1.0
-
     def __init__(self, dispatch: Callable[[logging.LogRecord], None]) -> None:
-        self.count = 0
         self._dispatch = dispatch
-        self._last_report = float("-inf")
+        self._report = RateLimitedReport("log_handler_errors", self.handle)
+
+    @property
+    def count(self) -> int:
+        """Bisher gefangene Fehler."""
+        return self._report.count
 
     def handle(self, record: logging.LogRecord) -> None:
         """Gibt den Record weiter; eine ``Exception`` wird gezaehlt."""
@@ -57,17 +98,9 @@ class HandlerErrors:
 
     def failed(self) -> None:
         """Zaehlt einen Fehler und meldet, sobald die Frist abgelaufen ist."""
-        self.count += 1
-        now = time.monotonic()
-        if now - self._last_report < self.REPORT_INTERVAL_S:
-            return
-        self._last_report = now
-        report = logging.LogRecord(
-            "swarmq.logging", logging.WARNING, __file__, 0, "log_handler_errors", None, None
-        )
-        report.count = count = self.count
-        self.handle(report)
-        if self.count != count:
+        self._report.count += 1
+        count = self.count
+        if self._report.report_due() and self.count != count:
             with contextlib.suppress(Exception):
                 print(
                     f"swarmq: log_handler_errors — {count} error(s) in log handlers so far",
@@ -222,10 +255,10 @@ def start_queue_listeners(on_drop: Callable[[], None]) -> None:
             and isinstance(listener, logging.handlers.QueueListener)
             and getattr(listener, "_thread", None) is None
         ):
-            _catch_handler_errors(listener)
+            drops = _report_from_listener(listener)
             listener.start()
             CONFIG_LISTENERS.append(listener)
-            _restart_lazily(handler, listener, on_drop)
+            _restart_lazily(handler, listener, on_drop, drops)
 
 
 def stop_queue_listeners() -> None:
@@ -256,12 +289,30 @@ def stop_queue_listeners() -> None:
                 setattr(listener, "_thread", None)  # noqa: B010
 
 
-def _catch_handler_errors(listener: logging.handlers.QueueListener) -> None:
+def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimitedReport:
     """Der stdlib-``_monitor`` faengt nichts: Ein werfender Handler, Filter
     oder Formatter beendete den Thread (KTD1). Am Exemplar wie bei
-    ``_restart_lazily``; gefangen und gemeldet wird pro Record."""
+    ``_restart_lazily``; gefangen und gemeldet wird pro Record. Nach jedem
+    Record und beim Ende meldet der Listener neue Drops wie der eingebaute
+    (KTD2); deren Zaehler liefert er zurueck."""
     errors = HandlerErrors(listener.handle)
-    setattr(listener, "handle", errors.handle)  # noqa: B010
+    drops = RateLimitedReport("log_records_dropped", errors.handle)
+
+    def handle(record: logging.LogRecord) -> None:
+        errors.handle(record)
+        drops.report_due()
+
+    monitor = listener._monitor  # type: ignore[attr-defined]
+
+    def serve() -> None:
+        # Thread-Ziel des stdlib-``start``: beim Ende noch nicht gemeldete
+        # Drops melden, auch innerhalb der Frist.
+        monitor()
+        drops.report_due(final=True)
+
+    setattr(listener, "handle", handle)  # noqa: B010
+    setattr(listener, "_monitor", serve)  # noqa: B010
+    return drops
 
 
 _CONFIG_LISTENER_LOCK = threading.Lock()
@@ -280,6 +331,7 @@ def _restart_lazily(
     handler: logging.handlers.QueueHandler,
     listener: logging.handlers.QueueListener,
     on_drop: Callable[[], None],
+    drops: RateLimitedReport,
 ) -> None:
     """Wie beim eingebauten Handler (KTD5): Nach ``shutdown_logging`` startet
     der naechste Eintrag den Listener wieder, und das naechste
@@ -288,7 +340,8 @@ def _restart_lazily(
     neu, dessen Thread gestorben ist (Plan 2026-10-06-1811, KTD1).
 
     Eine volle begrenzte Queue zaehlt als Drop: Der stdlib-``emit`` gaebe
-    ``queue.Full`` an ``handleError`` -- ein Traceback im Aufrufer."""
+    ``queue.Full`` an ``handleError`` -- ein Traceback im Aufrufer. Melden
+    wird ihn der Listener (``drops``, KTD2), nie der Aufrufer."""
     enqueue = handler.enqueue
 
     def enqueue_restarting(record: logging.LogRecord) -> None:
@@ -304,6 +357,7 @@ def _restart_lazily(
             enqueue(record)
         except queue.Full:
             on_drop()
+            drops.count += 1
 
     # Am Exemplar: die Klasse des Handlers gehoert der dictConfig der App.
     setattr(handler, "enqueue", enqueue_restarting)  # noqa: B010

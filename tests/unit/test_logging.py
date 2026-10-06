@@ -135,10 +135,9 @@ class TestQueueDropVisibility:
         handler.enqueue(rec)          # dropped again
         assert handler.dropped == 2
 
-        err = capsys.readouterr().err
-        assert "logging queue full" in err
-        # Rate limit: at most one notice for the burst.
-        assert err.count("logging queue full") == 1
+        # Seit Plan 2026-10-06-1811, U3 meldet der Listener die Drops,
+        # der Aufrufer schreibt nie selbst auf stderr.
+        assert capsys.readouterr().err == ""
 
     def test_normal_enqueue_unaffected(self):
         import logging as _logging

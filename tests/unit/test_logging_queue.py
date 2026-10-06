@@ -9,10 +9,8 @@ from __future__ import annotations
 # Test list:
 # 1. ``prepare`` gibt denselben Record mit erhaltenem ``exc_info`` zurueck;
 #    formatiert wird im Listener-Thread (Thread-Name im Formatter).
-# 2. Eine volle Queue blockiert nicht: ``dropped`` steigt, innerhalb einer
-#    Sekunde erscheint genau eine Meldung, danach wieder eine (Zeit gemockt).
-# 3. JSON-Modus: die Drop-Meldung ist parsebares JSON mit
-#    ``event=log_records_dropped`` und ``count`` (AE7).
+# 2. Eine volle Queue blockiert nicht: ``dropped`` steigt.
+# 3. (ersetzt durch 26: die JSON-Meldung kommt seit U3 aus dem Listener)
 # 4. Nach ``queue.ShutDown`` wird gezaehlt statt geworfen.
 # 5. Ein zweiter ``start`` wirft nicht und startet keinen zweiten Thread.
 # 6. ``shutdown_logging()`` schreibt alle Eintraege der Queue und ist
@@ -54,7 +52,19 @@ from __future__ import annotations
 #     Handler des Listeners hoechstens einmal pro Sekunde (Zeit gemockt).
 # 23. Ein ``stop``, waehrend dessen ein Eintrag den beendeten Thread durch
 #     einen neuen ersetzt, laesst den neuen nicht verwaist weiterlaufen.
+# Plan 2026-10-06-1811, U3 (R1, KTD2) -- die Drop-Meldung kommt aus dem
+# Listener, der Aufrufer zaehlt nur:
+# 24. Volle Queue, Ziel-Stream (zugleich ``sys.stderr``) blockiert im
+#     ``write``: Ein ``log.warning`` in einem Hilfsthread kehrt sofort zurueck.
+# 25. Nach dem Freigeben kommt genau eine Meldung ``log_records_dropped``
+#     ueber den Listener an (Logger ``swarmq.logging``, WARNING, ``count``).
+# 26. JSON-Modus: Die Meldung ist gueltiges JSON mit ``event`` und ``count``.
+# 27. ``sys.stderr`` geschlossen: Ein Drop wirft nicht und wird gezaehlt.
+# 28. Ratenbegrenzung: hoechstens eine Meldung pro Sekunde (Zeit gemockt),
+#     die Zaehlung stimmt.
+# 29. Beim Stoppen meldet der Listener noch nicht gemeldete Drops.
 import atexit
+import collections
 import contextlib
 import io
 import json
@@ -72,6 +82,7 @@ from swarmq.logging import (
     setup_logging,
     shutdown_logging,
 )
+from swarmq.logging_format import build_formatter
 from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener
 from tests.unit._fork_child import run_in_forked_child
 
@@ -137,46 +148,20 @@ class _Clock:
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     fake = _Clock()
-    monkeypatch.setattr("swarmq.logging_queue.time.monotonic", fake)
+    monkeypatch.setattr("swarmq.logging_file.time.monotonic", fake)
     return fake
 
 
-def test_full_queue_drops_without_blocking_and_notices_once_per_second(
-    clock: _Clock, capsys: pytest.CaptureFixture[str]
-):
+def test_full_queue_drops_without_blocking(capsys: pytest.CaptureFixture[str]):
     handler = _StructlogQueueHandler(queue.Queue(maxsize=1))
     handler.handle(_record())
 
     handler.handle(_record())
-    clock.now += 0.5
     handler.handle(_record())
+
     assert handler.dropped == 2
-    assert capsys.readouterr().err.count("dropped") == 1
-
-    clock.now += 0.5
-    handler.handle(_record())
-    err = capsys.readouterr().err
-    assert handler.dropped == 3
-    assert err.count("dropped") == 1
-    assert "3 record(s) dropped" in err
-
-
-def test_json_mode_drop_notice_is_a_json_line(
-    clock: _Clock, capsys: pytest.CaptureFixture[str]
-):
-    """Covers AE7."""
-    handler = _StructlogQueueHandler(queue.Queue(maxsize=1), json=True)
-    handler.handle(_record())
-    handler.handle(_record())
-    handler.handle(_record())
-
-    lines = capsys.readouterr().err.splitlines()
-    assert len(lines) == 1
-    data = json.loads(lines[0])
-    assert data["event"] == "log_records_dropped"
-    assert data["count"] == 1
-    assert data["level"] == "warning"
-    assert data["timestamp"].endswith("Z")
+    # Der Aufrufer schreibt nie selbst (Plan 2026-10-06-1811, U3).
+    assert capsys.readouterr().err == ""
 
 
 def test_shut_down_queue_counts_instead_of_raising(
@@ -189,9 +174,7 @@ def test_shut_down_queue_counts_instead_of_raising(
     handler.handle(_record())
 
     assert handler.dropped == 1
-    err = capsys.readouterr().err
-    assert "Traceback" not in err
-    assert "1 record(s) dropped" in err
+    assert capsys.readouterr().err == ""
 
 
 def test_second_start_neither_raises_nor_starts_a_second_thread():
@@ -282,13 +265,11 @@ def test_atexit_hook_is_registered_exactly_once():
         atexit.register(shutdown_logging)
 
 
-def test_after_fork_hook_resets_queue_and_drop_state(
-    clock: _Clock, capsys: pytest.CaptureFixture[str]
-):
+def test_after_fork_hook_resets_queue_and_drop_state():
     handler = _StructlogQueueHandler(queue.Queue(maxsize=1))
     handler.handle(_record())
     handler.handle(_record())
-    assert capsys.readouterr().err.count("dropped") == 1
+    assert handler.dropped == 1
 
     assert dropped_log_records() >= 1
 
@@ -299,7 +280,6 @@ def test_after_fork_hook_resets_queue_and_drop_state(
         handler.handle(_record())
         handler.handle(_record())
         assert handler.dropped == 1
-        assert "1 record(s) dropped" in capsys.readouterr().err
 
     assert run_in_forked_child(child) == 0
 
@@ -576,3 +556,208 @@ def test_a_stop_racing_a_restart_leaves_no_orphaned_listener_thread() -> None:
 
     assert not _listener_threads()
     assert [r.getMessage() for r in target.records] == ["first", "in-window"]
+
+
+class _BlockingStream(io.StringIO):
+    """Ziel-Stream, dessen ``write`` bis ``release`` blockiert -- wie stderr
+    auf einer vollen Pipe (Analyse S1)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def write(self, s: str) -> int:
+        self.entered.set()
+        self.release.wait()
+        return super().write(s)
+
+
+class _Blocked(types.SimpleNamespace):
+    stream: _BlockingStream
+    handler: _StructlogQueueHandler
+    log: logging.Logger
+    recorder: _RecordingHandler
+
+
+def _blocked_listener_with_full_queue(
+    monkeypatch: pytest.MonkeyPatch, *, json_mode: bool = False
+) -> _Blocked:
+    """Listener haengt im ``write`` auf ``sys.stderr``, die Queue ist voll.
+    Hinter dem Stream sammelt ein zweiter Ziel-Handler die Records."""
+    stream = _BlockingStream()
+    monkeypatch.setattr(sys, "stderr", stream)
+    target = logging.StreamHandler(stream)
+    target.setFormatter(build_formatter(json_mode, colors=False))
+    recorder = _RecordingHandler()
+    handler = _StructlogQueueHandler(
+        queue.Queue(maxsize=1), target, recorder, json=json_mode
+    )
+    log = logging.Logger("swarmq.tests.u3")
+    log.addHandler(handler)
+    log.warning("first")
+    assert stream.entered.wait(timeout=1)
+    log.warning("fills-the-queue")
+    return _Blocked(stream=stream, handler=handler, log=log, recorder=recorder)
+
+
+def _drop_reports(target: _RecordingHandler) -> list[logging.LogRecord]:
+    return [r for r in target.records if r.getMessage() == "log_records_dropped"]
+
+
+def test_a_drop_returns_at_once_while_the_target_stream_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocked = _blocked_listener_with_full_queue(monkeypatch)
+    try:
+        caller = threading.Thread(target=blocked.log.warning, args=("dropped",))
+        caller.start()
+        caller.join(timeout=1)
+
+        assert not caller.is_alive()
+        assert blocked.handler.dropped == 1
+    finally:
+        blocked.stream.release.set()
+
+
+def test_after_release_the_listener_reports_the_drops_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocked = _blocked_listener_with_full_queue(monkeypatch)
+    blocked.log.warning("dropped-1")
+    blocked.log.warning("dropped-2")
+
+    blocked.stream.release.set()
+    shutdown_logging()
+
+    reports = _drop_reports(blocked.recorder)
+    assert [r.count for r in reports] == [2]  # type: ignore[attr-defined]
+    assert reports[0].name == "swarmq.logging"
+    assert reports[0].levelno == logging.WARNING
+    assert blocked.stream.getvalue().count("log_records_dropped") == 1
+
+
+def test_json_mode_drop_report_is_a_valid_json_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Covers AE7."""
+    blocked = _blocked_listener_with_full_queue(monkeypatch, json_mode=True)
+    blocked.log.warning("dropped")
+
+    blocked.stream.release.set()
+    shutdown_logging()
+
+    lines = blocked.stream.getvalue().splitlines()
+    reports = [json.loads(line) for line in lines if "log_records_dropped" in line]
+    assert len(reports) == 1
+    assert reports[0]["event"] == "log_records_dropped"
+    assert reports[0]["count"] == 1
+    assert reports[0]["level"] == "warning"
+    assert reports[0]["logger"] == "swarmq.logging"
+    assert reports[0]["timestamp"].endswith("Z")
+
+
+def test_a_drop_with_closed_stderr_neither_raises_nor_goes_uncounted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = io.StringIO()
+    closed.close()
+    monkeypatch.setattr(sys, "stderr", closed)
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=1))
+    log = logging.Logger("swarmq.tests.u3")
+    log.addHandler(handler)
+
+    log.warning("fills-the-queue")
+    log.warning("dropped")
+
+    assert handler.dropped == 1
+
+
+class _AliveThread(_DeadThread):
+    """Ein laufender Listener-Thread, ohne dass ein Thread die Queue leert:
+    Der Test ruft ``listener.handle`` selbst auf."""
+
+    def is_alive(self) -> bool:
+        return True
+
+
+def test_drop_reports_come_at_most_once_per_second_with_the_full_count(
+    clock: _Clock,
+) -> None:
+    target = _RecordingHandler()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target)
+    listener = handler.listener
+    assert listener is not None
+    listener._thread = _AliveThread()  # type: ignore[assignment]
+    try:
+        handler.handle(_record(msg="fills-the-queue"))
+        handler.handle(_record(msg="dropped"))
+        listener.handle(_record(msg="a"))
+        assert [r.count for r in _drop_reports(target)] == [1]  # type: ignore[attr-defined]
+
+        clock.now += 0.5
+        handler.handle(_record(msg="dropped"))
+        handler.handle(_record(msg="dropped"))
+        listener.handle(_record(msg="b"))
+        assert [r.count for r in _drop_reports(target)] == [1]  # type: ignore[attr-defined]
+
+        clock.now += 0.5
+        listener.handle(_record(msg="c"))
+        assert [r.count for r in _drop_reports(target)] == [1, 3]  # type: ignore[attr-defined]
+        listener.handle(_record(msg="d"))
+        assert [r.count for r in _drop_reports(target)] == [1, 3]  # type: ignore[attr-defined]
+    finally:
+        listener._thread = None
+
+
+class _GateHandler(_RecordingHandler):
+    """Haelt den Listener bei jedem Record ``hold-*`` fest, bis dessen
+    Freigabe gesetzt ist; meldet jeden geschriebenen Record."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered: collections.defaultdict[str, threading.Event] = (
+            collections.defaultdict(threading.Event)
+        )
+        self.release: collections.defaultdict[str, threading.Event] = (
+            collections.defaultdict(threading.Event)
+        )
+        self.seen = threading.Condition()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if msg.startswith("hold-"):
+            self.entered[msg].set()
+            self.release[msg].wait()
+        with self.seen:
+            super().emit(record)
+            self.seen.notify_all()
+
+    def wait_for(self, msg: str) -> bool:
+        with self.seen:
+            return self.seen.wait_for(
+                lambda: msg in [r.getMessage() for r in self.records], timeout=1
+            )
+
+
+def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:
+    target = _GateHandler()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target)
+    log = logging.Logger("swarmq.tests.u3")
+    log.addHandler(handler)
+    try:
+        for round_ in ("1", "2"):
+            log.warning("hold-%s", round_)
+            assert target.entered[f"hold-{round_}"].wait(timeout=1)
+            log.warning("fill-%s", round_)
+            log.warning("dropped")
+            target.release[f"hold-{round_}"].set()
+            assert target.wait_for(f"fill-{round_}")
+        assert [r.count for r in _drop_reports(target)] == [1]  # type: ignore[attr-defined]
+
+        shutdown_logging()
+    finally:
+        for event in target.release.values():
+            event.set()
+
+    assert [r.count for r in _drop_reports(target)] == [1, 2]  # type: ignore[attr-defined]

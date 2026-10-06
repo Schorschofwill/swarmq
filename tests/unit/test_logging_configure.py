@@ -67,6 +67,11 @@ from __future__ import annotations
 # 31. Ein ``shutdown_logging``, waehrend dessen ein Eintrag den beendeten
 #     Datei-Modus-Thread durch einen neuen ersetzt, laesst den neuen nicht
 #     verwaist weiterlaufen.
+# Plan 2026-10-06-1811, U3 (R1, KTD2) -- Drop-Meldung im Datei-Modus-Listener:
+# 32. Volle begrenzte dictConfig-Queue: Nach dem Freigeben kommt genau eine
+#     Meldung ``log_records_dropped`` ueber die Handler des Listeners.
+# 33. Beim Stoppen meldet der Datei-Modus-Listener noch nicht gemeldete
+#     Drops, auch innerhalb der Frist (Zeit gemockt).
 import io
 import json
 import logging
@@ -78,6 +83,7 @@ import threading
 import types
 import weakref
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 import structlog
@@ -825,3 +831,110 @@ def test_a_shutdown_racing_a_file_mode_restart_leaves_no_orphaned_thread(
 
     assert not set(threading.enumerate()) - before
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_first", "evt_in_window"]
+
+
+def _bounded_blocking_queue_config() -> dict[str, Any]:
+    """dictConfig: ``QueueHandler`` mit Queue der Groesse 1 vor dem
+    blockierenden Sammel-Handler."""
+    return {
+        "version": 1,
+        "handlers": {
+            "rec": {"()": _BLOCKING_RECORDING},
+            "q": {
+                "class": "logging.handlers.QueueHandler",
+                "handlers": ["rec"],
+                "queue": {"()": "queue.Queue", "maxsize": 1},
+            },
+        },
+        "root": {"level": "INFO", "handlers": ["q"]},
+    }
+
+
+def _drop_reports() -> list[logging.LogRecord]:
+    return [r for r in FILE_RECORDS if r.getMessage() == "log_records_dropped"]
+
+
+def test_a_file_mode_listener_reports_drops_after_release(
+    tmp_path: pathlib.Path,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    FILE_HANDLER_ENTERED.clear()
+    FILE_HANDLER_RELEASE.clear()
+    FILE_RECORDS.clear()
+    path = _config_file(tmp_path, _bounded_blocking_queue_config())
+    configure_logging(LoggingSettings(log_config=path))
+    log = logging.getLogger("swarmq.tests.queued")
+    try:
+        log.warning("evt_busy")
+        assert FILE_HANDLER_ENTERED.wait(5)
+        log.warning("evt_queued")
+        log.warning("evt_overflow")
+        log.warning("evt_overflow")
+    finally:
+        FILE_HANDLER_RELEASE.set()
+    shutdown_logging()
+
+    reports = _drop_reports()
+    assert [r.count for r in reports] == [2]  # type: ignore[attr-defined]
+    assert reports[0].name == "swarmq.logging"
+    assert reports[0].levelno == logging.WARNING
+
+
+GATE_ENTERED: dict[str, threading.Event] = {}
+GATE_RELEASE: dict[str, threading.Event] = {}
+GATE_SEEN = threading.Condition()
+
+
+class GateRecordingHandler(RecordingHandler):
+    """Haelt den Listener der dictConfig bei jedem Record ``evt_hold_*`` fest,
+    bis dessen Freigabe in ``GATE_RELEASE`` gesetzt ist."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if msg.startswith("evt_hold_"):
+            GATE_ENTERED[msg].set()
+            GATE_RELEASE[msg].wait()
+        with GATE_SEEN:
+            super().emit(record)
+            GATE_SEEN.notify_all()
+
+
+def _wait_for_file_record(msg: str) -> bool:
+    with GATE_SEEN:
+        return GATE_SEEN.wait_for(
+            lambda: msg in [r.getMessage() for r in FILE_RECORDS], timeout=1
+        )
+
+
+def test_stopping_a_file_mode_listener_reports_held_back_drops(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import shutdown_logging
+
+    monkeypatch.setattr("swarmq.logging_file.time.monotonic", lambda: 100.0)
+    FILE_RECORDS.clear()
+    config = _bounded_blocking_queue_config()
+    config["handlers"]["rec"] = {"()": f"{__name__}.GateRecordingHandler"}
+    configure_logging(LoggingSettings(log_config=_config_file(tmp_path, config)))
+    log = logging.getLogger("swarmq.tests.queued")
+    rounds = ("evt_hold_1", "evt_hold_2")
+    for hold in rounds:
+        GATE_ENTERED[hold] = threading.Event()
+        GATE_RELEASE[hold] = threading.Event()
+    try:
+        for hold in rounds:
+            log.warning(hold)
+            assert GATE_ENTERED[hold].wait(1)
+            log.warning("evt_fill_%s", hold)
+            log.warning("evt_overflow")
+            GATE_RELEASE[hold].set()
+            assert _wait_for_file_record(f"evt_fill_{hold}")
+        assert [r.count for r in _drop_reports()] == [1]  # type: ignore[attr-defined]
+
+        shutdown_logging()
+    finally:
+        for event in GATE_RELEASE.values():
+            event.set()
+
+    assert [r.count for r in _drop_reports()] == [1, 2]  # type: ignore[attr-defined]
