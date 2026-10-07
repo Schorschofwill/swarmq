@@ -32,6 +32,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `2` | Bad arguments (argparse-detected usage error), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
 | `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. |
+| `130` | Interrupted by Ctrl-C (`KeyboardInterrupt`, 128 + `SIGINT`) outside the command's own handling, for example while modules are imported. A running command or worker treats Ctrl-C as a graceful shutdown and exits `0`. |
 
 `78` follows `sysexits.h`. Every configuration error, whether it
 surfaces in the parent process or inside a worker subprocess, ends the
@@ -49,6 +50,12 @@ too: a CPU worker whose silently restarted forkserver was rejected stops
 consuming, logs `compute_fork_source_rejected` and exits with it; the
 supervisor logs `worker_fork_source_rejected` and restarts it with a
 fresh forkserver within the budget.
+
+If a given-up log thread is still stuck after the final flush, the
+`swarmq` command ends via `os._exit` with the exit code it would have had
+(a traceback or `SystemExit` message goes to stderr first, if stderr
+does not block) instead of aborting with `Fatal Python error` (exit
+`134`) or hanging. See [Logging](logging.md#bounded-flushing).
 
 For `swarmq worker`, level `DEBUG` (`--log-level DEBUG` or
 `SWARMQ_LOG_LEVEL=DEBUG`) adds the full Python traceback to connection
@@ -92,7 +99,7 @@ swarmq worker --module DOTTED.PATH
 | `--pool {io,cpu}` | `io` | Execution pool. `cpu` runs every task body in a compute child forked from a pre-warmed forkserver: the loop process never computes, `hard_timeout` and cancel kill the child. POSIX only; not combinable with `--autoscale`. See the [CPU mode guide](../guides/cpu-mode.md). |
 | `--log-level LEVEL` | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Root level of every SwarmQ process. Env var: `SWARMQ_LOG_LEVEL`. |
 | `--log-format FORMAT` | `human` | `human` or `json` on stderr. JSON is fit for Loki, Datadog, CloudWatch. Env var: `SWARMQ_LOG_FORMAT` (alias `SWARMQ_LOG_JSON=true/false`; `SWARMQ_LOG_FORMAT` wins). |
-| `--log-config PATH` | unset | Logging `dictConfig` file (JSON; YAML with PyYAML installed) applied in every SwarmQ process instead of the built-in setup. Validated once by the supervisor. Not combinable with an explicit format or `--no-configure-logging`. Env var: `SWARMQ_LOG_CONFIG`. See [Logging](logging.md#own-dictconfig-file-log-config). |
+| `--log-config PATH` | unset | Logging `dictConfig` file (JSON; YAML with PyYAML installed) applied in every SwarmQ process (compute children included) instead of the built-in setup. Validated once by the supervisor and again before every `SIGHUP` reload, in a separate process with a 30-second limit while supervision continues; an invalid file (`log_config_reload_failed`) or a check that runs out of time (`log_config_reload_probe_timeout`) keeps the running workers. Not combinable with an explicit format or `--no-configure-logging`. Env var: `SWARMQ_LOG_CONFIG`. See [Logging](logging.md#own-dictconfig-file-log-config). |
 | `--no-configure-logging` | configure | Set up no logging in any SwarmQ process; your task module or `--configure` hook owns it. Env var: `SWARMQ_CONFIGURE_LOGGING=false`. |
 | `--logger-level NAME=LEVEL` | none | Level for one logger, e.g. `aio_pika=WARNING` or `swarmq.task=WARNING`. Repeatable; applied last. Env var: `SWARMQ_LOGGER_LEVELS` (comma-separated). |
 | `--log-queue-size N` | `10000` | Capacity of the in-process log queue; when it is full, records are dropped instead of blocking. Env var: `SWARMQ_LOG_QUEUE_SIZE`. |

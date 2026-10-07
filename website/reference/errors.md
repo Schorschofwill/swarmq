@@ -469,6 +469,28 @@ than the conflict limit allows.
 deterministic step ids keep it idempotent. Import it from
 `swarmq.exceptions` if you need it in tests.
 
+## Outside the hierarchy: `ForkSourceRejected`
+
+`swarmq.supervision.ForkSourceRejected` is a `RuntimeError`, not a
+`SwarmQError`, so `except SwarmQError` does not catch it.
+
+**When raised.** By `Worker.start()` (and so `app.start_worker()`) of an
+embedded CPU pool, after the worker shut down gracefully because its
+pool rejected the forkserver: the forkserver restarted silently and
+then ran more than one thread, so forking from it is no longer safe.
+
+**Cause.** A thread started at import time in the forkserver, usually
+a BLAS/OpenMP computation, a logging `QueueListener` of your app or
+the opt-in log queue. The worker logs
+`forkserver_restarted_multithreaded` with the thread names and a hint,
+then `compute_fork_source_rejected`.
+
+**Recovery.** Restart the worker process; a new process brings a fresh
+forkserver. Under `swarmq worker` this happens on its own: the worker
+subprocess exits with code `71` and the supervisor restarts it within
+the restart budget (`worker_fork_source_rejected`). See the
+[CPU mode guide](../guides/cpu-mode.md).
+
 ## See also
 
 - [API reference](api.md) — the methods that raise these exceptions

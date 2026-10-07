@@ -54,21 +54,20 @@ flowchart TD
     Run["await Task.run(*args, **kwargs)"]
     Store["store result in Valkey<br/>(sq:result:{task_id})"]
     Ack["basic.ack"]
-    Nack["basic.nack(requeue=False)"]
-    DLQ["RabbitMQ routes to {queue}.XQ"]
+    DLQ["worker publishes to {queue}.XQ<br/>(confirmed), then basic.ack"]
 
     Deliver --> Run
     Run -->|success or handled error| Store
     Store --> Ack
-    Run -->|retry_exhausted / NoRetry / expired| Nack
-    Nack --> DLQ
+    Run -->|retry_exhausted / NoRetry / expired| DLQ
 ```
 
 The ack-after-store sequence is the reason for the delivery
 guarantee: if the worker crashes between `Run` and `Store`, RabbitMQ
 still holds the message and will redeliver it. If the worker crashes
-between `Store` and `Ack`, the result is already durable — the
-redelivery will see the finished state and skip the rerun.
+between `Store` and `Ack`, the result is already durable, but the
+redelivery runs the task again (see
+[Redelivery scenarios](#1-worker-crash-between-store-and-ack)).
 
 ## What aborts the ack
 
@@ -228,8 +227,9 @@ that, write idempotent task bodies.
 Retries are a first-class path. The DLQ is the terminal path. A task
 reaches the DLQ by one of four routes:
 
-1. **Retry exhaustion.** The last retry raised. The worker nacks with
-   `requeue=False`, the broker routes via DLX to `{queue}.XQ`.
+1. **Retry exhaustion.** The last retry raised. The worker publishes
+   the message to `{queue}.XQ` (with `x-swarmq-traceback`) and acks
+   the original once the broker confirmed it.
 2. **`NoRetry`.** The task body raised `NoRetry("reason")`. This
    skips the retry decision entirely — straight to DLQ.
 3. **Broker-native delivery-limit.** RabbitMQ has redelivered the

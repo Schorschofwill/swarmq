@@ -75,6 +75,16 @@ task_info = TaskInfo(
 )
 ```
 
+Ist Valkey bei der Prüfung nicht erreichbar (oder antwortet nicht
+innerhalb von `SWARMQ_BACKEND_OP_TIMEOUT`), wird die Nachricht nicht
+rate-limitiert, sondern mit eigenem Backoff über die Delay-Queue
+zurückgestellt: kein `TASK_RATE_LIMITED`, `rate_limit_count` bleibt
+unverändert, und der Worker loggt `task_deferred_backend_unavailable`
+(`gate="rate_limit"`). Jeder andere Fehler der Prüfung loggt
+`rate_limit_check_failed` (ERROR) und reiht die Nachricht an derselben
+Stelle neu ein. Siehe
+[Zustellsemantik](../explanation/delivery-semantics.md#was-den-ack-abbricht).
+
 ## Global vs Per-Worker
 
 Jeder Worker-Prozess trifft denselben Valkey-Counter, also ist das

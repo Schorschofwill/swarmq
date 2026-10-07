@@ -58,10 +58,11 @@ class RateLimitGate:
             )
         except Exception as exc:
             # The limiter is the only side-effect-free decision-point we
-            # have. If Valkey is unreachable we cannot decide safely;
-            # nack(requeue=True) so the broker hands the message to the
-            # next worker that may have a healthier client. Important:
-            # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
+            # have. If Valkey is unreachable we cannot decide safely: an
+            # outage defers the message with backoff, any other error
+            # requeues it (nack) so the delivery limit still applies.
+            # Important: this runs BEFORE any FIRE_AND_FORGET ack — no
+            # data loss.
             if is_backend_outage(exc):
                 # Backend weg: zurueckstellen statt das Zustellbudget per
                 # Requeue zu verbrauchen; die Zurueckstellung loggt die eine

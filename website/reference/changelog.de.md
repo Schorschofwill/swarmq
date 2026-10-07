@@ -80,7 +80,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `swarmq.process_manager.reload`** (bisher `swarmq.process_manager.run`).
   Eine Prüfung der `--log-config`-Datei, die in ihre Frist von 30
   Sekunden läuft, wird stattdessen als `log_config_reload_probe_timeout`
-  gemeldet.
+  gemeldet. Die übrigen Reload-Events `process_manager_reload_execvp`,
+  `reload_aborted_alive_children` und `reload_execvp_failed` kommen vom
+  selben Logger (bisher `swarmq.process_manager.supervisor`).
 - **Der Befehl `swarmq` startet über `swarmq.cli:console_main`** (bisher
   `swarmq.cli:main`), wie `python -m swarmq.cli`. Er beendet den Prozess
   hart, wenn nach dem letzten Leeren noch ein Log-Thread feststeckt
@@ -264,7 +266,7 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Zustellung auf den Socket-Timeout des Valkey-Clients (10 s je
   Versuch, dazu dessen Wiederholungen). Diese Aufrufe sind jetzt durch
   `SWARMQ_BACKEND_OP_TIMEOUT` (Standard 5 s) begrenzt; ein Timeout gilt
-  als nicht erreichbares Backend, die Nachricht wird wie unten
+  als nicht erreichbares Backend, die Nachricht wird wie oben
   beschrieben zurückgestellt. Die Ergebnis-Benachrichtigung nach einem
   Cancel vor dem Start und das Abschließen oder Freigeben eines
   Schedule-Fire-Claims sind genauso begrenzt; ein Timeout dort loggt
@@ -290,7 +292,6 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Queue-Deklaration, `WORKER_ONLINE`) ließ dessen Election- und
   Poll-Tasks weiterlaufen; der Prozess erneuerte den
   Scheduler-Leader-Lock, und kein anderer Worker wurde Leader.
-
 - **Eine volle Log-Queue hält den loggenden Code nicht mehr an.** Bei
   blockiertem stderr schrieb der Aufrufer — im Event-Loop — die
   Drop-Meldung selbst, und der Loop stand sekundenlang still (2,9 s

@@ -63,7 +63,7 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | `TASK_STARTED` | Before `run()` is called | `task_id`, `task_name`, `queue` |
 | `TASK_COMPLETED` | After `run()` succeeds | `task_id`, `task_name`, `queue`, `duration_ms` |
 | `TASK_FAILED` | After **every** failed attempt (`run()` raised or timed out), before the retry-or-DLQ decision | `task_id`, `task_name`, `queue`, `exception` (string) |
-| `TASK_RETRYING` | Before a retry is published | `task_id`, `task_name`, `queue`, `retry_count` (the upcoming attempt's retry number), `delay` (seconds) |
+| `TASK_RETRYING` | Before a retry is published (not when a message is deferred because the backend is unreachable before execution; that deferral fires no signal) | `task_id`, `task_name`, `queue`, `retry_count` (the upcoming attempt's retry number), `delay` (seconds) |
 | `TASK_CANCELLED` | When a cancel flag is observed mid-run | `task_id`, `task_name`, `queue` |
 | `TASK_EXPIRED` | When `max_age` is exceeded at pickup; the message goes to the DLQ | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` |
 | `TASK_LOCKED` | When the task's lock is held by another execution at pickup (lock conflict); the message is requeued with a delay | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |

@@ -76,7 +76,10 @@ All notable changes to SwarmQ. This project follows
 - **`log_config_reload_failed` now comes from the logger
   `swarmq.process_manager.reload`** (was `swarmq.process_manager.run`).
   A check of the `--log-config` file that runs into its 30-second limit
-  is reported as `log_config_reload_probe_timeout` instead.
+  is reported as `log_config_reload_probe_timeout` instead. The other
+  reload events `process_manager_reload_execvp`,
+  `reload_aborted_alive_children` and `reload_execvp_failed` moved to
+  the same logger (was `swarmq.process_manager.supervisor`).
 - **The `swarmq` command starts through `swarmq.cli:console_main`**
   (was `swarmq.cli:main`), like `python -m swarmq.cli`. It ends the
   process hard when a log thread is still stuck after the final flush
@@ -243,7 +246,7 @@ All notable changes to SwarmQ. This project follows
   timeout (10 s per attempt, plus its retries). These calls are now
   bounded by `SWARMQ_BACKEND_OP_TIMEOUT` (default 5 s); a timeout counts
   as an unreachable backend, and the message is deferred as described
-  below. The result notification after a pre-start cancel and the
+  above. The result notification after a pre-start cancel and the
   completion or release of a schedule-fire claim are bounded the same
   way; a timeout there logs `publish_notification_failed` or
   `schedfire_finalize_failed` and the worker carries on. A lock acquire
@@ -266,7 +269,6 @@ All notable changes to SwarmQ. This project follows
   `WORKER_ONLINE`), left its election and poll tasks running; the
   process kept renewing the scheduler leader lock and no other worker
   could become leader.
-
 - **A full log queue no longer stalls the code that logs.** With a
   blocked stderr the drop notice was written by the caller — on the
   event loop — which stood still for seconds (2.9 s measured; without a

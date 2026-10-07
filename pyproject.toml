@@ -93,7 +93,8 @@ testpaths = ["tests"]
 timeout = 30
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
 # Stress, Soak, Property, Fuzz, Mutation laufen nur explizit via
-# `pytest -m chaos` o.ä. — Dev-Loop bleibt <= 15s.
+# `pytest -m chaos` o.ä. — der Dev-Loop bleibt schnell (Regel in AGENTS.md:
+# jeder Unit-Test < 100 ms, keine feste Gesamtgrenze).
 addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation'"
 markers = [
     "unit: unit tests",

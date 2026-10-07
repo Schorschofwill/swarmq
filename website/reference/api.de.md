@@ -90,7 +90,11 @@ Mit `log_queue=True` hängt die letzte Instanz beim Exit die
 [Opt-in-Log-Queue](logging.md#opt-in-log-queue) sofort ab und wartet
 dann, ohne den Event-Loop anzuhalten, auf deren restliche Einträge,
 höchstens `log_drain_timeout` Sekunden (Vorgabe 5). Was bis dahin nicht
-geschrieben ist, gilt als verworfen.
+geschrieben ist, gilt als verworfen. Das Warten läuft in einem eigenen
+Thread und funktioniert daher auch, wenn der Default-Executor des Loops
+schon heruntergefahren ist. Wird `__aexit__` während des Wartens
+abgebrochen, propagiert der Abbruch sofort, und das Leeren läuft im
+Hintergrund bis zur Frist weiter.
 
 ### `schedule()`
 
@@ -387,7 +391,13 @@ async def start_worker(self) -> None
 
 Betritt die Consumer-Schleife. Kehrt bei Shutdown (SIGTERM/SIGINT)
 zurück. Wird von der CLI (`swarmq worker`) aufgerufen; aus
-Anwendungscode selten direkt.
+Anwendungscode selten direkt. Wird der Start abgebrochen oder scheitert
+er, nachdem der eingebettete Scheduler gestartet ist, werden dessen
+Election- und Poll-Tasks gestoppt, bevor die Exception propagiert. Mit
+`pool="cpu"` wirft es nach einem geordneten Herunterfahren
+`swarmq.supervision.ForkSourceRejected`, wenn der Pool einen still neu
+gestarteten Forkserver verworfen hat; siehe
+[Fehlerkatalog](errors.md#auerhalb-der-hierarchie-forksourcerejected).
 
 ## `class TaskInfo`
 
@@ -756,6 +766,52 @@ Positionsargument durch `SwarmQ` gereicht. Seit 0.2.0 nennen die
 Konstruktor-Signaturen von `Worker` und `Client` diese Verträge statt
 der konkreten Klassen — bestehender Code läuft unverändert.
 
+### Protokolle der Koordinations-Stores
+
+`swarmq.contracts` definiert die Protokolle, die Worker und Scheduler auf
+diesen Stores aufrufen. Du brauchst sie nur, wenn du einen eigenen Store
+schreibst (für Tests oder ein anderes Backend). Auszug der Signaturen,
+deren Vertrag sich in 0.9.0 geändert hat:
+
+```python
+from swarmq.contracts import RateLimitStore, ScheduleStore
+
+class RateLimitStore(Protocol):
+    async def check(self, name: str, *, max_requests: int,
+                    window_ms: int) -> RateLimitDecision: ...
+
+class ScheduleStore(Protocol):
+    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None,
+                          payload: bytes | None, owner: str,
+                          fired_ts_ms: int | None = None) -> bool: ...
+    async def claim_fire(self, fire_key: str, ttl_ms: int, *,
+                         owner: str | None = None,
+                         takeover: str | Sequence[str] | None = None) -> bool: ...
+    async def release_fire_claim(self, fire_key: str, *,
+                                 owner: str | None = None) -> None: ...
+```
+
+- `RateLimitStore.check` muss `BackendConnectionError` werfen, wenn das
+  Backend nicht erreichbar ist (Verbindungsfehler, Timeout). Nur dann
+  stellt der Worker die Nachricht mit Backoff zurück; jede andere
+  Exception, auch `BackendResponseError`, führt zum Requeue an derselben
+  Stelle.
+- `ScheduleStore.commit_fire(fired_ts_ms=...)` greift nur, solange der
+  Zeitplan noch genau diesen Score im Fire-Index hat; ein Commit, der
+  verworfen wird, weil der Zeitplan seit dem Poll deaktiviert, entfernt
+  oder umgeplant wurde, liefert trotzdem `True` (`False` heißt nur, dass
+  die Leader-Prüfung scheiterte).
+- `ScheduleStore.claim_fire(owner=..., takeover=...)` schreibt den
+  In-Flight-Claim mit dem Owner-Token atomar. Es liefert `True`, wenn der
+  Claim frei war oder eines der `takeover`-Tokens trug (ein Token oder
+  eine Folge); der Claim gehört danach `owner` mit neuer TTL.
+- `ScheduleStore.release_fire_claim(owner=...)` löscht den Claim nur,
+  solange er noch dieses Token trägt (Compare-and-Delete).
+
+Worker und Scheduler übergeben die neuen Schlüsselwörter immer; ein Store
+von Dritten, der sie nicht annimmt, wirft daher bei jedem Fire
+`TypeError`.
+
 ## Dependency Injection (Dishka)
 
 Optional; Installation mit `pip install 'swarmq[dishka]'`.
@@ -842,7 +898,9 @@ Alle Library-Exceptions erben von `SwarmQError` und lassen sich aus
 ...`). `WorkflowStateConflict` ist die eine Exception, die nicht im
 Top-Level-Paket steht; importiere sie aus `swarmq.exceptions`.
 Detaillierte Semantik und `Wann geraist` / `Ursache` / `Recovery` pro
-Klasse leben im [Fehlerkatalog](errors.md).
+Klasse leben im [Fehlerkatalog](errors.md). `ForkSourceRejected`, das
+ein eingebetteter CPU-Worker wirft, ist ein `RuntimeError` in
+`swarmq.supervision`.
 
 ## Siehe auch
 

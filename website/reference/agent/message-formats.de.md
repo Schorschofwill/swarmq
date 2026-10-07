@@ -44,14 +44,15 @@ bedeutet, das Feature ist nicht aktiv.
 | `x-swarmq-unique-hash` | `string` (hex) | Client | SHA-256 der kanonischen `(name, args, kwargs)`. |
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | Wann der Worker den Dedup-Flag freigibt. |
 | `x-swarmq-schedfire` | `int` (Unix-ms) | Scheduler | Vorhanden auf scheduler-publishten Nachrichten; Worker dedupt darauf. |
-| `x-swarmq-schedfire-claim` | `string` | Worker (Kopie eines Schedule-Fires) | Owner-Token des In-Flight-Claims, den die Zustellung hielt, aus der diese Kopie stammt; die Kopie übernimmt diesen Claim, statt ihn als Duplikat zu werten. |
-| `x-swarmq-backend-defer-count` | `int` | Worker (Backend-Zurückstellung) | Wie oft eine Prüfung vor der Ausführung diese Nachricht zurückgestellt hat, weil das Backend nicht erreichbar war; bestimmt die nächste Wartezeit. Kein Retry-Zähler. Kopien, die entstehen, nachdem das Backend geantwortet hat (Retry, Rate-Limit-Treffer, Lock-Konflikt), tragen ihn nicht. |
+| `x-swarmq-schedfire-claim` | `string` (kommagetrennte Tokens) | Worker (Kopie eines Schedule-Fires) | Owner-Tokens des In-Flight-Claims des Fires, neuestes zuerst, höchstens 16: das Token der Zustellung, aus der diese Kopie stammt, gefolgt von den Tokens, die dieser Zustellung angeboten wurden (ein Claim, dessen Antwort verloren ging, kann jedes davon tragen). Die Kopie übernimmt einen Claim mit einem dieser Tokens, statt ihn als Duplikat zu werten. Gesetzt bei Kopien für Zurückstellung, Retry, Rate-Limit und Lock sowie bei der Kopie, die ein Requeue ersetzt, wenn die Freigabe des Claims scheiterte; ein Requeue an Ort und Stelle (`nack`) trägt ihn nie. Der Worker liest höchstens 16 Tokens. |
+| `x-swarmq-backend-defer-count` | `int` | Worker (Backend-Zurückstellung) | Wie oft eine Prüfung vor der Ausführung diese Nachricht zurückgestellt hat, weil das Backend nicht erreichbar war; bestimmt die nächste Wartezeit. Kein Retry-Zähler. Kopien, die entstehen, nachdem das Backend geantwortet hat (Retry, Rate-Limit-Treffer, Lock-Konflikt), tragen ihn nicht, und die Zählung beginnt neu, wenn die Zustellung einen Broker-Zähler trägt (`x-delivery-count`/`x-acquired-count` größer 0, der Broker hat die Nachricht also zurückgegeben). |
 | `x-swarmq-lock-render-error` | `string` | Worker (Lock-Template-Fehler) | Warum das Lock-Template nicht gerendert werden konnte; die Nachricht geht in die DLQ. |
 | `x-swarmq-lock-conflict-count` | `int` | Worker (Lock-Konflikt) | Bisherige Konflikte; beim 10. geht die Nachricht in die DLQ. |
 | `x-swarmq-lock-name` | `string` | Worker (Lock-Konflikt) | Gerenderter Lock-Name, auf den sich die Konflikte beziehen. |
 | `x-swarmq-rate-limit-count` | `int` | Worker (Rate-Limit) | Wie oft die Nachricht am Rate-Limit abgeprallt ist. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow, zu dem die Nachricht gehört (nur Workflow-Schritte). |
 | `x-swarmq-workflow-step` | `string` | Client / Worker | Schrittpfad im Workflow (nur Workflow-Schritte). |
+| `x-delivery-count`, `x-acquired-count` | `int` | RabbitMQ (Quorum-Queues) | Zustellzähler des Brokers; der Worker prüft `x-delivery-count` gegen `SWARMQ_DELIVERY_LIMIT`. Jede Kopie, die SwarmQ veröffentlicht (Retry, Zurückstellung, Rate-Limit, Lock), lässt sie weg; die Kopie ist eine neue Nachricht mit eigenem Zustellbudget. |
 | `x-death` | `array` | RabbitMQ | Broker-native DLX-Audit-Trail. |
 
 ## Task-Ergebnis (Valkey)

@@ -143,7 +143,7 @@ Fuer Worker-Subprozesse bleibt `spawn` die Wahl; fuer Rechenkinder ist es
 |--------|---------------|----------------|
 | **SIGINT** (Ctrl+C) | Shutdown einleiten, Event setzen | **IGNORIEREN** (`signal.SIG_IGN`) |
 | **SIGTERM** | Shutdown einleiten, Event setzen | `loop.add_signal_handler()` → lokales Shutdown-Event |
-| **SIGHUP** | Reload-Flag setzen, Shutdown einleiten | Ignoriert (Parent kuemmert sich) |
+| **SIGHUP** | Nur Reload vormerken; der Monitor-Loop prueft ggf. `--log-config` (Probe ausserhalb des Handlers), stoppt dann die Worker und fuehrt `execvpe` aus. SIGTERM/SIGINT verwerfen einen ausstehenden oder beschlossenen Reload | Ignoriert (Parent kuemmert sich) |
 | **SIGCHLD** | Zombie-Vermeidung via `os.waitpid()` | Nicht relevant |
 
 ## 3.3 Warum SIGINT im Worker ignorieren
@@ -317,13 +317,22 @@ def _on_sigchld(signum, frame):
 
 ## 5.4 Exit-Codes
 
+Stand 0.9.0 (`swarmq/supervision.py`, `Supervisor._handle_exit_code`); der
+urspruengliche Prototyp kannte noch einen Code 2 fuer "Restart angefordert",
+den es nicht mehr gibt (Reload laeuft per `SIGHUP` und `execvpe`).
+
 | Code | Bedeutung | Restart? |
 |------|-----------|----------|
-| 0 | Normaler Shutdown | Nein |
-| 1 | Unbehandelter Fehler | Ja (mit Backoff) |
-| 2 | Restart angefordert | Ja (sofort) |
+| 0 | Normaler Shutdown (Burst-Drain o. ae.) | Nein, Slot wird stillgelegt |
+| 78 | Konfigurationsfehler (`EX_CONFIG`, `worker_config_error`) | Nein, Supervisor endet mit 1 |
+| 75 | Recycling ohne Bestaetigung (`EX_TEMPFAIL`, `worker_recycle_noack`) | Ja (normaler Restart-Pfad) |
+| 71 | CPU-Pool hat seine Fork-Quelle verworfen (`ForkSourceRejected`, `worker_fork_source_rejected`) | Ja, mit frischem Forkserver (normaler Restart-Pfad) |
+| 1 / sonstige | Unbehandelter Fehler | Ja (mit Backoff, `MAX_RESTARTS`) |
 | -9 (137) | SIGKILL / OOM-Killer | Ja (mit Backoff) |
-| -15 | SIGTERM | Nein (kontrolliert) |
+| -15 | SIGTERM | Nur nach Supervisor-Entscheid (`expected_shutdown`) kein Restart |
+
+Haengt nach dem Leeren noch ein aufgegebener Log-Thread, endet der
+Worker-Subprozess per `os._exit` mit genau diesem Code (`logging_drain.py`).
 
 ## 5.5 Bekanntes Problem: `is_alive()` Verzoegerung bei `spawn`
 
@@ -633,4 +642,6 @@ nach `SHUTDOWN_TERM_S` SIGKILL; das zaehlt gegen ein eigenes Budget von
 Recycling-Absicht wird genauso beantwortet, ohne Kill; der Worker drainiert
 danach selbst. Exit 0 ohne `expected_shutdown` (Burst) wird nicht
 nachgefuellt; Exit 78 (Konfigurationsfehler) beendet den Supervisor mit 1;
-Exit 75 (Recycling ohne Bestaetigung) nimmt den normalen Restart-Pfad.
+Exit 75 (Recycling ohne Bestaetigung) und Exit 71 (verworfene Fork-Quelle
+des CPU-Pools, frischer Forkserver beim Neustart) nehmen den normalen
+Restart-Pfad.

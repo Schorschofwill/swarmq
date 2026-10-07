@@ -18,7 +18,12 @@ unterschiedlichen Ausführungs-Stufen.
 | `tests/soak/` | `soak` | – | manuell in der Pipeline | 1h Last-Test mit Leak-Detection |
 
 `addopts` in `pyproject.toml` schliesst opt-in-Marker per Default aus,
-damit `pytest tests/unit` ≤ 15s bleibt.
+damit der Dev-Loop schnell bleibt. Für Unit-Tests gilt die Regel aus
+`AGENTS.md`: jeder Unit-Test < 100 ms, Richtwert rund 15 ms im Mittel. Eine
+feste Grenze für die Gesamtlaufzeit gibt es nicht — sie darf mit der Zahl der
+Tests wachsen. Ein Unit-Test, der dauerhaft länger braucht (echte Prozesse,
+Timer, Fork), wandert nach `tests/integration/`, statt abgeschwächt zu werden.
+Langsame Tests findet `pytest tests/unit --durations=20`.
 
 ## CI-Stufen
 
@@ -67,36 +72,26 @@ und die SaaS-Runner weisen den Job mit `ci_quota_exceeded` ab, weil der
 Free-Plan keine Minuten mehr hat. Das ist eine bewusste Abweichung von
 KTD15 aus Plan U2.
 
-**Vor jedem Release örtlich fahren**, mit laufendem Docker:
-
-```bash
-uv run --extra test --extra reload pytest -m chaos tests/chaos -q
-uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q
-# Chaos-Kombinationen (Prozess-Abstürze, Scheduler-Failover) gegen den Teststack:
-SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-  uv run --extra test pytest -m chaos tests/e2e/combinations -q
-```
-
-Das vollständige Gate über alle opt-in-Marker deckt die Zeilen oben ab und
-nimmt Stress- und Property-Tests mit:
+**Vor jedem Release örtlich fahren**, mit laufendem Docker. Zuerst die
+Standard-Suite (Unit, Integration, E2E) gegen den Teststack:
 
 ```bash
 SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-  uv run --extra test --extra reload pytest tests -q \
-  -m "chaos or stress or property or fuzz"
+  uv run --extra test --extra reload pytest tests -q
 ```
 
-Die Chaos-Kombinationen in `tests/e2e/combinations` waren von Mai bis
-Oktober 2026 nie in einem Gate und deshalb unbemerkt rot (SIGUSR1 ohne
-Handler, eine nicht existierende CLI-Option, Supervisor- statt Kind-Kill).
-Ohne Toxiproxy überspringt die Suite acht Toxiproxy-Tests; die übrigen
-sechzehn müssen grün sein. Die Ports 5699/6399 sind Pflicht: Die Suite leert
-Valkey nach jedem Test, auf 6379 träfe das einen fremden Stack.
+Erwartung (Stand 2026-10-07): **3476 passed, 2 skipped**.
 
-Toxiproxy neben dem Teststack: `docker-compose.chaos.yml` startet den
-Haupt-Stack auf 5672/6379 mit. Ist das belegt, einen eigenen Toxiproxy im
-Host-Netz starten und Proxy-Ports sowie Upstreams per Env setzen — dann
-laufen alle 24 Tests:
+Dann das vollständige Chaos-Gate über alle opt-in-Marker. Es umfasst
+`tests/chaos` (eigene Compose-Stacks), den Chaos-gestützten Fuzz-Lauf
+`tests/fuzz/test_external_publish_fuzz.py`, die Chaos-Kombinationen in
+`tests/e2e/combinations` (Prozess-Abstürze, Scheduler-Failover,
+Backend-/Broker-Ausfälle über Toxiproxy) sowie Stress- und Property-Tests.
+Die Kombinationen brauchen einen Toxiproxy neben dem Teststack: Ohne ihn
+überspringen sie die zwölf Toxiproxy-Tests, und das Gate ist nicht
+vollständig. `docker-compose.chaos.yml` startet den Haupt-Stack auf
+5672/6379 mit; ist das belegt, einen eigenen Toxiproxy im Host-Netz starten
+und Proxy-Ports sowie Upstreams per Env setzen:
 
 ```bash
 docker run -d --name swarmq-test-toxiproxy --network host \
@@ -106,14 +101,33 @@ SWARMQ_TEST_TOXIPROXY_HOST=127.0.0.1 SWARMQ_TEST_TOXIPROXY_PORT=8474 \
 SWARMQ_TEST_TOXIPROXY_RMQ_PORT=5698 SWARMQ_TEST_TOXIPROXY_VALKEY_PORT=6398 \
 SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM=127.0.0.1:5699 \
 SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM=127.0.0.1:6399 \
+  uv run --extra test --extra reload pytest tests -q \
+  -m "chaos or stress or property or fuzz"
+```
+
+Erwartung (Stand 2026-10-07): **113 passed, 4 skipped** (117 Tests). Die
+vier Skips sind begründet und sollen so bleiben — `libfaketime` fehlt (auf
+die U3.x-Stressreihe vertagt), und die drei Disk-Pressure-Tests stehen
+hinter `SWARMQ_RUN_DISK_TESTS=1`, weil sie unter geteilter Last flattern.
+Jeder weitere Skip (etwa ein nicht erreichbarer Toxiproxy) heißt: Gate nicht
+bestanden.
+
+Einzeln, etwa zum Nachfahren eines roten Teils:
+
+```bash
+uv run --extra test --extra reload pytest -m chaos tests/chaos -q        # 41 Tests, 37 passed + 4 skipped
+uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q  # 2 passed
+# Chaos-Kombinationen, mit den Toxiproxy-Variablen von oben: 28 passed
+SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
   uv run --extra test pytest -m chaos tests/e2e/combinations -q
 ```
 
-Erwartung (Stand 2026-09-22): **37 passed, 4 skipped** in rund vier Minuten,
-und **2 passed** für den Fuzz-Lauf. Die vier Skips sind begründet und
-sollen so bleiben — `libfaketime` fehlt (auf die U3.x-Stressreihe vertagt),
-und die drei Disk-Pressure-Tests stehen hinter `SWARMQ_RUN_DISK_TESTS=1`,
-weil sie unter geteilter Last flattern.
+Die Chaos-Kombinationen in `tests/e2e/combinations` waren von Mai bis
+Oktober 2026 nie in einem Gate und deshalb unbemerkt rot (SIGUSR1 ohne
+Handler, eine nicht existierende CLI-Option, Supervisor- statt Kind-Kill).
+Ohne Toxiproxy überspringt die Suite zwölf Toxiproxy-Tests; die übrigen
+sechzehn müssen grün sein. Die Ports 5699/6399 sind Pflicht: Die Suite leert
+Valkey nach jedem Test, auf 6379 träfe das einen fremden Stack.
 
 Wer die Suite in einer Umgebung fährt, in der ein fehlender Stack ein
 Fehler sein soll statt eines Skips, setzt `SWARMQ_REQUIRE_CHAOS=1`. Dann

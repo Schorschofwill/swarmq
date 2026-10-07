@@ -89,7 +89,10 @@ With `log_queue=True`, the last instance to exit detaches the
 [opt-in log queue](logging.md#opt-in-log-queue) at once and then waits
 for its remaining records without blocking the event loop, at most
 `log_drain_timeout` seconds (default 5). Records not written by then
-count as dropped.
+count as dropped. The wait runs on a thread of its own, so it also works
+after the loop's default executor was shut down. If `__aexit__` is
+cancelled while waiting, the cancellation propagates at once and the
+flush continues in the background up to the deadline.
 
 ### `schedule()`
 
@@ -378,7 +381,12 @@ async def start_worker(self) -> None
 
 Enter the consumer loop. Returns on shutdown (SIGTERM/SIGINT).
 Called by the CLI (`swarmq worker`); rarely invoked directly from
-application code.
+application code. If the start is cancelled or fails after the embedded
+scheduler started, its election and poll tasks are stopped before the
+exception propagates. With `pool="cpu"` it raises
+`swarmq.supervision.ForkSourceRejected` after a graceful shutdown when
+the pool rejected a silently restarted forkserver; see the
+[error catalog](errors.md#outside-the-hierarchy-forksourcerejected).
 
 ## `class TaskInfo`
 
@@ -740,6 +748,50 @@ as the second positional argument. Since 0.2.0 the constructor
 signatures of `Worker` and `Client` name these contracts instead of
 the concrete classes — existing code keeps working unchanged.
 
+### Coordination store protocols
+
+`swarmq.contracts` defines the protocols the worker and the scheduler
+call on these stores. You only need them when you write a store of your
+own (for tests or another backend). Excerpt of the signatures whose
+contract changed in 0.9.0:
+
+```python
+from swarmq.contracts import RateLimitStore, ScheduleStore
+
+class RateLimitStore(Protocol):
+    async def check(self, name: str, *, max_requests: int,
+                    window_ms: int) -> RateLimitDecision: ...
+
+class ScheduleStore(Protocol):
+    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None,
+                          payload: bytes | None, owner: str,
+                          fired_ts_ms: int | None = None) -> bool: ...
+    async def claim_fire(self, fire_key: str, ttl_ms: int, *,
+                         owner: str | None = None,
+                         takeover: str | Sequence[str] | None = None) -> bool: ...
+    async def release_fire_claim(self, fire_key: str, *,
+                                 owner: str | None = None) -> None: ...
+```
+
+- `RateLimitStore.check` must raise `BackendConnectionError` when the
+  backend is unreachable (connection error, timeout). Only then does the
+  worker defer the message with backoff; any other exception, including
+  `BackendResponseError`, requeues it in place.
+- `ScheduleStore.commit_fire(fired_ts_ms=...)` applies the commit only
+  while the schedule still has exactly this score in the fire index; a
+  commit discarded because the schedule was disabled, removed or
+  rescheduled since the poll still returns `True` (`False` means only
+  that the leader check failed).
+- `ScheduleStore.claim_fire(owner=..., takeover=...)` writes the
+  in-flight claim with the owner token atomically. It returns `True`
+  when the claim was free or held one of the `takeover` tokens (one token
+  or a sequence); the claim then belongs to `owner` with a fresh TTL.
+- `ScheduleStore.release_fire_claim(owner=...)` deletes the claim only
+  while it still holds this token (compare-and-delete).
+
+Worker and scheduler always pass the new keywords, so a third-party
+store that does not accept them raises `TypeError` on every fire.
+
 ## Dependency injection (Dishka)
 
 Optional; install with `pip install 'swarmq[dishka]'`.
@@ -826,7 +878,8 @@ from `swarmq` (`from swarmq import TaskError, WorkflowNotFound, ...`).
 `WorkflowStateConflict` is the one exception left out of the
 top-level package; import it from `swarmq.exceptions`. Detailed
 semantics and `When raised` / `Cause` / `Recovery` for each class
-live in the [error catalog](errors.md).
+live in the [error catalog](errors.md). `ForkSourceRejected`, raised by
+an embedded CPU worker, is a `RuntimeError` in `swarmq.supervision`.
 
 ## See also
 

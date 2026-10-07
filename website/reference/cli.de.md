@@ -33,6 +33,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `2` | Ungültige Argumente (argparse-Usage-Fehler), auch `swarmq dlq retry` mit `task_id` und `--all` zugleich oder mit keinem von beiden (Meldung auf stderr). Nicht unter `swarmq worker --check`: Dort kommen argparse-Fehler als JSON mit Exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` fand keinen passenden DLQ-Eintrag |
 | `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig, ungültige Logging-Einstellungen oder Logging-Konfigurationsdatei (`LoggingConfigError`). Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. |
+| `130` | Durch Strg-C unterbrochen (`KeyboardInterrupt`, 128 + `SIGINT`), außerhalb der Behandlung durch den Befehl selbst, etwa während Module importiert werden. Ein laufender Befehl oder Worker behandelt Strg-C als Graceful Shutdown und endet mit `0`. |
 
 `78` folgt `sysexits.h`. Jeder Konfigurationsfehler, ob er im
 Elternprozess oder in einem Worker-Subprozess auftritt, beendet den
@@ -51,6 +52,13 @@ intern: Ein CPU-Worker, dessen still neu gestarteter Forkserver verworfen
 wurde, hört auf zu konsumieren, loggt `compute_fork_source_rejected` und
 endet damit; der Supervisor loggt `worker_fork_source_rejected` und
 startet ihn im Budget mit frischem Forkserver neu.
+
+Hängt nach dem letzten Leeren noch ein aufgegebener Log-Thread, endet
+der `swarmq`-Befehl per `os._exit` mit dem Exit-Code, den er sonst gehabt
+hätte (ein Traceback oder die Meldung eines `SystemExit` geht vorher auf
+stderr, sofern stderr nicht blockiert), statt mit `Fatal Python error`
+(Exit `134`) abzubrechen oder zu hängen. Siehe
+[Logging](logging.md#begrenztes-leeren).
 
 Für `swarmq worker` fügt Level `DEBUG` (`--log-level DEBUG` oder
 `SWARMQ_LOG_LEVEL=DEBUG`) den vollen Python-Traceback zu
@@ -95,7 +103,7 @@ swarmq worker --module DOTTED.PATH
 | `--pool {io,cpu}` | `io` | Ausführungspool. `cpu` führt jeden Task-Körper in einem Rechenkind aus einem vorgewärmten Forkserver aus: der Loop-Prozess rechnet nie, `hard_timeout` und Cancel töten das Kind. Nur POSIX; nicht mit `--autoscale` kombinierbar. Siehe [CPU-Modus](../guides/cpu-mode.md). |
 | `--log-level LEVEL` | `INFO` | Einer aus `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Root-Level jedes SwarmQ-Prozesses. Env-Var: `SWARMQ_LOG_LEVEL`. |
 | `--log-format FORMAT` | `human` | `human` oder `json` auf stderr. JSON passt zu Loki, Datadog, CloudWatch. Env-Var: `SWARMQ_LOG_FORMAT` (Alias `SWARMQ_LOG_JSON=true/false`; `SWARMQ_LOG_FORMAT` gewinnt). |
-| `--log-config PATH` | nicht gesetzt | Logging-`dictConfig`-Datei (JSON; YAML mit installiertem PyYAML), die in jedem SwarmQ-Prozess statt der eingebauten Einrichtung gilt. Der Supervisor prüft sie einmal. Nicht kombinierbar mit einem ausdrücklichen Format oder `--no-configure-logging`. Env-Var: `SWARMQ_LOG_CONFIG`. Siehe [Logging](logging.md#eigene-dictconfig-datei-log-config). |
+| `--log-config PATH` | nicht gesetzt | Logging-`dictConfig`-Datei (JSON; YAML mit installiertem PyYAML), die in jedem SwarmQ-Prozess (auch in den Rechenkindern) statt der eingebauten Einrichtung gilt. Der Supervisor prüft sie einmal und erneut vor jedem `SIGHUP`-Reload, in einem eigenen Prozess mit 30 Sekunden Frist, während die Überwachung weiterläuft; eine ungültige Datei (`log_config_reload_failed`) oder eine Prüfung, deren Frist abläuft (`log_config_reload_probe_timeout`), lässt die laufenden Worker weiterlaufen. Nicht kombinierbar mit einem ausdrücklichen Format oder `--no-configure-logging`. Env-Var: `SWARMQ_LOG_CONFIG`. Siehe [Logging](logging.md#eigene-dictconfig-datei-log-config). |
 | `--no-configure-logging` | konfigurieren | In keinem SwarmQ-Prozess Logging einrichten; dein Task-Modul oder `--configure`-Hook ist zuständig. Env-Var: `SWARMQ_CONFIGURE_LOGGING=false`. |
 | `--logger-level NAME=LEVEL` | keine | Level eines einzelnen Loggers, z. B. `aio_pika=WARNING` oder `swarmq.task=WARNING`. Wiederholbar; zuletzt angewandt. Env-Var: `SWARMQ_LOGGER_LEVELS` (komma-separiert). |
 | `--log-queue-size N` | `10000` | Kapazität der prozessinternen Log-Queue; ist sie voll, werden Einträge verworfen statt zu blockieren. Env-Var: `SWARMQ_LOG_QUEUE_SIZE`. |

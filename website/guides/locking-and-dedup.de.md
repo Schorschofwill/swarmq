@@ -77,6 +77,16 @@ Wenn der Worker eine Nachricht aufnimmt, deren Lock gehalten wird:
 - Ist `max_age` des Tasks gesetzt, läuft sie irgendwann in die DLQ,
   statt ewig zu retry'n.
 
+Ist Valkey beim Acquire nicht erreichbar (oder antwortet nicht
+innerhalb von `SWARMQ_BACKEND_OP_TIMEOUT`), ist das kein Konflikt: Die
+Nachricht wird mit eigenem Backoff über die Delay-Queue
+zurückgestellt, ohne `TASK_LOCKED` und ohne `lock_conflict_count` zu
+erhöhen, und der Worker loggt `task_deferred_backend_unavailable`
+(`gate="lock"`, `lock_name`). Jeder andere Fehler des Acquire loggt
+`lock_acquire_failed` (ERROR) und reiht die Nachricht an derselben
+Stelle neu ein. Ein Acquire, der nach Ablauf der Frist in Valkey doch
+noch ausgeführt wurde, lässt den Lock bis zu seiner TTL gehalten.
+
 Der Delay backed off — wiederholte Misses erweitern die Wartezeit.
 Die meisten Lock-nutzenden Tasks wollen `max_age` als
 Sicherheitsnetz, damit ein stuck Holder die Queue nicht dauerhaft

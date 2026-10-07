@@ -49,7 +49,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads je Rechenkind (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Sekunden zwischen In-Task-Cancel-Flag-Checks. |
-| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze in Sekunden für einzelne Valkey-Operationen in der Worker-Pipeline: Cancel-Check, Dedup-Prüfung und Claim eines Schedule-Fires, Rate-Limit-Prüfung, Lock-Acquire, Ergebnis-Schreiben. Läuft eine Prüfung vor der Ausführung hinein, gilt das Backend als nicht erreichbar und die Nachricht wird zurückgestellt. |
+| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze in Sekunden für einzelne Valkey-Operationen in der Worker-Pipeline: Cancel-Check, Dedup-Prüfung und Claim eines Schedule-Fires, Rate-Limit-Prüfung, Lock-Acquire, Lesen des Ergebnisses eines abgebrochenen Workflow-Schritts, Ergebnis-Schreiben, Ergebnis-Benachrichtigung nach einem Abbruch vor dem Start sowie Abschluss oder Freigabe eines Schedule-Fire-Claims. Läuft eine Prüfung vor der Ausführung hinein, gilt das Backend als nicht erreichbar und die Nachricht wird zurückgestellt, statt auf das Socket-Timeout des Valkey-Clients zu warten. Muss `> 0` sein. |
 | `SWARMQ_BACKEND_DEFER_BASE_DELAY` | `1.0` | Sekunden, die eine Nachricht nach ihrer ersten Zurückstellung wartet, wenn eine Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) das Backend nicht erreicht. Jede weitere Zurückstellung derselben Nachricht verdoppelt die Wartezeit. Jede Wartezeit streut zufällig um ±20 %, damit gemeinsam zurückgestellte Nachrichten nicht gemeinsam wiederkommen. Die Nachricht geht als neue Nachricht über die Delay-Queue zurück, eine lange Backend-Störung verbraucht also weder `max_retries` noch das Zustelllimit. |
 | `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Obergrenze der verdoppelten Wartezeit in Sekunden, vor der Streuung um ±20 % (eine einzelne Wartezeit kann also bis zum 1,2-Fachen dieses Werts betragen); mindestens `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Begrenzt, wie lange eine Nachricht nach der Rückkehr des Backends noch wartet. |
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |
@@ -95,7 +95,7 @@ beenden `swarmq worker` mit Exit `78`.
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Sekunden zwischen Leader-Heartbeat-Renews. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader-Lock-TTL; muss `≥ 2 × heartbeat_interval` sein. |
 | `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup-TTL für scheduler-initiierte Dispatches. |
-| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | Pre-Run-Marker-TTL während ein geplanter Task läuft. |
+| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL des Schedule-Fire-Claims, den ein Worker hält, während ein geplanter Task läuft. Ein Claim, der nicht freigegeben werden konnte, blockiert eine erneute Zustellung desselben Fires höchstens so lange als Duplikat. |
 
 ### Observability
 

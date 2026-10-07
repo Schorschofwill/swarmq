@@ -126,6 +126,15 @@ Additional DLQ paths:
   worker's delivery-count gate (`task_sent_to_dlq` with
   `error_type=WorkerHungError`), broker-native DLQ as the last resort.
 
+Not a DLQ path: a check before execution (schedule-fire dedup, cancel
+check, rate limit, lock) that cannot reach Valkey defers the message
+with backoff through the delay queue as a new message
+(`task_deferred_backend_unavailable`). This uses neither `max_retries`
+nor the delivery limit, so an outage of any length never dead-letters a
+task. An error reply from Valkey (`BackendResponseError`) is requeued in
+place instead and reaches the DLQ through the delivery limit if it
+persists.
+
 ## When should I use a signal handler vs middleware?
 
 ```mermaid

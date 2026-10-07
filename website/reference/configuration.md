@@ -48,7 +48,7 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads per compute child (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Seconds between in-task cancel-flag checks. |
-| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Upper bound in seconds on individual Valkey ops in the worker pipeline: cancel check, schedule-fire dedup and claim, rate-limit check, lock acquire, result writes. A check before execution that runs into it counts as an unreachable backend and defers the message. |
+| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Upper bound in seconds on individual Valkey ops in the worker pipeline: cancel check, schedule-fire dedup and claim, rate-limit check, lock acquire, the result read of a cancelled workflow step, result writes, the result notification after a pre-start cancel, and the completion or release of a schedule-fire claim. A check before execution that runs into it counts as an unreachable backend and defers the message instead of waiting for the Valkey client's socket timeout. Must be `> 0`. |
 | `SWARMQ_BACKEND_DEFER_BASE_DELAY` | `1.0` | Seconds a message waits after its first deferral when a check before execution (schedule-fire dedup, cancel check, rate limit, lock) cannot reach the backend. Each further deferral of the same message doubles the wait. Every wait varies randomly by ±20 % so messages deferred together do not return together. The message goes back through the delay queue as a new message, so a long backend outage neither consumes `max_retries` nor the delivery limit. |
 | `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Upper bound for the doubled wait in seconds, before the ±20 % variation (so a single wait can be up to 1.2 times this value); must be at least `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Bounds how long a message can wait after the backend is back. |
 | `SWARMQ_BURST_MODE` | `false` | If `true`, worker exits after `SWARMQ_BURST_IDLE_TIMEOUT` seconds of queue silence. |
@@ -94,7 +94,7 @@ with exit `78`.
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Seconds between leader heartbeat renewals. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × heartbeat_interval`. |
 | `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup TTL for scheduler-originated dispatches. |
-| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | Pre-run marker TTL while a scheduled task is executing. |
+| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL of the schedule-fire claim a worker holds while a scheduled task runs. A claim that could not be released blocks a redelivery of the same fire as a duplicate for at most this long. |
 
 ### Observability
 

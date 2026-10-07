@@ -121,8 +121,10 @@ nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
 | Locks | Valkey-Key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
 | Cancel-Flags | Valkey-Key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
 | Dedup-Marker | Valkey-Key `sq:unique:{hash}` | `unique_for` Sekunden |
-| Scheduler-Einträge | Valkey ZSET `sq:sched:*` | Bis gefeuert oder entfernt |
-| Leader-Election | Valkey-Key `sq:sched:leader` | Per Heartbeat erneuert |
+| Scheduler-Einträge | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Bis gefeuert oder entfernt |
+| Claims von Schedule-Fires | Valkey-Key `sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |
+| Erledigte Schedule-Fires | Valkey-Key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
+| Leader-Election | Valkey-Key `sq:lock:{sched}:leader` | Per Heartbeat erneuert |
 
 In-Process-State — die Task-Registry, der Middleware-Stack, der
 Signal-Dispatcher — wird bei jedem Worker-Start aus deinem
@@ -143,10 +145,14 @@ eine Task-Queue tatsächlich braucht:
 - **Quorum-Queue-Redelivery-Limits.** `x-delivery-limit=20` kappt
   den Schaden einer pathologischen Redelivery-Schleife, ohne die
   Nachricht zu verlieren — der 21. Versuch landet in der DLQ.
-- **Natives DLQ-Routing.** Wenn ein Worker ohne Requeue nackt
-  (Retry-Erschöpfung, `NoRetry`, Lock-Render-Fehler), routet
-  RabbitMQ die Nachricht automatisch nach `{queue}.XQ`. Keine
-  Application-Level-Kopie.
+- **Natives DLQ-Routing.** Jede Queue wird mit einem
+  Dead-Letter-Exchange deklariert: Eine Nachricht, die der Worker
+  ablehnt (nicht dekodierbar, unregistrierter Task) oder die das
+  Zustelllimit erreicht, landet ohne Worker-Code in `{queue}.XQ`. Bei
+  Retry-Erschöpfung, `NoRetry`, `max_age` und Lock-Fehlern publiziert
+  der Worker selbst nach `{queue}.XQ`, mit Diagnose-Headern
+  (`x-swarmq-traceback` u. a.), und bestätigt das Original erst, wenn
+  der Broker die Kopie bestätigt hat.
 - **Per-Consumer-Prefetch.** Concurrency ist eine client-seitige
   AMQP-Einstellung, kein Server-Feature. Ein Flag ändert die
   In-Flight-Tiefe, ohne die Queue-Topologie zu berühren.
@@ -198,7 +204,7 @@ bleiben im Loop-Prozess. Siehe [CPU-Modus](../guides/cpu-mode.md).
 |---|---|---|
 | Worker-Prozess-Crash | In-Flight-Tasks werden nach Visibility von RabbitMQ redelivered | Supervisor startet Worker neu (`--processes N` Default) |
 | Worker verliert Broker-Verbindung | Dieser Worker konsumiert nicht mehr; andere laufen weiter | `connect_robust()` reconnected; unacknowledgte Tasks redelivern |
-| Worker verliert Backend-Verbindung | Task-Ausführung läuft weiter; Result-Writes buffern und retry | `valkey-py` reconnected automatisch |
+| Worker verliert Backend-Verbindung | Prüfungen vor der Ausführung (Schedule-Fire-Dedup, Cancel, Rate-Limit, Lock) stellen die Nachricht mit wachsendem Backoff über die Delay-Queue zurück; ein gescheiterter Result-Write reiht die Nachricht neu ein, und der Task läuft erneut | `valkey-py` verbindet sich neu; zurückgestellte Nachrichten kommen spätestens nach `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) zurück |
 | RabbitMQ-Restart | Alle Worker reconnecten; unacknowledgte Nachrichten redelivern | Quorum-Queues überleben einzelnen Node-Verlust nativ |
 | Valkey-Restart | Aktive Locks, Rate-Counter und Leader-Lock laufen ab | Clients und Worker erwerben sie bei nächster Operation neu |
 | Client crasht nach Publish | Task läuft trotzdem; Ergebnis liegt `result_ttl` in Valkey | Wer die `task_id` hat, kann weiterhin `get_result()` aufrufen |

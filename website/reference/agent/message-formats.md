@@ -44,14 +44,15 @@ means the feature is not active.
 | `x-swarmq-unique-hash` | `string` (hex) | Client | SHA-256 of canonical `(name, args, kwargs)`. |
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | When the worker releases the dedup flag. |
 | `x-swarmq-schedfire` | `int` (unix ms) | Scheduler | Present on scheduler-published messages; worker dedupes on it. |
-| `x-swarmq-schedfire-claim` | `string` | Worker (copy of a schedule fire) | Owner token of the fire's in-flight claim held by the delivery this copy came from; the copy takes that claim over instead of treating it as a duplicate. |
-| `x-swarmq-backend-defer-count` | `int` | Worker (backend deferral) | How often a check before execution deferred this message because the backend was unreachable; sets the next wait. Not a retry count. Copies made after the backend answered (retry, rate-limit hit, lock conflict) do not carry it. |
+| `x-swarmq-schedfire-claim` | `string` (comma-separated tokens) | Worker (copy of a schedule fire) | Owner tokens of the fire's in-flight claim, newest first, at most 16: the token of the delivery this copy came from, followed by the tokens that delivery was offered (a claim whose reply was lost may hold any of them). The copy takes a claim held by one of these tokens over instead of treating it as a duplicate. Set on deferral, retry, rate-limit and lock copies and on the copy that replaces a requeue when releasing the claim failed; a requeue in place (`nack`) never carries it. The worker reads at most 16 tokens. |
+| `x-swarmq-backend-defer-count` | `int` | Worker (backend deferral) | How often a check before execution deferred this message because the backend was unreachable; sets the next wait. Not a retry count. Copies made after the backend answered (retry, rate-limit hit, lock conflict) do not carry it, and the count starts over when the delivery carries a broker counter (`x-delivery-count`/`x-acquired-count` above 0, i.e. the broker handed the message back). |
 | `x-swarmq-lock-render-error` | `string` | Worker (lock render failure) | Why the lock template could not be rendered; the message is DLQ-routed. |
 | `x-swarmq-lock-conflict-count` | `int` | Worker (lock conflict) | Conflicts so far; at 10 the message is DLQ-routed. |
 | `x-swarmq-lock-name` | `string` | Worker (lock conflict) | Rendered lock name the conflicts refer to. |
 | `x-swarmq-rate-limit-count` | `int` | Worker (rate limit) | How often the message bounced off its rate limit. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow the message belongs to (workflow steps only). |
 | `x-swarmq-workflow-step` | `string` | Client / Worker | Step path inside the workflow (workflow steps only). |
+| `x-delivery-count`, `x-acquired-count` | `int` | RabbitMQ (quorum queues) | Broker delivery counters; the worker checks `x-delivery-count` against `SWARMQ_DELIVERY_LIMIT`. Every copy SwarmQ publishes (retry, deferral, rate-limit, lock) drops them, so the copy is a new message with its own delivery budget. |
 | `x-death` | `array` | RabbitMQ | Broker-native DLX audit trail. |
 
 ## Task result (Valkey)
