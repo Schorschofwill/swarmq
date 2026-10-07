@@ -26,8 +26,7 @@ import importlib
 import os
 import sys
 
-from swarmq.logging import install_fork_source_sentinel
-from swarmq.logging_queue import mark_fork_source
+from swarmq.logging_forksource import install_fork_source_sentinel, mark_fork_source
 from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV
 
 

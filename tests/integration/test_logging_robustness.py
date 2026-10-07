@@ -32,6 +32,11 @@ beendet es mit Exit 1 und Stack, falls es doch haengt.
 # - [x] (Review A4) stdout und stderr auf derselben vollen Pipe, stdout mit
 #       gepufferten Daten, Listener haengt an stderr: Das harte Ende kommt
 #       trotzdem (Exit-Code 7), ``flush`` von stdout blockiert es nicht.
+# Restpunkte (Release 0.9.0):
+# - [x] stdout auf einer fast vollen Pipe (eine Seite frei, ``poll`` meldet
+#       beschreibbar), mehr als ``PIPE_BUF`` Bytes gepuffert, ein Log-Thread
+#       haengt anderswo: Das harte Ende kommt trotzdem mit seinem Code (3);
+#       der ``flush`` von stdout blockiert es nicht.
 # Test list (U5, echter Prozess; Vorlage ``s3_aexit_stall``):
 # - [x] Opt-in, langsamer App-Handler, Records in der Queue: Der maximale
 #       Loop-Lag waehrend ``__aexit__`` liegt unter 100 ms (im Kind
@@ -305,6 +310,57 @@ def test_the_hard_exit_is_not_blocked_by_stdout_on_the_same_full_pipe(
         os.close(r)  # erst jetzt: Die Pipe wird nie geleert
 
     assert returncode == 7, dump.read_text() if dump.exists() else ""
+
+
+_NEARLY_FULL_CHILD = f"""
+import faulthandler, logging, sys, threading
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True, file=open(sys.argv[1], "w"))
+
+from swarmq.logging_drain import abandon, exit_if_log_thread_stuck
+
+stuck = threading.Thread(target=threading.Event().wait, daemon=True)
+stuck.start()
+abandon(stuck, [logging.NullHandler()])  # haengt nicht an stdout
+sys.stdout.write("x" * 8000)  # Pipe: blockgepuffert, mehr als PIPE_BUF
+exit_if_log_thread_stuck(3)
+raise SystemExit(4)
+"""
+
+
+def _nearly_full_pipe() -> tuple[int, int]:
+    """Pipe mit genau einer freien Seite: ``poll`` meldet sie beschreibbar,
+    ein Schreibvorgang ueber ``PIPE_BUF`` Bytes blockiert aber."""
+    r, w = os.pipe()
+    flags = fcntl.fcntl(w, fcntl.F_GETFL)
+    fcntl.fcntl(w, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    with contextlib.suppress(BlockingIOError):
+        while True:
+            os.write(w, b"\n" * select.PIPE_BUF)
+    fcntl.fcntl(w, fcntl.F_SETFL, flags)
+    os.read(r, select.PIPE_BUF)
+    return r, w
+
+
+def test_the_hard_exit_is_not_blocked_by_flushing_stdout_into_a_nearly_full_pipe(
+    tmp_path: Path,
+) -> None:
+    dump = tmp_path / "hang.txt"
+    r, w = _nearly_full_pipe()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _NEARLY_FULL_CHILD, str(dump)],
+            cwd=_REPO, stdout=w, stderr=subprocess.DEVNULL,
+        )
+        os.close(w)
+        try:
+            returncode = proc.wait(timeout=_HANG_DEADLINE_S + 5)
+        finally:
+            proc.kill()
+            proc.wait()
+    finally:
+        os.close(r)  # erst jetzt: Die Pipe wird nicht weiter geleert
+
+    assert returncode == 3, dump.read_text() if dump.exists() else ""
 
 
 _EMBEDDED_CHILD = f"""

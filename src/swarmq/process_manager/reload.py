@@ -153,6 +153,10 @@ def reexec(pm: Any, retcode: int) -> int:
         # anhaengiges Signal ueberleben ``execve``, der neue Supervisor
         # bekommt es, sobald ``ProcessManager.run`` die Signale freigibt.
         saved = _block_shutdown_signals()
+        # Die Maske gilt nur fuer diesen Thread. Nimmt ein anderer Thread das
+        # Signal an, liefe der Handler hier womoeglich erst nach der Pruefung;
+        # er stellt es dann erneut an diesen Thread zu, wo es anhaengig bleibt.
+        pm._reexec_holds_signals = saved is not None
         try:
             # KTD8: SIGTERM waehrend Stopp oder Leeren -- oder schon, waehrend
             # der Loop den Reload beschloss.
@@ -165,6 +169,7 @@ def reexec(pm: Any, retcode: int) -> int:
             # influence the re-exec'd interpreter's import resolution.
             os.execvpe(sys.executable, [sys.executable, *pm._startup_argv], pm._startup_env)
         finally:
+            pm._reexec_holds_signals = False
             _restore_signal_mask(saved)  # nur ohne ``execve`` erreicht
     except OSError as exc:
         logger.error("reload_execvp_failed", **_error_fields(exc))

@@ -18,7 +18,7 @@ import threading
 import time
 import traceback
 import weakref
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 from swarmq.logging_format import iso_utc
 
@@ -35,6 +35,31 @@ class Deadline:
         ``OverflowError`` scheitern. Ein Rueckhalt -- die Einstellungen
         lassen solche Fristen gar nicht erst zu."""
         return min(threading.TIMEOUT_MAX, max(0.0, self._end - time.monotonic()))
+
+
+_ACTIVE_DEADLINES: list[Deadline] = []
+"""Fristen der gerade laufenden Leerungen (``shutdown_logging``)."""
+
+
+@contextlib.contextmanager
+def draining_until(deadline: Deadline) -> Iterator[None]:
+    """Meldet ein Leeren mit Frist ``deadline`` an, solange es laeuft."""
+    _ACTIVE_DEADLINES.append(deadline)
+    try:
+        yield
+    finally:
+        _ACTIVE_DEADLINES.remove(deadline)
+
+
+# Ein Kind erbt kein laufendes Leeren: Der Thread, der es fuehrt, fehlt dort.
+os.register_at_fork(after_in_child=_ACTIVE_DEADLINES.clear)
+
+
+def drain_expired() -> bool:
+    """Laeuft ein Leeren, dessen Frist abgelaufen ist? Dann startet kein
+    Record mehr einen Listener: Den gaebe das Leeren sofort wieder auf,
+    obwohl er gesund ist. Der Record zaehlt als verworfen."""
+    return any(deadline.remaining() <= 0 for deadline in list(_ACTIVE_DEADLINES))
 
 
 def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
@@ -170,16 +195,39 @@ def exit_if_log_thread_stuck(code: int, exc: BaseException | None = None) -> Non
     _enter_buffered_busy" ab (Exit 134) oder haengt. Spaetere
     atexit-Funktionen laufen nicht; stdout und stderr werden vorher geleert,
     soweit das nicht blockiert (:func:`_flushable`).
+
+    Leeren und Ausgabe laufen in einem eigenen Thread, auf den das harte Ende
+    hoechstens ``FLUSH_BUDGET_S`` wartet: ``poll`` verspricht nur Platz fuer
+    ``PIPE_BUF`` Bytes, ein ``flush`` von mehr Daten in eine fast volle Pipe
+    blockierte sonst. O_NONBLOCK am fd ist keine Loesung: Es gaelte fuer die
+    gemeinsame File Description, also auch fuer Supervisor und Geschwister,
+    und bliebe nach dem Ende dieses Prozesses stehen.
     """
     if not any(thread.is_alive() for thread in _ABANDONED):
         return
+    with contextlib.suppress(RuntimeError):  # kein Thread mehr startbar
+        writer = threading.Thread(
+            target=_flush_and_report, args=(exc,), name="swarmq-log-exit", daemon=True,
+        )
+        writer.start()
+        writer.join(FLUSH_BUDGET_S)
+    _hard_exit(code)
+
+
+FLUSH_BUDGET_S = 0.2
+"""So lange wartet das harte Ende hoechstens auf das Leeren von stdout und
+stderr und die Ausgabe der Ausnahme."""
+
+
+def _flush_and_report(exc: BaseException | None) -> None:
+    """stdout und stderr leeren, soweit :func:`_flushable`, dann ``exc`` auf
+    fd 2 ausgeben."""
     for stream in (sys.stdout, sys.stderr):
         if _flushable(stream):
             with contextlib.suppress(Exception):
                 stream.flush()
     if exc is not None and (report := _exit_report(exc)):
         _write_fd2_if_free(report)
-    _hard_exit(code)
 
 
 _TRUNCATED = b"[...]\n"

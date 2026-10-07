@@ -89,11 +89,13 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `Fatal Python error` abzubrechen (Exit `134`) oder zu hängen.
   Registrierte `atexit`-Funktionen, die noch nicht gelaufen sind, laufen
   dann nicht mehr; stdout wird nicht geleert, wenn es sich die Datei oder
-  Pipe mit dem hängenden Stream teilt (`2>&1`, journald). Endet der
-  Befehl `swarmq` mit einer Ausnahme, geht ihr Traceback (oder die
-  Meldung eines `SystemExit`) vorher auf stderr, gekürzt auf 4096 Bytes
-  und nur, wenn stderr nicht blockiert; Strg-C endet dann mit `130`.
-  Apps, die SwarmQ einbetten, werden nie hart beendet.
+  Pipe mit dem hängenden Stream teilt (`2>&1`, journald), und stdout und
+  stderr werden höchstens 0,2 Sekunden lang geleert. Endet der Befehl
+  `swarmq`, ein Worker-Subprozess oder ein Rechenkind mit einer
+  Ausnahme, geht ihr Traceback (oder die Meldung eines `SystemExit`)
+  vorher auf stderr, gekürzt auf 4096 Bytes und nur, wenn stderr nicht
+  blockiert; Strg-C beendet den Befehl `swarmq` dann mit `130`. Apps,
+  die SwarmQ einbetten, werden nie hart beendet.
 - **Neue Events:** `log_handler_errors` (ein Handler, Filter oder
   Formatter hat geworfen; Feld `count`), `log_drain_timeout_exceeded`
   (eine Zeile direkt auf stderr, wenn ein Leeren die Frist überschritten
@@ -138,10 +140,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   lange dauern wie das Ziel: das Ende jedes SwarmQ-Prozesses, den
   Supervisor vor einem Reload (seine Worker waren schon gestoppt) und
   ein Rechenkind, dessen Ergebnis dann nie ankam. Jedes Leeren ist jetzt
-  durch `log_drain_timeout` begrenzt.
+  durch `log_drain_timeout` begrenzt. Records in einer Queue, deren
+  Listener nicht läuft, werden innerhalb der Frist geschrieben oder
+  danach als verworfen gezählt; bis das Leeren zurückkehrt, startet kein
+  Record mehr einen Listener, den das Leeren sofort wieder aufgäbe.
 - **`SwarmQ.__aexit__` mit `log_queue=True` hält den Event-Loop nicht
   mehr an**, während die Opt-in-Queue geleert wird (bis zu 12 s gemessen
-  mit einem langsamen Handler).
+  mit einem langsamen Handler). Wird es beim Warten abgebrochen, geht
+  der Abbruch sofort weiter, und das Leeren läuft im Hintergrund bis zur
+  Frist weiter.
 - **CPU-Pool mit Opt-in-Log-Queue:** Ein `swarmq.*`-Record, der beim
   Import geloggt wurde, während `SwarmQ(log_queue=True)` oder
   `SWARMQ_LOG_QUEUE=1` aktiv war (auch durch zweimaliges
@@ -174,7 +181,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   nach einem `SIGTERM` eintraf, startete den Supervisor neu, statt ihn
   herunterzufahren — in jedem Deployment, mit oder ohne `--log-config`.
   Auch ein `SIGTERM` während des Worker-Stopps für einen Reload wird
-  jetzt beachtet.
+  jetzt beachtet, und eines, das ein anderer Thread des Supervisors kurz
+  vor dem Neuausführen annimmt, bleibt anhängig und beendet den neuen
+  Supervisor.
 - **Fork aus Task-Code:** Nach `os.fork()` verloren die Queue-Handler
   einer `--log-config`-Datei im Kind jeden Record (mit begrenzter Queue
   gab jeder Record einen `Logging error` aus). Ein Fork, während ein
@@ -185,7 +194,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   bleibt mit dem Elternprozess geteilt: Das Kind startet keinen eigenen
   Listener, die Records des Kindes schreibt der Listener des
   Elternprozesses. Unter rohem `os.fork()` startet SwarmQ den
-  Feeder-Thread der Queue im Kind neu.
+  Feeder-Thread der Queue im Kind neu, und ein Manager-Proxy baut eine
+  eigene Verbindung zum Manager auf, statt die des Elternprozesses
+  mitzubenutzen. Auf ein Ziel, das belegt bleibt, wartet nur der erste
+  Fork, nicht jeder weitere erneut.
 - **Records, die beim Herunterfahren des Interpreters entstehen** (etwa
   „Future exception was never retrieved“ oder aus einem `__del__`),
   lösten einen `--- Logging error ---` aus und gingen verloren; sie

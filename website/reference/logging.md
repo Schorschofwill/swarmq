@@ -183,7 +183,10 @@ app = SwarmQ(broker, backend, log_queue=True, log_level="INFO")
   logger (handler, `propagate`, level) at once. It then waits for the
   thread to write the remaining records without blocking the event loop,
   at most [`log_drain_timeout`](#bounded-flushing) seconds (default 5);
-  what is not written by then counts as dropped. A new
+  what is not written by then counts as dropped. If `__aexit__` is
+  cancelled while it waits, the cancellation propagates at once; the
+  thread keeps writing in the background until the deadline, and only
+  what is left then counts as dropped and is reported. A new
   `SwarmQ(log_queue=True)` created meanwhile gets a fresh queue. The
   app's `log_drain_timeout` also bounds the flush at process exit.
 - The option is off by default and has no effect in processes that
@@ -454,7 +457,10 @@ and are stopped in parallel, so one blocked target does not hold up the
 others. Records that are not written by then count as dropped (in
 `dropped_log_records()` and the metric). For the listeners of a
 dictConfig file the count is an upper bound: the given-up thread may
-still write some of these records later.
+still write some of these records later. Records that sit in a queue
+whose listener is not running (for example one logged at the very
+moment the flush swapped the queue) are written within the same
+deadline.
 
 When the deadline passes:
 
@@ -462,6 +468,10 @@ When the deadline passes:
   list that `logging.shutdown()` flushes at exit, so the interpreter
   does not wait for them either. As long as the thread hangs, new
   records for these handlers are counted as dropped instead of queued.
+- Until the flush returns, no record starts a new listener thread — the
+  flush would give it up at once although it is healthy; such records,
+  and records still in a queue without a running listener, count as
+  dropped.
 - One final line `log_drain_timeout_exceeded` (fields `count`,
   `timeout_s`) goes directly to file descriptor 2, but only if stderr
   accepts it without blocking; otherwise only the counter remains. It
@@ -476,13 +486,14 @@ When the deadline passes:
   thread stuck while writing to stderr makes the interpreter abort at
   shutdown (`Fatal Python error`, exit `134`) or hang. Registered
   `atexit` functions that have not run yet do not run then. stdout and
-  stderr are flushed first, unless that would block — stdout is not
-  flushed when it is the same file or pipe as the stuck stream (for
-  example with `2>&1` or under journald). If the `swarmq` command ends
-  with an exception, its traceback (or the message of a `SystemExit`)
-  goes to file descriptor 2 first, under the same condition as
-  `log_drain_timeout_exceeded` and shortened to its last 4096 bytes;
-  Ctrl-C ends it with `130`.
+  stderr are flushed first, for at most 0.2 seconds — stdout not at
+  all when it is the same file or pipe as the stuck stream (for example
+  with `2>&1` or under journald). If the `swarmq` command, a worker
+  subprocess or a compute child ends with an exception, its traceback
+  (or the message of a `SystemExit`) goes to file descriptor 2 first,
+  under the same condition as `log_drain_timeout_exceeded` and
+  shortened to its last 4096 bytes; Ctrl-C ends the `swarmq` command
+  with `130`.
 - An app that embeds SwarmQ is never ended hard. If its stderr is still
   blocked when the process ends, the interpreter can still hang or abort
   there; that risk remains.
@@ -511,7 +522,9 @@ of a `--log-config` file:
   stays shared with the parent: the child starts no listener of its own
   and only puts records into it; the parent's listener writes them, as
   the only reader of the queue. Under a raw `os.fork()` SwarmQ restarts
-  the queue's feeder thread in the child. A child that ends with
+  the queue's feeder thread in the child, and a proxy opens its own
+  connection to the manager (and registers its own reference) instead
+  of sharing the parent's socket. A child that ends with
   `os._exit()` must call `queue.close()` and `queue.join_thread()` first
   (a `multiprocessing` rule), otherwise its last records are lost.
 - Queues of other classes (such as your own subclass, created with
@@ -520,9 +533,11 @@ of a `--log-config` file:
   `queue.SimpleQueue`.
 - Before the fork, a hook waits up to 50 ms in total for listener
   threads that are writing at that moment, so the child does not inherit
-  a half-written record. A target that is busy for longer, or code that
-  writes to the same stream without the handler's lock, can still leave
-  a half-written record in the child.
+  a half-written record. A target that was already busy at the previous
+  fork and still is gets no second wait, so a listener stuck on a full
+  pipe does not cost every fork 50 ms. A target that is busy for longer,
+  or code that writes to the same stream without the handler's lock, can
+  still leave a half-written record in the child.
 
 ## Task context fields
 

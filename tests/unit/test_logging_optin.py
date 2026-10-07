@@ -73,6 +73,11 @@ from __future__ import annotations
 # 29. ``configure_logging`` hebt einen Opt-in mit haengendem App-Handler
 #     innerhalb der Frist auf.
 # Echter Prozess (Loop-Lag): ``tests/integration/test_logging_robustness.py``.
+# Restpunkte (Release 0.9.0) -- ``__aexit__`` wird beim Leeren abgebrochen:
+# 30. Der Abbruch geht weiter; nach der Frist ist der Rest trotzdem als
+#     verworfen gezaehlt und ``log_drain_timeout_exceeded`` gemeldet.
+# 31. Ein Leeren, das innerhalb der Frist fertig wird, verliert durch den
+#     Abbruch nichts: Es laeuft im Hintergrund bis zur Frist weiter.
 import asyncio
 import contextvars
 import io
@@ -691,3 +696,70 @@ def test_a_builtin_setup_lifts_an_opt_in_with_a_stuck_app_handler_in_time(
         assert dropped_log_records() - before == 1
     finally:
         blocking.release.set()
+
+
+@pytest.mark.timeout(5)
+async def test_cancelling_the_drain_still_counts_and_reports_the_rest(
+    broker: MagicMock, backend: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    notices: list[int] = []
+    noticed = threading.Event()
+
+    def notice(count: int, timeout: float, *, json: bool) -> None:
+        notices.append(count)
+        noticed.set()
+
+    monkeypatch.setattr("swarmq.logging_queue.write_drain_notice", notice)
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    app = SwarmQ(broker, backend, log_queue=True, log_drain_timeout=0.05)
+    try:
+        _LOG.warning("optin_stuck")
+        assert blocking.entered.wait(5)
+        _LOG.warning("optin_never_written")
+        before = dropped_log_records()
+        leaving = asyncio.create_task(app.__aexit__(None, None, None))
+        draining = asyncio.Event()
+        asyncio.get_running_loop().call_soon(draining.set)
+        await draining.wait()
+
+        leaving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leaving
+
+        assert noticed.wait(2)
+        assert notices == [1]
+        assert dropped_log_records() - before == 1
+    finally:
+        blocking.release.set()
+
+
+@pytest.mark.timeout(5)
+async def test_cancelling_a_drain_that_finishes_in_time_loses_nothing(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    app = SwarmQ(broker, backend, log_queue=True)
+    _LOG.warning("optin_drain_1")
+    assert blocking.entered.wait(5)
+    _LOG.warning("optin_drain_2")
+    before = dropped_log_records()
+    leaving = asyncio.create_task(app.__aexit__(None, None, None))
+    draining = asyncio.Event()
+    asyncio.get_running_loop().call_soon(draining.set)
+    await draining.wait()
+
+    leaving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leaving
+    blocking.release.set()
+    for thread in _listener_threads():
+        thread.join(2)
+
+    assert blocking.events() == ["optin_drain_1", "optin_drain_2"]
+    assert dropped_log_records() == before

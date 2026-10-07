@@ -11,6 +11,10 @@ Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 # 4. Ein Supervisor, der mit blockiertem SIGTERM/SIGINT startet (von
 #    ``reexec`` ueber ``execve`` geerbt), gibt sie nach dem Einrichten der
 #    Handler frei (Charakterisierung: ``run`` tat das schon).
+# Restpunkte (Release 0.9.0):
+# 5. Ein SIGTERM, das ein anderer Thread annimmt, dessen Handler also erst
+#    nach der letzten Pruefung in ``reexec`` laeuft, bleibt ueber ``execve``
+#    anhaengig, statt verloren zu gehen.
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from swarmq.process_manager import (
     ProcessManager,
     WorkerInfo,
 )
+from swarmq.process_manager import reload as reload_module
 from swarmq.process_manager.reload import ReloadController
 from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import (
@@ -397,6 +402,32 @@ class TestProcessManagerRestart:
 
         [mask] = seen
         assert not ({signal.SIGTERM, signal.SIGINT} & set(mask))
+
+    def test_a_sigterm_handled_after_the_last_check_stays_pending_across_execve(self):
+        pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+        pm._ctx = MagicMock()
+        pm._reload_requested = True
+        pending: list[set[signal.Signals]] = []
+
+        def execvpe(*_args: object) -> None:
+            # Ein anderer Thread hat das Signal angenommen; der Handler laeuft
+            # im Hauptthread erst nach der Pruefung, direkt vor ``execve``.
+            pm._on_shutdown_signal(signal.SIGTERM, None)
+            pending.append(signal.sigpending())
+
+        received: list[int] = []
+        old_handler = signal.signal(signal.SIGTERM, lambda signum, _frame: received.append(signum))
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+        try:
+            with patch("swarmq.process_manager.reload.shutdown_logging"), \
+                 patch("swarmq.process_manager.reload.os.execvpe", side_effect=execvpe):
+                reload_module.reexec(pm, 0)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+            signal.signal(signal.SIGTERM, old_handler)
+
+        [held] = pending
+        assert signal.SIGTERM in held
 
     def test_reload_writes_the_log_queue_before_execvpe(self):
         """U7 (R15): ``process_manager_reload_execvp`` ist geschrieben, bevor

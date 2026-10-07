@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from swarmq.exceptions import LoggingConfigError
-from swarmq.logging_drain import Deadline, abandon
+from swarmq.logging_drain import Deadline, abandon, drain_expired
 
 CONFIG_LISTENERS: list[logging.handlers.QueueListener] = []
 """Von ``configure_logging`` gestartete Listener aus einer dictConfig-Datei;
@@ -355,7 +355,7 @@ def reset_queue_listeners_after_fork() -> None:
             # Schluss-Review (P1): Der Listener des Elternprozesses bleibt
             # der einzige Konsument; das Kind reiht nur ein.
             _state(listener).parent_owned = True
-            _restart_feeder(handler.queue)
+            _reattach_in_child(handler.queue)
             continue
         fresh = _fresh_queue(handler.queue)
         if fresh is None:
@@ -377,15 +377,29 @@ def _shared_with_parent(inherited: object) -> bool:
     return managers is not None and isinstance(inherited, managers.BaseProxy)
 
 
-def _restart_feeder(inherited: Any) -> None:
-    """Unter rohem ``os.fork`` setzt das Kind den Feeder-Thread einer
-    ``multiprocessing.Queue`` selbst zurueck (``_after_fork``; sonst tut das
-    nur ``multiprocessing.Process``): Der geerbte Thread fehlt im Kind, und
-    ``put`` legte sonst nur in einen Puffer, den niemand sendet. Ein zweiter
-    Aufruf durch ``multiprocessing`` ist harmlos. ``SimpleQueue`` und Proxys
-    haben keinen Feeder."""
+def _reattach_in_child(inherited: Any) -> None:
+    """Unter rohem ``os.fork`` tut das Kind fuer die geteilte Queue, was sonst
+    nur ``multiprocessing.Process`` beim Start tut (``_run_after_forkers``);
+    ein zweiter Aufruf durch ``multiprocessing`` ist harmlos.
+
+    - ``multiprocessing.Queue``: Feeder-Thread zuruecksetzen
+      (``_after_fork``). Der geerbte fehlt im Kind, und ``put`` legte sonst
+      nur in einen Puffer, den niemand sendet.
+    - Manager-Proxy: Die thread-lokale Verbindung (``_tls``) und die Menge
+      der Referenzen vergessen, dann eine eigene Referenz anmelden
+      (``_after_fork``). Sonst benutzte das Kind die Socket-Verbindung des
+      Elternprozesses mit, und gleichzeitige Aufrufe beider laesen einander
+      die Antworten weg -- beide haengen.
+
+    ``SimpleQueue`` hat keinen Feeder."""
     queues = sys.modules.get("multiprocessing.queues")
     if queues is not None and isinstance(inherited, queues.Queue):
+        inherited._after_fork()
+        return
+    managers = sys.modules.get("multiprocessing.managers")
+    if managers is not None and isinstance(inherited, managers.BaseProxy):
+        inherited._tls.__dict__.clear()
+        inherited._all_serials.clear()
         inherited._after_fork()
 
 
@@ -502,6 +516,48 @@ def _qsize(queue_: Any) -> int:
         return 0
 
 
+def start_pending_queue_listeners(deadline: Deadline) -> int:
+    """Startet die Listener gestarteter dictConfig-Handler, deren Thread
+    nicht mehr laeuft, in deren Queue aber noch Records liegen (Plan
+    2026-10-06-1811, KTD3): Ein Aufrufer, der den alten Thread noch leben
+    sah, reihte hinter dessen Sentinel ein. Geteilte Queues des
+    Elternprozesses und aufgegebene Listener bleiben aussen vor.
+
+    Nach Ablauf der Frist startet keiner mehr; die Records werden
+    verworfen. Liefert ihre Zahl -- zaehlen muss sie der Aufrufer."""
+    discarded = 0
+    for handler, drops in list(_STARTED_HANDLERS.items()):
+        listener = handler.listener
+        if (
+            listener is None
+            or _alive(listener)
+            or _state(listener).parent_owned
+            or _still_abandoned(listener)
+            or not _qsize(handler.queue)
+        ):
+            continue
+        if deadline.remaining() <= 0:
+            lost = _discard(handler.queue)
+            drops.add(lost)
+            discarded += lost
+            continue
+        with _CONFIG_LISTENER_LOCK:
+            if not _alive(listener):
+                _restart(listener)
+    return discarded
+
+
+def _discard(queue_: Any) -> int:
+    """Leert ``queue_`` ohne zu warten; liefert die Zahl der Eintraege."""
+    count = 0
+    while True:
+        try:
+            queue_.get_nowait()
+        except queue.Empty:
+            return count
+        count += 1
+
+
 def close_queue_listeners() -> list[FileDraining]:
     """Schliesst die gestarteten dictConfig-Listener, ohne zu warten (KTD5,
     Plan 2026-10-06-1811 KTD3); gewartet wird gemeinsam mit den eingebauten.
@@ -562,6 +618,16 @@ def _alive(listener: logging.handlers.QueueListener) -> bool:
     return thread is not None and thread.is_alive()
 
 
+def _restart(listener: logging.handlers.QueueListener) -> None:
+    """Startet den Listener neu, unter ``_CONFIG_LISTENER_LOCK``. Ein toter
+    Thread zaehlt wie keiner (KTD1); der stdlib-``start`` wirft sonst. Die
+    Queue bleibt."""
+    _forget_thread(listener)
+    _state(listener).stop = False
+    listener.start()
+    CONFIG_LISTENERS.append(listener)
+
+
 def _still_abandoned(listener: logging.handlers.QueueListener) -> bool:
     """Haengt der aufgegebene Thread noch (KTD3)?"""
     state = _state(listener)
@@ -604,19 +670,19 @@ def _restart_lazily(
             listener.handle(record)
             return
         if not _alive(listener) and not _state(listener).parent_owned:
+            if drain_expired():
+                # Ein Leeren ist ueber seiner Frist: kein neuer Thread, den
+                # es sofort wieder aufgaebe.
+                dropped()
+                return
             with _CONFIG_LISTENER_LOCK:
                 if not _alive(listener):
-                    # Ein toter Thread zaehlt wie keiner (KTD1); der
-                    # stdlib-``start`` wirft sonst. Die Queue bleibt.
-                    _forget_thread(listener)
-                    _state(listener).stop = False
                     try:
-                        listener.start()
+                        _restart(listener)
                     except PythonFinalizationError:
                         _forget_thread(listener)
                         listener.handle(record)
                         return
-                    CONFIG_LISTENERS.append(listener)
         try:
             enqueue(record)
         except queue.Full:

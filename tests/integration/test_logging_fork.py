@@ -20,14 +20,22 @@ im Elternprozess und ein Alarm im Kind beenden haengende Prozesse mit Stack.
 #       call``, alle Zeilen aller Kinder in der Datei.
 # Schluss-Review (P1, Regression gegenueber main), ``multiprocessing.Queue``
 # als Queue des ``QueueHandler``:
-# - [ ] Kind per ``multiprocessing.Process`` (fork-Kontext) und per rohem
+# - [x] Kind per ``multiprocessing.Process`` (fork-Kontext) und per rohem
 #       ``os.fork``: Die Zeilen des Kindes kommen ueber den Listener des
 #       Elternprozesses an, der Elternprozess schreibt danach alle weiteren
 #       Zeilen, und sein Ende wartet nicht bis zur Frist.
+# Restpunkte (Release 0.9.0), Proxy aus ``multiprocessing.Manager`` als Queue:
+# - [x] Rohes ``os.fork``, Eltern- und Kindprozess loggen gleichzeitig: Das
+#       Kind baut eine eigene Verbindung zum Manager auf, statt die des
+#       Elternprozesses mitzubenutzen -- kein ``Logging error``, alle Zeilen
+#       beider Prozesse in der Datei.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -238,3 +246,91 @@ def test_a_multiprocessing_queue_keeps_the_parent_listener_as_its_only_consumer(
     assert _child_lines(lines, pid) == [f"{pid} child_line_{i}" for i in range(3)]
     parent_lines = [line.split(" ", 1)[1] for line in lines if not line.startswith(f"{pid} ")]
     assert parent_lines == ["parent_before_fork"] + [f"parent_after_child_{i}" for i in range(5)]
+
+
+_MANAGER_SCRIPT = f"""
+import faulthandler, json, logging, multiprocessing, os, signal, sys, warnings
+warnings.simplefilter("ignore", DeprecationWarning)  # fork mit Threads (3.14)
+
+
+def on_alarm(*_):
+    faulthandler.dump_traceback(all_threads=True)
+    os._exit(3)
+
+
+signal.signal(signal.SIGALRM, on_alarm)
+signal.alarm({_HANG_DEADLINE_S})
+
+from swarmq.logging import configure_logging, shutdown_logging
+from swarmq.logging_settings import LoggingSettings
+
+MANAGER = None
+
+
+def manager_queue():
+    return MANAGER.Queue()
+
+
+if __name__ == "__main__":
+    MANAGER = multiprocessing.Manager()
+    log_file, lines = sys.argv[1], int(sys.argv[2])
+    config = {{
+        "version": 1,
+        "formatters": {{"p": {{"format": "%(process)d %(message)s"}}}},
+        "handlers": {{
+            "file": {{"class": "logging.FileHandler", "filename": log_file, "formatter": "p"}},
+            "q": {{
+                "class": "logging.handlers.QueueHandler", "handlers": ["file"],
+                "queue": {{"()": "__main__.manager_queue"}},
+            }},
+        }},
+        "root": {{"level": "INFO", "handlers": ["q"]}},
+    }}
+    configure_logging(LoggingSettings(
+        log_config="/never/read.json", log_config_json=json.dumps(config),
+        drain_timeout={_MP_DRAIN_TIMEOUT_S},
+    ))
+    log = logging.getLogger("app")
+    log.info("parent_before_fork")  # baut die Verbindung des Hauptthreads auf
+    pid = os.fork()
+    if pid == 0:
+        signal.alarm({_CHILD_DEADLINE_S})
+        for i in range(lines):
+            log.info("child_line_%d", i)
+        # Ohne Interpreter-Ende: Dessen ``multiprocessing``-atexit wollte den
+        # Manager des Elternprozesses einsammeln. Ein Proxy hat keinen Puffer.
+        os._exit(0)
+    for i in range(lines):
+        log.info("parent_line_%d", i)
+    _, status = os.waitpid(pid, 0)
+    shutdown_logging()
+    print(json.dumps({{"child": [pid, os.waitstatus_to_exitcode(status)]}}))
+    MANAGER.shutdown()
+"""
+
+
+def test_a_manager_queue_gets_its_own_connection_in_a_raw_forked_child(tmp_path: Path) -> None:
+    log_file = tmp_path / "out.log"
+    lines = 300
+    # Eigene Sitzung: Haengt der Lauf, beendet ``killpg`` auch den Manager
+    # und den Forkserver, die sonst die Pipes offen und verwaist zurueckblieben.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _MANAGER_SCRIPT, str(log_file), str(lines)],
+        cwd=_REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=_HANG_DEADLINE_S + 10)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+
+    assert proc.returncode == 0, stderr[-3000:]
+    assert "Logging error" not in stderr, stderr[-3000:]
+    pid, code = json.loads(stdout)["child"]
+    assert code == 0, stderr[-3000:]
+    written = log_file.read_text().splitlines()
+    assert _child_lines(written, pid) == [f"{pid} child_line_{i}" for i in range(lines)]
+    parent = [line.split(" ", 1)[1] for line in written if not line.startswith(f"{pid} ")]
+    assert parent == ["parent_before_fork"] + [f"parent_line_{i}" for i in range(lines)]

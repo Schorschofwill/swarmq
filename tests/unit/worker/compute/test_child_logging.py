@@ -76,6 +76,9 @@ Schluss-Review:
 29. [x] ... die Opt-in-Queue am Logger ``swarmq`` zaehlt dabei nicht: Sie
         reicht den Record im Forkserver selbst an die Root-Handler weiter
         (Fund im Integrationstest).
+Restpunkte (Release 0.9.0):
+30. [x] Endet das Kind an einer Ausnahme, bekommt das harte Ende sie mit
+        (``exc``): Traceback auf fd 2 wie in ``console_main``.
 """
 
 from __future__ import annotations
@@ -539,7 +542,8 @@ def test_a_blocked_stderr_delays_the_result_at_most_by_the_drain_timeout(
     stderr = _BlockedStderr()
     monkeypatch.setattr("sys.stderr", stderr)
     monkeypatch.setattr(
-        child, "exit_if_log_thread_stuck", lambda code: events.append(("exit", code)), raising=False,
+        child, "exit_if_log_thread_stuck", lambda code, exc=None: events.append(("exit", code)),
+        raising=False,
     )
     done = threading.Event()
 
@@ -559,9 +563,33 @@ def test_a_blocked_stderr_delays_the_result_at_most_by_the_drain_timeout(
         worker.join(1)
 
 
+class _BrokenChannel(_Channel):
+    """Rueckkanal, dessen Ergebnisnachricht scheitert (Elternprozess weg)."""
+
+    def send(self, msg: tuple[Any, ...]) -> None:
+        if msg[0] == "result":
+            raise BrokenPipeError("pool gone")
+        super().send(msg)
+
+
+@pytest.mark.timeout(5)
+def test_the_hard_exit_gets_the_exception_the_child_ends_with(
+    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _forkserver_root()
+    _register_logging_task()
+    seen: list[tuple[int, BaseException | None]] = []
+    monkeypatch.setattr(child, "exit_if_log_thread_stuck", lambda code, exc=None: seen.append((code, exc)))
+
+    with pytest.raises(BrokenPipeError) as raised:
+        child.child_once(_job(), _BrokenChannel(events), 0)
+
+    assert seen == [(1, raised.value)]
+
+
 def _sentinel_root() -> logging.Logger:
     """Root wie im Forkserver mit Sentinel (KTD9), vor dem Vorladen der App."""
-    from swarmq.logging import install_fork_source_sentinel
+    from swarmq.logging_forksource import install_fork_source_sentinel
 
     _forkserver_root()
     install_fork_source_sentinel()
@@ -817,7 +845,7 @@ def test_the_sentinel_still_forwards_a_record_relayed_by_the_opt_in_queue(
 
     last_resort = _LastResort()
     monkeypatch.setattr(logging, "lastResort", last_resort)
-    monkeypatch.setattr("swarmq.logging_queue._IN_FORK_SOURCE", True)  # im Forkserver
+    monkeypatch.setattr("swarmq.logging_forksource.FORK_SOURCE.active", True)  # im Forkserver
     _sentinel_root()
     _enable_log_queue("INFO")
     try:

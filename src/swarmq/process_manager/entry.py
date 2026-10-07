@@ -223,6 +223,7 @@ def worker_subprocess_entry(
         # der Listener-Thread die letzten Zeilen geschrieben hat -- der
         # Supervisor saehe im Fehlerfall nur den Exit-Code. Begrenzt (Plan
         # 2026-10-06-1811, KTD3); haengt danach noch ein Log-Thread, endet
-        # der Prozess hart mit dem Code, mit dem er ohnehin endete.
+        # der Prozess hart mit dem Code, mit dem er ohnehin endete -- und
+        # gibt die Ausnahme vorher auf fd 2 aus wie ``console_main``.
         shutdown_logging()
-        exit_if_log_thread_stuck(exit_code_for(sys.exception()))
+        exit_if_log_thread_stuck(exit_code_for(sys.exception()), sys.exception())

@@ -85,11 +85,12 @@ All notable changes to SwarmQ. This project follows
   have had, instead of aborting with `Fatal Python error` (exit `134`)
   or hanging. Registered `atexit` functions that have not run yet do
   not run then; stdout is not flushed when it shares the stuck file or
-  pipe (`2>&1`, journald). If the `swarmq` command ends with an
-  exception, its traceback (or the message of a `SystemExit`) is
-  written to stderr first, shortened to 4096 bytes and only if stderr
-  does not block; Ctrl-C then ends it with `130`. Apps that embed SwarmQ
-  are never ended hard.
+  pipe (`2>&1`, journald), and stdout and stderr are flushed for at
+  most 0.2 seconds. If the `swarmq` command, a worker subprocess or a
+  compute child ends with an exception, its traceback (or the message
+  of a `SystemExit`) is written to stderr first, shortened to 4096 bytes
+  and only if stderr does not block; Ctrl-C then ends the `swarmq`
+  command with `130`. Apps that embed SwarmQ are never ended hard.
 - **New events:** `log_handler_errors` (a handler, filter or formatter
   raised; field `count`), `log_drain_timeout_exceeded` (a line written
   directly to stderr when a flush exceeded the deadline, only if stderr
@@ -132,9 +133,15 @@ All notable changes to SwarmQ. This project follows
   the exit of every SwarmQ process, the supervisor before a reload (its
   workers were already stopped), and a compute child, whose result then
   never arrived. Every flush is now bounded by `log_drain_timeout`.
+  Records left in a queue whose listener is not running are written
+  within the deadline or, after it, counted as dropped; until the flush
+  returns, no record starts a listener that the flush would give up at
+  once.
 - **`SwarmQ.__aexit__` with `log_queue=True` no longer blocks the event
   loop** while the opt-in queue drains (up to 12 s measured with a slow
-  handler).
+  handler). If it is cancelled while waiting, the cancellation
+  propagates at once and the flush continues in the background up to
+  the deadline.
 - **CPU pool with the opt-in log queue:** a `swarmq.*` record logged at
   import time while `SwarmQ(log_queue=True)` or `SWARMQ_LOG_QUEUE=1` was
   active (also from calling `setup_dishka()` twice) started a listener
@@ -163,7 +170,9 @@ All notable changes to SwarmQ. This project follows
 - **`SIGTERM` always ends the supervisor.** A `SIGHUP` that arrived
   shortly after a `SIGTERM` restarted the supervisor instead of shutting
   it down — in every deployment, with or without `--log-config`. A
-  `SIGTERM` during the worker stop for a reload is honoured as well.
+  `SIGTERM` during the worker stop for a reload is honoured as well, and
+  one that another thread of the supervisor receives right before it
+  re-executes itself stays pending and ends the new supervisor.
 - **Forking from task code:** after `os.fork()` the queue handlers of a
   `--log-config` file lost every record in the child (with a bounded
   queue, each record printed a `Logging error`). A fork while a listener
@@ -173,7 +182,9 @@ All notable changes to SwarmQ. This project follows
   proxy) stays shared with the parent: the child starts no listener of
   its own, and the parent's listener writes the child's records. Under a
   raw `os.fork()` SwarmQ restarts the queue's feeder thread in the
-  child.
+  child, and a manager proxy opens its own connection to the manager
+  instead of sharing the parent's. A target that stays busy is waited
+  for only at the first fork, not again at every following one.
 - **Records logged while the interpreter shuts down** (for example
   "Future exception was never retrieved" or from a `__del__`) caused a
   `--- Logging error ---` and were lost; they are now written

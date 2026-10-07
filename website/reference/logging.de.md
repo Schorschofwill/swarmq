@@ -188,7 +188,10 @@ app = SwarmQ(broker, backend, log_queue=True, log_level="INFO")
   Danach wartet sie, ohne den Event-Loop anzuhalten, bis der Thread die
   restlichen Records geschrieben hat, höchstens
   [`log_drain_timeout`](#begrenztes-leeren) Sekunden (Vorgabe 5); was
-  bis dahin nicht geschrieben ist, gilt als verworfen. Eine neue
+  bis dahin nicht geschrieben ist, gilt als verworfen. Wird
+  `__aexit__` beim Warten abgebrochen, geht der Abbruch sofort weiter;
+  der Thread schreibt im Hintergrund bis zur Frist weiter, und erst was
+  dann noch übrig ist, gilt als verworfen und wird gemeldet. Eine neue
   `SwarmQ(log_queue=True)`-Instanz, die in dieser Zeit entsteht, bekommt
   eine frische Queue. Das `log_drain_timeout` der App begrenzt auch das
   Leeren beim Prozessende.
@@ -465,7 +468,9 @@ ein blockiertes Ziel hält die anderen also nicht auf. Was bis dahin
 nicht geschrieben ist, gilt als verworfen (in `dropped_log_records()`
 und der Metrik). Für die Listener einer dictConfig-Datei ist die Zahl
 eine Obergrenze: Der aufgegebene Thread kann einige dieser Records
-später doch noch schreiben.
+später doch noch schreiben. Records in einer Queue, deren Listener
+nicht läuft (etwa einer, der genau beim Tausch der Queue durch das
+Leeren geloggt wurde), werden innerhalb derselben Frist geschrieben.
 
 Ist die Frist abgelaufen:
 
@@ -474,6 +479,10 @@ Ist die Frist abgelaufen:
   auch der Interpreter wartet also nicht auf sie. Solange der Thread
   hängt, werden neue Records für diese Handler als verworfen gezählt,
   statt eingereiht.
+- Bis das Leeren zurückkehrt, startet kein Record mehr einen neuen
+  Listener-Thread — das Leeren gäbe ihn sofort wieder auf, obwohl er
+  gesund ist; solche Records und Records, die noch in einer Queue ohne
+  laufenden Listener liegen, gelten als verworfen.
 - Eine Abschlusszeile `log_drain_timeout_exceeded` (Felder `count`,
   `timeout_s`) geht direkt auf Dateideskriptor 2, aber nur, wenn stderr
   sie annimmt, ohne zu blockieren; sonst bleibt es beim Zähler. Sie ist
@@ -488,14 +497,15 @@ Ist die Frist abgelaufen:
   bricht der Interpreter beim Beenden ab (`Fatal Python error`, Exit
   `134`) oder hängt, wenn ein Thread beim Schreiben nach stderr
   feststeckt. Registrierte `atexit`-Funktionen, die noch nicht gelaufen
-  sind, laufen dann nicht mehr. stdout und stderr werden vorher geleert,
-  sofern das nicht blockiert — stdout nicht, wenn es dieselbe Datei
-  oder Pipe ist wie der hängende Stream (etwa bei `2>&1` oder unter
-  journald). Endet der Befehl `swarmq` mit einer Ausnahme, geht ihr
+  sind, laufen dann nicht mehr. stdout und stderr werden vorher
+  höchstens 0,2 Sekunden lang geleert — stdout gar nicht, wenn es
+  dieselbe Datei oder Pipe ist wie der hängende Stream (etwa bei `2>&1`
+  oder unter journald). Endet der Befehl `swarmq`, ein
+  Worker-Subprozess oder ein Rechenkind mit einer Ausnahme, geht ihr
   Traceback (oder die Meldung eines `SystemExit`) vorher auf
   Dateideskriptor 2, unter derselben Bedingung wie
   `log_drain_timeout_exceeded` und gekürzt auf die letzten 4096 Bytes;
-  Strg-C endet mit `130`.
+  Strg-C beendet den Befehl `swarmq` mit `130`.
 - Eine App, die SwarmQ einbettet, wird nie hart beendet. Ist ihr stderr
   beim Prozessende noch blockiert, kann der Interpreter dort weiterhin
   hängen oder abbrechen; dieses Risiko bleibt.
@@ -526,7 +536,9 @@ mit den Queue-Handlern einer `--log-config`-Datei:
   Kind startet keinen eigenen Listener und reiht Records nur ein; sie
   schreibt der Listener des Elternprozesses, der einzige Leser der
   Queue. Unter rohem `os.fork()` startet SwarmQ den Feeder-Thread der
-  Queue im Kind neu. Ein Kind, das mit `os._exit()` endet, muss vorher
+  Queue im Kind neu, und ein Proxy baut eine eigene Verbindung zum
+  Manager auf (und meldet eine eigene Referenz an), statt den Socket des
+  Elternprozesses mitzubenutzen. Ein Kind, das mit `os._exit()` endet, muss vorher
   `queue.close()` und `queue.join_thread()` aufrufen (eine Regel von
   `multiprocessing`), sonst gehen seine letzten Records verloren.
 - Queues anderer Klassen (etwa eine eigene Unterklasse, per `"()"` in
@@ -535,9 +547,12 @@ mit den Queue-Handlern einer `--log-config`-Datei:
   `queue.Queue` und `queue.SimpleQueue`.
 - Vor dem Fork wartet ein Hook insgesamt höchstens 50 ms auf
   Listener-Threads, die gerade schreiben; so erbt das Kind keinen halb
-  geschriebenen Datensatz. Ein Ziel, das länger belegt ist, oder Code,
-  der am Lock des Handlers vorbei in denselben Stream schreibt, kann im
-  Kind dennoch einen halb geschriebenen Datensatz hinterlassen.
+  geschriebenen Datensatz. Ein Ziel, das schon beim letzten Fork belegt
+  war und es noch ist, wird nicht noch einmal abgewartet; ein Listener,
+  der an einer vollen Pipe hängt, kostet also nicht jeden Fork 50 ms.
+  Ein Ziel, das länger belegt ist, oder Code, der am Lock des Handlers
+  vorbei in denselben Stream schreibt, kann im Kind dennoch einen halb
+  geschriebenen Datensatz hinterlassen.
 
 ## Task-Kontext-Felder
 

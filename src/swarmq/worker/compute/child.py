@@ -285,8 +285,10 @@ def _shutdown_child_logging() -> None:
     shutdown_logging()
     logging.shutdown()
     # Das Kind gehoert swarmq (Plan 2026-10-06-1811, KTD3): Haengt nach der
-    # Frist noch ein Log-Thread, endet es hart mit seinem Exit-Code.
-    exit_if_log_thread_stuck(exit_code_for(sys.exception()))
+    # Frist noch ein Log-Thread, endet es hart mit seinem Exit-Code; die
+    # Ausnahme, an der es endet, geht vorher auf fd 2 (wie ``console_main``).
+    exc = sys.exception()
+    exit_if_log_thread_stuck(exit_code_for(exc), exc)
 
 
 def child_once(job: ComputeJob, channel: Any, slot: int | None = None) -> None:

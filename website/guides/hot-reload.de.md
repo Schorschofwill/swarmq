@@ -98,7 +98,8 @@ stoppen, und wenn kurz nach dem `SIGTERM` ein `SIGHUP` eintrifft. Der
 Supervisor fährt dann herunter, ohne sich neu auszuführen; eine noch
 laufende Prüfung wird beendet. Ein `SIGTERM`, das im letzten Moment vor
 `os.execvpe` eintrifft, bleibt anhängig und beendet den neuen Supervisor,
-sobald dieser seine Signal-Handler eingerichtet hat.
+sobald dieser seine Signal-Handler eingerichtet hat — auch, wenn ein
+anderer Thread des Supervisors es annimmt.
 
 Der Watcher unterdrückt Re-Entrancy: Ist bereits ein Reload
 vorgemerkt, in Prüfung oder im Gange, wenn eine zweite Änderung landet,

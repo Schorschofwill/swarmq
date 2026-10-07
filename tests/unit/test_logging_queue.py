@@ -98,8 +98,9 @@ from swarmq.logging import (
     shutdown_logging,
 )
 from swarmq.logging_file import RateLimitedReport
+from swarmq.logging_forksource import mark_fork_source
 from swarmq.logging_format import build_formatter
-from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener, mark_fork_source
+from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener
 from tests.unit._fork_child import run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)

@@ -69,6 +69,25 @@ from __future__ import annotations
 #         die Ausnahme auf fd 2 aus (Traceback bzw. Text eines
 #         ``SystemExit``), gekuerzt auf ``PIPE_BUF`` Bytes, und nur, wenn fd 2
 #         sofort beschreibbar ist.
+# Restpunkte (Release 0.9.0) -- kein Record bleibt ungezaehlt liegen:
+# 24. [x] Ein Record in einer Queue ohne laufenden Listener (Wettlauf beim
+#         Tausch der Queue: der Aufrufer sah noch den alten Listener) wird
+#         innerhalb der Frist geschrieben.
+# 25. [x] ... nach Ablauf der Frist startet dafuer kein Listener mehr; der
+#         Record zaehlt als verworfen.
+# 26. [x] Datei-Modus: ein Record hinter dem Sentinel (der Thread endete am
+#         Sentinel) wird innerhalb der Frist geschrieben.
+# 27. [x] ... nach Ablauf der Frist zaehlt er als verworfen.
+# 28. [x] Die Abschlusszeile ``log_drain_timeout_exceeded`` nennt auch die
+#         nach der Frist verworfenen Records (eingebaut und Datei-Modus).
+# 29. [x] Ein Record, der nach Ablauf der Frist, aber noch waehrend des
+#         Leerens einen Listener starten wuerde, zaehlt als verworfen: Es
+#         startet kein Thread, der sofort wieder aufgegeben wuerde (dessen
+#         Ziel-Handler fiele sonst aus ``logging._handlerList``).
+# 30. [x] ... ebenso im Datei-Modus.
+# 31. [x] Ein per Fork entstandenes Kind erbt kein laufendes Leeren: Ein
+#         Fork waehrend eines Leerens nach Ablauf der Frist laesst den
+#         Listener des Kindes normal starten.
 import contextlib
 import fcntl
 import io
@@ -825,3 +844,159 @@ def test_a_long_exception_report_keeps_its_end_within_pipe_buf(
     assert len(err.encode()) <= select.PIPE_BUF
     assert err.startswith("[...]")
     assert err.endswith(" the end\n")
+
+
+def test_a_record_left_in_a_queue_without_a_running_listener_is_written_by_the_drain() -> None:
+    gate = _Gate()
+    gate.opened.set()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), gate)
+    # Wettlauf beim Tausch der Queue (``_close``): Der Aufrufer sah den alten
+    # Listener laufen und legte den Record in die frische Queue, deren
+    # Listener nie gestartet wurde.
+    handler.queue.put_nowait(_record("raced"))
+
+    assert _returns_within(lambda: shutdown_logging(timeout=1))
+
+    assert gate.messages == ["raced"]
+
+
+def test_after_the_deadline_a_record_left_without_a_listener_counts_as_dropped() -> None:
+    gate = _Gate()
+    gate.opened.set()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), gate)
+    handler.queue.put_nowait(_record("raced"))
+    threads = set(_listener_threads())
+    before = dropped_log_records()
+
+    assert _returns_within(lambda: shutdown_logging(timeout=0))
+
+    assert not set(_listener_threads()) - threads
+    assert gate.messages == []
+    assert handler.dropped == 1
+    assert dropped_log_records() == before + 1
+
+
+def _file_mode_queue_handler() -> logging.handlers.QueueHandler:
+    [handler] = [
+        h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.QueueHandler)
+    ]
+    return handler
+
+
+def test_file_mode_writes_a_record_left_behind_the_sentinel(file_mode_gate: _GateState) -> None:
+    file_mode_gate.opened.set()
+    log = _configure_file_mode()
+    log.warning("first")
+    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    # Wettlauf mit dem Sentinel: Der Aufrufer sah den Thread noch leben und
+    # reihte hinter dem Sentinel ein; der Thread endete am Sentinel.
+    _file_mode_queue_handler().queue.put_nowait(_record("behind-sentinel"))
+
+    assert _returns_within(lambda: shutdown_logging(timeout=1))
+
+    assert file_mode_gate.messages == ["first", "behind-sentinel"]
+
+
+def test_file_mode_counts_a_record_left_behind_the_sentinel_after_the_deadline(
+    file_mode_gate: _GateState,
+) -> None:
+    file_mode_gate.opened.set()
+    log = _configure_file_mode()
+    log.warning("first")
+    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    _file_mode_queue_handler().queue.put_nowait(_record("behind-sentinel"))
+    before = dropped_log_records()
+
+    assert _returns_within(lambda: shutdown_logging(timeout=0))
+
+    assert dropped_log_records() == before + 1
+    # Ein dafuer gestarteter Listener schriebe den Record spaetestens jetzt.
+    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert file_mode_gate.messages == ["first"]
+
+
+def test_the_closing_line_counts_records_discarded_after_the_deadline(
+    file_mode_gate: _GateState, capfd: pytest.CaptureFixture[str],
+) -> None:
+    file_mode_gate.opened.set()
+    log = _configure_file_mode()
+    log.warning("first")
+    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    _file_mode_queue_handler().queue.put_nowait(_record("behind-sentinel"))
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), _Gate())
+    handler.queue.put_nowait(_record("raced"))
+    capfd.readouterr()
+
+    assert _returns_within(lambda: shutdown_logging(timeout=0))
+
+    [line] = _notices(capfd.readouterr().err)
+    assert " 2 log record(s)" in line
+
+
+def test_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq import logging_queue
+
+    _stuck, gate = _stuck_handler(maxsize=2)
+    healthy_target = _Gate()
+    healthy_target.opened.set()
+    healthy = _StructlogQueueHandler(queue.Queue(maxsize=10), healthy_target)
+    real_abandon = logging_queue.abandon
+
+    def abandon_then_log(*args: object) -> None:
+        real_abandon(*args)  # type: ignore[arg-type]
+        healthy.handle(_record("after-deadline"))  # ein anderer Thread loggt
+
+    monkeypatch.setattr(logging_queue, "abandon", abandon_then_log)
+    try:
+        assert _returns_within(lambda: shutdown_logging(timeout=0.05))
+    finally:
+        gate.opened.set()
+
+    assert healthy.dropped == 1
+    assert healthy_target in [ref() for ref in logging._handlerList]  # type: ignore[attr-defined]
+    assert healthy_target.messages == []
+
+
+def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropped(
+    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq import logging_queue
+
+    file_mode_gate.opened.set()
+    log = _configure_file_mode()
+    log.warning("first")
+    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    _stuck, gate = _stuck_handler(maxsize=2)
+    real_abandon = logging_queue.abandon
+
+    def abandon_then_log(*args: object) -> None:
+        real_abandon(*args)  # type: ignore[arg-type]
+        log.warning("after-deadline")  # ein anderer Thread loggt
+
+    monkeypatch.setattr(logging_queue, "abandon", abandon_then_log)
+    before = dropped_log_records()
+    try:
+        assert _returns_within(lambda: shutdown_logging(timeout=0.05))
+    finally:
+        gate.opened.set()
+
+    assert dropped_log_records() == before + 2 + 1  # die volle Queue und der neue
+    assert file_mode_gate.messages == ["first"]
+
+
+def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
+    from swarmq.logging_drain import Deadline, draining_until
+    from tests.unit._fork_child import run_in_forked_child
+
+    gate = _Gate()
+    gate.opened.set()
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=10), gate)
+
+    def child() -> None:
+        handler.handle(_record("in-child"))
+        assert handler.dropped == 0
+
+    with draining_until(Deadline(0)):
+        assert run_in_forked_child(child) == 0

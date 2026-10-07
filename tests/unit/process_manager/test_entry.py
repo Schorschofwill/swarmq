@@ -19,6 +19,10 @@ from __future__ import annotations
 # - [x] Schluss-Review: ``ForkSourceRejected`` (der CPU-Pool hat seine
 #       Kindquelle verworfen, der Worker ist geordnet beendet) endet mit
 #       Exit 71, ohne Traceback; das ERROR-Event schrieb schon der Worker
+# Restpunkte (Release 0.9.0):
+# - [x] Endet der Worker an einer Ausnahme, bekommt das harte Ende sie
+#       mit (``exc``): Traceback bzw. ``SystemExit``-Meldung auf fd 2 wie in
+#       ``console_main``
 import os
 
 import pytest
@@ -507,9 +511,28 @@ class TestHardExitAfterTheDrain:
         )
         monkeypatch.setattr(
             "swarmq.process_manager.entry.exit_if_log_thread_stuck",
-            lambda code: calls.append(("exit_if_log_thread_stuck", code)),
+            lambda code, exc=None: calls.append(("exit_if_log_thread_stuck", code)),
         )
         return calls
+
+    def test_an_unexpected_error_is_handed_to_the_hard_exit(self, monkeypatch):
+        async def boom(ns):
+            raise RuntimeError("kaputt")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+        _capture_entry_logs(monkeypatch)
+        monkeypatch.setattr("swarmq.process_manager.entry.shutdown_logging", lambda *a, **k: None)
+        seen: list[tuple[int, BaseException | None]] = []
+        monkeypatch.setattr(
+            "swarmq.process_manager.entry.exit_if_log_thread_stuck",
+            lambda code, exc=None: seen.append((code, exc)),
+        )
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+        with pytest.raises(RuntimeError, match="kaputt") as raised:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+
+        assert seen == [(1, raised.value)]
 
     def test_a_config_error_hands_its_exit_code_to_the_hard_exit(self, monkeypatch):
         from swarmq.exceptions import ConfigurationError
@@ -562,7 +585,7 @@ class TestHardExitAfterTheDrain:
         stderr = BlockedStderr()
         monkeypatch.setattr(sys, "stderr", stderr)
         monkeypatch.setattr(
-            "swarmq.process_manager.entry.exit_if_log_thread_stuck", lambda code: None,
+            "swarmq.process_manager.entry.exit_if_log_thread_stuck", lambda code, exc=None: None,
         )
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         settings = _broken_log_config_settings(drain_timeout=0.05)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import weakref
 from collections.abc import Iterable
 from typing import Any
 
@@ -36,14 +37,21 @@ def _held() -> list[Any]:
     return locks
 
 
+_BUSY: weakref.WeakSet[logging.Handler] = weakref.WeakSet()
+"""Handler, deren Lock beim letzten Fork nicht zu bekommen war."""
+
+
 def hold_handler_locks(handlers: Iterable[logging.Handler]) -> None:
     """``before``-Hook: erwirbt die Locks von ``handlers``. Das Budget
     ``LOCK_BUDGET_S`` gilt fuer alle zusammen; ist es aufgebraucht, werden
     die uebrigen nur noch ohne Warten versucht, und der Fork laeuft
     trotzdem. Ziel-Handler aufgegebener Threads (KTD3) bleiben aussen vor:
-    Ihr Lock haelt womoeglich der haengende Thread."""
-    locks = [h.lock for h in handlers if h.lock is not None and not is_stuck(h)]
-    if not locks:
+    Ihr Lock haelt womoeglich der haengende Thread. Ein Handler, dessen Lock
+    schon beim letzten Fork belegt blieb, wird nur ohne Warten versucht --
+    ein Listener, der an einer vollen Pipe haengt, kostet nicht jeden Fork
+    das ganze Budget."""
+    targets = [h for h in handlers if h.lock is not None and not is_stuck(h)]
+    if not targets:
         return
     deadline = Deadline(LOCK_BUDGET_S)
     # Erst ``logging._lock``, dann die Handler-Locks -- die Reihenfolge von
@@ -55,9 +63,13 @@ def hold_handler_locks(handlers: Iterable[logging.Handler]) -> None:
         return
     held = _held()
     held.append(module_lock)
-    for lock in locks:
-        if lock.acquire(timeout=deadline.remaining()):
+    for handler in targets:
+        lock = handler.lock
+        if lock.acquire(timeout=0 if handler in _BUSY else deadline.remaining()):  # type: ignore[union-attr]
             held.append(lock)
+            _BUSY.discard(handler)
+        else:
+            _BUSY.add(handler)
 
 
 def release_handler_locks() -> None:

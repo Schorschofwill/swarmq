@@ -79,7 +79,6 @@ def preserved_root_logger() -> Iterator[None]:
     wechseln je Testphase und bleiben, wie pytest sie gerade gesetzt hat --
     zurueckgelegte Handler einer beendeten Phase sammelten sonst weiter.
     """
-    import swarmq.logging as swarmq_logging
     import swarmq.logging_queue as _queue_core
     from swarmq.logging import shutdown_logging
     from swarmq.logging_queue import _reset_log_queue
@@ -101,10 +100,12 @@ def preserved_root_logger() -> Iterator[None]:
         _queue_core._DRAIN_TIMEOUT = LoggingSettings().drain_timeout
         # Ein im Test als Fork-Quelle markierter Prozess (U6, KTD6) startet
         # sonst keinen Listener mehr.
-        _queue_core._IN_FORK_SOURCE = False
-        # Ein im Test angehaengter Forkserver-Sentinel (U9, KTD9) gilt nicht
-        # fuer den naechsten.
-        swarmq_logging._FORK_SOURCE_SENTINEL = None
+        # Ebenso ein im Test angehaengter Forkserver-Sentinel (U9, KTD9).
+        from swarmq.logging_forksource import FORK_SOURCE
+
+        FORK_SOURCE.active = False
+        FORK_SOURCE.sentinel = None
+        FORK_SOURCE.detached_at_fork = False
         root.handlers[:] = own + [h for h in root.handlers if _is_pytest_handler(h)]
         root.setLevel(level)
         swarmq_logger.handlers[:], swarmq_level, swarmq_logger.propagate = swarmq_state

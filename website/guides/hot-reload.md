@@ -91,7 +91,7 @@ the reload was decided while the workers are stopping, and when a
 down without re-executing itself; a check still running is killed. A
 `SIGTERM` that arrives in the last moment before `os.execvpe` stays
 pending and ends the new supervisor as soon as it has set up its signal
-handlers.
+handlers — also when another thread of the supervisor receives it.
 
 The watcher suppresses re-entrancy: if a reload is already pending, being
 checked or in flight when a second change lands, the second event is

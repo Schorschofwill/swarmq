@@ -21,15 +21,23 @@ import threading
 import weakref
 from typing import Any
 
-from swarmq.logging_drain import Deadline, abandon, write_drain_notice
+from swarmq.logging_drain import (
+    Deadline,
+    abandon,
+    drain_expired,
+    draining_until,
+    write_drain_notice,
+)
 from swarmq.logging_file import (
     FileDraining,
     ListenerReports,
     close_queue_listeners,
     reset_queue_listeners_after_fork,
     running_targets,
+    start_pending_queue_listeners,
 )
 from swarmq.logging_fork import forget_handler_locks, hold_handler_locks, release_handler_locks
+from swarmq.logging_forksource import FORK_SOURCE
 
 LISTENER_THREAD_NAME = "swarmq-log-lsnr"
 """Name des Listener-Threads; daran erkennbar in Thread-Dumps und Tests.
@@ -168,21 +176,6 @@ def count_dropped(count: int = 1) -> None:
     _DROPPED_TOTAL += count
 
 
-_IN_FORK_SOURCE = False
-"""Ist dieser Prozess eine Fork-Quelle (Forkserver)? Dann startet kein
-Listener-Thread (Plan 2026-10-06-1811, KTD6)."""
-
-
-def mark_fork_source() -> None:
-    """Markiert den Prozess als Fork-Quelle: Queue-Handler geben synchron
-    ueber die Ziel-Handler aus, statt einen Listener-Thread zu starten, und
-    der Forkserver bleibt einfaedig (Plan 2026-10-06-1811, KTD6). Gesetzt
-    von ``swarmq.worker.compute.preload``; der Fork-Hook hebt es im Kind
-    auf."""
-    global _IN_FORK_SOURCE
-    _IN_FORK_SOURCE = True
-
-
 _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
 """Alle lebenden Queue-Handler des Prozesses; der Fork-Hook setzt sie zurueck."""
 
@@ -237,7 +230,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
                 return
             self._abandoned = None
         listener = self.listener
-        if listener is not None and (_IN_FORK_SOURCE or sys.is_finalizing()):
+        if listener is not None and (FORK_SOURCE.active or sys.is_finalizing()):
             # Fork-Quelle (KTD6): kein Thread, der Forkserver bleibt
             # einfaedig. Finalisierung (KTD5): Kein neuer Thread startet
             # mehr, und ein laufender kommt nicht mehr dran -- synchron
@@ -245,6 +238,9 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
             listener.handle(record)
             return
         if listener is not None and not listener.running:
+            if drain_expired():
+                self._drop()
+                return
             try:
                 listener.start()
             except PythonFinalizationError:
@@ -287,6 +283,18 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         # meist gerade deshalb voll, weil das Ziel blockiert.
         if self.listener is not None:
             self.listener.drops.add()
+
+    def _discard_pending(self) -> int:
+        """Verwirft und zaehlt, was in der Queue liegt (KTD3); liefert die
+        Zahl."""
+        count = 0
+        while True:
+            try:
+                self.queue.get_nowait()
+            except (queue.Empty, queue.ShutDown):
+                return count
+            self._drop()
+            count += 1
 
     def _reset_after_fork(self) -> None:
         """Frische Queue, Zaehler und Listener im Kind (KTD5)."""
@@ -351,6 +359,10 @@ def _dispatch_to_root(record: logging.LogRecord, listener: _SwarmqQueueListener)
 
 class _OptinQueueHandler(_StructlogQueueHandler):
     """Queue-Handler am Logger ``swarmq`` fuer den Opt-in (KTD10)."""
+
+    forwards_to_root = True
+    """Reicht jeden Record an die Root-Handler weiter; der Platzhalter der
+    Fork-Quelle zaehlt ihn deshalb nicht als eigenen Handler."""
 
     def __init__(self, queue_: _LogQueue, *, json: bool = False) -> None:
         super().__init__(queue_, json=json)
@@ -417,13 +429,36 @@ def _disable_log_queue() -> _Draining | None:
 
 async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -> None:
     """Wartet, ohne den Event-Loop anzuhalten, bis der Listener die
-    geschlossene Opt-in-Queue geleert hat (Plan 2026-10-06-1811, KTD4)."""
+    geschlossene Opt-in-Queue geleert hat (Plan 2026-10-06-1811, KTD4).
+
+    Wird das Warten abgebrochen (etwa ein zweites ``cancel`` beim
+    Herunterfahren), geht der Abbruch weiter, ohne erneut zu warten. Das
+    Leeren laeuft dann im Hintergrund bis zur Frist weiter; erst danach gilt
+    der Rest als verworfen und wird gemeldet."""
     if draining is None:
         return
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(asyncio.to_thread(draining.thread.join, timeout), timeout)
-    if not draining.settle():
+    deadline = Deadline(timeout)
+    try:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.to_thread(draining.thread.join, timeout), timeout)
+    except BaseException:
+        _finish_in_background(draining, deadline, timeout)
+        raise
+    _finish_draining(draining, deadline, timeout)
+
+
+def _finish_draining(draining: _Draining, deadline: Deadline, timeout: float) -> None:
+    """Bis zur Frist warten; danach aufgeben, zaehlen und melden (KTD3)."""
+    if not draining.wait(deadline):
         draining.notify(timeout)
+
+
+def _finish_in_background(draining: _Draining, deadline: Deadline, timeout: float) -> None:
+    """:func:`_finish_draining` in einem eigenen Thread."""
+    threading.Thread(
+        target=_finish_draining, args=(draining, deadline, timeout),
+        name="swarmq-log-drain", daemon=True,
+    ).start()
 
 
 def _reset_log_queue() -> None:
@@ -502,9 +537,18 @@ def _stop_listeners(timeout: float | None = None) -> None:
     solange inzwischen neue Listener laufen. Nach der Frist gibt jede Runde
     die noch laufenden auf; deren Handler starten keinen neuen, solange der
     alte Thread lebt -- die Schleife endet auch bei ununterbrochenem
-    Loggen."""
+    Loggen. Records in einer Queue ohne laufenden Listener werden vorher
+    geschrieben oder, nach der Frist, als verworfen gezaehlt und gemeldet."""
     seconds = _DRAIN_TIMEOUT if timeout is None else timeout
     deadline = Deadline(seconds)
+    with draining_until(deadline):
+        _drain(deadline, seconds)
+
+
+def _drain(deadline: Deadline, seconds: float) -> None:
+    """Der Kern von :func:`_stop_listeners`."""
+    discarded = _start_pending(deadline)
+    file_discarded = start_pending_queue_listeners(deadline)
     closing = _close_running()
     file_closing = close_queue_listeners()
     given_up: list[_Draining] = []
@@ -516,15 +560,36 @@ def _stop_listeners(timeout: float | None = None) -> None:
         # der frischen Queue und starten deren Listener; ein Eintrag im
         # Fenster zwischen Ende und Vergessen startet einen neuen Thread
         # (KTD1). Auch sie werden geschlossen und abgewartet, nicht verwaist.
+        discarded += _start_pending(deadline)
+        file_discarded += start_pending_queue_listeners(deadline)
         closing = _close_running()
         file_closing = close_queue_listeners()
-    file_lost = sum(d.lost for d in file_given_up)
+    file_lost = sum(d.lost for d in file_given_up) + file_discarded
     count_dropped(file_lost)
-    if given_up or file_given_up:
+    lost = sum(d.lost for d in given_up) + sum(n for _, n in discarded) + file_lost
+    if given_up or file_given_up or lost:
+        handlers = [*(d.handler for d in given_up), *(h for h, _ in discarded)]
         write_drain_notice(
-            sum(d.lost for d in given_up) + file_lost, seconds,
-            json=any(d.handler is not None and d.handler.json for d in given_up),
+            lost, seconds, json=any(h is not None and h.json for h in handlers),
         )
+
+
+def _start_pending(deadline: Deadline) -> list[tuple[_StructlogQueueHandler, int]]:
+    """Liegen Records in der Queue eines eingebauten Handlers, dessen
+    Listener nicht laeuft, startet er: Ein Aufrufer, der beim Tausch der
+    Queue (``_close``) noch den alten Listener sah, legte sie in die
+    frische. Nach Ablauf der Frist zaehlen sie stattdessen als verworfen;
+    geliefert werden diese Handler mit der Zahl ihrer Records."""
+    discarded: list[tuple[_StructlogQueueHandler, int]] = []
+    for handler in list(_HANDLERS):
+        listener = handler.listener
+        if listener is None or listener.running or handler.queue.empty():
+            continue
+        if deadline.remaining() > 0:
+            listener.start()
+        else:
+            discarded.append((handler, handler._discard_pending()))
+    return discarded
 
 
 def _close_running() -> list[_Draining]:
@@ -627,12 +692,9 @@ def _after_fork_in_child() -> None:
     2026-10-06-1811, KTD10); die vom ``before``-Hook gehaltenen Handler-Locks
     setzt die stdlib im Kind schon selbst zurueck.
     """
-    global _LISTENER_LOCK, _DROPPED_TOTAL, _IN_FORK_SOURCE
+    global _LISTENER_LOCK, _DROPPED_TOTAL
     _LISTENER_LOCK = threading.Lock()
     _DROPPED_TOTAL = 0
-    # Das Kind ist keine Fork-Quelle mehr (KTD6): Der naechste Eintrag
-    # startet seinen Listener.
-    _IN_FORK_SOURCE = False
     _LISTENERS.clear()
     forget_handler_locks()
     reset_queue_listeners_after_fork()

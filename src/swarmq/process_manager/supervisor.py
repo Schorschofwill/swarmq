@@ -246,6 +246,7 @@ class ProcessManager:
         # es direkt vor ``execvpe``; geloggt wird es genau einmal.
         self._shutdown_signal: str | None = None
         self._shutdown_signal_logged = False
+        self._reexec_holds_signals = False  # ``reload.reexec`` vor ``execve``
         self._reload_requested = False
         self.reloader = ReloadController()  # KTD8; ``run`` setzt ihn mit --log-config
         # R20/KTD9 (Plan 2026-09-03-001): sauber beendete Worker (Exit 0 ohne
@@ -387,6 +388,11 @@ class ProcessManager:
         self._reload_requested = False
         self.reloader.cancel()
         self.shutdown_event.set()
+        if self._reexec_holds_signals:
+            # ``reload.reexec`` prueft womoeglich nicht mehr: das Signal an den
+            # blockierten Hauptthread zurueck, anhaengig ueber ``execve``
+            # hinweg. Kommt es ohne ``execve`` noch einmal, ist das harmlos.
+            signal.raise_signal(signum)
 
     def _on_reload_signal(self, _signum: int, _frame: object) -> None:
         # KTD8: nur vormerken; Probe und Reload treibt der Monitor-Loop.
