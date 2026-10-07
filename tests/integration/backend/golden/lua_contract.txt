@@ -2,7 +2,7 @@ chord_complete	KEYS=1	ARGV=3
 lock_acquire	KEYS=1	ARGV=4
 lock_release	KEYS=1	ARGV=2
 lock_renew	KEYS=1	ARGV=2
-sched_commit	KEYS=3	ARGV=4
+sched_commit	KEYS=3	ARGV=5
 sched_disable	KEYS=2	ARGV=2
 sched_poll	KEYS=2	ARGV=2
 sliding_window_counter	KEYS=2	ARGV=3

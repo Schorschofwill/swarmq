@@ -7,6 +7,13 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 über seinen ``LockStore``).
 """
 
+# Test list (0.9.0, Scheduler-Commit-Wettlauf) -- ScheduleStoreContract:
+# 1. commit_fire mit ``fired_ts_ms`` verwirft den Commit, wenn der Eintrag
+#    inzwischen deaktiviert wurde (Fire-Index leer, Definition bleibt).
+# 2. ... wenn der Eintrag inzwischen dauerhaft entfernt wurde.
+# 3. ... wenn der Fire-Index-Score inzwischen ein anderer ist (``put``).
+# 4. commit_fire mit passendem ``fired_ts_ms`` wendet den Commit an.
+
 from __future__ import annotations
 
 import uuid
@@ -212,6 +219,63 @@ class ScheduleStoreContract:
         assert await impl.commit_fire(name, next_fire_ts_ms=None, payload=None, owner="chief") is True
         assert await impl.exists(name) is False
         assert all(n != name for n, _, _ in await impl.poll_due(10_000))
+
+    async def test_commit_fire_discards_when_disabled_since_poll(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.disable(name, b"off")
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"off"
+        assert all(n != name for n, _, _ in await impl.poll_due(10_000))
+
+    async def test_commit_fire_discards_when_removed_since_poll(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.remove(name)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.exists(name) is False
+        assert all(n != name for n, _, _ in await impl.poll_due(10_000))
+
+    async def test_commit_fire_discards_when_replanned_since_poll(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.put(name, b"replanned", fire_ts_ms=5_000)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"replanned"
+        assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 5_000
+
+    async def test_commit_fire_applies_when_fired_score_unchanged(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"v2"
+        assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 2_000
+
+    async def test_commit_fire_owner_check_precedes_superseded_check(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.remove(name)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="impostor", fired_ts_ms=1_000)
+            is False
+        )
 
     async def test_fire_markers(self, impl: ScheduleStore) -> None:
         key = _name("fire")

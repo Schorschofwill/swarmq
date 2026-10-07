@@ -122,6 +122,22 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein Scheduler-Fire überschreibt keine Zeitplanänderung mehr, die
+  während des Fires passiert.** Ein `swarmq schedule remove`
+  (deaktivieren oder `--permanent`) oder ein Redeploy mit neuer Cron
+  zwischen Poll und Commit wurde rückgängig gemacht: Der Zeitplan war
+  wieder aktiv, wieder angelegt oder hatte wieder die alte Cron. Der
+  Commit greift jetzt nur, solange der Zeitplan noch den gefeuerten
+  Score hat; `sched_commit.lua` prüft das atomar (neues optionales
+  `ARGV[5]`, abwärtskompatibel), und `ScheduleStore.commit_fire` hat das
+  neue optionale Keyword `fired_ts_ms`.
+- **Ein abgebrochener Worker-Start lässt den eingebetteten Scheduler
+  nicht mehr weiterlaufen.** Ein Abbruch von `start_worker()` oder ein
+  Fehler nach dem Start des Schedulers (Executor-Start,
+  Queue-Deklaration, `WORKER_ONLINE`) ließ dessen Election- und
+  Poll-Tasks weiterlaufen; der Prozess erneuerte den
+  Scheduler-Leader-Lock, und kein anderer Worker wurde Leader.
+
 - **Eine volle Log-Queue hält den loggenden Code nicht mehr an.** Bei
   blockiertem stderr schrieb der Aufrufer — im Event-Loop — die
   Drop-Meldung selbst, und der Loop stand sekundenlang still (2,9 s

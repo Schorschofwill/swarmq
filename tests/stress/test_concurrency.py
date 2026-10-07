@@ -316,10 +316,14 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
     valkey_client = valkey_asyncio.Valkey.from_url(valkey_url)
 
     class CronFireTask(Task):
-        # Natural cron is every minute — but the test won't wait for it.
-        # We hijack the zset score to force fires in quick succession.
+        # The cron must never come due on its own while the test runs: a
+        # minutely cron fired regularly at the full minute, and that extra
+        # fire landed in the grace window (101 instead of 100 executions).
+        # Yearly at 00:00 UTC on Jan 1 — the forced fires come exclusively
+        # from the zset re-scoring below, and each commit advances the
+        # score to a future slot (> now), which the injection loop waits for.
         task_info = TaskInfo(
-            name=task_name, queues=[queue], cron="* * * * *",
+            name=task_name, queues=[queue], cron="0 0 1 1 *",
         )
 
         async def run(self) -> str:
@@ -373,7 +377,7 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
 
         # Force 100 fires by re-scoring the zset, one at a time. Each
         # injection waits until the leader has COMMITTED the fire
-        # (commit_fire advances the score to the next cron minute, i.e.
+        # (commit_fire advances the score to the next cron slot, i.e.
         # into the future) before injecting the next one. A fixed 80ms
         # gap raced the 50ms poll tick on slow shared CI runners: the
         # next ZADD overwrote a not-yet-polled score and the fire was

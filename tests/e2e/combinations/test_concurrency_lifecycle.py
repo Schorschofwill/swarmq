@@ -36,17 +36,22 @@ Assumptions documented in-line; §Assumptions section at the bottom.
 
 Lock TTL note: compute_lock_ttl_ms(hard_timeout) = (hard_timeout + 30) × 1000 ms
 (P0-A fix, 2026-06-02 — the TTL must outlive the task's permitted runtime).
-None of the SIGKILL tests below actually wait for a lock TTL to expire — the
-shutdown_sleep fixture has no lock, and recovery happens via RabbitMQ
-redelivery, so @pytest.mark.timeout(90) covers subprocess startup + redelivery,
-not a TTL.
+Crash semantics (since R20 the worker loop runs in a supervisor child): the
+SIGKILL tests use ``crash_worker``, which SIGKILLs the worker child together
+with the supervisor. A supervisor-only SIGKILL would let the child shut down
+gracefully via its parent-death signal and release every lock — the TTL path
+would never run. The scheduler-lock tests (Combos 27-29) run with a short
+scheduler lock (``SHORT_SCHEDULER_LOCK_ENV``: TTL 3s, heartbeat 1s) and
+observe the orphaned lock expiring by TTL. Task-lock TTLs are
+``hard_timeout + 30s`` and stay out of reach of these tests; the
+shutdown_sleep fixture has no task lock, so task recovery happens via
+RabbitMQ redelivery.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import signal as _signal
 import subprocess
 import time
@@ -68,10 +73,24 @@ from ._invariants import (
     assert_no_reader_leak,
 )
 from ._subprocess import (
+    SHORT_SCHEDULER_LOCK_ENV,
+    SHORT_SCHEDULER_LOCK_TTL_S,
+    crash_worker,
     kill_subprocess,
+    kill_worker_child,
+    lock_owner_pid,
+    scheduler_lock_owner,
     spawn_worker,
+    wait_for_scheduler_leader,
+    wait_for_worker_children,
     wait_for_worker_started,
 )
+
+
+def _worker_children_now(proc: subprocess.Popen[str]) -> list[Any]:
+    """Exactly the current worker child(ren) of a single-process worker."""
+    return wait_for_worker_children(proc, count=1)
+
 
 # Module-level timeout; chaos tests override with @pytest.mark.timeout(N).
 pytestmark = [pytest.mark.timeout(60)]
@@ -922,10 +941,9 @@ class TestHotReloadInflightLockCombo:
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
 
-            # SIGKILL worker A.
-            os.kill(proc_a.pid, _signal.SIGKILL)
-            rc = proc_a.wait(timeout=10)
-            assert rc == -_signal.SIGKILL
+            # Crash worker A (child + supervisor).
+            crash_worker(proc_a)
+            assert proc_a.returncode == -_signal.SIGKILL
 
         finally:
             kill_subprocess(proc_a)
@@ -1221,10 +1239,9 @@ class TestSIGKILLLockAtLeastOnceCombo:
                 # Let worker A pick them up.
                 await asyncio.sleep(0.5)
 
-                # SIGKILL worker A.
-                os.kill(proc_a.pid, _signal.SIGKILL)
-                rc_a = proc_a.wait(timeout=10)
-                assert rc_a == -_signal.SIGKILL
+                # Crash worker A — its in-flight tasks are NOT drained.
+                crash_worker(proc_a)
+                assert proc_a.returncode == -_signal.SIGKILL
 
                 # Spin up worker B to handle redeliveries.
                 proc_b = spawn_worker(
@@ -1274,8 +1291,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
         )
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
-            os.kill(proc_a.pid, _signal.SIGKILL)
-            proc_a.wait(timeout=10)
+            crash_worker(proc_a)
 
         finally:
             kill_subprocess(proc_a)
@@ -1299,66 +1315,66 @@ class TestSIGKILLLockAtLeastOnceCombo:
     async def test_lock_recovery_within_ttl(
         self, rabbitmq_url: str, valkey_url: str, unique_queue: str
     ) -> None:
-        """After SIGKILL, the lock must be released within its TTL.
+        """After a crash the orphaned scheduler lock expires by TTL and the
+        successor takes it over within that TTL.
 
-        Uses assert_no_deadlock to poll the Valkey lock key.
-
-        Assumption: we use a scheduler-leader lock as the observable lock
-        (SCHEDULER_LOCK_KEY); it has a configurable TTL via scheduler_lock_ttl.
-        For this test we use a short scheduler_lock_ttl=2s and verify the lock
-        clears within 5s.
+        Observable lock: the scheduler-leader lock (value = owner token
+        ``{host}:{pid}:{uuid}``), run with a 3s TTL. Checked:
+          - A's worker child holds the lock before the crash;
+          - right after the crash the lock still belongs to A (a real crash
+            releases nothing — a graceful path would have freed it);
+          - B's worker child owns the lock no later than TTL + two
+            heartbeats after the crash (or after B's start, if later).
         """
         queue = unique_queue
         from tests.e2e.combinations._subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
-        # Spin up worker A (no scheduler here — we observe task lock via
-        # check on ValkeyBackend directly after SIGKILL).
         proc_a = spawn_worker(
             queue,
             fixture_module=_FIXTURE_MODULE,
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=1,
+            env_extra=SHORT_SCHEDULER_LOCK_ENV,
         )
+        proc_b: subprocess.Popen[str] | None = None
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
-            os.kill(proc_a.pid, _signal.SIGKILL)
-            proc_a.wait(timeout=10)
+            (child_a,) = _worker_children_now(proc_a)
+            await wait_for_scheduler_leader(valkey_url, child_a.pid)
 
+            crash_worker(proc_a)
+            crashed_at = time.monotonic()
+            assert lock_owner_pid(await scheduler_lock_owner(valkey_url)) == child_a.pid, (
+                "the crashed leader's lock must stay behind until its TTL"
+            )
+
+            proc_b = spawn_worker(
+                queue,
+                fixture_module=_FIXTURE_MODULE,
+                broker_url=rabbitmq_url,
+                backend_url=valkey_url,
+                concurrency=1,
+                env_extra=SHORT_SCHEDULER_LOCK_ENV,
+            )
+            wait_for_worker_started(proc_b, timeout=20.0)
+            b_started_at = time.monotonic()
+            (child_b,) = _worker_children_now(proc_b)
+            taken_over_at = await wait_for_scheduler_leader(
+                valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0
+            )
+
+            bound = max(crashed_at + SHORT_SCHEDULER_LOCK_TTL_S, b_started_at) + 2.0
+            assert taken_over_at <= bound, (
+                f"successor took over {taken_over_at - crashed_at:.1f}s after the crash "
+                f"(TTL {SHORT_SCHEDULER_LOCK_TTL_S}s)"
+            )
         finally:
             kill_subprocess(proc_a)
-
-        # After SIGKILL, verify that a new worker can start cleanly — which
-        # implies no leaked exclusive state that would block startup.
-        proc_b = spawn_worker(
-            queue,
-            fixture_module=_FIXTURE_MODULE,
-            broker_url=rabbitmq_url,
-            backend_url=valkey_url,
-            concurrency=1,
-        )
-        try:
-            wait_for_worker_started(proc_b, timeout=20.0)
-
-            # Use assert_no_deadlock with a Valkey probe: if the scheduler
-            # lock (or any global lock) is still held from the killed process,
-            # this will detect it.
-            backend = ValkeyBackend(valkey_url)
-            await backend.connect()
-            try:
-                from swarmq.locking import SCHEDULER_LOCK_KEY
-
-                await assert_no_deadlock(
-                    lambda: backend._client.exists(SCHEDULER_LOCK_KEY),
-                    max_wait_s=8.0,
-                )
-            finally:
-                await backend.close()
-
-        finally:
-            kill_subprocess(proc_b)
+            if proc_b is not None:
+                kill_subprocess(proc_b)
 
 
 # ---------------------------------------------------------------------------
@@ -1445,11 +1461,13 @@ class TestSchedulerLeaderFailoverCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=2,
-            extra_args=["--scheduler-lock-ttl", "3"],
+            env_extra=SHORT_SCHEDULER_LOCK_ENV,
         )
         proc_b: subprocess.Popen[str] | None = None
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
+            (child_a,) = _worker_children_now(proc_a)
+            await wait_for_scheduler_leader(valkey_url, child_a.pid)
 
             broker = RabbitMQBroker(rabbitmq_url)
             backend = ValkeyBackend(valkey_url)
@@ -1462,9 +1480,9 @@ class TestSchedulerLeaderFailoverCombo:
                 # Let worker A pick up and begin.
                 await asyncio.sleep(0.3)
 
-                # SIGKILL leader A.
-                os.kill(proc_a.pid, _signal.SIGKILL)
-                proc_a.wait(timeout=10)
+                # Crash leader A (orphaned leader lock, in-flight task
+                # not drained).
+                crash_worker(proc_a)
 
                 # Spin up worker B as successor.
                 proc_b = spawn_worker(
@@ -1473,13 +1491,18 @@ class TestSchedulerLeaderFailoverCombo:
                     broker_url=rabbitmq_url,
                     backend_url=valkey_url,
                     concurrency=2,
-                    extra_args=["--scheduler-lock-ttl", "3"],
+                    env_extra=SHORT_SCHEDULER_LOCK_ENV,
                 )
                 wait_for_worker_started(proc_b, timeout=20.0)
+                (child_b,) = _worker_children_now(proc_b)
 
                 # Task must complete on B.
                 result = await app.get_result(task_id, timeout=20)
                 assert result == "slept:0.5"
+                # B takes over the orphaned leadership after the TTL.
+                await wait_for_scheduler_leader(
+                    valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0
+                )
 
                 proc_b.send_signal(_signal.SIGTERM)
                 proc_b.wait(timeout=20)
@@ -1536,12 +1559,23 @@ class TestSchedulerLeaderFailoverCombo:
         async def _failover_b(**_: Any) -> None:
             failover_emitted.set()
 
+        b_online = asyncio.Event()
+
+        @app_b.on_signal(Signal.WORKER_ONLINE)
+        async def _online_b(**_: Any) -> None:
+            b_online.set()
+
         task_a = asyncio.create_task(app_a.start_worker())
-        task_b = asyncio.create_task(app_b.start_worker())
+        task_b: asyncio.Task[None] | None = None
 
         try:
-            # Wait for A to become leader.
+            # Wait for A to become leader; B starts only afterwards — started
+            # together, B may win the election and A never becomes leader.
             await asyncio.wait_for(leader_a_event.wait(), timeout=10.0)
+            task_b = asyncio.create_task(app_b.start_worker())
+            # B's scheduler starts before WORKER_ONLINE, so once B is online
+            # its first election tick has seen A's lock as held.
+            await asyncio.wait_for(b_online.wait(), timeout=10.0)
 
             # Stop A without graceful handover — mimic crash.
             task_a.cancel()
@@ -1555,9 +1589,12 @@ class TestSchedulerLeaderFailoverCombo:
 
         finally:
             task_a.cancel()
-            task_b.cancel()
+            if task_b is not None:
+                task_b.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(task_a, task_b, return_exceptions=True)
+                await asyncio.gather(
+                    task_a, *([task_b] if task_b is not None else []), return_exceptions=True
+                )
             for br, be in ((broker_a, backend_a), (broker_b, backend_b)):
                 with contextlib.suppress(Exception):
                     await br.close()
@@ -1593,12 +1630,12 @@ class TestProcessManagerWorkerCrashLockCombo:
     async def test_pm_restarts_crashed_worker(
         self, rabbitmq_url: str, valkey_url: str, unique_queue: str
     ) -> None:
-        """ProcessManager pattern: kill worker A, spin up worker B as
-        the replacement, verify B handles tasks correctly.
+        """The supervisor restarts a crashed worker child; the restarted
+        child processes the redelivered tasks.
 
-        Note: We use direct subprocess spawn (not ProcessManager class)
-        to stay within the async test framework.  The behaviour is identical:
-        crash → new worker → redelivery.
+        Real ProcessManager path (since R20 ``swarmq worker`` is the
+        supervisor): only the worker child gets SIGKILL, the supervisor stays
+        up, notices the crash and spawns a new child in the same slot.
         """
         queue = unique_queue
         from tests.e2e.combinations._subprocess import ensure_fixture_registered
@@ -1612,7 +1649,6 @@ class TestProcessManagerWorkerCrashLockCombo:
             backend_url=valkey_url,
             concurrency=2,
         )
-        proc_b: subprocess.Popen[str] | None = None
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
 
@@ -1627,31 +1663,26 @@ class TestProcessManagerWorkerCrashLockCombo:
                     tids.append(tid)
 
                 await asyncio.sleep(0.3)
-                os.kill(proc_a.pid, _signal.SIGKILL)
-                proc_a.wait(timeout=10)
+                crashed_pid = kill_worker_child(proc_a)
 
-                # ProcessManager would restart; we simulate with explicit spawn.
-                proc_b = spawn_worker(
-                    queue,
-                    fixture_module=_FIXTURE_MODULE,
-                    broker_url=rabbitmq_url,
-                    backend_url=valkey_url,
-                    concurrency=4,
-                )
-                wait_for_worker_started(proc_b, timeout=20.0)
+                # The supervisor restarts the slot with a fresh child.
+                deadline = time.monotonic() + 20.0
+                while time.monotonic() < deadline:
+                    pids = {c.pid for c in _worker_children_now(proc_a)} - {crashed_pid}
+                    if pids:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    raise AssertionError("supervisor did not restart the crashed worker child")
+                assert proc_a.poll() is None, "supervisor must survive a child crash"
 
                 results = await app.get_results(tids, timeout=25)
                 assert len(results) == 3
-
-                proc_b.send_signal(_signal.SIGTERM)
-                proc_b.wait(timeout=20)
 
             assert_at_least_once_held(len(results), expected_min=3)
 
         finally:
             kill_subprocess(proc_a)
-            if proc_b is not None:
-                kill_subprocess(proc_b)
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
@@ -1674,21 +1705,21 @@ class TestProcessManagerWorkerCrashLockCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=1,
-            extra_args=["--scheduler-lock-ttl", "3"],
+            env_extra=SHORT_SCHEDULER_LOCK_ENV,
         )
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
+            (child_a,) = _worker_children_now(proc_a)
+            await wait_for_scheduler_leader(valkey_url, child_a.pid)
 
-            # Give the worker time to start and potentially acquire scheduler lock.
-            await asyncio.sleep(1.0)
-
-            os.kill(proc_a.pid, _signal.SIGKILL)
-            proc_a.wait(timeout=10)
+            crash_worker(proc_a)
+            # A real crash leaves the leader lock behind ...
+            assert lock_owner_pid(await scheduler_lock_owner(valkey_url)) == child_a.pid
 
         finally:
             kill_subprocess(proc_a)
 
-        # After TTL, scheduler lock must be released.
+        # ... and its TTL (3s) must clear it — no zombie leader.
         backend = ValkeyBackend(valkey_url)
         await backend.connect()
         try:
@@ -1696,7 +1727,7 @@ class TestProcessManagerWorkerCrashLockCombo:
 
             await assert_no_deadlock(
                 lambda: backend._client.exists(SCHEDULER_LOCK_KEY),
-                max_wait_s=10.0,
+                max_wait_s=SHORT_SCHEDULER_LOCK_TTL_S + 2.0,
             )
         finally:
             await backend.close()
@@ -1735,8 +1766,7 @@ class TestProcessManagerWorkerCrashLockCombo:
                 await app.schedule("shutdown_sleep", 0.5, queue=queue)
                 await asyncio.sleep(0.2)
 
-                os.kill(proc_a.pid, _signal.SIGKILL)
-                proc_a.wait(timeout=10)
+                crash_worker(proc_a)
 
             # Worker B comes up fresh.
             proc_b = spawn_worker(
@@ -1930,9 +1960,8 @@ class TestAutoscaleShrinkRunningCombo:
                     tids.append(tid)
                 await asyncio.sleep(0.3)
 
-                # Autoscale SIGKILL escalation.
-                os.kill(proc_a.pid, _signal.SIGKILL)
-                proc_a.wait(timeout=10)
+                # Autoscale SIGKILL escalation (no drain anywhere).
+                crash_worker(proc_a)
 
                 proc_b = spawn_worker(
                     queue,
@@ -2035,11 +2064,13 @@ class TestHotReloadSchedulerLeaderCombo:
             new_leader_emitted.set()
 
         task_a = asyncio.create_task(app_a.start_worker())
-        task_b = asyncio.create_task(app_b.start_worker())
+        task_b: asyncio.Task[None] | None = None
 
         try:
-            # Wait for A to become leader.
+            # Wait for A to become leader; start the standby only then —
+            # started together, B may win the election first.
             await asyncio.wait_for(leader_a.wait(), timeout=12.0)
+            task_b = asyncio.create_task(app_b.start_worker())
 
             # Graceful stop of A (equivalent to hot-reload graceful shutdown part).
             task_a.cancel()
@@ -2060,9 +2091,12 @@ class TestHotReloadSchedulerLeaderCombo:
 
         finally:
             task_a.cancel()
-            task_b.cancel()
+            if task_b is not None:
+                task_b.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(task_a, task_b, return_exceptions=True)
+                await asyncio.gather(
+                    task_a, *([task_b] if task_b is not None else []), return_exceptions=True
+                )
             for br, be in ((broker_a, backend_a), (broker_b, backend_b)):
                 with contextlib.suppress(Exception):
                     await br.close()
@@ -2121,10 +2155,12 @@ class TestHotReloadSchedulerLeaderCombo:
         )
 
         task_a = asyncio.create_task(app_a.start_worker())
-        task_b = asyncio.create_task(app_b.start_worker())
+        task_b: asyncio.Task[None] | None = None
 
         try:
+            # Standby B starts only after A won the election (see above).
             await asyncio.wait_for(leader_a_event.wait(), timeout=12.0)
+            task_b = asyncio.create_task(app_b.start_worker())
 
             # Schedule a task with A; then gracefully stop A.
             client_broker = RabbitMQBroker(rabbitmq_url)
@@ -2149,9 +2185,12 @@ class TestHotReloadSchedulerLeaderCombo:
 
         finally:
             task_a.cancel()
-            task_b.cancel()
+            if task_b is not None:
+                task_b.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(task_a, task_b, return_exceptions=True)
+                await asyncio.gather(
+                    task_a, *([task_b] if task_b is not None else []), return_exceptions=True
+                )
             for br, be in (
                 (broker_a, backend_a),
                 (broker_b, backend_b),

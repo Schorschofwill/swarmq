@@ -18,14 +18,29 @@
 -- ARGV[2] next_fire_ts_ms       (int; -1 means one-shot, skip ZADD)
 -- ARGV[3] updated_def_json      (bytes; "" means delete def via HDEL)
 -- ARGV[4] owner_token           (caller's identity — must match KEYS[3])
+-- ARGV[5] fired_ts_ms           (optional; the zset score that was fired)
+--
+-- Superseded guard (0.9.0): with ARGV[5] the commit only applies while the
+-- member still sits in the zset with exactly the fired score. A schedule
+-- that was disabled (ZREM), removed (ZREM + HDEL) or re-planned (new
+-- score) between poll and commit keeps that change — the commit is
+-- discarded instead of reviving or overwriting it.
 --
 -- Returns:
 --   1 -> commit applied (zset/defs mutated according to ARGV)
+--   2 -> superseded by a concurrent change; no state touched
 --   0 -> owner mismatch; no state touched
 
 local owner = redis.call('GET', KEYS[3])
 if owner ~= ARGV[4] then
     return 0
+end
+
+if ARGV[5] ~= nil and ARGV[5] ~= '' then
+    local current = redis.call('ZSCORE', KEYS[1], ARGV[1])
+    if not current or tonumber(current) ~= tonumber(ARGV[5]) then
+        return 2
+    end
 end
 
 redis.call('ZREM', KEYS[1], ARGV[1])

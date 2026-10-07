@@ -12,6 +12,10 @@ insert-if-absent vs. update-static branches that live in Python.
 # 1. ``disable_schedule`` auf kaputtem Eintrag loggt
 #    ``schedule_def_malformed_skipped`` mit ``error_type``/``error``.
 # 2. ``list_schedules`` ebenso.
+#
+# Test list (0.9.0, Scheduler-Commit-Wettlauf):
+# 3. ``commit_fire`` reicht den gefeuerten Score als ``fired_ts_ms`` an den
+#    Bytes-Store durch.
 
 from __future__ import annotations
 
@@ -331,6 +335,11 @@ class TestScheduleStorePollAndCommit:
         kwargs = schedules.commit_fire.await_args.kwargs
         assert kwargs["next_fire_ts_ms"] == 1_900 and kwargs["owner"] == "chief"
         assert msgspec.json.decode(kwargs["payload"], type=ScheduleDefinition) == d
+
+    async def test_commit_fire_forwards_fired_score(self):
+        store, schedules = _make_store()
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_ts_ms"] == 1_000
 
     async def test_commit_fire_one_shot_maps_minus_one_to_none(self):
         store, schedules = _make_store()

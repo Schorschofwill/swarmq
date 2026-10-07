@@ -80,9 +80,23 @@ class ScheduleStore(Protocol):
     async def poll_due(self, now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
         """``(name, fire_ts_ms, payload)`` aller fälligen Einträge."""
 
-    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None, payload: bytes | None, owner: str) -> bool:
+    async def commit_fire(
+        self,
+        name: str,
+        *,
+        next_fire_ts_ms: int | None,
+        payload: bytes | None,
+        owner: str,
+        fired_ts_ms: int | None = None,
+    ) -> bool:
         """Owner-Check gegen den Leader im selben atomaren Schritt;
-        ``payload=None`` löscht die Definition (One-Shot)."""
+        ``payload=None`` löscht die Definition (One-Shot).
+
+        Mit ``fired_ts_ms`` (dem gefeuerten Index-Score) greift der Commit
+        nur, wenn der Eintrag noch mit genau diesem Score im Fire-Index
+        steht; wurde der Zeitplan seit dem Poll deaktiviert, entfernt oder
+        umgeplant, wird der Commit verworfen. ``False`` heißt nur
+        „Owner-Check abgelehnt“ — ein verworfener Commit liefert ``True``."""
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 

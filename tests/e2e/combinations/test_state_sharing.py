@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import signal as _signal
 import time
 import uuid
 from typing import Any
@@ -48,8 +47,15 @@ from ._invariants import (
     assert_signal_sequence,
 )
 from ._subprocess import (
+    SHORT_SCHEDULER_LOCK_ENV,
+    SHORT_SCHEDULER_LOCK_TTL_S,
+    crash_worker,
     kill_subprocess,
+    lock_owner_pid,
+    scheduler_lock_owner,
     spawn_worker,
+    wait_for_scheduler_leader,
+    wait_for_worker_children,
     wait_for_worker_started,
 )
 
@@ -617,12 +623,9 @@ class TestLockCancelCombo:
                 await broker.declare_queue(queue)
                 # Worker A handles the task but we cannot easily inject a
                 # lock here without a custom fixture. Instead verify that
-                # after SIGKILL the lock is eventually freed via TTL and
-                # a second worker can start fresh tasks.
-                import os as _os
-
-                _os.kill(proc_a.pid, _signal.SIGKILL)
-                proc_a.wait(timeout=5)
+                # after a hard crash (worker child + supervisor SIGKILL, no
+                # drain) a second worker can start fresh tasks.
+                crash_worker(proc_a)
 
             # Spawn worker B — it should come online normally.
             proc_b = spawn_worker(
@@ -955,11 +958,13 @@ class TestLockHardTimeoutCombo:
         valkey_url: str,
         unique_queue: str,
     ) -> None:
-        """Worker SIGKILL with lock held — lock TTL must fire, successor
-        acquires.  Uses assert_no_deadlock to poll Valkey.
+        """Worker crash with a lock held — the lock TTL must fire, the
+        successor acquires it.
 
-        Assumption: lock TTL >= 30s (hard_timeout=120 → TTL=30s).
-        The test waits up to 45s for the lock to be released.
+        Task-lock TTLs are ``hard_timeout + 30s`` (P0-A) and out of reach
+        here, so the observable lock is the scheduler-leader lock with a 3s
+        TTL: A's worker child holds it, the crash leaves it orphaned, and
+        successor B's child owns it after the TTL. B must stay healthy.
         """
         queue = unique_queue
         fixture_module = "tests.e2e._shutdown_fixture_tasks"
@@ -970,13 +975,14 @@ class TestLockHardTimeoutCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=1,
+            env_extra=SHORT_SCHEDULER_LOCK_ENV,
         )
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
-
-            import os as _os
-            _os.kill(proc_a.pid, _signal.SIGKILL)
-            proc_a.wait(timeout=5)
+            (child_a,) = wait_for_worker_children(proc_a)
+            await wait_for_scheduler_leader(valkey_url, child_a.pid)
+            crash_worker(proc_a)
+            assert lock_owner_pid(await scheduler_lock_owner(valkey_url)) == child_a.pid
 
         finally:
             kill_subprocess(proc_a)
@@ -988,9 +994,14 @@ class TestLockHardTimeoutCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=1,
+            env_extra=SHORT_SCHEDULER_LOCK_ENV,
         )
         try:
             wait_for_worker_started(proc_b, timeout=20.0)
+            (child_b,) = wait_for_worker_children(proc_b)
+            await wait_for_scheduler_leader(
+                valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0
+            )
             await assert_no_reader_leak(proc_b)
         finally:
             kill_subprocess(proc_b)

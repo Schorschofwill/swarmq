@@ -116,6 +116,22 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A scheduler fire no longer overwrites a schedule change made while
+  it fires.** A `swarmq schedule remove` (disable or `--permanent`) or a
+  redeploy with a new cron that landed between poll and commit was
+  undone: the schedule came back enabled, was recreated, or got its old
+  cron back. The commit now applies only while the schedule still has
+  the score that was fired; `sched_commit.lua` checks this atomically
+  (new optional `ARGV[5]`, backwards compatible), and
+  `ScheduleStore.commit_fire` takes a new optional keyword
+  `fired_ts_ms`.
+- **An aborted worker start no longer leaves the embedded scheduler
+  running.** Cancelling `start_worker()`, or a failure after the
+  scheduler had started (executor start, queue declaration,
+  `WORKER_ONLINE`), left its election and poll tasks running; the
+  process kept renewing the scheduler leader lock and no other worker
+  could become leader.
+
 - **A full log queue no longer stalls the code that logs.** With a
   blocked stderr the drop notice was written by the caller — on the
   event loop — which stood still for seconds (2.9 s measured; without a

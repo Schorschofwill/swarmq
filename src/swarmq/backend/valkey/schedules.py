@@ -114,23 +114,33 @@ class ValkeyScheduleStore:
             result.append((_decode(member_raw), int(_decode(score_raw)), def_raw))
         return result
 
-    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None, payload: bytes | None, owner: str) -> bool:
+    async def commit_fire(
+        self,
+        name: str,
+        *,
+        next_fire_ts_ms: int | None,
+        payload: bytes | None,
+        owner: str,
+        fired_ts_ms: int | None = None,
+    ) -> bool:
         """``sched_commit.lua``: Owner-Check gegen den Leader-Lock im selben
         EVAL; ``next_fire_ts_ms=None`` + ``payload=None`` entfernt einen
-        One-Shot. ``False``, wenn der Owner-Check ablehnt (stale leader)."""
+        One-Shot. ``False``, wenn der Owner-Check ablehnt (stale leader).
+        Mit ``fired_ts_ms`` verwirft das Skript den Commit (Ergebnis 2,
+        hier ``True``), wenn der Fire-Index-Score inzwischen ein anderer ist."""
+        args: list[Any] = [
+            name,
+            -1 if next_fire_ts_ms is None else next_fire_ts_ms,
+            payload if payload is not None else b"",
+            owner,
+        ]
+        if fired_ts_ms is not None:
+            args.append(fired_ts_ms)
         result = await self._run(
             f"sched_commit for {name!r}",
-            self._commit_script(
-                keys=[ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY],
-                args=[
-                    name,
-                    -1 if next_fire_ts_ms is None else next_fire_ts_ms,
-                    payload if payload is not None else b"",
-                    owner,
-                ],
-            ),
+            self._commit_script(keys=[ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY], args=args),
         )
-        return int(result) == 1
+        return int(result) in (1, 2)
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool:
         return await self.set_schedfire_dedup(fire_key, ttl_ms)

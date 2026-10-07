@@ -369,42 +369,47 @@ class WorkerLifecycle:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
         await self._broker.connect()
         await self._backend.connect()
-        await self._wire_coordination()
-        await self._start_observability()
-        self._warn_priority_tasks_without_routing()
-        self._warn_hard_timeout_over_consumer_timeout()
-        self._warn_without_delivery_limit()
-        await self._start_executor()
-        await self._declare_and_consume_queues()
-        self._state = WorkerState.RUNNING
-
-        # Register signal handlers for graceful shutdown
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGTERM, self._request_shutdown)
-        loop.add_signal_handler(signal.SIGINT, self._request_shutdown)
-
-        logger.info(
-            "worker_started",
-            pid=os.getpid(),
-            python_version=sys.version,
-            queues=self._config.queues,
-            concurrency=self._config.concurrency,
-            registered_tasks=sorted(self._registry.get_all()),
-            broker_url=sanitize_url(self._config.broker_url),
-            backend_url=sanitize_url(self._config.backend_url),
-        )
-
-        await self._signal_dispatcher.dispatch(
-            Signal.WORKER_ONLINE,
-            handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-            worker_id=self._config.worker_identity,
-        )
-        self._start_background_monitors()
-        # Block until shutdown is requested. The try/finally makes the cancel
-        # path safe: a plain cancel of this coroutine (tests, ProcessManager
-        # reload, embedded use) would otherwise skip _execute_shutdown and
-        # leak the scheduler election/poll tasks + broker connection tasks.
+        # The try/finally makes the cancel and error paths safe from the
+        # moment the scheduler starts (inside _wire_coordination): a plain
+        # cancel of this coroutine (tests, ProcessManager reload, embedded
+        # use) or a startup failure (queue declaration, executor) would
+        # otherwise skip _execute_shutdown and leak the scheduler
+        # election/poll tasks — which keep renewing the leader lock for the
+        # life of the process — plus the broker connection tasks. This used
+        # to start only after WORKER_ONLINE (0.9.0 fix).
         try:
+            await self._wire_coordination()
+            await self._start_observability()
+            self._warn_priority_tasks_without_routing()
+            self._warn_hard_timeout_over_consumer_timeout()
+            self._warn_without_delivery_limit()
+            await self._start_executor()
+            await self._declare_and_consume_queues()
+            self._state = WorkerState.RUNNING
+
+            # Register signal handlers for graceful shutdown
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(signal.SIGTERM, self._request_shutdown)
+            loop.add_signal_handler(signal.SIGINT, self._request_shutdown)
+
+            logger.info(
+                "worker_started",
+                pid=os.getpid(),
+                python_version=sys.version,
+                queues=self._config.queues,
+                concurrency=self._config.concurrency,
+                registered_tasks=sorted(self._registry.get_all()),
+                broker_url=sanitize_url(self._config.broker_url),
+                backend_url=sanitize_url(self._config.backend_url),
+            )
+
+            await self._signal_dispatcher.dispatch(
+                Signal.WORKER_ONLINE,
+                handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
+                worker_id=self._config.worker_identity,
+            )
+            self._start_background_monitors()
+            # Block until shutdown is requested.
             await self._shutdown_event.wait()
             await self._execute_shutdown()
             if getattr(self, "_recycle_ack_missing", False):

@@ -20,13 +20,14 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import os
-import signal as signal_module
 import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
+
+import psutil
 
 from swarmq.signals import Signal, SignalDispatcher
 
@@ -250,53 +251,88 @@ def assert_at_least_once_held(
 # ---------------------------------------------------------------------------
 
 
+def _broker_port(child: psutil.Process) -> int | None:
+    """Port of ``SWARMQ_BROKER_URL`` in the child's environment."""
+    try:
+        url = child.environ().get("SWARMQ_BROKER_URL")
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+    if not url:
+        return None
+    return urlsplit(url).port or 5672
+
+
 async def assert_no_reader_leak(
     process: subprocess.Popen[str] | None,
     *,
-    max_reader_tasks: int = 0,
-    timeout_s: float = 5.0,
+    max_broker_connections: int = 2,
+    observe_s: float = 0.5,
 ) -> None:
-    """After SIGKILL, ask the surviving worker for a faulthandler dump and
-    verify aiormq/_reader task count is at or below ``max_reader_tasks``.
+    """Check the SURVIVOR worker after a predecessor's crash: it stays alive
+    and holds no leaked broker connections.
 
-    ``process`` is the SURVIVOR (successor worker that took over after the
-    SIGKILLed predecessor). For the killed process itself, this helper is
-    a no-op — there are no Python threads to dump.
+    ``process`` is the supervisor started by ``spawn_worker``; since R20 the
+    worker loop runs in its ``multiprocessing`` child. The check:
 
-    Implementation note (per learning aiormq-reader-leak-and-stale-connection-
-    recovery-2026-04-16): ``RobustConnection.is_closed`` lies; reader-task
-    counts in faulthandler output are the truthful signal.
+    1. the supervisor and at least one worker child are alive — before and
+       after ``observe_s``;
+    2. each worker child holds at most ``max_broker_connections`` TCP
+       connections to the broker port (taken from the child's
+       ``SWARMQ_BROKER_URL``). A healthy worker holds one; aiormq reader
+       leaks (learning aiormq-reader-leak-and-stale-connection-recovery-
+       2026-04-16) show up as extra, stale connections — and
+       ``RobustConnection.is_closed`` is no truthful signal for them.
 
-    The signal mechanism (SIGUSR1 → faulthandler.register) is only
-    available on POSIX. Skip the check on platforms that lack it.
+    Earlier versions sent SIGUSR1 for a faulthandler dump; swarmq never
+    registers that handler, so the default action terminated the process
+    (rc=-10) and the check could never pass.
     """
-    if process is None or process.poll() is not None:
-        # No survivor to inspect, or already exited — nothing to verify.
+    if process is None:
         return
-    if not hasattr(signal_module, "SIGUSR1"):
-        # Windows or other non-POSIX — faulthandler.register-by-signal not
-        # available. Caller should expect a no-op here.
-        return
-
-    # We don't yet have a stdout-channel back from the subprocess to read
-    # the faulthandler dump (subprocess.PIPE was bound to stdout by
-    # spawn_worker but is typically already being consumed by
-    # wait_for_worker_started). This helper is best-effort: signal the
-    # process and verify it stays alive. A future enhancement can capture
-    # the dump into a tempfile via SWARMQ_FAULTHANDLER_PATH.
-    try:
-        os.kill(process.pid, signal_module.SIGUSR1)
-    except ProcessLookupError:
-        return
-    # Brief grace period for faulthandler to flush.
-    await asyncio.sleep(min(timeout_s, 0.5))
-    # If the survivor is dead now, something is very wrong — SIGUSR1
-    # should not kill a healthy worker.
     if process.poll() is not None:
-        raise AssertionError(
-            f"worker died after SIGUSR1 (rc={process.returncode}) — "
-            "indicates reader leak crashed it under faulthandler trigger"
-        )
+        raise AssertionError(f"survivor supervisor is dead (rc={process.returncode})")
+
+    def _children() -> list[psutil.Process]:
+        try:
+            tree = psutil.Process(process.pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            return []
+        workers: list[psutil.Process] = []
+        for child in tree:
+            try:
+                if any("spawn_main" in part for part in child.cmdline()):
+                    workers.append(child)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return workers
+
+    before = _children()
+    if not before:
+        raise AssertionError("survivor supervisor runs no worker child")
+    await asyncio.sleep(observe_s)
+    if process.poll() is not None:
+        raise AssertionError(f"survivor supervisor died during observation (rc={process.returncode})")
+    after = _children()
+    dead = {c.pid for c in before} - {c.pid for c in after}
+    if dead:
+        raise AssertionError(f"worker child(ren) {sorted(dead)} died during observation")
+
+    for child in after:
+        port = _broker_port(child)
+        if port is None:
+            continue
+        try:
+            conns = [
+                c for c in child.net_connections(kind="tcp")
+                if c.raddr and c.raddr.port == port and c.status == psutil.CONN_ESTABLISHED
+            ]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if len(conns) > max_broker_connections:
+            raise AssertionError(
+                f"worker child {child.pid} holds {len(conns)} broker connections "
+                f"(max {max_broker_connections}) — leaked aiormq connection/reader"
+            )
 
 
 # ---------------------------------------------------------------------------

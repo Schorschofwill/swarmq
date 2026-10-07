@@ -72,7 +72,27 @@ KTD15 aus Plan U2.
 ```bash
 uv run --extra test --extra reload pytest -m chaos tests/chaos -q
 uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q
+# Chaos-Kombinationen (Prozess-Abstürze, Scheduler-Failover) gegen den Teststack:
+SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
+  uv run --extra test pytest -m chaos tests/e2e/combinations -q
 ```
+
+Das vollständige Gate über alle opt-in-Marker deckt die Zeilen oben ab und
+nimmt Stress- und Property-Tests mit:
+
+```bash
+SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
+  uv run --extra test --extra reload pytest tests -q \
+  -m "chaos or stress or property or fuzz"
+```
+
+Die Chaos-Kombinationen in `tests/e2e/combinations` waren von Mai bis
+Oktober 2026 nie in einem Gate und deshalb unbemerkt rot (SIGUSR1 ohne
+Handler, eine nicht existierende CLI-Option, Supervisor- statt Kind-Kill).
+Ohne Toxiproxy (`docker-compose.chaos.yml`) überspringt die Suite acht
+Toxiproxy-Tests; die übrigen sechzehn müssen grün sein. Die Ports 5699/6399
+sind Pflicht: Die Suite leert Valkey nach jedem Test, auf 6379 träfe das
+einen fremden Stack.
 
 Erwartung (Stand 2026-09-22): **37 passed, 4 skipped** in rund vier Minuten,
 und **2 passed** für den Fuzz-Lauf. Die vier Skips sind begründet und

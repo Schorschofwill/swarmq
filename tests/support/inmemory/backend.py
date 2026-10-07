@@ -399,9 +399,19 @@ class InMemoryScheduleStore:
         due = sorted(((ts, n) for n, ts in self._fires.items() if ts <= now_ms and n in self._defs))
         return [(n, ts, self._defs[n]) for ts, n in due[:limit]]
 
-    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None, payload: bytes | None, owner: str) -> bool:
+    async def commit_fire(
+        self,
+        name: str,
+        *,
+        next_fire_ts_ms: int | None,
+        payload: bytes | None,
+        owner: str,
+        fired_ts_ms: int | None = None,
+    ) -> bool:
         if await self._locks.current_owner(SCHEDULER_LOCK_NAME) != owner:
             return False
+        if fired_ts_ms is not None and self._fires.get(name) != fired_ts_ms:
+            return True
         self._fires.pop(name, None)
         if next_fire_ts_ms is not None and next_fire_ts_ms >= 0:
             self._fires[name] = next_fire_ts_ms

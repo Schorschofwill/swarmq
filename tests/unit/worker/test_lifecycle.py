@@ -4,6 +4,14 @@ und Observability-Autowire — zusammengeführt aus ``test_graceful_shutdown.py`
 
 Unit tests for graceful shutdown (Unit 2.5)."""
 
+# Test list (0.9.0, Start-Abbruch):
+# 1. Ein Abbruch von ``start()`` nach dem Scheduler-Start, aber vor
+#    WORKER_ONLINE (hier: haengendes ``declare_queue``) laesst keine
+#    Scheduler-Tasks zurueck (sonst erneuert der Prozess den Leader-Lock
+#    endlos).
+# 2. Ein Fehler in derselben Phase (``declare_queue`` wirft) laesst ebenso
+#    keine Scheduler-Tasks zurueck.
+
 from __future__ import annotations
 
 import asyncio
@@ -977,3 +985,45 @@ class TestWorkerIdentityInSignalsAndMetrics:
 
 async def _collect(sink: list[dict], kwargs: dict) -> None:
     sink.append(kwargs)
+
+
+def _pending_scheduler_tasks() -> list[asyncio.Task]:
+    names = ("_election_loop", "_poll_loop")
+    return [
+        t for t in asyncio.all_tasks()
+        if not t.done() and getattr(t.get_coro(), "__qualname__", "").endswith(names)
+    ]
+
+
+class TestStartupAbortLeavesNoScheduler:
+    """Zwischen ``scheduler.start()`` und WORKER_ONLINE liegen awaits
+    (Executor, Queue-Deklaration, Online-Signal). Bricht ``start()`` dort ab,
+    muss der Scheduler mit abgebaut werden."""
+
+    async def test_cancel_during_queue_declaration(self, broker, backend, registry, config):
+        declaring = asyncio.Event()
+
+        async def _hang(*_a, **_kw):
+            declaring.set()
+            await asyncio.Event().wait()
+
+        broker.declare_queue = AsyncMock(side_effect=_hang)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        start = asyncio.create_task(w.start())
+        await asyncio.wait_for(declaring.wait(), timeout=2)
+        assert _pending_scheduler_tasks(), "precondition: scheduler running"
+
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+
+        assert _pending_scheduler_tasks() == []
+
+    async def test_failure_during_queue_declaration(self, broker, backend, registry, config):
+        broker.declare_queue = AsyncMock(side_effect=RuntimeError("PRECONDITION_FAILED"))
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        with pytest.raises(RuntimeError, match="PRECONDITION_FAILED"):
+            await w.start()
+
+        assert _pending_scheduler_tasks() == []
