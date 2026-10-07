@@ -6,6 +6,8 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-07
+
 ### Changed (breaking)
 
 - **CPU pool: `logging.basicConfig()` in a task module no longer takes

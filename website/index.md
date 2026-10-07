@@ -150,7 +150,7 @@ round-trip — install, broker, worker, client, result.
 ---
 
 !!! info "Pre-release"
-    SwarmQ is currently v0.8 and under active development. The core
+    SwarmQ is currently v0.9 and under active development. The core
     round-trip, retries, DLQ, middleware, signals, rate limiting,
     locking, deduplication, the scheduler, workflows, the CPU worker
     mode, structured logging, metrics and health endpoints are in. APIs
