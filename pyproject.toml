@@ -65,6 +65,8 @@ test = [
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
+    # mypy (CI prueft tests/support): Typen fuer psutil.
+    "types-psutil",
     # E2E-Hardening Phase 3 U3.10 — mutation testing.
     "mutmut",
     # R5.1: tests/unit/test_metrics.py asserts the real registry shape,

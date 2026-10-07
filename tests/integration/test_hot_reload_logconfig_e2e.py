@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -37,6 +38,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import psutil
 import pytest
 
 from swarmq.app import SwarmQ
@@ -78,10 +80,12 @@ class _Supervisor:
         return target.with_name(target.name + ".used")
 
     def children(self, marker: str) -> list[int]:
-        out = subprocess.run(
-            ["pgrep", "-a", "-P", str(self.proc.pid)], capture_output=True, text=True, check=False,
-        ).stdout
-        return [int(line.split()[0]) for line in out.splitlines() if marker in line]
+        # psutil statt pgrep: das CI-Image hat kein procps.
+        return [
+            child.pid
+            for child in _live_children(self.proc.pid)
+            if marker in _cmdline(child)
+        ]
 
 
 def _log_config(path: Path) -> None:
@@ -143,10 +147,31 @@ def _assert_no_leftovers(supervisor_pid: int) -> None:
     """Weder Worker (Sitzung des Supervisors) noch eine Probe (eigene Sitzung)
     ueberleben den Supervisor."""
     # Die Probe ist ``python -c "\nimport json, logging.config, sys ..."``.
-    probe = r"^\S+ -c .?import json, logging\.config"
-    for args in (["pgrep", "-a", "-s", str(supervisor_pid)], ["pgrep", "-af", probe]):
-        out = subprocess.run(args, capture_output=True, text=True, check=False).stdout
-        assert not out.strip(), (args, out)
+    probe = re.compile(r"^\S+ -c .?import json, logging\.config")
+    leftovers = []
+    for proc in psutil.process_iter():
+        try:
+            in_session = os.getsid(proc.pid) == supervisor_pid
+        except OSError:
+            in_session = False
+        cmdline = _cmdline(proc)
+        if in_session or probe.match(cmdline):
+            leftovers.append((proc.pid, cmdline))
+    assert not leftovers, leftovers
+
+
+def _live_children(pid: int) -> list[psutil.Process]:
+    try:
+        return psutil.Process(pid).children()
+    except psutil.NoSuchProcess:
+        return []
+
+
+def _cmdline(proc: psutil.Process) -> str:
+    try:
+        return " ".join(proc.cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return ""
 
 
 def _probe_pids(sup: _Supervisor) -> list[int]:
