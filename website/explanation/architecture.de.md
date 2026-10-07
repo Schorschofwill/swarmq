@@ -202,7 +202,7 @@ bleiben im Loop-Prozess. Siehe [CPU-Modus](../guides/cpu-mode.md).
 
 | Fehler | Radius | Recovery |
 |---|---|---|
-| Worker-Prozess-Crash | In-Flight-Tasks werden nach Visibility von RabbitMQ redelivered | Supervisor startet Worker neu (`--processes N` Default) |
+| Worker-Prozess-Crash | In-Flight-Tasks stellt RabbitMQ neu zu, sobald Kanal oder Verbindung des Workers schließen | Supervisor startet Worker neu (`--processes N` Default) |
 | Worker verliert Broker-Verbindung | Dieser Worker konsumiert nicht mehr; andere laufen weiter | `connect_robust()` reconnected; unacknowledgte Tasks redelivern |
 | Worker verliert Backend-Verbindung | Prüfungen vor der Ausführung (Schedule-Fire-Dedup, Cancel, Rate-Limit, Lock) stellen die Nachricht mit wachsendem Backoff über die Delay-Queue zurück; ein gescheiterter Result-Write reiht die Nachricht neu ein, und der Task läuft erneut | `valkey-py` verbindet sich neu; zurückgestellte Nachrichten kommen spätestens nach `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) zurück |
 | RabbitMQ-Restart | Alle Worker reconnecten; unacknowledgte Nachrichten redelivern | Quorum-Queues überleben einzelnen Node-Verlust nativ |

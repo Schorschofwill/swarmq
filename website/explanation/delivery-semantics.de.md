@@ -81,7 +81,7 @@ Nachricht entweder oder routet sie in die DLQ:
 
 | Abbruchquelle | Ziel |
 |---|---|
-| Worker-Prozess gekillt (`SIGKILL`, OOM, Node-Crash) | Redelivery von RabbitMQ nach Visibility-Timeout |
+| Worker-Prozess gekillt (`SIGKILL`, OOM, Node-Crash) | RabbitMQ stellt neu zu, sobald Kanal oder Verbindung des Workers schließen |
 | Worker mitten im Task neu gestartet (graceful `SIGTERM`) | Drain der In-Flight-Tasks läuft; pending Messages redelivern an neuen Worker |
 | `Task.run()` raist eine retry-bare Exception, Retries verbleiben | Neue Nachricht in die Delay-Queue, Original bestätigt (`TASK_RETRYING`) |
 | `Task.run()` raist, nachdem `max_retries` erreicht ist | Worker publiziert nach `{queue}.XQ`, Original bestätigt (`TASK_DLQ`) |

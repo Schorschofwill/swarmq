@@ -192,7 +192,7 @@ process. See the [CPU mode guide](../guides/cpu-mode.md).
 
 | Failure | Blast radius | Recovery |
 |---|---|---|
-| Worker process crash | In-flight tasks get redelivered by RabbitMQ after visibility | Supervisor restarts the worker (`--processes N` default) |
+| Worker process crash | In-flight tasks get redelivered by RabbitMQ as soon as the worker's channel or connection closes | Supervisor restarts the worker (`--processes N` default) |
 | Worker loses broker connection | That worker stops consuming; others continue | `connect_robust()` reconnects; unacked tasks redeliver |
 | Worker loses backend connection | Checks before execution (schedule-fire dedup, cancel, rate limit, lock) defer the message to the delay queue with growing backoff; a failed result write requeues the message, and the task runs again | `valkey-py` reconnects; deferred messages return after at most `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) |
 | RabbitMQ restart | All workers reconnect; unacked messages redeliver | Quorum queues survive single-node loss natively |
