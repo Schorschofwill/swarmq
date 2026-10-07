@@ -6,10 +6,16 @@ Test-Liste 0.9.0 (Kopie und Broker-Zaehler):
 - [x] Backend-Fehler beim Acquire -> genau eine Zeile (WARNING
       ``task_deferred_backend_unavailable``, ``stage=acquire``, ``lock_name``)
 - [x] anderer Fehler beim Acquire -> weiter ERROR ``lock_acquire_failed``
+
+Test-Liste 0.9.0 (Zeitlimit):
+- [x] haengendes Acquire (Blackhole) -> nach ``backend_op_timeout``
+      zurueckgestellt (``stage=acquire``), kein Lock registriert
+- [x] Konflikt-Kopie traegt keinen ``x-swarmq-backend-defer-count``
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -664,6 +670,15 @@ class TestLockGateOutcomes:
         assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
         assert headers["x-swarmq-lock-conflict-count"] == 1
 
+    async def test_conflict_copy_drops_backend_defer_count(self, worker, broker):
+        """Das Backend hat geantwortet (Konflikt): die ueberstandene Stoerung
+        zaehlt nicht mehr."""
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(return_value=None)
+        msg = make_message(_default_payload(), headers={"x-swarmq-backend-defer-count": 6})
+        await worker._lock_gate.apply(msg, self._ctx())
+        assert "x-swarmq-backend-defer-count" not in broker.retry_later.await_args.kwargs["headers"]
+
     async def test_conflict_at_cap_dead_letters_with_diagnostics(self, worker, broker):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(return_value=None)
@@ -746,6 +761,27 @@ class TestLockGateLogging:
         assert entry["event"] == "task_deferred_backend_unavailable"
         assert entry["gate"] == "lock" and entry["stage"] == "acquire" and entry["lock_name"] == "resource"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    @pytest.mark.timeout(5)
+    async def test_hanging_acquire_is_deferred_after_backend_op_timeout(self, worker, broker, swarmq_logs):
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = _hang
+        ctx = self._ctx()
+        outcome = await worker._lock_gate.apply(make_message(_default_payload()), ctx)
+
+        assert outcome is Redelivered
+        broker.retry_later.assert_awaited_once()
+        assert ctx.acquired_locks == []
+        [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "lock" and entry["stage"] == "acquire"
+        assert entry["error_type"] == "BackendConnectionError"
 
     async def test_acquire_failure_logs_error_fields(self, worker, swarmq_logs):
         worker._lock_manager = MagicMock()

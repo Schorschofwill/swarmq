@@ -184,7 +184,13 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   sich je Zurückstellung bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (neu,
   Standard 60 s); die Kopie behält alle SwarmQ-Header, aber nicht die
   Zustellzähler des Brokers (neuer Header
-  `x-swarmq-backend-defer-count`). Das ist kein Retry: `max_retries`
+  `x-swarmq-backend-defer-count`). Die Zählung beginnt neu, sobald das
+  Backend geantwortet hat: Kopien für einen Retry, einen
+  Rate-Limit-Treffer oder einen Lock-Konflikt tragen den Header nicht,
+  und eine Nachricht, die der Broker nach einer Zustellung ohne
+  Zurückstellung zurückgibt (Requeue nach den Prüfungen, Absturz;
+  erkannt an `x-delivery-count` oder `x-acquired-count` auf
+  Quorum-Queues), wartet wieder die Basiswartezeit. Das ist kein Retry: `max_retries`
   bleibt unberührt, `TASK_RETRYING` feuert nicht. Jede Zurückstellung
   loggt das neue WARNING-Event `task_deferred_backend_unavailable`
   (Felder `gate`, `stage`, `defer_count`, `delay_ms`, `error_type`,
@@ -193,6 +199,23 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   an derselben Stelle neu ein und loggt `task_defer_failed_redelivered`.
   `ValkeyRateLimitStore.check` wirft bei Verbindungs- und
   Timeout-Fehlern jetzt `BackendConnectionError`.
+- **Prüfungen vor der Ausführung hängen nicht mehr an einem Backend,
+  das nicht antwortet.** Die Rate-Limit-Prüfung, das Lock-Acquire, die
+  Dedup-Prüfung und der Claim eines Schedule-Fires sowie das Lesen des
+  Ergebnisses eines abgebrochenen Workflow-Schritts hatten kein eigenes
+  Zeitlimit. Antwortete Valkey nicht mehr, ohne die Verbindung zu
+  schließen (ein Blackhole, etwa ein verlorener Netzpfad), wartete die
+  Zustellung auf den Socket-Timeout des Valkey-Clients (10 s je
+  Versuch, dazu dessen Wiederholungen). Diese Aufrufe sind jetzt durch
+  `SWARMQ_BACKEND_OP_TIMEOUT` (Standard 5 s) begrenzt; ein Timeout gilt
+  als nicht erreichbares Backend, die Nachricht wird wie unten
+  beschrieben zurückgestellt. Die Ergebnis-Benachrichtigung nach einem
+  Cancel vor dem Start und das Abschließen oder Freigeben eines
+  Schedule-Fire-Claims sind genauso begrenzt; ein Timeout dort loggt
+  `publish_notification_failed` bzw. `schedfire_finalize_failed`, und
+  der Worker macht weiter. Läuft ein Lock-Acquire in den Timeout,
+  nachdem Valkey es ausgeführt hat, bleibt der Lock bis zu seiner TTL
+  gehalten, wie zuvor bei einem Socket-Timeout.
 - **Ein Scheduler-Fire überschreibt keine Zeitplanänderung mehr, die
   während des Fires passiert.** Ein `swarmq schedule remove`
   (deaktivieren oder `--permanent`) oder ein Redeploy mit neuer Cron

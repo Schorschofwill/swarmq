@@ -27,6 +27,9 @@ Test-Liste 0.9.0 (Retry-Kopie und Broker-Zaehler):
     Zustellbudget); alle anderen Header bleiben.
 12. Haelt die Zustellung einen Schedfire-Claim, traegt die Retry-Kopie das
     Claim-Token (``x-swarmq-schedfire-claim``).
+13. Die Retry-Kopie traegt keinen ``x-swarmq-backend-defer-count``: der Task
+    lief, die Backend-Stoerung ist ueberstanden; eine naechste Stoerung
+    beginnt wieder mit der Basiswartezeit.
 """
 
 from __future__ import annotations
@@ -291,3 +294,20 @@ async def test_retry_copy_carries_schedfire_claim_token(broker, backend, config)
 
     headers = broker.retry_later.await_args.kwargs["headers"]
     assert headers["x-swarmq-schedfire-claim"] == "tok-1"
+
+
+@pytest.mark.timeout(5)
+async def test_retry_copy_drops_backend_defer_count(broker, backend, config):
+    """Liste 13."""
+    from swarmq.middleware import MiddlewareChain
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=3)
+
+    handler, _ = _handler(broker, backend, config, RetryingTask)
+    msg = make_message(_default_payload(name="retrying-task"), headers={"x-swarmq-backend-defer-count": 6})
+    await handler.evaluate(
+        msg, _ctx(RetryingTask), RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([])
+    )
+
+    assert "x-swarmq-backend-defer-count" not in broker.retry_later.await_args.kwargs["headers"]

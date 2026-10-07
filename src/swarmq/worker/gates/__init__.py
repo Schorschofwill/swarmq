@@ -26,7 +26,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
-from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
+from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
 
@@ -111,15 +111,25 @@ class GateDeps:
 # gesetzten ``x-delivery-count`` bei, 3.13 zaehlt zudem Requeues).
 BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
 
+# Nicht in Kopien uebernommen: die Broker-Zaehler (s. o.) und der Zaehler der
+# Zurueckstellungen bei Backend-Ausfall. Wer eine Kopie macht, ohne am Backend
+# gescheitert zu sein (Retry, Rate-Limit-/Lock-Requeue), hat das Backend
+# erreicht -- die Stoerung ist ueberstanden, eine naechste beginnt wieder mit
+# der Basiswartezeit. Die Zurueckstellung selbst liest den bisherigen Stand
+# vom Original und zaehlt weiter.
+_NOT_COPIED = BROKER_DELIVERY_COUNTERS | {HEADER_BACKEND_DEFER_COUNT}
+
 
 def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
     """Header fuer eine neue Kopie von *delivery* (Retry, Zurueckstellung,
-    Requeue): alle Header des Originals ohne die Zustellzaehler des Brokers.
-    Hielt die Zustellung einen Schedfire-Claim, traegt die Kopie dessen
-    Owner-Token -- sie uebernimmt den Claim, falls dessen Freigabe scheitert."""
+    Requeue): alle Header des Originals ohne die Zustellzaehler des Brokers
+    und ohne ``x-swarmq-backend-defer-count`` (die Zurueckstellung setzt ihn
+    selbst). Hielt die Zustellung einen Schedfire-Claim, traegt die Kopie
+    dessen Owner-Token -- sie uebernimmt den Claim, falls dessen Freigabe
+    scheitert."""
     headers = {
         key: value for key, value in (delivery.headers or {}).items()
-        if key not in BROKER_DELIVERY_COUNTERS
+        if key not in _NOT_COPIED
     }
     if ctx.schedfire_claim is not None:
         headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim

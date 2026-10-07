@@ -173,7 +173,12 @@ All notable changes to SwarmQ. This project follows
   wait grows from `SWARMQ_BACKEND_DEFER_BASE_DELAY` (new, default 1 s)
   and doubles per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (new,
   default 60 s); the copy keeps all SwarmQ headers but not the broker's
-  delivery counters (new header `x-swarmq-backend-defer-count`). It is
+  delivery counters (new header `x-swarmq-backend-defer-count`). The
+  count starts over once the backend has answered: copies for a retry,
+  a rate-limit hit or a lock conflict do not carry it, and a message the
+  broker hands back after a delivery that did not defer (requeue after
+  the checks, crash; recognised by `x-delivery-count` or
+  `x-acquired-count` on quorum queues) waits the base delay again. It is
   not a retry: `max_retries` stays untouched and no `TASK_RETRYING`
   fires. Each deferral logs the new WARNING event
   `task_deferred_backend_unavailable` (fields `gate`, `stage`,
@@ -182,6 +187,21 @@ All notable changes to SwarmQ. This project follows
   as before and logs `task_defer_failed_redelivered`.
   `ValkeyRateLimitStore.check` now raises `BackendConnectionError` for
   connection and timeout errors.
+- **Checks before execution no longer hang on an unresponsive
+  backend.** The rate-limit check, the lock acquire, the schedule-fire
+  dedup check and claim, and the result read of a cancelled workflow
+  step had no time limit of their own. When Valkey stopped answering
+  without closing the connection (a blackhole, for example a dropped
+  network path), the delivery waited for the Valkey client's socket
+  timeout (10 s per attempt, plus its retries). These calls are now
+  bounded by `SWARMQ_BACKEND_OP_TIMEOUT` (default 5 s); a timeout counts
+  as an unreachable backend, and the message is deferred as described
+  below. The result notification after a pre-start cancel and the
+  completion or release of a schedule-fire claim are bounded the same
+  way; a timeout there logs `publish_notification_failed` or
+  `schedfire_finalize_failed` and the worker carries on. A lock acquire
+  that times out after Valkey executed it leaves the lock held until its
+  TTL, as a socket timeout did before.
 - **A scheduler fire no longer overwrites a schedule change made while
   it fires.** A `swarmq schedule remove` (disable or `--permanent`) or a
   redeploy with a new cron that landed between poll and commit was

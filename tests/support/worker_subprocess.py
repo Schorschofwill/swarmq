@@ -1,11 +1,13 @@
-"""Subprocess-worker helpers for combinations tests.
+"""Subprocess-worker helpers for e2e, combinations and chaos tests.
 
 Lifted from ``tests/e2e/test_worker_shutdown_load.py`` (Plan 2026-05-26-002 Unit 2)
 and parametrised so multiple test modules can spawn workers against either
 the raw broker/backend or the Toxiproxy-proxied variants.
 
 The original helpers in ``test_worker_shutdown_load.py`` are kept as thin
-wrappers that delegate here, so the existing tests stay green.
+wrappers that delegate here, so the existing tests stay green. Moved from
+``tests/e2e/combinations/_subprocess.py`` to ``tests/support`` (0.9.0): the
+chaos tests need the crash helpers too.
 
 Process tree since R20: ``swarmq worker`` is a supervisor; the worker loop
 (consumer, scheduler, locks) runs in a ``multiprocessing`` child. Two
@@ -38,7 +40,7 @@ import psutil
 
 from tests.support.cli_process import terminate_worker_process
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def port_open(host: str, port: int, timeout: float = 1.0) -> bool:

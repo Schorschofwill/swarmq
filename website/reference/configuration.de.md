@@ -49,7 +49,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads je Rechenkind (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Sekunden zwischen In-Task-Cancel-Flag-Checks. |
-| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze einzelner Valkey-Operationen in der Cancel-/Dedup-Pipeline. |
+| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze in Sekunden für einzelne Valkey-Operationen in der Worker-Pipeline: Cancel-Check, Dedup-Prüfung und Claim eines Schedule-Fires, Rate-Limit-Prüfung, Lock-Acquire, Ergebnis-Schreiben. Läuft eine Prüfung vor der Ausführung hinein, gilt das Backend als nicht erreichbar und die Nachricht wird zurückgestellt. |
 | `SWARMQ_BACKEND_DEFER_BASE_DELAY` | `1.0` | Sekunden, die eine Nachricht nach ihrer ersten Zurückstellung wartet, wenn eine Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) das Backend nicht erreicht. Jede weitere Zurückstellung derselben Nachricht verdoppelt die Wartezeit. Die Nachricht geht als neue Nachricht über die Delay-Queue zurück, eine lange Backend-Störung verbraucht also weder `max_retries` noch das Zustelllimit. |
 | `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Obergrenze dieser Wartezeit in Sekunden; mindestens `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Begrenzt, wie lange eine Nachricht nach der Rückkehr des Backends noch wartet. |
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |

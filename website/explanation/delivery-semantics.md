@@ -98,8 +98,16 @@ message to the delay queue and acks the original only after the
 broker confirmed the copy. The copy keeps every SwarmQ header (retry
 count, workflow context, unique hash, enqueue time) but not the
 broker's delivery counters, so it starts with a fresh delivery budget.
-The wait starts at `SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) and doubles
-per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Each
+A check also counts as failed when Valkey does not answer within
+`SWARMQ_BACKEND_OP_TIMEOUT` (5 s), so a backend that silently drops
+traffic defers the message instead of holding it until the client's
+socket timeout. The wait starts at `SWARMQ_BACKEND_DEFER_BASE_DELAY`
+(1 s) and doubles per consecutive deferral up to
+`SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Once the backend has answered,
+the count starts over: retry, rate-limit and lock copies do not carry
+`x-swarmq-backend-defer-count`, and a message the broker hands back
+after a delivery that got past the checks (on quorum queues recognised
+by its delivery counter) waits the base delay again. Each
 deferral logs one line, `task_deferred_backend_unavailable` (WARNING),
 whose fields `gate` and `stage` name the check that failed. It is not
 a retry: `max_retries` is untouched and no `TASK_RETRYING` fires. Only

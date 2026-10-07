@@ -12,7 +12,8 @@ import inspect
 
 import pytest
 
-from . import _subprocess
+from tests.support import worker_subprocess as _subprocess
+
 from ._toxiproxy import ProxyConfig, ToxiproxyClient
 
 # ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ from ._toxiproxy import ProxyConfig, ToxiproxyClient
 
 
 def test_subprocess_module_exports_expected_helpers() -> None:
-    """Public surface of ``_subprocess`` matches what the original
+    """Public surface of ``tests.support.worker_subprocess`` matches what the original
     ``test_worker_shutdown_load.py`` lifted from."""
     expected = {
         "port_open",

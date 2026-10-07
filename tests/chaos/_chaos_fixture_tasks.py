@@ -61,7 +61,7 @@ class ChaosSleepTask(Task):
 class ChaosMemoryHogTask(Task):
     """Allocate ~``mb`` megabytes and then sleep — stands in for an
     OOM-bound workload. The chaos test kills the worker externally via
-    ``os.kill(pid, SIGKILL)`` once the process has swelled (simulating
+    a SIGKILL on the worker child once it has swelled (simulating
     an OOM-killer from the kernel/container runtime). No container
     memory-limit is required."""
 
@@ -90,7 +90,14 @@ class ChordHeaderSleepTask(Task):
         max_retries=0,
     )
 
-    async def run(self, n: int, seconds: float = 0.0) -> int:
+    async def run(self, n: int, seconds: float = 0.0, run_key: str = "") -> int:
+        if run_key and self._backend is not None:
+            # Starts per run: a crash mid-fan-in shows up as re-runs.
+            try:
+                await self._backend._client.incr(f"chord_header_runs:{run_key}")
+                await self._backend._client.expire(f"chord_header_runs:{run_key}", 300)
+            except Exception:
+                pass
         if seconds:
             await asyncio.sleep(seconds)
         return n

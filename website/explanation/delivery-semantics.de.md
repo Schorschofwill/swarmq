@@ -104,9 +104,19 @@ eine Kopie der Nachricht in die Delay-Queue und bestätigt das Original
 erst, wenn der Broker die Kopie bestätigt hat. Die Kopie behält alle
 SwarmQ-Header (Retry-Zähler, Workflow-Kontext, Unique-Hash,
 Enqueue-Zeit), aber nicht die Zustellzähler des Brokers; sie beginnt
-also mit frischem Zustellbudget. Die Wartezeit beginnt bei
+also mit frischem Zustellbudget. Eine Prüfung gilt auch dann als
+gescheitert, wenn Valkey nicht innerhalb von `SWARMQ_BACKEND_OP_TIMEOUT`
+(5 s) antwortet; ein Backend, das Verkehr stumm verwirft, stellt die
+Nachricht also zurück, statt sie bis zum Socket-Timeout des Clients
+festzuhalten. Die Wartezeit beginnt bei
 `SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) und verdoppelt sich je
-Zurückstellung bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Jede
+Zurückstellung in Folge bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s).
+Sobald das Backend geantwortet hat, beginnt die Zählung neu:
+Retry-, Rate-Limit- und Lock-Kopien tragen
+`x-swarmq-backend-defer-count` nicht, und eine Nachricht, die der Broker
+nach einer Zustellung zurückgibt, die die Prüfungen bestanden hat (auf
+Quorum-Queues an ihrem Zustellzähler erkannt), wartet wieder die
+Basiswartezeit. Jede
 Zurückstellung loggt eine Zeile, `task_deferred_backend_unavailable`
 (WARNING), deren Felder `gate` und `stage` die gescheiterte Prüfung
 nennen. Das ist kein Retry: `max_retries` bleibt unberührt,

@@ -14,12 +14,20 @@ Test-Liste 0.9.0 (Schedfire-Claim bei Nicht-Ausfuehrung, Claim-Token):
    wenn die Freigabe am Backend-Ausfall scheitert.
 6. Die nicht-terminale Freigabe im finally ist owner-geprueft (Token).
 7. Verlorener Claim bleibt Duplikat (Ack, kein Lauf) -- auch mit fremdem Token.
+
+Test-Liste 0.9.0 (Zeitlimit):
+8. Haengender Completed-Check (Blackhole) -> nach ``backend_op_timeout``
+   zurueckgestellt (``stage=completed_check``).
+9. Haengender In-Flight-Claim -> ebenso (``stage=inflight_claim``), kein
+   Eintrag im Claim-Register.
 """
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
 import structlog
 
 from swarmq.registry import TaskRegistry
@@ -484,6 +492,45 @@ class TestSchedfireGateOutcomes:
         assert entry["event"] == "task_deferred_backend_unavailable"
         assert entry["stage"] == "inflight_claim" and entry["schedfire_key"] == "s:1"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+
+    @pytest.mark.timeout(5)
+    async def test_hanging_completed_check_is_deferred_after_backend_op_timeout(
+        self, worker, broker, backend, swarmq_logs,
+    ):
+        """Liste 8."""
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        backend.schedules.is_fire_completed = _hang
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_awaited_once()
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["stage"] == "completed_check" and entry["error_type"] == "BackendConnectionError"
+
+
+    @pytest.mark.timeout(5)
+    async def test_hanging_inflight_claim_is_deferred_after_backend_op_timeout(
+        self, worker, broker, backend, swarmq_logs,
+    ):
+        """Liste 9."""
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        backend.schedules.claim_fire = _hang
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_awaited_once()
+        assert id(msg) not in worker._schedfire_inflight_claims
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["stage"] == "inflight_claim" and entry["error_type"] == "BackendConnectionError"
 
 
 class LongTask(Task):

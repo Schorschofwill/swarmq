@@ -21,6 +21,11 @@ Test-Liste:
       bisher nur die zusaetzliche Gate-Warnung trug
 - [x] 0.9.0: der Fallback-Log traegt Stufe, Kontext und den Backend-Fehler
       (``backend_error_type``/``backend_error``) neben dem Publish-Fehler
+- [x] 0.9.0: Kopien ohne Backend-Fehler (Retry, Rate-Limit-/Lock-Requeue)
+      tragen den Zaehler nicht (``republish_headers``; Tests in den Gates)
+- [x] 0.9.0: gab der Broker die Zustellung zurueck (``x-acquired-count`` bzw.
+      ``x-delivery-count`` > 0: Requeue nach bestandenen Gates, Absturz),
+      beginnt die Zaehlung neu -- die Stoerung davor ist ueberstanden
 """
 
 from __future__ import annotations
@@ -101,6 +106,22 @@ async def test_followup_deferral_increments_count_and_doubles_delay(worker, brok
     assert kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 4
     assert kwargs["delay_ms"] == 8000
 
+
+
+@pytest.mark.parametrize("counter", ["x-acquired-count", "x-delivery-count"])
+async def test_broker_redelivered_message_restarts_the_defer_count(worker, broker, counter):
+    """Eine Kopie mit Zaehler 5 bestand die Gates, scheiterte danach (z. B.
+    Ergebnis-Schreiben -> Requeue) und geraet in eine neue Stoerung: sie
+    beginnt wieder mit der Basiswartezeit statt mit 32 s."""
+    msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 5, counter: 1})
+
+    await defer_backend_unavailable(
+        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+    )
+
+    kwargs = broker.retry_later.await_args.kwargs
+    assert kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 1
+    assert kwargs["delay_ms"] == 1000
 
 
 async def test_followup_deferral_delay_is_capped_by_config(worker, broker):

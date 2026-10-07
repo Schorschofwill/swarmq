@@ -22,7 +22,7 @@ from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.gates import GateContext, GateDeps
-from swarmq.worker.gates.backend_defer import defer_backend_unavailable
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
@@ -94,7 +94,9 @@ class CancelGate:
             # unconditional write (the flag only exists pre-/mid-run).
             store_cancel_result = result_ttl > 0
             if store_cancel_result and workflow_cancel:
-                existing = await deps.backend.get_result(task_id)
+                existing = await bounded_backend_call(
+                    deps, deps.backend.get_result(task_id), what="cancel existing result read",
+                )
                 store_cancel_result = existing is None
             if store_cancel_result:
                 result_bytes = encode_result(
@@ -104,7 +106,9 @@ class CancelGate:
                     task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
                 )
                 try:
-                    await deps.backend.notify_result(task_id)
+                    await bounded_backend_call(
+                        deps, deps.backend.notify_result(task_id), what="cancel result notification",
+                    )
                 except Exception as exc:
                     logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 

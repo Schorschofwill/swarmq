@@ -65,14 +65,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
-
-from ._invariants import (
-    SignalRecorder,
-    assert_at_least_once_held,
-    assert_no_deadlock,
-    assert_no_reader_leak,
-)
-from ._subprocess import (
+from tests.support.worker_subprocess import (
     SHORT_SCHEDULER_LOCK_ENV,
     SHORT_SCHEDULER_LOCK_TTL_S,
     crash_worker,
@@ -84,6 +77,13 @@ from ._subprocess import (
     wait_for_scheduler_leader,
     wait_for_worker_children,
     wait_for_worker_started,
+)
+
+from ._invariants import (
+    SignalRecorder,
+    assert_at_least_once_held,
+    assert_no_deadlock,
+    assert_no_reader_leak,
 )
 
 
@@ -625,7 +625,7 @@ class TestGracefulShutdownInflightRetryCombo:
     ) -> None:
         """Worker with in-flight task shuts down gracefully after SIGTERM."""
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -662,7 +662,7 @@ class TestGracefulShutdownInflightRetryCombo:
         """SIGTERM with multiple in-flight tasks: all must complete before exit."""
         queue = unique_queue
         N = 4
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -706,7 +706,7 @@ class TestGracefulShutdownInflightRetryCombo:
         the exhausted retry after worker B handles it.
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -927,7 +927,7 @@ class TestHotReloadInflightLockCombo:
         the successor to acquire the lock.
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1210,7 +1210,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
         by B after TTL (max 30s).
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1278,7 +1278,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
         counts tell the truth).
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1327,7 +1327,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
             heartbeats after the crash (or after B's start, if later).
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1450,7 +1450,7 @@ class TestSchedulerLeaderFailoverCombo:
         re-fire a task that was already enqueued in the broker).
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1638,7 +1638,7 @@ class TestProcessManagerWorkerCrashLockCombo:
         up, notices the crash and spawns a new child in the same slot.
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1695,7 +1695,7 @@ class TestProcessManagerWorkerCrashLockCombo:
         after worker crash).  Uses assert_no_deadlock with short TTL.
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1743,7 +1743,7 @@ class TestProcessManagerWorkerCrashLockCombo:
         Restarted worker B must be able to process redelivered locked tasks.
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1818,7 +1818,7 @@ class TestAutoscaleShrinkRunningCombo:
     ) -> None:
         """Scale-down SIGTERM: in-flight task completes before worker exits."""
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1879,7 +1879,7 @@ class TestAutoscaleShrinkRunningCombo:
     ) -> None:
         """WORKER_SHUTDOWN signal fires when a worker is scaled down via SIGTERM."""
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 
@@ -1934,7 +1934,7 @@ class TestAutoscaleShrinkRunningCombo:
         path for an unresponsive worker).  Worker B handles redeliveries.
         """
         queue = unique_queue
-        from tests.e2e.combinations._subprocess import ensure_fixture_registered
+        from tests.support.worker_subprocess import ensure_fixture_registered
 
         ensure_fixture_registered(_FIXTURE_MODULE, queue=queue)
 

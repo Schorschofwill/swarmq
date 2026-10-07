@@ -5,12 +5,11 @@ verifies three shutdown scenarios:
 
 1. SIGTERM with in-flight tasks — all N complete, no redelivery
    (DLQ stays empty, each task_id executed exactly once).
-2. SIGKILL mid-execution — in-flight tasks redelivered to a successor
-   worker; every task_id eventually completes, no losses.
-   NOTE: a SIGKILLed worker has no chance to release its per-task
-   exec_count counter, and the successor re-runs the task. We therefore
-   count ``>= 1`` executions per task (not exactly one) — at-least-once
-   semantics is what the broker guarantees here.
+2. SIGKILL mid-execution (worker child and supervisor, ``crash_worker``)
+   — in-flight tasks redelivered to a successor worker; every task_id
+   eventually completes, no losses. Each task ran twice (interrupted on
+   A, re-run on B) — at-least-once semantics is what the broker
+   guarantees here.
 3. Worker-shutdown while a retry is sitting in the delay queue — the
    retry lands on the successor worker B, which re-fails it and drains
    it into the DLQ.
@@ -34,19 +33,22 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
-from tests.e2e.combinations._subprocess import (
+from tests.support.worker_subprocess import (
+    crash_worker as _crash_worker,
+)
+from tests.support.worker_subprocess import (
     ensure_fixture_registered as _ensure_fixture_registered_base,
 )
-from tests.e2e.combinations._subprocess import (
+from tests.support.worker_subprocess import (
     kill_subprocess as _kill_subprocess,
 )
-from tests.e2e.combinations._subprocess import (
+from tests.support.worker_subprocess import (
     port_open as _port_open,
 )
-from tests.e2e.combinations._subprocess import (
+from tests.support.worker_subprocess import (
     spawn_worker as _spawn_worker_base,
 )
-from tests.e2e.combinations._subprocess import (
+from tests.support.worker_subprocess import (
     wait_for_worker_started as _wait_for_worker_started,
 )
 
@@ -91,13 +93,13 @@ _FIXTURE_MODULE = "tests.e2e._shutdown_fixture_tasks"
 
 def _ensure_fixture_registered(queue: str) -> None:
     """Thin wrapper preserving the original positional signature; delegates to
-    ``tests.e2e.combinations._subprocess.ensure_fixture_registered`` with the
+    ``tests.support.worker_subprocess.ensure_fixture_registered`` with the
     shutdown-suite fixture module bound."""
     _ensure_fixture_registered_base(_FIXTURE_MODULE, queue=queue)
 
 
 # ---------------------------------------------------------------------------
-# Subprocess worker helpers — thin wrappers around shared combinations._subprocess
+# Subprocess worker helpers — thin wrappers around shared tests.support.worker_subprocess
 # ---------------------------------------------------------------------------
 
 
@@ -150,6 +152,17 @@ async def _read_exec_counts(task_ids: list[str]) -> dict[str, int]:
         return out
     finally:
         await backend.close()
+
+
+async def _wait_all_started(task_ids: list[str], *, timeout: float = 10.0) -> None:
+    """Block until every task has recorded its first execution."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        counts = await _read_exec_counts(task_ids)
+        if all(c >= 1 for c in counts.values()):
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"not every task started within {timeout}s: {counts}")
 
 
 # ---------------------------------------------------------------------------
@@ -227,17 +240,18 @@ async def test_sigterm_with_inflight_completes_gracefully(_cleanup_tasks) -> Non
 
 
 async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -> None:
-    """Start worker A, schedule 10 × 3s sleeps, SIGKILL at 0.5s, spin up
-    worker B, expect:
+    """Start worker A, schedule 10 × 3s sleeps, SIGKILL once all are running,
+    spin up worker B, expect:
       * all 10 results eventually stored (no loss)
-      * every task_id executed at least once (at-least-once)
+      * every task_id executed twice: started on A, which crashed mid-run,
+        and re-run on B. A count of 1 would mean A finished the task after
+        all -- the "crash" was then a graceful drain, not a crash.
 
     NOTE: SIGKILL gives the worker no chance to ack or release locks;
     the broker will redeliver every un-acked message to worker B. Our
-    ``exec_count`` counter therefore tends to show ``2`` for each task
-    (once on A, once on B). We assert ``>= 1`` — exactly-once at the
-    application layer would require idempotency + lock-based dedup,
-    which is out of scope for this test.
+    ``exec_count`` counter therefore shows ``2`` for each task (once on
+    A, once on B). Exactly-once at the application layer would require
+    idempotency + lock-based dedup, which is out of scope for this test.
     """
     queue = f"e2e-shutdown-{uuid.uuid4().hex[:10]}"
     N = 10
@@ -260,16 +274,17 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
                 task_ids.append(tid)
 
             # Let worker A pick them all up — prefetch=N = 10.
-            await asyncio.sleep(0.5)
+            await _wait_all_started(task_ids)
 
-            # SIGKILL — no graceful handling, no ack, no result for
-            # in-flight tasks. The broker will redeliver to whichever
-            # consumer subscribes next.
-            os.kill(proc_a.pid, signal.SIGKILL)
-            rc_a = proc_a.wait(timeout=10)
+            # Hard crash — SIGKILL the worker child AND the supervisor: no
+            # graceful handling, no ack, no result for in-flight tasks. A
+            # supervisor-only SIGKILL would let the child drain gracefully
+            # via its parent-death signal and finish the tasks. The broker
+            # redelivers to whichever consumer subscribes next.
+            _crash_worker(proc_a)
             # SIGKILL produces rc = -SIGKILL (-9) on POSIX.
-            assert rc_a == -signal.SIGKILL, (
-                f"expected -SIGKILL, got rc={rc_a}"
+            assert proc_a.returncode == -signal.SIGKILL, (
+                f"expected -SIGKILL, got rc={proc_a.returncode}"
             )
 
             # Start worker B — it subscribes to the same queue and
@@ -292,12 +307,11 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
             rc_b = proc_b.wait(timeout=30)
             assert rc_b == 0
 
-        # At-least-once: every task_id must have run at least once.
-        # Typical outcome is 2 (once on A, once on B) because the
-        # prefetched-but-killed messages are re-delivered.
+        # At-least-once with a real crash: each task started on A, A died
+        # mid-run, B re-ran the redelivered message.
         counts = await _read_exec_counts(task_ids)
-        assert all(c >= 1 for c in counts.values()), (
-            f"expected exec_count>=1 for every task, got {counts}"
+        assert all(c >= 2 for c in counts.values()), (
+            f"every task must have been interrupted on A and re-run on B, got {counts}"
         )
     finally:
         _kill_subprocess(proc_a)

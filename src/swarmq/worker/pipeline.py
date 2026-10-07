@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -52,6 +52,7 @@ from swarmq.worker.gates import (
     WorkerBroker,
     route_via_dlx,
 )
+from swarmq.worker.gates.backend_defer import bounded_backend_call
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
 from swarmq.worker.gates.expiry import ExpiryGate
@@ -265,14 +266,17 @@ class Worker(WorkerLifecycle):
             return
         schedfire_key, owner = claim
         try:
+            finalize: Awaitable[object]
             if terminal:
                 assert self._config.scheduler_dedup_ttl is not None  # Config-Default
                 ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
-                await self._backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
+                finalize = self._backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
             else:
                 # Owner-geprueft: hat eine Kopie den Claim schon uebernommen
                 # (verspaetete Freigabe), bleibt er ihr.
-                await self._backend.schedules.release_fire_claim(schedfire_key, owner=owner)
+                finalize = self._backend.schedules.release_fire_claim(schedfire_key, owner=owner)
+            # Begrenzt: ein Blackhole darf weder Gate noch finally blockieren.
+            await bounded_backend_call(self._gate_deps, finalize, what="schedfire finalize")
         except BackendConnectionError as exc:
             logger.warning(
                 "schedfire_finalize_failed",

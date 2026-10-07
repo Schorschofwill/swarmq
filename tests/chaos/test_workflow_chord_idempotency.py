@@ -24,8 +24,8 @@ Both workers talk to RabbitMQ + Valkey THROUGH toxiproxy
 from __future__ import annotations
 
 import asyncio
-import os
 import signal
+import time
 import uuid
 
 import pytest
@@ -43,18 +43,34 @@ from tests.chaos.test_worker_crash import (
     _spawn_worker,
     _wait_for_worker_started,
 )
+from tests.support.worker_subprocess import crash_worker
 
 pytestmark = [pytest.mark.timeout(180)]
 
 
-async def _body_count(stack: ChaosStack, run_key: str) -> int:
+async def _counter(stack: ChaosStack, key: str) -> int:
     backend = ValkeyBackend(stack.valkey_url)
     await backend.connect()
     try:
-        raw = await backend._client.get(f"chord_body:{run_key}")
+        raw = await backend._client.get(key)
         return int(raw) if raw is not None else 0
     finally:
         await backend.close()
+
+
+async def _body_count(stack: ChaosStack, run_key: str) -> int:
+    return await _counter(stack, f"chord_body:{run_key}")
+
+
+async def _header_runs(stack: ChaosStack, run_key: str) -> int:
+    return await _counter(stack, f"chord_header_runs:{run_key}")
+
+
+async def _wait_header_runs(stack: ChaosStack, run_key: str, count: int, *, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while (runs := await _header_runs(stack, run_key)) < count:
+        assert time.monotonic() < deadline, f"only {runs}/{count} header members started"
+        await asyncio.sleep(0.05)
 
 
 def _chord(run_key: str, *, sleep: float):
@@ -62,9 +78,9 @@ def _chord(run_key: str, *, sleep: float):
     body sums them and bumps the per-run counter."""
     return chord(
         group(
-            sig("chord_header_sleep", 1, sleep),
-            sig("chord_header_sleep", 2, sleep),
-            sig("chord_header_sleep", 3, sleep),
+            sig("chord_header_sleep", 1, sleep, run_key=run_key),
+            sig("chord_header_sleep", 2, sleep, run_key=run_key),
+            sig("chord_header_sleep", 3, sleep, run_key=run_key),
         ),
         sig("chord_body_count", run_key=run_key),
     )
@@ -102,10 +118,12 @@ class TestChordIdempotency:
                 # Headers sleep 3s — wide window to kill A mid-execution.
                 handle = await app.apply(_chord(run_key, sleep=3.0))
 
-                # Let worker A pick up and start the header members.
-                await asyncio.sleep(1.0)
-                os.kill(proc_a.pid, signal.SIGKILL)
-                assert proc_a.wait(timeout=10) == -signal.SIGKILL
+                # Let worker A pick up and start all three header members.
+                await _wait_header_runs(chaos_stack, run_key, 3)
+                # Hard crash: worker child AND supervisor (a supervisor-only
+                # SIGKILL lets the child drain gracefully and finish them).
+                crash_worker(proc_a)
+                assert proc_a.returncode == -signal.SIGKILL
 
                 # Successor takes over the redelivered (unacked) members.
                 proc_b = _spawn_worker(chaos_stack, queue, concurrency=4)
@@ -118,6 +136,9 @@ class TestChordIdempotency:
             assert await _body_count(chaos_stack, run_key) == 1, (
                 "chord body must run exactly once despite header redelivery"
             )
+            # Real crash: all three members were interrupted on A and re-run
+            # on B. Three runs would mean A finished them (graceful drain).
+            assert await _header_runs(chaos_stack, run_key) >= 6
             assert await _dlq_count(chaos_stack, queue) == 0
         finally:
             _kill_subprocess(proc_a)

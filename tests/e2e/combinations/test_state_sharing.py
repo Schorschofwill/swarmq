@@ -37,16 +37,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
-
-from ._invariants import (
-    FAFStageObservation,
-    SignalRecorder,
-    assert_at_least_once_held,
-    assert_faf_stage_invariants,
-    assert_no_reader_leak,
-    assert_signal_sequence,
-)
-from ._subprocess import (
+from tests.support.worker_subprocess import (
     SHORT_SCHEDULER_LOCK_ENV,
     SHORT_SCHEDULER_LOCK_TTL_S,
     crash_worker,
@@ -57,6 +48,15 @@ from ._subprocess import (
     wait_for_scheduler_leader,
     wait_for_worker_children,
     wait_for_worker_started,
+)
+
+from ._invariants import (
+    FAFStageObservation,
+    SignalRecorder,
+    assert_at_least_once_held,
+    assert_faf_stage_invariants,
+    assert_no_reader_leak,
+    assert_signal_sequence,
 )
 
 # Module-level timeout cap; individual chaos tests may override via

@@ -16,7 +16,7 @@ from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, republish_headers
-from swarmq.worker.gates.backend_defer import defer_backend_unavailable
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -42,10 +42,16 @@ class RateLimitGate:
         config = parse_rate_limit(task_info.rate_limit)
         try:
             # RateLimitStore-Vertrag (U15): eine Entscheidung statt Tupel.
-            decision = await limiter.check(
-                ctx.task_name,
-                max_requests=config.max_requests,
-                window_ms=config.window_size_ms,
+            # Begrenzt: ein Blackhole zaehlt nach backend_op_timeout als
+            # Backend-Ausfall statt bis zum Socket-Timeout zu haengen.
+            decision = await bounded_backend_call(
+                deps,
+                limiter.check(
+                    ctx.task_name,
+                    max_requests=config.max_requests,
+                    window_ms=config.window_size_ms,
+                ),
+                what="rate limit check",
             )
             allowed, remaining, retry_after_ms = (
                 decision.allowed, decision.remaining, decision.retry_after_ms,

@@ -26,7 +26,7 @@ from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
 from swarmq.logging import get_logger
 from swarmq.worker.gates import GateContext, GateDeps
-from swarmq.worker.gates.backend_defer import defer_backend_unavailable
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
@@ -54,7 +54,9 @@ class SchedfireGate:
         deps = self._deps
 
         try:
-            already_completed = await deps.backend.schedules.is_fire_completed(header_value)
+            already_completed = await bounded_backend_call(
+                deps, deps.backend.schedules.is_fire_completed(header_value), what="schedfire completed check",
+            )
         except BackendConnectionError as exc:
             # KTD11: die Zurueckstellung erholt sich selbst -> eine WARNING-Zeile.
             return await defer_backend_unavailable(
@@ -87,8 +89,10 @@ class SchedfireGate:
         carried = (delivery.headers or {}).get(HEADER_SCHEDFIRE_CLAIM)
         takeover = carried if isinstance(carried, str) and carried else None
         try:
-            claimed = await deps.backend.schedules.claim_fire(
-                header_value, inflight_ttl_ms, owner=owner, takeover=takeover,
+            claimed = await bounded_backend_call(
+                deps,
+                deps.backend.schedules.claim_fire(header_value, inflight_ttl_ms, owner=owner, takeover=takeover),
+                what="schedfire inflight claim",
             )
         except BackendConnectionError as exc:
             return await defer_backend_unavailable(

@@ -7,16 +7,24 @@ Test-Liste 0.9.0 (Kopie und Broker-Zaehler):
       ``task_deferred_backend_unavailable``, ``stage=check``), kein ERROR
       ``rate_limit_check_failed`` mehr fuer den selbstheilenden Fall
 - [x] anderer Fehler beim Check -> weiter ERROR ``rate_limit_check_failed``
+
+Test-Liste 0.9.0 (Zeitlimit):
+- [x] haengender Check (Blackhole) -> nach ``backend_op_timeout`` als
+      Backend-Ausfall zurueckgestellt (``stage=check``), nicht haengen
+- [x] Rate-Limit-Kopie traegt keinen ``x-swarmq-backend-defer-count``
+      (Backend hat geantwortet, die naechste Stoerung beginnt bei 1)
 """
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from swarmq.contracts.coordination import RateLimitDecision
 from swarmq.exceptions import BackendConnectionError
+from swarmq.headers import HEADER_BACKEND_DEFER_COUNT
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -393,6 +401,17 @@ class TestRateLimitGateOutcomes:
         assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
         assert headers["x-swarmq-rate-limit-count"] == 1
 
+    async def test_limited_copy_drops_backend_defer_count(self, worker, broker):
+        """Der Limiter hat geantwortet: die ueberstandene Stoerung zaehlt
+        nicht mehr, eine spaetere beginnt wieder mit der Basiswartezeit."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
+        msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 6})
+        await worker._rate_limit_gate.apply(msg, self._ctx())
+        assert HEADER_BACKEND_DEFER_COUNT not in broker.retry_later.await_args.kwargs["headers"]
+
     async def test_backend_error_is_deferred_without_ack(self, worker, broker):
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
@@ -416,6 +435,29 @@ class TestRateLimitGateOutcomes:
         assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
         assert entry["task_id"] == self._ctx().task_id
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+
+    @pytest.mark.timeout(5)
+    async def test_hanging_check_is_deferred_after_backend_op_timeout(self, worker, broker, swarmq_logs):
+        """Blackhole: der Check antwortet nie. Er darf nicht bis zum
+        Socket-Timeout des Clients haengen, sondern zaehlt nach
+        ``backend_op_timeout`` als Backend-Ausfall."""
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = _hang
+        outcome = await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        assert outcome is Redelivered
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
+        [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
+        assert entry["error_type"] == "BackendConnectionError"
 
     async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17): kein Backend-Ausfall -> ERROR."""

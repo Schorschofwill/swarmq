@@ -45,7 +45,7 @@ bedeutet, das Feature ist nicht aktiv.
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | Wann der Worker den Dedup-Flag freigibt. |
 | `x-swarmq-schedfire` | `int` (Unix-ms) | Scheduler | Vorhanden auf scheduler-publishten Nachrichten; Worker dedupt darauf. |
 | `x-swarmq-schedfire-claim` | `string` | Worker (Kopie eines Schedule-Fires) | Owner-Token des In-Flight-Claims, den die Zustellung hielt, aus der diese Kopie stammt; die Kopie übernimmt diesen Claim, statt ihn als Duplikat zu werten. |
-| `x-swarmq-backend-defer-count` | `int` | Worker (Backend-Zurückstellung) | Wie oft eine Prüfung vor der Ausführung diese Nachricht zurückgestellt hat, weil das Backend nicht erreichbar war; bestimmt die nächste Wartezeit. Kein Retry-Zähler. |
+| `x-swarmq-backend-defer-count` | `int` | Worker (Backend-Zurückstellung) | Wie oft eine Prüfung vor der Ausführung diese Nachricht zurückgestellt hat, weil das Backend nicht erreichbar war; bestimmt die nächste Wartezeit. Kein Retry-Zähler. Kopien, die entstehen, nachdem das Backend geantwortet hat (Retry, Rate-Limit-Treffer, Lock-Konflikt), tragen ihn nicht. |
 | `x-swarmq-lock-render-error` | `string` | Worker (Lock-Template-Fehler) | Warum das Lock-Template nicht gerendert werden konnte; die Nachricht geht in die DLQ. |
 | `x-swarmq-lock-conflict-count` | `int` | Worker (Lock-Konflikt) | Bisherige Konflikte; beim 10. geht die Nachricht in die DLQ. |
 | `x-swarmq-lock-name` | `string` | Worker (Lock-Konflikt) | Gerenderter Lock-Name, auf den sich die Konflikte beziehen. |

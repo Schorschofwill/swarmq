@@ -30,7 +30,7 @@ from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, republish_headers, route_via_dlx
-from swarmq.worker.gates.backend_defer import defer_backend_unavailable
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -280,8 +280,12 @@ class LockGate:
         """
         # LockStore-Vertrag (U15): acquire liefert den Token, der später
         # renew/release adressiert — die Registry hält Tokens.
-        token = await lock_manager.acquire(
-            lock_name, owner=owner_token, ttl_ms=ttl_ms, max_concurrency=max_concurrency
+        # Das Zeitlimit gilt INNERHALB des Shields: laeuft es ab, wird nichts
+        # registriert (ein Blackhole zaehlt als Backend-Ausfall).
+        token = await bounded_backend_call(
+            self._deps,
+            lock_manager.acquire(lock_name, owner=owner_token, ttl_ms=ttl_ms, max_concurrency=max_concurrency),
+            what=f"lock acquire for {lock_name!r}",
         )
         if token is not None:
             ctx.acquired_locks.append(token)

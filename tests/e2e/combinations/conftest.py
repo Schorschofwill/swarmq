@@ -19,8 +19,8 @@ import uuid
 import pytest
 
 from swarmq.task import Task
+from tests.support.worker_subprocess import port_open
 
-from ._subprocess import port_open
 from ._toxiproxy import (
     DEFAULT_ADMIN_HOST,
     DEFAULT_ADMIN_PORT,

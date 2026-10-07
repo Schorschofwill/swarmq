@@ -105,6 +105,7 @@ async def _running_worker(
     shutdown_timeout: int = 5,
     middlewares: list[Middleware] | None = None,
     mirror_to: Any = None,
+    backend: ValkeyBackend | None = None,
     **config_kwargs: Any,
 ):
     """Spin up an in-process SwarmQ worker against the given queue.
@@ -119,7 +120,7 @@ async def _running_worker(
     instance with its own dispatcher).
     """
     worker_broker = RabbitMQBroker(rabbitmq_url)
-    worker_backend = ValkeyBackend(valkey_url)
+    worker_backend = backend if backend is not None else ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
         worker_broker,
         worker_backend,
@@ -1779,6 +1780,121 @@ class TestSchedfireClaimAcrossBackendOutageCombo:
         assert runs == ["run"], f"Fire genau einmal: {runs}"
         assert is_completed is True
         assert xq_depth == 0
+
+
+# ---------------------------------------------------------------------------
+# Combo 23 — Rate-Limit-Pruefung gegen ein Blackhole (Tier 2)
+# ---------------------------------------------------------------------------
+
+
+class _RateLimitViaProxyBackend(ValkeyBackend):
+    """Worker-Backend, dessen Rate-Limit-Store (und nur der) ueber den
+    Valkey-Proxy laeuft. So trifft das Blackhole genau das Rate-Limit-Gate;
+    Cancel-Check, Heartbeat und Ergebnisse sprechen Valkey direkt. Der
+    Proxy-Client ist ein eigener ``ValkeyBackend`` mit den Socket-Schranken
+    und Retries von swarmq (10 s Socket-Timeout)."""
+
+    def __init__(self, url: str, rate_limit_url: str) -> None:
+        super().__init__(url)
+        self._rate_limit_backend = ValkeyBackend(rate_limit_url)
+
+    async def connect(self) -> None:
+        await super().connect()
+        await self._rate_limit_backend.connect()
+
+    async def close(self) -> None:
+        await self._rate_limit_backend.close()
+        await super().close()
+
+    @property
+    def rate_limit(self) -> Any:
+        return self._rate_limit_backend.rate_limit
+
+
+class TestRateLimitBlackholeCombo:
+    """Combo #23: Valkey antwortet der Rate-Limit-Pruefung nicht (Blackhole).
+
+    Vorher: Der Rate-Limit-Check hatte kein Zeitlimit. Er hing bis zum
+    Socket-Timeout des Clients (10 s, dazu dessen Retries) -- die Zustellung
+    stand so lange, statt zurueckgestellt zu werden.
+
+    Jetzt: Nach ``backend_op_timeout`` zaehlt der Check als Backend-Ausfall,
+    die Nachricht wird mit Backoff zurueckgestellt (``gate=rate_limit``).
+    Nach dem Ende des Blackholes laeuft der Task genau einmal.
+    """
+
+    OP_TIMEOUT_S = 1.0
+    BLACKHOLE_S = 6.0
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(120)
+    async def test_hanging_rate_limit_check_defers_after_op_timeout(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_url: str,
+        valkey_proxied_url: str,
+    ) -> None:
+        import time
+
+        from tests.unit._log_capture import capture_swarmq_logs
+
+        queue = _uq("rl-blackhole")
+        task_name = _task_name("rl_blackhole")
+        runs: list[int] = []
+        done = asyncio.Event()
+
+        class LimitedTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue], rate_limit="100/s")
+
+            async def run(self, val: int) -> int:
+                runs.append(val)
+                done.set()
+                return val * 10
+
+        def _rl_deferrals(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                e for e in logs
+                if e["event"] == "task_deferred_backend_unavailable" and e.get("gate") == "rate_limit"
+            ]
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+        worker_backend = _RateLimitViaProxyBackend(valkey_url, valkey_proxied_url)
+
+        with capture_swarmq_logs() as logs:
+            async with app:
+                await broker.declare_queue(queue)
+                async with _running_worker(
+                    rabbitmq_url, valkey_url, queue, backend=worker_backend,
+                    backend_op_timeout=self.OP_TIMEOUT_S,
+                    backend_defer_base_delay=0.5, backend_defer_max_delay=1.0,
+                ):
+                    toxic = await toxiproxy.add_toxic(
+                        "valkey", "timeout", attributes={"timeout": 0}, stream="downstream",
+                    )
+                    try:
+                        started = time.monotonic()
+                        tid = await app.schedule(task_name, 7)
+                        first_deferral_after: float | None = None
+                        while time.monotonic() - started < self.BLACKHOLE_S:
+                            if first_deferral_after is None and _rl_deferrals(logs):
+                                first_deferral_after = time.monotonic() - started
+                            await asyncio.sleep(0.05)
+                        assert not runs, "kein Lauf ohne Rate-Limit-Entscheidung"
+                    finally:
+                        await toxiproxy.remove_toxic("valkey", toxic)
+                    await asyncio.wait_for(done.wait(), timeout=30.0)
+                    result = await app.get_result(tid, timeout=15)
+
+        assert first_deferral_after is not None, "der haengende Check wurde nie zurueckgestellt"
+        # Ohne Zeitlimit kaeme die erste Zurueckstellung erst nach dem
+        # Socket-Timeout (>= 10 s); mit Zeitlimit nach ~op_timeout.
+        assert first_deferral_after < self.OP_TIMEOUT_S + 2.5, first_deferral_after
+        assert len(_rl_deferrals(logs)) >= 2, "waehrend des Blackholes mehrfach zurueckgestellt"
+        assert result == 70
+        assert runs == [7], f"genau ein Lauf: {runs}"
 
 
 # ---------------------------------------------------------------------------

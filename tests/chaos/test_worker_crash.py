@@ -2,12 +2,17 @@
 
 Four chaos scenarios for a crashing worker:
 
+Crashes hit the worker child AND the supervisor (``crash_worker``): a
+supervisor-only SIGKILL lets the child drain gracefully via its
+parent-death signal, so no crash would be tested at all.
+
 1. SIGKILL with a single in-flight task — the broker redelivers,
    a successor worker picks it up, and the task eventually
    completes (at-least-once contract — see ``exec_count`` note below).
 2. SIGKILL with 50 in-flight tasks — successor drains, DLQ stays empty.
-3. OOM simulation — task allocates ~50 MB, external SIGKILL
-   stands in for the OOM-killer (portable across environments; a
+3. OOM simulation — task allocates ~50 MB, external SIGKILL on the
+   worker child stands in for the OOM-killer; the supervisor restarts
+   the slot (portable across environments; a
    true ``docker run --memory=20m`` doesn't compose through the
    toxiproxy-wrapped chaos stack).
 4. SIGSEGV via ``ctypes.string_at(0)`` — expensive (every delivery
@@ -38,7 +43,6 @@ import subprocess
 import sys
 import time
 import uuid
-from pathlib import Path
 
 import aio_pika
 import pytest
@@ -48,15 +52,14 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
 from tests.chaos.conftest import ChaosStack
+from tests.support.worker_subprocess import (
+    crash_worker,
+    kill_subprocess,
+    spawn_worker,
+    wait_for_worker_children,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-# psutil is optional in the repo's test extra; guard the OOM test.
-try:  # pragma: no cover — import-time probe only
-    import psutil  # type: ignore[import-not-found]
-    _HAS_PSUTIL = True
-except ImportError:  # pragma: no cover
-    _HAS_PSUTIL = False
+_FIXTURE_MODULE = "tests.chaos._chaos_fixture_tasks"
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +72,7 @@ def _ensure_fixture_registered(queue: str) -> None:
     accepts them. Task._registered_tasks is cleared between tests, so
     re-import via importlib.reload is necessary."""
     os.environ["CLI_TEST_QUEUE"] = queue
-    mod_name = "tests.chaos._chaos_fixture_tasks"
+    mod_name = _FIXTURE_MODULE
     if mod_name in sys.modules:
         importlib.reload(sys.modules[mod_name])
     else:
@@ -84,31 +87,16 @@ def _spawn_worker(
     env_extra: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
 ) -> subprocess.Popen[str]:
-    """Launch ``swarmq.cli worker`` as a subprocess, pointed at the
-    toxiproxy-wrapped URLs from the chaos stack."""
-    env = dict(os.environ)
-    env["SWARMQ_BROKER_URL"] = stack.rabbitmq_url
-    env["SWARMQ_BACKEND_URL"] = stack.valkey_url
-    env["CLI_TEST_QUEUE"] = queue_name
-    env["PYTHONUNBUFFERED"] = "1"
-    if env_extra:
-        env.update(env_extra)
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m", "swarmq.cli",
-            "worker",
-            "--module", "tests.chaos._chaos_fixture_tasks",
-            "--queues", queue_name,
-            "--concurrency", str(concurrency),
-            "--log-format", "json",
-            *(extra_args or []),
-        ],
-        cwd=str(REPO_ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    """Launch ``swarmq.cli worker`` as a subprocess (own process group),
+    pointed at the toxiproxy-wrapped URLs from the chaos stack."""
+    return spawn_worker(
+        queue_name,
+        fixture_module=_FIXTURE_MODULE,
+        broker_url=stack.rabbitmq_url,
+        backend_url=stack.valkey_url,
+        concurrency=concurrency,
+        env_extra=env_extra,
+        extra_args=extra_args,
     )
 
 
@@ -143,16 +131,10 @@ def _wait_for_worker_started(proc: subprocess.Popen[str], timeout: float = 30.0)
 
 
 def _kill_subprocess(proc: subprocess.Popen[str]) -> None:
-    """Defensive teardown so assertion failures don't orphan workers."""
-    if proc.poll() is None:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
+    """Defensive teardown so assertion failures don't orphan workers: SIGTERM
+    with grace, then SIGKILL for the whole process group (worker children
+    included)."""
+    kill_subprocess(proc)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +164,19 @@ async def _read_exec_counts(stack: ChaosStack, task_ids: list[str]) -> dict[str,
         return out
     finally:
         await backend.close()
+
+
+async def _wait_all_started(stack: ChaosStack, task_ids: list[str], *, timeout: float = 15.0) -> None:
+    """Block until every task has recorded its first execution (the worker
+    is mid-run on all of them)."""
+    deadline = time.monotonic() + timeout
+    counts: dict[str, int] = {}
+    while time.monotonic() < deadline:
+        counts = await _read_exec_counts(stack, task_ids)
+        if all(c >= 1 for c in counts.values()):
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"not every task started within {timeout}s: {counts}")
 
 
 # ---------------------------------------------------------------------------
@@ -234,13 +229,14 @@ class TestWorkerCrash:
             async with app:
                 tid = await app.schedule("chaos_sleep", 5.0, queue=queue)
 
-                # Let worker A pick the task up (prefetch + concurrency
-                # covers it immediately).
-                await asyncio.sleep(0.8)
+                # Let worker A pick the task up and start it.
+                await _wait_all_started(chaos_stack, [tid])
 
-                os.kill(proc_a.pid, signal.SIGKILL)
-                rc_a = proc_a.wait(timeout=10)
-                assert rc_a == -signal.SIGKILL
+                # Hard crash: worker child AND supervisor. A supervisor-only
+                # SIGKILL lets the child drain gracefully (parent-death
+                # signal) and finish the task -- no crash at all.
+                crash_worker(proc_a)
+                assert proc_a.returncode == -signal.SIGKILL
 
                 proc_b = _spawn_worker(chaos_stack, queue, concurrency=2)
                 _wait_for_worker_started(proc_b)
@@ -253,8 +249,9 @@ class TestWorkerCrash:
                 assert rc_b == 0
 
             counts = await _read_exec_counts(chaos_stack, [tid])
-            # At-least-once: document — not exactly-once.
-            assert counts[tid] >= 1, f"expected exec_count>=1, got {counts}"
+            # Real crash: A died mid-run, B re-ran the redelivered task. A
+            # count of 1 would mean A finished it after all (graceful drain).
+            assert counts[tid] >= 2, f"task must have been interrupted and re-run, got {counts}"
             assert await _dlq_count(chaos_stack, queue) == 0
         finally:
             _kill_subprocess(proc_a)
@@ -285,12 +282,14 @@ class TestWorkerCrash:
                     tid = await app.schedule("chaos_sleep", 3.0, queue=queue)
                     task_ids.append(tid)
 
-                # Give worker A a moment to prefetch all N.
-                await asyncio.sleep(1.0)
+                # Let worker A start all N.
+                await _wait_all_started(chaos_stack, task_ids)
 
-                os.kill(proc_a.pid, signal.SIGKILL)
-                rc_a = proc_a.wait(timeout=10)
-                assert rc_a == -signal.SIGKILL
+                # Hard crash: worker child AND supervisor. A supervisor-only
+                # SIGKILL lets the child drain gracefully (parent-death
+                # signal) and finish the task -- no crash at all.
+                crash_worker(proc_a)
+                assert proc_a.returncode == -signal.SIGKILL
 
                 proc_b = _spawn_worker(chaos_stack, queue, concurrency=N)
                 _wait_for_worker_started(proc_b)
@@ -306,12 +305,15 @@ class TestWorkerCrash:
                 assert rc_b == 0
 
             assert await _dlq_count(chaos_stack, queue) == 0
+            counts = await _read_exec_counts(chaos_stack, task_ids)
+            assert all(c >= 2 for c in counts.values()), (
+                f"every task must have been interrupted on A and re-run on B, got {counts}"
+            )
         finally:
             _kill_subprocess(proc_a)
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
-    @pytest.mark.skipif(not _HAS_PSUTIL, reason="psutil not installed")
     async def test_oom_simulation_via_external_kill(
         self, chaos_stack: ChaosStack, _cleanup_tasks
     ) -> None:
@@ -320,68 +322,60 @@ class TestWorkerCrash:
         Real docker ``--memory=20m`` isn't portable through the
         toxiproxy-wrapped chaos stack (compose ports don't reach into
         a standalone container), so we stand in for the OOM-killer
-        with an external ``SIGKILL`` once the worker's RSS has grown
-        past a threshold. Covers the same invariant: the kernel can
-        kill the worker at any moment, the broker redelivers, the
-        successor completes the task.
+        with an external ``SIGKILL`` once the worker child's RSS has
+        grown past a threshold. The OOM-killer picks the process that
+        holds the memory -- the worker child, not the supervisor. The
+        supervisor restarts the slot, the broker redelivers, the new
+        child completes the task.
         """
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
 
-        proc_a = _spawn_worker(chaos_stack, queue, concurrency=1)
-        proc_b: subprocess.Popen[str] | None = None
+        proc = _spawn_worker(chaos_stack, queue, concurrency=1)
         try:
-            _wait_for_worker_started(proc_a)
+            _wait_for_worker_started(proc)
+            (child,) = wait_for_worker_children(proc)
 
             broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
             backend = ValkeyBackend(chaos_stack.valkey_url)
             app = SwarmQ(broker, backend, queues=[queue])
 
             async with app:
+                baseline = child.memory_info().rss
                 # Allocate ~50MB and hold for 10s — gives us a generous
                 # window to observe the growth and kill externally.
                 tid = await app.schedule(
                     "chaos_memory_hog", 50, 10.0, queue=queue
                 )
 
-                # Wait for the worker to grow above a baseline.
-                # Polling psutil.memory_info().rss — we accept the task
-                # as "started" once we see a ≥ 20 MB jump from start.
-                ps = psutil.Process(proc_a.pid)
-                baseline = ps.memory_info().rss
+                # Wait for the worker child to grow above its baseline
+                # (≥ 20 MB): the task is running and holds the memory.
                 deadline = time.monotonic() + 15.0
-                while time.monotonic() < deadline:
-                    try:
-                        if ps.memory_info().rss - baseline > 20 * 1024 * 1024:
-                            break
-                    except psutil.NoSuchProcess:
-                        break
+                while child.memory_info().rss - baseline <= 20 * 1024 * 1024:
+                    assert time.monotonic() < deadline, "worker child never grew -- task not running"
                     await asyncio.sleep(0.2)
 
-                # External SIGKILL stands in for the kernel OOM-killer.
-                try:
-                    ps.kill()
-                except psutil.NoSuchProcess:
-                    pass
-                rc_a = proc_a.wait(timeout=10)
-                assert rc_a == -signal.SIGKILL
+                # External SIGKILL on the child stands in for the kernel
+                # OOM-killer.
+                child.kill()
+                child.wait(timeout=10)
+                assert proc.poll() is None, "supervisor must survive the child's OOM kill"
 
-                proc_b = _spawn_worker(chaos_stack, queue, concurrency=1)
-                _wait_for_worker_started(proc_b)
-
-                # Successor completes the redelivered task.
+                # The supervisor restarts the slot; the new child completes
+                # the redelivered task.
                 result = await app.get_result(tid, timeout=30)
                 assert result == "alloc:50"
+                counts = await _read_exec_counts(chaos_stack, [tid])
+                assert counts[tid] >= 2, f"OOM-killed run must be re-run, got {counts}"
+                (successor,) = wait_for_worker_children(proc)
+                assert successor.pid != child.pid
 
-                proc_b.send_signal(signal.SIGTERM)
-                rc_b = proc_b.wait(timeout=30)
-                assert rc_b == 0
+                proc.send_signal(signal.SIGTERM)
+                assert proc.wait(timeout=30) == 0
 
             assert await _dlq_count(chaos_stack, queue) == 0
         finally:
-            _kill_subprocess(proc_a)
-            if proc_b is not None:
-                _kill_subprocess(proc_b)
+            _kill_subprocess(proc)
 
     @pytest.mark.timeout(300)
     async def test_segv_panic_redelivers_then_dlqs_after_max_retries(

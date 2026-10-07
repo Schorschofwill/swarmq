@@ -11,28 +11,65 @@ Kopie ist eine neue Nachricht mit eigenem Zustellbudget.
 Einbezogen: Schedfire-, Cancel-, Rate-Limit- und Lock-Gate. Expiry und
 Delivery-Count entscheiden ohne Backend; die Unique-Freigabe beim Start
 schluckt Backend-Fehler selbst.
+
+Jeder Backend-Aufruf dieser Gates ist durch ``backend_op_timeout`` begrenzt
+(``bounded_backend_call``): ein Blackhole zaehlt nach dieser Frist als
+Backend-Ausfall, statt das Gate bis zum Socket-Timeout zu blockieren.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Mapping
 from typing import Any
 
 from swarmq.backoff import backend_defer_delay
+from swarmq.exceptions import BackendConnectionError
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT
 from swarmq.logging import _error_fields, get_logger
-from swarmq.worker.gates import GateContext, GateDeps, republish_headers
+from swarmq.worker.gates import BROKER_DELIVERY_COUNTERS, GateContext, GateDeps, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
 
 
-def _prior_deferrals(raw: Any) -> int:
-    """Bisherige Zurueckstellungen; ein kaputter Header zaehlt wie keiner."""
+async def bounded_backend_call[T](deps: GateDeps, call: Awaitable[T], *, what: str) -> T:
+    """Begrenzt einen Backend-Aufruf eines Gates auf ``backend_op_timeout``.
+
+    Die Koordinations-Stores (Rate-Limit, Lock, Schedfire) kennen kein
+    eigenes Zeitlimit; ohne diese Schranke hinge ein Gate bei einem
+    Blackhole bis zum Socket-Timeout des Clients (samt dessen Retries).
+    Eine Zeitueberschreitung gilt als Backend-Ausfall
+    (``BackendConnectionError``) -- das Gate stellt dann zurueck.
+    """
+    timeout = deps.config.backend_op_timeout
+    try:
+        return await asyncio.wait_for(call, timeout=timeout)
+    except TimeoutError as exc:
+        raise BackendConnectionError(f"{what} timed out after {timeout}s") from exc
+
+
+def _as_count(raw: Any) -> int:
+    """Nicht-negativer Zaehler; ein kaputter Header zaehlt wie keiner."""
     try:
         count = int(raw)
     except (TypeError, ValueError):
         return 0
     return max(count, 0)
+
+
+def _prior_deferrals(headers: Mapping[str, Any]) -> int:
+    """Bisherige Zurueckstellungen in Folge.
+
+    Eine Zurueckstellungs-Kopie traegt keine Broker-Zaehler (neue Nachricht).
+    Traegt die Zustellung welche, hat der Broker sie nach einer Zustellung
+    zurueckgegeben, die nicht zurueckgestellt hat (Requeue nach bestandenen
+    Gates, Absturz, Fallback): die Folge ist unterbrochen, die Zaehlung
+    beginnt neu. Klassische Queues fuehren keine solchen Zaehler.
+    """
+    if any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS):
+        return 0
+    return _as_count(headers.get(HEADER_BACKEND_DEFER_COUNT))
 
 
 async def defer_backend_unavailable(
@@ -53,7 +90,7 @@ async def defer_backend_unavailable(
     in der zusaetzlichen Gate-Warnung stand.
     """
     headers = republish_headers(delivery, ctx)
-    attempt = _prior_deferrals(headers.get(HEADER_BACKEND_DEFER_COUNT)) + 1
+    attempt = _prior_deferrals(delivery.headers or {}) + 1
     headers[HEADER_BACKEND_DEFER_COUNT] = attempt
     delay_s = backend_defer_delay(
         attempt, deps.config.backend_defer_base_delay, deps.config.backend_defer_max_delay,
