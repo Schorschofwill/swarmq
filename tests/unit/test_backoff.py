@@ -2,6 +2,13 @@
 
 from swarmq.backoff import calculate_backoff
 
+# Testliste backend_defer_delay (Zurueckstellung bei Backend-Ausfall):
+# [x] erster Versuch -> Basiswartezeit
+# [x] Verdopplung je Versuch
+# [x] Obergrenze greift
+# [x] Versuch < 1 wird wie der erste behandelt (kaputter Header)
+# [x] sehr hoher Versuch laeuft nicht ueber (bleibt beim Deckel)
+
 
 def test_fixed_strategy_returns_base_delay():
     """Fixed strategy always returns base_delay, no jitter, no scaling."""
@@ -67,3 +74,36 @@ def test_max_delay_cap_is_respected():
     # Fixed is always base_delay, even if base > max_delay the formula is just base
     result = calculate_backoff(attempt=0, strategy="fixed", base_delay=5.0, max_delay=max_d)
     assert result == 5.0
+
+
+def test_backend_defer_delay_first_attempt_is_base_delay():
+    from swarmq.backoff import backend_defer_delay
+
+    assert backend_defer_delay(1, base_delay=1.0, max_delay=60.0) == 1.0
+
+
+def test_backend_defer_delay_doubles_per_attempt():
+    from swarmq.backoff import backend_defer_delay
+
+    assert backend_defer_delay(3, base_delay=1.0, max_delay=60.0) == 4.0
+
+
+def test_backend_defer_delay_is_capped():
+    from swarmq.backoff import backend_defer_delay
+
+    assert backend_defer_delay(8, base_delay=1.0, max_delay=60.0) == 60.0
+
+
+def test_backend_defer_delay_attempt_below_one_is_base_delay():
+    from swarmq.backoff import backend_defer_delay
+
+    assert backend_defer_delay(0, base_delay=1.0, max_delay=60.0) == 1.0
+    assert backend_defer_delay(-5, base_delay=1.0, max_delay=60.0) == 1.0
+
+
+def test_backend_defer_delay_huge_attempt_stays_at_cap():
+    """Der Zaehler-Header waechst ueber eine lange Stoerung ohne Grenze;
+    ``2 ** n`` darf dabei nicht in einen Float-Ueberlauf laufen."""
+    from swarmq.backoff import backend_defer_delay
+
+    assert backend_defer_delay(100_000, base_delay=1.0, max_delay=60.0) == 60.0

@@ -88,6 +88,7 @@ Nachricht entweder oder routet sie in die DLQ:
 | `Task.run()` raist, nachdem `max_retries` erreicht ist | Worker publiziert nach `{queue}.XQ`, Original bestätigt (`TASK_DLQ`) |
 | `raise NoRetry("reason")` | Worker publiziert sofort nach `{queue}.XQ`, Original bestätigt (`TASK_DLQ`) |
 | RabbitMQs `x-delivery-limit=20` erreicht | Broker-native DLQ-Route |
+| Backend nicht erreichbar bei einer Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) | Neue Nachricht in die Delay-Queue mit wachsendem Backoff, Original bestätigt (`task_deferred_backend_unavailable`); kein Retry |
 | Task-Alter übersteigt `max_age` bei Pickup | `TASK_EXPIRED`-Signal + DLQ |
 | Lock-Render-Fehler oder Conflict-Cap erreicht | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (Conflict-Cap) |
 
@@ -95,6 +96,23 @@ Der Worker ruft auf dem Primär-Retry-Pfad nie `basic.nack(requeue=True)`
 auf. Ein Requeue-an-Ort-und-Stelle würde das Retry-Backoff umgehen
 und den Broker in einer Hot-Loop ausbeuten. Alle Retries gehen
 durch die Delay-Queue.
+
+Dasselbe gilt für einen Backend-Ausfall vor der Ausführung. Erreicht
+eine Prüfung, die vor dem Task läuft (Schedule-Fire-Dedup,
+Cancel-Check, Rate-Limit, Lock), Valkey nicht, publiziert der Worker
+eine Kopie der Nachricht in die Delay-Queue und bestätigt das Original
+erst, wenn der Broker die Kopie bestätigt hat. Die Kopie behält alle
+SwarmQ-Header (Retry-Zähler, Workflow-Kontext, Unique-Hash,
+Enqueue-Zeit), aber nicht die Zustellzähler des Brokers; sie beginnt
+also mit frischem Zustellbudget. Die Wartezeit beginnt bei
+`SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) und verdoppelt sich je
+Zurückstellung bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Jede
+Zurückstellung loggt `task_deferred_backend_unavailable` (WARNING).
+Das ist kein Retry: `max_retries` bleibt unberührt, `TASK_RETRYING`
+feuert nicht. Nur wenn auch der Broker die Kopie nicht annimmt, fällt
+der Worker auf `basic.nack(requeue=True)` zurück. Fire-and-forget-Tasks
+werden genauso zurückgestellt, denn diese Prüfungen laufen vor ihrem
+frühen Ack.
 
 ## Redelivery-Szenarien
 
@@ -187,7 +205,9 @@ erreicht die DLQ über einen von vier Wegen:
 3. **Broker-native Delivery-Limit.** RabbitMQ hat die Nachricht
    20-mal redelivered, ohne dass ein Ack gelandet ist. Das ist der
    Pathologischer-Loop-Schutz; er schirmt den Broker gegen einen
-   buggy Worker ab.
+   buggy Worker ab. Ein Backend-Ausfall zählt nicht dagegen: Die
+   Prüfungen vor der Ausführung stellen die Nachricht als neue
+   Nachricht zurück, statt sie neu einzureihen (siehe oben).
 4. **Expiry / Lock-Render / Conflict-Cap.** `max_age` überschritten,
    Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg),
    Lock-Conflict-Budget getroffen. Die DLQ trägt die Nachricht mit

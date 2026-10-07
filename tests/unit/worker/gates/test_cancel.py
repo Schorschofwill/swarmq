@@ -229,10 +229,11 @@ class TestWorkerPreStartCancelCheck:
         backend.store_result.assert_awaited_once()
         broker.ack.assert_awaited_once_with(msg)
 
-    async def test_cancel_is_cancelled_raises_nacks_with_requeue(
+    async def test_cancel_is_cancelled_raises_defers_via_delay_queue(
         self, worker, broker, backend,
     ):
-        """BackendConnectionError during is_cancelled → nack(requeue=True)."""
+        """BackendConnectionError during is_cancelled → Zurueckstellung ueber
+        die Delay-Queue (neue Nachricht), kein Requeue an derselben Stelle."""
         backend.is_cancelled = AsyncMock(
             side_effect=BackendConnectionError("valkey down")
         )
@@ -240,16 +241,18 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        assert broker.retry_later.await_args.args == (msg,)
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
         backend.store_result.assert_not_awaited()
         # Contextvars cleared even on error path.
         assert structlog.contextvars.get_contextvars() == {}
 
-    async def test_cancel_store_result_failure_nacks_and_keeps_flag(
+    async def test_cancel_store_result_failure_defers_and_keeps_flag(
         self, worker, broker, backend,
     ):
-        """store_result wirft → nack(requeue=True), flag stays for retry."""
+        """store_result wirft → Zurueckstellung, flag stays for the copy."""
         backend.is_cancelled = AsyncMock(return_value=True)
         backend.store_result = AsyncMock(
             side_effect=BackendConnectionError("write failed")
@@ -258,7 +261,8 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
         # Flag was NOT cleared — redelivery will re-trigger the cancel branch.
         backend.clear_cancel_flag.assert_not_awaited()
@@ -380,7 +384,7 @@ class TestWorkflowCancelPickup:
         await worker._handle_message(msg)
         backend.is_workflow_cancelled.assert_not_awaited()
 
-    async def test_workflow_check_backend_error_nacks_requeue(
+    async def test_workflow_check_backend_error_defers(
         self, worker, broker, backend,
     ):
         from swarmq.exceptions import BackendConnectionError
@@ -393,7 +397,11 @@ class TestWorkflowCancelPickup:
         msg = self._wf_message()
         await worker._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        # Workflow-Kontext reist mit der Kopie.
+        headers = broker.retry_later.await_args.kwargs["headers"]
+        assert headers["x-swarmq-workflow-id"] == msg.headers["x-swarmq-workflow-id"]
+        broker.redeliver.assert_not_awaited()
         backend.store_result.assert_not_awaited()
 
 
@@ -460,11 +468,12 @@ class TestCancelGateOutcomes:
         backend.clear_cancel_flag.assert_awaited_once()
         broker.ack.assert_awaited_once_with(msg)
 
-    async def test_backend_error_is_redelivered(self, worker, broker, backend):
+    async def test_backend_error_is_deferred(self, worker, broker, backend):
         backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("down"))
         msg = make_message(_default_payload())
         assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
 
 
 class TestCancelGateLogging:

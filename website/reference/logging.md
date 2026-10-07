@@ -623,6 +623,8 @@ selection, not every event SwarmQ emits.
 | `task_sent_to_dlq` | `swarmq.worker.retry` | ERROR | The task was dead-lettered. Fields `error_type` (exception class; `WorkerHungError` when the delivery limit was reached) and `error`. |
 | `task_rate_limited` | `swarmq.worker.gates.rate_limit` | INFO | Fields `retry_after_ms`, `remaining`, `rate_limit_count`. |
 | `task_lock_conflict` | `swarmq.worker.gates.lock` | INFO | Lock held elsewhere; message requeued. Fields `lock_name`, `lock_conflict_count`. |
+| `task_deferred_backend_unavailable` | `swarmq.worker.gates.backend_defer` | WARNING | A check before execution (schedule-fire dedup, cancel check, rate limit, lock) could not reach the backend; the message went back through the delay queue as a new message and returns after `delay_ms`. Not a retry: `max_retries` and the delivery limit stay untouched. Fields `gate` (`schedfire`, `cancel`, `rate_limit`, `lock`), `defer_count`, `delay_ms`, `error_type`, `error`. |
+| `task_defer_failed_redelivered` | `swarmq.worker.gates.backend_defer` | WARNING | The deferral could not be published either (broker unreachable too); the message is requeued in place instead. Fields `gate`, `error_type`, `error`. |
 | `task_expired` | `swarmq.worker.gates.expiry` | WARNING | Older than `max_age`; sent to the DLQ. Fields `age_s`, `max_age_s`. |
 | `delivery_limit_reached_dead_letter` | `swarmq.worker.gates.delivery_count` | ERROR | Delivered `delivery_limit` times without acknowledgement; dead-lettered as `WorkerHungError`. Fields `delivery_count`, `delivery_limit`. |
 | `message_body_too_large` | `swarmq.worker.decode` | ERROR | Body over `SWARMQ_MAX_MESSAGE_BODY_BYTES`; routed to the DLX undecoded. Fields `body_bytes`, `cap_bytes`, `hint`. |

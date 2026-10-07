@@ -30,3 +30,8 @@ HEADER_ENQUEUED_AT = "x-swarmq-enqueued-at"
 # the advancement seam is a no-op for it.
 HEADER_WORKFLOW_ID = "x-swarmq-workflow-id"
 HEADER_WORKFLOW_STEP = "x-swarmq-workflow-step"
+
+# Zurueckstellung bei Backend-Ausfall: wie oft ein Gate diese Nachricht
+# schon wegen eines Backend-Fehlers ueber die Delay-Queue zurueckgestellt
+# hat. Bestimmt die naechste Wartezeit; kein Retry-Zaehler.
+HEADER_BACKEND_DEFER_COUNT = "x-swarmq-backend-defer-count"

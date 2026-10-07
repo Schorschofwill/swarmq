@@ -164,6 +164,18 @@
     },
     {
       "default": 1.0,
+      "env_var": "SWARMQ_BACKEND_DEFER_BASE_DELAY",
+      "name": "backend_defer_base_delay",
+      "type": "float"
+    },
+    {
+      "default": 60.0,
+      "env_var": "SWARMQ_BACKEND_DEFER_MAX_DELAY",
+      "name": "backend_defer_max_delay",
+      "type": "float"
+    },
+    {
+      "default": 1.0,
       "env_var": "SWARMQ_SCHEDULER_POLL_INTERVAL",
       "name": "scheduler_poll_interval",
       "type": "float"

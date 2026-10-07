@@ -116,6 +116,27 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A backend outage before execution no longer drains the delivery
+  budget.** When a check that runs before the task (schedule-fire dedup,
+  cancel check, rate limit, lock) could not reach Valkey, the worker
+  requeued the message in place (`nack(requeue=True)`), roughly every
+  1.5 s (refused connection) to 5 s (blackhole). On a broker that counts
+  requeues against `x-delivery-limit` (RabbitMQ 3.13), the broker moved
+  the messages to `{queue}.XQ` after about 20 rounds, without
+  `TASK_DLQ`, error result or log line; on RabbitMQ 4 the message cycled
+  without backoff. Now the worker publishes a copy to the delay queue
+  and acks the original only after the broker confirmed the copy. The
+  wait grows from `SWARMQ_BACKEND_DEFER_BASE_DELAY` (new, default 1 s)
+  and doubles per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (new,
+  default 60 s); the copy keeps all SwarmQ headers but not the broker's
+  delivery counters (new header `x-swarmq-backend-defer-count`). It is
+  not a retry: `max_retries` stays untouched and no `TASK_RETRYING`
+  fires. Each deferral logs the new WARNING event
+  `task_deferred_backend_unavailable` (fields `gate`, `defer_count`,
+  `delay_ms`, `error_type`, `error`). If the broker cannot take the copy
+  either, the worker requeues in place as before and logs
+  `task_defer_failed_redelivered`. `ValkeyRateLimitStore.check` now
+  raises `BackendConnectionError` for connection and timeout errors.
 - **A scheduler fire no longer overwrites a schedule change made while
   it fires.** A `swarmq schedule remove` (disable or `--permanent`) or a
   redeploy with a new cron that landed between poll and commit was

@@ -371,12 +371,15 @@ class TestRateLimitGateOutcomes:
         assert kwargs["delay_ms"] == 1500 and kwargs["headers"]["x-swarmq-rate-limit-count"] == 3
         broker.ack.assert_not_awaited()  # retry_later bestätigt selbst (U8)
 
-    async def test_backend_error_is_redelivered_via_nack_without_ack(self, worker, broker):
+    async def test_backend_error_is_deferred_without_ack(self, worker, broker):
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
-        msg = make_message(_default_payload())
+        msg = make_message(_default_payload(), headers={"x-swarmq-rate-limit-count": 2})
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        # Kein Limit-Treffer: der Rate-Limit-Zaehler bleibt, wie er war.
+        assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-rate-limit-count"] == 2
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
 
     async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):

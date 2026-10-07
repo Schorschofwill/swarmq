@@ -83,12 +83,28 @@ it to the DLQ:
 | `Task.run()` raises after `max_retries` reached | Worker publishes to `{queue}.XQ`, original acked (`TASK_DLQ`) |
 | `raise NoRetry("reason")` | Worker publishes to `{queue}.XQ` immediately, original acked (`TASK_DLQ`) |
 | RabbitMQ's `x-delivery-limit=20` reached | Broker-native DLQ route |
+| Backend unreachable for a check before execution (schedule-fire dedup, cancel check, rate limit, lock) | New message to the delay queue with growing backoff, original acked (`task_deferred_backend_unavailable`); not a retry |
 | Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
 | Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (conflict cap) header |
 
 The worker never calls `basic.nack(requeue=True)` with the primary
 retry path. Requeue-in-place would bypass the retry backoff and hot-
 loop the broker. All retries go through the delay queue.
+
+The same holds for a backend outage before execution. When a check
+that runs before the task (schedule-fire dedup, cancel check, rate
+limit, lock) cannot reach Valkey, the worker publishes a copy of the
+message to the delay queue and acks the original only after the
+broker confirmed the copy. The copy keeps every SwarmQ header (retry
+count, workflow context, unique hash, enqueue time) but not the
+broker's delivery counters, so it starts with a fresh delivery budget.
+The wait starts at `SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) and doubles
+per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Each
+deferral logs `task_deferred_backend_unavailable` (WARNING). It is not
+a retry: `max_retries` is untouched and no `TASK_RETRYING` fires. Only
+if the broker cannot take the copy either does the worker fall back to
+`basic.nack(requeue=True)`. Fire-and-forget tasks are deferred the
+same way, because these checks run before their early ack.
 
 ## Redelivery scenarios
 
@@ -175,7 +191,9 @@ reaches the DLQ by one of four routes:
    skips the retry decision entirely — straight to DLQ.
 3. **Broker-native delivery-limit.** RabbitMQ has redelivered the
    message 20 times without an ack landing. This is the pathological-
-   loop guard; it protects the broker from a buggy worker.
+   loop guard; it protects the broker from a buggy worker. A backend
+   outage does not count against it: the checks before execution defer
+   the message as a new message instead of requeuing it (see above).
 4. **Expiry / lock-render / conflict-cap.** `max_age` exceeded,
    lock key cannot be rendered (e.g. missing kwarg), or lock
    conflict budget hit. DLQ carries the message with diagnostic

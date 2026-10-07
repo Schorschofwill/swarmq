@@ -530,6 +530,8 @@ _NUMERIC_ENV_VARS = [
     "SWARMQ_SHUTDOWN_TIMEOUT",
     "SWARMQ_CANCEL_POLL_INTERVAL",
     "SWARMQ_BACKEND_OP_TIMEOUT",
+    "SWARMQ_BACKEND_DEFER_BASE_DELAY",
+    "SWARMQ_BACKEND_DEFER_MAX_DELAY",
     "SWARMQ_SCHEDULER_POLL_INTERVAL",
     "SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL",
     "SWARMQ_METRICS_SAMPLE_INTERVAL",
@@ -938,3 +940,37 @@ def test_resolved_field_is_not_overridden_by_env(monkeypatch):
         concurrency=20, resolved_fields=("concurrency",),
     )
     assert cfg.concurrency == 20
+
+
+# === Zurueckstellung bei Backend-Ausfall (Gate-Backoff) ===
+# Test-Liste:
+# - [x] Defaults 1 s / 60 s
+# - [x] Env-Overrides SWARMQ_BACKEND_DEFER_BASE_DELAY / _MAX_DELAY
+# - [x] Werte <= 0 -> ConfigurationError
+# - [x] Obergrenze kleiner als Basis -> ConfigurationError
+
+
+def test_backend_defer_delays_default_to_one_and_sixty_seconds():
+    cfg = _cfg()
+    assert cfg.backend_defer_base_delay == 1.0
+    assert cfg.backend_defer_max_delay == 60.0
+
+
+def test_backend_defer_delays_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_BACKEND_DEFER_BASE_DELAY", "0.5")
+    monkeypatch.setenv("SWARMQ_BACKEND_DEFER_MAX_DELAY", "30")
+    cfg = _cfg()
+    assert cfg.backend_defer_base_delay == 0.5
+    assert cfg.backend_defer_max_delay == 30.0
+
+
+@pytest.mark.parametrize("field", ["backend_defer_base_delay", "backend_defer_max_delay"])
+@pytest.mark.parametrize("value", [0.0, -1.0])
+def test_backend_defer_delays_must_be_positive(field, value):
+    with pytest.raises(ConfigurationError, match=f"{field} must be > 0"):
+        _cfg(**{field: value})
+
+
+def test_backend_defer_max_delay_below_base_raises():
+    with pytest.raises(ConfigurationError, match="backend_defer_max_delay must be >= backend_defer_base_delay"):
+        _cfg(backend_defer_base_delay=10.0, backend_defer_max_delay=5.0)

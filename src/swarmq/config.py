@@ -190,6 +190,12 @@ class SwarmQConfig:
     # Valkey would otherwise wedge the cancel monitor at TCP-default
     # latency. 5s is conservative for a local Valkey deployment.
     backend_op_timeout: float = 5.0
+    # Zurueckstellung, wenn ein Gate vor der Ausfuehrung am Backend scheitert:
+    # die Nachricht geht als neue Nachricht ueber die Delay-Queue zurueck
+    # (Wartezeit ``base * 2**(n-1)``, gedeckelt), statt per Requeue das
+    # Zustellbudget zu verbrauchen. Kein Retry, kein Retry-Budget.
+    backend_defer_base_delay: float = 1.0
+    backend_defer_max_delay: float = 60.0
     scheduler_poll_interval: float = 1.0
     scheduler_heartbeat_interval: float = 10.0
     scheduler_lock_ttl: float = 30.0
@@ -297,6 +303,8 @@ class SwarmQConfig:
         ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
+        ("SWARMQ_BACKEND_DEFER_BASE_DELAY", "backend_defer_base_delay", "float"),
+        ("SWARMQ_BACKEND_DEFER_MAX_DELAY", "backend_defer_max_delay", "float"),
         ("SWARMQ_SCHEDULER_POLL_INTERVAL", "scheduler_poll_interval", "float"),
         ("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "scheduler_heartbeat_interval", "float"),
         ("SWARMQ_METRICS_SAMPLE_INTERVAL", "metrics_sample_interval", "float"),
@@ -330,6 +338,8 @@ class SwarmQConfig:
     _POSITIVE_FIELDS: ClassVar[tuple[str, ...]] = (
         "cancel_poll_interval",
         "backend_op_timeout",
+        "backend_defer_base_delay",
+        "backend_defer_max_delay",
         "max_message_body_bytes",
         "scheduler_poll_interval",
         "scheduler_heartbeat_interval",
@@ -457,6 +467,13 @@ class SwarmQConfig:
             if value <= 0:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
+
+        if self.backend_defer_max_delay < self.backend_defer_base_delay:
+            msg = (
+                "backend_defer_max_delay must be >= backend_defer_base_delay, "
+                f"got {self.backend_defer_max_delay} < {self.backend_defer_base_delay}"
+            )
+            raise ConfigurationError(msg)
 
     def _validate_logging(self) -> None:
         """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""

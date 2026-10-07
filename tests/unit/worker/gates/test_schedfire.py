@@ -10,7 +10,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.worker.gates import GateContext
-from swarmq.worker.outcome import Continue, Terminal
+from swarmq.worker.outcome import Continue, Redelivered, Terminal
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import (
     AddTask,  # noqa: F401
@@ -203,9 +203,11 @@ class TestSchedfireDedup:
         )
         await w._handle_message(msg)
 
-        # U8: redeliver — die Nachricht kommt zurück und ein gesunder Worker
-        # versucht es erneut.
-        broker.redeliver.assert_awaited_once_with(msg)
+        # Zurueckstellung ueber die Delay-Queue statt Requeue an derselben
+        # Stelle; die Kopie traegt den Schedfire-Schluessel weiter.
+        broker.retry_later.assert_awaited_once()
+        assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire"] == "cron_a:1700000000000"
+        broker.redeliver.assert_not_awaited()
 
         # Unit 9 / Fork A2: no header mutation on the nack path — AMQP
         # nack-with-requeue does not transmit in-memory header changes
@@ -352,6 +354,16 @@ class TestSchedfireGateOutcomes:
         await worker._schedfire_gate.apply(msg, ctx)
         ttl_ms = backend.schedules.claim_fire.await_args.args[1]
         assert ttl_ms == max(config.scheduler_inflight_ttl, 900 + 30) * 1000
+
+    async def test_inflight_claim_backend_error_is_deferred(self, worker, broker, backend):
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
+        assert id(msg) not in worker._schedfire_inflight_claims
 
     async def test_completed_check_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17, KTD11): Redelivery erholt sich selbst."""

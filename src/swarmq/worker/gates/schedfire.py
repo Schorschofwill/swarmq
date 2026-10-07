@@ -5,8 +5,9 @@ Rate-Limit und Lock.
 Zwei Marker: Completed (lange TTL, nach dem Lauf) und In-Flight (kurze TTL,
 Claim vor dem Lauf). Duplikate werden bestätigt und übersprungen
 (``Terminal.never_release()`` — kein Claim, keine Freigabe); Backend-Fehler
-→ ``nack(requeue=True)`` (``Redelivered``). Der Runner behandelt dieses Gate
-wie heute *vor* seinem ``try/finally`` (Plan-Fortschrittsprotokoll U19).
+→ Zurueckstellung ueber die Delay-Queue (``backend_defer``, ``Redelivered``).
+Der Runner behandelt dieses Gate wie heute *vor* seinem ``try/finally``
+(Plan-Fortschrittsprotokoll U19).
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ from typing import Any
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.worker.gates import GateContext, GateDeps
-from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
+from swarmq.worker.gates.backend_defer import defer_backend_unavailable
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
 
@@ -45,13 +47,12 @@ class SchedfireGate:
         try:
             already_completed = await deps.backend.schedules.is_fire_completed(header_value)
         except BackendConnectionError as exc:
-            # KTD11: die Redelivery erholt sich selbst -> WARNING.
+            # KTD11: die Zurueckstellung erholt sich selbst -> WARNING.
             logger.warning(
                 "schedfire_dedup_backend_error", schedfire_key=header_value, stage="completed_check",
                 **_error_fields(exc),
             )
-            await deps.broker.redeliver(delivery)
-            return Redelivered
+            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="schedfire")
 
         if already_completed:
             logger.info("schedfire_completed_duplicate_acked", schedfire_key=header_value)
@@ -79,8 +80,7 @@ class SchedfireGate:
                 "schedfire_dedup_backend_error", schedfire_key=header_value, stage="inflight_claim",
                 **_error_fields(exc),
             )
-            await deps.broker.redeliver(delivery)
-            return Redelivered
+            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="schedfire")
 
         if claimed:
             # This worker owns the run; the runner's finally finalizes the

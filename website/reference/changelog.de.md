@@ -122,6 +122,29 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein Backend-Ausfall vor der Ausführung verbraucht das Zustellbudget
+  nicht mehr.** Erreichte eine Prüfung vor dem Task (Schedule-Fire-Dedup,
+  Cancel-Check, Rate-Limit, Lock) Valkey nicht, reihte der Worker die
+  Nachricht an derselben Stelle neu ein (`nack(requeue=True)`), etwa alle
+  1,5 s (abgewiesene Verbindung) bis 5 s (Blackhole). Auf einem Broker,
+  der Requeues auf `x-delivery-limit` anrechnet (RabbitMQ 3.13),
+  verschob der Broker die Nachrichten nach etwa 20 Runden nach
+  `{queue}.XQ`, ohne `TASK_DLQ`, Fehlerergebnis oder Logzeile; auf
+  RabbitMQ 4 kreiste die Nachricht ohne Backoff. Jetzt publiziert der
+  Worker eine Kopie in die Delay-Queue und bestätigt das Original erst,
+  wenn der Broker die Kopie bestätigt hat. Die Wartezeit beginnt bei
+  `SWARMQ_BACKEND_DEFER_BASE_DELAY` (neu, Standard 1 s) und verdoppelt
+  sich je Zurückstellung bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (neu,
+  Standard 60 s); die Kopie behält alle SwarmQ-Header, aber nicht die
+  Zustellzähler des Brokers (neuer Header
+  `x-swarmq-backend-defer-count`). Das ist kein Retry: `max_retries`
+  bleibt unberührt, `TASK_RETRYING` feuert nicht. Jede Zurückstellung
+  loggt das neue WARNING-Event `task_deferred_backend_unavailable`
+  (Felder `gate`, `defer_count`, `delay_ms`, `error_type`, `error`).
+  Nimmt auch der Broker die Kopie nicht an, reiht der Worker wie bisher
+  an derselben Stelle neu ein und loggt `task_defer_failed_redelivered`.
+  `ValkeyRateLimitStore.check` wirft bei Verbindungs- und
+  Timeout-Fehlern jetzt `BackendConnectionError`.
 - **Ein Scheduler-Fire überschreibt keine Zeitplanänderung mehr, die
   während des Fires passiert.** Ein `swarmq schedule remove`
   (deaktivieren oder `--permanent`) oder ein Redeploy mit neuer Cron

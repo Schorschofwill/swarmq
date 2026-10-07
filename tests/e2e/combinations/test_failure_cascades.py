@@ -105,6 +105,7 @@ async def _running_worker(
     shutdown_timeout: int = 5,
     middlewares: list[Middleware] | None = None,
     mirror_to: Any = None,
+    **config_kwargs: Any,
 ):
     """Spin up an in-process SwarmQ worker against the given queue.
 
@@ -126,6 +127,7 @@ async def _running_worker(
         concurrency=concurrency,
         cancel_poll_interval=cancel_poll_interval,
         shutdown_timeout=shutdown_timeout,
+        **config_kwargs,
     )
     for mw in middlewares or []:
         worker_app.add_middleware(mw)
@@ -1300,8 +1302,8 @@ class TestBackendDownResultStoreCombo:
     The scenarios are gated by events instead of sleeps (see
     ``_BackendDropGates``).  The failed store takes ``backend_op_timeout``
     (5 s by default) to surface; while Valkey is down the redelivered
-    message is nacked back by the pre-start cancel check, so the rerun
-    happens after the heal.
+    message is deferred by the pre-start cancel check (delay queue,
+    growing backoff), so the rerun happens after the heal.
     """
 
     async def test_happy_path(
@@ -1545,7 +1547,7 @@ class _BackendDropGates:
     ``ValkeyBackend.store_result`` (the backend boundary) reports the failed
     store, which is the moment to heal, and the successful store of the
     redelivered run.  While Valkey is down the redelivered message cannot
-    pass the pre-start cancel check (it is nacked back again), so the second
+    pass the pre-start cancel check (it is deferred again), so the second
     ``run()`` only happens after the heal.
     """
 
@@ -1579,6 +1581,91 @@ class _BackendDropGates:
             await self.toxic_active.wait()
         else:
             self.redelivered.set()
+
+
+# ---------------------------------------------------------------------------
+# Combo 21 — lange Backend-Stoerung vor dem Start (Tier 2)
+# ---------------------------------------------------------------------------
+
+
+class TestLongBackendOutageBeforeStartCombo:
+    """Combo #21: Valkey ist laenger weg, als das Zustellbudget reicht.
+
+    Vorher: Der Pre-Start-Cancel-Check scheiterte, jede Zustellung ging per
+    ``nack(requeue=True)`` zurueck. Auf einem Broker, der Requeues aufs
+    Zustellbudget anrechnet (RabbitMQ 3.13), stieg ``x-delivery-count``, und
+    nach ``delivery_limit`` Zyklen schob die Broker-DLX die Nachrichten still
+    nach ``.XQ`` -- kein ``TASK_DLQ``, kein Fehlerergebnis. RabbitMQ 4.x
+    rechnet ``nack(requeue=True)`` nicht an (nur ``x-acquired-count``); dort
+    kreiste die Nachricht ohne Backoff und ohne Meldung zur Zurueckstellung.
+
+    Jetzt: Jede Zustellung, die ein Gate am Backend scheitern laesst, wird mit
+    wachsendem Backoff ueber die Delay-Queue zurueckgestellt (neue Nachricht,
+    eigenes Zustellbudget) und meldet ``task_deferred_backend_unavailable``.
+    Nach der Wiederherstellung laufen alle Tasks genau einmal.
+    """
+
+    OUTAGE_S = 40.0  # > 20 alte Zyklen bei abgewiesener Verbindung (~1,5 s)
+    TASKS = 4
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(180)
+    async def test_outage_longer_than_delivery_budget_defers_instead_of_xq(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_url: str,
+        valkey_proxied_url: str,
+    ) -> None:
+        from tests.unit._log_capture import capture_swarmq_logs
+
+        queue = _uq("backend-outage")
+        task_name = _task_name("backend_outage")
+        runs: dict[int, int] = {}
+        all_done = asyncio.Event()
+
+        class OutageTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self, val: int) -> int:
+                runs[val] = runs.get(val, 0) + 1
+                if len(runs) == TestLongBackendOutageBeforeStartCombo.TASKS:
+                    all_done.set()
+                return val * 10
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        with capture_swarmq_logs() as logs:
+            async with app:
+                await broker.declare_queue(queue)
+                async with _running_worker(
+                    rabbitmq_url, valkey_proxied_url, queue, backend_defer_max_delay=8.0,
+                ):
+                    # Abgewiesene Verbindung: Proxy aus, bestehende
+                    # Verbindungen fallen, neue werden abgewiesen.
+                    await toxiproxy.set_proxy_enabled("valkey", False)
+                    try:
+                        tids = [await app.schedule(task_name, i) for i in range(self.TASKS)]
+                        await asyncio.sleep(self.OUTAGE_S)
+                        assert not runs, "kein Task darf ohne Backend starten"
+                        assert await broker.dead_letter_depth(queue) == 0, (
+                            "Nachrichten sind waehrend der Backend-Stoerung im .XQ gelandet"
+                        )
+                    finally:
+                        await toxiproxy.set_proxy_enabled("valkey", True)
+                    await asyncio.wait_for(all_done.wait(), timeout=90.0)
+                    results = [await app.get_result(tid, timeout=15) for tid in tids]
+                    xq_depth = await broker.dead_letter_depth(queue)
+
+        assert results == [i * 10 for i in range(self.TASKS)]
+        assert runs == {i: 1 for i in range(self.TASKS)}, f"jeder Task genau einmal: {runs}"
+        assert xq_depth == 0
+        deferred = [e for e in logs if e["event"] == "task_deferred_backend_unavailable"]
+        assert deferred, "keine Zurueckstellungs-Warnung geloggt"
+        assert all(e["log_level"] == "warning" for e in deferred)
+        assert {e["task_id"] for e in deferred} == set(tids)
 
 
 # ---------------------------------------------------------------------------

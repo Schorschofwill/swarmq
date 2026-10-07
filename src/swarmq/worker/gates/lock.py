@@ -9,7 +9,8 @@ Fallbacks (KTD3, unverändert): Render-Fehler, leerer Render und Konflikt am
 Cap gehen an das Dead-Letter-Ziel und geben das Dedup-Flag inline frei; schlägt
 der Publish fehl, ``nack(requeue=False)`` (DLX ohne Diagnose-Header). Konflikt
 unter dem Cap → exponentielle Rückstellung, bei Publish-Fehler
-``nack(requeue=True)``.
+``nack(requeue=True)``. Backend-Fehler beim Acquire → Zurueckstellung mit
+Backoff (``backend_defer``), ohne den Konfliktzaehler zu erhoehen.
 
 Outcome bis U8: jeder behandelte Sub-Pfad meldet ``Redelivered`` — für den
 ``finally`` des Runners verhaltensgleich mit dem heutigen Stand (keine
@@ -24,10 +25,12 @@ import inspect
 import uuid
 from typing import Any, Literal
 
+from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, route_via_dlx
+from swarmq.worker.gates.backend_defer import defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -138,6 +141,10 @@ class LockGate:
                 "lock_acquire_failed", task_id=ctx.task_id, task_name=ctx.task_name, lock_name=lock_name,
                 **_error_fields(exc),
             )
+            if isinstance(exc, BackendConnectionError):
+                # Backend weg: zurueckstellen statt per Requeue das
+                # Zustellbudget zu verbrauchen (kein Lock-Konflikt).
+                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="lock")
             await deps.broker.redeliver(delivery)
             return Redelivered
 

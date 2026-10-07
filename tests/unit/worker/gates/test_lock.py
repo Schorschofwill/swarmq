@@ -169,12 +169,13 @@ class TestWorkerLocking:
     # --- Mandatory regression #2 ---------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_lock_check_connection_error_nacks_with_requeue(
+    async def test_lock_check_connection_error_defers(
         self, broker, backend, config
     ):
-        """Valkey unreachable mid-acquire must nack(requeue=True), NOT
-        drop the message. Same shape as
-        test_limiter_connection_error_nacks_with_requeue."""
+        """Valkey unreachable mid-acquire must NOT drop the message: it is
+        deferred via the delay queue (new message, own delivery budget),
+        not requeued in place. The lock-conflict counter is untouched —
+        a backend outage is no conflict."""
         reg = TaskRegistry()
         reg.register(LockedTask)
 
@@ -187,9 +188,10 @@ class TestWorkerLocking:
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        assert "x-swarmq-lock-conflict-count" not in broker.retry_later.await_args.kwargs["headers"]
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
-        broker.retry_later.assert_not_called()
 
 
 class TestFireAndForgetLock:
@@ -212,8 +214,10 @@ class TestFireAndForgetLock:
         msg = make_message(_default_payload(name="ff_locked", args=[], kwargs={}))
         await w._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
-        # Crucially: NO ack happened. Message survives for redelivery.
+        # Zurueckgestellt (retry_later bestaetigt erst nach dem Confirm der
+        # Kopie); das FAF-Frueh-Ack wird nie erreicht.
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -2,18 +2,21 @@
 
 Limitiert → Zähler-Header ``x-swarmq-rate-limit-count`` erhöhen, Signal
 ``TASK_RATE_LIMITED``, Rückstellung über ``retry_later`` (Verzögerungsziel der
-Zustellungs-Queue, KTD2); Outcome ``Redelivered``. Limiter- oder Publish-Fehler
-→ ``redeliver`` (KTD3), ebenfalls ``Redelivered``.
+Zustellungs-Queue, KTD2); Outcome ``Redelivered``. Backend-Fehler des Limiters
+→ Zurueckstellung mit Backoff (``backend_defer``); andere Limiter- oder
+Publish-Fehler → ``redeliver`` (KTD3), ebenfalls ``Redelivered``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from swarmq.exceptions import BackendConnectionError
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates.backend_defer import defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -54,6 +57,10 @@ class RateLimitGate:
             # next worker that may have a healthier client. Important:
             # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
             logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc))
+            if isinstance(exc, BackendConnectionError):
+                # Backend weg: zurueckstellen statt das Zustellbudget per
+                # Requeue zu verbrauchen. Andere Fehler bleiben beim Requeue.
+                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="rate_limit")
             await deps.broker.redeliver(delivery)
             return Redelivered
 

@@ -6,7 +6,8 @@ Cancel-Flag (Task oder Workflow) gesetzt → Cancel-Ergebnis speichern,
 Benachrichtigung, Flag löschen, Schedfire-Claim finalisieren, Dedup-Flag
 freigeben, bestätigen, Signal ``TASK_CANCELLED`` nach dem Ack; Outcome
 ``Terminal.already_released()``. Backend-Fehler und Result-Write-Fehler →
-``nack(requeue=True)`` (``Redelivered``). Der Runner behandelt dieses Gate
+Zurueckstellung ueber die Delay-Queue (``backend_defer``, ``Redelivered``;
+scheitert deren Publish, ``nack(requeue=True)``). Der Runner behandelt dieses Gate
 wie heute *vor* seinem ``try/finally``.
 """
 
@@ -21,7 +22,8 @@ from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.gates import GateContext, GateDeps
-from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
+from swarmq.worker.gates.backend_defer import defer_backend_unavailable
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
 
@@ -36,13 +38,12 @@ class CancelGate:
         try:
             is_cancelled = await deps.backend.is_cancelled(task_id, op_timeout=deps.config.backend_op_timeout)
         except BackendConnectionError as exc:
-            # Observability is via the structured log event only:
-            # AMQP nack(requeue=True) redelivers the stored
-            # message, so in-memory header mutations would be lost anyway.
-            # KTD11: die Redelivery erholt sich selbst -> WARNING.
+            # KTD11: die Zurueckstellung erholt sich selbst -> WARNING.
+            # Kein Requeue an derselben Stelle: das verbrauchte das
+            # Zustellbudget, nach delivery_limit Zyklen laege die Nachricht
+            # still im .XQ.
             logger.warning("cancel_check_backend_error", task_id=task_id, **_error_fields(exc))
-            await deps.broker.redeliver(delivery)
-            return Redelivered
+            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel")
 
         workflow_cancel = False
         if not is_cancelled:
@@ -62,8 +63,7 @@ class CancelGate:
                 logger.warning(
                     "workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id, **_error_fields(exc)
                 )
-                await deps.broker.redeliver(delivery)
-                return Redelivered
+                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel")
             if not wf_cancelled:
                 return Continue
             workflow_cancel = True
@@ -128,12 +128,11 @@ class CancelGate:
             await deps.broker.ack(delivery)
 
         except BackendConnectionError as exc:
-            # Result-write failure: nack(requeue=True) so a redelivery
-            # re-runs this branch. Flag stays in Valkey (that's what
-            # triggers the re-cancel on redelivery).
+            # Result-write failure: zurueckstellen, damit die Kopie diesen
+            # Zweig erneut durchlaeuft. Flag stays in Valkey (that's what
+            # triggers the re-cancel on the deferred copy).
             logger.warning("cancel_store_result_failed", task_id=task_id, **_error_fields(exc))
-            await deps.broker.redeliver(delivery)
-            return Redelivered
+            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel")
 
         # Signal AFTER the broker ack so a handler that raises doesn't
         # prevent the message from being committed.
