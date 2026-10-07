@@ -73,7 +73,8 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 |---|---|
 | Alle Tests grün | Kein Commit, kein neues Feature wenn Tests rot sind |
 | Kein ungetesteter Code | Jede Zeile Produktionscode wurde durch einen fehlschlagenden Test motiviert |
-| Tests sind schnell | Unit Tests < 100ms, Gesamte Suite < 30 Sekunden |
+| Tests sind schnell | Jeder Unit-Test < 100 ms. Die Gesamtlaufzeit darf mit der Zahl der Tests wachsen; Richtwert sind rund 15 ms pro Unit-Test im Mittel. Langsame Tests mit `pytest tests/unit --durations=20` finden |
+| Langsame Tests verschieben, nicht abschwächen | Ein Unit-Test, der dauerhaft über 100 ms braucht (echte Prozesse, Timer, Fork), gehört nach `tests/integration/` oder trägt eine Begründung im Test |
 | Tests sind deterministisch | Kein Test darf manchmal bestehen und manchmal fehlschlagen |
 | Tests sind unabhängig | Kein Test darf von der Ausführungsreihenfolge abhängen |
 
@@ -87,6 +88,7 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 6. **Tests für private Methoden** — die öffentliche API testen
 7. **Implementierungsdetails in Assertions** — Verhalten testen, nicht Struktur
 8. **Committen mit roten Tests** — NIEMALS
+9. **Tests für Laufzeit opfern** — keinen Test weglassen, abschwächen oder mit verkürzten Wartezeiten unzuverlässiger machen, nur um Laufzeit zu sparen
 
 ### Erlaubte Abkürzungen
 
