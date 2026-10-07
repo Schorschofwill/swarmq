@@ -59,7 +59,7 @@
       "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.ConfigurationError",
-      "exit_code_on_cli": 1,
+      "exit_code_on_cli": 78,
       "init_params": [],
       "module": "swarmq.exceptions",
       "name": "ConfigurationError",

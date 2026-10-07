@@ -159,6 +159,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Agent-Spec: Exit-Codes.** `errors.json` nannte für
+  `ConfigurationError` den CLI-Exit-Code `1`; `swarmq worker` endet mit
+  `78`. `cli.json` listet jetzt auch `78` und `130`.
+
 - **Ein Scheduler-Fire geht nicht mehr verloren, wenn Valkey direkt
   nach seinem Claim ausfällt.** Der Worker beansprucht einen Fire in
   Valkey, bevor er den Task ausführt. Beendete eine spätere Prüfung
