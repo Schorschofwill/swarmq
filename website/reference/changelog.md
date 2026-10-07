@@ -142,6 +142,12 @@ All notable changes to SwarmQ. This project follows
   handler). If it is cancelled while waiting, the cancellation
   propagates at once and the flush continues in the background up to
   the deadline.
+- **`SwarmQ.__aexit__` with `log_queue=True` no longer raises when the
+  event loop's default executor is already shut down**
+  (`loop.shutdown_default_executor()`, as `asyncio.run` does at the
+  end). The flush raised `RuntimeError: Executor shutdown has been
+  called` into your code; it now waits on a thread of its own, bounded
+  by `log_drain_timeout` as before.
 - **CPU pool with the opt-in log queue:** a `swarmq.*` record logged at
   import time while `SwarmQ(log_queue=True)` or `SWARMQ_LOG_QUEUE=1` was
   active (also from calling `setup_dishka()` twice) started a listener
@@ -189,6 +195,16 @@ All notable changes to SwarmQ. This project follows
   "Future exception was never retrieved" or from a `__del__`) caused a
   `--- Logging error ---` and were lost; they are now written
   synchronously.
+- **A `multiprocessing` queue in a `--log-config` file at process
+  exit:** the exit hook of `multiprocessing` usually runs before
+  SwarmQ's and closed the queue's pipe while the listener still read
+  from it. Records not yet read were lost, and the listener died with an
+  `EOFError`/`OSError` traceback — restarted over and over, often
+  hundreds of tracebacks. SwarmQ now flushes these listeners before
+  `multiprocessing` closes the queue. A record that still arrives after
+  that (for example from an `atexit` function registered before
+  `multiprocessing` was imported) counts as dropped, without a
+  traceback.
 
 ## [0.8.0] — 2026-10-06
 

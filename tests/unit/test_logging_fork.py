@@ -48,6 +48,13 @@ from __future__ import annotations
 #         immer belegt ist (Listener haengt an einer vollen Pipe, ohne schon
 #         aufgegeben zu sein): Der naechste Fork wartet nicht noch einmal das
 #         ganze Budget.
+# 19. [x] Multiprocessing-Queue am Prozessende: Die atexit-Funktion von
+#         ``multiprocessing`` (nach swarmq registriert, laeuft also zuerst)
+#         schliesst die Pipe der Queue. Davor sind alle Records geschrieben,
+#         kein Listener stirbt mit Traceback (``EOFError``/``OSError``).
+# 20. [x] Ein Record nach dem Schliessen der Pipe (etwa aus einer spaeteren
+#         atexit-Funktion der App): kein Traceback, kein Neustart-Sturm, der
+#         Record zaehlt als verworfen.
 import json
 import logging
 import logging.handlers
@@ -524,3 +531,61 @@ def test_a_target_still_busy_since_the_last_fork_is_not_waited_for_again() -> No
         holder.join(2)
 
     assert elapsed < LOCK_BUDGET_S / 5
+
+
+def test_multiprocessing_exit_before_shutdown_logging_writes_all_records(
+    tmp_path: pathlib.Path,
+) -> None:
+    def child() -> None:
+        import multiprocessing.process
+        import multiprocessing.util
+
+        # Wie im Kind von ``multiprocessing.Process``: keine geerbten
+        # Finalizer und Kinder des Testprozesses.
+        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.process._children.clear()  # type: ignore[attr-defined]
+        thread_errors: list[object] = []
+        threading.excepthook = thread_errors.append
+        _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
+        log = logging.getLogger("app")
+        for i in range(3):
+            log.warning("evt_exit_%d", i)
+
+        # Interpreterende: ``multiprocessing`` wurde nach swarmq importiert,
+        # seine atexit-Funktion laeuft vor ``shutdown_logging``.
+        multiprocessing.util._exit_function()  # type: ignore[attr-defined]
+        shutdown_logging()
+
+        assert thread_errors == []
+        assert _messages() == [f"evt_exit_{i}" for i in range(3)]
+
+    assert run_in_forked_child(child, timeout=3.0) == 0
+
+
+def test_a_record_after_multiprocessing_closed_the_pipe_is_counted_as_dropped(
+    tmp_path: pathlib.Path,
+) -> None:
+    def child() -> None:
+        import multiprocessing.process
+        import multiprocessing.util
+
+        from swarmq.logging import dropped_log_records
+
+        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.process._children.clear()  # type: ignore[attr-defined]
+        thread_errors: list[object] = []
+        threading.excepthook = thread_errors.append
+        _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
+        log = logging.getLogger("app")
+        log.warning("evt_before_exit")
+        multiprocessing.util._exit_function()  # type: ignore[attr-defined]
+        before = dropped_log_records()
+
+        log.warning("evt_after_exit")  # etwa aus einer spaeteren atexit-Funktion
+        shutdown_logging()
+
+        assert thread_errors == []
+        assert dropped_log_records() - before == 1
+        assert _messages() == ["evt_before_exit"]
+
+    assert run_in_forked_child(child, timeout=3.0) == 0

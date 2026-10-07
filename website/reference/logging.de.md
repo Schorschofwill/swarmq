@@ -194,7 +194,9 @@ app = SwarmQ(broker, backend, log_queue=True, log_level="INFO")
   dann noch übrig ist, gilt als verworfen und wird gemeldet. Eine neue
   `SwarmQ(log_queue=True)`-Instanz, die in dieser Zeit entsteht, bekommt
   eine frische Queue. Das `log_drain_timeout` der App begrenzt auch das
-  Leeren beim Prozessende.
+  Leeren beim Prozessende. Das gilt auch, wenn der Default-Executor des
+  Event-Loops schon heruntergefahren ist; `__aexit__` wirft nie wegen
+  des Loggings.
 - Die Option ist standardmäßig aus und wirkt nicht in Prozessen, die
   `swarmq worker` konfiguriert (eingebauter Modus oder `--log-config`);
   unter `--no-configure-logging` gilt sie.
@@ -519,6 +521,16 @@ etwa aus einem `__del__` nach dem Leeren beim Prozessende, wird synchron
 geschrieben, statt einen Logging-Fehler auszulösen. Ein per `SIGKILL`
 beendeter Prozess verliert die Einträge, die noch in seiner Queue
 liegen.
+
+Eine `multiprocessing`-Queue in einer `--log-config`-Datei wird geleert,
+bevor `multiprocessing` beim Prozessende ihre Pipe schließt (die
+Exit-Funktion von `multiprocessing` läuft meist vor der von SwarmQ). Ist
+die Queue trotzdem geschlossen — ein Record, der später geloggt wird,
+etwa aus einer `atexit`-Funktion, die vor dem Import von
+`multiprocessing` registriert wurde, oder ein beendeter Manager —, endet
+der Listener ohne Traceback und startet keinen neuen Thread; solche
+Records gelten als verworfen und erscheinen in der Zeile
+`log_drain_timeout_exceeded`.
 
 ### Fork aus Task-Code
 

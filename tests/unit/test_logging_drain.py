@@ -88,6 +88,11 @@ from __future__ import annotations
 # 31. [x] Ein per Fork entstandenes Kind erbt kein laufendes Leeren: Ein
 #         Fork waehrend eines Leerens nach Ablauf der Frist laesst den
 #         Listener des Kindes normal starten.
+# 32. [x] Eingerichtet per ``configure_logging`` im JSON-Format, betroffen
+#         sind nur aufgegebene eingebaute Handler: Die Abschlusszeile ist
+#         gueltiges JSON mit der Zahl der Records (Charakterisierung, ohne
+#         eigenes Rot -- die Verdrahtung ueber ``configure_logging`` war
+#         ungetestet).
 import contextlib
 import fcntl
 import io
@@ -1000,3 +1005,48 @@ def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
 
     with draining_until(Deadline(0)):
         assert run_in_forked_child(child) == 0
+
+
+class _BlockingStream(io.StringIO):
+    """``sys.stderr`` fuer den eingebauten Handler: blockiert jedes
+    ``write``, bis ``opened`` gesetzt ist."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.opened = threading.Event()
+
+    def write(self, text: str) -> int:
+        self.entered.set()
+        self.opened.wait()
+        return super().write(text)
+
+    def isatty(self) -> bool:
+        return False
+
+
+def test_a_configured_json_setup_writes_a_json_closing_line_for_given_up_builtin_handlers(
+    capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import configure_logging, get_logger
+    from swarmq.logging_settings import LoggingSettings
+
+    stream = _BlockingStream()
+    monkeypatch.setattr(sys, "stderr", stream)
+    configure_logging(LoggingSettings(format="json"))
+    log = get_logger("swarmq.tests.drain")
+    try:
+        log.warning("stuck_in_write")
+        assert stream.entered.wait(1)
+        log.warning("given_up_1")
+        log.warning("given_up_2")
+
+        assert _returns_within(lambda: shutdown_logging(timeout=0.05))
+    finally:
+        stream.opened.set()
+
+    [line] = _notices(capfd.readouterr().err)
+    notice = json.loads(line)
+    assert (notice["event"], notice["count"], notice["level"]) == (
+        "log_drain_timeout_exceeded", 2, "warning",
+    )

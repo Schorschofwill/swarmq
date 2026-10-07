@@ -47,6 +47,20 @@ def root_handler_snapshot() -> tuple[logging.Handler, ...]:
     return tuple(logging.getLogger().handlers)
 
 
+APP_LOGGING_REPORTS: dict[str, str] = {
+    "logging_reconfigured_by_app": "info",
+    "logging_handlers_added_by_app": "warning",
+}
+"""Meldungen ueber das Logging der App mit ihrem Level: im Worker
+(:func:`react_to_app_logging`) und je Pool fuer die Compute-Kinder
+(``swarmq.worker.compute.pool``)."""
+
+
+def report_app_logging(log: Any, event: str, **fields: Any) -> None:
+    """Meldet ``event`` aus :data:`APP_LOGGING_REPORTS` mit dessen Level."""
+    getattr(log, APP_LOGGING_REPORTS[event])(event, **fields)
+
+
 def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
     """Regel "App gewinnt" (Plan 2026-10-06-0831, U7, KTD4).
 
@@ -67,11 +81,13 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
             _stop_listeners()
             _activate_swarmq_queue_after_app_takeover(**_queue_options(before))
         _queue_core._APP_TAKEOVER_REPORTED = True
-        get_logger(__name__).info("logging_reconfigured_by_app", reenabled_loggers=reenabled)
+        report_app_logging(
+            get_logger(__name__), "logging_reconfigured_by_app", reenabled_loggers=reenabled,
+        )
     if added and not replaced:
         # Neben swarmqs Handler: beide schreiben -- swarmq entfernt nichts.
-        get_logger(__name__).warning(
-            "logging_handlers_added_by_app",
+        report_app_logging(
+            get_logger(__name__), "logging_handlers_added_by_app",
             handler_types=[type(handler).__name__ for handler in added],
         )
 
@@ -181,7 +197,9 @@ def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Iterator[None]:
 def _start_app_queue_listeners() -> None:
     """Startet geerbte, ungestartete Queue-Listener der App (R13); swarmqs
     eigene Listener starten weiter lazy beim ersten Eintrag (KTD5)."""
-    start_queue_listeners(on_drop=_queue_core.count_dropped, skip=(_StructlogQueueHandler,))
+    start_queue_listeners(
+        on_drop=_queue_core.count_dropped, skip=(_StructlogQueueHandler,), drain=_stop_listeners,
+    )
 
 
 def _app_changes(
@@ -393,7 +411,7 @@ def _configure_from_file(settings: LoggingSettings) -> None:
         # dictConfig meldet Tippfehler als ValueError, TypeError,
         # AttributeError oder ImportError -- alle mit Pfad nach oben (AE4).
         raise LoggingConfigError(settings.log_config, exc) from exc
-    start_queue_listeners(on_drop=_queue_core.count_dropped)
+    start_queue_listeners(on_drop=_queue_core.count_dropped, drain=_stop_listeners)
 
 
 def _apply_logger_levels(settings: LoggingSettings) -> None:

@@ -188,7 +188,9 @@ app = SwarmQ(broker, backend, log_queue=True, log_level="INFO")
   thread keeps writing in the background until the deadline, and only
   what is left then counts as dropped and is reported. A new
   `SwarmQ(log_queue=True)` created meanwhile gets a fresh queue. The
-  app's `log_drain_timeout` also bounds the flush at process exit.
+  app's `log_drain_timeout` also bounds the flush at process exit. This
+  also works when the event loop's default executor is already shut
+  down; `__aexit__` never raises because of logging.
 - The option is off by default and has no effect in processes that
   `swarmq worker` configures (built-in or `--log-config` mode); under
   `--no-configure-logging` it applies.
@@ -506,6 +508,15 @@ A record logged while the interpreter shuts down, for example from a
 `__del__` after the flush at exit, is written synchronously instead of
 causing a logging error. A process killed with `SIGKILL` loses the
 records still in its queue.
+
+A `multiprocessing` queue in a `--log-config` file is flushed before
+`multiprocessing` closes its pipe at process exit (the exit hook of
+`multiprocessing` usually runs before SwarmQ's). If the queue is closed
+anyway — a record logged later, for example from an `atexit` function
+registered before `multiprocessing` was imported, or a manager that has
+shut down — the listener ends without a traceback and starts no new
+thread; such records count as dropped and appear in the
+`log_drain_timeout_exceeded` line.
 
 ### Forking from task code
 

@@ -12,6 +12,7 @@ import contextlib
 import json as jsonlib
 import logging
 import logging.handlers
+import os
 import queue
 import subprocess
 import sys
@@ -298,7 +299,8 @@ Kind zurueck (Plan 2026-10-06-1811, KTD10)."""
 
 
 def start_queue_listeners(
-    on_drop: Callable[[], None], *, skip: tuple[type[logging.Handler], ...] = ()
+    on_drop: Callable[[], None], *, skip: tuple[type[logging.Handler], ...] = (),
+    drain: Callable[[], None] | None = None,
 ) -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
 
@@ -307,7 +309,9 @@ def start_queue_listeners(
     Prozessende (``atexit``). ``on_drop`` zaehlt einen wegen voller Queue
     verworfenen Eintrag (Plan 2026-10-06-1811, KTD1). Handler der Typen
     ``skip`` -- swarmqs eigene, deren Listener lazy starten -- bleiben aussen
-    vor (Plan 2026-10-06-1811, U9).
+    vor (Plan 2026-10-06-1811, U9). ``drain`` leert alle Listener; mit einer
+    ``multiprocessing``-Queue laeuft es vor deren Finalizer
+    (:func:`_drain_before_multiprocessing_exit`).
     """
     loggers = [logging.getLogger()] + [lg for _, lg in iter_loggers()]
     for handler in {h for lg in loggers for h in lg.handlers}:
@@ -323,6 +327,36 @@ def start_queue_listeners(
             CONFIG_LISTENERS.append(listener)
             _restart_lazily(handler, listener, on_drop, drops)
             _STARTED_HANDLERS[handler] = drops
+            if drain is not None and _shared_with_parent(handler.queue):
+                _drain_before_multiprocessing_exit(drain)
+
+
+_BEFORE_MULTIPROCESSING_QUEUES = 100
+"""Prioritaet des Leerens unter den ``multiprocessing``-Finalizern: hoeher
+als die der Queue (10), die beim Prozessende ihre Pipe schliesst."""
+
+_MP_EXIT_DRAIN_PID: int | None = None
+"""Prozess, in dem das Leeren vor ``multiprocessing`` registriert ist."""
+
+
+def _drain_before_multiprocessing_exit(drain: Callable[[], None]) -> None:
+    """Registriert ``drain`` einmal je Prozess vor den Finalizern von
+    ``multiprocessing``.
+
+    Dessen atexit-Funktion wird beim Import von ``multiprocessing``
+    registriert, meist nach swarmqs ``shutdown_logging``, und laeuft damit
+    zuerst (atexit ist LIFO). Ihr Finalizer der Queue laesst den Feeder die
+    Pipe schliessen -- vorher noch ungelesene Records waeren verloren, und
+    der Listener stuerbe mit ``EOFError``/``OSError``-Traceback. Ein
+    ``Finalize`` gilt nur im Prozess, der es angelegt hat."""
+    global _MP_EXIT_DRAIN_PID
+    pid = os.getpid()
+    if pid == _MP_EXIT_DRAIN_PID:
+        return
+    _MP_EXIT_DRAIN_PID = pid
+    from multiprocessing import util  # schon importiert: Die Queue braucht es
+
+    util.Finalize(None, drain, exitpriority=_BEFORE_MULTIPROCESSING_QUEUES)
 
 
 def running_targets() -> Iterator[logging.Handler]:
@@ -440,6 +474,12 @@ class _ListenerState:
     parent_owned: bool = False
     """Im Kind nach ``os.fork``: Die Queue teilt es mit dem Elternprozess,
     dessen Listener sie leert; hier startet keiner (Schluss-Review, P1)."""
+    closed: bool = False
+    """Die Queue ist geschlossen (``EOFError``/``OSError`` beim Lesen): Es
+    startet kein Listener mehr, jeder Record zaehlt als verworfen."""
+    counted: int = 0
+    """Wie viele Records der geschlossenen Queue schon als verworfen zaehlen;
+    lesen laesst sie sich nicht mehr."""
 
 
 _STATES: weakref.WeakKeyDictionary[logging.handlers.QueueListener, _ListenerState] = (
@@ -514,6 +554,8 @@ def _qsize(queue_: Any) -> int:
         return int(queue_.qsize())
     except (NotImplementedError, AttributeError):  # etwa ``multiprocessing`` auf macOS
         return 0
+    except (EOFError, OSError):  # Proxy eines beendeten Managers
+        return 0
 
 
 def start_pending_queue_listeners(deadline: Deadline) -> int:
@@ -528,6 +570,11 @@ def start_pending_queue_listeners(deadline: Deadline) -> int:
     discarded = 0
     for handler, drops in list(_STARTED_HANDLERS.items()):
         listener = handler.listener
+        if listener is not None and _state(listener).closed:
+            lost = _count_closed(listener)
+            drops.add(lost)
+            discarded += lost
+            continue
         if (
             listener is None
             or _alive(listener)
@@ -545,6 +592,14 @@ def start_pending_queue_listeners(deadline: Deadline) -> int:
             if not _alive(listener):
                 _restart(listener)
     return discarded
+
+
+def _count_closed(listener: logging.handlers.QueueListener) -> int:
+    """Die noch nicht gezaehlten Records einer geschlossenen Queue."""
+    state = _state(listener)
+    lost = max(_qsize(listener.queue) - state.counted, 0)
+    state.counted += lost
+    return lost
 
 
 def _discard(queue_: Any) -> int:
@@ -581,7 +636,11 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
     oder Formatter beendete den Thread (KTD1). Am Exemplar wie bei
     ``_restart_lazily``; gefangen und gemeldet wird pro Record. Nach jedem
     Record und beim Ende meldet der Listener neue Drops wie der eingebaute
-    (KTD2); deren Zaehler liefert er zurueck."""
+    (KTD2); deren Zaehler liefert er zurueck.
+
+    Ist die Queue geschlossen -- die Pipe einer ``multiprocessing``-Queue
+    nach deren Finalizer, ein beendeter Manager --, endet er ohne Traceback;
+    was noch in ihr liegt, zaehlt das naechste Leeren als verworfen."""
     reports = ListenerReports(listener.handle)
     monitor = listener._monitor  # type: ignore[attr-defined]
 
@@ -598,7 +657,11 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
         source: Any = listener.queue
         if _state(listener).stop and source.empty():
             raise queue.Empty
-        return dequeue(block)
+        try:
+            return dequeue(block)
+        except (EOFError, OSError):
+            _state(listener).closed = True
+            raise queue.Empty from None
 
     setattr(listener, "handle", reports.handle)  # noqa: B010
     setattr(listener, "_monitor", serve)  # noqa: B010
@@ -662,7 +725,7 @@ def _restart_lazily(
         drops.add()
 
     def enqueue_restarting(record: logging.LogRecord) -> None:
-        if _still_abandoned(listener):
+        if _state(listener).closed or _still_abandoned(listener):
             dropped()
             return
         if sys.is_finalizing():

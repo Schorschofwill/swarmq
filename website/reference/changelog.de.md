@@ -149,6 +149,12 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   mit einem langsamen Handler). Wird es beim Warten abgebrochen, geht
   der Abbruch sofort weiter, und das Leeren läuft im Hintergrund bis zur
   Frist weiter.
+- **`SwarmQ.__aexit__` mit `log_queue=True` wirft nicht mehr, wenn der
+  Default-Executor des Event-Loops schon heruntergefahren ist**
+  (`loop.shutdown_default_executor()`, wie `asyncio.run` es am Ende
+  tut). Das Leeren warf `RuntimeError: Executor shutdown has been
+  called` in deinen Code; jetzt wartet es auf einem eigenen Thread,
+  wie bisher begrenzt durch `log_drain_timeout`.
 - **CPU-Pool mit Opt-in-Log-Queue:** Ein `swarmq.*`-Record, der beim
   Import geloggt wurde, während `SwarmQ(log_queue=True)` oder
   `SWARMQ_LOG_QUEUE=1` aktiv war (auch durch zweimaliges
@@ -202,6 +208,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   „Future exception was never retrieved“ oder aus einem `__del__`),
   lösten einen `--- Logging error ---` aus und gingen verloren; sie
   werden jetzt synchron geschrieben.
+- **Eine `multiprocessing`-Queue in einer `--log-config`-Datei beim
+  Prozessende:** Die Exit-Funktion von `multiprocessing` läuft meist vor
+  der von SwarmQ und schloss die Pipe der Queue, während der Listener
+  noch aus ihr las. Noch nicht gelesene Records gingen verloren, und der
+  Listener starb mit einem `EOFError`/`OSError`-Traceback — immer wieder
+  neu gestartet, oft Hunderte Tracebacks. SwarmQ leert diese Listener
+  jetzt, bevor `multiprocessing` die Queue schließt. Ein Record, der
+  danach noch kommt (etwa aus einer `atexit`-Funktion, die vor dem
+  Import von `multiprocessing` registriert wurde), gilt ohne Traceback
+  als verworfen.
 
 ## [0.8.0] — 2026-10-06
 

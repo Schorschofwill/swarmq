@@ -29,6 +29,12 @@ im Elternprozess und ein Alarm im Kind beenden haengende Prozesse mit Stack.
 #       Kind baut eine eigene Verbindung zum Manager auf, statt die des
 #       Elternprozesses mitzubenutzen -- kein ``Logging error``, alle Zeilen
 #       beider Prozesse in der Datei.
+# Restpunkte (Release 0.9.0), ``multiprocessing.Queue`` am Prozessende ohne
+# eigenes ``shutdown_logging`` (nur atexit; die atexit-Funktion von
+# ``multiprocessing`` laeuft vor der von swarmq und schliesst die Pipe):
+# - [x] Kein Traceback auf stderr, alle Zeilen in der Datei.
+# - [x] Ein Record aus einer spaeteren atexit-Funktion der App: kein
+#       Traceback, er zaehlt als verworfen, alle frueheren Zeilen in der Datei.
 
 from __future__ import annotations
 
@@ -334,3 +340,53 @@ def test_a_manager_queue_gets_its_own_connection_in_a_raw_forked_child(tmp_path:
     assert _child_lines(written, pid) == [f"{pid} child_line_{i}" for i in range(lines)]
     parent = [line.split(" ", 1)[1] for line in written if not line.startswith(f"{pid} ")]
     assert parent == ["parent_before_fork"] + [f"parent_line_{i}" for i in range(lines)]
+
+
+_EXIT_SCRIPT = f"""
+import atexit, faulthandler, json, logging, sys
+faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True)
+
+from swarmq.logging import configure_logging
+from swarmq.logging_settings import LoggingSettings
+
+log_file, lines, late = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "late"
+if late:
+    # Vor ``multiprocessing`` registriert: laeuft nach dessen atexit-Funktion.
+    atexit.register(lambda: logging.getLogger("app").info("late_line"))
+config = {{
+    "version": 1,
+    "formatters": {{"p": {{"format": "%(message)s"}}}},
+    "handlers": {{
+        "file": {{"class": "logging.FileHandler", "filename": log_file, "formatter": "p"}},
+        "q": {{
+            "class": "logging.handlers.QueueHandler", "handlers": ["file"],
+            "queue": {{"()": "multiprocessing.Queue"}},
+        }},
+    }},
+    "root": {{"level": "INFO", "handlers": ["q"]}},
+}}
+configure_logging(LoggingSettings(log_config="/never/read.json", log_config_json=json.dumps(config)))
+log = logging.getLogger("app")
+for i in range(lines):
+    log.info("line_%d", i)
+"""
+
+
+@pytest.mark.parametrize("late", ["no_late", "late"])
+def test_a_multiprocessing_queue_ends_without_traceback_at_interpreter_exit(
+    tmp_path: Path, late: str,
+) -> None:
+    log_file = tmp_path / "out.log"
+    lines = 2000
+    proc = subprocess.run(
+        [sys.executable, "-c", _EXIT_SCRIPT, str(log_file), str(lines), late],
+        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 10,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert "Traceback" not in proc.stderr, proc.stderr[-3000:]
+    assert log_file.read_text().splitlines() == [f"line_{i}" for i in range(lines)]
+    if late == "late":
+        assert "1 log record(s)" in proc.stderr, proc.stderr
+    else:
+        assert proc.stderr == ""

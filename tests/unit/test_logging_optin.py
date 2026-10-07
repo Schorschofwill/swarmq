@@ -78,6 +78,11 @@ from __future__ import annotations
 #     verworfen gezaehlt und ``log_drain_timeout_exceeded`` gemeldet.
 # 31. Ein Leeren, das innerhalb der Frist fertig wird, verliert durch den
 #     Abbruch nichts: Es laeuft im Hintergrund bis zur Frist weiter.
+# Restpunkte (Release 0.9.0) -- Default-Executor schon heruntergefahren
+# (``loop.shutdown_default_executor``, ``asyncio.to_thread`` wirft):
+# 32. ``__aexit__`` wirft nicht in den App-Code; die Records sind geschrieben.
+# 33. Haengt dabei ein App-Handler, kehrt ``__aexit__`` nach der Frist zurueck;
+#     der Rest ist als verworfen gezaehlt.
 import asyncio
 import contextvars
 import io
@@ -763,3 +768,39 @@ async def test_cancelling_a_drain_that_finishes_in_time_loses_nothing(
 
     assert blocking.events() == ["optin_drain_1", "optin_drain_2"]
     assert dropped_log_records() == before
+
+
+@pytest.mark.timeout(5)
+async def test_leaving_the_app_after_the_default_executor_shut_down_does_not_raise(
+    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+) -> None:
+    app = SwarmQ(broker, backend, log_queue=True)
+    _LOG.warning("optin_after_executor_shutdown")
+    await asyncio.get_running_loop().shutdown_default_executor()
+
+    await app.__aexit__(None, None, None)
+
+    assert app_handler.events() == ["optin_after_executor_shutdown"]
+
+
+@pytest.mark.timeout(5)
+async def test_leaving_the_app_without_executor_returns_at_the_drain_timeout(
+    broker: MagicMock, backend: MagicMock,
+) -> None:
+    from swarmq.logging import dropped_log_records
+
+    blocking = _Blocking()
+    logging.getLogger().handlers[:] = [blocking]
+    app = SwarmQ(broker, backend, log_queue=True, log_drain_timeout=0.05)
+    try:
+        _LOG.warning("optin_stuck")
+        assert blocking.entered.wait(5)
+        _LOG.warning("optin_never_written")
+        before = dropped_log_records()
+        await asyncio.get_running_loop().shutdown_default_executor()
+
+        await app.__aexit__(None, None, None)
+
+        assert dropped_log_records() - before == 1
+    finally:
+        blocking.release.set()

@@ -35,18 +35,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from swarmq.logging import _error_fields, get_logger
+from swarmq.logging import APP_LOGGING_REPORTS, _error_fields, get_logger, report_app_logging
 from swarmq.worker.compute.child import child_loop, child_once
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
 from swarmq.worker.compute.forkserver import ForkSourceUnsafe
 
 logger = get_logger(__name__)
-
-_APP_LOGGING_REPORTS = {
-    "logging_reconfigured_by_app": "info",
-    "logging_handlers_added_by_app": "warning",  # wie im Worker (react_to_app_logging)
-}
-"""Meldungen der Kinder ueber das Logging der App, mit ihrem Level."""
 
 RecycleHook = Callable[[int, str, float], Awaitable[None]]
 ProgressSink = Callable[[tuple[Any, ...]], Awaitable[None]]
@@ -431,7 +425,7 @@ class SlotPool:
             child.pending.set_result(envelope)
         elif kind in ("progress", "publish"):
             self._forward_progress(msg)
-        elif kind in _APP_LOGGING_REPORTS:
+        elif kind in APP_LOGGING_REPORTS:
             self._report_app_logging(child, kind, msg[1])
 
     def _report_app_logging(self, child: _Child, event: str, fields: dict[str, Any]) -> None:
@@ -441,7 +435,7 @@ class SlotPool:
         if event in self._app_logging_reported:
             return
         self._app_logging_reported.add(event)
-        getattr(logger, _APP_LOGGING_REPORTS[event])(event, compute_slot=child.slot, pid=child.pid, **fields)
+        report_app_logging(logger, event, compute_slot=child.slot, pid=child.pid, **fields)
 
     def _on_decode_error(self, child: _Child, exc: Exception) -> None:
         self.stats.undecodable += 1

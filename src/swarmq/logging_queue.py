@@ -440,11 +440,38 @@ async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -
     deadline = Deadline(timeout)
     try:
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(asyncio.to_thread(draining.thread.join, timeout), timeout)
+            await asyncio.wait_for(_join_without_blocking(draining.thread, timeout), timeout)
     except BaseException:
         _finish_in_background(draining, deadline, timeout)
         raise
     _finish_draining(draining, deadline, timeout)
+
+
+async def _join_without_blocking(thread: threading.Thread, timeout: float) -> None:
+    """``thread.join(timeout)``, ohne den Event-Loop anzuhalten.
+
+    Ist der Default-Executor schon heruntergefahren
+    (``loop.shutdown_default_executor``), wirft ``asyncio.to_thread``
+    ``RuntimeError``. Logging wirft nie in den App-Code: Dann wartet ein
+    eigener Thread ``swarmq-log-drain`` und weckt den Loop."""
+    try:
+        await asyncio.to_thread(thread.join, timeout)
+    except RuntimeError:
+        loop = asyncio.get_running_loop()
+        joined = loop.create_future()
+
+        def wake() -> None:
+            if not joined.done():
+                joined.set_result(None)
+
+        def join() -> None:
+            thread.join(timeout)
+            # Der Loop kann inzwischen geschlossen sein.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(wake)
+
+        threading.Thread(target=join, name="swarmq-log-drain", daemon=True).start()
+        await joined
 
 
 def _finish_draining(draining: _Draining, deadline: Deadline, timeout: float) -> None:
