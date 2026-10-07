@@ -14,10 +14,11 @@ der Band-Erhalt beim Retry ist die benannte Verhaltenskorrektur (KTD2, U8).
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from swarmq.backoff import backend_defer_delay
 from swarmq.contracts import Broker, BrokerAdmin, ResultBackend
 from swarmq.contracts.coordination import (
     ChordStore,
@@ -27,6 +28,7 @@ from swarmq.contracts.coordination import (
     ScheduleStore,
 )
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
+from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
 
@@ -35,6 +37,9 @@ if TYPE_CHECKING:
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
     from swarmq.task import TaskInfo
+
+
+logger = get_logger(__name__)
 
 
 class WorkerBroker(Broker, BrokerAdmin, Protocol):
@@ -127,7 +132,9 @@ class GateDeps:
     registry: TaskRegistry
     rate_limiter: Callable[[], RateLimitStore | None]
     lock_manager: Callable[[], LockStore | None]
-    finalize_schedfire: Callable[[GateContext, bool], Awaitable[None]]  # (ctx, terminal)
+    # (ctx, terminal) -> ``True``, wenn kein Claim gehalten wurde oder die
+    # Finalisierung gelang; ``False``, wenn der Claim stehen blieb.
+    finalize_schedfire: Callable[[GateContext, bool], Awaitable[bool]]
     maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
     register_lock: Callable[[uuid.UUID, LockEntry], None]
@@ -165,18 +172,81 @@ def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
     return headers
 
 
+def _as_count(raw: Any) -> int:
+    """Nicht-negativer Zaehler; ein kaputter Header zaehlt wie keiner."""
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(count, 0)
+
+
+def prior_deferrals(headers: Mapping[str, Any]) -> int:
+    """Bisherige Zurueckstellungen in Folge.
+
+    Eine Zurueckstellungs-Kopie traegt keine Broker-Zaehler (neue Nachricht).
+    Traegt die Zustellung welche, hat der Broker sie nach einer Zustellung
+    zurueckgegeben, die nicht zurueckgestellt hat (Requeue nach bestandenen
+    Gates, Absturz, Fallback): die Folge ist unterbrochen, die Zaehlung
+    beginnt neu. Klassische Queues fuehren keine solchen Zaehler.
+    """
+    if any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS):
+        return 0
+    return _as_count(headers.get(HEADER_BACKEND_DEFER_COUNT))
+
+
+def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict[str, Any], int, int]:
+    """Header, Zaehlerstand und Wartezeit (ms) der Kopie einer Zurueckstellung
+    bei Backend-Ausfall: ``republish_headers`` plus hochgezaehltem
+    ``x-swarmq-backend-defer-count``, Wartezeit nach ``backend_defer_delay``.
+    Vor der Freigabe des Claims aufrufen -- sonst fehlt der Kopie dessen
+    Token."""
+    headers = republish_headers(delivery, ctx)
+    attempt = prior_deferrals(delivery.headers or {}) + 1
+    headers[HEADER_BACKEND_DEFER_COUNT] = attempt
+    delay_s = backend_defer_delay(
+        attempt, deps.config.backend_defer_base_delay, deps.config.backend_defer_max_delay,
+    )
+    return headers, attempt, int(delay_s * 1000)
+
+
 async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) -> None:
     """``nack(requeue=True)`` des Originals; ein gehaltener Schedfire-Claim
     wird VORHER freigegeben (owner-geprueft, begrenzt).
 
     Das Original kehrt ohne ``x-swarmq-schedfire-claim`` zurueck: stuende der
     Claim noch, wenn die Redelivery ihn prueft, bestaetigte sie sich als
-    Duplikat. Scheitert die Freigabe (Backend weg), wartet der Fire auf die
-    Claim-TTL. Kein Ersatz durch eine Kopie (``retry_later``): die Requeue-
-    Pfade sind Fallbacks fuer einen gestoerten Broker oder zaehlen bewusst
-    aufs Zustelllimit (Logikfehler -> DLQ)."""
-    await deps.finalize_schedfire(ctx, False)
-    await deps.broker.redeliver(delivery)
+    Duplikat -- der Fire (bzw. der Workflow-Advance) waere verloren, nicht
+    nur bis zur Claim-TTL verzoegert. Scheitert die Freigabe deshalb (Backend
+    weg, fremde Ausnahme eines Stores), geht statt des ``nack`` eine Kopie
+    mit dem Owner-Token ueber die Delay-Queue (``retry_later``, Backoff und
+    Zaehler wie eine Zurueckstellung bei Backend-Ausfall); sie uebernimmt den
+    Claim. Erst wenn auch dieser Publish scheitert, bleibt der ``nack``.
+
+    Zustelllimit: die Kopie erbt keinen Broker-Zaehler. Sie entsteht nur bei
+    gescheiterter Freigabe, also bei einem Ausfall; erreicht die Kopie das
+    Backend wieder, gelingt die Freigabe beim naechsten Requeue, und der
+    ``nack`` zaehlt wieder aufs Zustelllimit (Logikfehler -> DLQ)."""
+    claim = ctx.schedfire_claim
+    if claim is None:
+        await deps.broker.redeliver(delivery)
+        return
+    # Vor der Freigabe gebaut: sie nimmt den Claim vom Kontext.
+    headers, attempt, delay_ms = deferral_copy(deps, delivery, ctx)
+    if await deps.finalize_schedfire(ctx, False):
+        await deps.broker.redeliver(delivery)
+        return
+    fields = {"task_id": ctx.task_id, "task_name": ctx.task_name, "schedfire_key": claim.key}
+    try:
+        # Publish-then-ack: ``retry_later`` bestaetigt das Original erst nach
+        # dem Publisher-Confirm der Kopie.
+        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+    except Exception as exc:
+        # Broker ebenfalls gestoert: letzter Ausweg ``nack``.
+        logger.warning("task_copy_failed_redelivered", **fields, **_error_fields(exc))
+        await deps.broker.redeliver(delivery)
+        return
+    logger.warning("task_requeued_as_copy", **fields, defer_count=attempt, delay_ms=delay_ms)
 
 
 class Gate(Protocol):

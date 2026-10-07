@@ -231,7 +231,7 @@ class Worker(WorkerLifecycle):
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _finalize_schedfire(self, ctx: GateContext, *, terminal: bool) -> None:
+    async def _finalize_schedfire(self, ctx: GateContext, *, terminal: bool) -> bool:
         """Finalize the in-flight schedfire claim of this delivery.
 
         Called from the ``_handle_message`` finally block (and the
@@ -250,10 +250,12 @@ class Worker(WorkerLifecycle):
           fail ``is_schedfire_completed`` and get silently dropped.
 
         Failures are logged and swallowed — an orphan in-flight marker
-        self-heals via its short TTL."""
+        self-heals via its short TTL. Returns ``False`` only when a held
+        claim could not be finalized (``redeliver_in_place`` then copies
+        instead of nacking)."""
         claim, ctx.schedfire_claim = ctx.schedfire_claim, None
         if claim is None:
-            return
+            return True
         schedfire_key, owner = claim.key, claim.owner
         try:
             finalize: Awaitable[object]
@@ -267,13 +269,20 @@ class Worker(WorkerLifecycle):
                 finalize = self._backend.schedules.release_fire_claim(schedfire_key, owner=owner)
             # Begrenzt: ein Blackhole darf weder Gate noch finally blockieren.
             await bounded_backend_call(self._gate_deps, finalize, what="schedfire finalize")
-        except BackendConnectionError as exc:
+        except Exception as exc:
+            # Auch eine fremde Ausnahme (Dritt-Store): sie darf weder den
+            # ``nack``/die Kopie eines Requeues noch das finally ueberspringen.
             logger.warning(
                 "schedfire_finalize_failed",
                 schedfire_key=schedfire_key,
                 terminal=terminal,
                 **_error_fields(exc),
             )
+            return False
+        return True
+
+    async def _release_schedfire_claim(self, ctx: GateContext) -> None:
+        await self._finalize_schedfire(ctx, terminal=False)
 
     @staticmethod
     def _extract_valid_unique_hash(message: Any) -> str | None:
@@ -479,8 +488,14 @@ class Worker(WorkerLifecycle):
                 outcome = await gate.apply(message, ctx)
             except BaseException:
                 # Ein Gate-Fehler endet ebenfalls vor dem finally: Claim
-                # nicht-terminal freigeben, dann weiterwerfen.
-                await self._finalize_schedfire(ctx, terminal=False)
+                # nicht-terminal freigeben, dann weiterwerfen. Geshieldet und
+                # getrackt (wie der Lock-Release): ein zweiter Abbruch
+                # (Shutdown) unterbricht die Freigabe nicht, der Shutdown
+                # wartet vor ``backend.close`` auf sie.
+                inner = asyncio.create_task(self._release_schedfire_claim(ctx))
+                self._detached_releases.add(inner)
+                inner.add_done_callback(self._detached_releases.discard)
+                await asyncio.shield(inner)
                 raise
             if outcome is not Continue:
                 await self._finalize_schedfire(ctx, terminal=False)

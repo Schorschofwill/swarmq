@@ -190,6 +190,14 @@ zurück und landet, wenn der Fehler bleibt, über das Zustelllimit in
 `{queue}.XQ`. Den im Fehler genannten Key prüfen und löschen oder
 korrigieren.
 
+Fehlerantworten, die durch Warten heilen, sind kein
+`BackendResponseError`, sondern ein einfacher `BackendConnectionError`
+und werden wie ein nicht erreichbares Backend behandelt: `OOM`
+(maxmemory erreicht), `READONLY` (der Client spricht nach einem
+Failover noch mit dem herabgestuften Primary), `LOADING`, `TRYAGAIN`,
+`CLUSTERDOWN`, `MASTERDOWN` und `MISCONF` (Persistenz scheitert, etwa
+bei voller Platte).
+
 ## `TaskNotFoundError`
 
 **Wann geraist.** `app.schedule("name", ...)` mit einem Namen, den

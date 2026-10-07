@@ -108,7 +108,10 @@ messages deferred together do not hit the recovering backend together.
 Only an outage defers: when Valkey answers a check with an error
 (`BackendResponseError`, for example `WRONGTYPE`), waiting does not
 help, and the message goes back to the queue in place, so a persistent
-error reaches `{queue}.XQ` through the delivery limit. Once the backend has answered,
+error reaches `{queue}.XQ` through the delivery limit. Error replies
+that heal by waiting (`OOM`, `READONLY` during a failover, `LOADING`,
+`TRYAGAIN`, `CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`) count as an outage
+and defer. Once the backend has answered,
 the count starts over: retry, rate-limit and lock copies do not carry
 `x-swarmq-backend-defer-count`, and a message the broker hands back
 after a delivery that got past the checks (on quorum queues recognised
@@ -136,8 +139,13 @@ claim itself is lost (Valkey may or may not have written it), the copy
 carries the new token together with the ones it was offered, and takes
 the claim over either way. A requeue in place (`nack(requeue=True)`)
 cannot carry a token, so the worker releases the claim before it
-requeues; only if that release fails too (broker and backend down at
-once) does the fire wait for `SWARMQ_SCHEDULER_INFLIGHT_TTL`. The claim
+requeues. If that release fails, the worker publishes a copy carrying
+the token to the delay queue instead (with the backoff of a deferral)
+and acks the original once the broker confirmed the copy. Only if the
+broker cannot take that copy either does it requeue in place; the
+redelivery then finds the claim still held and is acked as a duplicate
+until the claim expires (`SWARMQ_SCHEDULER_INFLIGHT_TTL`), so that fire
+is lost. The claim
 protection needs every worker on 0.9.0 or later: a worker of an older
 version neither writes nor recognises the token.
 

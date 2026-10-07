@@ -96,7 +96,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Die Prüfungen vor der Ausführung stellen eine Nachricht dafür nicht
   zurück (Warten hilft nicht), sondern reihen sie an derselben Stelle
   neu ein; ein bleibender Fehler landet so über das Zustelllimit in
-  `{queue}.XQ`. Die Schedule-Fire- und die Cancel-Prüfung loggen dabei
+  `{queue}.XQ`. Fehlerantworten, die durch Warten heilen, gelten als
+  Ausfall und bleiben ein einfacher `BackendConnectionError`: `OOM`
+  (maxmemory erreicht), `READONLY` (Failover), `LOADING`, `TRYAGAIN`,
+  `CLUSTERDOWN`, `MASTERDOWN` und `MISCONF`. Die Schedule-Fire- und die
+  Cancel-Prüfung loggen dabei
   das neue ERROR-Event `task_gate_backend_error` (Felder `gate`,
   `stage`, `error_type`, `error`, dazu `schedfire_key` oder
   `workflow_id`).
@@ -175,8 +179,19 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   zuerst, höchstens 16) und übernimmt den Claim in beiden Fällen. Ein
   Neueinreihen an derselben Stelle (`nack(requeue=True)`: Shutdown, ein
   Publish-Fallback, ein anderer Fehler als ein Ausfall) kann kein Token
-  tragen, deshalb wird der Claim vorher freigegeben; nur wenn auch diese
-  Freigabe scheitert, wartet der Fire weiter auf die Claim-TTL. Neues
+  tragen, deshalb wird der Claim vorher freigegeben. Scheitert diese
+  Freigabe (Valkey weg oder ein Store von Dritten wirft eine beliebige
+  Ausnahme), veröffentlicht der Worker stattdessen eine Kopie mit dem
+  Token in die Delay-Queue, mit dem Backoff einer Zurückstellung, und
+  bestätigt das Original, sobald der Broker die Kopie bestätigt hat
+  (WARNING `task_requeued_as_copy`); nur wenn auch dieser Publish
+  scheitert, reiht er an derselben Stelle neu ein
+  (`task_copy_failed_redelivered`), und der Fire kann dann weiter als
+  Duplikat verworfen werden, solange der Claim lebt. Den Claim einer
+  Zustellung, deren Prüfungen abgebrochen werden (Shutdown), gibt der
+  Worker auch dann frei, wenn während der Freigabe ein zweiter Abbruch
+  kommt. Aus dem Header bietet der Worker dem Claim-Skript höchstens 16
+  Tokens an. Neues
   Lua-Skript `sched_fire_claim.lua`; `ScheduleStore.claim_fire` hat die
   neuen optionalen Keywords `owner` und `takeover` (ein Token oder eine
   Folge von Tokens), `ScheduleStore.release_fire_claim` das neue
@@ -232,7 +247,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   derselben Stelle neu eingereiht, ein bleibender Fehler landet also
   weiter über das Zustelllimit in `{queue}.XQ`, statt endlos
   zurückgestellt zu werden. `ValkeyRateLimitStore.check` wirft bei
-  Verbindungs- und Timeout-Fehlern jetzt `BackendConnectionError`. Ein
+  Verbindungs- und Timeout-Fehlern und bei Fehlerantworten, die durch
+  Warten heilen (siehe `BackendResponseError` unter Hinzugefügt), jetzt
+  `BackendConnectionError`, bei anderen Fehlerantworten
+  `BackendResponseError` (vorher den rohen
+  `valkey.exceptions.ResponseError`). Ein
   `RateLimitStore` von Dritten bekommt die Zurückstellung nur, wenn sein
   `check` bei Transportfehlern `BackendConnectionError` wirft; jede
   andere Ausnahme behält das Neueinreihen an derselben Stelle.

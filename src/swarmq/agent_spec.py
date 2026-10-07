@@ -106,6 +106,8 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
     "BackendResponseError": dict(
         # Unterklasse von BackendConnectionError: das Backend antwortete mit
         # einem Fehler (WRONGTYPE, Skriptfehler) -- kein Ausfall, kein Backoff.
+        # Selbstheilende Antworten (OOM, READONLY, ...) sind kein
+        # BackendResponseError, sondern ein Ausfall.
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),

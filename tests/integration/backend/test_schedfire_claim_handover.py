@@ -23,6 +23,16 @@ Test-Liste:
       scheitert -> die Kopie uebernimmt den Claim und laeuft genau einmal
 - [x] die Kopie einer Kopie: deren Claim kam nicht an (das alte Token steht
       noch) -> die naechste Kopie uebernimmt trotzdem
+
+Test-Liste (viertes Review):
+- [x] Requeue an derselben Stelle (Fehlerantwort beim Cancel-Check), die
+      Freigabe scheitert: statt des tokenlosen ``nack`` geht eine Kopie mit
+      Token; nach der Erholung von Valkey laeuft der Fire genau einmal
+- [x] ``sched_fire_claim.lua`` direkt: ein leeres erstes Uebernahme-Token
+      wird uebersprungen, ein spaeteres passt
+- [x] ``sched_fire_claim.lua`` direkt: mehr als 16 Uebernahme-Tokens --
+      das Skript prueft alle (die Deckelung liegt beim Worker), ohne
+      passendes Token bleibt der Claim fremd
 """
 
 from __future__ import annotations
@@ -38,7 +48,7 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError
 from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
@@ -226,3 +236,50 @@ async def test_copy_of_a_copy_takes_over_when_the_lost_claim_never_arrived(
 
     assert RUNS == ["run"], "das alte Token fehlte in der Kopie -- Fire verloren"
     assert await backend.schedules.is_fire_completed(fire_key) is True
+
+
+async def test_failed_release_before_requeue_in_place_sends_a_copy_that_runs_once(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+) -> None:
+    """Vorher: das Original ging per ``nack`` ohne Token zurueck, der Claim
+    blieb stehen -- nach der Erholung bestaetigte sich die Redelivery als
+    Duplikat, der Fire war verloren."""
+    fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
+    original = _message(fire_key)
+    store = backend.schedules
+    real_is_cancelled, real_release = backend.is_cancelled, store.release_fire_claim
+    backend.is_cancelled = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))  # type: ignore[method-assign]
+    store.release_fire_claim = AsyncMock(side_effect=BackendConnectionError("valkey down"))  # type: ignore[method-assign]
+    try:
+        await worker._handle_message(original)
+    finally:
+        backend.is_cancelled = real_is_cancelled  # type: ignore[method-assign]
+        store.release_fire_claim = real_release  # type: ignore[method-assign]
+    broker.redeliver.assert_not_awaited()
+    broker.retry_later.assert_awaited_once()
+    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    assert not RUNS
+
+    await worker._handle_message(_copy_of(original, headers))
+
+    assert RUNS == ["run"], "die Kopie hielt den eigenen Claim fuer fremd -- Fire verloren"
+    assert await backend.schedules.is_fire_completed(fire_key) is True
+
+
+async def test_lua_claim_skips_an_empty_first_takeover_token(backend: ValkeyBackend) -> None:
+    fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
+    store = backend.schedules
+    assert await store.claim_fire(fire_key, 60_000, owner="tok-held") is True
+
+    assert await store.claim_fire(fire_key, 60_000, owner="tok-new", takeover=["", "tok-held"]) is True
+    assert await store.claim_fire(fire_key, 60_000, owner="tok-other", takeover=["", "tok-held"]) is False
+
+
+async def test_lua_claim_checks_more_than_sixteen_takeover_tokens(backend: ValkeyBackend) -> None:
+    fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
+    store = backend.schedules
+    assert await store.claim_fire(fire_key, 60_000, owner="tok-held") is True
+    foreign = [f"tok-{n}" for n in range(20)]
+
+    assert await store.claim_fire(fire_key, 60_000, owner="tok-x", takeover=foreign) is False
+    assert await store.claim_fire(fire_key, 60_000, owner="tok-new", takeover=[*foreign, "tok-held"]) is True

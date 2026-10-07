@@ -90,7 +90,11 @@ All notable changes to SwarmQ. This project follows
   `except BackendConnectionError` still catches it. The checks before
   execution do not defer a message for it (waiting does not help) but
   requeue it in place, so a persistent error reaches `{queue}.XQ`
-  through the delivery limit; the schedule-fire and cancel checks log
+  through the delivery limit. Error replies that heal by waiting count
+  as an outage and stay a plain `BackendConnectionError`: `OOM`
+  (maxmemory reached), `READONLY` (failover), `LOADING`, `TRYAGAIN`,
+  `CLUSTERDOWN`, `MASTERDOWN` and `MISCONF`. The schedule-fire and
+  cancel checks log
   the new ERROR event `task_gate_backend_error` (fields `gate`, `stage`,
   `error_type`, `error`, plus `schedfire_key` or `workflow_id`).
 - **`log_drain_timeout`** (`--log-drain-timeout SECONDS`,
@@ -163,8 +167,17 @@ All notable changes to SwarmQ. This project follows
   (comma-separated, newest first, at most 16) and takes the claim over
   either way. A requeue in place (`nack(requeue=True)`: shutdown, a
   publish fallback, an error other than an outage) cannot carry a token,
-  so the claim is released before the requeue; only if that release
-  fails too does the fire still wait for the claim TTL. New Lua script
+  so the claim is released before the requeue. If that release fails
+  (Valkey down, or a third-party store raises any exception), the worker
+  publishes a copy carrying the token to the delay queue instead, with
+  the backoff of a deferral, and acks the original once the broker
+  confirmed the copy (WARNING `task_requeued_as_copy`); only if that
+  publish fails too does it requeue in place
+  (`task_copy_failed_redelivered`), and the fire can then still be
+  dropped as a duplicate while the claim lives. A claim held by a
+  delivery whose checks are cancelled (shutdown) is released even if a
+  second cancel arrives during the release. The worker offers at most 16
+  tokens from the header to the claim script. New Lua script
   `sched_fire_claim.lua`; `ScheduleStore.claim_fire` takes the new
   optional keywords `owner` and `takeover` (one token or a sequence of
   tokens), `ScheduleStore.release_fire_claim` the new optional keyword
@@ -215,7 +228,10 @@ All notable changes to SwarmQ. This project follows
   a persistent error still ends in `{queue}.XQ` through the delivery
   limit instead of being deferred forever.
   `ValkeyRateLimitStore.check` now raises `BackendConnectionError` for
-  connection and timeout errors. A third-party `RateLimitStore` gets the
+  connection and timeout errors and for the error replies that heal by
+  waiting (see `BackendResponseError` under Added), and
+  `BackendResponseError` for other error replies (before, it raised the
+  raw `valkey.exceptions.ResponseError`). A third-party `RateLimitStore` gets the
   deferral only if its `check` raises `BackendConnectionError` for
   transport errors; any other exception keeps the requeue in place.
 - **Checks before execution no longer hang on an unresponsive

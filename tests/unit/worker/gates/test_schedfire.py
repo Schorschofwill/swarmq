@@ -38,6 +38,17 @@ Test-Liste 0.9.0 (drittes Review):
 18. Pre-Start-Cancel finalisiert terminal (Completed-Marker); die nicht-
     terminale Finalisierung des Runners danach ist ein No-op -- der Claim
     wird nicht mehr freigegeben, der Marker bleibt.
+
+Test-Liste 0.9.0 (viertes Review):
+19. Ein gefaelschter oder kaputter Header mit beliebig vielen Tokens geht
+    nicht ungedeckelt als Lua-ARGV an den Claim: das Gate bietet hoechstens
+    ``MAX_SCHEDFIRE_CLAIM_TOKENS`` (die neuesten) an.
+20. Liste 10 auch fuer ``asyncio.CancelledError`` (Shutdown bricht einen
+    Handler im Gate ab): Freigabe owner-geprueft, kein Completed-Marker,
+    der Abbruch propagiert.
+21. Ein zweiter Abbruch waehrend dieser Freigabe unterbricht sie nicht: sie
+    laeuft (durch ``backend_op_timeout`` begrenzt) zu Ende, der Abbruch
+    propagiert trotzdem.
 """
 
 from __future__ import annotations
@@ -363,6 +374,41 @@ class TestSchedfireDedup:
         backend.schedules.release_fire_claim.assert_awaited_once_with("cron_a:1700000000000", owner=owner)
         backend.schedules.mark_fire_completed.assert_not_awaited()
 
+    async def test_claim_is_released_when_a_later_gate_is_cancelled(self, worker, broker, backend):
+        """Liste 20."""
+        backend.is_cancelled.side_effect = asyncio.CancelledError()
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        with pytest.raises(asyncio.CancelledError):
+            await worker._handle_message(msg)
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        backend.schedules.release_fire_claim.assert_awaited_once_with("cron_a:1700000000000", owner=owner)
+        backend.schedules.mark_fire_completed.assert_not_awaited()
+
+    async def test_second_cancel_does_not_interrupt_the_claim_release(self, worker, broker, backend):
+        """Liste 21: sonst stuende der Claim bis zur TTL, und die Redelivery
+        nach dem Shutdown waere ein Duplikat (verlorener Fire)."""
+        release_started, may_finish, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def _release(key, *, owner):
+            release_started.set()
+            await may_finish.wait()
+            released.set()
+
+        backend.is_cancelled.side_effect = asyncio.CancelledError()
+        backend.schedules.release_fire_claim.side_effect = _release
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+        handler = asyncio.create_task(worker._handle_message(msg))
+        await release_started.wait()
+
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+        may_finish.set()
+
+        await asyncio.wait_for(released.wait(), timeout=1)
+
     async def test_pre_start_cancel_completes_the_fire_and_releases_nothing(self, worker, broker, backend):
         """Liste 18."""
         backend.is_cancelled.return_value = True
@@ -557,6 +603,19 @@ class TestSchedfireGateOutcomes:
         await worker._schedfire_gate.apply(msg, self._ctx())
 
         assert backend.schedules.claim_fire.await_args.kwargs["takeover"] == ("tok-b", "tok-a")
+
+    async def test_claim_offers_at_most_the_capped_number_of_tokens(self, worker, backend):
+        """Liste 19."""
+        from swarmq.worker.gates import MAX_SCHEDFIRE_CLAIM_TOKENS
+
+        carried = [f"tok-{n}" for n in range(10_000)]
+        msg = make_message(
+            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": ",".join(carried)},
+        )
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        offered = backend.schedules.claim_fire.await_args.kwargs["takeover"]
+        assert offered == tuple(carried[:MAX_SCHEDFIRE_CLAIM_TOKENS])
 
     async def test_copy_caps_the_carried_tokens(self, worker, broker, backend):
         """Liste 16: bei jedem Claim mit unklarem Ausgang kommt ein Token

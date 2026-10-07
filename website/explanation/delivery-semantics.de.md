@@ -117,7 +117,10 @@ Zurückgestellt wird nur bei einem Ausfall: Antwortet Valkey einer
 Prüfung mit einem Fehler (`BackendResponseError`, etwa `WRONGTYPE`),
 hilft Warten nicht, und die Nachricht geht an derselben Stelle in die
 Queue zurück; ein bleibender Fehler landet so über das Zustelllimit in
-`{queue}.XQ`. Sobald das Backend geantwortet hat, beginnt die Zählung neu:
+`{queue}.XQ`. Fehlerantworten, die durch Warten heilen (`OOM`,
+`READONLY` während eines Failovers, `LOADING`, `TRYAGAIN`,
+`CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`), gelten als Ausfall und werden
+zurückgestellt. Sobald das Backend geantwortet hat, beginnt die Zählung neu:
 Retry-, Rate-Limit- und Lock-Kopien tragen
 `x-swarmq-backend-defer-count` nicht, und eine Nachricht, die der Broker
 nach einer Zustellung zurückgibt, die die Prüfungen bestanden hat (auf
@@ -148,9 +151,14 @@ Geht die Antwort auf den Claim selbst verloren (Valkey kann ihn
 geschrieben haben oder nicht), trägt die Kopie das neue Token zusammen
 mit den angebotenen und übernimmt den Claim in beiden Fällen. Ein
 Neueinreihen an derselben Stelle (`nack(requeue=True)`) kann kein Token
-tragen; der Worker gibt den Claim deshalb vorher frei. Nur wenn auch
-diese Freigabe scheitert (Broker und Backend gleichzeitig gestört),
-wartet der Fire auf `SWARMQ_SCHEDULER_INFLIGHT_TTL`. Der Claim-Schutz
+tragen; der Worker gibt den Claim deshalb vorher frei. Scheitert diese
+Freigabe, publiziert der Worker stattdessen eine Kopie mit dem Token in
+die Delay-Queue (mit dem Backoff einer Zurückstellung) und bestätigt
+das Original, sobald der Broker die Kopie bestätigt hat. Nur wenn auch
+der Broker diese Kopie nicht annimmt, reiht er an derselben Stelle neu
+ein; die Redelivery findet den Claim dann noch vor und wird als
+Duplikat bestätigt, bis der Claim abläuft
+(`SWARMQ_SCHEDULER_INFLIGHT_TTL`) -- dieser Fire geht verloren. Der Claim-Schutz
 setzt voraus, dass alle Worker mindestens 0.9.0 laufen: ein Worker
 älterer Version schreibt das Token weder noch erkennt er es.
 

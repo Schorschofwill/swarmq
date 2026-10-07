@@ -51,6 +51,11 @@ class BackendResponseError(BackendConnectionError):
     """Das Backend war erreichbar, hat die Operation aber mit einem Fehler
     beantwortet (z. B. ``WRONGTYPE``, Skriptfehler).
 
+    Fehlerantworten, die durch Warten heilen (OOM, READONLY, LOADING,
+    TRYAGAIN, CLUSTERDOWN, MASTERDOWN, MISCONF), sind KEIN
+    ``BackendResponseError``, sondern ein einfacher
+    ``BackendConnectionError`` (``as_backend_error``).
+
     Kein Ausfall, der sich von selbst erholt: die Gates vor der Ausfuehrung
     stellen dafuer nicht mit Backoff zurueck, sondern nehmen den alten Weg
     (Requeue an derselben Stelle, das Zustelllimit fuehrt eine dauerhaft

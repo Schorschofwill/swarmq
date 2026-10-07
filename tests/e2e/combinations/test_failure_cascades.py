@@ -1794,6 +1794,118 @@ class TestSchedfireClaimAcrossBackendOutageCombo:
         assert xq_depth == 0
 
 
+class TestSchedfireRequeueInPlaceAcrossBackendOutageCombo:
+    """Combo #22b: Valkey faellt waehrend des Laufs eines Schedule-Fires aus.
+
+    Vorher: Das Ergebnis-Schreiben scheiterte, die Nachricht ging per
+    ``nack(requeue=True)`` zurueck (``redeliver_in_place``); die Freigabe des
+    Claims davor scheiterte ebenfalls. Das Original kam ohne Token zurueck,
+    sah nach der Wiederherstellung den stehengebliebenen Claim als fremden
+    Lauf und bestaetigte sich als Duplikat -- der Fire wurde nie
+    abgeschlossen (Claim lebt ``scheduler_inflight_ttl``).
+
+    Jetzt: Scheitert die Freigabe, geht statt des ``nack`` eine Kopie mit dem
+    Owner-Token ueber die Delay-Queue; sie uebernimmt den Claim.
+
+    Test-Liste:
+    - [x] Valkey-Ausfall im Lauf, Ergebnis-Schreiben und Freigabe scheitern
+          -> nach der Wiederherstellung wird der Fire genau einmal
+          abgeschlossen, nichts im ``.XQ``
+    """
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(90)
+    async def test_requeued_fire_completes_once_after_outage(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_url: str,
+        valkey_proxied_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from swarmq.backend.valkey.schedules import ValkeyScheduleStore
+        from swarmq.serialization import encode_json
+
+        queue = _uq("schedfire-requeue")
+        task_name = _task_name("schedfire_requeue")
+        fire_key = f"{_task_name('cron')}:1700000000000"
+        runs: list[str] = []
+        release_failed = asyncio.Event()
+        completed: list[str] = []
+        completed_event = asyncio.Event()
+
+        class FireTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self) -> str:
+                runs.append("run")
+                if len(runs) == 1:
+                    # Valkey faellt nach dem Claim im Lauf aus: das
+                    # Ergebnis-Schreiben scheitert -> Requeue an derselben
+                    # Stelle (AT_LEAST_ONCE).
+                    await toxiproxy.set_proxy_enabled("valkey", False)
+                return "ok"
+
+        real_release = ValkeyScheduleStore.release_fire_claim
+        real_mark = ValkeyScheduleStore.mark_fire_completed
+
+        async def observed_release(self: Any, key: str, **kwargs: Any) -> None:
+            # Die Freigabe endet hier mit einem Fehler oder wird vom
+            # ``backend_op_timeout`` abgebrochen (CancelledError) -- beides
+            # heisst: der Claim steht noch.
+            succeeded = False
+            try:
+                await real_release(self, key, **kwargs)
+                succeeded = True
+            finally:
+                if key == fire_key and not succeeded:
+                    release_failed.set()
+
+        async def observed_mark(self: Any, key: str, ttl_ms: int) -> bool:
+            first = await real_mark(self, key, ttl_ms)
+            if key == fire_key:
+                completed.append(key)
+                completed_event.set()
+            return first
+
+        monkeypatch.setattr(ValkeyScheduleStore, "release_fire_claim", observed_release)
+        monkeypatch.setattr(ValkeyScheduleStore, "mark_fire_completed", observed_mark)
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_proxied_url, queue,
+                backend_defer_base_delay=0.5, backend_defer_max_delay=2.0,
+                backend_op_timeout=1.0, scheduler_inflight_ttl=600,
+            ):
+                body = encode_json({
+                    "task": {"id": str(uuid.uuid4()), "queue": queue, "name": task_name},
+                    "args": [], "kwargs": {},
+                })
+                try:
+                    await broker.publish(queue, body, headers={"x-swarmq-schedfire": fire_key})
+                    # Lauf vorbei, Ergebnis nicht geschrieben, Freigabe
+                    # gescheitert -- der Claim steht.
+                    await asyncio.wait_for(release_failed.wait(), timeout=30.0)
+                finally:
+                    await toxiproxy.set_proxy_enabled("valkey", True)
+                # Vorher: die Redelivery ohne Token bestaetigte sich als
+                # Duplikat, der Fire wurde nie abgeschlossen.
+                await asyncio.wait_for(completed_event.wait(), timeout=30.0)
+                is_completed = await backend.schedules.is_fire_completed(fire_key)
+                xq_depth = await broker.dead_letter_depth(queue)
+
+        # Der erste Lauf verlor sein Ergebnis (AT_LEAST_ONCE: erneuter Lauf),
+        # abgeschlossen wird der Fire genau einmal.
+        assert runs == ["run", "run"], f"Laeufe: {runs}"
+        assert completed == [fire_key]
+        assert is_completed is True
+        assert xq_depth == 0
+
+
 # ---------------------------------------------------------------------------
 # Combo 23 — Rate-Limit-Pruefung gegen ein Blackhole (Tier 2)
 # ---------------------------------------------------------------------------

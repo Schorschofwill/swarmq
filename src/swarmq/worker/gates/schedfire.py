@@ -21,18 +21,20 @@ verloren (Timeout, Reset), kann Valkey den Claim geschrieben haben oder
 nicht. Die Kopie traegt dann das neue Token und die angebotenen (komma-
 getrennt, neuestes zuerst, gedeckelt) -- sie uebernimmt den Claim in beiden
 Faellen. Ein Requeue an derselben Stelle (``nack``) kann kein Token tragen;
-dort wird der Claim vorher freigegeben (``redeliver_in_place``).
+dort wird der Claim vorher freigegeben (``redeliver_in_place``) -- scheitert
+das, geht statt des ``nack`` eine Kopie mit dem Token.
 """
 
 from __future__ import annotations
 
 import uuid
+from itertools import islice
 from typing import Any
 
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
 from swarmq.logging import get_logger
-from swarmq.worker.gates import GateContext, GateDeps, SchedfireClaim
+from swarmq.worker.gates import MAX_SCHEDFIRE_CLAIM_TOKENS, GateContext, GateDeps, SchedfireClaim
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
@@ -41,10 +43,13 @@ logger = get_logger(__name__)
 
 def _claim_tokens(raw: Any) -> tuple[str, ...]:
     """Tokens aus ``x-swarmq-schedfire-claim`` (kommagetrennt, neuestes
-    zuerst); ein fehlender oder kaputter Header bietet keins an."""
+    zuerst); ein fehlender oder kaputter Header bietet keins an. Gedeckelt
+    auf ``MAX_SCHEDFIRE_CLAIM_TOKENS``: ein gefaelschter Header geht nicht
+    ungedeckelt als Lua-ARGV an Valkey."""
     if not isinstance(raw, str):
         return ()
-    return tuple(token for token in (part.strip() for part in raw.split(",")) if token)
+    tokens = (token for token in (part.strip() for part in raw.split(",")) if token)
+    return tuple(islice(tokens, MAX_SCHEDFIRE_CLAIM_TOKENS))
 
 
 class SchedfireGate:

@@ -179,6 +179,13 @@ the message goes back to the queue in place and, if the error
 persists, reaches `{queue}.XQ` through the delivery limit. Inspect the
 key named in the error and delete or fix it.
 
+Error replies that heal by waiting are not a `BackendResponseError`
+but a plain `BackendConnectionError`, handled like an unreachable
+backend: `OOM` (maxmemory reached), `READONLY` (the client still talks
+to a demoted primary after a failover), `LOADING`, `TRYAGAIN`,
+`CLUSTERDOWN`, `MASTERDOWN` and `MISCONF` (persistence failing, for
+example a full disk).
+
 ## `TaskNotFoundError`
 
 **When raised.** `app.schedule("name", ...)` with a name no

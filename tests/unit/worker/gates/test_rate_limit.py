@@ -19,6 +19,10 @@ Test-Liste 0.9.0 (drittes Review):
       ERROR ``rate_limit_check_failed`` und Requeue, keine Zurueckstellung
 - [x] die Rueckstellungs-Kopie einer Schedfire-Zustellung mit gewonnenem
       Claim traegt dessen Owner-Token (``x-swarmq-schedfire-claim``)
+
+Test-Liste 0.9.0 (viertes Review):
+- [x] OOM/READONLY am echten ``ValkeyRateLimitStore`` (Client gemockt) ->
+      Ausfall: Zurueckstellung mit Backoff, kein heisser Requeue
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import valkey.exceptions
 
 from swarmq.contracts.coordination import RateLimitDecision
 from swarmq.exceptions import BackendConnectionError
@@ -520,3 +525,29 @@ async def test_limited_copy_of_a_claimed_fire_carries_the_claim_token(broker, ba
 
     owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
     assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        valkey.exceptions.OutOfMemoryError("command not allowed when used memory > 'maxmemory'."),
+        valkey.exceptions.ReadOnlyError("You can't write against a read only replica."),
+    ],
+)
+async def test_self_healing_reply_of_the_valkey_store_is_deferred(worker, broker, reply):
+    """maxmemory oder Failover: Warten heilt -- zurueckstellen, nicht heiss
+    bis zum Zustelllimit requeuen (das fuehrte ins Dead-Letter-Ziel)."""
+    from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
+
+    client = MagicMock()
+    client.time = AsyncMock(return_value=(1, 0))
+    client.register_script = MagicMock(return_value=AsyncMock(side_effect=reply))
+    worker._rate_limiter = ValkeyRateLimitStore(client)
+    ctx = GateContext(task_id="abc-123", task_name="add", queue="default")
+    ctx.task_info = RateLimitedTask.task_info
+
+    outcome = await worker._rate_limit_gate.apply(make_message(_default_payload()), ctx)
+
+    assert outcome is Redelivered
+    broker.redeliver.assert_not_awaited()
+    assert broker.retry_later.await_args.kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 1
