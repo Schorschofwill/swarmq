@@ -349,11 +349,44 @@ def reset_queue_listeners_after_fork() -> None:
         # Die Drops des Elternprozesses meldet der Elternprozess.
         drops.reset()
         listener = handler.listener
+        if listener is None:
+            continue
+        if _shared_with_parent(handler.queue):
+            # Schluss-Review (P1): Der Listener des Elternprozesses bleibt
+            # der einzige Konsument; das Kind reiht nur ein.
+            _state(listener).parent_owned = True
+            _restart_feeder(handler.queue)
+            continue
         fresh = _fresh_queue(handler.queue)
-        if listener is None or fresh is None:
+        if fresh is None:
             continue
         handler.queue = listener.queue = fresh
         _forget_thread(listener)
+
+
+def _shared_with_parent(inherited: object) -> bool:
+    """Verbindet die Queue das Kind mit dem Elternprozess
+    (``multiprocessing``-Queue oder Manager-Proxy)? Ein zweiter Listener im
+    Kind konkurrierte mit dem des Elternprozesses um dieselbe Pipe, und ein
+    Kind, das mitten im ``get`` endet, hinterliesse deren Lese-Lock belegt.
+    Ohne importiertes ``multiprocessing`` gibt es keine solche Queue."""
+    queues = sys.modules.get("multiprocessing.queues")
+    managers = sys.modules.get("multiprocessing.managers")
+    if queues is not None and isinstance(inherited, (queues.Queue, queues.SimpleQueue)):
+        return True
+    return managers is not None and isinstance(inherited, managers.BaseProxy)
+
+
+def _restart_feeder(inherited: Any) -> None:
+    """Unter rohem ``os.fork`` setzt das Kind den Feeder-Thread einer
+    ``multiprocessing.Queue`` selbst zurueck (``_after_fork``; sonst tut das
+    nur ``multiprocessing.Process``): Der geerbte Thread fehlt im Kind, und
+    ``put`` legte sonst nur in einen Puffer, den niemand sendet. Ein zweiter
+    Aufruf durch ``multiprocessing`` ist harmlos. ``SimpleQueue`` und Proxys
+    haben keinen Feeder."""
+    queues = sys.modules.get("multiprocessing.queues")
+    if queues is not None and isinstance(inherited, queues.Queue):
+        inherited._after_fork()
 
 
 def _fresh_queue(inherited: object) -> Any:
@@ -390,6 +423,9 @@ class _ListenerState:
     """Beim Aufgeben ohne Platz fuer den Sentinel: an der leeren Queue enden."""
     abandoned: FileDraining | None = None
     """Das aufgegebene Leeren, solange sein Thread noch haengen kann."""
+    parent_owned: bool = False
+    """Im Kind nach ``os.fork``: Die Queue teilt es mit dem Elternprozess,
+    dessen Listener sie leert; hier startet keiner (Schluss-Review, P1)."""
 
 
 _STATES: weakref.WeakKeyDictionary[logging.handlers.QueueListener, _ListenerState] = (
@@ -567,7 +603,7 @@ def _restart_lazily(
             # Finalisierung (Plan 2026-10-06-1811, KTD5): synchron ausgeben.
             listener.handle(record)
             return
-        if not _alive(listener):
+        if not _alive(listener) and not _state(listener).parent_owned:
             with _CONFIG_LISTENER_LOCK:
                 if not _alive(listener):
                     # Ein toter Thread zaehlt wie keiner (KTD1); der

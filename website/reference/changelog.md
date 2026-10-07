@@ -18,13 +18,17 @@ All notable changes to SwarmQ. This project follows
   format) and against `--log-level` (INFO lines lost when `basicConfig`
   set no level). Now the forkserver attaches a placeholder handler to the
   root logger before it imports your modules (it starts no thread and
-  passes WARNING and above on to `lastResort`), and each compute child
-  applies the rule of the IO worker: `basicConfig` has no effect, a
+  passes WARNING and above on to `lastResort` when no other handler gets
+  the record), and each compute child applies the rule of the IO worker: `basicConfig` has no effect, a
   module that replaces the root handlers (for example with
   `logging.config.dictConfig`) wins, and added handlers write next to
   SwarmQ's. `logging_reconfigured_by_app` and
   `logging_handlers_added_by_app` appear once per pool, from the logger
-  `swarmq.worker.compute.pool`. Under `--no-configure-logging`
+  `swarmq.worker.compute.pool`. Every process forked from the forkserver
+  starts without the placeholder, so `basicConfig` works in processes
+  your app starts from the shared forkserver itself (for example a
+  `ProcessPoolExecutor` with the default start method `forkserver` on
+  Python 3.14). Under `--no-configure-logging`
   (`configure_logging=False`) `basicConfig` takes effect in both pools.
   The same applies to the compute children of an embedded CPU pool. A
   main module started by path (`python app.py`) is imported by the
@@ -81,20 +85,33 @@ All notable changes to SwarmQ. This project follows
   have had, instead of aborting with `Fatal Python error` (exit `134`)
   or hanging. Registered `atexit` functions that have not run yet do
   not run then; stdout is not flushed when it shares the stuck file or
-  pipe (`2>&1`, journald). Apps that embed SwarmQ are never ended hard.
+  pipe (`2>&1`, journald). If the `swarmq` command ends with an
+  exception, its traceback (or the message of a `SystemExit`) is
+  written to stderr first, shortened to 4096 bytes and only if stderr
+  does not block; Ctrl-C then ends it with `130`. Apps that embed SwarmQ
+  are never ended hard.
 - **New events:** `log_handler_errors` (a handler, filter or formatter
   raised; field `count`), `log_drain_timeout_exceeded` (a line written
   directly to stderr when a flush exceeded the deadline, only if stderr
   does not block; fields `count`, `timeout_s`),
   `log_config_reload_probe_timeout` (fields `path`, `timeout_s`,
-  `hint`) and `forkserver_restarted_multithreaded` (ERROR; fields `pid`,
-  `threads`, `thread_names`, `hint`).
+  `hint`), `forkserver_restarted_multithreaded` (ERROR; fields `pid`,
+  `threads`, `thread_names`, `hint`), `compute_fork_source_rejected`
+  (ERROR; fields `reason`, `hint`) and `worker_fork_source_rejected`
+  (supervisor, WARNING; fields `worker_id`, `pid`, `exitcode`).
 - **The forkserver thread check names the threads** it found and the
   likely cause: the opt-in log queue, a logging `QueueListener` of your
   app started at import time, or else a BLAS/OpenMP computation. It
-  also runs after a silent restart of the forkserver; a restarted
-  forkserver with more than one thread is rejected, and `/ready` reports
-  the pool as unhealthy from then on.
+  also runs after a silent restart of the forkserver, before the next
+  compute child gets work. A restarted forkserver with more than one
+  thread is rejected: `/ready` reports the pool as unhealthy, the worker
+  logs `compute_fork_source_rejected`, stops consuming and shuts down
+  gracefully (the running message goes back to the queue without a
+  retry count). A worker subprocess then exits with code `71`, and the
+  supervisor restarts it with a fresh forkserver (within the restart
+  budget). With an embedded CPU pool, `Worker.start()` raises
+  `swarmq.supervision.ForkSourceRejected` after the shutdown; your app
+  decides whether to restart.
 
 ### Fixed
 
@@ -152,7 +169,11 @@ All notable changes to SwarmQ. This project follows
   queue, each record printed a `Logging error`). A fork while a listener
   was writing could leave the child with `RuntimeError: reentrant call`
   on every record. The child now gets fresh queues, and the fork waits
-  up to 50 ms for running writes.
+  up to 50 ms for running writes. A `multiprocessing` queue (or manager
+  proxy) stays shared with the parent: the child starts no listener of
+  its own, and the parent's listener writes the child's records. Under a
+  raw `os.fork()` SwarmQ restarts the queue's feeder thread in the
+  child.
 - **Records logged while the interpreter shuts down** (for example
   "Future exception was never retrieved" or from a `__del__`) caused a
   `--- Logging error ---` and were lost; they are now written

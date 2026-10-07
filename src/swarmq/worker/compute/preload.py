@@ -28,13 +28,7 @@ import sys
 
 from swarmq.logging import install_fork_source_sentinel
 from swarmq.logging_queue import mark_fork_source
-
-#: Gesetzt von ``wiring.start_compute_executor`` vor dem Forkserver-Start.
-MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"
-
-#: ``"1"``, wenn swarmq das Logging der Kinder konfiguriert (Plan
-#: 2026-10-06-1811, U9, KTD9); gesetzt von ``wiring.start_compute_executor``.
-SENTINEL_ENV = "SWARMQ_FORKSERVER_LOG_SENTINEL"
+from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV
 
 
 def register_main_module(name: str) -> None:

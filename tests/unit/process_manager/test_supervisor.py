@@ -1169,6 +1169,21 @@ class TestConfigErrorNoRestart:
         assert 500 in pm.workers  # Neustart im Budget wie bisher
         assert pm._config_error is False
 
+    def test_a_rejected_fork_source_exit_is_logged_and_restarted(self, swarmq_logs):
+        """Schluss-Review: Exit 71 (verworfene Kindquelle des CPU-Pools) ist
+        ein Neustart im Budget -- mit frischem Forkserver -- und bekommt
+        einen eigenen Logsatz."""
+        from swarmq.supervision import FORK_SOURCE_REJECTED_EXIT_CODE
+
+        pm = self._pm()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=FORK_SOURCE_REJECTED_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        pm._check_dead_workers()
+        assert "worker_fork_source_rejected" in [entry["event"] for entry in swarmq_logs]
+        assert 500 in pm.workers
+        assert pm._config_error is False
+
     def test_ordinary_crash_still_restarts(self):
         pm = self._pm()
         pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))

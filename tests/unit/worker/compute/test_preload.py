@@ -32,12 +32,13 @@ from pathlib import Path
 
 import pytest
 
+from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV
+
 PRELOAD = "swarmq.worker.compute.preload"
 FIXTURE_MAIN = "u8_main_fixture"
 FIXTURE_PKG = "u8_pkg"
 FIXTURE_OPTIN_MAIN = "u6_optin_main_fixture"
 FIXTURE_BASICCONFIG_MAIN = "u9_basicconfig_main_fixture"
-SENTINEL_ENV = "SWARMQ_FORKSERVER_LOG_SENTINEL"
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def fresh_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[N
 
 
 def test_import_registers_named_main_module_as_dunder_main(fresh_modules, monkeypatch):
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_MAIN)
+    monkeypatch.setenv(MAIN_MODULE_ENV, FIXTURE_MAIN)
     importlib.import_module(PRELOAD)
     main = sys.modules["__main__"]
     assert main is sys.modules[FIXTURE_MAIN]
@@ -88,7 +89,7 @@ def test_import_registers_named_main_module_as_dunder_main(fresh_modules, monkey
 
 
 def test_import_with_dunder_main_name_leaves_main_untouched(fresh_modules, monkeypatch):
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", "__main__")
+    monkeypatch.setenv(MAIN_MODULE_ENV, "__main__")
     before = sys.modules["__main__"]
     importlib.import_module(PRELOAD)
     assert sys.modules["__main__"] is before
@@ -96,7 +97,7 @@ def test_import_with_dunder_main_name_leaves_main_untouched(fresh_modules, monke
 
 
 def test_import_without_env_leaves_main_untouched(fresh_modules, monkeypatch):
-    monkeypatch.delenv("SWARMQ_MAIN_MODULE", raising=False)
+    monkeypatch.delenv(MAIN_MODULE_ENV, raising=False)
     before = sys.modules["__main__"]
     importlib.import_module(PRELOAD)
     assert sys.modules["__main__"] is before
@@ -104,7 +105,7 @@ def test_import_without_env_leaves_main_untouched(fresh_modules, monkeypatch):
 
 def test_import_with_package_main_name_leaves_main_untouched(fresh_modules, monkeypatch):
     """``paket.__main__`` laeuft beim Import ungeschuetzt; ``_fixup_main_from_name`` fasst es ohnehin nicht an."""
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", f"{FIXTURE_PKG}.__main__")
+    monkeypatch.setenv(MAIN_MODULE_ENV, f"{FIXTURE_PKG}.__main__")
     before = sys.modules["__main__"]
     importlib.import_module(PRELOAD)
     assert sys.modules["__main__"] is before
@@ -114,7 +115,7 @@ def test_import_with_package_main_name_leaves_main_untouched(fresh_modules, monk
 def test_import_marks_the_fork_source_before_the_main_module_logs(fresh_modules, monkeypatch):
     from swarmq.logging import LISTENER_THREAD_NAME
 
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_OPTIN_MAIN)
+    monkeypatch.setenv(MAIN_MODULE_ENV, FIXTURE_OPTIN_MAIN)
     seen: list[str] = []
     collect = logging.Handler()
     collect.emit = lambda record: seen.append(record.getMessage())  # type: ignore[method-assign]
@@ -135,7 +136,7 @@ def _forkserver_root() -> logging.Logger:
 
 
 def test_with_the_sentinel_a_basicconfig_in_the_main_module_has_no_effect(fresh_modules, monkeypatch):
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_BASICCONFIG_MAIN)
+    monkeypatch.setenv(MAIN_MODULE_ENV, FIXTURE_BASICCONFIG_MAIN)
     monkeypatch.setenv(SENTINEL_ENV, "1")
     root = _forkserver_root()
     level = root.level
@@ -147,7 +148,7 @@ def test_with_the_sentinel_a_basicconfig_in_the_main_module_has_no_effect(fresh_
 
 
 def test_the_sentinel_passes_a_forkserver_warning_to_last_resort_exactly_once(fresh_modules, monkeypatch, capsys):
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_BASICCONFIG_MAIN)
+    monkeypatch.setenv(MAIN_MODULE_ENV, FIXTURE_BASICCONFIG_MAIN)
     monkeypatch.setenv(SENTINEL_ENV, "1")
     _forkserver_root()
     threads = threading.active_count()
@@ -161,7 +162,7 @@ def test_the_sentinel_passes_a_forkserver_warning_to_last_resort_exactly_once(fr
 
 
 def test_without_the_sentinel_variable_a_basicconfig_in_the_main_module_applies(fresh_modules, monkeypatch):
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_BASICCONFIG_MAIN)
+    monkeypatch.setenv(MAIN_MODULE_ENV, FIXTURE_BASICCONFIG_MAIN)
     monkeypatch.setenv(SENTINEL_ENV, "0")  # --no-configure-logging
     root = _forkserver_root()
 
@@ -175,7 +176,7 @@ def test_without_the_sentinel_variable_a_basicconfig_in_the_main_module_applies(
 def test_root_handlers_from_a_main_module_started_by_path_get_no_sentinel(fresh_modules, monkeypatch):
     """KTD6-Grenze: ``python app.py`` importiert das Hauptmodul vor dem
     Preload; hat es Root schon eingerichtet, gewinnt es wie bisher."""
-    monkeypatch.setenv("SWARMQ_MAIN_MODULE", FIXTURE_MAIN)
+    monkeypatch.setenv(MAIN_MODULE_ENV, FIXTURE_MAIN)
     monkeypatch.setenv(SENTINEL_ENV, "1")
     root = _forkserver_root()
     app_handler = logging.StreamHandler()

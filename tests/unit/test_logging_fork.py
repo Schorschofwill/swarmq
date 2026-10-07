@@ -34,6 +34,15 @@ from __future__ import annotations
 #         (Fund waehrend Zyklus 11).
 # 14. [x] Drops des Elternprozesses meldet das Kind nicht noch einmal (Fund
 #         im Prozesstest mit begrenzter Queue).
+# Schluss-Review (P1, Regression gegenueber main):
+# 15. [x] Multiprocessing-Queue: Das Kind startet keinen Listener; sein
+#         Record kommt ueber den Listener des Elternprozesses an (auch unter
+#         rohem ``os.fork``, also mit frischem Feeder-Thread im Kind).
+# 16. [x] Eigene Queue-Klasse der App: Der Listener startet im Kind weiter
+#         lazy (Gegenstueck zu 15; Schutztest, war schon gruen).
+# 17. [x] Zwei Threads forken gleichzeitig: Das ``after_in_parent`` des
+#         einen gibt nicht die Locks frei, die der ``before``-Hook des
+#         anderen haelt.
 import json
 import logging
 import logging.handlers
@@ -60,6 +69,9 @@ pytestmark = pytest.mark.timeout(5)
 RECORDS: list[logging.LogRecord] = []
 """Ziel des ``RecordingHandler`` aus den dictConfig-Dateien der Tests."""
 
+RECORDED = threading.Condition()
+"""Meldet jeden neuen Eintrag in ``RECORDS``."""
+
 ENTERED = threading.Event()
 RELEASE = threading.Event()
 
@@ -68,7 +80,9 @@ class RecordingHandler(logging.Handler):
     """Per dictConfig (``"()"``) referenzierbarer Sammel-Handler."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        RECORDS.append(record)
+        with RECORDED:
+            RECORDS.append(record)
+            RECORDED.notify_all()
 
 
 class BlockingHandler(RecordingHandler):
@@ -155,6 +169,11 @@ def _messages() -> list[str]:
     return [r.getMessage() for r in RECORDS]
 
 
+def _wait_for_message(message: str, timeout: float = 2.0) -> bool:
+    with RECORDED:
+        return RECORDED.wait_for(lambda: message in _messages(), timeout)
+
+
 @pytest.mark.parametrize(
     "queue_config",
     [{}, {"queue": {"()": "queue.SimpleQueue"}}],
@@ -194,6 +213,26 @@ def test_a_multiprocessing_queue_is_kept_in_the_child(
     assert run_in_forked_child(child) == 0
 
 
+def test_the_child_only_produces_into_a_multiprocessing_queue(tmp_path: pathlib.Path) -> None:
+    handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
+    log = logging.getLogger("app")
+    log.warning("evt_parent")
+    assert _wait_for_message("evt_parent")
+
+    def child() -> None:
+        log.warning("evt_child")
+        # Ein Kind, das per ``os._exit`` endet, leert den Feeder-Thread der
+        # Queue selbst (multiprocessing-Doku: "joining processes that use
+        # queues").
+        handler.queue.close()  # type: ignore[attr-defined]
+        handler.queue.join_thread()  # type: ignore[attr-defined]
+        # Der Feeder ist beendet: Jeder weitere Thread waere ein Listener.
+        assert [t.name for t in threading.enumerate()] == [threading.current_thread().name]
+
+    assert run_in_forked_child(child) == 0
+    assert _wait_for_message("evt_child")
+
+
 class AppQueue(queue.Queue[object]):
     """Eigene Queue-Klasse der App: Ihren Konstruktor kennt swarmq nicht."""
 
@@ -204,6 +243,20 @@ def test_an_app_queue_class_is_kept_in_the_child(tmp_path: pathlib.Path) -> None
 
     def child() -> None:
         assert handler.queue is inherited
+
+    assert run_in_forked_child(child) == 0
+
+
+def test_an_app_queue_class_still_gets_a_listener_in_the_child(tmp_path: pathlib.Path) -> None:
+    _configure_file_mode(tmp_path, "BlockingHandler", queue={"()": f"{__name__}.AppQueue"})
+    log = logging.getLogger("app")
+    log.warning("evt_parent_busy")
+    assert ENTERED.wait(2)
+
+    def child() -> None:
+        # Die Queue-Kopie gehoert dem Kind: Sein eigener Listener schreibt.
+        log.warning("evt_child")
+        assert _wait_for_message("evt_child")
 
     assert run_in_forked_child(child) == 0
 
@@ -410,3 +463,39 @@ def test_the_child_does_not_report_the_drops_of_the_parent(tmp_path: pathlib.Pat
         assert _messages() == ["evt_child"]
 
     assert run_in_forked_child(child) == 0
+
+
+def test_a_forking_thread_releases_only_the_locks_it_holds(tmp_path: pathlib.Path) -> None:
+    from swarmq.logging_fork import hold_handler_locks, release_handler_locks
+
+    handler = _configure_file_mode(tmp_path)
+    (target,) = handler.listener.handlers  # type: ignore[union-attr]
+    held = threading.Event()
+    errors: list[BaseException] = []
+
+    def fork_in_progress() -> None:
+        # Thread A: ``before``-Hook gelaufen, der Fork dauert noch.
+        hold_handler_locks([target])
+        held.set()
+        RELEASE.wait()
+        release_handler_locks()
+
+    other = threading.Thread(target=fork_in_progress, daemon=True)
+    other.start()
+    assert held.wait(2)
+    try:
+        # Thread B: sein ``before``-Hook bekam nichts (Budget), sein
+        # ``after_in_parent`` laeuft jetzt.
+        release_handler_locks()
+    except RuntimeError as exc:  # "cannot release un-acquired lock"
+        errors.append(exc)
+    acquired_by_b = target.lock.acquire(timeout=0.05)  # type: ignore[union-attr]
+    if acquired_by_b:
+        target.lock.release()  # type: ignore[union-attr]
+    RELEASE.set()
+    other.join(2)
+
+    assert errors == []
+    assert not acquired_by_b  # Thread A haelt sein Lock bis zu seinem Fork-Ende
+    assert target.lock.acquire(timeout=0.5)  # type: ignore[union-attr]
+    target.lock.release()  # type: ignore[union-attr]

@@ -62,6 +62,13 @@ from __future__ import annotations
 #         ``logging._handlerList`` aus; Handler auf anderen Streams bleiben.
 # 21. [x] ``exit_if_log_thread_stuck`` leert stdout, aber nicht den Stream,
 #         an dem der aufgegebene Thread schreibt.
+# Schluss-Review:
+# 22. [x] ``exit_code_for(KeyboardInterrupt())`` ist 130 (128 + SIGINT), wie
+#         beim Ende des Interpreters durch Strg-C.
+# 23. [x] ``exit_if_log_thread_stuck(code, exc)`` gibt vor dem harten Ende
+#         die Ausnahme auf fd 2 aus (Traceback bzw. Text eines
+#         ``SystemExit``), gekuerzt auf ``PIPE_BUF`` Bytes, und nur, wenn fd 2
+#         sofort beschreibbar ist.
 import contextlib
 import fcntl
 import io
@@ -699,6 +706,7 @@ def test_a_process_exits_hard_with_its_code_while_an_abandoned_thread_hangs(
         (SystemExit(None), 0),
         (SystemExit("message"), 1),
         (ValueError("boom"), 1),
+        (KeyboardInterrupt(), 130),
     ],
 )
 def test_the_hard_exit_keeps_the_exit_code_the_process_would_have_had(
@@ -763,3 +771,57 @@ def test_the_hard_exit_flushes_stdout_but_not_the_stuck_stream(
             exit_if_log_thread_stuck(3)
 
     assert (stdout.flushed, stderr.flushed) == (1, 0)
+
+
+def _raised(exc: BaseException) -> BaseException:
+    """``exc`` mit Traceback, wie ``console_main`` sie faengt."""
+    try:
+        raise exc
+    except BaseException as caught:
+        return caught
+
+
+@pytest.mark.parametrize(
+    ("exc", "last_line"),
+    [
+        (ValueError("boom"), "ValueError: boom"),
+        (SystemExit("config broken"), "config broken"),
+        (KeyboardInterrupt(), "KeyboardInterrupt"),
+    ],
+)
+def test_the_hard_exit_first_reports_the_exception_on_fd_2(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    exc: BaseException, last_line: str,
+) -> None:
+    from swarmq.logging_drain import abandon, exit_if_log_thread_stuck
+
+    monkeypatch.setattr("swarmq.logging_drain._hard_exit", _fake_exit)
+    raised = _raised(exc)
+
+    with _hanging_thread() as thread:
+        abandon(thread, [])
+        with pytest.raises(_Exited):
+            exit_if_log_thread_stuck(1, raised)
+
+    assert capfd.readouterr().err.splitlines()[-1] == last_line
+
+
+def test_a_long_exception_report_keeps_its_end_within_pipe_buf(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+) -> None:
+    import select
+
+    from swarmq.logging_drain import abandon, exit_if_log_thread_stuck
+
+    monkeypatch.setattr("swarmq.logging_drain._hard_exit", _fake_exit)
+    message = "x" * (2 * select.PIPE_BUF) + " the end"
+
+    with _hanging_thread() as thread:
+        abandon(thread, [])
+        with pytest.raises(_Exited):
+            exit_if_log_thread_stuck(1, _raised(SystemExit(message)))
+
+    err = capfd.readouterr().err
+    assert len(err.encode()) <= select.PIPE_BUF
+    assert err.startswith("[...]")
+    assert err.endswith(" the end\n")

@@ -10,6 +10,10 @@ Test-Liste Plan 2026-10-06-1811, U6 (R6, R7; KTD6, KTD7):
 5. [x] ``ForkserverHandle.restarted()`` mit mehr als einem Thread:
        ``forkserver_restarted_multithreaded`` (ERROR) und eine Ausnahme fuer
        den Pool.
+Schluss-Review:
+6. [x] ``restarted()`` startet einen toten Forkserver selbst neu
+       (``ensure_running``), bevor es die PID vergleicht: Die Pruefung laeuft
+       vor dem Fork des naechsten Kindes, nicht erst beim Dispatch danach.
 """
 
 from __future__ import annotations
@@ -192,7 +196,7 @@ class TestStartForkserver:
         _status(root, 77, 1)
         handle = fsmod.start_forkserver(
             ["m"], context_factory=lambda name: ctx,
-            available_methods=["forkserver"], proc_root=root,
+            available_methods=["forkserver"], proc_root=root, ensure_running=lambda: None,
         )
         assert handle.restarted() is False
         assert handle.restarted() is True
@@ -208,7 +212,7 @@ class TestStartForkserver:
         _tasks(root, 77, "python3", LISTENER_THREAD_NAME)
         handle = fsmod.start_forkserver(
             ["m"], context_factory=lambda name: _fake_ctx([]),
-            available_methods=["forkserver"], proc_root=root,
+            available_methods=["forkserver"], proc_root=root, ensure_running=lambda: None,
         )
 
         with pytest.raises(fsmod.ForkSourceUnsafe, match="has 2 threads"):
@@ -218,3 +222,21 @@ class TestStartForkserver:
         assert entry["log_level"] == "error"
         assert entry["threads"] == 2
         assert entry["thread_names"] == ["python3", LISTENER_THREAD_NAME]
+
+
+    def test_restart_check_restarts_a_dead_forkserver_before_comparing(self, monkeypatch, tmp_path):
+        current = {"pid": 42}
+
+        def ensure_running() -> None:
+            current["pid"] = 77  # der Forkserver war tot und laeuft jetzt neu
+
+        monkeypatch.setattr(fsmod, "forkserver_pid", lambda: current["pid"])
+        root = _status(tmp_path, 42, 1)
+        _tasks(root, 77, "python3", "openblas")
+        handle = fsmod.start_forkserver(
+            ["m"], context_factory=lambda name: _fake_ctx([]),
+            available_methods=["forkserver"], proc_root=root, ensure_running=ensure_running,
+        )
+
+        with pytest.raises(fsmod.ForkSourceUnsafe, match="has 2 threads"):
+            handle.restarted()

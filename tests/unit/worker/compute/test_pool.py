@@ -773,3 +773,70 @@ async def test_unsafe_restarted_fork_source_is_rejected_for_good(ctx, signals):
     assert FakeCtx.started == []
     assert not p.healthy
     await p.aclose()
+
+
+# Schluss-Review -- Test-Liste:
+# 1. [x] Verwirft der Pool die Kindquelle, meldet er das genau einmal an
+#    ``on_source_rejected`` (mit dem Grund): Der Worker hoert dann auf zu
+#    konsumieren, statt jede Nachricht neu zustellen zu lassen.
+# 2. [x] Startet der Forkserver zwischen Pruefung und Fork still neu (die
+#    Pruefung direkt nach ``process.start()`` meldet ``ForkSourceUnsafe``),
+#    bekommt das eben gestartete Kind keine Arbeit: Es wird getoetet, der Job
+#    endet in ``SlotUnavailable``. Gilt auch fuer das Ersatzkind beim
+#    Recycling (``_spawn_reuse``).
+@pytest.mark.timeout(5)
+async def test_a_child_forked_from_an_unsafe_restarted_source_gets_no_work(ctx, signals):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        if FakeCtx.started:  # der stille Neustart geschah in ``process.start()``
+            raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+        return False
+
+    p = await _make_pool(ctx, slots=1, restart_check=restart_check)
+    with pytest.raises(SlotUnavailable, match="2 threads"):
+        await p.run(_job("a"), use_di=True)
+    (proc,) = FakeCtx.started
+    assert not proc.is_alive()
+    assert not p.healthy
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_a_recycle_replacement_from_an_unsafe_restarted_source_is_killed(ctx, signals):
+    """Schutztest zu Punkt 2 der Liste (Recycling-Pfad, ohne eigenes Rot)."""
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        if len(FakeCtx.started) > 1:  # Neustart beim Fork des Ersatzkindes
+            raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+        return False
+
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, restart_check=restart_check)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    old.channel.send(("result", _result("a", 0, rss=10.0)))
+    await t1
+    replacement = await _started(2)
+    await _settle(lambda: p.stats.recycled == 1)
+    assert not replacement.is_alive()
+    assert not p.healthy
+    old.die()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_a_rejected_fork_source_is_reported_once(ctx, signals):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+
+    reported: list[str] = []
+    p = await _make_pool(ctx, slots=1, restart_check=restart_check, on_source_rejected=reported.append)
+    for tid in ("a", "b"):
+        with pytest.raises(SlotUnavailable):
+            await p.run(_job(tid), use_di=False)
+    assert reported == ["restarted forkserver has 2 threads"]
+    await p.aclose()

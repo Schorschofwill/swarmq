@@ -1330,6 +1330,8 @@ class TestConsoleEntryHardExit:
       liefert ihn zurueck
     - [x] (Review A2) wirft ``main``, prueft ``console_main`` mit dem Code
       der Ausnahme (``exit_code_for``) und wirft sie weiter
+    - [x] (Schluss-Review) die Ausnahme selbst geht mit an das harte Ende,
+      das sie vorher auf fd 2 ausgibt
     """
 
     def test_console_main_hands_the_exit_code_of_main_to_the_hard_exit(self, monkeypatch):
@@ -1356,10 +1358,28 @@ class TestConsoleEntryHardExit:
         monkeypatch.setattr(cli, "main", failing_main)
         monkeypatch.setattr(
             "swarmq.logging_drain.exit_if_log_thread_stuck",
-            lambda code: calls.append(("exit_if_log_thread_stuck", code)),
+            lambda code, exc=None: calls.append(("exit_if_log_thread_stuck", code)),
         )
 
         with pytest.raises(type(exc)):
             cli.console_main(["worker"])
 
         assert calls == [("exit_if_log_thread_stuck", code)]
+
+    def test_console_main_hands_the_exception_of_main_to_the_hard_exit(self, monkeypatch):
+        calls: list[object] = []
+        exc = SystemExit("config broken")
+
+        def failing_main(argv=None):
+            raise exc
+
+        monkeypatch.setattr(cli, "main", failing_main)
+        monkeypatch.setattr(
+            "swarmq.logging_drain.exit_if_log_thread_stuck",
+            lambda code, exc=None: calls.append((code, exc)),
+        )
+
+        with pytest.raises(SystemExit):
+            cli.console_main(["worker"])
+
+        assert calls == [(1, exc)]

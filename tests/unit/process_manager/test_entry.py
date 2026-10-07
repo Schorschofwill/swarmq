@@ -16,6 +16,9 @@ from __future__ import annotations
 #       (``exit_if_log_thread_stuck`` als letzter Schritt)
 # - [x] ... der Rueckfall nach einer kaputten dictConfig behaelt die Frist
 #       ``log_drain_timeout`` aus den Settings
+# - [x] Schluss-Review: ``ForkSourceRejected`` (der CPU-Pool hat seine
+#       Kindquelle verworfen, der Worker ist geordnet beendet) endet mit
+#       Exit 71, ohne Traceback; das ERROR-Event schrieb schon der Worker
 import os
 
 import pytest
@@ -351,6 +354,21 @@ class TestRecycleAckTimeoutExitCode:
         entry = next(e for e in events if e["event"] == "worker_recycle_ack_timeout")
         assert entry["error_type"] == "RecycleAckTimeout"
         assert "no ack" in entry["error"]
+
+
+class TestForkSourceRejectedExitCode:
+    def test_a_rejected_fork_source_exits_with_71(self, monkeypatch, capsys):
+        from swarmq.supervision import FORK_SOURCE_REJECTED_EXIT_CODE, ForkSourceRejected
+
+        async def rejected(ns):
+            raise ForkSourceRejected("compute fork source rejected: 2 threads")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", rejected)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg())
+        assert exc_info.value.code == FORK_SOURCE_REJECTED_EXIT_CODE == 71
+        assert "Traceback" not in capsys.readouterr().err
 
 
 class TestInheritedSignalMask:

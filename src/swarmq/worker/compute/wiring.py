@@ -16,7 +16,14 @@ from typing import Any
 from swarmq.logging import get_logger
 from swarmq.signals import Signal
 from swarmq.worker.compute.executor import ComputeExecutor
-from swarmq.worker.compute.forkserver import PRELOAD_MODULE, ForkserverHandle, forkserver_pid, start_forkserver
+from swarmq.worker.compute.forkserver import (
+    MAIN_MODULE_ENV,
+    PRELOAD_MODULE,
+    SENTINEL_ENV,
+    ForkserverHandle,
+    forkserver_pid,
+    start_forkserver,
+)
 from swarmq.worker.compute.pool import SlotPool
 
 logger = get_logger(__name__)
@@ -36,9 +43,8 @@ _RUNTIME_PRELOAD = ("swarmq.logging", "swarmq.worker.compute.child")
 # U8 (R28, KTD10): erstes Preload-Modul. Registriert im Forkserver das per ``python -m``
 # gestartete Hauptmodul (Name aus ``SWARMQ_MAIN_MODULE``) als ``sys.modules["__main__"]``,
 # damit ``spawn._fixup_main_from_name`` es nicht je Kind erneut ausfuehrt (B13).
-_PRELOAD_MODULE = PRELOAD_MODULE
-_MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"  # gelesen von preload.py im Forkserver
-_SENTINEL_ENV = "SWARMQ_FORKSERVER_LOG_SENTINEL"  # dito (Plan 2026-10-06-1811, U9, KTD9)
+# Die Umgebungsnamen (``MAIN_MODULE_ENV``, ``SENTINEL_ENV``) teilt es mit
+# ``forkserver``, ohne Import von ``preload`` (dessen Import wirkt).
 
 
 def _main_module_name() -> str:
@@ -64,8 +70,8 @@ def prepare_forkserver_env(*, configure_logging: bool) -> None:
     der Kinder konfiguriert -- nur dann haengt der Preload vor dem App-Import
     den Sentinel an Root, und ``basicConfig`` der App bleibt wirkungslos.
     """
-    os.environ[_MAIN_MODULE_ENV] = _main_module_name()
-    os.environ[_SENTINEL_ENV] = "1" if configure_logging else "0"
+    os.environ[MAIN_MODULE_ENV] = _main_module_name()
+    os.environ[SENTINEL_ENV] = "1" if configure_logging else "0"
 
 
 def preload_modules(registry: Any) -> list[str]:
@@ -74,7 +80,7 @@ def preload_modules(registry: Any) -> list[str]:
     U8: das Preload-Modul steht zuerst; den Hauptmodulnamen erhaelt es ueber
     ``SWARMQ_MAIN_MODULE`` (gesetzt in ``start_compute_executor``).
     """
-    fixed = (_PRELOAD_MODULE, _main_module_name(), *_RUNTIME_PRELOAD)
+    fixed = (PRELOAD_MODULE, _main_module_name(), *_RUNTIME_PRELOAD)
     modules = {cls.__module__ for cls in registry.get_all().values()}
     return [*fixed, *sorted(m for m in modules if m and m != "__main__" and m not in fixed)]
 
@@ -109,6 +115,7 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
         end_grace_s=float(cfg.shutdown_timeout),
         on_recycle=on_recycle,
         restart_check=handle.restarted,
+        on_source_rejected=lambda reason: stop_on_rejected_fork_source(worker, reason),
     )
     executor = ComputeExecutor(worker._gate_deps, pool, worker_id=worker_id)
     pool.set_progress_sink(executor.progress_sink)
@@ -124,6 +131,24 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
         preload=preload,
     )
     return executor
+
+
+def stop_on_rejected_fork_source(worker: Any, reason: str) -> None:
+    """Der Pool hat seine Kindquelle verworfen (Schluss-Review, Abweichung
+    vom Plan 2026-10-06-1811, KTD7): Jede weitere Nachricht scheiterte mit
+    ``SlotUnavailable`` und ginge ohne Retry-Zaehlung zurueck in die Queue --
+    bis zum Delivery-Limit. Der Worker hoert deshalb auf zu konsumieren und
+    endet geordnet; die laufende Nachricht geht unveraendert zurueck.
+    ``Worker.start`` wirft danach ``ForkSourceRejected``: Der
+    Worker-Subprozess endet mit ``FORK_SOURCE_REJECTED_EXIT_CODE``,
+    eingebettet entscheidet die App."""
+    worker._fork_source_rejected = reason
+    logger.error(
+        "compute_fork_source_rejected", reason=reason,
+        hint="the worker stops consuming and shuts down; under the swarmq supervisor it exits "
+        "with code 71 and is restarted with a fresh forkserver",
+    )
+    worker._request_shutdown()
 
 
 async def close_compute_executor(worker: Any) -> None:
@@ -178,5 +203,6 @@ __all__ = [
     "preload_modules",
     "prepare_forkserver_env",
     "start_compute_executor",
+    "stop_on_rejected_fork_source",
     "warn_hard_timeout_over_consumer_timeout",
 ]

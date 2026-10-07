@@ -29,7 +29,7 @@ from swarmq.logging import _error_fields, get_logger, sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
-from swarmq.supervision import RecycleAckTimeout, current_channel
+from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout, current_channel
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
     WorkflowStepEnqueuer,
@@ -411,6 +411,9 @@ class WorkerLifecycle:
                 # KTD11: ohne Bestaetigung Exit != 0, damit der Supervisor den
                 # bestehenden Restart-Pfad nimmt statt den Slot zu verlieren.
                 raise RecycleAckTimeout("supervisor did not acknowledge the recycle request")
+            if (rejected := getattr(self, "_fork_source_rejected", None)) is not None:
+                # Schluss-Review: verworfene Kindquelle (compute.wiring) -> Exit 71.
+                raise ForkSourceRejected(f"compute fork source rejected: {rejected}")
         finally:
             await self._teardown_on_exit()
 

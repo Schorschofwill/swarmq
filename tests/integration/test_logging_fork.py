@@ -18,6 +18,12 @@ im Elternprozess und ein Alarm im Kind beenden haengende Prozesse mit Stack.
 #       Kindes kommen an.
 # - [x] Fork unter Schreiblast, 20 Runden: kein ``RuntimeError: reentrant
 #       call``, alle Zeilen aller Kinder in der Datei.
+# Schluss-Review (P1, Regression gegenueber main), ``multiprocessing.Queue``
+# als Queue des ``QueueHandler``:
+# - [ ] Kind per ``multiprocessing.Process`` (fork-Kontext) und per rohem
+#       ``os.fork``: Die Zeilen des Kindes kommen ueber den Listener des
+#       Elternprozesses an, der Elternprozess schreibt danach alle weiteren
+#       Zeilen, und sein Ende wartet nicht bis zur Frist.
 
 from __future__ import annotations
 
@@ -131,3 +137,104 @@ def test_forking_under_write_load_leaves_no_half_written_record(tmp_path: Path) 
     assert [code for _, code in children] == [0] * 20
     for pid, _ in children:
         assert _child_lines(lines, pid) == [f"{pid} child_line_{i}" for i in range(3)]
+
+
+_MP_DRAIN_TIMEOUT_S = 4.0
+"""Frist des Leerens im Skript; das Ende des Elternprozesses bleibt weit
+darunter."""
+
+# Kein ``faulthandler.dump_traceback_later`` wie oben: Das per ``os.fork``
+# geteilte Kind endet hier ueber den Interpreter, und dessen Ende wartete auf
+# den Watchdog-Thread des Elternprozesses, den es im Kind nicht gibt. Den
+# Stack liefert stattdessen ein Alarm (im Kind geerbt, mit eigener Frist).
+_MP_SCRIPT = f"""
+import faulthandler, json, logging, multiprocessing, os, signal, sys, threading, time, warnings
+warnings.simplefilter("ignore", DeprecationWarning)  # fork mit Threads (3.14)
+
+
+def on_alarm(*_):
+    faulthandler.dump_traceback(all_threads=True)
+    os._exit(3)
+
+
+signal.signal(signal.SIGALRM, on_alarm)
+signal.alarm({_HANG_DEADLINE_S})
+
+from swarmq.logging import configure_logging, shutdown_logging
+from swarmq.logging_settings import LoggingSettings
+
+log_file, mode = sys.argv[1], sys.argv[2]
+config = {{
+    "version": 1,
+    "formatters": {{"p": {{"format": "%(process)d %(message)s"}}}},
+    "handlers": {{
+        "file": {{"class": "logging.FileHandler", "filename": log_file, "formatter": "p"}},
+        "q": {{
+            "class": "logging.handlers.QueueHandler", "handlers": ["file"],
+            "queue": {{"()": "multiprocessing.Queue"}},
+        }},
+    }},
+    "root": {{"level": "INFO", "handlers": ["q"]}},
+}}
+configure_logging(LoggingSettings(
+    log_config="/never/read.json", log_config_json=json.dumps(config),
+    drain_timeout={_MP_DRAIN_TIMEOUT_S},
+))
+log = logging.getLogger("app")
+log.info("parent_before_fork")
+
+
+def child_body():
+    signal.alarm({_CHILD_DEADLINE_S})
+    for i in range(3):
+        log.info("child_line_%d", i)
+    # Ausser dem Feeder der Queue laeuft kein Thread: Ein Listener im Kind
+    # konkurrierte mit dem des Elternprozesses.
+    others = [t.name for t in threading.enumerate()
+              if t is not threading.main_thread() and t.name != "QueueFeederThread"]
+    if others:
+        print("listener in the child:", others, file=sys.stderr)
+        os._exit(4)
+
+
+if mode == "process":
+    child = multiprocessing.get_context("fork").Process(target=child_body)
+    child.start()
+    child.join()
+    pid, code = child.pid, child.exitcode
+else:
+    pid = os.fork()
+    if pid == 0:
+        child_body()
+        # Ende ueber den Interpreter: atexit leert den Feeder der Queue.
+        sys.exit(0)
+    _, status = os.waitpid(pid, 0)
+    code = os.waitstatus_to_exitcode(status)
+for i in range(5):
+    log.info("parent_after_child_%d", i)
+started = time.monotonic()
+shutdown_logging()
+print(json.dumps({{"child": [pid, code], "shutdown_s": time.monotonic() - started}}))
+"""
+
+
+@pytest.mark.parametrize("mode", ["process", "raw_fork"])
+def test_a_multiprocessing_queue_keeps_the_parent_listener_as_its_only_consumer(
+    tmp_path: Path, mode: str,
+) -> None:
+    log_file = tmp_path / "out.log"
+    proc = subprocess.run(
+        [sys.executable, "-c", _MP_SCRIPT, str(log_file), mode],
+        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 10,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    pid, code = result["child"]
+    assert code == 0
+    assert "log_drain_timeout_exceeded" not in proc.stderr
+    assert result["shutdown_s"] < _MP_DRAIN_TIMEOUT_S / 2
+    lines = log_file.read_text().splitlines()
+    assert _child_lines(lines, pid) == [f"{pid} child_line_{i}" for i in range(3)]
+    parent_lines = [line.split(" ", 1)[1] for line in lines if not line.startswith(f"{pid} ")]
+    assert parent_lines == ["parent_before_fork"] + [f"parent_after_child_{i}" for i in range(5)]

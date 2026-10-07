@@ -46,7 +46,11 @@ Exit `75` (`EX_TEMPFAIL`) ist intern: Ein Worker-Kind, das Recycling
 angefragt und keine Bestätigung bekommen hat, loggt
 `worker_recycle_ack_timeout` und endet damit, der Supervisor loggt
 `worker_recycle_noack` und startet es im Budget neu;
-den Aufrufer erreicht dieser Code nie.
+den Aufrufer erreicht dieser Code nie. Auch Exit `71` (`EX_OSERR`) ist
+intern: Ein CPU-Worker, dessen still neu gestarteter Forkserver verworfen
+wurde, hört auf zu konsumieren, loggt `compute_fork_source_rejected` und
+endet damit; der Supervisor loggt `worker_fork_source_rejected` und
+startet ihn im Budget mit frischem Forkserver neu.
 
 Für `swarmq worker` fügt Level `DEBUG` (`--log-level DEBUG` oder
 `SWARMQ_LOG_LEVEL=DEBUG`) den vollen Python-Traceback zu

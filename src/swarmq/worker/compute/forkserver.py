@@ -14,7 +14,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,14 @@ _PROC_ROOT = Path("/proc")
 #: Erstes Preload-Modul (U8, Plan 2026-10-06-1811 U6/KTD6): markiert den
 #: Forkserver als Fork-Quelle, bevor ein App-Modul importiert wird.
 PRELOAD_MODULE = "swarmq.worker.compute.preload"
+
+#: Umgebung des Forkservers, gesetzt von ``wiring.prepare_forkserver_env``,
+#: gelesen von ``preload`` -- die Umgebung ist der einzige Weg dorthin.
+#: Name des per ``python -m`` gestarteten Hauptmoduls (U8, KTD10).
+MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"
+#: ``"1"``, wenn swarmq das Logging der Kinder konfiguriert (Plan
+#: 2026-10-06-1811, U9, KTD9): Dann haengt der Preload den Sentinel an Root.
+SENTINEL_ENV = "SWARMQ_FORKSERVER_LOG_SENTINEL"
 
 #: Bibliotheken, die ueber OpenMP/BLAS eigene Threadpools aufspannen (R15).
 THREAD_LIMIT_VARS: tuple[str, ...] = (
@@ -57,6 +65,14 @@ class ComputeEnvironment:
     kept_from_operator: dict[str, str] = field(default_factory=dict)
 
 
+def ensure_forkserver_running() -> None:
+    """Startet einen toten Forkserver neu -- wie es ``Process.start`` sonst
+    still taete (``multiprocessing.forkserver.ensure_running``)."""
+    from multiprocessing import forkserver as _fs
+
+    _fs.ensure_running()
+
+
 @dataclass(slots=True)
 class ForkserverHandle:
     """Laufender Forkserver samt Kontext und Pruefergebnis."""
@@ -66,16 +82,21 @@ class ForkserverHandle:
     pid: int | None
     threads: int | None
     proc_root: Path = _PROC_ROOT
+    ensure_running: Callable[[], None] = ensure_forkserver_running
 
     def restarted(self) -> bool:
         """KTD4: hat ``ensure_running()`` den Forkserver still neu gestartet?
 
-        Vergleicht die aktuelle Forkserver-PID mit der beim Bootstrap
-        gemerkten. Ein Neustart fuehrt den Preload erneut aus; die
+        Startet einen toten Forkserver selbst neu, bevor der Pool das
+        naechste Kind forkt (Schluss-Review): ``Process.start`` holte das
+        sonst still nach, und das erste Kind des neuen Forkservers liefe
+        ungeprueft. Vergleicht dann die aktuelle Forkserver-PID mit der beim
+        Bootstrap gemerkten. Ein Neustart fuehrt den Preload erneut aus; die
         Thread-Pruefung laeuft dann erneut (Plan 2026-10-06-1811, KTD7).
         Mehr als ein Thread: ``forkserver_restarted_multithreaded`` und
         ``ForkSourceUnsafe``.
         """
+        self.ensure_running()
         current = forkserver_pid()
         if current is None or current == self.pid:
             return False
@@ -225,6 +246,7 @@ def start_forkserver(
     context_factory: Any = multiprocessing.get_context,
     available_methods: Sequence[str] | None = None,
     proc_root: Path = _PROC_ROOT,
+    ensure_running: Callable[[], None] = ensure_forkserver_running,
 ) -> ForkserverHandle:
     """Umgebung setzen, Forkserver mit Preload starten, aufwaermen, pruefen.
 
@@ -284,5 +306,6 @@ def start_forkserver(
         env_from_operator=env.kept_from_operator,
     )
     return ForkserverHandle(
-        context=ctx, preload=tuple(preload), pid=pid, threads=threads, proc_root=proc_root
+        context=ctx, preload=tuple(preload), pid=pid, threads=threads, proc_root=proc_root,
+        ensure_running=ensure_running,
     )

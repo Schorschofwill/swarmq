@@ -360,8 +360,13 @@ IO- und CPU-Pool folgen derselben Regel. Ein Worker-Subprozess richtet
 das Logging ein, **bevor** er dein Task-Modul importiert. Im CPU-Pool
 importiert der Forkserver deine Task-Module; vorher hängt er einen
 Platzhalter-Handler an den Root-Logger (er startet keinen Thread und
-gibt WARNING und höher an `lastResort` weiter), und jedes Rechenkind
-vergleicht beim Einrichten des Loggings mit ihm. Ändert dein Modul
+gibt WARNING und höher an `lastResort` weiter, wenn kein anderer Handler
+den Record bekommt), und jedes Rechenkind vergleicht beim Einrichten des
+Loggings mit ihm. Jeder vom Forkserver per Fork gestartete Prozess
+beginnt ohne den Platzhalter; Prozesse, die deine App selbst über den
+gemeinsamen Forkserver startet (etwa ein `ProcessPoolExecutor` mit der
+Standard-Startmethode `forkserver` unter Python 3.14), bekommen deshalb
+einen leeren Root-Logger, und `basicConfig` wirkt dort. Ändert dein Modul
 (oder ein `--configure`-Hook) das Logging, gewinnt deine App:
 
 - **Sie ersetzt die Root-Handler** (etwa mit einer eigenen `dictConfig`):
@@ -372,7 +377,8 @@ vergleicht beim Einrichten des Loggings mit ihm. Ändert dein Modul
   Anzahl steht im Feld `reenabled_loggers`.
 - **Sie fügt Handler** neben denen von SwarmQ **hinzu**: Beide schreiben,
   SwarmQ entfernt nichts und loggt `logging_handlers_added_by_app` als
-  WARNING mit den Handler-Typen.
+  WARNING mit den Handler-Typen. Eine im Rechenkind angewendete
+  `--log-config` schließt sie nicht.
 - **`logging.basicConfig(...)` in einem Task-Modul wirkt nicht** unter
   `swarmq worker`, in keinem der beiden Pools, weil der Root-Logger
   schon einen Handler hat. `--log-format`, `--log-level` und
@@ -485,7 +491,11 @@ Ist die Frist abgelaufen:
   sind, laufen dann nicht mehr. stdout und stderr werden vorher geleert,
   sofern das nicht blockiert — stdout nicht, wenn es dieselbe Datei
   oder Pipe ist wie der hängende Stream (etwa bei `2>&1` oder unter
-  journald).
+  journald). Endet der Befehl `swarmq` mit einer Ausnahme, geht ihr
+  Traceback (oder die Meldung eines `SystemExit`) vorher auf
+  Dateideskriptor 2, unter derselben Bedingung wie
+  `log_drain_timeout_exceeded` und gekürzt auf die letzten 4096 Bytes;
+  Strg-C endet mit `130`.
 - Eine App, die SwarmQ einbettet, wird nie hart beendet. Ist ihr stderr
   beim Prozessende noch blockiert, kann der Interpreter dort weiterhin
   hängen oder abbrechen; dieses Risiko bleibt.
@@ -511,9 +521,18 @@ mit den Queue-Handlern einer `--log-config`-Datei:
   Queue liegen, schreibt der Elternprozess, nicht noch einmal das Kind,
   und die Verluste des Elternprozesses werden nicht erneut gemeldet. Der
   Listener-Thread des Kindes startet mit seinem ersten Record.
-- `multiprocessing`-Queues und Queues anderer Klassen (etwa eine eigene
-  Unterklasse, per `"()"` in der Datei angelegt) bleiben unverändert;
-  SwarmQ erneuert nur `queue.Queue` und `queue.SimpleQueue`.
+- Eine `multiprocessing`-Queue (auch ein Proxy aus
+  `multiprocessing.managers`) bleibt mit dem Elternprozess geteilt: Das
+  Kind startet keinen eigenen Listener und reiht Records nur ein; sie
+  schreibt der Listener des Elternprozesses, der einzige Leser der
+  Queue. Unter rohem `os.fork()` startet SwarmQ den Feeder-Thread der
+  Queue im Kind neu. Ein Kind, das mit `os._exit()` endet, muss vorher
+  `queue.close()` und `queue.join_thread()` aufrufen (eine Regel von
+  `multiprocessing`), sonst gehen seine letzten Records verloren.
+- Queues anderer Klassen (etwa eine eigene Unterklasse, per `"()"` in
+  der Datei angelegt) bleiben unverändert, und der eigene Listener des
+  Kindes startet mit seinem ersten Record. SwarmQ erneuert nur
+  `queue.Queue` und `queue.SimpleQueue`.
 - Vor dem Fork wartet ein Hook insgesamt höchstens 50 ms auf
   Listener-Threads, die gerade schreiben; so erbt das Kind keinen halb
   geschriebenen Datensatz. Ein Ziel, das länger belegt ist, oder Code,
@@ -617,6 +636,8 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `hot_reload_enabled` | `swarmq.process_manager.supervisor` | WARNING | `--reload` ist aktiv (nur Entwicklung). Feld `watch_dirs`. |
 | `compute_pool_unhealthy` | `swarmq.worker.compute.pool` | ERROR | Kein Rechenkind nutzbar; `/ready` meldet den Pool als down. |
 | `forkserver_restarted_multithreaded` | `swarmq.worker.compute.forkserver` | ERROR | Ein still neu gestarteter Forkserver hat mehr als einen Thread; der Pool verwirft ihn und bleibt ungesund (`/ready`). Felder `pid`, `threads`, `thread_names`, `hint`. |
+| `compute_fork_source_rejected` | `swarmq.worker.compute.wiring` | ERROR | Nach diesem Verwerfen hört der Worker auf zu konsumieren und fährt herunter; ein Worker-Subprozess endet mit `71`. Felder `reason`, `hint`. |
+| `worker_fork_source_rejected` | `swarmq.process_manager.supervisor` | WARNING | Ein Worker-Kind endete mit `71`; es wird mit frischem Forkserver neu gestartet (im Neustart-Budget). Felder `worker_id`, `pid`, `exitcode`. |
 | `compute_child_unreaped` | `swarmq.worker.compute.pool` | ERROR | Ein Rechenkind hat SIGKILL überlebt; sein Slot bleibt gesperrt. Felder `slot`, `pid`, `reason`. |
 | `setpoint_applied` | `swarmq.process_manager.setpoint` | INFO | Kontrollkanal: neue Grenzen gelten. Felder `group`, `effective`. |
 | `setpoint_rejected` | `swarmq.process_manager.setpoint` | WARNING | Kontrollkanal: Sollwert abgelehnt, die bisherigen Grenzen bleiben. Felder `group`, `reason`. |

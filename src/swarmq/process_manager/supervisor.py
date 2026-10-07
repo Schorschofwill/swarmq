@@ -24,6 +24,7 @@ from swarmq.process_manager.reload import ReloadController, reexec
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
 from swarmq.supervision import (
+    FORK_SOURCE_REJECTED_EXIT_CODE,
     INTENT_DRAINING,
     INTENT_RECYCLE,
     RECYCLE_NOACK_EXIT_CODE,
@@ -618,14 +619,15 @@ class ProcessManager:
             self._maybe_restart(info)
 
     def _handle_exit_code(self, info: WorkerInfo, pid: int, exitcode: int | None) -> bool:
-        """Logsaetze zu den beiden benannten Exit-Codes; ``True`` = kein
-        Neustart (R20).
+        """Logsaetze zu den benannten Exit-Codes; ``True`` = kein Neustart
+        (R20).
 
         78: Ein Neustart wuerde denselben Konfigurationsfehler reproduzieren,
         also genau ein Startversuch. 75: Das Kind bekam seine
         Recycling-Bestaetigung nicht — Neustart wie bei jedem Absturz, aber
         mit eigenem Logsatz, sonst ist der Fall im Betrieb nicht von einem
-        Crash zu unterscheiden.
+        Crash zu unterscheiden. 71: Der CPU-Pool hat seine Kindquelle
+        verworfen -- ebenso, der Neustart bringt einen frischen Forkserver.
         """
         if exitcode == CONFIG_ERROR_EXIT_CODE:
             logger.error(
@@ -638,6 +640,8 @@ class ProcessManager:
             logger.warning(
                 "worker_recycle_noack", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
             )
+        if exitcode == FORK_SOURCE_REJECTED_EXIT_CODE:  # Schluss-Review: frischer Forkserver
+            logger.warning("worker_fork_source_rejected", worker_id=info.worker_id, pid=pid, exitcode=exitcode)
         return False
 
     # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)

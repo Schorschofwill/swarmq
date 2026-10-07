@@ -59,6 +59,23 @@ App-Import den Sentinel an Root, das Kind vergleicht nach der Regel von
         wieder ein und meldet die Zahl wie im Worker.
 24. [x] Ein ungestarteter ``QueueListener`` hinter einem App-Handler neben
         dem Sentinel wird ebenfalls gestartet; seine Kindzeilen kommen an (R13).
+Schluss-Review:
+25. [x] Sentinel, ``FileHandler(mode="w")`` der App daneben und ``log_config``:
+        Die dictConfig von swarmq schliesst den App-Handler nicht; er schreibt
+        die Kindzeilen weiter.
+26. [x] Ein per Fork entstandenes Kind der Fork-Quelle, das
+        ``configure_child_logging`` nie ruft (etwa ein eigener
+        ``ProcessPoolExecutor`` der App), beginnt ohne Sentinel an Root:
+        ``basicConfig`` der App wirkt dort.
+27. [x] Im per Fork entstandenen Kind unterscheidet ``configure_child_logging``
+        dieselben Faelle wie zuvor (nur Sentinel, App-Handler daneben, Sentinel
+        ersetzt), obwohl der Sentinel dort nicht mehr an Root haengt.
+28. [x] Der Sentinel gibt an ``lastResort`` nur weiter, wenn kein anderer
+        Handler den Record bekommt (wie die stdlib selbst): Ein App-Handler
+        an einem Nicht-Root-Logger fuehrt zu keiner zweiten Ausgabe.
+29. [x] ... die Opt-in-Queue am Logger ``swarmq`` zaehlt dabei nicht: Sie
+        reicht den Record im Forkserver selbst an die Root-Handler weiter
+        (Fund im Integrationstest).
 """
 
 from __future__ import annotations
@@ -80,6 +97,7 @@ import structlog
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.compute import child
 from swarmq.worker.compute.envelope import ComputeJob
+from tests.unit._fork_child import run_in_forked_child
 
 RECORDS: list[logging.LogRecord] = []
 """Ziel des ``CollectingHandler`` aus den dictConfig-Tests."""
@@ -696,3 +714,115 @@ def test_an_unstarted_app_queue_listener_next_to_the_sentinel_is_started(events:
     child.child_once(_job(log_json=True), _Channel(events), 0)
 
     assert "task_line t1" in [r.getMessage() for r in RECORDS]
+
+
+@pytest.mark.timeout(5)
+def test_the_log_config_of_the_job_does_not_close_an_app_handler_next_to_the_sentinel(
+    events: list[Any], tmp_path: Any,
+) -> None:
+    root = _sentinel_root()
+    _register_logging_task()
+    app_file = tmp_path / "app.log"
+    app_handler = logging.FileHandler(app_file, mode="w")  # beim Vorladen
+    root.addHandler(app_handler)
+
+    try:
+        child.child_once(_job(log_config="/does/not/exist.json", log_config_json=_FILE_CONFIG), _Channel(events), 0)
+        app_handler.flush()
+    finally:
+        app_handler.close()
+
+    assert [r.getMessage() for r in RECORDS] == ["task_line t1"]
+    assert app_file.read_text().splitlines() == ["task_line t1"]
+
+
+@pytest.mark.timeout(5)
+def test_a_forked_child_of_the_fork_source_starts_without_the_sentinel() -> None:
+    root = _sentinel_root()
+
+    def app_child() -> None:
+        assert root.handlers == []
+        logging.basicConfig(level=logging.INFO)
+        assert [type(h).__name__ for h in root.handlers] == ["StreamHandler"]
+
+    assert run_in_forked_child(app_child) == 0
+
+
+def _app_basicconfig() -> list[tuple[str, Any]]:
+    logging.basicConfig(level=logging.INFO, format="APPFMT|%(message)s")  # wirkungslos
+    return []
+
+
+def _app_adds_a_handler() -> list[tuple[str, Any]]:
+    logging.getLogger().addHandler(CollectingHandler())
+    return [("logging_handlers_added_by_app", {"handler_types": ["CollectingHandler"]})]
+
+
+def _app_replaces_root() -> list[tuple[str, Any]]:
+    _app_dictconfig({"collect": {"()": _COLLECTING}}, ["collect"])
+    return [("logging_reconfigured_by_app", {"reenabled_loggers": 0})]
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    "preload", [_app_basicconfig, _app_adds_a_handler, _app_replaces_root],
+    ids=["only-sentinel", "handler-next-to-it", "sentinel-replaced"],
+)
+def test_the_forked_compute_child_tells_the_same_cases_apart(preload: Any) -> None:
+    from swarmq.logging import configure_child_logging
+    from swarmq.logging_settings import LoggingSettings
+
+    _sentinel_root()
+    expected = preload()  # im Forkserver, vor dem Fork
+
+    def compute_child() -> None:
+        assert configure_child_logging(LoggingSettings()) == expected
+
+    assert run_in_forked_child(compute_child) == 0
+
+
+class _LastResort(logging.Handler):
+    """Ersatz fuer ``logging.lastResort``: sammelt die Meldungen."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@pytest.mark.timeout(5)
+def test_the_sentinel_forwards_to_last_resort_only_without_another_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    last_resort = _LastResort()
+    monkeypatch.setattr(logging, "lastResort", last_resort)
+    _sentinel_root()  # im Forkserver
+    handled = logging.getLogger("app.handled_u9")
+    monkeypatch.setattr(handled, "handlers", [CollectingHandler()])
+
+    handled.warning("evt_app_handler")
+    logging.getLogger("app.unhandled_u9").warning("evt_nobody")
+
+    assert [r.getMessage() for r in RECORDS] == ["evt_app_handler"]
+    assert last_resort.messages == ["evt_nobody"]
+
+
+@pytest.mark.timeout(5)
+def test_the_sentinel_still_forwards_a_record_relayed_by_the_opt_in_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging import _disable_log_queue, _enable_log_queue
+
+    last_resort = _LastResort()
+    monkeypatch.setattr(logging, "lastResort", last_resort)
+    monkeypatch.setattr("swarmq.logging_queue._IN_FORK_SOURCE", True)  # im Forkserver
+    _sentinel_root()
+    _enable_log_queue("INFO")
+    try:
+        logging.getLogger("swarmq.tests.sentinel_optin").warning("evt_optin")
+    finally:
+        _disable_log_queue()
+
+    assert last_resort.messages == ["evt_optin"]

@@ -117,6 +117,7 @@ class SlotPool:
         on_recycle: RecycleHook | None = None,
         progress_sink: ProgressSink | None = None,
         restart_check: Callable[[], bool] | None = None,
+        on_source_rejected: Callable[[str], None] | None = None,
     ) -> None:
         if slots < 1:
             raise ValueError("slots must be >= 1")
@@ -132,6 +133,7 @@ class SlotPool:
         self._on_recycle = on_recycle
         self._progress_sink = progress_sink
         self._restart_check = restart_check
+        self._on_source_rejected = on_source_rejected
         self._rejected_source: str | None = None  # KTD7: unsichere Kindquelle, endgueltig
         self._slots = [_Slot(index=i) for i in range(slots)]
         self._free: asyncio.Queue[int] | None = None
@@ -256,13 +258,17 @@ class SlotPool:
     def _check_fork_source(self, index: int) -> None:
         """KTD4: still neu gestarteter Forkserver? Ist er mehrfaedig
         (Plan 2026-10-06-1811, KTD7), verwirft der Pool die Kindquelle
-        endgueltig: ``SlotUnavailable`` und ``/ready`` meldet den Ausfall."""
+        endgueltig: ``SlotUnavailable``, ``/ready`` meldet den Ausfall, und
+        ``on_source_rejected`` erfaehrt es einmal -- der Worker hoert dann
+        auf zu konsumieren (Schluss-Review)."""
         if self._rejected_source is None and self._restart_check is not None:
             try:
                 if self._restart_check():
                     logger.warning("forkserver_restarted_before_dispatch", slot=index)
             except ForkSourceUnsafe as exc:
                 self._rejected_source = str(exc)
+                if self._on_source_rejected is not None:
+                    self._on_source_rejected(self._rejected_source)
         if self._rejected_source is not None:
             raise SlotUnavailable(f"compute fork source rejected: {self._rejected_source}")
 
@@ -348,6 +354,18 @@ class SlotPool:
             with contextlib.suppress(Exception):
                 c.close()
         child.pid = process.pid
+        try:
+            # Schluss-Review: ``process.start()`` startet einen toten
+            # Forkserver still neu. Ist der neue unsicher, bekommt das eben
+            # geforkte Kind keine Arbeit.
+            self._check_fork_source(slot.index)
+        except SlotUnavailable:
+            await self._kill_child(child, reason="fork_source_rejected", by_pid_only=True)
+            for c in (conn, job_conn):
+                if c is not None:
+                    with contextlib.suppress(Exception):
+                        c.close()
+            raise
         self._children[process.pid] = child
         self.stats.started += 1
         reader = threading.Thread(

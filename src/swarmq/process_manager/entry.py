@@ -22,8 +22,10 @@ from swarmq.supervision import (
     CONFIG_ERROR_EXIT_CODE as _CONFIG_ERROR_EXIT_CODE,
 )
 from swarmq.supervision import (
+    FORK_SOURCE_REJECTED_EXIT_CODE,
     RECYCLE_NOACK_EXIT_CODE,
     SHUTDOWN_TERM_S,
+    ForkSourceRejected,
     RecycleAckTimeout,
     SupervisorChannel,
     set_current_channel,
@@ -199,6 +201,11 @@ def worker_subprocess_entry(
             error=f"{type(exc).__name__}: {exc}",
         )
         raise SystemExit(RECYCLE_NOACK_EXIT_CODE) from None
+    except ForkSourceRejected:
+        # Schluss-Review: Der Worker hat aufgehoert zu konsumieren und ist
+        # geordnet beendet; ``compute_fork_source_rejected`` (ERROR) steht
+        # schon im Log. Der Supervisor startet ihn mit frischem Forkserver neu.
+        raise SystemExit(FORK_SOURCE_REJECTED_EXIT_CODE) from None
     except (ConfigurationError, ModuleNotFoundError) as exc:
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
         # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code

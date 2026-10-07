@@ -491,16 +491,17 @@ def console_main(argv: Sequence[str] | None = None) -> int:
     2026-10-06-1811, KTD3), endet der Prozess hart mit dem Exit-Code von
     ``main`` -- die Finalisierung bricht sonst ab (Exit 134) oder haengt.
     Wirft ``main``, gilt der Code, mit dem die Ausnahme den Prozess beendet
-    haette (``exit_code_for``, wie im Worker-Subprozess); sonst wird sie
-    weitergeworfen. ``main`` selbst bleibt ohne hartes Ende: Tests und
-    Aufrufer im Prozess rufen es direkt.
+    haette (``exit_code_for``, wie im Worker-Subprozess), und das harte Ende
+    gibt sie vorher auf fd 2 aus; sonst wird sie weitergeworfen. ``main``
+    selbst bleibt ohne hartes Ende: Tests und Aufrufer im Prozess rufen es
+    direkt.
     """
     from swarmq.logging_drain import exit_code_for, exit_if_log_thread_stuck
 
     try:
         code = main(argv)
     except BaseException as exc:
-        exit_if_log_thread_stuck(exit_code_for(exc))
+        exit_if_log_thread_stuck(exit_code_for(exc), exc)
         raise
     exit_if_log_thread_stuck(code)
     return code

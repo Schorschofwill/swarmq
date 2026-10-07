@@ -7,7 +7,9 @@ import json as jsonlib
 import logging
 import logging.config
 import logging.handlers
+import os
 import sys
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -19,7 +21,13 @@ from swarmq.logging_file import iter_loggers, start_queue_listeners
 from swarmq.logging_file import load_log_config as load_log_config
 from swarmq.logging_format import build_formatter as build_formatter
 from swarmq.logging_queue import LISTENER_THREAD_NAME as LISTENER_THREAD_NAME
-from swarmq.logging_queue import _activate_swarmq_queue_after_app_takeover, _LogQueue, _reset_log_queue, _stop_listeners
+from swarmq.logging_queue import (
+    _activate_swarmq_queue_after_app_takeover,
+    _LogQueue,
+    _OptinQueueHandler,
+    _reset_log_queue,
+    _stop_listeners,
+)
 from swarmq.logging_queue import _await_log_queue_drained as _await_log_queue_drained
 from swarmq.logging_queue import _disable_log_queue as _disable_log_queue
 from swarmq.logging_queue import _enable_log_queue as _enable_log_queue
@@ -43,15 +51,31 @@ class _ForkSourceSentinel(logging.Handler):
     vor dem App-Import einrichtet. Ohne Thread (KTD6).
 
     Kein reiner NullHandler: Records ab ``logging.lastResort.level`` gibt er
-    an ``logging.lastResort`` weiter. Warnungen aus dem Forkserver und aus
-    dem Kind vor ``configure_child_logging`` bleiben so sichtbar -- genau
-    einmal, denn mit einem Handler an Root greift ``lastResort`` selbst nicht.
+    an ``logging.lastResort`` weiter. Warnungen aus dem Forkserver bleiben so
+    sichtbar -- genau einmal: Mit einem Handler an Root greift ``lastResort``
+    selbst nicht. Ein per Fork entstandenes Kind beginnt ohne Sentinel
+    (:func:`_detach_fork_source_sentinel`).
+    Weitergegeben wird wie in der stdlib nur, wenn kein anderer Handler auf
+    dem Weg des Records liegt (Schluss-Review).
     """
 
     def emit(self, record: logging.LogRecord) -> None:
         last = logging.lastResort
-        if last is not None and record.levelno >= last.level:
+        if last is not None and record.levelno >= last.level and not self._others_on_path(record):
             last.handle(record)
+
+    def _others_on_path(self, record: logging.LogRecord) -> bool:
+        """Faende ``Logger.callHandlers`` ohne den Sentinel einen Handler?
+        Die Opt-in-Queue zaehlt nicht: Sie reicht den Record selbst an die
+        Root-Handler weiter, also an diesen Sentinel."""
+        current: Any = logging.Logger.manager.loggerDict.get(record.name)
+        if not isinstance(current, logging.Logger):
+            current = logging.getLogger()
+        while current is not None:
+            if any(h is not self and not isinstance(h, _OptinQueueHandler) for h in current.handlers):
+                return True
+            current = current.parent if current.propagate else None
+        return False
 
 
 def install_fork_source_sentinel() -> None:
@@ -72,6 +96,28 @@ _FORK_SOURCE_SENTINEL: _ForkSourceSentinel | None = None
 """Der vom Forkserver geerbte Sentinel; ``configure_child_logging`` vergleicht
 mit ihm wie ``react_to_app_logging`` mit dem Schnappschuss vor dem App-Import.
 Auch dann bekannt, wenn die App ihn von Root entfernt hat."""
+
+
+_SENTINEL_DETACHED_AT_FORK = False
+"""Hing der Sentinel beim Fork an Root? Im Kind hat ihn der Fork-Hook
+abgehaengt; ``configure_child_logging`` wertet das wie seine Anwesenheit."""
+
+
+def _detach_fork_source_sentinel() -> None:
+    """``after_in_child`` (Schluss-Review): Jedes per Fork entstandene Kind
+    der Fork-Quelle beginnt ohne Sentinel an Root -- auch eines, das die App
+    selbst vom gemeinsamen Forkserver holt (``ProcessPoolExecutor``) und das
+    ``configure_child_logging`` nie ruft. Dort wirkt ``basicConfig`` wieder.
+    Ob er an Root hing, merkt sich das Kind fuer ``configure_child_logging``."""
+    global _SENTINEL_DETACHED_AT_FORK
+    sentinel = _FORK_SOURCE_SENTINEL
+    root = logging.getLogger()
+    if sentinel is not None and sentinel in root.handlers:
+        root.removeHandler(sentinel)
+        _SENTINEL_DETACHED_AT_FORK = True
+
+
+os.register_at_fork(after_in_child=_detach_fork_source_sentinel)
 
 
 def root_handler_snapshot() -> tuple[logging.Handler, ...]:
@@ -134,12 +180,16 @@ def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[s
     Liefert die Meldungen ``(event, felder)``. Sie schreibt nicht das Kind,
     sondern der Pool, einmal je Pool statt einmal je Kind.
     """
-    global _FORK_SOURCE_SENTINEL
+    global _FORK_SOURCE_SENTINEL, _SENTINEL_DETACHED_AT_FORK
     _queue_core.set_drain_timeout(settings.drain_timeout)
     sentinel, _FORK_SOURCE_SENTINEL = _FORK_SOURCE_SENTINEL, None
+    detached, _SENTINEL_DETACHED_AT_FORK = _SENTINEL_DETACHED_AT_FORK, False
     root = logging.getLogger()
     if sentinel is not None:
-        replaced, added = _app_changes((sentinel,), tuple(root.handlers))
+        # Im per Fork entstandenen Kind hat der Fork-Hook den Sentinel schon
+        # abgehaengt; hing er dort, zaehlt das wie seine Anwesenheit.
+        current = (sentinel, *root.handlers) if detached else tuple(root.handlers)
+        replaced, added = _app_changes((sentinel,), current)
         root.removeHandler(sentinel)
         if not replaced:
             return _configure_next_to_app_handlers(settings, added)
@@ -172,7 +222,8 @@ def _configure_next_to_app_handlers(
     root = logging.getLogger()
     for handler in added:
         root.removeHandler(handler)
-    configure_logging(settings)
+    with _hidden_from_dictconfig(added):
+        configure_logging(settings)
     for handler in added:
         root.addHandler(handler)
     if not settings.configure:
@@ -185,6 +236,26 @@ def _configure_next_to_app_handlers(
     if added:
         reports.append(("logging_handlers_added_by_app", {"handler_types": [type(h).__name__ for h in added]}))
     return reports
+
+
+@contextlib.contextmanager
+def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Iterator[None]:
+    """Nimmt ``handlers`` voruebergehend aus ``logging._handlerList``
+    (Schluss-Review): Eine ``dictConfig`` schliesst sonst jeden bekannten
+    Handler (``_clearExistingHandlers``), auch die eben abgehaengten der App.
+    Ein ``FileHandler(mode="w")`` oeffnete danach nie wieder, ein Handler mit
+    Hintergrund-Thread waere gestoppt. Danach stehen sie wieder in der Liste,
+    damit ``logging.shutdown`` sie bei Prozessende leert."""
+    lock = logging._lock  # type: ignore[attr-defined]
+    with lock:
+        refs = logging._handlerList  # type: ignore[attr-defined]
+        hidden = [ref for ref in refs if ref() in handlers]
+        refs[:] = [ref for ref in refs if ref not in hidden]
+    try:
+        yield
+    finally:
+        with lock:
+            logging._handlerList.extend(hidden)  # type: ignore[attr-defined]
 
 
 def _start_app_queue_listeners() -> None:

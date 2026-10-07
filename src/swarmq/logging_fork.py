@@ -12,6 +12,7 @@ nach dem Fork.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -21,8 +22,18 @@ LOCK_BUDGET_S = 0.05
 """So lange wartet der ``before``-Hook hoechstens auf die Locks: Ein Fork
 haengt nie an einem langsamen oder blockierten Ziel."""
 
-_HELD: list[Any] = []
-"""Die vom ``before``-Hook erworbenen Locks, in Erwerbsreihenfolge."""
+_HELD = threading.local()
+"""Je Thread die vom ``before``-Hook erworbenen Locks, in Erwerbsreihenfolge
+(``locks``): Forken zwei Threads gleichzeitig, gibt das ``after_in_parent``
+des einen nie die Locks des anderen frei (Schluss-Review)."""
+
+
+def _held() -> list[Any]:
+    """Die Liste des aufrufenden Threads; beim ersten Zugriff angelegt."""
+    locks: list[Any] | None = getattr(_HELD, "locks", None)
+    if locks is None:
+        locks = _HELD.locks = []
+    return locks
 
 
 def hold_handler_locks(handlers: Iterable[logging.Handler]) -> None:
@@ -42,16 +53,19 @@ def hold_handler_locks(handlers: Iterable[logging.Handler]) -> None:
     module_lock = logging._lock  # type: ignore[attr-defined]
     if not module_lock.acquire(timeout=deadline.remaining()):
         return
-    _HELD.append(module_lock)
+    held = _held()
+    held.append(module_lock)
     for lock in locks:
         if lock.acquire(timeout=deadline.remaining()):
-            _HELD.append(lock)
+            held.append(lock)
 
 
 def release_handler_locks() -> None:
-    """``after_in_parent``: gibt die erworbenen Locks wieder frei."""
-    while _HELD:
-        _HELD.pop().release()
+    """``after_in_parent``: gibt die Locks frei, die der ``before``-Hook
+    dieses Threads erworben hat."""
+    held = _held()
+    while held:
+        held.pop().release()
 
 
 def forget_handler_locks() -> None:
@@ -59,5 +73,6 @@ def forget_handler_locks() -> None:
     Locks aller Handler selbst zurueck (``_after_at_fork_child_reinit_locks``,
     vor diesem Hook registriert und daher zuerst ausgefuehrt). Freizugeben
     bleibt nichts; ein ``release`` wuerfe ``RuntimeError``. Nur die Liste
-    wird geleert, sonst gaebe ein weiterer Fork aus dem Kind sie frei."""
-    _HELD.clear()
+    des forkenden -- im Kind einzigen -- Threads wird geleert, sonst gaebe
+    ein weiterer Fork aus dem Kind sie frei."""
+    _held().clear()

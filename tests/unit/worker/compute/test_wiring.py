@@ -8,6 +8,12 @@ Plan 2026-10-06-1811, U9 (KTD9):
 Plan 2026-10-06-1811, U10 (KTD7):
 - [x] Der ``/ready``-Grund eines ungesunden Pools nennt auch eine verworfene
   Kindquelle (``forkserver_restarted_multithreaded``).
+
+Schluss-Review (Abweichung vom Plan, freigegeben):
+- [x] Verwirft der Pool die Kindquelle, hoert der Worker auf zu konsumieren:
+  ERROR-Event ``compute_fork_source_rejected`` und geordneter Shutdown;
+  ``Worker.start`` wirft danach ``ForkSourceRejected`` (tests/unit/worker/
+  test_worker.py), der Worker-Subprozess endet mit 71.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ from swarmq.signals import Signal
 from swarmq.task import TaskInfo
 from swarmq.worker.compute import wiring
 from swarmq.worker.compute.executor import ComputeExecutor
-from swarmq.worker.compute.forkserver import ForkserverHandle
+from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV, ForkserverHandle
 
 
 class _T:
@@ -116,6 +122,7 @@ async def test_forkserver_ready_reports_running_and_dead(monkeypatch, tmp_path):
     assert await wiring.forkserver_ready(w, proc_root=tmp_path) == (True, None)
 
 
+@pytest.mark.timeout(5)
 async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
@@ -129,6 +136,7 @@ async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path)
     assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)
 
 
+@pytest.mark.timeout(5)
 async def test_forkserver_ready_names_a_rejected_fork_source_as_a_cause(monkeypatch, tmp_path):
     """Plan 2026-10-06-1811, KTD7: Ein still neu gestarteter, mehrfaediger
     Forkserver macht den Pool dauerhaft ungesund; der ``/ready``-Grund nennt
@@ -168,11 +176,11 @@ async def test_cpu_pool_sets_main_module_env_before_forkserver_start(monkeypatch
     fake_main = ModuleType("pkg.mod")
     fake_main.__spec__ = importlib.machinery.ModuleSpec("pkg.mod", None)
     monkeypatch.setitem(sys.modules, "__main__", fake_main)  # wie bei ``python -m pkg.mod``
-    monkeypatch.delenv("SWARMQ_MAIN_MODULE", raising=False)
+    monkeypatch.delenv(MAIN_MODULE_ENV, raising=False)
     seen: dict[str, object] = {}
 
     def fake_start(preload, **kw):
-        seen["env"], seen["preload"] = os.environ.get("SWARMQ_MAIN_MODULE"), preload
+        seen["env"], seen["preload"] = os.environ.get(MAIN_MODULE_ENV), preload
         return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
@@ -201,14 +209,41 @@ def test_preload_list_never_contains_the_configure_hook():
 async def test_cpu_pool_passes_the_configure_setting_to_the_forkserver(monkeypatch, configure, expected):
     import os
 
-    monkeypatch.delenv("SWARMQ_FORKSERVER_LOG_SENTINEL", raising=False)
+    monkeypatch.delenv(SENTINEL_ENV, raising=False)
     seen: dict[str, object] = {}
 
     def fake_start(preload, **kw):
-        seen["env"] = os.environ.get("SWARMQ_FORKSERVER_LOG_SENTINEL")
+        seen["env"] = os.environ.get(SENTINEL_ENV)
         return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
     monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
     await wiring.start_compute_executor(_worker(configure_logging=configure))
     assert seen["env"] == expected
+
+
+@pytest.mark.timeout(5)
+async def test_a_rejected_fork_source_stops_the_worker(monkeypatch, swarmq_logs):
+    from swarmq.worker.compute.envelope import ComputeJob
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+    from swarmq.worker.compute.pool import SlotUnavailable
+
+    def restarted() -> bool:
+        raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+
+    handle = SimpleNamespace(context=MagicMock(), pid=42, restarted=restarted)
+    monkeypatch.setattr(wiring, "start_forkserver", lambda preload, **kw: handle)
+    w = _worker()
+    w._request_shutdown = MagicMock()
+    executor = await wiring.start_compute_executor(w)
+    assert executor is not None
+    job = ComputeJob(task_id="t1", task_name="t", queue="q", args=(), kwargs={})
+
+    with pytest.raises(SlotUnavailable):
+        await executor._pool.run(job, use_di=False)
+
+    w._request_shutdown.assert_called_once_with()
+    [entry] = [e for e in swarmq_logs if e["event"] == "compute_fork_source_rejected"]
+    assert entry["log_level"] == "error"
+    assert "2 threads" in entry["reason"]
+    await wiring.close_compute_executor(w)

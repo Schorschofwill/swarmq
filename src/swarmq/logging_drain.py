@@ -12,9 +12,11 @@ import json as jsonlib
 import logging
 import os
 import select
+import signal
 import sys
 import threading
 import time
+import traceback
 import weakref
 from collections.abc import Iterable
 
@@ -60,12 +62,21 @@ def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
             f"swarmq: log_drain_timeout_exceeded — {count} log record(s) not written "
             f"within {timeout:g} s, counted as dropped"
         )
-    data = (line + "\n").encode("utf-8", "replace")
+    _write_fd2_if_free((line + "\n").encode("utf-8", "replace"))
+
+
+def _write_fd2_if_free(data: bytes) -> bool:
+    """Schreibt ``data`` per ``os.write`` auf fd 2, wenn das nicht blockiert:
+    hoechstens ``PIPE_BUF`` Bytes (ein Schreibvorgang) und nur, wenn ``poll``
+    fd 2 sofort als beschreibbar meldet. ``False``, wenn nichts geschrieben
+    wurde."""
     try:
         if _writable_now(2) and len(data) <= select.PIPE_BUF:
             os.write(2, data)
+            return True
     except OSError:
-        pass  # fd 2 geschlossen oder Leser weg: es bleibt beim Zaehler
+        pass  # fd 2 geschlossen oder Leser weg
+    return False
 
 
 _ABANDONED: list[threading.Thread] = []
@@ -141,9 +152,15 @@ def _forget(handlers: set[logging.Handler]) -> None:
         ]
 
 
-def exit_if_log_thread_stuck(code: int) -> None:
+def exit_if_log_thread_stuck(code: int, exc: BaseException | None = None) -> None:
     """Beendet den Prozess hart mit ``code``, wenn nach dem Leeren noch ein
     aufgegebener Listener-Thread lebt (Plan 2026-10-06-1811, KTD3).
+
+    ``exc`` ist die Ausnahme, an der der Prozess endet: Ihre Ausgabe -- der
+    Traceback, beim ``SystemExit`` dessen Text -- stuende sonst erst in der
+    Finalisierung an, die das harte Ende ueberspringt. Sie geht vorher wie
+    :func:`write_drain_notice` auf fd 2, gekuerzt auf ``PIPE_BUF`` Bytes
+    (Schluss-Review).
 
     Nur fuer Prozesse, die swarmq selbst startet (CLI und Supervisor,
     Worker-Subprozess, Compute-Kind), als letzter Schritt nach den eigenen
@@ -160,7 +177,27 @@ def exit_if_log_thread_stuck(code: int) -> None:
         if _flushable(stream):
             with contextlib.suppress(Exception):
                 stream.flush()
+    if exc is not None and (report := _exit_report(exc)):
+        _write_fd2_if_free(report)
     _hard_exit(code)
+
+
+_TRUNCATED = b"[...]\n"
+
+
+def _exit_report(exc: BaseException) -> bytes:
+    """Was der Interpreter beim Ende an ``exc`` ausgaebe, als Bytes fuer
+    einen Schreibvorgang: der Text eines ``SystemExit`` (nichts bei einem
+    Code), sonst der Traceback. Zu Langes verliert den Anfang -- die letzte
+    Zeile nennt die Ausnahme."""
+    if isinstance(exc, SystemExit):
+        text = "" if exc.code is None or isinstance(exc.code, int) else f"{exc.code}\n"
+    else:
+        text = "".join(traceback.format_exception(exc))
+    data = text.encode("utf-8", "replace")
+    if len(data) > select.PIPE_BUF:
+        data = _TRUNCATED + data[-(select.PIPE_BUF - len(_TRUNCATED)):]
+    return data
 
 
 def _flushable(stream: object) -> bool:
@@ -197,9 +234,12 @@ _hard_exit = os._exit
 def exit_code_for(exc: BaseException | None) -> int:
     """Der Exit-Code, mit dem der Prozess ohne hartes Ende geendet haette:
     0 ohne Ausnahme, der Code eines ``SystemExit`` wie in
-    ``multiprocessing``, sonst 1."""
+    ``multiprocessing``, 130 (128 + SIGINT) fuer ``KeyboardInterrupt`` wie
+    beim Ende des Interpreters durch Strg-C, sonst 1."""
     if exc is None:
         return 0
+    if isinstance(exc, KeyboardInterrupt):
+        return 128 + signal.SIGINT
     if isinstance(exc, SystemExit):
         if exc.code is None:
             return 0
