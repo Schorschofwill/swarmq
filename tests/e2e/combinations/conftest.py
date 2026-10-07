@@ -35,9 +35,11 @@ _TOXIPROXY_PORT = int(
     os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)),
 )
 
-# Proxy listen ports — must match docker-compose.chaos.yml.
-_RMQ_PROXY_PORT = 5673
-_VALKEY_PROXY_PORT = 6380
+# Proxy listen ports — defaults match docker-compose.chaos.yml. The env
+# override lets a standalone Toxiproxy (``--network host``) listen next to
+# the test containers on 5699/6399 when 5673/6380 are taken on the host.
+_RMQ_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", "5673"))
+_VALKEY_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_VALKEY_PORT", "6380"))
 
 # Upstream service names — must match the docker network. The values default
 # to docker-compose service names; env override lets a non-compose harness

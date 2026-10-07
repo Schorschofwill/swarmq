@@ -23,12 +23,14 @@ sequence, retry logic):
       sequence?
 
   Combo 19 — broker-reconnect mid-publish + at-most-once delivery (Tier 2):
-      Toxiproxy drops the RabbitMQ connection during publish.  At-most-once
-      tasks must be dropped; FAF-4 invariants must hold.
+      Toxiproxy drops the RabbitMQ connection during publish.  The publish
+      fails loudly (``PublishIndeterminate``) and is not re-sent, so the task
+      runs at most once; the at-least-once variants keep FAF-4.
 
   Combo 20 — backend-down + result-store (Tier 2):
-      Toxiproxy drops the Valkey connection during result storage.  The task
-      must emit TASK_FAILED; retry brings it back after the backend recovers.
+      Toxiproxy drops the Valkey connection during result storage.  The ack
+      is withheld and the message redelivered (no TASK_FAILED — run()
+      succeeded); the rerun stores the result after the backend recovers.
 
 Each class follows the same structure:
   test_happy_path       — both features work together (Tier 1, unmarked)
@@ -60,7 +62,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import NoRetry
+from swarmq.exceptions import BackendConnectionError, NoRetry, PublishIndeterminate
 from swarmq.middleware import MessageContext, Middleware
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
@@ -1035,10 +1037,10 @@ class TestBrokerReconnectAtMostOnceCombo:
     RabbitMQ connection via a ``timeout`` toxic during the publish phase and
     verify that at-most-once delivery semantics are respected.
 
-    Assumption: at-most-once tasks are published without a persistent flag
-    (``delivery_mode=1`` / transient).  If the broker drops the connection
-    before the publish-confirm is received, the task is NOT re-sent (the
-    caller gets a connection error, not a retry).
+    Publishes are the same for every delivery mode (persistent, with
+    publisher confirm).  If the confirm does not arrive within
+    ``publish_timeout_s``, the caller gets ``PublishIndeterminate`` and the
+    task is NOT re-sent (a connection error, not a retry).
     """
 
     async def test_happy_path(
@@ -1074,24 +1076,31 @@ class TestBrokerReconnectAtMostOnceCombo:
     async def test_at_most_once_drops_message_on_broker_drop(
         self,
         toxiproxy: Any,
+        rabbitmq_url: str,
         rabbitmq_proxied_url: str,
         valkey_url: str,
     ) -> None:
-        """Toxiproxy drops the RabbitMQ connection during the publish attempt.
+        """Toxiproxy blackholes the publisher's RabbitMQ connection while
+        ``schedule()`` waits for the publisher confirm.
 
-        At-most-once: the publisher should see a connection error.  The task
-        must NOT be silently re-enqueued after reconnect.  FAF-4 invariants
-        are verified: no silent drop of an in-flight message.
+        Documented contract (``SWARMQ_PUBLISH_TIMEOUT_S`` in the configuration
+        reference, ``PublishIndeterminate`` in the errors reference): the
+        publish gives up after ``publish_timeout_s`` with
+        ``PublishIndeterminate`` instead of hanging, and the caller learns
+        about it — no silent drop.  The publisher does not re-send on its own
+        after the connection heals, so the task runs at most once.
 
-        Implementation note: we inject the toxic BEFORE schedule() so the
-        connection drop hits during the publish handshake.  After removing
-        the toxic (healing), no task should arrive at the worker because the
-        publisher gave up.
+        Only the producer goes through the proxy; the worker consumes over the
+        direct connection so the drop hits exactly the publish path.  A
+        sentinel task on the same queue (worker concurrency 1, FIFO) proves
+        that the worker has drained everything published before it — if the
+        dropped publish had reached the broker, its task would have run first.
         """
         queue = _uq("broker-amo")
         task_name = _task_name("broker_amo")
+        sentinel_name = _task_name("broker_amo_sentinel")
         run_count = 0
-        run_event = asyncio.Event()
+        sentinel_done = asyncio.Event()
 
         class AtMostOnceTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
@@ -1099,50 +1108,43 @@ class TestBrokerReconnectAtMostOnceCombo:
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
-                run_event.set()
                 return val
 
+        class SentinelTask(Task):
+            task_info = TaskInfo(name=sentinel_name, queues=[queue])
+
+            async def run(self) -> None:
+                sentinel_done.set()
+
+        # Short publish deadline: the default of 120 s would outlive the
+        # test timeout; the contract is the same for any value.
         broker = RabbitMQBroker(rabbitmq_proxied_url)
         backend = ValkeyBackend(valkey_url)
-        app = SwarmQ(broker, backend, queues=[queue])
+        app = SwarmQ(broker, backend, queues=[queue], publish_timeout_s=2.0)
+        direct_broker = RabbitMQBroker(rabbitmq_url)
+        direct_backend = ValkeyBackend(valkey_url)
+        direct_app = SwarmQ(direct_broker, direct_backend, queues=[queue])
 
-        async with app:
-            await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
-                # Inject a timeout toxic to cut the broker connection.
+        async with app, direct_app:
+            await direct_broker.declare_queue(queue)
+            async with _running_worker(rabbitmq_url, valkey_url, queue, concurrency=1):
                 toxic_name = await toxiproxy.add_toxic(
                     "rabbitmq",
                     "timeout",
                     attributes={"timeout": 0},
                     stream="upstream",
                 )
-                # Attempt publish while connection is broken.
-                publish_error: Exception | None = None
                 try:
-                    await app.schedule(task_name, 99)
-                except Exception as exc:
-                    publish_error = exc
+                    with pytest.raises(PublishIndeterminate):
+                        await app.schedule(task_name, 99)
+                finally:
+                    await toxiproxy.remove_toxic("rabbitmq", toxic_name)
 
-                # Heal the connection.
-                await toxiproxy.remove_toxic("rabbitmq", toxic_name)
-                await asyncio.sleep(1.5)  # wait for reconnect window
+                await direct_app.schedule(sentinel_name)
+                await asyncio.wait_for(sentinel_done.wait(), timeout=10.0)
 
-        # At-most-once: if publish failed, the task must not have run.
-        # If it somehow succeeded (publisher retried internally), run_count == 1
-        # is acceptable but the FAF-4 invariant still holds.
-        obs = FAFStageObservation(
-            stage_executed=run_count > 0,
-            nacked_with_requeue=False,  # at-most-once: no requeue on drop
-            silently_dropped=run_count == 0 and publish_error is None,
-            requeue_count=0,
-        )
-        # At-most-once: silently_dropped is acceptable (message can be lost).
-        # The invariant we care about is: no unbounded requeue storm.
-        assert_faf_stage_invariants(
-            obs,
-            scenario_kind="broker_drop",
-            max_requeues=1,  # at-most-once allows 0 or 1 delivery
-        )
+        # At most once: the publisher gave up and did not re-send.
+        assert run_count <= 1, f"at-most-once violated: task ran {run_count} times"
 
     @pytest.mark.chaos
     async def test_at_least_once_redelivers_after_drop(
@@ -1281,16 +1283,25 @@ class TestBrokerReconnectAtMostOnceCombo:
 class TestBackendDownResultStoreCombo:
     """Combo #20: backend-down + result-store.
 
-    Tier 2 — all tests require Toxiproxy.  Tests drop the Valkey backend
-    connection during result storage and verify:
-    - TASK_FAILED fires (backend write failure → task failure)
-    - After backend recovery, retry (if configured) succeeds
-    - FAF-4 invariants hold (no silent drop)
+    Tier 2 — all tests require Toxiproxy.  Tests blackhole the Valkey backend
+    connection while the worker stores the result of a successful ``run()``
+    and verify the documented contract (delivery-semantics: "SwarmQ acks
+    after the task's terminal state is durably stored"):
 
-    Assumption: when ValkeyBackend.store_result() raises (due to connection
-    loss), the worker treats this as a task failure and emits TASK_FAILED.
-    The broker message is nacked(requeue) so the task can be retried once
-    the backend is healthy again.
+    - The failed store aborts the ack; the message goes back to the broker
+      (``nack(requeue=True)``) and is redelivered — no silent drop.
+    - ``run()`` itself succeeded, so ``TASK_COMPLETED`` fires and
+      ``TASK_FAILED`` does not (signals guide: TASK_FAILED is for a ``run()``
+      that raised or timed out).  The redelivery is not a retry, so it
+      neither consumes ``max_retries`` nor ends in the DLQ.
+    - Once Valkey is back, the redelivered run stores the result and
+      ``get_result`` returns it.
+
+    The scenarios are gated by events instead of sleeps (see
+    ``_BackendDropGates``).  The failed store takes ``backend_op_timeout``
+    (5 s by default) to surface; while Valkey is down the redelivered
+    message is nacked back by the pre-start cancel check, so the rerun
+    happens after the heal.
     """
 
     async def test_happy_path(
@@ -1322,24 +1333,53 @@ class TestBackendDownResultStoreCombo:
                 result = await app.get_result(tid, timeout=5)
                 assert result == 42
 
+    @staticmethod
+    async def _drop_backend_during_first_store(
+        toxiproxy: Any,
+        app: SwarmQ,
+        task_name: str,
+        arg: int,
+        gates: _BackendDropGates,
+    ) -> str:
+        """Schedule, blackhole Valkey before the first ``run()`` returns,
+        heal once that run's result store has failed. Returns the task id."""
+        tid = await app.schedule(task_name, arg)
+        await asyncio.wait_for(gates.first_run_started.wait(), timeout=8.0)
+        toxic_name = await toxiproxy.add_toxic(
+            "valkey",
+            "timeout",
+            attributes={"timeout": 0},
+            stream="downstream",
+        )
+        try:
+            gates.toxic_active.set()
+            # The store blocks until backend_op_timeout and fails.
+            await asyncio.wait_for(gates.store_failed.wait(), timeout=20.0)
+        finally:
+            await toxiproxy.remove_toxic("valkey", toxic_name)
+        # The message went back to the broker: the redelivered run stores
+        # the result.  Waiting for exactly that store keeps get_result from
+        # racing it — the first SET may well have reached Valkey even though
+        # its reply was dropped.
+        await asyncio.wait_for(gates.rerun_stored.wait(), timeout=25.0)
+        return tid
+
     @pytest.mark.chaos
-    @pytest.mark.timeout(45)
-    async def test_backend_drop_during_result_store_emits_task_failed(
+    @pytest.mark.timeout(60)
+    async def test_backend_drop_during_result_store_redelivers_without_task_failed(
         self,
         toxiproxy: Any,
         rabbitmq_url: str,
         valkey_proxied_url: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Valkey connection is dropped while the worker tries to store the
-        result.  The task must emit TASK_FAILED (backend write failure).
-
-        Toxiproxy injects a ``timeout`` toxic on the valkey proxy just before
-        run() returns so the store_result call fails.
-        """
+        """Valkey is blackholed while the worker stores the result.  The
+        failed store is not a task failure: no TASK_FAILED, no DLQ — the
+        message is redelivered even with ``max_retries=0`` and the rerun
+        stores the result after recovery."""
         queue = _uq("backend-drop-fail")
         task_name = _task_name("backend_drop_fail")
-        run_started = asyncio.Event()
-        failed_event = asyncio.Event()
+        gates = _BackendDropGates(monkeypatch)
 
         class SlowResultTask(Task):
             task_info = TaskInfo(
@@ -1349,9 +1389,7 @@ class TestBackendDownResultStoreCombo:
             )
 
             async def run(self, val: int) -> int:
-                run_started.set()
-                # Brief pause so the toxic can be injected before store_result.
-                await asyncio.sleep(0.3)
+                await gates.enter_run()
                 return val
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -1360,55 +1398,51 @@ class TestBackendDownResultStoreCombo:
 
         recorder = SignalRecorder.attach(
             app._signal_dispatcher,
-            signals=[Signal.TASK_STARTED, Signal.TASK_FAILED, Signal.TASK_COMPLETED],
+            signals=[
+                Signal.TASK_STARTED, Signal.TASK_FAILED, Signal.TASK_COMPLETED,
+                Signal.TASK_RETRYING, Signal.TASK_DLQ,
+            ],
         )
-
-        @app.on_signal(Signal.TASK_FAILED)
-        async def _on_failed(**_: Any) -> None:
-            failed_event.set()
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
-                await app.schedule(task_name, 1)
-
-                # Wait for run() to start, then drop Valkey.
-                await asyncio.wait_for(run_started.wait(), timeout=8.0)
-                toxic_name = await toxiproxy.add_toxic(
-                    "valkey",
-                    "timeout",
-                    attributes={"timeout": 0},
-                    stream="downstream",
+            async with _running_worker(
+                rabbitmq_url, valkey_proxied_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
+                tid = await self._drop_backend_during_first_store(
+                    toxiproxy, app, task_name, 1, gates,
                 )
+                result = await app.get_result(tid, timeout=15)
 
-                # Wait for failure to propagate.
-                try:
-                    await asyncio.wait_for(failed_event.wait(), timeout=10.0)
-                finally:
-                    await toxiproxy.remove_toxic("valkey", toxic_name)
-
-        assert Signal.TASK_FAILED in recorder.emitted_signals, (
-            "TASK_FAILED must fire when backend is down during result store"
+        assert result == 1
+        assert gates.run_count >= 2
+        emitted = recorder.emitted_signals
+        assert Signal.TASK_FAILED not in emitted, (
+            "a failed result store after a successful run() is not a task "
+            f"failure; signals: {emitted}"
         )
+        assert Signal.TASK_RETRYING not in emitted
+        assert Signal.TASK_DLQ not in emitted
+        assert emitted.count(Signal.TASK_COMPLETED) >= 2
 
     @pytest.mark.chaos
-    @pytest.mark.timeout(45)
+    @pytest.mark.timeout(60)
     async def test_retry_after_backend_recovery(
         self,
         toxiproxy: Any,
         rabbitmq_url: str,
         valkey_proxied_url: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Backend drops during first run, but the task has retries.  After
-        Valkey recovers the retry attempt succeeds and result is stored.
+        """Backend drops during the first run's result store.  After Valkey
+        recovers, the redelivered attempt succeeds and the result is stored.
 
         FAF-4: no silent drop; message must be nacked and redelivered.
         """
         queue = _uq("backend-retry")
         task_name = _task_name("backend_retry")
-        run_count = 0
-        first_run_started = asyncio.Event()
-        completed_event = asyncio.Event()
+        gates = _BackendDropGates(monkeypatch)
 
         class RetriableBackendTask(Task):
             task_info = TaskInfo(
@@ -1419,59 +1453,42 @@ class TestBackendDownResultStoreCombo:
             )
 
             async def run(self, val: int) -> int:
-                nonlocal run_count
-                run_count += 1
-                if run_count == 1:
-                    first_run_started.set()
-                    await asyncio.sleep(0.4)  # pause for toxic injection
+                await gates.enter_run()
                 return val * 2
 
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_proxied_url)
         app = SwarmQ(broker, backend, queues=[queue])
 
-        @app.on_signal(Signal.TASK_COMPLETED)
-        async def _on_done(**_: Any) -> None:
-            completed_event.set()
-
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
-                tid = await app.schedule(task_name, 6)
-
-                # Drop backend during first run's result-store phase.
-                await asyncio.wait_for(first_run_started.wait(), timeout=8.0)
-                toxic_name = await toxiproxy.add_toxic(
-                    "valkey",
-                    "timeout",
-                    attributes={"timeout": 0},
-                    stream="downstream",
+            async with _running_worker(
+                rabbitmq_url, valkey_proxied_url, queue,
+                mirror_to=app._signal_dispatcher,
+            ):
+                tid = await self._drop_backend_during_first_store(
+                    toxiproxy, app, task_name, 6, gates,
                 )
-                await asyncio.sleep(0.5)  # let first store_result fail
-                # Heal the backend.
-                await toxiproxy.remove_toxic("valkey", toxic_name)
-
-                # Retry should now succeed.
-                await asyncio.wait_for(completed_event.wait(), timeout=15.0)
-                result = await app.get_result(tid, timeout=5)
+                result = await app.get_result(tid, timeout=15)
                 assert result == 12
 
-        assert_at_least_once_held(run_count, expected_min=1)
+        assert_at_least_once_held(gates.run_count, expected_min=1)
         obs = FAFStageObservation(
-            stage_executed=run_count >= 1,
-            nacked_with_requeue=run_count >= 2,  # retry = requeue occurred
-            silently_dropped=run_count == 0,
-            requeue_count=max(0, run_count - 1),
+            stage_executed=gates.run_count >= 1,
+            nacked_with_requeue=gates.redelivered.is_set(),
+            silently_dropped=gates.run_count == 0,
+            requeue_count=max(0, gates.run_count - 1),
         )
         assert_faf_stage_invariants(obs, scenario_kind="backend_fault", max_requeues=5)
 
     @pytest.mark.chaos
-    @pytest.mark.timeout(45)
+    @pytest.mark.timeout(60)
     async def test_faf4_invariants_for_backend_drop(
         self,
         toxiproxy: Any,
         rabbitmq_url: str,
         valkey_proxied_url: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Dedicated FAF-4 assertion block for backend-drop scenario.
 
@@ -1483,9 +1500,7 @@ class TestBackendDownResultStoreCombo:
         """
         queue = _uq("backend-faf4")
         task_name = _task_name("backend_faf4")
-        run_count = 0
-        run_started = asyncio.Event()
-        done_event = asyncio.Event()
+        gates = _BackendDropGates(monkeypatch)
 
         class FAF4BackendTask(Task):
             task_info = TaskInfo(
@@ -1496,12 +1511,7 @@ class TestBackendDownResultStoreCombo:
             )
 
             async def run(self, val: int) -> int:
-                nonlocal run_count
-                run_count += 1
-                run_started.set()
-                if run_count == 1:
-                    await asyncio.sleep(0.5)
-                done_event.set()
+                await gates.enter_run()
                 return val
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -1511,29 +1521,64 @@ class TestBackendDownResultStoreCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
-                await app.schedule(task_name, 1)
-
-                await asyncio.wait_for(run_started.wait(), timeout=8.0)
-                toxic_name = await toxiproxy.add_toxic(
-                    "valkey",
-                    "timeout",
-                    attributes={"timeout": 0},
-                    stream="downstream",
+                tid = await self._drop_backend_during_first_store(
+                    toxiproxy, app, task_name, 1, gates,
                 )
-                await asyncio.sleep(0.6)
-                await toxiproxy.remove_toxic("valkey", toxic_name)
+                # The redelivered run completes — the result is durable.
+                assert await app.get_result(tid, timeout=15) == 1
 
-                run_started.clear()
-                await asyncio.wait_for(done_event.wait(), timeout=15.0)
-
-        assert_at_least_once_held(run_count, expected_min=1)
+        assert_at_least_once_held(gates.run_count, expected_min=1)
         obs = FAFStageObservation(
-            stage_executed=run_count >= 1,
-            nacked_with_requeue=run_count >= 2,
-            silently_dropped=run_count == 0,
-            requeue_count=max(0, run_count - 1),
+            stage_executed=gates.run_count >= 1,
+            nacked_with_requeue=gates.redelivered.is_set(),
+            silently_dropped=gates.run_count == 0,
+            requeue_count=max(0, gates.run_count - 1),
         )
         assert_faf_stage_invariants(obs, scenario_kind="backend_fault", max_requeues=5)
+
+
+class _BackendDropGates:
+    """Event gates for the Combo-20 scenarios (no sleeps).
+
+    The first ``run()`` signals its start and returns only once the Valkey
+    toxic is active, so its result store hits the dead backend.  A spy on
+    ``ValkeyBackend.store_result`` (the backend boundary) reports the failed
+    store, which is the moment to heal, and the successful store of the
+    redelivered run.  While Valkey is down the redelivered message cannot
+    pass the pre-start cancel check (it is nacked back again), so the second
+    ``run()`` only happens after the heal.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.run_count = 0
+        self.first_run_started = asyncio.Event()
+        self.toxic_active = asyncio.Event()
+        self.store_failed = asyncio.Event()
+        self.redelivered = asyncio.Event()
+        self.rerun_stored = asyncio.Event()
+
+        original = ValkeyBackend.store_result
+        gates = self
+
+        async def _spy(backend: ValkeyBackend, *args: Any, **kwargs: Any) -> Any:
+            try:
+                stored = await original(backend, *args, **kwargs)
+            except BackendConnectionError:
+                gates.store_failed.set()
+                raise
+            if gates.redelivered.is_set():
+                gates.rerun_stored.set()
+            return stored
+
+        monkeypatch.setattr(ValkeyBackend, "store_result", _spy)
+
+    async def enter_run(self) -> None:
+        self.run_count += 1
+        if self.run_count == 1:
+            self.first_run_started.set()
+            await self.toxic_active.wait()
+        else:
+            self.redelivered.set()
 
 
 # ---------------------------------------------------------------------------
@@ -1559,6 +1604,10 @@ class TestBackendDownResultStoreCombo:
 #     approximated from run_count (run_count - 1 = re-executions = requeues).
 #     This is an observable proxy for the broker-side nack/requeue sequence.
 #
-# A5. Toxiproxy ``timeout`` toxic with ``timeout=0`` immediately closes
-#     connections; ``stream="upstream"`` hits the publisher path,
-#     ``stream="downstream"`` hits the consumer/result-store path.
+# A5. Toxiproxy ``timeout`` toxic with ``timeout=0`` does NOT close the
+#     connection: it drops all data on the stream until the toxic is
+#     removed (a blackhole).  The client only notices through its own
+#     deadline — ``publish_timeout_s`` for publishes, ``backend_op_timeout``
+#     for Valkey operations.  ``stream="upstream"`` hits the client→server
+#     direction (requests, publishes), ``stream="downstream"`` the
+#     server→client direction (replies, confirms, deliveries).

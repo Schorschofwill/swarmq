@@ -89,10 +89,25 @@ SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
 Die Chaos-Kombinationen in `tests/e2e/combinations` waren von Mai bis
 Oktober 2026 nie in einem Gate und deshalb unbemerkt rot (SIGUSR1 ohne
 Handler, eine nicht existierende CLI-Option, Supervisor- statt Kind-Kill).
-Ohne Toxiproxy (`docker-compose.chaos.yml`) überspringt die Suite acht
-Toxiproxy-Tests; die übrigen sechzehn müssen grün sein. Die Ports 5699/6399
-sind Pflicht: Die Suite leert Valkey nach jedem Test, auf 6379 träfe das
-einen fremden Stack.
+Ohne Toxiproxy überspringt die Suite acht Toxiproxy-Tests; die übrigen
+sechzehn müssen grün sein. Die Ports 5699/6399 sind Pflicht: Die Suite leert
+Valkey nach jedem Test, auf 6379 träfe das einen fremden Stack.
+
+Toxiproxy neben dem Teststack: `docker-compose.chaos.yml` startet den
+Haupt-Stack auf 5672/6379 mit. Ist das belegt, einen eigenen Toxiproxy im
+Host-Netz starten und Proxy-Ports sowie Upstreams per Env setzen — dann
+laufen alle 24 Tests:
+
+```bash
+docker run -d --name swarmq-test-toxiproxy --network host \
+  ghcr.io/shopify/toxiproxy:2.9.0 -host 127.0.0.1 -port 8474
+SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
+SWARMQ_TEST_TOXIPROXY_HOST=127.0.0.1 SWARMQ_TEST_TOXIPROXY_PORT=8474 \
+SWARMQ_TEST_TOXIPROXY_RMQ_PORT=5698 SWARMQ_TEST_TOXIPROXY_VALKEY_PORT=6398 \
+SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM=127.0.0.1:5699 \
+SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM=127.0.0.1:6399 \
+  uv run --extra test pytest -m chaos tests/e2e/combinations -q
+```
 
 Erwartung (Stand 2026-09-22): **37 passed, 4 skipped** in rund vier Minuten,
 und **2 passed** für den Fuzz-Lauf. Die vier Skips sind begründet und
