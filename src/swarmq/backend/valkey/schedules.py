@@ -8,12 +8,13 @@ in ``swarmq.scheduler`` (dort delegiert ``ScheduleStore`` hierher).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
 
+from swarmq.backend.valkey.connection import as_backend_error
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.lua import load_script
@@ -57,14 +58,16 @@ class ValkeyScheduleStore:
         self._owner_release_script = client.register_script(load_script("unique_release"))
 
     async def _run(self, what: str, coro: Any) -> Any:
+        """Transportfehler -> ``BackendConnectionError``, Fehlerantworten und
+        andere Fehler -> ``BackendResponseError`` (``as_backend_error``)."""
         try:
             return await coro
         except BackendConnectionError:
             raise
         except (ValkeyError, OSError) as exc:
-            raise BackendConnectionError(str(exc)) from exc
+            raise as_backend_error(str(exc), exc) from exc
         except Exception as exc:
-            raise BackendConnectionError(f"{what} failed: {exc}") from exc
+            raise as_backend_error(f"{what} failed: {exc}", exc) from exc
 
     # ------------------------------------------------------------------
     # Vertrag ``ScheduleStore``
@@ -150,14 +153,16 @@ class ValkeyScheduleStore:
         return await self.set_schedfire_dedup(fire_key, ttl_ms)
 
     async def claim_fire(
-        self, fire_key: str, ttl_ms: int, *, owner: str | None = None, takeover: str | None = None,
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        takeover: str | Sequence[str] | None = None,
     ) -> bool:
-        """``sched_fire_claim.lua``: frei oder Wert == ``takeover`` -> Owner
+        """``sched_fire_claim.lua``: frei oder Wert in ``takeover`` -> Owner
         ``owner`` mit neuer TTL, sonst ``False`` (Duplikat)."""
+        offered = [takeover] if isinstance(takeover, str) else list(takeover or ())
         result = await self._run(
             "sched_fire_claim",
             self._fire_claim_script(
-                keys=[inflight_key(fire_key)], args=[owner or "1", ttl_ms, takeover or ""],
+                keys=[inflight_key(fire_key)], args=[owner or "1", ttl_ms, *(offered or [""])],
             ),
         )
         return int(result) == 1

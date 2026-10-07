@@ -119,7 +119,7 @@ class CancelGate:
             # completed so a redelivery after in-flight-TTL expiry does not
             # re-run the task (Unit 1). User-initiated cancel is
             # terminal — "this fire was processed."
-            await deps.finalize_schedfire(delivery, True)
+            await deps.finalize_schedfire(ctx, True)
 
             # R3.5 Unit 11: pre-start cancel is a terminal path — the task
             # never ran; release the dedup flag so a future legitimate

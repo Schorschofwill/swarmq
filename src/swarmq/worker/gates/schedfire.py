@@ -10,11 +10,18 @@ Der Runner behandelt dieses Gate wie heute *vor* seinem ``try/finally``
 (Plan-Fortschrittsprotokoll U19).
 
 Claim-Token (0.9.0): Der In-Flight-Claim speichert ein Owner-Token je
-Zustellung. Jede Kopie (Zurueckstellung, Retry, Requeue) traegt es als
+Zustellung. Jede Kopie (Zurueckstellung, Retry, Rueckstellung) traegt es als
 ``x-swarmq-schedfire-claim`` und bietet es beim Claim zur Uebernahme an --
 scheiterte die Freigabe am Backend-Ausfall, gilt der Claim fuer die Kopie
 als ihrer statt als Duplikat. Die Uebernahme rotiert das Token; eine
 Zustellung ohne oder mit altem Token bleibt ein Duplikat.
+
+Das Token liegt schon VOR dem Claim-Aufruf am Kontext: geht dessen Antwort
+verloren (Timeout, Reset), kann Valkey den Claim geschrieben haben oder
+nicht. Die Kopie traegt dann das neue Token und die angebotenen (komma-
+getrennt, neuestes zuerst, gedeckelt) -- sie uebernimmt den Claim in beiden
+Faellen. Ein Requeue an derselben Stelle (``nack``) kann kein Token tragen;
+dort wird der Claim vorher freigegeben (``redeliver_in_place``).
 """
 
 from __future__ import annotations
@@ -25,11 +32,19 @@ from typing import Any
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
 from swarmq.logging import get_logger
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, SchedfireClaim
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
+
+
+def _claim_tokens(raw: Any) -> tuple[str, ...]:
+    """Tokens aus ``x-swarmq-schedfire-claim`` (kommagetrennt, neuestes
+    zuerst); ein fehlender oder kaputter Header bietet keins an."""
+    if not isinstance(raw, str):
+        return ()
+    return tuple(token for token in (part.strip() for part in raw.split(",")) if token)
 
 
 class SchedfireGate:
@@ -86,12 +101,15 @@ class SchedfireGate:
         # ihres Vorgaengers zur Uebernahme an (der Claim rotiert dabei, eine
         # Broker-Redelivery derselben Kopie bleibt ein Duplikat).
         owner = uuid.uuid4().hex
-        carried = (delivery.headers or {}).get(HEADER_SCHEDFIRE_CLAIM)
-        takeover = carried if isinstance(carried, str) and carried else None
+        offered = _claim_tokens((delivery.headers or {}).get(HEADER_SCHEDFIRE_CLAIM))
+        # Das Token liegt VOR dem Aufruf am Kontext: geht die Antwort
+        # verloren, traegt der Claim ``owner`` (geschrieben) oder noch eines
+        # der angebotenen Tokens -- die Kopie bietet alle an.
+        ctx.schedfire_claim = SchedfireClaim(key=header_value, owner=owner, candidates=offered)
         try:
             claimed = await bounded_backend_call(
                 deps,
-                deps.backend.schedules.claim_fire(header_value, inflight_ttl_ms, owner=owner, takeover=takeover),
+                deps.backend.schedules.claim_fire(header_value, inflight_ttl_ms, owner=owner, takeover=offered),
                 what="schedfire inflight claim",
             )
         except BackendConnectionError as exc:
@@ -102,11 +120,12 @@ class SchedfireGate:
         if claimed:
             # This worker owns the run; the runner's finally finalizes the
             # claim (completed marker on terminal, in-flight clear otherwise).
-            deps.claim_schedfire(delivery, header_value, owner)
-            ctx.schedfire_claim = owner
+            # Der Claim traegt jetzt sicher nur noch ``owner``.
+            ctx.schedfire_claim = SchedfireClaim(key=header_value, owner=owner)
             return Continue
 
         # Another worker is running it right now.
+        ctx.schedfire_claim = None
         logger.info("schedfire_inflight_duplicate_acked", schedfire_key=header_value)
         await deps.broker.ack(delivery)
         return Terminal.never_release()

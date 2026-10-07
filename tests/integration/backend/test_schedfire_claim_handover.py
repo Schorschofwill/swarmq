@@ -19,6 +19,10 @@ Test-Liste:
       Leader-Kopie, Broker-Redelivery des Originals) ein Duplikat
 - [x] nach der Uebernahme bleibt eine Zustellung mit dem alten Token
       (Broker-Redelivery der Kopie) ein Duplikat
+- [x] Claim geschrieben, Antwort verloren (unklarer Ausgang), Freigabe
+      scheitert -> die Kopie uebernimmt den Claim und laeuft genau einmal
+- [x] die Kopie einer Kopie: deren Claim kam nicht an (das alte Token steht
+      noch) -> die naechste Kopie uebernimmt trotzdem
 """
 
 from __future__ import annotations
@@ -109,6 +113,33 @@ async def _defer_with_failed_release(worker: Worker, broker: MagicMock, backend:
     return headers
 
 
+async def _defer_with_lost_claim_reply(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any, *, written: bool,
+) -> dict:
+    """Der Claim-Aufruf endet mit einem Transportfehler -- nachdem Valkey den
+    Claim geschrieben hat (``written``) oder bevor er ankam; die Freigabe
+    scheitert ebenfalls."""
+    store = backend.schedules
+    real_claim, real_release = store.claim_fire, store.release_fire_claim
+
+    async def _claim(*args: Any, **kwargs: Any) -> bool:
+        if written:
+            await real_claim(*args, **kwargs)
+        raise BackendConnectionError("reply lost")
+
+    store.claim_fire = _claim  # type: ignore[method-assign]
+    store.release_fire_claim = AsyncMock(side_effect=BackendConnectionError("valkey down"))  # type: ignore[method-assign]
+    try:
+        await worker._handle_message(msg)
+    finally:
+        store.claim_fire = real_claim  # type: ignore[method-assign]
+        store.release_fire_claim = real_release  # type: ignore[method-assign]
+    broker.retry_later.assert_awaited_once()
+    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    broker.retry_later.reset_mock()
+    return headers
+
+
 def _copy_of(original: Any, headers: dict) -> MagicMock:
     return make_message(body=original.body, headers=headers)
 
@@ -164,3 +195,34 @@ async def test_redelivery_of_the_copy_after_takeover_stays_a_duplicate(
     release.set()
     await first
     assert RUNS == ["run"]
+
+
+async def test_copy_takes_over_a_claim_whose_reply_was_lost(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+) -> None:
+    fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
+    original = _message(fire_key)
+    headers = await _defer_with_lost_claim_reply(worker, broker, backend, original, written=True)
+    assert not RUNS
+
+    await worker._handle_message(_copy_of(original, headers))
+
+    assert RUNS == ["run"], "die Kopie hielt den eigenen, geschriebenen Claim fuer fremd -- Fire verloren"
+    assert await backend.schedules.is_fire_completed(fire_key) is True
+
+
+async def test_copy_of_a_copy_takes_over_when_the_lost_claim_never_arrived(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+) -> None:
+    fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
+    original = _message(fire_key)
+    first_headers = await _defer_with_failed_release(worker, broker, backend, original)
+    second_headers = await _defer_with_lost_claim_reply(
+        worker, broker, backend, _copy_of(original, first_headers), written=False,
+    )
+    assert not RUNS
+
+    await worker._handle_message(_copy_of(original, second_headers))
+
+    assert RUNS == ["run"], "das alte Token fehlte in der Kopie -- Fire verloren"
+    assert await backend.schedules.is_fire_completed(fire_key) is True

@@ -4,6 +4,11 @@ Die Pub/Sub-Wartelogik wanderte aus ``Client.get_result``/``watch_progress``
 hierher; diese Tests sind die Portierung der früheren Client-Tests
 (``tests/unit/test_client.py`` #14–#21 und ``TestClientProgress``) gegen einen
 gemockten valkey-Client. Verhalten unverändert (R9).
+
+Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort): eine Fehlerantwort von Valkey
+(``ResponseError``) wird ``BackendResponseError``, ein Transportfehler bleibt
+einfacher ``BackendConnectionError`` (Cancel-Gate: nur Ausfaelle werden
+zurueckgestellt).
 """
 
 from __future__ import annotations
@@ -13,10 +18,11 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError
 
 
 def _backend(get_side_effect: object) -> tuple[ValkeyBackend, AsyncMock, AsyncMock]:
@@ -336,7 +342,7 @@ class TestResultsLogging:
     @pytest.mark.timeout(5)
     async def test_failed_clear_cancel_flag_logs_error_fields(self, swarmq_logs) -> None:
         backend, client, _ = _backend(None)
-        client.delete = AsyncMock(side_effect=ValkeyError("delete down"))
+        client.delete = AsyncMock(side_effect=ValkeyConnectionError("delete down"))
 
         await backend.clear_cancel_flag("task-1")
 
@@ -349,7 +355,7 @@ class TestResultsLogging:
     @pytest.mark.timeout(5)
     async def test_failed_release_unique_logs_error_fields(self, swarmq_logs) -> None:
         backend, client, _ = _backend(None)
-        client.register_script = Mock(return_value=AsyncMock(side_effect=ValkeyError("script down")))
+        client.register_script = Mock(return_value=AsyncMock(side_effect=ValkeyConnectionError("script down")))
 
         assert await backend.release_unique("hash-1", "task-1") is False
 
@@ -359,3 +365,20 @@ class TestResultsLogging:
         assert entry["task_id"] == "task-1"
         assert entry["error_type"] == "BackendConnectionError"
         assert "script down" in entry["error"]
+
+
+class TestOutageVersusErrorReply:
+    async def test_error_reply_is_a_response_error(self) -> None:
+        from valkey.exceptions import ResponseError
+
+        backend, client, _ = _backend(None)
+        client.get = AsyncMock(side_effect=ResponseError("WRONGTYPE"))
+        with pytest.raises(BackendResponseError):
+            await backend.get_result("t")
+
+    async def test_transport_error_is_a_plain_outage(self) -> None:
+        backend, client, _ = _backend(None)
+        client.exists = AsyncMock(side_effect=ValkeyConnectionError("refused"))
+        with pytest.raises(BackendConnectionError) as exc_info:
+            await backend.is_cancelled("t", op_timeout=1)
+        assert not isinstance(exc_info.value, BackendResponseError)

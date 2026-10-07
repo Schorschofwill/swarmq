@@ -15,6 +15,11 @@ schluckt Backend-Fehler selbst.
 Jeder Backend-Aufruf dieser Gates ist durch ``backend_op_timeout`` begrenzt
 (``bounded_backend_call``): ein Blackhole zaehlt nach dieser Frist als
 Backend-Ausfall, statt das Gate bis zum Socket-Timeout zu blockieren.
+
+Nur ein Ausfall wird zurueckgestellt (``is_backend_outage``). Eine
+Fehlerantwort des Backends (``BackendResponseError``: WRONGTYPE,
+Skriptfehler) heilt keine Wartezeit -- sie nimmt den alten Weg (Requeue an
+derselben Stelle, das Zustelllimit fuehrt sie ins Dead-Letter-Ziel).
 """
 
 from __future__ import annotations
@@ -24,10 +29,16 @@ from collections.abc import Awaitable, Mapping
 from typing import Any
 
 from swarmq.backoff import backend_defer_delay
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT
 from swarmq.logging import _error_fields, get_logger
-from swarmq.worker.gates import BROKER_DELIVERY_COUNTERS, GateContext, GateDeps, republish_headers
+from swarmq.worker.gates import (
+    BROKER_DELIVERY_COUNTERS,
+    GateContext,
+    GateDeps,
+    redeliver_in_place,
+    republish_headers,
+)
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -47,6 +58,12 @@ async def bounded_backend_call[T](deps: GateDeps, call: Awaitable[T], *, what: s
         return await asyncio.wait_for(call, timeout=timeout)
     except TimeoutError as exc:
         raise BackendConnectionError(f"{what} timed out after {timeout}s") from exc
+
+
+def is_backend_outage(exc: BaseException) -> bool:
+    """Ausfall des Backends (Verbindung, Timeout) -- nicht eine
+    Fehlerantwort (``BackendResponseError``) und kein anderer Fehler."""
+    return isinstance(exc, BackendConnectionError) and not isinstance(exc, BackendResponseError)
 
 
 def _as_count(raw: Any) -> int:
@@ -89,6 +106,17 @@ async def defer_backend_unavailable(
     ``schedfire_key``, ``workflow_id``, ``lock_name``) tragen, was frueher
     in der zusaetzlichen Gate-Warnung stand.
     """
+    if not is_backend_outage(exc):
+        # Das Backend hat geantwortet, die Operation scheitert trotzdem
+        # (WRONGTYPE, Skriptfehler): das heilt keine Wartezeit. Alter Weg --
+        # Requeue an derselben Stelle; das Zustelllimit fuehrt eine dauerhaft
+        # scheiternde Nachricht ins Dead-Letter-Ziel.
+        logger.error(
+            "task_gate_backend_error",
+            task_id=ctx.task_id, task_name=ctx.task_name, gate=gate, stage=stage, **context, **_error_fields(exc),
+        )
+        await redeliver_in_place(deps, delivery, ctx)
+        return Redelivered
     headers = republish_headers(delivery, ctx)
     attempt = _prior_deferrals(delivery.headers or {}) + 1
     headers[HEADER_BACKEND_DEFER_COUNT] = attempt
@@ -110,7 +138,7 @@ async def defer_backend_unavailable(
             **{f"backend_{key}": value for key, value in _error_fields(exc).items()},
             **_error_fields(publish_exc),
         )
-        await deps.broker.redeliver(delivery)
+        await redeliver_in_place(deps, delivery, ctx)
         return Redelivered
     logger.warning(
         "task_deferred_backend_unavailable",

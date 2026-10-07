@@ -26,19 +26,35 @@ Test-Liste:
 - [x] 0.9.0: gab der Broker die Zustellung zurueck (``x-acquired-count`` bzw.
       ``x-delivery-count`` > 0: Requeue nach bestandenen Gates, Absturz),
       beginnt die Zaehlung neu -- die Stoerung davor ist ueberstanden
+- [x] 0.9.0 (drittes Review): eine Fehlerantwort des Backends
+      (``BackendResponseError``, z. B. WRONGTYPE) ist kein Ausfall -- keine
+      Zurueckstellung, sondern der alte Weg: Requeue an derselben Stelle
+      (Zustelllimit -> DLQ) mit ERROR ``task_gate_backend_error``
 """
 
 from __future__ import annotations
 
 import pytest
 
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError, PublishIndeterminate
+from swarmq.exceptions import (
+    BackendConnectionError,
+    BackendResponseError,
+    BrokerConnectionError,
+    PublishIndeterminate,
+)
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT
 from swarmq.worker.gates import GateContext
 from swarmq.worker.gates.backend_defer import defer_backend_unavailable
 from swarmq.worker.outcome import Redelivered
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
+
+pytestmark = pytest.mark.timeout(5)
+
+
+def _jittered(delay_ms: int, nominal_ms: int) -> bool:
+    """Die Wartezeit streut um +-20 % (Jitter, ``backend_defer_delay``)."""
+    return int(nominal_ms * 0.8) <= delay_ms <= int(nominal_ms * 1.2)
 
 
 def _ctx() -> GateContext:
@@ -54,8 +70,25 @@ async def test_first_deferral_publishes_to_delay_queue_with_base_delay(worker, b
 
     assert outcome is Redelivered
     broker.retry_later.assert_awaited_once()
-    assert broker.retry_later.await_args.kwargs["delay_ms"] == 1000
+    assert _jittered(broker.retry_later.await_args.kwargs["delay_ms"], 1000)
     broker.redeliver.assert_not_awaited()
+
+
+async def test_error_reply_is_requeued_in_place_not_deferred(worker, broker, swarmq_logs):
+    msg = make_message(_default_payload())
+
+    outcome = await defer_backend_unavailable(
+        worker._gate_deps, msg, _ctx(), BackendResponseError("WRONGTYPE"), gate="schedfire",
+        stage="inflight_claim", schedfire_key="s:1",
+    )
+
+    assert outcome is Redelivered
+    broker.retry_later.assert_not_awaited()
+    broker.redeliver.assert_awaited_once_with(msg)
+    [entry] = [e for e in swarmq_logs if e["log_level"] == "error"]
+    assert entry["event"] == "task_gate_backend_error"
+    assert (entry["gate"], entry["stage"], entry["schedfire_key"]) == ("schedfire", "inflight_claim", "s:1")
+    assert (entry["error_type"], entry["error"]) == ("BackendResponseError", "WRONGTYPE")
 
 
 async def test_deferral_keeps_all_headers_and_sets_defer_count(worker, broker):
@@ -104,7 +137,7 @@ async def test_followup_deferral_increments_count_and_doubles_delay(worker, brok
 
     kwargs = broker.retry_later.await_args.kwargs
     assert kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 4
-    assert kwargs["delay_ms"] == 8000
+    assert _jittered(kwargs["delay_ms"], 8000)
 
 
 
@@ -121,7 +154,7 @@ async def test_broker_redelivered_message_restarts_the_defer_count(worker, broke
 
     kwargs = broker.retry_later.await_args.kwargs
     assert kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 1
-    assert kwargs["delay_ms"] == 1000
+    assert _jittered(kwargs["delay_ms"], 1000)
 
 
 async def test_followup_deferral_delay_is_capped_by_config(worker, broker):
@@ -132,7 +165,7 @@ async def test_followup_deferral_delay_is_capped_by_config(worker, broker):
         worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
     )
 
-    assert broker.retry_later.await_args.kwargs["delay_ms"] == 5000
+    assert _jittered(broker.retry_later.await_args.kwargs["delay_ms"], 5000)
 
 
 @pytest.mark.parametrize("raw", ["abc", None, -3, b"\xff"])
@@ -145,7 +178,7 @@ async def test_malformed_defer_count_counts_as_first_deferral(worker, broker, ra
 
     kwargs = broker.retry_later.await_args.kwargs
     assert kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 1
-    assert kwargs["delay_ms"] == 1000
+    assert _jittered(kwargs["delay_ms"], 1000)
 
 
 async def test_deferral_logs_warning_with_attempt_delay_and_error(worker, broker, swarmq_logs):
@@ -162,7 +195,7 @@ async def test_deferral_logs_warning_with_attempt_delay_and_error(worker, broker
     assert entry["task_name"] == "add"
     assert entry["gate"] == "cancel"
     assert entry["defer_count"] == 2
-    assert entry["delay_ms"] == 2000
+    assert _jittered(entry["delay_ms"], 2000)
     assert entry["error_type"] == "BackendConnectionError"
     assert entry["error"] == "valkey down"
 

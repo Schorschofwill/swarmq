@@ -2,8 +2,7 @@
 
 Test-Liste 0.9.0 (Schedfire-Claim bei Nicht-Ausfuehrung, Claim-Token):
 1. Stellt ein spaeteres Prae-Pipeline-Gate (Cancel-Check) die Nachricht nach
-   gewonnenem Claim zurueck, wird der Claim freigegeben und der Eintrag im
-   Claim-Register entfernt.
+   gewonnenem Claim zurueck, wird der Claim freigegeben.
 2. Dasselbe fuer den Dead-Letter des Delivery-Count-Gates.
 3. Der Claim laeuft mit einem frischen Owner-Token; ohne Claim-Header gibt es
    keine Uebernahme (``takeover=None``).
@@ -18,8 +17,27 @@ Test-Liste 0.9.0 (Schedfire-Claim bei Nicht-Ausfuehrung, Claim-Token):
 Test-Liste 0.9.0 (Zeitlimit):
 8. Haengender Completed-Check (Blackhole) -> nach ``backend_op_timeout``
    zurueckgestellt (``stage=completed_check``).
-9. Haengender In-Flight-Claim -> ebenso (``stage=inflight_claim``), kein
-   Eintrag im Claim-Register.
+9. Haengender In-Flight-Claim -> ebenso (``stage=inflight_claim``).
+
+Test-Liste 0.9.0 (drittes Review):
+10. Wirft ein Prae-Pipeline-Gate nach gewonnenem Claim, wird der Claim
+    nicht-terminal (owner-geprueft) freigegeben und die Ausnahme weiter-
+    geworfen; eine spaetere Zustellung finalisiert ihn nicht.
+11. Claim mit unklarem Ausgang (``claim_fire`` wirft ``BackendConnectionError``,
+    Valkey hat den Claim vielleicht geschrieben): die zurueckgestellte Kopie
+    traegt das Owner-Token, das der Aufruf geschrieben haben kann.
+12. Traegt die Zustellung schon ein Token, bietet die Kopie nach unklarem
+    Ausgang beide an (neues zuerst) -- der Claim kann noch das alte tragen.
+13. Verlorener Claim (``False``) haelt keinen Claim am Kontext.
+14. Nach gewonnener Uebernahme traegt eine spaetere Kopie nur das neue Token
+    (der Claim traegt sicher nur noch dieses).
+15. Eine Zustellung mit mehreren Tokens bietet alle zur Uebernahme an.
+16. Die Kandidatenliste ist gedeckelt (die aeltesten fallen weg).
+17. Fehlerantwort beim Claim (``BackendResponseError``) -> kein Ausfall:
+    Requeue an derselben Stelle, keine Zurueckstellung.
+18. Pre-Start-Cancel finalisiert terminal (Completed-Marker); die nicht-
+    terminale Finalisierung des Runners danach ist ein No-op -- der Claim
+    wird nicht mehr freigegeben, der Marker bleibt.
 """
 
 from __future__ import annotations
@@ -40,6 +58,8 @@ from tests.unit.worker._helpers import (
     AddTask,  # noqa: F401
     _default_payload,
 )
+
+pytestmark = pytest.mark.timeout(5)
 
 
 class TestSchedfireDedup:
@@ -287,7 +307,6 @@ class TestSchedfireDedup:
         backend.schedules.release_fire_claim.assert_awaited_once()
         assert backend.schedules.release_fire_claim.await_args.args[0] == "cron_a:1700000000000"
         backend.schedules.mark_fire_completed.assert_not_awaited()
-        assert id(msg) not in worker._schedfire_inflight_claims
 
     async def test_deferred_copy_carries_claim_token(self, worker, broker, backend):
         """Liste 5: scheitert auch die Freigabe (Valkey weg), erkennt die
@@ -330,7 +349,31 @@ class TestSchedfireDedup:
 
         broker.dead_letter.assert_awaited_once()
         backend.schedules.release_fire_claim.assert_awaited_once()
-        assert id(msg) not in worker._schedfire_inflight_claims
+
+    async def test_claim_is_released_when_a_later_gate_raises(self, worker, broker, backend):
+        """Liste 10: blieb der Claim im Register liegen, konnte eine spaetere
+        Zustellung mit wiederverwendeter ``id()`` ihn als erledigt markieren."""
+        backend.is_cancelled.side_effect = RuntimeError("boom")
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await worker._handle_message(msg)
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        backend.schedules.release_fire_claim.assert_awaited_once_with("cron_a:1700000000000", owner=owner)
+        backend.schedules.mark_fire_completed.assert_not_awaited()
+
+    async def test_pre_start_cancel_completes_the_fire_and_releases_nothing(self, worker, broker, backend):
+        """Liste 18."""
+        backend.is_cancelled.return_value = True
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        await worker._handle_message(msg)
+
+        backend.schedules.mark_fire_completed.assert_awaited_once()
+        assert backend.schedules.mark_fire_completed.await_args.args[0] == "cron_a:1700000000000"
+        backend.schedules.release_fire_claim.assert_not_awaited()
+        broker.ack.assert_awaited_once_with(msg)
 
     async def test_worker_start_instantiates_scheduler(
         self, broker, backend, config, monkeypatch
@@ -428,8 +471,11 @@ class TestSchedfireGateOutcomes:
 
     async def test_won_claim_is_continue_and_records_claim(self, worker, backend):
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
-        assert await worker._schedfire_gate.apply(msg, self._ctx()) is Continue
-        assert worker._schedfire_inflight_claims[id(msg)][0] == "s:1"
+        ctx = self._ctx()
+        assert await worker._schedfire_gate.apply(msg, ctx) is Continue
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        assert ctx.schedfire_claim is not None
+        assert (ctx.schedfire_claim.key, ctx.schedfire_claim.owner) == ("s:1", owner)
 
     async def test_claim_uses_fresh_owner_token_without_takeover(self, worker, backend):
         """Liste 3."""
@@ -437,7 +483,7 @@ class TestSchedfireGateOutcomes:
         await worker._schedfire_gate.apply(msg, self._ctx())
         kwargs = backend.schedules.claim_fire.await_args.kwargs
         assert isinstance(kwargs["owner"], str) and kwargs["owner"]
-        assert kwargs["takeover"] is None
+        assert kwargs["takeover"] == ()
 
     async def test_claim_offers_carried_token_for_takeover(self, worker, backend):
         """Liste 4: die Kopie traegt das Token ihres Vorgaengers."""
@@ -446,7 +492,7 @@ class TestSchedfireGateOutcomes:
         )
         await worker._schedfire_gate.apply(msg, self._ctx())
         kwargs = backend.schedules.claim_fire.await_args.kwargs
-        assert kwargs["takeover"] == "tok-a"
+        assert kwargs["takeover"] == ("tok-a",)
         assert kwargs["owner"] != "tok-a"
 
     async def test_inflight_ttl_grows_with_hard_timeout(self, worker, backend, config):
@@ -465,7 +511,88 @@ class TestSchedfireGateOutcomes:
         assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
         broker.retry_later.assert_awaited_once()
         broker.redeliver.assert_not_awaited()
-        assert id(msg) not in worker._schedfire_inflight_claims
+
+    async def test_copy_after_indeterminate_claim_carries_the_attempted_owner(self, worker, broker, backend):
+        """Liste 11."""
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("reply lost"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner
+
+    async def test_copy_after_indeterminate_takeover_offers_both_tokens(self, worker, broker, backend):
+        """Liste 12."""
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("reply lost"))
+        msg = make_message(
+            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
+        )
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == f"{owner},tok-a"
+
+    async def test_copy_after_won_takeover_carries_only_the_new_token(self, worker, broker, backend):
+        """Liste 14."""
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.is_cancelled.side_effect = BackendConnectionError("valkey down")
+        msg = make_message(
+            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
+        )
+        await worker._handle_message(msg)
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner
+
+    async def test_claim_offers_every_carried_token_for_takeover(self, worker, backend):
+        """Liste 15."""
+        msg = make_message(
+            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-b, tok-a,"},
+        )
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        assert backend.schedules.claim_fire.await_args.kwargs["takeover"] == ("tok-b", "tok-a")
+
+    async def test_copy_caps_the_carried_tokens(self, worker, broker, backend):
+        """Liste 16: bei jedem Claim mit unklarem Ausgang kommt ein Token
+        dazu; der Header bleibt gedeckelt, die aeltesten fallen weg."""
+        from swarmq.exceptions import BackendConnectionError
+
+        backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("reply lost"))
+        carried = [f"tok-{n}" for n in range(20)]
+        msg = make_message(
+            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": ",".join(carried)},
+        )
+        await worker._schedfire_gate.apply(msg, self._ctx())
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        tokens = broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"].split(",")
+        assert tokens == [owner, *carried[:15]]
+
+    async def test_claim_error_reply_is_requeued_not_deferred(self, worker, broker, backend):
+        """Liste 17."""
+        from swarmq.exceptions import BackendResponseError
+
+        backend.schedules.claim_fire = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_awaited_once_with(msg)
+
+    async def test_lost_claim_holds_no_claim(self, worker, broker, backend):
+        """Liste 13: ein Duplikat gibt keinen fremden Claim frei."""
+        backend.schedules.claim_fire = AsyncMock(return_value=False)
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+
+        await worker._handle_message(msg)
+
+        broker.ack.assert_awaited_once_with(msg)
+        backend.schedules.release_fire_claim.assert_not_awaited()
 
     async def test_completed_check_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17, KTD11): die Zurueckstellung erholt
@@ -528,7 +655,6 @@ class TestSchedfireGateOutcomes:
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
         assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
         broker.retry_later.assert_awaited_once()
-        assert id(msg) not in worker._schedfire_inflight_claims
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
         assert entry["stage"] == "inflight_claim" and entry["error_type"] == "BackendConnectionError"
 

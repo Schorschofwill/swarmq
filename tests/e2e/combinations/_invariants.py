@@ -266,6 +266,7 @@ async def assert_no_reader_leak(
     process: subprocess.Popen[str] | None,
     *,
     max_broker_connections: int = 2,
+    min_broker_connections: int = 1,
     observe_s: float = 0.5,
 ) -> None:
     """Check the SURVIVOR worker after a predecessor's crash: it stays alive
@@ -276,9 +277,12 @@ async def assert_no_reader_leak(
 
     1. the supervisor and at least one worker child are alive — before and
        after ``observe_s``;
-    2. each worker child holds at most ``max_broker_connections`` TCP
-       connections to the broker port (taken from the child's
-       ``SWARMQ_BROKER_URL``). A healthy worker holds one; aiormq reader
+    2. each worker child holds between ``min_broker_connections`` and
+       ``max_broker_connections`` TCP connections to the broker port (taken
+       from the child's ``SWARMQ_BROKER_URL``), and at least one child was
+       actually counted -- otherwise (no broker URL in the child's
+       environment, ``AccessDenied``) the check would silently degrade to a
+       liveness check. A healthy worker holds one; aiormq reader
        leaks (learning aiormq-reader-leak-and-stale-connection-recovery-
        2026-04-16) show up as extra, stale connections — and
        ``RobustConnection.is_closed`` is no truthful signal for them.
@@ -309,6 +313,8 @@ async def assert_no_reader_leak(
     before = _children()
     if not before:
         raise AssertionError("survivor supervisor runs no worker child")
+    # Deliberate observation window (negative check: nothing may die during
+    # it) -- there is no event to wait for.
     await asyncio.sleep(observe_s)
     if process.poll() is not None:
         raise AssertionError(f"survivor supervisor died during observation (rc={process.returncode})")
@@ -317,6 +323,7 @@ async def assert_no_reader_leak(
     if dead:
         raise AssertionError(f"worker child(ren) {sorted(dead)} died during observation")
 
+    counted = 0
     for child in after:
         port = _broker_port(child)
         if port is None:
@@ -328,11 +335,22 @@ async def assert_no_reader_leak(
             ]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+        counted += 1
         if len(conns) > max_broker_connections:
             raise AssertionError(
                 f"worker child {child.pid} holds {len(conns)} broker connections "
                 f"(max {max_broker_connections}) — leaked aiormq connection/reader"
             )
+        if len(conns) < min_broker_connections:
+            raise AssertionError(
+                f"worker child {child.pid} holds {len(conns)} broker connections "
+                f"(min {min_broker_connections}) — survivor lost its broker connection"
+            )
+    if not counted:
+        raise AssertionError(
+            "no worker child's broker connections could be counted (no SWARMQ_BROKER_URL, "
+            "AccessDenied) — the check would only prove liveness"
+        )
 
 
 # ---------------------------------------------------------------------------

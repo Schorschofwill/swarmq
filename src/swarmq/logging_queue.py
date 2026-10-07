@@ -32,6 +32,7 @@ from swarmq.logging_file import (
     FileDraining,
     ListenerReports,
     close_queue_listeners,
+    discard_pending,
     reset_queue_listeners_after_fork,
     running_targets,
     start_pending_queue_listeners,
@@ -287,14 +288,10 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     def _discard_pending(self) -> int:
         """Verwirft und zaehlt, was in der Queue liegt (KTD3); liefert die
         Zahl."""
-        count = 0
-        while True:
-            try:
-                self.queue.get_nowait()
-            except (queue.Empty, queue.ShutDown):
-                return count
+        count = discard_pending(self.queue)
+        for _ in range(count):
             self._drop()
-            count += 1
+        return count
 
     def _reset_after_fork(self) -> None:
         """Frische Queue, Zaehler und Listener im Kind (KTD5)."""

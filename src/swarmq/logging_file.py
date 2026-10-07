@@ -584,7 +584,7 @@ def start_pending_queue_listeners(deadline: Deadline) -> int:
         ):
             continue
         if deadline.remaining() <= 0:
-            lost = _discard(handler.queue)
+            lost = discard_pending(handler.queue)
             drops.add(lost)
             discarded += lost
             continue
@@ -602,13 +602,16 @@ def _count_closed(listener: logging.handlers.QueueListener) -> int:
     return lost
 
 
-def _discard(queue_: Any) -> int:
-    """Leert ``queue_`` ohne zu warten; liefert die Zahl der Eintraege."""
+def discard_pending(queue_: Any) -> int:
+    """Leert ``queue_`` ohne zu warten; liefert die Zahl der Eintraege.
+    Eine abgeschaltete (``queue.ShutDown``) oder geschlossene Queue (Proxy
+    eines beendeten Managers, geschlossene Pipe) gilt als leer -- das Leeren
+    wirft nie in den Aufrufer. Zaehlen muss der Aufrufer."""
     count = 0
     while True:
         try:
             queue_.get_nowait()
-        except queue.Empty:
+        except (queue.Empty, queue.ShutDown, EOFError, OSError):
             return count
         count += 1
 

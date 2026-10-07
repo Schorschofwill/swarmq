@@ -41,6 +41,24 @@ All notable changes to SwarmQ. This project follows
   hook rather than at import time; SwarmQ then starts it in every
   compute child. Details:
   [Logging](logging.md#when-a-task-module-configures-logging).
+- **One log line per deferral when the backend is unreachable before
+  execution.** The gate warnings `cancel_check_backend_error`,
+  `workflow_cancel_check_backend_error`, `cancel_store_result_failed` and
+  `schedfire_dedup_backend_error` are gone; `rate_limit_check_failed`
+  and `lock_acquire_failed` (ERROR) now appear only for errors other
+  than an unreachable backend. Their details moved into
+  `task_deferred_backend_unavailable`: the new field `stage`
+  (`completed_check`, `inflight_claim`, `cancel_check`,
+  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
+  plus `schedfire_key`, `workflow_id` or `lock_name` where they apply.
+  `task_defer_failed_redelivered` carries the same fields and the
+  backend error as `backend_error_type` and `backend_error`. Alerts on
+  the removed events should match `task_deferred_backend_unavailable`
+  instead. When Valkey answers such a check with an error instead
+  (`WRONGTYPE`, script error), the schedule-fire and cancel checks log
+  the new ERROR event `task_gate_backend_error` and requeue in place;
+  `error_type` in these and other backend log lines then reads
+  `BackendResponseError` (see Added).
 
 ### Changed
 
@@ -63,23 +81,18 @@ All notable changes to SwarmQ. This project follows
   (was `swarmq.cli:main`), like `python -m swarmq.cli`. It ends the
   process hard when a log thread is still stuck after the final flush
   (see Added). `swarmq.cli.main()` is unchanged and never exits hard.
-- **One log line per deferral when the backend is unreachable before
-  execution.** The gate warnings `cancel_check_backend_error`,
-  `workflow_cancel_check_backend_error`, `cancel_store_result_failed` and
-  `schedfire_dedup_backend_error` are gone; `rate_limit_check_failed`
-  and `lock_acquire_failed` (ERROR) now appear only for errors other
-  than an unreachable backend. Their details moved into
-  `task_deferred_backend_unavailable`: the new field `stage`
-  (`completed_check`, `inflight_claim`, `cancel_check`,
-  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
-  plus `schedfire_key`, `workflow_id` or `lock_name` where they apply.
-  `task_defer_failed_redelivered` carries the same fields and the
-  backend error as `backend_error_type` and `backend_error`. Alerts on
-  the removed events should match `task_deferred_backend_unavailable`
-  instead.
 
 ### Added
 
+- **`BackendResponseError`** (`from swarmq import BackendResponseError`),
+  a subclass of `BackendConnectionError`: Valkey was reachable but
+  answered an operation with an error (`WRONGTYPE`, script error). Every
+  `except BackendConnectionError` still catches it. The checks before
+  execution do not defer a message for it (waiting does not help) but
+  requeue it in place, so a persistent error reaches `{queue}.XQ`
+  through the delivery limit; the schedule-fire and cancel checks log
+  the new ERROR event `task_gate_backend_error` (fields `gate`, `stage`,
+  `error_type`, `error`, plus `schedfire_key` or `workflow_id`).
 - **`log_drain_timeout`** (`--log-drain-timeout SECONDS`,
   `SWARMQ_LOG_DRAIN_TIMEOUT`, `SwarmQConfig(log_drain_timeout=...)`,
   `LoggingSettings.drain_timeout`; default 5; precedence CLI > env >
@@ -143,14 +156,25 @@ All notable changes to SwarmQ. This project follows
   rotates, so a broker redelivery of that copy is still a duplicate).
   Real duplicates (a second publish of the fire, a redelivery of the
   original) are still dropped. Checks that end the delivery before the
-  task now also release the claim, owner-checked. New Lua script
+  task, or end it with an exception, now also release the claim,
+  owner-checked. The token is chosen before the claim call: when its
+  reply is lost (timeout, reset) Valkey may or may not have written the
+  claim, so the copy carries the new token and the ones it was offered
+  (comma-separated, newest first, at most 16) and takes the claim over
+  either way. A requeue in place (`nack(requeue=True)`: shutdown, a
+  publish fallback, an error other than an outage) cannot carry a token,
+  so the claim is released before the requeue; only if that release
+  fails too does the fire still wait for the claim TTL. New Lua script
   `sched_fire_claim.lua`; `ScheduleStore.claim_fire` takes the new
-  optional keywords `owner` and `takeover`,
-  `ScheduleStore.release_fire_claim` the new optional keyword `owner`
-  (third-party stores must accept them). A requeue in place
-  (`nack(requeue=True)`, when the broker cannot take the copy either)
-  cannot carry the token; if the release fails too, that fire still
-  waits for the claim TTL.
+  optional keywords `owner` and `takeover` (one token or a sequence of
+  tokens), `ScheduleStore.release_fire_claim` the new optional keyword
+  `owner`, and `ScheduleStore.commit_fire` the new keyword `fired_ts_ms`
+  (see below). Worker and scheduler always pass them: a third-party
+  store that does not accept them raises `TypeError` on every fire.
+  **Rolling upgrade:** the protection needs every worker on 0.9.0; a
+  worker of an older version neither writes nor recognises the token,
+  so a copy it handles can still be dropped as a duplicate until all
+  workers run 0.9.0.
 - **Retry copies no longer inherit the broker's delivery counters.** The
   copy published for a retry, a rate-limit hit or a lock conflict took
   `x-delivery-count` and `x-acquired-count` from the original.
@@ -172,7 +196,8 @@ All notable changes to SwarmQ. This project follows
   and acks the original only after the broker confirmed the copy. The
   wait grows from `SWARMQ_BACKEND_DEFER_BASE_DELAY` (new, default 1 s)
   and doubles per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (new,
-  default 60 s); the copy keeps all SwarmQ headers but not the broker's
+  default 60 s), varied by ±20 % so messages deferred together do not
+  return together; the copy keeps all SwarmQ headers but not the broker's
   delivery counters (new header `x-swarmq-backend-defer-count`). The
   count starts over once the backend has answered: copies for a retry,
   a rate-limit hit or a lock conflict do not carry it, and a message the
@@ -185,8 +210,14 @@ All notable changes to SwarmQ. This project follows
   `defer_count`, `delay_ms`, `error_type`, `error`; see Changed). If
   the broker cannot take the copy either, the worker requeues in place
   as before and logs `task_defer_failed_redelivered`.
+  Only an outage defers: an error reply from Valkey
+  (`BackendResponseError`, see Added) is requeued in place as before, so
+  a persistent error still ends in `{queue}.XQ` through the delivery
+  limit instead of being deferred forever.
   `ValkeyRateLimitStore.check` now raises `BackendConnectionError` for
-  connection and timeout errors.
+  connection and timeout errors. A third-party `RateLimitStore` gets the
+  deferral only if its `check` raises `BackendConnectionError` for
+  transport errors; any other exception keeps the requeue in place.
 - **Checks before execution no longer hang on an unresponsive
   backend.** The rate-limit check, the lock acquire, the schedule-fire
   dedup check and claim, and the result read of a cancelled workflow
@@ -210,7 +241,9 @@ All notable changes to SwarmQ. This project follows
   the score that was fired; `sched_commit.lua` checks this atomically
   (new optional `ARGV[5]`, backwards compatible), and
   `ScheduleStore.commit_fire` takes a new optional keyword
-  `fired_ts_ms`.
+  `fired_ts_ms`. A schedule removed and recreated with the same next
+  fire time between poll and commit cannot be told apart from the fired
+  one; the commit applies there.
 - **An aborted worker start no longer leaves the embedded scheduler
   running.** Cancelling `start_worker()`, or a failure after the
   scheduler had started (executor start, queue declaration,
@@ -306,7 +339,9 @@ All notable changes to SwarmQ. This project follows
   `multiprocessing` closes the queue. A record that still arrives after
   that (for example from an `atexit` function registered before
   `multiprocessing` was imported) counts as dropped, without a
-  traceback.
+  traceback, and a queue that is already closed when the flush discards
+  its records after the deadline no longer raises `EOFError`/`OSError`
+  out of `shutdown_logging()`.
 
 ## [0.8.0] — 2026-10-06
 

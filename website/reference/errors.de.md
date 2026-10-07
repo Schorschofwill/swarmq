@@ -25,6 +25,7 @@ except SwarmQError as exc:
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
+| `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
@@ -169,6 +170,25 @@ TLS-Mismatch.
 `PONG` drucken. Laufzeit-Connection-Losses werden vom valkey-py-
 Reconnect-Loop automatisch erholt — diese Exception feuert nur,
 wenn das Retry-Fenster erschöpft ist.
+
+## `BackendResponseError`
+
+**Wann geraist.** Eine Backend-Operation hat Valkey erreicht, Valkey
+hat aber mit einem Fehler geantwortet: ein Key vom falschen Typ
+(`WRONGTYPE`), ein Fehler im Lua-Skript. Eine Unterklasse von
+`BackendConnectionError`, jedes `except BackendConnectionError` fängt
+sie also weiter.
+
+**Ursache.** Meist ein Key, den etwas anderes als SwarmQ unter einem
+SwarmQ-Namen geschrieben hat (etwa ein Lock-Key `sq:lock:...` als
+Hash), oder ein inkompatibler Server.
+
+**Recovery.** Warten hilft nicht, deshalb stellt der Worker eine
+Nachricht dafür vor der Ausführung nicht zurück (anders als bei einem
+nicht erreichbaren Backend): Sie geht an derselben Stelle in die Queue
+zurück und landet, wenn der Fehler bleibt, über das Zustelllimit in
+`{queue}.XQ`. Den im Fehler genannten Key prüfen und löschen oder
+korrigieren.
 
 ## `TaskNotFoundError`
 

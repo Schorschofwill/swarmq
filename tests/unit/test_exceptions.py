@@ -113,3 +113,14 @@ def test_remaining_exceptions_are_exported_from_package_root():
     assert {"LoggingConfigError", "SoftTimeoutError", "PublishIndeterminate"} <= set(
         swarmq.__all__
     )
+
+
+def test_backend_response_error_is_a_backend_connection_error_exported_from_the_root():
+    """0.9.0 (drittes Review): Fehlerantwort des Backends -- eine Unterklasse,
+    damit bestehende ``except BackendConnectionError`` sie weiter fangen."""
+    import swarmq
+    from swarmq import BackendResponseError, exceptions
+
+    assert BackendResponseError is exceptions.BackendResponseError
+    assert issubclass(BackendResponseError, exceptions.BackendConnectionError)
+    assert "BackendResponseError" in swarmq.__all__

@@ -110,8 +110,14 @@ gescheitert, wenn Valkey nicht innerhalb von `SWARMQ_BACKEND_OP_TIMEOUT`
 Nachricht also zurück, statt sie bis zum Socket-Timeout des Clients
 festzuhalten. Die Wartezeit beginnt bei
 `SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) und verdoppelt sich je
-Zurückstellung in Folge bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s).
-Sobald das Backend geantwortet hat, beginnt die Zählung neu:
+Zurückstellung in Folge bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s);
+jede Wartezeit streut um ±20 %, damit gemeinsam zurückgestellte
+Nachrichten das sich erholende Backend nicht gemeinsam treffen.
+Zurückgestellt wird nur bei einem Ausfall: Antwortet Valkey einer
+Prüfung mit einem Fehler (`BackendResponseError`, etwa `WRONGTYPE`),
+hilft Warten nicht, und die Nachricht geht an derselben Stelle in die
+Queue zurück; ein bleibender Fehler landet so über das Zustelllimit in
+`{queue}.XQ`. Sobald das Backend geantwortet hat, beginnt die Zählung neu:
 Retry-, Rate-Limit- und Lock-Kopien tragen
 `x-swarmq-backend-defer-count` nicht, und eine Nachricht, die der Broker
 nach einer Zustellung zurückgibt, die die Prüfungen bestanden hat (auf
@@ -138,9 +144,15 @@ der Worker den Claim nicht freigeben, etwa weil Valkey direkt nach dem
 Claim ausfiel, erkennt die Kopie den Claim als ihren und übernimmt ihn,
 statt sich als Duplikat zu bestätigen. Das Token wechselt bei jeder
 Übernahme, eine Redelivery derselben Kopie bleibt also ein Duplikat.
-Nur ein Neueinreihen an derselben Stelle kann kein Token tragen:
-scheitern in diesem Moment Broker und Backend, wartet der Fire auf
-`SWARMQ_SCHEDULER_INFLIGHT_TTL`.
+Geht die Antwort auf den Claim selbst verloren (Valkey kann ihn
+geschrieben haben oder nicht), trägt die Kopie das neue Token zusammen
+mit den angebotenen und übernimmt den Claim in beiden Fällen. Ein
+Neueinreihen an derselben Stelle (`nack(requeue=True)`) kann kein Token
+tragen; der Worker gibt den Claim deshalb vorher frei. Nur wenn auch
+diese Freigabe scheitert (Broker und Backend gleichzeitig gestört),
+wartet der Fire auf `SWARMQ_SCHEDULER_INFLIGHT_TTL`. Der Claim-Schutz
+setzt voraus, dass alle Worker mindestens 0.9.0 laufen: ein Worker
+älterer Version schreibt das Token weder noch erkennt er es.
 
 ## Redelivery-Szenarien
 

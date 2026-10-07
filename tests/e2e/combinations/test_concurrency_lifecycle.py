@@ -1666,14 +1666,9 @@ class TestProcessManagerWorkerCrashLockCombo:
                 crashed_pid = kill_worker_child(proc_a)
 
                 # The supervisor restarts the slot with a fresh child.
-                deadline = time.monotonic() + 20.0
-                while time.monotonic() < deadline:
-                    pids = {c.pid for c in _worker_children_now(proc_a)} - {crashed_pid}
-                    if pids:
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    raise AssertionError("supervisor did not restart the crashed worker child")
+                await asyncio.to_thread(
+                    wait_for_worker_children, proc_a, exclude={crashed_pid}, timeout=20.0,
+                )
                 assert proc_a.poll() is None, "supervisor must survive a child crash"
 
                 results = await app.get_results(tids, timeout=25)

@@ -103,6 +103,12 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "BackendResponseError": dict(
+        # Unterklasse von BackendConnectionError: das Backend antwortete mit
+        # einem Fehler (WRONGTYPE, Skriptfehler) -- kein Ausfall, kein Backoff.
+        origin="library", when=["startup", "schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "TaskNotFoundError": dict(
         origin="library", when=["schedule"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=None,

@@ -63,6 +63,36 @@ class WorkerBackend(ResultBackend, Protocol):
 LockEntry = LockToken
 
 
+# Hoechstzahl der Tokens in ``x-swarmq-schedfire-claim``. Jeder Claim mit
+# unklarem Ausgang fuegt eins hinzu; 16 decken bei Standard-Backoff
+# (1 s ... 60 s) gut zehn Minuten Folgefehler ab -- laenger als die
+# Standard-TTL des Claims (300 s), danach ist ein aelteres Token ohnehin
+# abgelaufen.
+MAX_SCHEDFIRE_CLAIM_TOKENS = 16
+
+
+@dataclass(frozen=True)
+class SchedfireClaim:
+    """Schedfire-Claim einer Zustellung: Fire-Schluessel und Owner-Token.
+
+    Liegt am ``GateContext`` der Zustellung (nicht in einem Register des
+    Workers) -- der Runner finalisiert ihn von dort, eine andere Zustellung
+    kann ihn nicht treffen."""
+
+    key: str
+    owner: str
+    # Tokens, die der Claim nach einem Aufruf mit unklarem Ausgang noch
+    # tragen kann (die angebotenen Uebernahme-Tokens); leer, sobald der
+    # Claim sicher ``owner`` gehoert.
+    candidates: tuple[str, ...] = ()
+
+    def header_value(self) -> str:
+        """Wert von ``x-swarmq-schedfire-claim`` einer Kopie: das eigene
+        Token zuerst, dann die Kandidaten (kommagetrennt, gedeckelt auf
+        ``MAX_SCHEDFIRE_CLAIM_TOKENS``; die aeltesten fallen weg)."""
+        return ",".join((self.owner, *self.candidates)[:MAX_SCHEDFIRE_CLAIM_TOKENS])
+
+
 @dataclass
 class GateContext:
     """Pro-Zustellung-Kontext, den der Runner nach dem Decode aufbaut."""
@@ -77,9 +107,9 @@ class GateContext:
     handler_id: uuid.UUID | None = None
     acquired_locks: list[LockEntry] = field(default_factory=list)
     workflow_id: str | None = None  # gepruefter Workflow-Header (U10: Logkontext im Kind)
-    # Owner-Token des Schedfire-Claims, den diese Zustellung gewonnen hat;
-    # jede Kopie traegt es als ``x-swarmq-schedfire-claim`` weiter.
-    schedfire_claim: str | None = None
+    # Schedfire-Claim, den diese Zustellung gewonnen hat; jede Kopie traegt
+    # sein Owner-Token als ``x-swarmq-schedfire-claim`` weiter.
+    schedfire_claim: SchedfireClaim | None = None
 
 
 @dataclass
@@ -97,10 +127,9 @@ class GateDeps:
     registry: TaskRegistry
     rate_limiter: Callable[[], RateLimitStore | None]
     lock_manager: Callable[[], LockStore | None]
-    finalize_schedfire: Callable[[Any, bool], Awaitable[None]]
+    finalize_schedfire: Callable[[GateContext, bool], Awaitable[None]]  # (ctx, terminal)
     maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
-    claim_schedfire: Callable[[Any, str, str], None]  # (delivery, fire_key, owner_token)
     register_lock: Callable[[uuid.UUID, LockEntry], None]
 
 
@@ -132,8 +161,22 @@ def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
         if key not in _NOT_COPIED
     }
     if ctx.schedfire_claim is not None:
-        headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim
+        headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim.header_value()
     return headers
+
+
+async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) -> None:
+    """``nack(requeue=True)`` des Originals; ein gehaltener Schedfire-Claim
+    wird VORHER freigegeben (owner-geprueft, begrenzt).
+
+    Das Original kehrt ohne ``x-swarmq-schedfire-claim`` zurueck: stuende der
+    Claim noch, wenn die Redelivery ihn prueft, bestaetigte sie sich als
+    Duplikat. Scheitert die Freigabe (Backend weg), wartet der Fire auf die
+    Claim-TTL. Kein Ersatz durch eine Kopie (``retry_later``): die Requeue-
+    Pfade sind Fallbacks fuer einen gestoerten Broker oder zaehlen bewusst
+    aufs Zustelllimit (Logikfehler -> DLQ)."""
+    await deps.finalize_schedfire(ctx, False)
+    await deps.broker.redeliver(delivery)
 
 
 class Gate(Protocol):
@@ -182,7 +225,9 @@ __all__ = [
     "GateContext",
     "GateDeps",
     "LockEntry",
+    "SchedfireClaim",
     "WorkerBackend",
     "WorkerBroker",
+    "redeliver_in_place",
     "route_via_dlx",
 ]

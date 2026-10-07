@@ -7,7 +7,7 @@ Implementierung ``scheduler.definition`` nicht importieren muss.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -49,7 +49,12 @@ class RateLimitDecision:
 @runtime_checkable
 class RateLimitStore(Protocol):
     async def check(self, name: str, *, max_requests: int, window_ms: int) -> RateLimitDecision:
-        """Zählt den Aufruf, wenn erlaubt; meldet sonst die Restwartezeit."""
+        """Zählt den Aufruf, wenn erlaubt; meldet sonst die Restwartezeit.
+
+        Ist das Backend nicht erreichbar (Verbindung, Timeout), wirft die
+        Implementierung ``BackendConnectionError`` -- nur dann stellt der
+        Worker die Nachricht mit Backoff zurück. Jeder andere Fehler (auch
+        ``BackendResponseError``) führt zum Requeue an derselben Stelle."""
 
 
 @runtime_checkable
@@ -96,17 +101,23 @@ class ScheduleStore(Protocol):
         nur, wenn der Eintrag noch mit genau diesem Score im Fire-Index
         steht; wurde der Zeitplan seit dem Poll deaktiviert, entfernt oder
         umgeplant, wird der Commit verworfen. ``False`` heißt nur
-        „Owner-Check abgelehnt“ — ein verworfener Commit liefert ``True``."""
+        „Owner-Check abgelehnt“ — ein verworfener Commit liefert ``True``.
+        Grenze: entfernt und mit demselben Score neu angelegt, ist der
+        Eintrag nicht vom gefeuerten zu unterscheiden; der Commit greift.
+        Der Scheduler übergibt ``fired_ts_ms`` immer -- Stores Dritter müssen
+        das Schlüsselwort annehmen."""
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 
     async def claim_fire(
-        self, fire_key: str, ttl_ms: int, *, owner: str | None = None, takeover: str | None = None,
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        takeover: str | Sequence[str] | None = None,
     ) -> bool:
         """In-Flight-Claim mit Owner-Token (atomar). ``True``, wenn der Claim
-        frei war oder sein Wert ``takeover`` ist -- dann gehoert er danach
-        ``owner`` mit neuer TTL (Uebernahme durch die eigene Kopie).
-        Ohne ``owner`` speichert der Claim einen Platzhalter."""
+        frei war oder sein Wert eines der ``takeover``-Tokens ist (ein Token
+        oder mehrere) -- dann gehoert er danach ``owner`` mit neuer TTL
+        (Uebernahme durch die eigene Kopie). Ohne ``owner`` speichert der
+        Claim einen Platzhalter."""
 
     async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
         """Gibt den In-Flight-Claim frei; mit ``owner`` nur, wenn er noch

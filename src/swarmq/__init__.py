@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from swarmq.exceptions import (
     BackendConnectionError,
+    BackendResponseError,
     BrokerConnectionError,
     ConfigurationError,
     LoggingConfigError,
@@ -111,6 +112,7 @@ def __dir__() -> list[str]:
 __all__ = [
     # Exceptions
     "BackendConnectionError",
+    "BackendResponseError",
     "BrokerConnectionError",
     "ConfigurationError",
     # Task

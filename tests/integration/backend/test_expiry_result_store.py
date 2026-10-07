@@ -69,7 +69,6 @@ async def test_expired_task_error_result_is_stored_and_decodable(backend):
         finalize_schedfire=AsyncMock(),
         maybe_release_unique=AsyncMock(),
         extract_valid_workflow_id=lambda _msg: None,
-        claim_schedfire=lambda _msg, _key, _owner: None,
         register_lock=lambda _hid, _tok: None,
     )
     gate = ExpiryGate(deps)

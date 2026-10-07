@@ -1,5 +1,7 @@
 """Tests for swarmq.backoff — backoff calculation."""
 
+import pytest
+
 from swarmq.backoff import calculate_backoff
 
 # Testliste backend_defer_delay (Zurueckstellung bei Backend-Ausfall):
@@ -8,6 +10,14 @@ from swarmq.backoff import calculate_backoff
 # [x] Obergrenze greift
 # [x] Versuch < 1 wird wie der erste behandelt (kaputter Header)
 # [x] sehr hoher Versuch laeuft nicht ueber (bleibt beim Deckel)
+# [x] multiplikativer Jitter 0.8..1.2 (Zufallsquelle injizierbar), auch am
+#     Deckel -- sonst kaemen gleichzeitig zurueckgestellte Nachrichten
+#     gleichzeitig wieder (Wellen nach der Erholung des Backends)
+# [x] ohne injizierte Quelle streut die Wartezeit im Bereich
+
+
+def _no_jitter(_lo: float, _hi: float) -> float:
+    return 1.0
 
 
 def test_fixed_strategy_returns_base_delay():
@@ -79,26 +89,26 @@ def test_max_delay_cap_is_respected():
 def test_backend_defer_delay_first_attempt_is_base_delay():
     from swarmq.backoff import backend_defer_delay
 
-    assert backend_defer_delay(1, base_delay=1.0, max_delay=60.0) == 1.0
+    assert backend_defer_delay(1, base_delay=1.0, max_delay=60.0, uniform=_no_jitter) == 1.0
 
 
 def test_backend_defer_delay_doubles_per_attempt():
     from swarmq.backoff import backend_defer_delay
 
-    assert backend_defer_delay(3, base_delay=1.0, max_delay=60.0) == 4.0
+    assert backend_defer_delay(3, base_delay=1.0, max_delay=60.0, uniform=_no_jitter) == 4.0
 
 
 def test_backend_defer_delay_is_capped():
     from swarmq.backoff import backend_defer_delay
 
-    assert backend_defer_delay(8, base_delay=1.0, max_delay=60.0) == 60.0
+    assert backend_defer_delay(8, base_delay=1.0, max_delay=60.0, uniform=_no_jitter) == 60.0
 
 
 def test_backend_defer_delay_attempt_below_one_is_base_delay():
     from swarmq.backoff import backend_defer_delay
 
-    assert backend_defer_delay(0, base_delay=1.0, max_delay=60.0) == 1.0
-    assert backend_defer_delay(-5, base_delay=1.0, max_delay=60.0) == 1.0
+    assert backend_defer_delay(0, base_delay=1.0, max_delay=60.0, uniform=_no_jitter) == 1.0
+    assert backend_defer_delay(-5, base_delay=1.0, max_delay=60.0, uniform=_no_jitter) == 1.0
 
 
 def test_backend_defer_delay_huge_attempt_stays_at_cap():
@@ -106,4 +116,18 @@ def test_backend_defer_delay_huge_attempt_stays_at_cap():
     ``2 ** n`` darf dabei nicht in einen Float-Ueberlauf laufen."""
     from swarmq.backoff import backend_defer_delay
 
-    assert backend_defer_delay(100_000, base_delay=1.0, max_delay=60.0) == 60.0
+    assert backend_defer_delay(100_000, base_delay=1.0, max_delay=60.0, uniform=_no_jitter) == 60.0
+
+
+def test_backend_defer_delay_applies_multiplicative_jitter_even_at_the_cap():
+    from swarmq.backoff import backend_defer_delay
+
+    drawn: list[tuple[float, float]] = []
+
+    def _uniform(lo: float, hi: float) -> float:
+        drawn.append((lo, hi))
+        return hi
+
+    assert backend_defer_delay(3, base_delay=1.0, max_delay=60.0, uniform=_uniform) == pytest.approx(4.8)
+    assert backend_defer_delay(8, base_delay=1.0, max_delay=60.0, uniform=_uniform) == pytest.approx(72.0)
+    assert drawn == [(0.8, 1.2), (0.8, 1.2)]

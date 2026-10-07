@@ -14,13 +14,24 @@
 -- ARGV[1] Owner-Token     (neuer Wert des Claims)
 -- ARGV[2] TTL in ms
 -- ARGV[3] Uebernahme-Token ("" = keine Uebernahme)
+-- ARGV[4..n] weitere Uebernahme-Tokens: nach einem Claim mit unklarem
+--         Ausgang (Antwort verloren) kann der Claim jedes davon tragen.
 --
 -- Returns:
 --   1 -> Claim gehoert jetzt ARGV[1] (frei gewesen oder uebernommen)
 --   0 -> fremder Claim (Duplikat)
 
 local current = redis.call('GET', KEYS[1])
-if (not current) or (ARGV[3] ~= '' and current == ARGV[3]) then
+local owned = not current
+if not owned then
+    for i = 3, #ARGV do
+        if ARGV[i] ~= '' and current == ARGV[i] then
+            owned = true
+            break
+        end
+    end
+end
+if owned then
     redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
     return 1
 end

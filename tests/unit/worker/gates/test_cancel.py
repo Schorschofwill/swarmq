@@ -12,6 +12,10 @@ Test-Liste 0.9.0 (Zeitlimit):
       ``backend_op_timeout`` zurueckgestellt (``stage=cancel_store_result``)
 - [x] haengendes ``notify_result`` -> nach ``backend_op_timeout`` weiter
       (Warnung), Nachricht bestaetigt
+
+Test-Liste 0.9.0 (drittes Review):
+- [x] Fehlerantwort beim Cancel-Check (``BackendResponseError``) -> kein
+      Ausfall: Requeue an derselben Stelle, keine Zurueckstellung
 """
 
 from __future__ import annotations
@@ -35,6 +39,8 @@ from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
 )
+
+pytestmark = pytest.mark.timeout(5)
 
 
 class TestWorkerPreStartCancelCheck:
@@ -512,6 +518,16 @@ class TestCancelGateOutcomes:
         assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
         broker.retry_later.assert_awaited_once()
         broker.redeliver.assert_not_awaited()
+
+
+    async def test_error_reply_is_requeued_not_deferred(self, worker, broker, backend):
+        from swarmq.exceptions import BackendResponseError
+
+        backend.is_cancelled = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))
+        msg = make_message(_default_payload())
+        assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_awaited_once_with(msg)
 
 
 class TestCancelGateLogging:

@@ -11,6 +11,13 @@ Test-Liste 0.9.0 (Zeitlimit):
 - [x] haengendes Acquire (Blackhole) -> nach ``backend_op_timeout``
       zurueckgestellt (``stage=acquire``), kein Lock registriert
 - [x] Konflikt-Kopie traegt keinen ``x-swarmq-backend-defer-count``
+
+Test-Liste 0.9.0 (drittes Review):
+- [x] Fehlerantwort des Backends beim Acquire (``BackendResponseError``,
+      z. B. WRONGTYPE auf dem Lock-Key) -> kein Ausfall: ERROR
+      ``lock_acquire_failed`` und Requeue, keine Zurueckstellung
+- [x] die Konflikt-Kopie einer Schedfire-Zustellung mit gewonnenem Claim
+      traegt dessen Owner-Token (``x-swarmq-schedfire-claim``)
 """
 
 from __future__ import annotations
@@ -35,6 +42,8 @@ from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
 )
+
+pytestmark = pytest.mark.timeout(5)
 
 
 class LockedTask(Task):
@@ -792,6 +801,19 @@ class TestLockGateLogging:
         assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
         assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
 
+    async def test_acquire_error_reply_takes_the_old_requeue_path(self, worker, broker, swarmq_logs):
+        from swarmq.exceptions import BackendResponseError
+
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))
+        outcome = await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
+
+        assert outcome is Redelivered
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_awaited_once()
+        entry = self._entry(swarmq_logs, "lock_acquire_failed")
+        assert entry["error_type"] == "BackendResponseError" and entry["error"] == "WRONGTYPE"
+
     async def test_conflict_dlq_failure_at_cap_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(return_value=None)
@@ -813,3 +835,19 @@ class TestLockGateLogging:
         entry = self._entry(swarmq_logs, "lock_conflict_requeue_failed")
         assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
         assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+
+
+async def test_conflict_copy_of_a_claimed_fire_carries_the_claim_token(broker, backend, config):
+    reg = TaskRegistry()
+    reg.register(LockedTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+    w._lock_manager = MagicMock()
+    w._lock_manager.acquire = AsyncMock(return_value=None)
+    msg = make_message(
+        _default_payload(name="locked", args=[], kwargs={}), headers={"x-swarmq-schedfire": "s:1"},
+    )
+
+    await w._handle_message(msg)
+
+    owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+    assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner

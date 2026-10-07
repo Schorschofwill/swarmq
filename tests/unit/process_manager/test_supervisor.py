@@ -131,12 +131,12 @@ class TestProcessManagerCore:
         ``PR_SET_PDEATHSIG`` auf SIGTERM: der Elterntod loest denselben
         Graceful-Shutdown aus wie ein geordnetes Herunterfahren.
         """
-        from swarmq.process_manager.supervisor import _run_worker_entry
+        from swarmq.process_manager.worker_target import run_worker_entry
 
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe(duplex=False)
         proc = ctx.Process(
-            target=_run_worker_entry, args=(_report_pdeathsig_entry, child_conn)
+            target=run_worker_entry, args=(_report_pdeathsig_entry, child_conn)
         )
         proc.start()
         try:
@@ -1488,7 +1488,7 @@ class TestSlotTable:
         generations: dict[int, int] = {}
 
         def spawn(**kwargs):
-            # Ziel ist seit B15 die Huelle ``_run_worker_entry``; der Slot steht
+            # Ziel ist seit B15 die Huelle ``run_worker_entry``; der Slot steht
             # hinter dem Entry an zweiter Stelle.
             slot = kwargs["args"][1]
             generations[slot] = generations.get(slot, 0) + 1

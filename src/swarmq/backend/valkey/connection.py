@@ -18,7 +18,7 @@ from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 from valkey.exceptions import ValkeyError
 
 from swarmq.config import INJECTED_URL
-from swarmq.exceptions import BackendConnectionError, ConfigurationError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
 
 # Transient transport errors that should be retried transparently by the
 # valkey-py client. Application-level errors (ResponseError, DataError,
@@ -28,6 +28,16 @@ _TRANSIENT_ERRORS: list[type[Exception]] = [
     ValkeyTimeoutError,
     OSError,
 ]
+
+def as_backend_error(message: str, exc: BaseException) -> BackendConnectionError:
+    """Abbildung eines Treiberfehlers an der Backend-Grenze: ein
+    Transportfehler (Verbindung, Timeout, Socket) ist ein Ausfall
+    (``BackendConnectionError``), jede andere Ursache -- Fehlerantwort,
+    Skriptfehler -- ein ``BackendResponseError``."""
+    if isinstance(exc, tuple(_TRANSIENT_ERRORS)):
+        return BackendConnectionError(message)
+    return BackendResponseError(message)
+
 
 # Socket-level bounds for the owned client. Without
 # socket_timeout, an in-flight recv on a half-open connection (peer
@@ -173,7 +183,7 @@ class ValkeyConnection:
         except TimeoutError as exc:
             raise BackendConnectionError(f"{what} timed out after {op_timeout}s") from exc
         except (ValkeyError, OSError) as exc:
-            raise BackendConnectionError(str(exc)) from exc
+            raise as_backend_error(str(exc), exc) from exc
 
     def _pubsub(self) -> Any:
         return self._require_client().pubsub()

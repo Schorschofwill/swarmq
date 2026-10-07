@@ -9,8 +9,11 @@ Fallbacks (KTD3, unverändert): Render-Fehler, leerer Render und Konflikt am
 Cap gehen an das Dead-Letter-Ziel und geben das Dedup-Flag inline frei; schlägt
 der Publish fehl, ``nack(requeue=False)`` (DLX ohne Diagnose-Header). Konflikt
 unter dem Cap → exponentielle Rückstellung, bei Publish-Fehler
-``nack(requeue=True)``. Backend-Fehler beim Acquire → Zurueckstellung mit
-Backoff (``backend_defer``), ohne den Konfliktzaehler zu erhoehen.
+``nack(requeue=True)``. Backend-Ausfall beim Acquire → Zurueckstellung mit
+Backoff (``backend_defer``), ohne den Konfliktzaehler zu erhoehen; eine
+Fehlerantwort (``BackendResponseError``) oder ein anderer Fehler →
+``lock_acquire_failed`` und Requeue. Jedes Requeue gibt einen gehaltenen
+Schedfire-Claim vorher frei (``redeliver_in_place``).
 
 Outcome bis U8: jeder behandelte Sub-Pfad meldet ``Redelivered`` — für den
 ``finally`` des Runners verhaltensgleich mit dem heutigen Stand (keine
@@ -25,12 +28,11 @@ import inspect
 import uuid
 from typing import Any, Literal
 
-from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, republish_headers, route_via_dlx
-from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
+from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers, route_via_dlx
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -133,14 +135,16 @@ class LockGate:
                 self._acquire_and_register(lock_manager, ctx, lock_name, owner_token, ttl_ms, task_info.max_concurrency)
             )
         except Exception as exc:
-            # Same shape as rate-limit: BackendConnectionError or any
-            # other failure means we cannot decide safely. nack(requeue)
-            # so the broker hands the message to the next worker. Runs
-            # BEFORE FIRE_AND_FORGET ack — no data loss.
-            if isinstance(exc, BackendConnectionError):
+            # Same shape as rate-limit: an outage defers; any other
+            # failure means we cannot decide safely -> nack(requeue) so the
+            # broker hands the message to the next worker (the delivery
+            # limit ends a persistent failure in the DLQ). Runs BEFORE
+            # FIRE_AND_FORGET ack — no data loss.
+            if is_backend_outage(exc):
                 # Backend weg: zurueckstellen statt per Requeue das
                 # Zustellbudget zu verbrauchen (kein Lock-Konflikt); die
-                # Zurueckstellung loggt die eine WARNING-Zeile.
+                # Zurueckstellung loggt die eine WARNING-Zeile. Eine
+                # Fehlerantwort (WRONGTYPE ...) nimmt den alten Weg unten.
                 return await defer_backend_unavailable(
                     deps, delivery, ctx, exc, gate="lock", stage="acquire", lock_name=lock_name,
                 )
@@ -148,7 +152,7 @@ class LockGate:
                 "lock_acquire_failed", task_id=ctx.task_id, task_name=ctx.task_name, lock_name=lock_name,
                 **_error_fields(exc),
             )
-            await deps.broker.redeliver(delivery)
+            await redeliver_in_place(deps, delivery, ctx)
             return Redelivered
 
         if acquired:
@@ -231,7 +235,7 @@ class LockGate:
                 lock_name=lock_name,
                 **_error_fields(exc),
             )
-            await deps.broker.redeliver(delivery)
+            await redeliver_in_place(deps, delivery, ctx)
 
         return Redelivered
 

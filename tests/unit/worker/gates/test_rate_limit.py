@@ -13,6 +13,12 @@ Test-Liste 0.9.0 (Zeitlimit):
       Backend-Ausfall zurueckgestellt (``stage=check``), nicht haengen
 - [x] Rate-Limit-Kopie traegt keinen ``x-swarmq-backend-defer-count``
       (Backend hat geantwortet, die naechste Stoerung beginnt bei 1)
+
+Test-Liste 0.9.0 (drittes Review):
+- [x] Fehlerantwort eines Stores (``BackendResponseError``) -> kein Ausfall:
+      ERROR ``rate_limit_check_failed`` und Requeue, keine Zurueckstellung
+- [x] die Rueckstellungs-Kopie einer Schedfire-Zustellung mit gewonnenem
+      Claim traegt dessen Owner-Token (``x-swarmq-schedfire-claim``)
 """
 
 from __future__ import annotations
@@ -36,6 +42,8 @@ from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
 )
+
+pytestmark = pytest.mark.timeout(5)
 
 
 class RateLimitedTask(Task):
@@ -470,6 +478,19 @@ class TestRateLimitGateOutcomes:
         assert entry["log_level"] == "error" and entry["task_id"] == self._ctx().task_id
         assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
 
+    async def test_check_error_reply_takes_the_old_requeue_path(self, worker, broker, swarmq_logs):
+        from swarmq.exceptions import BackendResponseError
+
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))
+        outcome = await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        assert outcome is Redelivered
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_awaited_once()
+        [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_check_failed"]
+        assert entry["error_type"] == "BackendResponseError"
+
     async def test_requeue_failure_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(
@@ -481,3 +502,21 @@ class TestRateLimitGateOutcomes:
         [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_requeue_failed"]
         assert entry["log_level"] == "error"
         assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+
+
+async def test_limited_copy_of_a_claimed_fire_carries_the_claim_token(broker, backend, config):
+    reg = TaskRegistry()
+    reg.register(RateLimitedTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+    w._rate_limiter = MagicMock()
+    w._rate_limiter.check = AsyncMock(
+        return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
+    )
+    msg = make_message(
+        _default_payload(name="rate_limited", args=[], kwargs={}), headers={"x-swarmq-schedfire": "s:1"},
+    )
+
+    await w._handle_message(msg)
+
+    owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+    assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner

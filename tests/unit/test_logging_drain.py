@@ -93,6 +93,12 @@ from __future__ import annotations
 #         gueltiges JSON mit der Zahl der Records (Charakterisierung, ohne
 #         eigenes Rot -- die Verdrahtung ueber ``configure_logging`` war
 #         ungetestet).
+# Drittes Review (0.9.0):
+# 33. [x] Datei-Modus: wirft die Queue nach Ablauf der Frist beim Verwerfen
+#         ``EOFError``/``OSError`` (Manager beendet, Pipe geschlossen), kehrt
+#         ``shutdown_logging`` trotzdem zurueck, ohne die Ausnahme zu werfen.
+# 34. [x] Zu 31: das Kind schreibt den Record auch (nicht nur: nicht
+#         verworfen).
 import contextlib
 import fcntl
 import io
@@ -920,6 +926,25 @@ def test_file_mode_counts_a_record_left_behind_the_sentinel_after_the_deadline(
     assert file_mode_gate.messages == ["first"]
 
 
+@pytest.mark.parametrize("error", [EOFError, OSError])
+def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
+    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch, error: type[Exception],
+) -> None:
+    file_mode_gate.opened.set()
+    log = _configure_file_mode()
+    log.warning("first")
+    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    queue_ = _file_mode_queue_handler().queue
+    queue_.put_nowait(_record("behind-sentinel"))
+
+    def _closed() -> object:
+        raise error("queue closed")
+
+    monkeypatch.setattr(queue_, "get_nowait", _closed)
+
+    assert _returns_within(lambda: shutdown_logging(timeout=0))
+
+
 def test_the_closing_line_counts_records_discarded_after_the_deadline(
     file_mode_gate: _GateState, capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -1002,6 +1027,9 @@ def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
     def child() -> None:
         handler.handle(_record("in-child"))
         assert handler.dropped == 0
+        # Liste 34: der Listener des Kindes schreibt den Record auch.
+        shutdown_logging(timeout=1)
+        assert gate.messages == ["in-child"]
 
     with draining_until(Deadline(0)):
         assert run_in_forked_child(child) == 0

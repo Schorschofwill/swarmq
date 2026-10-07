@@ -34,6 +34,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Collection
 from pathlib import Path
 
 import psutil
@@ -135,12 +136,14 @@ def worker_children(proc: subprocess.Popen[str]) -> list[psutil.Process]:
 
 
 def wait_for_worker_children(
-    proc: subprocess.Popen[str], *, count: int = 1, timeout: float = 10.0
+    proc: subprocess.Popen[str], *, count: int = 1, timeout: float = 10.0, exclude: Collection[int] = (),
 ) -> list[psutil.Process]:
-    """Block until the supervisor runs ``count`` worker children."""
+    """Block until the supervisor runs ``count`` worker children, not
+    counting the PIDs in ``exclude`` (e.g. a child just killed, to wait for
+    its restart)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        children = worker_children(proc)
+        children = [child for child in worker_children(proc) if child.pid not in exclude]
         if len(children) >= count:
             return children
         if proc.poll() is not None:

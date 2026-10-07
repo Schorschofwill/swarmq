@@ -24,8 +24,7 @@ from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 from swarmq.process_manager.reload import ReloadController, reexec
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
-from swarmq.process_manager.worker_target import _block_signals, _unblock_signals
-from swarmq.process_manager.worker_target import _run_worker_entry as _run_worker_entry
+from swarmq.process_manager.worker_target import block_signals, run_worker_entry, unblock_signals
 from swarmq.supervision import (
     FORK_SOURCE_REJECTED_EXIT_CODE,
     INTENT_DRAINING,
@@ -247,10 +246,10 @@ class ProcessManager:
             autoscale=self._autoscale,
         )
         setpoint.read_at_start(self)  # R6: vor dem ersten Kind, scheitert nie
-        _block_signals()
+        block_signals()
         self._start_all_workers()
         self._setup_signals()
-        _unblock_signals()
+        unblock_signals()
 
         # R5.3 Unit 6: arm the file-watcher AFTER _setup_signals so the
         # SIGHUP handler is guaranteed to be installed by the time the
@@ -339,7 +338,7 @@ class ProcessManager:
         """Spawn one worker subprocess for ``slot`` and register it."""
         channel = SupervisorChannel.create(self._ctx)
         p = self._ctx.Process(
-            target=_run_worker_entry,
+            target=run_worker_entry,
             args=(self._worker_entry, slot, self.shutdown_event, *self._worker_args, channel),
             name=f"swarmq-worker-{slot}",
             daemon=False,

@@ -1146,8 +1146,11 @@ class TestBrokerReconnectAtMostOnceCombo:
                 await direct_app.schedule(sentinel_name)
                 await asyncio.wait_for(sentinel_done.wait(), timeout=10.0)
 
-        # At most once: the publisher gave up and did not re-send.
-        assert run_count <= 1, f"at-most-once violated: task ran {run_count} times"
+        # The toxic blocked the upstream before the publish, so nothing reached
+        # the broker: the task never ran (the sentinel proves the queue was
+        # drained). ``<= 1`` would also pass if the scenario never dropped
+        # anything; the publisher gave up and did not re-send.
+        assert run_count == 0, f"at-most-once violated or publish not dropped: task ran {run_count} times"
 
     @pytest.mark.chaos
     async def test_at_least_once_redelivers_after_drop(
@@ -1367,6 +1370,24 @@ class TestBackendDownResultStoreCombo:
         await asyncio.wait_for(gates.rerun_stored.wait(), timeout=25.0)
         return tid
 
+    @staticmethod
+    async def _assert_settled_on_the_broker(
+        broker: RabbitMQBroker, queue: str, gates: _BackendDropGates,
+    ) -> None:
+        """FAF-4 from the real broker state instead of values derived from
+        ``run_count`` (that observation was circular).  Called after the
+        worker shut down, so an unacked message would be ready again:
+
+        1. no silent drop and the requeue happened: the first store failed
+           and the result was stored by the redelivered run;
+        2. the message was acked -- nothing left ready or delayed in the
+           queue and its ``.DQ``;
+        3. no silent dead-lettering -- ``.XQ`` is empty.
+        """
+        assert gates.store_failed.is_set() and gates.rerun_stored.is_set()
+        assert await broker.queue_depth(queue) == 0
+        assert await broker.dead_letter_depth(queue) == 0
+
     @pytest.mark.chaos
     @pytest.mark.timeout(60)
     async def test_backend_drop_during_result_store_redelivers_without_task_failed(
@@ -1474,15 +1495,9 @@ class TestBackendDownResultStoreCombo:
                 )
                 result = await app.get_result(tid, timeout=15)
                 assert result == 12
+            await self._assert_settled_on_the_broker(broker, queue, gates)
 
         assert_at_least_once_held(gates.run_count, expected_min=1)
-        obs = FAFStageObservation(
-            stage_executed=gates.run_count >= 1,
-            nacked_with_requeue=gates.redelivered.is_set(),
-            silently_dropped=gates.run_count == 0,
-            requeue_count=max(0, gates.run_count - 1),
-        )
-        assert_faf_stage_invariants(obs, scenario_kind="backend_fault", max_requeues=5)
 
     @pytest.mark.chaos
     @pytest.mark.timeout(60)
@@ -1529,15 +1544,9 @@ class TestBackendDownResultStoreCombo:
                 )
                 # The redelivered run completes — the result is durable.
                 assert await app.get_result(tid, timeout=15) == 1
+            await self._assert_settled_on_the_broker(broker, queue, gates)
 
         assert_at_least_once_held(gates.run_count, expected_min=1)
-        obs = FAFStageObservation(
-            stage_executed=gates.run_count >= 1,
-            nacked_with_requeue=gates.redelivered.is_set(),
-            silently_dropped=gates.run_count == 0,
-            requeue_count=max(0, gates.run_count - 1),
-        )
-        assert_faf_stage_invariants(obs, scenario_kind="backend_fault", max_requeues=5)
 
 
 class _BackendDropGates:
@@ -1649,6 +1658,9 @@ class TestLongBackendOutageBeforeStartCombo:
                     await toxiproxy.set_proxy_enabled("valkey", False)
                     try:
                         tids = [await app.schedule(task_name, i) for i in range(self.TASKS)]
+                        # Bewusstes Beobachtungsfenster: die Ausfalldauer IST
+                        # das Szenario (laenger als das alte Zustellbudget);
+                        # es gibt kein Ereignis, auf das zu warten waere.
                         await asyncio.sleep(self.OUTAGE_S)
                         assert not runs, "kein Task darf ohne Backend starten"
                         assert await broker.dead_letter_depth(queue) == 0, (
@@ -1878,6 +1890,10 @@ class TestRateLimitBlackholeCombo:
                         started = time.monotonic()
                         tid = await app.schedule(task_name, 7)
                         first_deferral_after: float | None = None
+                        # Bewusstes Beobachtungsfenster ueber die ganze
+                        # Blackhole-Dauer (negative Pruefung: kein Lauf ohne
+                        # Entscheidung); nebenbei wird der Zeitpunkt der
+                        # ersten Zurueckstellung abgelesen.
                         while time.monotonic() - started < self.BLACKHOLE_S:
                             if first_deferral_after is None and _rl_deferrals(logs):
                                 first_deferral_after = time.monotonic() - started

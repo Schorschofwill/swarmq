@@ -44,7 +44,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
-from swarmq.worker.gates import GateContext
+from swarmq.worker.gates import GateContext, SchedfireClaim
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
 
@@ -289,7 +289,7 @@ async def test_retry_copy_carries_schedfire_claim_token(broker, backend, config)
     handler, _ = _handler(broker, backend, config, RetryingTask)
     msg = make_message(_default_payload(name="retrying-task"), headers={"x-swarmq-schedfire": "s:1"})
     ctx = _ctx(RetryingTask)
-    ctx.schedfire_claim = "tok-1"
+    ctx.schedfire_claim = SchedfireClaim(key="s:1", owner="tok-1")
     await handler.evaluate(msg, ctx, RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([]))
 
     headers = broker.retry_later.await_args.kwargs["headers"]

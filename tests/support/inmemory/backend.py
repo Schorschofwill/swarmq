@@ -425,10 +425,12 @@ class InMemoryScheduleStore:
         return self._completed.set_if_absent(fire_key, "1", ttl_ms)
 
     async def claim_fire(
-        self, fire_key: str, ttl_ms: int, *, owner: str | None = None, takeover: str | None = None,
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        takeover: str | Sequence[str] | None = None,
     ) -> bool:
         current = self._inflight.get(fire_key)
-        if current is not None and (takeover is None or current != takeover):
+        offered = (takeover,) if isinstance(takeover, str) else tuple(takeover or ())
+        if current is not None and current not in offered:
             return False
         self._inflight.set(fire_key, owner or "1", ttl_ms)
         return True

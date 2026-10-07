@@ -42,6 +42,26 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `--configure`-Hook statt beim Import; SwarmQ startet ihn dann in jedem
   Rechenkind. Details:
   [Logging](logging.md#wenn-ein-task-modul-das-logging-konfiguriert).
+- **Eine Logzeile je Zurückstellung, wenn das Backend vor der Ausführung
+  nicht erreichbar ist.** Die Gate-Warnungen
+  `cancel_check_backend_error`, `workflow_cancel_check_backend_error`,
+  `cancel_store_result_failed` und `schedfire_dedup_backend_error`
+  entfallen; `rate_limit_check_failed` und `lock_acquire_failed` (ERROR)
+  erscheinen nur noch bei anderen Fehlern als einem unerreichbaren
+  Backend. Ihre Angaben stehen jetzt in
+  `task_deferred_backend_unavailable`: im neuen Feld `stage`
+  (`completed_check`, `inflight_claim`, `cancel_check`,
+  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
+  sowie, wo zutreffend, in `schedfire_key`, `workflow_id` oder
+  `lock_name`. `task_defer_failed_redelivered` trägt dieselben Felder
+  und den Backend-Fehler als `backend_error_type` und `backend_error`.
+  Alarme auf die entfallenen Events sollten stattdessen auf
+  `task_deferred_backend_unavailable` prüfen. Antwortet Valkey einer
+  solchen Prüfung dagegen mit einem Fehler (`WRONGTYPE`, Skriptfehler),
+  loggen die Schedule-Fire- und die Cancel-Prüfung das neue ERROR-Event
+  `task_gate_backend_error` und reihen an derselben Stelle neu ein;
+  `error_type` lautet in diesen und anderen Backend-Logzeilen dann
+  `BackendResponseError` (siehe Hinzugefügt).
 
 ### Geändert
 
@@ -66,24 +86,20 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   hart, wenn nach dem letzten Leeren noch ein Log-Thread feststeckt
   (siehe Hinzugefügt). `swarmq.cli.main()` bleibt unverändert und endet
   nie hart.
-- **Eine Logzeile je Zurückstellung, wenn das Backend vor der Ausführung
-  nicht erreichbar ist.** Die Gate-Warnungen
-  `cancel_check_backend_error`, `workflow_cancel_check_backend_error`,
-  `cancel_store_result_failed` und `schedfire_dedup_backend_error`
-  entfallen; `rate_limit_check_failed` und `lock_acquire_failed` (ERROR)
-  erscheinen nur noch bei anderen Fehlern als einem unerreichbaren
-  Backend. Ihre Angaben stehen jetzt in
-  `task_deferred_backend_unavailable`: im neuen Feld `stage`
-  (`completed_check`, `inflight_claim`, `cancel_check`,
-  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
-  sowie, wo zutreffend, in `schedfire_key`, `workflow_id` oder
-  `lock_name`. `task_defer_failed_redelivered` trägt dieselben Felder
-  und den Backend-Fehler als `backend_error_type` und `backend_error`.
-  Alarme auf die entfallenen Events sollten stattdessen auf
-  `task_deferred_backend_unavailable` prüfen.
 
 ### Hinzugefügt
 
+- **`BackendResponseError`** (`from swarmq import BackendResponseError`),
+  eine Unterklasse von `BackendConnectionError`: Valkey war erreichbar,
+  hat eine Operation aber mit einem Fehler beantwortet (`WRONGTYPE`,
+  Skriptfehler). Jedes `except BackendConnectionError` fängt sie weiter.
+  Die Prüfungen vor der Ausführung stellen eine Nachricht dafür nicht
+  zurück (Warten hilft nicht), sondern reihen sie an derselben Stelle
+  neu ein; ein bleibender Fehler landet so über das Zustelllimit in
+  `{queue}.XQ`. Die Schedule-Fire- und die Cancel-Prüfung loggen dabei
+  das neue ERROR-Event `task_gate_backend_error` (Felder `gate`,
+  `stage`, `error_type`, `error`, dazu `schedfire_key` oder
+  `workflow_id`).
 - **`log_drain_timeout`** (`--log-drain-timeout SECONDS`,
   `SWARMQ_LOG_DRAIN_TIMEOUT`, `SwarmQConfig(log_drain_timeout=...)`,
   `LoggingSettings.drain_timeout`; Vorgabe 5; Priorität CLI > Env >
@@ -151,14 +167,27 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   dabei, eine Broker-Redelivery dieser Kopie bleibt also ein Duplikat).
   Echte Duplikate (ein zweites Publish des Fires, eine Redelivery des
   Originals) werden weiter verworfen. Prüfungen, die die Zustellung vor
-  dem Task beenden, geben den Claim jetzt ebenfalls frei, mit
-  Owner-Prüfung. Neues Lua-Skript `sched_fire_claim.lua`;
-  `ScheduleStore.claim_fire` hat die neuen optionalen Keywords `owner`
-  und `takeover`, `ScheduleStore.release_fire_claim` das neue optionale
-  Keyword `owner` (Stores von Dritten müssen sie annehmen). Ein
-  Neueinreihen an derselben Stelle (`nack(requeue=True)`, wenn auch der
-  Broker die Kopie nicht annimmt) kann kein Token tragen; scheitert dann
-  auch die Freigabe, wartet dieser Fire weiter auf die Claim-TTL.
+  dem Task beenden oder mit einer Ausnahme abbrechen, geben den Claim
+  jetzt ebenfalls frei, mit Owner-Prüfung. Das Token wird vor dem
+  Claim-Aufruf festgelegt: Geht dessen Antwort verloren (Timeout,
+  Reset), kann Valkey den Claim geschrieben haben oder nicht; die Kopie
+  trägt dann das neue Token und die angebotenen (kommagetrennt, neuestes
+  zuerst, höchstens 16) und übernimmt den Claim in beiden Fällen. Ein
+  Neueinreihen an derselben Stelle (`nack(requeue=True)`: Shutdown, ein
+  Publish-Fallback, ein anderer Fehler als ein Ausfall) kann kein Token
+  tragen, deshalb wird der Claim vorher freigegeben; nur wenn auch diese
+  Freigabe scheitert, wartet der Fire weiter auf die Claim-TTL. Neues
+  Lua-Skript `sched_fire_claim.lua`; `ScheduleStore.claim_fire` hat die
+  neuen optionalen Keywords `owner` und `takeover` (ein Token oder eine
+  Folge von Tokens), `ScheduleStore.release_fire_claim` das neue
+  optionale Keyword `owner` und `ScheduleStore.commit_fire` das neue
+  Keyword `fired_ts_ms` (siehe unten). Worker und Scheduler übergeben
+  sie immer: Ein Store von Dritten, der sie nicht annimmt, wirft bei
+  jedem Fire `TypeError`. **Rollendes Upgrade:** Der Schutz setzt
+  voraus, dass alle Worker 0.9.0 laufen; ein Worker älterer Version
+  schreibt das Token weder noch erkennt er es, eine Kopie, die er
+  bearbeitet, kann also weiter als Duplikat verworfen werden, bis alle
+  Worker 0.9.0 laufen.
 - **Retry-Kopien erben die Zustellzähler des Brokers nicht mehr.** Die
   Kopie für einen Retry, einen Rate-Limit-Treffer oder einen
   Lock-Konflikt übernahm `x-delivery-count` und `x-acquired-count` vom
@@ -182,7 +211,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   wenn der Broker die Kopie bestätigt hat. Die Wartezeit beginnt bei
   `SWARMQ_BACKEND_DEFER_BASE_DELAY` (neu, Standard 1 s) und verdoppelt
   sich je Zurückstellung bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (neu,
-  Standard 60 s); die Kopie behält alle SwarmQ-Header, aber nicht die
+  Standard 60 s), um ±20 % gestreut, damit gemeinsam zurückgestellte
+  Nachrichten nicht gemeinsam wiederkommen; die Kopie behält alle SwarmQ-Header, aber nicht die
   Zustellzähler des Brokers (neuer Header
   `x-swarmq-backend-defer-count`). Die Zählung beginnt neu, sobald das
   Backend geantwortet hat: Kopien für einen Retry, einen
@@ -197,8 +227,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `error`; siehe Geändert).
   Nimmt auch der Broker die Kopie nicht an, reiht der Worker wie bisher
   an derselben Stelle neu ein und loggt `task_defer_failed_redelivered`.
-  `ValkeyRateLimitStore.check` wirft bei Verbindungs- und
-  Timeout-Fehlern jetzt `BackendConnectionError`.
+  Zurückgestellt wird nur bei einem Ausfall: Eine Fehlerantwort von
+  Valkey (`BackendResponseError`, siehe Hinzugefügt) wird wie bisher an
+  derselben Stelle neu eingereiht, ein bleibender Fehler landet also
+  weiter über das Zustelllimit in `{queue}.XQ`, statt endlos
+  zurückgestellt zu werden. `ValkeyRateLimitStore.check` wirft bei
+  Verbindungs- und Timeout-Fehlern jetzt `BackendConnectionError`. Ein
+  `RateLimitStore` von Dritten bekommt die Zurückstellung nur, wenn sein
+  `check` bei Transportfehlern `BackendConnectionError` wirft; jede
+  andere Ausnahme behält das Neueinreihen an derselben Stelle.
 - **Prüfungen vor der Ausführung hängen nicht mehr an einem Backend,
   das nicht antwortet.** Die Rate-Limit-Prüfung, das Lock-Acquire, die
   Dedup-Prüfung und der Claim eines Schedule-Fires sowie das Lesen des
@@ -224,7 +261,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Commit greift jetzt nur, solange der Zeitplan noch den gefeuerten
   Score hat; `sched_commit.lua` prüft das atomar (neues optionales
   `ARGV[5]`, abwärtskompatibel), und `ScheduleStore.commit_fire` hat das
-  neue optionale Keyword `fired_ts_ms`.
+  neue optionale Keyword `fired_ts_ms`. Ein Zeitplan, der zwischen Poll
+  und Commit entfernt und mit demselben nächsten Fire-Zeitpunkt neu
+  angelegt wurde, ist vom gefeuerten nicht zu unterscheiden; dort greift
+  der Commit.
 - **Ein abgebrochener Worker-Start lässt den eingebetteten Scheduler
   nicht mehr weiterlaufen.** Ein Abbruch von `start_worker()` oder ein
   Fehler nach dem Start des Schedulers (Executor-Start,
@@ -327,7 +367,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   jetzt, bevor `multiprocessing` die Queue schließt. Ein Record, der
   danach noch kommt (etwa aus einer `atexit`-Funktion, die vor dem
   Import von `multiprocessing` registriert wurde), gilt ohne Traceback
-  als verworfen.
+  als verworfen, und eine Queue, die schon geschlossen ist, wenn das
+  Leeren ihre Records nach Ablauf der Frist verwirft, wirft kein
+  `EOFError`/`OSError` mehr aus `shutdown_logging()`.
 
 ## [0.8.0] — 2026-10-06
 

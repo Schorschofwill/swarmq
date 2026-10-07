@@ -50,6 +50,7 @@ from swarmq.worker.gates import (
     GateDeps,
     WorkerBackend,
     WorkerBroker,
+    redeliver_in_place,
     route_via_dlx,
 )
 from swarmq.worker.gates.backend_defer import bounded_backend_call
@@ -124,13 +125,6 @@ class Worker(WorkerLifecycle):
         # running the scheduler loop" (only possible if explicitly
         # disabled; default is enabled).
         self._scheduler: SchedulerLoop | None = None
-        # Schedfire in-flight claims. Keyed by id(message) because
-        # aio_pika's IncomingMessage forbids dynamic attribute
-        # assignment. Populated when _pre_start_schedfire_dedup wins
-        # the inflight SETNX, read + popped by _finalize_schedfire
-        # in the finally block (Unit 1).
-        # Wert: (schedfire_key, owner_token) -- die Freigabe ist owner-geprueft.
-        self._schedfire_inflight_claims: dict[int, tuple[str, str]] = {}
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
         # AT_LEAST_ONCE redelivery within the same worker). Values are the
@@ -148,11 +142,9 @@ class Worker(WorkerLifecycle):
             registry=self._registry,
             rate_limiter=lambda: self._rate_limiter,
             lock_manager=lambda: self._lock_manager,
-            finalize_schedfire=lambda message, terminal: self._finalize_schedfire(message, terminal=terminal),
+            finalize_schedfire=lambda ctx, terminal: self._finalize_schedfire(ctx, terminal=terminal),
             maybe_release_unique=self._maybe_release_unique,
             extract_valid_workflow_id=self._extract_valid_workflow_id,
-            claim_schedfire=lambda message, key, owner: self._schedfire_inflight_claims.__setitem__(
-                id(message), (key, owner)),
             register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
         )
         self._schedfire_gate = SchedfireGate(gate_deps)
@@ -239,13 +231,13 @@ class Worker(WorkerLifecycle):
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _finalize_schedfire(self, message: Any, *, terminal: bool) -> None:
-        """Finalize the in-flight schedfire claim for this message.
+    async def _finalize_schedfire(self, ctx: GateContext, *, terminal: bool) -> None:
+        """Finalize the in-flight schedfire claim of this delivery.
 
         Called from the ``_handle_message`` finally block (and the
-        pre-start-cancel terminal path). No-ops when the message was not
-        a schedfire delivery we claimed (the claim is only stashed on the
-        happy path in ``_pre_start_schedfire_dedup``).
+        pre-start-cancel terminal path). No-ops when the delivery holds no
+        claim (``ctx.schedfire_claim`` is set only by the schedfire gate);
+        the claim is taken off the context first, so it is finalized once.
 
         * ``terminal=True`` (success, error→DLQ, pre-start cancel): write
           the long-TTL ``sq:sched:fired:<key>`` completed marker so any
@@ -259,12 +251,10 @@ class Worker(WorkerLifecycle):
 
         Failures are logged and swallowed — an orphan in-flight marker
         self-heals via its short TTL."""
-        # Pop from the Worker-local claims dict (see __init__). No-op
-        # when the message was not a schedfire delivery we claimed.
-        claim = self._schedfire_inflight_claims.pop(id(message), None)
+        claim, ctx.schedfire_claim = ctx.schedfire_claim, None
         if claim is None:
             return
-        schedfire_key, owner = claim
+        schedfire_key, owner = claim.key, claim.owner
         try:
             finalize: Awaitable[object]
             if terminal:
@@ -480,13 +470,20 @@ class Worker(WorkerLifecycle):
         Scope in ``_handle_message`` wieder her (KTD13), nicht die Gates.
 
         Diese Gates liegen vor dem ``try/finally``: endet die Zustellung nach
-        gewonnenem Schedfire-Claim hier (Zurueckstellung, Dead-Letter), gibt
-        dieser Zweig den Claim frei -- sonst saehe die Kopie ihn als Duplikat.
-        Ein Gate, das selbst finalisiert hat (Pre-Start-Cancel), hinterlaesst
-        keinen Eintrag mehr (No-op)."""
+        gewonnenem Schedfire-Claim hier (Zurueckstellung, Dead-Letter,
+        Ausnahme eines Gates), gibt dieser Zweig den Claim frei -- sonst saehe
+        die Kopie ihn als Duplikat. Ein Gate, das selbst finalisiert hat
+        (Pre-Start-Cancel), hat den Claim schon vom Kontext genommen (No-op)."""
         for gate in (self._schedfire_gate, self._cancel_gate, self._delivery_count_gate):
-            if await gate.apply(message, ctx) is not Continue:
-                await self._finalize_schedfire(message, terminal=False)
+            try:
+                outcome = await gate.apply(message, ctx)
+            except BaseException:
+                # Ein Gate-Fehler endet ebenfalls vor dem finally: Claim
+                # nicht-terminal freigeben, dann weiterwerfen.
+                await self._finalize_schedfire(ctx, terminal=False)
+                raise
+            if outcome is not Continue:
+                await self._finalize_schedfire(ctx, terminal=False)
                 return False
         return True
 
@@ -520,7 +517,7 @@ class Worker(WorkerLifecycle):
         )
 
     async def _finalize_delivery(
-        self, message: Any, outcome: DeliveryOutcome, task_id: str, task_info: TaskInfo | None
+        self, message: Any, outcome: DeliveryOutcome, ctx: GateContext, task_info: TaskInfo | None
     ) -> None:
         """Finally-Kopf des Runners (U19: der finally liest das Outcome).
 
@@ -537,10 +534,10 @@ class Worker(WorkerLifecycle):
         Pickup bereits freigegeben (No-op), ebenso Nachrichten ohne Header."""
         terminal = outcome if isinstance(outcome, Terminal) else None
         await self._finalize_schedfire(
-            message, terminal=terminal is not None and terminal.finalize_schedfire,
+            ctx, terminal=terminal is not None and terminal.finalize_schedfire,
         )
         if terminal is not None and terminal.release_unique:
-            await self._maybe_release_unique(message, task_id, task_info)
+            await self._maybe_release_unique(message, ctx.task_id, task_info)
 
     async def _resolve_error_path(
         self,
@@ -649,7 +646,7 @@ class Worker(WorkerLifecycle):
                 # nack(requeue=True): broker redelivers with headers
                 # intact → keep the flag so redelivery can release.
                 outcome = Redelivered
-                await self._broker.redeliver(message)
+                await redeliver_in_place(self._gate_deps, message, ctx)
                 return
 
             # 4-5. Look up task in registry
@@ -729,7 +726,7 @@ class Worker(WorkerLifecycle):
             # than being skipped as "completed".
             # U19: der finally liest die Outcome-Felder. ``Redelivered`` (kein
             # Terminal) → In-Flight-Claim löschen, keine Freigabe.
-            await self._finalize_delivery(message, outcome, task_id, task_info)
+            await self._finalize_delivery(message, outcome, ctx, task_info)
 
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
             # __aexit__ with the captured task exception so yield-based

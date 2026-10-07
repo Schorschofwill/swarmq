@@ -18,6 +18,8 @@ import valkey.exceptions
 from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
 from swarmq.exceptions import BackendConnectionError
 
+pytestmark = pytest.mark.timeout(5)
+
 
 def _store(script_error: BaseException) -> ValkeyRateLimitStore:
     client = MagicMock()

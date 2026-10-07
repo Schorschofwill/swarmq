@@ -103,7 +103,12 @@ A check also counts as failed when Valkey does not answer within
 traffic defers the message instead of holding it until the client's
 socket timeout. The wait starts at `SWARMQ_BACKEND_DEFER_BASE_DELAY`
 (1 s) and doubles per consecutive deferral up to
-`SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Once the backend has answered,
+`SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s); each wait varies by ±20 %, so
+messages deferred together do not hit the recovering backend together.
+Only an outage defers: when Valkey answers a check with an error
+(`BackendResponseError`, for example `WRONGTYPE`), waiting does not
+help, and the message goes back to the queue in place, so a persistent
+error reaches `{queue}.XQ` through the delivery limit. Once the backend has answered,
 the count starts over: retry, rate-limit and lock copies do not carry
 `x-swarmq-backend-defer-count`, and a message the broker hands back
 after a delivery that got past the checks (on quorum queues recognised
@@ -126,9 +131,15 @@ in `x-swarmq-schedfire-claim`. If the worker could not release the
 claim, for example because Valkey went down right after the claim, the
 copy recognises the claim as its own and takes it over instead of
 acking itself as a duplicate. The token changes on each takeover, so a
-redelivery of the same copy is still a duplicate. Only a requeue in
-place cannot carry the token: if both broker and backend fail at that
-moment, the fire waits for `SWARMQ_SCHEDULER_INFLIGHT_TTL`.
+redelivery of the same copy is still a duplicate. When the reply to the
+claim itself is lost (Valkey may or may not have written it), the copy
+carries the new token together with the ones it was offered, and takes
+the claim over either way. A requeue in place (`nack(requeue=True)`)
+cannot carry a token, so the worker releases the claim before it
+requeues; only if that release fails too (broker and backend down at
+once) does the fire wait for `SWARMQ_SCHEDULER_INFLIGHT_TTL`. The claim
+protection needs every worker on 0.9.0 or later: a worker of an older
+version neither writes nor recognises the token.
 
 ## Redelivery scenarios
 

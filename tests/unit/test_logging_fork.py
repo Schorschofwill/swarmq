@@ -513,24 +513,36 @@ def test_a_forking_thread_releases_only_the_locks_it_holds(tmp_path: pathlib.Pat
     target.lock.release()  # type: ignore[union-attr]
 
 
+class _BusyLock:
+    """Lock-Attrappe, die nie zu bekommen ist und die Wartezeit jedes
+    Versuchs festhaelt -- statt die Wanduhr zu messen (deterministisch)."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.timeouts.append(timeout)
+        return False
+
+    def release(self) -> None:
+        raise AssertionError("never acquired")
+
+
 def test_a_target_still_busy_since_the_last_fork_is_not_waited_for_again() -> None:
-    from swarmq.logging_fork import LOCK_BUDGET_S, hold_handler_locks, release_handler_locks
+    from swarmq.logging_fork import hold_handler_locks, release_handler_locks
 
     target = logging.Handler()
-    holder = _hold_in_other_thread([target.lock])  # type: ignore[list-item]
-    try:
-        hold_handler_locks([target])  # erster Fork: wartet das Budget ab
-        release_handler_locks()
+    busy = _BusyLock()
+    target.lock = busy  # type: ignore[assignment]
 
-        started = time.monotonic()
-        hold_handler_locks([target])
-        elapsed = time.monotonic() - started
-        release_handler_locks()
-    finally:
-        RELEASE.set()
-        holder.join(2)
+    hold_handler_locks([target])  # erster Fork: wartet bis zum Budget
+    release_handler_locks()
+    hold_handler_locks([target])  # zweiter Fork: nur ein Versuch ohne Warten
+    release_handler_locks()
 
-    assert elapsed < LOCK_BUDGET_S / 5
+    first, second = busy.timeouts
+    assert first > 0
+    assert second == 0
 
 
 def test_multiprocessing_exit_before_shutdown_logging_writes_all_records(

@@ -23,7 +23,7 @@ from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.task import DeliveryMode
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered, Terminal
 
 if TYPE_CHECKING:
@@ -155,7 +155,7 @@ class ResultTail:
             at_least_once = task_info.delivery is DeliveryMode.AT_LEAST_ONCE
             _log_fail_mark_error(event, workflow_id=wf_id, **_error_fields(exc), redelivered=at_least_once)
             if at_least_once:
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
         except Exception as exc:
             _log_fail_mark_error(event, workflow_id=wf_id, **_error_fields(exc), redelivered=False)
@@ -199,7 +199,7 @@ class ResultTail:
             logger.error("workflow_advance_backend_error", workflow_id=wf_id)
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 # Transient — redelivery retries the idempotent advance.
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
             return Terminal.release_in_finally()
         except BrokerConnectionError:
@@ -210,7 +210,7 @@ class ResultTail:
             # re-publishes safely (deterministic step ids + step_tasks).
             logger.error("workflow_advance_broker_error", workflow_id=wf_id)
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
             return Terminal.release_in_finally()
         except Exception as exc:
@@ -250,7 +250,7 @@ class ResultTail:
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 # Non-terminal — redelivery will re-run the task from
                 # scratch; keep the flag so next terminal path can release.
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
             return Terminal.release_in_finally()
 
