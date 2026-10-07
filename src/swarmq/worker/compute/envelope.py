@@ -67,6 +67,8 @@ class ComputeJob:
     configure_logging: bool = True
     logger_levels: tuple[tuple[str, str], ...] = ()
     log_queue_size: int = 10_000
+    # Frist fuer das Leeren vor jedem Ergebnis (Plan 2026-10-06-1811, KTD3).
+    log_drain_timeout: float = 5.0
     worker_id: str = ""
     workflow_id: str | None = None  # U10 (KTD13): Logkontext im Kind
 

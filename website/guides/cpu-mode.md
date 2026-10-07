@@ -81,7 +81,24 @@ worker.
   `SWARMQ_MALLOC_TRIM_THRESHOLD` / `SWARMQ_MALLOC_ARENA_MAX`.
 - The forkserver preloads the modules of your registered tasks and must never
   compute at import time: after warm-up it has to have exactly one thread,
-  otherwise the worker refuses to start.
+  otherwise the worker refuses to start (exit `78`). The message names the
+  extra threads and the likely cause: SwarmQ's opt-in log queue
+  (`swarmq-log-lsnr`), a logging `QueueListener` your app started at import
+  time, or else a BLAS/OpenMP computation. SwarmQ itself starts no log
+  thread in the forkserver. If the forkserver is restarted silently, the
+  same check runs again before the next compute child gets work; with more
+  than one thread the worker logs `forkserver_restarted_multithreaded`,
+  rejects the forkserver and reports the pool as unhealthy on `/ready`.
+  It then logs `compute_fork_source_rejected`, stops consuming and shuts
+  down gracefully; the running message goes back to the queue without a
+  retry count. Under `swarmq worker` the worker subprocess exits with code
+  `71` and the supervisor restarts it with a fresh forkserver. With an
+  embedded CPU pool, `Worker.start()` raises
+  `swarmq.supervision.ForkSourceRejected` after the shutdown, and your app
+  decides how to continue — SwarmQ does not end your process.
+- Logging that your task modules set up at import time follows the same
+  "app wins" rule as in the IO pool; `logging.basicConfig()` has no effect
+  there ([Logging](../reference/logging.md#when-a-task-module-configures-logging)).
 - `--pool cpu` cannot be combined with `--autoscale` (later stage) and needs
   a POSIX platform with `forkserver`. Memory and thread checks read `/proc`.
 - RabbitMQ's `consumer_timeout` (default 30 min) bounds any single delivery.

@@ -11,7 +11,7 @@ Test-Liste:
       aktiv; nach dem Reparieren laeuft der Reload (``execvpe``) durch und die
       neue Konfiguration gilt (KTD9)
 - [x] Opt-in ``log_queue=True`` in einer eingebetteten App: swarmq-Zeilen
-      erreichen die Handler der App aus dem Thread ``swarmq-log-listener``,
+      erreichen die Handler der App aus dem Thread ``swarmq-log-lsnr``,
       je genau einmal, Root-Handler/-Level unveraendert, nichts geht beim
       Verlassen von ``async with`` verloren, ``swarmq`` wird wiederhergestellt
       (R5, R6, KTD10)
@@ -202,7 +202,7 @@ def test_reload_with_invalid_log_config_keeps_running_then_reloads_after_fix(rel
     cfg.write_text(_log_config("CFGV2", handler_class="logging.StreamHandlr"))
     proc.send_signal(signal.SIGHUP)
     failed = out.wait_for(lambda line: "log_config_reload_failed" in line, start=armed)
-    assert out.lines[failed] == "CFGV1|swarmq.process_manager.run|log_config_reload_failed"
+    assert out.lines[failed] == "CFGV1|swarmq.process_manager.reload|log_config_reload_failed"
 
     # Worker laufen weiter und arbeiten einen neuen Task ab -- mit der alten
     # Logging-Konfiguration.
@@ -219,7 +219,7 @@ def test_reload_with_invalid_log_config_keeps_running_then_reloads_after_fix(rel
     cfg.write_text(_log_config("CFGV2"))
     proc.send_signal(signal.SIGHUP)
     execvp = out.wait_for(lambda line: line.endswith("|process_manager_reload_execvp"), start=failed)
-    assert out.lines[execvp] == "CFGV1|swarmq.process_manager.supervisor|process_manager_reload_execvp"
+    assert out.lines[execvp] == "CFGV1|swarmq.process_manager.reload|process_manager_reload_execvp"
     restarted = out.wait_for(lambda line: line == "CFGV2|swarmq.worker.lifecycle|worker_started", start=execvp)
     out.wait_for(lambda line: line == "CFGV2|swarmq.process_manager.supervisor|hot_reload_enabled", start=execvp)
     assert asyncio.run(_echo_roundtrip(queue, "after-reload")) == "echoed:after-reload"
@@ -293,7 +293,7 @@ def test_embedded_app_with_log_queue_hands_swarmq_records_to_app_handlers_off_th
     assert swarmq_records == records, "only swarmq.* records expected in the app's handler"
     # Der Handler der App laeuft im Listener-Thread; erzeugt wurde der Record
     # im Aufrufer (``%(threadName)s`` = Erzeuger, stdlib-Semantik).
-    assert {r["handler_thread"] for r in records} == {"swarmq-log-listener"}, records[:5]
+    assert {r["handler_thread"] for r in records} == {"swarmq-log-lsnr"}, records[:5]
     assert {r["record_thread"] for r in records} == {"MainThread"}
     # ``log_level="INFO"`` gilt am Logger ``swarmq``, obwohl Root auf WARNING steht.
     assert any(r["event"] == "worker_started" for r in records)
@@ -301,8 +301,8 @@ def test_embedded_app_with_log_queue_hands_swarmq_records_to_app_handlers_off_th
 
     _assert_root_untouched(summary)
     # Lazy: kein Listener-Thread nach ``SwarmQ()`` (AE6), keiner mehr nach dem Verlassen.
-    assert "swarmq-log-listener" not in summary["after_init"]["threads"]
-    assert "swarmq-log-listener" not in summary["after_exit"]["threads"]
+    assert "swarmq-log-lsnr" not in summary["after_init"]["threads"]
+    assert "swarmq-log-lsnr" not in summary["after_exit"]["threads"]
     assert summary["after_init"]["swarmq_propagate"] is False
     _assert_swarmq_restored(summary)
 
@@ -321,7 +321,7 @@ def test_embedded_app_without_log_queue_logs_in_caller_thread_and_leaves_logging
         assert summary[stage]["swarmq_handlers"] == [], stage
         assert summary[stage]["swarmq_propagate"] is True, stage
         assert summary[stage]["swarmq_level"] == summary["before"]["swarmq_level"], stage
-        assert "swarmq-log-listener" not in summary[stage]["threads"], stage
+        assert "swarmq-log-lsnr" not in summary[stage]["threads"], stage
 
 
 # ---------------------------------------------------------------------------

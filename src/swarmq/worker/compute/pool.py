@@ -35,9 +35,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from swarmq.logging import _error_fields, get_logger
+from swarmq.logging import APP_LOGGING_REPORTS, _error_fields, get_logger, report_app_logging
 from swarmq.worker.compute.child import child_loop, child_once
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
+from swarmq.worker.compute.forkserver import ForkSourceUnsafe
 
 logger = get_logger(__name__)
 
@@ -110,6 +111,7 @@ class SlotPool:
         on_recycle: RecycleHook | None = None,
         progress_sink: ProgressSink | None = None,
         restart_check: Callable[[], bool] | None = None,
+        on_source_rejected: Callable[[str], None] | None = None,
     ) -> None:
         if slots < 1:
             raise ValueError("slots must be >= 1")
@@ -125,6 +127,8 @@ class SlotPool:
         self._on_recycle = on_recycle
         self._progress_sink = progress_sink
         self._restart_check = restart_check
+        self._on_source_rejected = on_source_rejected
+        self._rejected_source: str | None = None  # KTD7: unsichere Kindquelle, endgueltig
         self._slots = [_Slot(index=i) for i in range(slots)]
         self._free: asyncio.Queue[int] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -137,14 +141,17 @@ class SlotPool:
         # Diagnose (Messnachweis M0): (Dauer process.start(), Zeit bis Ready) je Spawn in ms.
         self.recent_spawn_ms: deque[tuple[float, float]] = deque(maxlen=256)
         self.unhealthy_after = 3 * slots
-        self._app_logging_reported = False
+        self._app_logging_reported: set[str] = set()
 
     @property
     def healthy(self) -> bool:
         """``False``, wenn der Handshake dauerhaft ausbleibt (toter Forkserver o. ae.)
         oder jeder Slot blockiert ist: ``/ready`` meldet den Pool dann als Ausfall,
         statt dass jede Nachricht bis zum Delivery-Limit requeued wird."""
-        return self.consecutive_unavailable < self.unhealthy_after and self._usable_slots() > 0
+        return (
+            self.consecutive_unavailable < self.unhealthy_after and self._usable_slots() > 0
+            and self._rejected_source is None
+        )
 
     def _usable_slots(self) -> int:
         return self.size - len(self.stats.blocked_slots)
@@ -209,8 +216,7 @@ class SlotPool:
         child: _Child | None = None
         fut: asyncio.Future[ResultEnvelope] = asyncio.get_running_loop().create_future()
         try:
-            if self._restart_check is not None and self._restart_check():
-                logger.warning("forkserver_restarted_before_dispatch", slot=index)
+            self._check_fork_source(index)
             if use_di:
                 child = await self._ensure_reuse_child(slot)
                 child.current_task_id = job.task_id
@@ -242,6 +248,23 @@ class SlotPool:
             slot.active = None
             if not slot.blocked and not self._closing:
                 self._free.put_nowait(index)
+
+    def _check_fork_source(self, index: int) -> None:
+        """KTD4: still neu gestarteter Forkserver? Ist er mehrfaedig
+        (Plan 2026-10-06-1811, KTD7), verwirft der Pool die Kindquelle
+        endgueltig: ``SlotUnavailable``, ``/ready`` meldet den Ausfall, und
+        ``on_source_rejected`` erfaehrt es einmal -- der Worker hoert dann
+        auf zu konsumieren (Schluss-Review)."""
+        if self._rejected_source is None and self._restart_check is not None:
+            try:
+                if self._restart_check():
+                    logger.warning("forkserver_restarted_before_dispatch", slot=index)
+            except ForkSourceUnsafe as exc:
+                self._rejected_source = str(exc)
+                if self._on_source_rejected is not None:
+                    self._on_source_rejected(self._rejected_source)
+        if self._rejected_source is not None:
+            raise SlotUnavailable(f"compute fork source rejected: {self._rejected_source}")
 
     async def _send_job(self, child: _Child, job: ComputeJob) -> None:
         assert child.job_conn is not None
@@ -325,6 +348,18 @@ class SlotPool:
             with contextlib.suppress(Exception):
                 c.close()
         child.pid = process.pid
+        try:
+            # Schluss-Review: ``process.start()`` startet einen toten
+            # Forkserver still neu. Ist der neue unsicher, bekommt das eben
+            # geforkte Kind keine Arbeit.
+            self._check_fork_source(slot.index)
+        except SlotUnavailable:
+            await self._kill_child(child, reason="fork_source_rejected", by_pid_only=True)
+            for c in (conn, job_conn):
+                if c is not None:
+                    with contextlib.suppress(Exception):
+                        c.close()
+            raise
         self._children[process.pid] = child
         self.stats.started += 1
         reader = threading.Thread(
@@ -390,16 +425,17 @@ class SlotPool:
             child.pending.set_result(envelope)
         elif kind in ("progress", "publish"):
             self._forward_progress(msg)
-        elif kind == "logging_reconfigured_by_app":
-            self._report_app_logging(child, msg[1])
+        elif kind in APP_LOGGING_REPORTS:
+            self._report_app_logging(child, kind, msg[1])
 
-    def _report_app_logging(self, child: _Child, fields: dict[str, Any]) -> None:
-        """Die App hat das Logging der Kinder (KTD14): einmal je Pool melden,
-        nicht je Kind -- jedes Kind erbt dieselbe Einrichtung vom Forkserver."""
-        if self._app_logging_reported:
+    def _report_app_logging(self, child: _Child, event: str, fields: dict[str, Any]) -> None:
+        """Was die App am Logging der Kinder geaendert hat (KTD14; Plan
+        2026-10-06-1811, KTD9): je Event einmal je Pool melden, nicht je Kind
+        -- jedes Kind erbt dieselbe Einrichtung vom Forkserver."""
+        if event in self._app_logging_reported:
             return
-        self._app_logging_reported = True
-        logger.info("logging_reconfigured_by_app", compute_slot=child.slot, pid=child.pid, **fields)
+        self._app_logging_reported.add(event)
+        report_app_logging(logger, event, compute_slot=child.slot, pid=child.pid, **fields)
 
     def _on_decode_error(self, child: _Child, exc: Exception) -> None:
         self.stats.undecodable += 1

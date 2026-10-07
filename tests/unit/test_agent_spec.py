@@ -12,6 +12,10 @@ Test list
 - parent + init_params are code-derived (cannot drift from the class).
 - curated semantics use the canonical vocabulary from error-catalog-machine.md
   and are present for every class.
+- ConfigurationError ends `swarmq worker` with the EX_CONFIG constant (78),
+  the main case for agents; other commands' exit 1 is in the CLI table.
+- the CLI exit codes list every code of the `swarmq` binary: 78 and 130 are
+  anchored to the real constants.
 """
 
 from __future__ import annotations
@@ -264,11 +268,27 @@ def test_cli_spec_schedule_add_has_positional_and_required_task() -> None:
     assert args["--task"]["required"] is True
 
 
+def test_configuration_error_exit_code_is_the_worker_config_exit_code() -> None:
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    by_name = {e["name"]: e for e in build_error_catalog()["errors"]}
+    assert by_name["ConfigurationError"]["exit_code_on_cli"] == CONFIG_ERROR_EXIT_CODE
+
+
 def test_cli_spec_exit_codes_anchored_to_code() -> None:
     codes = {e["code"]: e["meaning"] for e in build_cli_spec()["exit_codes"]}
     assert set(codes) >= {0, 1, 2, 3}
     # Code 3 is anchored to the real constant, not a copied literal.
     assert _DLQ_NOT_FOUND_EXIT_CODE == 3
+
+
+def test_cli_spec_lists_the_config_and_interrupt_exit_codes() -> None:
+    from swarmq.logging_drain import exit_code_for
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    codes = {e["code"] for e in build_cli_spec()["exit_codes"]}
+    assert CONFIG_ERROR_EXIT_CODE in codes
+    assert exit_code_for(KeyboardInterrupt()) in codes
 
 
 # === U4: message JSON schemas ===

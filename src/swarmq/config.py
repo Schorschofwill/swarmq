@@ -14,6 +14,7 @@ from swarmq.logging_settings import (
     LoggingSettings,
     parse_logger_levels,
     split_csv,
+    valid_drain_timeout,
     validate_logger_levels,
 )
 
@@ -141,6 +142,8 @@ class SwarmQConfig:
     logger_levels: tuple[tuple[str, str], ...] = ()
     log_queue_size: int = 10_000
     log_lifecycle_level: str = "DEBUG"
+    # Frist fuer jedes Leeren der Log-Queues (Plan 2026-10-06-1811, KTD11).
+    log_drain_timeout: float = 5.0
     # Opt-in-Queue fuer eingebettete Apps (KTD10), standardmaessig aus.
     log_queue: bool = False
     # Die im Supervisor aufgeloesten Einstellungen (U7, KTD7). Gesetzt, sind
@@ -187,6 +190,12 @@ class SwarmQConfig:
     # Valkey would otherwise wedge the cancel monitor at TCP-default
     # latency. 5s is conservative for a local Valkey deployment.
     backend_op_timeout: float = 5.0
+    # Zurueckstellung, wenn ein Gate vor der Ausfuehrung am Backend scheitert:
+    # die Nachricht geht als neue Nachricht ueber die Delay-Queue zurueck
+    # (Wartezeit ``base * 2**(n-1)``, gedeckelt), statt per Requeue das
+    # Zustellbudget zu verbrauchen. Kein Retry, kein Retry-Budget.
+    backend_defer_base_delay: float = 1.0
+    backend_defer_max_delay: float = 60.0
     scheduler_poll_interval: float = 1.0
     scheduler_heartbeat_interval: float = 10.0
     scheduler_lock_ttl: float = 30.0
@@ -267,7 +276,7 @@ class SwarmQConfig:
     #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
     _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset({
         "log_level", "log_json", "log_config", "configure_logging",
-        "logger_levels", "log_queue_size", "log_lifecycle_level",
+        "logger_levels", "log_queue_size", "log_lifecycle_level", "log_drain_timeout",
     })
 
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
@@ -283,6 +292,7 @@ class SwarmQConfig:
         ("SWARMQ_LOG_CONFIG", "log_config", "str"),
         ("SWARMQ_LOG_QUEUE_SIZE", "log_queue_size", "int"),
         ("SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "str"),
+        ("SWARMQ_LOG_DRAIN_TIMEOUT", "log_drain_timeout", "float"),
         ("SWARMQ_LOG_QUEUE", "log_queue", "bool"),
         ("SWARMQ_CONFIGURE_LOGGING", "configure_logging", "bool"),
         ("SWARMQ_LOGGER_LEVELS", "logger_levels", "logger_levels"),
@@ -293,6 +303,8 @@ class SwarmQConfig:
         ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
+        ("SWARMQ_BACKEND_DEFER_BASE_DELAY", "backend_defer_base_delay", "float"),
+        ("SWARMQ_BACKEND_DEFER_MAX_DELAY", "backend_defer_max_delay", "float"),
         ("SWARMQ_SCHEDULER_POLL_INTERVAL", "scheduler_poll_interval", "float"),
         ("SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL", "scheduler_heartbeat_interval", "float"),
         ("SWARMQ_METRICS_SAMPLE_INTERVAL", "metrics_sample_interval", "float"),
@@ -326,6 +338,8 @@ class SwarmQConfig:
     _POSITIVE_FIELDS: ClassVar[tuple[str, ...]] = (
         "cancel_poll_interval",
         "backend_op_timeout",
+        "backend_defer_base_delay",
+        "backend_defer_max_delay",
         "max_message_body_bytes",
         "scheduler_poll_interval",
         "scheduler_heartbeat_interval",
@@ -454,6 +468,13 @@ class SwarmQConfig:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
 
+        if self.backend_defer_max_delay < self.backend_defer_base_delay:
+            msg = (
+                "backend_defer_max_delay must be >= backend_defer_base_delay, "
+                f"got {self.backend_defer_max_delay} < {self.backend_defer_base_delay}"
+            )
+            raise ConfigurationError(msg)
+
     def _validate_logging(self) -> None:
         """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""
         for field_name in ("log_level", "log_lifecycle_level"):
@@ -465,6 +486,13 @@ class SwarmQConfig:
                 )
                 raise ConfigurationError(msg)
         self.logger_levels = validate_logger_levels(self.logger_levels, "logger_levels")
+        if not valid_drain_timeout(self.log_drain_timeout):
+            # Nicht unter ``_POSITIVE_FIELDS``: ``inf``/``nan`` bestehen ``<= 0``.
+            msg = (
+                "log_drain_timeout must be > 0 and at most threading.TIMEOUT_MAX "
+                f"seconds, got {self.log_drain_timeout}"
+            )
+            raise ConfigurationError(msg)
         if self.log_config is not None and not self.configure_logging:
             msg = (
                 "log_config cannot be combined with configure_logging=False: "
@@ -512,6 +540,7 @@ class SwarmQConfig:
         self.logger_levels = settings.logger_levels
         self.log_queue_size = settings.queue_size
         self.log_lifecycle_level = settings.lifecycle_level
+        self.log_drain_timeout = settings.drain_timeout
 
     def __post_init__(self) -> None:
         self._apply_env_overrides()

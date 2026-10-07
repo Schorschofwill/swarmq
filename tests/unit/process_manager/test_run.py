@@ -492,7 +492,6 @@ class TestSupervisorLoggingSettings:
 
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        pm_mock.reload_precheck = None
         with patch.dict(os.environ, _URLS, clear=False), \
              patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock), \
              patch("swarmq.process_manager.check._validate_module_importable"):
@@ -501,44 +500,25 @@ class TestSupervisorLoggingSettings:
             )
         return pm_mock
 
-    def test_hot_reload_revalidates_the_log_config_first(self, tmp_path, swarmq_logs):
-        """KTD9: Vor dem Stoppen eines Workers prueft der Supervisor die Datei
-        neu; ist sie inzwischen ungueltig, laeuft alles weiter -- kein
-        ``execvpe``, kein Exit 78."""
+    def test_hot_reload_revalidates_the_log_config_first(self, tmp_path):
+        """KTD9, seit U8 (KTD8) im Monitor-Loop: Der Supervisor bekommt einen
+        Reload-Controller fuer die Datei; dessen Probe entscheidet vor dem
+        Stoppen eines Workers (Verhalten in ``test_reload.py``)."""
         from swarmq.logging_settings import LoggingSettings
+        from swarmq.process_manager.reload import ReloadController
 
         path = tmp_path / "log.json"
         path.write_text('{"version": 1}')
         pm = self._supervisor_with(LoggingSettings(log_config=str(path)))
 
-        assert pm.reload_precheck() is True
-        path.write_text('{"version": 1,')
-        assert pm.reload_precheck() is False
-        (event,) = [e for e in swarmq_logs if e["event"] == "log_config_reload_failed"]
-        assert event["path"] == str(path)
-        assert event["error_type"] == "LoggingConfigError"
-        assert event["error"] and not event["error"].startswith("LoggingConfigError")
-        assert event["log_level"] == "error"
+        assert isinstance(pm.reloader, ReloadController)
+        assert pm.reloader.log_config == str(path)
 
-    def test_hot_reload_also_catches_a_handler_typo(self, tmp_path, swarmq_logs):
-        """AE4 beim Reload: Ein Tippfehler im Handler faellt erst in
-        ``dictConfig`` auf -- der neu gestartete Supervisor endete sonst mit
-        78, nachdem die Worker schon gestoppt sind."""
-        import json
-
+    def test_without_log_config_the_reload_needs_no_probe(self):
         from swarmq.logging_settings import LoggingSettings
 
-        path = tmp_path / "log.json"
-        path.write_text('{"version": 1}')
-        pm = self._supervisor_with(LoggingSettings(log_config=str(path)))
-        path.write_text(json.dumps({
-            "version": 1,
-            "handlers": {"err": {"class": "logging.StreamHandlr"}},
-            "root": {"handlers": ["err"]},
-        }))
-
-        assert pm.reload_precheck() is False
-        assert [e["event"] for e in swarmq_logs] == ["log_config_reload_failed"]
+        pm = self._supervisor_with(LoggingSettings())
+        assert pm.reloader.log_config is None
 
 class TestHeartbeatIntervalPassThrough:
     """Review #8: SWARMQ_HEARTBEAT_INTERVAL_S wurde geparst, kam aber nie in der WorkerConfig an —

@@ -1,13 +1,41 @@
-"""Rate-Limit-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle plus direkte Outcome-Tests."""
+"""Rate-Limit-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle plus direkte Outcome-Tests.
+
+Test-Liste 0.9.0 (Kopie und Broker-Zaehler):
+- [x] die Rueckstellungs-Kopie bei Limit-Treffer traegt weder
+      ``x-delivery-count`` noch ``x-acquired-count`` des Originals
+- [x] Backend-Fehler beim Check -> genau eine Zeile (WARNING
+      ``task_deferred_backend_unavailable``, ``stage=check``), kein ERROR
+      ``rate_limit_check_failed`` mehr fuer den selbstheilenden Fall
+- [x] anderer Fehler beim Check -> weiter ERROR ``rate_limit_check_failed``
+
+Test-Liste 0.9.0 (Zeitlimit):
+- [x] haengender Check (Blackhole) -> nach ``backend_op_timeout`` als
+      Backend-Ausfall zurueckgestellt (``stage=check``), nicht haengen
+- [x] Rate-Limit-Kopie traegt keinen ``x-swarmq-backend-defer-count``
+      (Backend hat geantwortet, die naechste Stoerung beginnt bei 1)
+
+Test-Liste 0.9.0 (drittes Review):
+- [x] Fehlerantwort eines Stores (``BackendResponseError``) -> kein Ausfall:
+      ERROR ``rate_limit_check_failed`` und Requeue, keine Zurueckstellung
+- [x] die Rueckstellungs-Kopie einer Schedfire-Zustellung mit gewonnenem
+      Claim traegt dessen Owner-Token (``x-swarmq-schedfire-claim``)
+
+Test-Liste 0.9.0 (viertes Review):
+- [x] OOM/READONLY am echten ``ValkeyRateLimitStore`` (Client gemockt) ->
+      Ausfall: Zurueckstellung mit Backoff, kein heisser Requeue
+"""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import valkey.exceptions
 
 from swarmq.contracts.coordination import RateLimitDecision
 from swarmq.exceptions import BackendConnectionError
+from swarmq.headers import HEADER_BACKEND_DEFER_COUNT
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -19,6 +47,8 @@ from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
 )
+
+pytestmark = pytest.mark.timeout(5)
 
 
 class RateLimitedTask(Task):
@@ -371,24 +401,100 @@ class TestRateLimitGateOutcomes:
         assert kwargs["delay_ms"] == 1500 and kwargs["headers"]["x-swarmq-rate-limit-count"] == 3
         broker.ack.assert_not_awaited()  # retry_later bestätigt selbst (U8)
 
-    async def test_backend_error_is_redelivered_via_nack_without_ack(self, worker, broker):
+    async def test_limited_copy_drops_broker_delivery_counters(self, worker, broker):
+        """Die Kopie ist eine neue Nachricht: ein vererbter ``x-delivery-count``
+        liesse das Delivery-Count-Gate sie als haengend dead-lettern."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
+        msg = make_message(_default_payload(), headers={"x-delivery-count": 18, "x-acquired-count": 30})
+        await worker._rate_limit_gate.apply(msg, self._ctx())
+        headers = broker.retry_later.await_args.kwargs["headers"]
+        assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
+        assert headers["x-swarmq-rate-limit-count"] == 1
+
+    async def test_limited_copy_drops_backend_defer_count(self, worker, broker):
+        """Der Limiter hat geantwortet: die ueberstandene Stoerung zaehlt
+        nicht mehr, eine spaetere beginnt wieder mit der Basiswartezeit."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
+        msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 6})
+        await worker._rate_limit_gate.apply(msg, self._ctx())
+        assert HEADER_BACKEND_DEFER_COUNT not in broker.retry_later.await_args.kwargs["headers"]
+
+    async def test_backend_error_is_deferred_without_ack(self, worker, broker):
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
-        msg = make_message(_default_payload())
+        msg = make_message(_default_payload(), headers={"x-swarmq-rate-limit-count": 2})
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        # Kein Limit-Treffer: der Rate-Limit-Zaehler bleibt, wie er war.
+        assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-rate-limit-count"] == 2
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
 
-    async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
-        """Plan 2026-10-06-0831, U9 (R17)."""
+    async def test_check_backend_error_logs_one_deferral_line(self, worker, swarmq_logs):
+        """0.9.0: die Zurueckstellung erholt sich selbst -- eine WARNING-Zeile
+        statt ERROR plus WARNING."""
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
+        await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
+        assert entry["task_id"] == self._ctx().task_id
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+
+    @pytest.mark.timeout(5)
+    async def test_hanging_check_is_deferred_after_backend_op_timeout(self, worker, broker, swarmq_logs):
+        """Blackhole: der Check antwortet nie. Er darf nicht bis zum
+        Socket-Timeout des Clients haengen, sondern zaehlt nach
+        ``backend_op_timeout`` als Backend-Ausfall."""
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = _hang
+        outcome = await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        assert outcome is Redelivered
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
+        [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
+        assert entry["error_type"] == "BackendConnectionError"
+
+    async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17): kein Backend-Ausfall -> ERROR."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(side_effect=RuntimeError("bug"))
         await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
 
         [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_check_failed"]
         assert entry["logger"] == "swarmq.worker.gates.rate_limit"
         assert entry["log_level"] == "error" and entry["task_id"] == self._ctx().task_id
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
+
+    async def test_check_error_reply_takes_the_old_requeue_path(self, worker, broker, swarmq_logs):
+        from swarmq.exceptions import BackendResponseError
+
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))
+        outcome = await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        assert outcome is Redelivered
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_awaited_once()
+        [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_check_failed"]
+        assert entry["error_type"] == "BackendResponseError"
 
     async def test_requeue_failure_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._rate_limiter = MagicMock()
@@ -401,3 +507,47 @@ class TestRateLimitGateOutcomes:
         [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_requeue_failed"]
         assert entry["log_level"] == "error"
         assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+
+
+async def test_limited_copy_of_a_claimed_fire_carries_the_claim_token(broker, backend, config):
+    reg = TaskRegistry()
+    reg.register(RateLimitedTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+    w._rate_limiter = MagicMock()
+    w._rate_limiter.check = AsyncMock(
+        return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
+    )
+    msg = make_message(
+        _default_payload(name="rate_limited", args=[], kwargs={}), headers={"x-swarmq-schedfire": "s:1"},
+    )
+
+    await w._handle_message(msg)
+
+    owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+    assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        valkey.exceptions.OutOfMemoryError("command not allowed when used memory > 'maxmemory'."),
+        valkey.exceptions.ReadOnlyError("You can't write against a read only replica."),
+    ],
+)
+async def test_self_healing_reply_of_the_valkey_store_is_deferred(worker, broker, reply):
+    """maxmemory oder Failover: Warten heilt -- zurueckstellen, nicht heiss
+    bis zum Zustelllimit requeuen (das fuehrte ins Dead-Letter-Ziel)."""
+    from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
+
+    client = MagicMock()
+    client.time = AsyncMock(return_value=(1, 0))
+    client.register_script = MagicMock(return_value=AsyncMock(side_effect=reply))
+    worker._rate_limiter = ValkeyRateLimitStore(client)
+    ctx = GateContext(task_id="abc-123", task_name="add", queue="default")
+    ctx.task_info = RateLimitedTask.task_info
+
+    outcome = await worker._rate_limit_gate.apply(make_message(_default_payload()), ctx)
+
+    assert outcome is Redelivered
+    broker.redeliver.assert_not_awaited()
+    assert broker.retry_later.await_args.kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 1

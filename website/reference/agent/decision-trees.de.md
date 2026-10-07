@@ -132,6 +132,15 @@ Zusätzliche DLQ-Pfade:
   Delivery-Count-Gate des Workers (`task_sent_to_dlq` mit
   `error_type=WorkerHungError`), broker-native DLQ als letzte Stufe.
 
+Kein DLQ-Pfad: Eine Prüfung vor der Ausführung (Schedule-Fire-Dedup,
+Cancel-Check, Rate-Limit, Lock), die Valkey nicht erreicht, stellt die
+Nachricht mit Backoff über die Delay-Queue als neue Nachricht zurück
+(`task_deferred_backend_unavailable`). Das verbraucht weder
+`max_retries` noch das Zustell-Limit; ein Ausfall beliebiger Dauer
+schickt also keinen Task in die DLQ. Eine Fehlerantwort von Valkey
+(`BackendResponseError`) geht dagegen an Ort und Stelle zurück in die
+Queue und erreicht die DLQ über das Zustell-Limit, wenn sie anhält.
+
 ## Wann Signal-Handler vs Middleware?
 
 ```mermaid

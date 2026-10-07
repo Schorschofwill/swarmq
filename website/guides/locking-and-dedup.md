@@ -77,6 +77,15 @@ When the worker picks up a message whose lock is held:
 - If the task's `max_age` is set, it eventually expires to the DLQ
   rather than retrying forever.
 
+If Valkey is unreachable during the acquire (or does not answer within
+`SWARMQ_BACKEND_OP_TIMEOUT`), that is not a conflict: the message is
+deferred through the delay queue with its own backoff, without
+`TASK_LOCKED` and without raising `lock_conflict_count`, and the worker
+logs `task_deferred_backend_unavailable` (`gate="lock"`, `lock_name`).
+Any other error of the acquire logs `lock_acquire_failed` (ERROR) and
+requeues the message in place. An acquire that times out after Valkey
+executed it leaves the lock held until its TTL.
+
 The delay backs off — repeated misses extend the wait. Most
 `lock`-using tasks want `max_age` as a safety net so a stuck
 holder does not back up the queue forever.

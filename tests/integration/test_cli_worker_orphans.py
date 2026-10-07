@@ -4,7 +4,7 @@ Hintergrund (Notiz e2e-scheduler-leader-flake): Ein per ``proc.kill()``
 beendeter Supervisor liess seine Loop-Prozesse als Waisen zurueck. Die liefen
 stundenlang weiter, erneuerten den Scheduler-Leader-Lock per Heartbeat und
 liessen spaetere Leader-Tests in derselben Datenbank scheitern. Seit dem
-Parent-Death-Signal im Kindziel (``_run_worker_entry``) bekommt jedes Kind
+Parent-Death-Signal im Kindziel (``run_worker_entry``) bekommt jedes Kind
 SIGTERM, sobald der Supervisor stirbt, und drainiert.
 """
 

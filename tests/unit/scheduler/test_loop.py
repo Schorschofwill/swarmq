@@ -11,6 +11,10 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 #    duplicate_signal_dispatch_error, signal_dispatch_error.
 # 3. ``scheduler_task_not_in_local_registry`` ueber ``swarmq_logs`` statt
 #    gepatchtem Logger.
+#
+# Test list (0.9.0, Scheduler-Commit-Wettlauf):
+# 4. Der Fire-Commit traegt den gefeuerten Index-Score (``fired_ts_ms``),
+#    damit eine Aenderung zwischen Poll und Commit nicht ueberschrieben wird.
 
 from __future__ import annotations
 
@@ -282,6 +286,20 @@ class TestPollLoop:
         assert commit_args.args[1] > 0
         # owner_token is passed through
         assert commit_args.args[3] == "test-owner"
+
+    async def test_commit_carries_fired_zset_score(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+        loop._state = "leader"
+        d = _def(name="cron_a", cron="*/5 * * * *", fire_ts_ms=9_999)
+        store.poll_due.return_value = [("cron_a", 1_000, d)]
+
+        await loop._poll_tick()
+
+        assert store.commit_fire.await_args.kwargs["fired_ts_ms"] == 1_000
 
     async def test_schedfire_key_uses_zset_score_not_definition_ts(
         self, backend, broker, config, lock_manager, store, signal_dispatcher

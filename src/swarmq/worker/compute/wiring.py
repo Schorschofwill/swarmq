@@ -16,7 +16,14 @@ from typing import Any
 from swarmq.logging import get_logger
 from swarmq.signals import Signal
 from swarmq.worker.compute.executor import ComputeExecutor
-from swarmq.worker.compute.forkserver import ForkserverHandle, forkserver_pid, start_forkserver
+from swarmq.worker.compute.forkserver import (
+    MAIN_MODULE_ENV,
+    PRELOAD_MODULE,
+    SENTINEL_ENV,
+    ForkserverHandle,
+    forkserver_pid,
+    start_forkserver,
+)
 from swarmq.worker.compute.pool import SlotPool
 
 logger = get_logger(__name__)
@@ -36,8 +43,8 @@ _RUNTIME_PRELOAD = ("swarmq.logging", "swarmq.worker.compute.child")
 # U8 (R28, KTD10): erstes Preload-Modul. Registriert im Forkserver das per ``python -m``
 # gestartete Hauptmodul (Name aus ``SWARMQ_MAIN_MODULE``) als ``sys.modules["__main__"]``,
 # damit ``spawn._fixup_main_from_name`` es nicht je Kind erneut ausfuehrt (B13).
-_PRELOAD_MODULE = "swarmq.worker.compute.preload"
-_MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"  # gelesen von preload.py im Forkserver
+# Die Umgebungsnamen (``MAIN_MODULE_ENV``, ``SENTINEL_ENV``) teilt es mit
+# ``forkserver``, ohne Import von ``preload`` (dessen Import wirkt).
 
 
 def _main_module_name() -> str:
@@ -55,13 +62,25 @@ def _main_module_name() -> str:
     return str(name)
 
 
+def prepare_forkserver_env(*, configure_logging: bool) -> None:
+    """Umgebung fuer ``preload.py`` setzen, vor dem Forkserver-Start.
+
+    Die Umgebung ist der einzige Weg in den Forkserver. U8 (KTD10): der
+    Hauptmodulname. Plan 2026-10-06-1811, U9 (KTD9): ob swarmq das Logging
+    der Kinder konfiguriert -- nur dann haengt der Preload vor dem App-Import
+    den Sentinel an Root, und ``basicConfig`` der App bleibt wirkungslos.
+    """
+    os.environ[MAIN_MODULE_ENV] = _main_module_name()
+    os.environ[SENTINEL_ENV] = "1" if configure_logging else "0"
+
+
 def preload_modules(registry: Any) -> list[str]:
     """R17: Hauptmodul, Kind-Laufzeit und die Module der registrierten Tasks sind der Forkserver-Preload.
 
     U8: das Preload-Modul steht zuerst; den Hauptmodulnamen erhaelt es ueber
     ``SWARMQ_MAIN_MODULE`` (gesetzt in ``start_compute_executor``).
     """
-    fixed = (_PRELOAD_MODULE, _main_module_name(), *_RUNTIME_PRELOAD)
+    fixed = (PRELOAD_MODULE, _main_module_name(), *_RUNTIME_PRELOAD)
     modules = {cls.__module__ for cls in registry.get_all().values()}
     return [*fixed, *sorted(m for m in modules if m and m != "__main__" and m not in fixed)]
 
@@ -72,9 +91,7 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
     if cfg.pool != "cpu":
         return None
     preload = preload_modules(worker._registry)
-    # U8 (KTD10): die Umgebung ist der einzige Weg in den Forkserver — preload.py liest
-    # den Namen beim Import und registriert das Modul dort einmal als ``__main__``.
-    os.environ[_MAIN_MODULE_ENV] = _main_module_name()
+    prepare_forkserver_env(configure_logging=cfg.configure_logging)
     handle: ForkserverHandle = start_forkserver(
         preload,
         thread_limit=cfg.compute_thread_limit,
@@ -98,6 +115,7 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
         end_grace_s=float(cfg.shutdown_timeout),
         on_recycle=on_recycle,
         restart_check=handle.restarted,
+        on_source_rejected=lambda reason: stop_on_rejected_fork_source(worker, reason),
     )
     executor = ComputeExecutor(worker._gate_deps, pool, worker_id=worker_id)
     pool.set_progress_sink(executor.progress_sink)
@@ -113,6 +131,24 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
         preload=preload,
     )
     return executor
+
+
+def stop_on_rejected_fork_source(worker: Any, reason: str) -> None:
+    """Der Pool hat seine Kindquelle verworfen (Schluss-Review, Abweichung
+    vom Plan 2026-10-06-1811, KTD7): Jede weitere Nachricht scheiterte mit
+    ``SlotUnavailable`` und ginge ohne Retry-Zaehlung zurueck in die Queue --
+    bis zum Delivery-Limit. Der Worker hoert deshalb auf zu konsumieren und
+    endet geordnet; die laufende Nachricht geht unveraendert zurueck.
+    ``Worker.start`` wirft danach ``ForkSourceRejected``: Der
+    Worker-Subprozess endet mit ``FORK_SOURCE_REJECTED_EXIT_CODE``,
+    eingebettet entscheidet die App."""
+    worker._fork_source_rejected = reason
+    logger.error(
+        "compute_fork_source_rejected", reason=reason,
+        hint="the worker stops consuming and shuts down; under the swarmq supervisor it exits "
+        "with code 71 and is restarted with a fresh forkserver",
+    )
+    worker._request_shutdown()
 
 
 async def close_compute_executor(worker: Any) -> None:
@@ -149,7 +185,10 @@ async def forkserver_ready(worker: Any, proc_root: Path = Path("/proc")) -> tupl
     if handle is None:
         return False, "compute pool not started"
     if not getattr(getattr(worker, "_executor", None), "pool_healthy", True):
-        return False, "compute pool unhealthy: repeated ready-handshake failures or every slot blocked"
+        return False, (
+            "compute pool unhealthy: repeated ready-handshake failures, every slot blocked "
+            "or fork source rejected (forkserver_restarted_multithreaded)"
+        )
     pid = forkserver_pid()
     if pid is None:
         return True, None  # nicht pruefbar (KTD14) — nicht als Ausfall melden
@@ -162,6 +201,8 @@ __all__ = [
     "close_compute_executor",
     "forkserver_ready",
     "preload_modules",
+    "prepare_forkserver_env",
     "start_compute_executor",
+    "stop_on_rejected_fork_source",
     "warn_hard_timeout_over_consumer_timeout",
 ]

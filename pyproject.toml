@@ -11,7 +11,7 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.8.0"
+version = "0.9.0"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
@@ -65,6 +65,8 @@ test = [
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
+    # mypy (CI prueft tests/support): Typen fuer psutil.
+    "types-psutil",
     # E2E-Hardening Phase 3 U3.10 — mutation testing.
     "mutmut",
     # R5.1: tests/unit/test_metrics.py asserts the real registry shape,
@@ -82,7 +84,7 @@ docs = [
 ]
 
 [project.scripts]
-swarmq = "swarmq.cli:main"
+swarmq = "swarmq.cli:console_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swarmq"]
@@ -93,7 +95,8 @@ testpaths = ["tests"]
 timeout = 30
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
 # Stress, Soak, Property, Fuzz, Mutation laufen nur explizit via
-# `pytest -m chaos` o.ä. — Dev-Loop bleibt <= 15s.
+# `pytest -m chaos` o.ä. — der Dev-Loop bleibt schnell (Regel in AGENTS.md:
+# jeder Unit-Test < 100 ms, keine feste Gesamtgrenze).
 addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation'"
 markers = [
     "unit: unit tests",

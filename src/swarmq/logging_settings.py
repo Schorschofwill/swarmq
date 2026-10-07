@@ -7,6 +7,7 @@ und gibt es aufgeloest an seine Kinder weiter.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -34,6 +35,9 @@ class LoggingSettings:
     logger_levels: tuple[tuple[str, str], ...] = ()
     queue_size: int = 10_000
     lifecycle_level: str = "DEBUG"
+    # Gesamtfrist in Sekunden fuer jedes Leeren der Log-Queues (Plan
+    # 2026-10-06-1811, KTD3/KTD11); Rest gilt als verworfen.
+    drain_timeout: float = 5.0
 
 
 def fallback_log_format(cli: object | None, env: Mapping[str, str]) -> str:
@@ -70,6 +74,10 @@ def resolve_logging_settings(
         "log_lifecycle_level", "--log-lifecycle-level",
         "SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "DEBUG",
     )
+    drain_timeout = sources.pick(
+        "log_drain_timeout", "--log-drain-timeout",
+        "SWARMQ_LOG_DRAIN_TIMEOUT", "log_drain_timeout", 5.0,
+    )
     log_config = sources.pick(
         "log_config", "--log-config", "SWARMQ_LOG_CONFIG", "log_config", None,
     )
@@ -89,6 +97,7 @@ def resolve_logging_settings(
         logger_levels=_logger_levels(cli, env, config),
         queue_size=_positive_int(queue_size),
         lifecycle_level=_level(lifecycle_level),
+        drain_timeout=_positive_seconds(drain_timeout),
     )
 
 
@@ -169,6 +178,34 @@ def _positive_int(picked: _Picked) -> int:
         msg = f"{picked.source} must be a positive integer, got {picked.value!r}"
         raise ConfigurationError(msg)
     return number
+
+
+def valid_drain_timeout(seconds: float) -> bool:
+    """Eine gueltige Frist fuers Leeren der Log-Queues (Plan 2026-10-06-1811,
+    KTD11): groesser 0 und hoechstens ``threading.TIMEOUT_MAX``.
+
+    ``nan`` hoebe die Frist auf (jedes Leeren gaebe sofort auf), ``inf`` und
+    alles ueber ``TIMEOUT_MAX`` liessen ``Thread.join`` mit ``OverflowError``
+    scheitern -- das Leeren bricht ab, und ein Compute-Kind schickt sein
+    Ergebnis nie. Die Grenze ist die technische, keine willkuerliche: Wer
+    "praktisch unbegrenzt" will, bekommt das bis dorthin.
+    """
+    return 0 < seconds <= threading.TIMEOUT_MAX
+
+
+def _positive_seconds(picked: _Picked) -> float:
+    """Sekunden nach :func:`valid_drain_timeout`."""
+    try:
+        seconds = float(str(picked.value).strip())
+    except ValueError:
+        seconds = 0.0
+    if not valid_drain_timeout(seconds):
+        msg = (
+            f"{picked.source} must be a positive number of seconds up to "
+            f"{threading.TIMEOUT_MAX:g}, got {picked.value!r}"
+        )
+        raise ConfigurationError(msg)
+    return seconds
 
 
 def _logger_levels(

@@ -4,15 +4,29 @@ Covers the full add/list/poll/commit roundtrip plus the insert-if-absent
 and Fork-1 static-update paths.
 """
 
+# Test list (0.9.0, Scheduler-Commit-Wettlauf) -- TestCommitVsConcurrentChange:
+# 1. ``schedule remove`` (disable) waehrend eines Fires bleibt nach dem
+#    Commit bestehen (Definition disabled, kein Fire-Index-Eintrag).
+# 2. ``schedule remove --permanent`` waehrend eines Fires wird vom Commit
+#    nicht wiederbelebt.
+# 3. Ein geaenderter Zeitplan (neuer Score per ``put``) waehrend eines Fires
+#    wird vom Commit nicht ueberschrieben.
+# 4. Ohne parallele Aenderung schreibt der Commit den naechsten Fire-Zeitpunkt
+#    wie bisher (Regression).
+
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.config import SwarmQConfig
 from swarmq.locking import SCHEDULER_LOCK_KEY
-from swarmq.scheduler import ScheduleDefinition, ScheduleStore
+from swarmq.scheduler import ScheduleDefinition, SchedulerLoop, ScheduleStore
+from swarmq.signals import SignalDispatcher
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
@@ -204,3 +218,112 @@ class TestCommitFire:
         assert not any(s.schedule_name == sched_name for s in schedules)
 
         await valkey_client.delete(SCHEDULER_LOCK_KEY)
+
+
+class TestCommitVsConcurrentChange:
+    """Der Commit nach einem Fire darf eine Aenderung, die zwischen Poll und
+    Commit am Zeitplan passiert (CLI ``schedule remove``, Redeploy mit neuer
+    Cron), nicht ueberschreiben. Der Wettlauf wird deterministisch erzeugt:
+    der Fake-Publisher aendert den Zeitplan genau waehrend des Publish."""
+
+    @staticmethod
+    def _loop(store, valkey_backend, publisher, owner):
+        config = SwarmQConfig(
+            broker_url="amqp://unused",
+            backend_url="redis://unused",
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=1.0,
+        )
+        return SchedulerLoop(
+            backend=valkey_backend,
+            broker=publisher,
+            config=config,
+            lock_manager=valkey_backend.locks,
+            store=store,
+            signal_dispatcher=SignalDispatcher(),
+            owner_token=owner,
+        )
+
+    async def _fire_with_concurrent_change(
+        self, valkey_url, valkey_client, sched_name, change
+    ):
+        backend = ValkeyBackend(valkey_url)
+        await backend.connect()
+        try:
+            store = ScheduleStore(backend)
+            await store.add_schedule(_def(sched_name, cron="* * * * *", fire_ts_ms=1))
+            owner = uuid.uuid4().hex
+            await valkey_client.set(SCHEDULER_LOCK_KEY, owner, px=5_000)
+
+            async def _publish(queue, body, *, headers):
+                if headers["x-swarmq-schedfire"].startswith(f"{sched_name}:"):
+                    await change(store)
+
+            publisher = AsyncMock()
+            publisher.publish = AsyncMock(side_effect=_publish)
+            loop = self._loop(store, backend, publisher, owner)
+            loop._state = "leader"
+            await loop._poll_tick()
+            await valkey_client.delete(SCHEDULER_LOCK_KEY)
+            return store
+        finally:
+            await backend.close()
+
+    async def test_disable_during_fire_survives_commit(
+        self, valkey_url, valkey_client, sched_name
+    ):
+        async def _disable(store):
+            assert await store.disable_schedule(sched_name) is True
+
+        await self._fire_with_concurrent_change(
+            valkey_url, valkey_client, sched_name, _disable
+        )
+
+        raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
+        assert msgspec.json.decode(raw, type=ScheduleDefinition).disabled is True
+        assert await valkey_client.zscore("sq:{sched}:zset", sched_name) is None
+
+    async def test_permanent_remove_during_fire_is_not_revived(
+        self, valkey_url, valkey_client, sched_name
+    ):
+        async def _remove(store):
+            assert await store.remove_schedule(sched_name) is True
+
+        await self._fire_with_concurrent_change(
+            valkey_url, valkey_client, sched_name, _remove
+        )
+
+        assert await valkey_client.hget("sq:{sched}:defs", sched_name) is None
+        assert await valkey_client.zscore("sq:{sched}:zset", sched_name) is None
+
+    async def test_replan_during_fire_is_not_overwritten(
+        self, valkey_url, valkey_client, sched_name
+    ):
+        replanned = _def(sched_name, cron="0 0 1 1 *", fire_ts_ms=4_000_000_000_000)
+
+        async def _replan(store):
+            await store.update_static_schedule(replanned)
+
+        await self._fire_with_concurrent_change(
+            valkey_url, valkey_client, sched_name, _replan
+        )
+
+        raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
+        assert msgspec.json.decode(raw, type=ScheduleDefinition) == replanned
+        assert await valkey_client.zscore("sq:{sched}:zset", sched_name) == 4_000_000_000_000
+
+    async def test_commit_without_concurrent_change_advances_schedule(
+        self, valkey_url, valkey_client, sched_name
+    ):
+        async def _nothing(store):
+            return None
+
+        await self._fire_with_concurrent_change(
+            valkey_url, valkey_client, sched_name, _nothing
+        )
+
+        raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
+        committed = msgspec.json.decode(raw, type=ScheduleDefinition)
+        assert committed.last_fire_at is not None
+        assert await valkey_client.zscore("sq:{sched}:zset", sched_name) == committed.fire_ts_ms

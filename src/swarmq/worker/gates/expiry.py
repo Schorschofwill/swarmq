@@ -17,7 +17,7 @@ from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.logging import get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
@@ -110,7 +110,7 @@ class ExpiryGate:
         except BrokerConnectionError:
             logger.warning("task_expired_dlq_publish_failed")
             try:
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
             except BrokerConnectionError:
                 # Double-failure — let the message TTL / broker
                 # redeliver-limit be the safety net.

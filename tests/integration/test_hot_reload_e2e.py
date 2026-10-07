@@ -192,7 +192,7 @@ def test_full_pipeline_file_write_triggers_execvpe(
     """R5.3 ce-review #9: end-to-end pipeline.
 
     File write → watchfiles → FileWatcher trigger → os.kill(SIGHUP) →
-    ProcessManager._on_reload_signal → _monitor_loop exits →
+    ProcessManager._on_reload_signal → monitor tick accepts →
     _shutdown_all_workers → os.execvpe. We mock only execvpe (would
     replace the pytest process) but let the real watcher, real
     signal delivery, and real reload handler run.
@@ -214,14 +214,16 @@ def test_full_pipeline_file_write_triggers_execvpe(
         watch_dirs=(str(tmp_path),),
     )
 
-    # Short monitor_loop that returns as soon as the SIGHUP handler
-    # flips _reload_requested. Without this override the real loop
-    # would block on time.sleep waiting for worker state that does
-    # not exist in this reduced setup.
+    # Short monitor_loop: drives the reload controller like the real
+    # loop (U8, KTD8: the SIGHUP handler only marks the reload pending)
+    # and returns once the reload is accepted. Without this override
+    # the real loop would end at once ("all workers exited") in this
+    # reduced setup without workers.
     def _short_monitor():
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
-            if pm._reload_requested:
+            if pm.reloader.step():
+                pm._reload_requested = True
                 return 0
             time.sleep(0.05)
         return 0
@@ -256,7 +258,7 @@ def test_full_pipeline_file_write_triggers_execvpe(
         """
         target = tmp_path / "my_tasks.py"
         for attempt in range(1, 100):  # bounded; real guard is the marker
-            if pm._reload_requested:
+            if pm._reload_requested or pm.reloader.busy:
                 return
             target.write_text(f"# reload trigger {attempt}\n")
             time.sleep(0.25)

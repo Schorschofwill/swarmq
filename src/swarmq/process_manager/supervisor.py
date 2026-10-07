@@ -1,7 +1,8 @@
 """Supervisor (Plan U21): ``ProcessManager`` (Restart-Budget, Autoscale,
-SIGHUP-Reload mit eingefrorenem argv/env), Signal-Blöcke und der injizierte
+SIGHUP-Reload mit eingefrorenem argv/env) und der injizierte
 ``QueueDepthFn``-Seam. Slot-Tabelle und ``WorkerInfo`` liegen in ``slots``
-(Plan 2026-09-08-001, KTD1)."""
+(Plan 2026-09-08-001, KTD1), Signal-Blöcke und das Kindziel in
+``worker_target``."""
 
 from __future__ import annotations
 
@@ -17,12 +18,15 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
 
-from swarmq.logging import _error_fields, get_logger, shutdown_logging
+from swarmq.logging import _error_fields, get_logger
 from swarmq.process_manager import autoscale, setpoint
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
+from swarmq.process_manager.reload import ReloadController, reexec
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
+from swarmq.process_manager.worker_target import block_signals, run_worker_entry, unblock_signals
 from swarmq.supervision import (
+    FORK_SOURCE_REJECTED_EXIT_CODE,
     INTENT_DRAINING,
     INTENT_RECYCLE,
     RECYCLE_NOACK_EXIT_CODE,
@@ -33,77 +37,6 @@ from swarmq.supervision import (
 )
 
 logger = get_logger(__name__)
-
-
-_HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-
-
-def _block_signals() -> None:
-    """Block ``_HANDLED_SIGNALS`` on the current thread."""
-    try:
-        signal.pthread_sigmask(signal.SIG_BLOCK, _HANDLED_SIGNALS)
-    except (AttributeError, OSError):
-        # Non-POSIX platforms: best effort; supervisor still works.
-        pass
-
-
-def _unblock_signals() -> None:
-    """Unblock ``_HANDLED_SIGNALS`` on the current thread."""
-    try:
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, _HANDLED_SIGNALS)
-    except (AttributeError, OSError):
-        pass
-
-
-#: ``prctl``-Option, mit der ein Kind sich beim Tod seines Elternprozesses ein
-#: Signal bestellt (Linux). Dieselbe Mechanik nutzt das Rechenkind (KTD3 des
-#: CPU-Plans), dort mit SIGKILL; ein Worker bekommt SIGTERM und drainiert.
-_PR_SET_PDEATHSIG = 1
-
-
-def _bind_to_supervisor() -> bool:
-    """Das Kind stirbt mit dem Supervisor -- auch wenn dieser per SIGKILL endet.
-
-    Ohne dieses Band lebte ein Worker weiter, dessen Supervisor hart beendet
-    wurde (Test-Teardown, OOM-Killer, ``docker kill``): reparented, unbeachtet,
-    und mit einem Scheduler-Heartbeat, der den Leader-Lock am Leben hielt und
-    jeden spaeteren Leader in derselben Datenbank blockierte (Notiz
-    e2e-scheduler-leader-flake). Liefert ``True``, wenn ``prctl`` das Signal
-    gesetzt hat; ohne ``prctl`` (Nicht-Linux) bleibt es beim bisherigen
-    Verhalten.
-
-    Stirbt der Supervisor zwischen ``fork`` und ``prctl``, kommt kein Signal
-    mehr: dann ist der Elternprozess des Kindes nicht mehr der, der es
-    gestartet hat, und das Kind beendet sich, statt als Waise anzulaufen.
-    """
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL(None, use_errno=True)
-        armed = int(libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0)) == 0
-    except (AttributeError, OSError):
-        return False
-    parent = multiprocessing.parent_process()
-    if parent is not None and os.getppid() != parent.pid:
-        raise SystemExit(0)
-    return armed
-
-
-def _run_worker_entry(entry: Callable[..., Any], *args: Any) -> Any:
-    """Ziel des Kindprozesses: geerbte Signalblockade aufheben, dann den Entry rufen.
-
-    Der Supervisor blockiert ``_HANDLED_SIGNALS``, waehrend er Kinder startet;
-    ``spawn`` vererbt die Maske. swarmqs eigener Entry hob sie selbst auf, ein
-    fremder Entry (der Betreiber gibt dem ``ProcessManager`` seinen eigenen)
-    erbte sie -- das SIGTERM, das sein Shutdown-Watcher auf die eigene PID
-    schickt, blieb anhaengig, und der Container endete erst per SIGKILL nach
-    dem Stop-Timeout (B15 des Loadsuite-Backlogs). Danach bindet sich das Kind
-    per Parent-Death-Signal an den Supervisor (:func:`_bind_to_supervisor`).
-    Modulfunktion, damit ``spawn`` sie picklen kann.
-    """
-    _unblock_signals()
-    _bind_to_supervisor()
-    return entry(*args)
 
 
 QueueDepthFn = Callable[[], int]
@@ -166,7 +99,6 @@ class ProcessManager:
     SCALE_MIN_AGE_S = 30.0
     # Kontrollkanal (KTD5): Abtastintervall des Sollwert-Durchlaufs.
     SETPOINT_SAMPLE_INTERVAL = DEFAULT_SAMPLE_INTERVAL_S
-    reload_precheck: Callable[[], bool] | None = None  # KTD9: vor dem Reload, z. B. --log-config
 
     def __init__(
         self,
@@ -241,7 +173,13 @@ class ProcessManager:
             slot_count = num_workers
         self._slots = SlotTable(slot_count)
         self._shutting_down = False
+        # KTD8: vom Handler hinterlegt und nie geloescht -- ``reexec`` prueft
+        # es direkt vor ``execvpe``; geloggt wird es genau einmal.
+        self._shutdown_signal: str | None = None
+        self._shutdown_signal_logged = False
+        self._reexec_holds_signals = False  # ``reload.reexec`` vor ``execve``
         self._reload_requested = False
+        self.reloader = ReloadController()  # KTD8; ``run`` setzt ihn mit --log-config
         # R20/KTD9 (Plan 2026-09-03-001): sauber beendete Worker (Exit 0 ohne
         # expected_shutdown, z. B. --burst) werden nicht nachgefuellt; sind
         # alle so beendet, endet der Supervisor mit 0.
@@ -308,10 +246,10 @@ class ProcessManager:
             autoscale=self._autoscale,
         )
         setpoint.read_at_start(self)  # R6: vor dem ersten Kind, scheitert nie
-        _block_signals()
+        block_signals()
         self._start_all_workers()
         self._setup_signals()
-        _unblock_signals()
+        unblock_signals()
 
         # R5.3 Unit 6: arm the file-watcher AFTER _setup_signals so the
         # SIGHUP handler is guaranteed to be installed by the time the
@@ -328,13 +266,15 @@ class ProcessManager:
             self._file_watcher = FileWatcher(
                 watch_dirs=self._watch_dirs,
                 trigger=lambda: os.kill(os.getpid(), signal.SIGHUP),
-                is_busy=lambda: self._reload_requested,
+                is_busy=lambda: self._reload_requested or self.reloader.busy,
             )
             self._file_watcher.start()
 
         try:
             retcode = self._monitor_loop()
         finally:
+            self.reloader.abort()  # KTD8: laufende Probe beenden, kein Reload
+            self._log_shutdown_signal()
             if self._file_watcher is not None:
                 try:
                     self._file_watcher.stop()
@@ -342,53 +282,21 @@ class ProcessManager:
                     logger.warning("file_watcher_stop_failed", **_error_fields(exc), exc_info=True)
             self._shutdown_all_workers()
             self._collect_zombies()
+            self._log_shutdown_signal()  # SIGTERM waehrend des Worker-Stopps
 
         if self._reload_requested:
-            # Orphan-guard: if any child
-            # survived Phase-3 SIGKILL (typically D-state: NFS stall,
-            # dying disk), os.execvp would replace the parent image
-            # and orphan the child to init/systemd. Prefer clean
-            # no-reload exit over orphan.
-            alive = [
-                w for w in self.workers.values() if w.process.is_alive()
-            ]
-            if alive:
-                logger.warning(
-                    "reload_aborted_alive_children",
-                    alive_count=len(alive),
-                    alive_pids=[w.process.pid for w in alive],
-                    hint=(
-                        "re-send SIGHUP once all workers have exited; "
-                        "a D-state process (uninterruptible kernel wait) "
-                        "may require host-level intervention"
-                    ),
-                )
-                # Return 0 (clean exit): systemd / k8s must NOT
-                # restart us — operator needs to act.
-                return 0
-            try:
-                logger.info("process_manager_reload_execvp")
-                shutdown_logging()  # R15: die Queue vor dem neuen Abbild leeren
-                # Use the argv AND env
-                # snapshots captured in __init__. execvpe closes the
-                # env side of the trust boundary so in-process
-                # os.environ mutation (e.g., a library flipping
-                # PYTHONPATH) cannot influence the re-exec'd
-                # interpreter's import resolution.
-                os.execvpe(
-                    sys.executable,
-                    [sys.executable, *self._startup_argv],
-                    self._startup_env,
-                )
-            except OSError as exc:
-                logger.error("reload_execvp_failed", **_error_fields(exc))
-                return 1
-
+            return reexec(self, retcode)  # kehrt nur ohne Reload zurueck
         return retcode
 
     # ------------------------------------------------------------------
     # Signal handling
     # ------------------------------------------------------------------
+
+    def _log_shutdown_signal(self) -> None:
+        """Das vom Handler hinterlegte Signal genau einmal loggen."""
+        if self._shutdown_signal is not None and not self._shutdown_signal_logged:
+            self._shutdown_signal_logged = True
+            logger.info("process_manager_shutdown_signal", signal=self._shutdown_signal)
 
     def _setup_signals(self) -> None:
         # Deliberately NO SIGCHLD handler. A previous
@@ -404,18 +312,23 @@ class ProcessManager:
         signal.signal(signal.SIGHUP, self._on_reload_signal)
 
     def _on_shutdown_signal(self, signum: int, _frame: object) -> None:
-        sig_name = signal.Signals(signum).name
-        logger.info("process_manager_shutdown_signal", signal=sig_name)
+        # KTD8: kein Loggen im Handler (Mutex der Log-Queue); ``run`` schreibt es.
+        self._shutdown_signal = signal.Signals(signum).name
         self._shutting_down = True
+        # KTD8: SIGTERM gewinnt immer, auch gegen einen beschlossenen Reload.
+        self._reload_requested = False
+        self.reloader.cancel()
         self.shutdown_event.set()
+        if self._reexec_holds_signals:
+            # ``reload.reexec`` prueft womoeglich nicht mehr: das Signal an den
+            # blockierten Hauptthread zurueck, anhaengig ueber ``execve``
+            # hinweg. Kommt es ohne ``execve`` noch einmal, ist das harmlos.
+            signal.raise_signal(signum)
 
     def _on_reload_signal(self, _signum: int, _frame: object) -> None:
-        if self.reload_precheck is not None and not self.reload_precheck():
-            return  # vor dem Stoppen eines Workers abgebrochen (KTD9)
-        logger.info("process_manager_reload_requested")
-        self._reload_requested = True
-        self._shutting_down = True
-        self.shutdown_event.set()
+        # KTD8: nur vormerken; Probe und Reload treibt der Monitor-Loop.
+        if not self._shutting_down:  # Szenario E: SIGTERM gewinnt
+            self.reloader.request()
 
     # ------------------------------------------------------------------
     # Worker lifecycle
@@ -425,7 +338,7 @@ class ProcessManager:
         """Spawn one worker subprocess for ``slot`` and register it."""
         channel = SupervisorChannel.create(self._ctx)
         p = self._ctx.Process(
-            target=_run_worker_entry,
+            target=run_worker_entry,
             args=(self._worker_entry, slot, self.shutdown_event, *self._worker_args, channel),
             name=f"swarmq-worker-{slot}",
             daemon=False,
@@ -564,6 +477,12 @@ class ProcessManager:
                 )
                 return 1
 
+            if self.reloader.step():  # KTD8: Probe starten bzw. pollen, nie blockierend
+                logger.info("process_manager_reload_requested")
+                self._reload_requested = True
+                self._shutting_down = True
+                self.shutdown_event.set()
+                break
             setpoint.tick(self)  # Kontrollkanal: vor Nachfuellen und Autoskalierer (KTD3)
             # Backfill to the current target (initial count without
             # autoscale; between min..max with autoscale).
@@ -637,14 +556,15 @@ class ProcessManager:
             self._maybe_restart(info)
 
     def _handle_exit_code(self, info: WorkerInfo, pid: int, exitcode: int | None) -> bool:
-        """Logsaetze zu den beiden benannten Exit-Codes; ``True`` = kein
-        Neustart (R20).
+        """Logsaetze zu den benannten Exit-Codes; ``True`` = kein Neustart
+        (R20).
 
         78: Ein Neustart wuerde denselben Konfigurationsfehler reproduzieren,
         also genau ein Startversuch. 75: Das Kind bekam seine
         Recycling-Bestaetigung nicht — Neustart wie bei jedem Absturz, aber
         mit eigenem Logsatz, sonst ist der Fall im Betrieb nicht von einem
-        Crash zu unterscheiden.
+        Crash zu unterscheiden. 71: Der CPU-Pool hat seine Kindquelle
+        verworfen -- ebenso, der Neustart bringt einen frischen Forkserver.
         """
         if exitcode == CONFIG_ERROR_EXIT_CODE:
             logger.error(
@@ -657,6 +577,8 @@ class ProcessManager:
             logger.warning(
                 "worker_recycle_noack", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
             )
+        if exitcode == FORK_SOURCE_REJECTED_EXIT_CODE:  # Schluss-Review: frischer Forkserver
+            logger.warning("worker_fork_source_rejected", worker_id=info.worker_id, pid=pid, exitcode=exitcode)
         return False
 
     # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)

@@ -13,12 +13,19 @@ from typing import Any
 import valkey.asyncio
 from valkey.asyncio.retry import Retry
 from valkey.backoff import ExponentialBackoff
+from valkey.exceptions import (
+    ClusterDownError,
+    OutOfMemoryError,
+    ReadOnlyError,
+    ResponseError,
+    TryAgainError,
+    ValkeyError,
+)
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
-from valkey.exceptions import ValkeyError
 
 from swarmq.config import INJECTED_URL
-from swarmq.exceptions import BackendConnectionError, ConfigurationError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
 
 # Transient transport errors that should be retried transparently by the
 # valkey-py client. Application-level errors (ResponseError, DataError,
@@ -28,6 +35,42 @@ _TRANSIENT_ERRORS: list[type[Exception]] = [
     ValkeyTimeoutError,
     OSError,
 ]
+
+# Fehlerantworten, die ein voruebergehender Serverzustand sind und durch
+# Warten heilen (maxmemory, Failover, Cluster-Umbau): wie ein Transportfehler
+# ein Ausfall. ``ClusterDownError`` deckt ``MasterDownError`` ab;
+# ``BusyLoadingError`` (LOADING) ist in valkey-py bereits ein
+# ``ConnectionError``.
+_OUTAGE_REPLIES: tuple[type[Exception], ...] = (OutOfMemoryError, ReadOnlyError, TryAgainError, ClusterDownError)
+
+# Dieselben Zustaende als Fehlerpraefix: der Standalone-Parser von valkey-py
+# kennt MASTERDOWN, MISCONF (Persistenz scheitert, z. B. Platte voll),
+# CLUSTERDOWN und TRYAGAIN nicht und liefert einen einfachen
+# ``ResponseError`` mit dem Praefix im Text.
+_OUTAGE_REPLY_PREFIXES = frozenset(
+    {"OOM", "READONLY", "LOADING", "TRYAGAIN", "CLUSTERDOWN", "MASTERDOWN", "MISCONF"}
+)
+
+
+def _is_outage_reply(exc: BaseException) -> bool:
+    if isinstance(exc, _OUTAGE_REPLIES):
+        return True
+    if not isinstance(exc, ResponseError):
+        return False
+    words = str(exc).split(maxsplit=1)
+    return bool(words) and words[0] in _OUTAGE_REPLY_PREFIXES
+
+
+def as_backend_error(message: str, exc: BaseException) -> BackendConnectionError:
+    """Abbildung eines Treiberfehlers an der Backend-Grenze: ein
+    Transportfehler (Verbindung, Timeout, Socket) und eine Fehlerantwort, die
+    durch Warten heilt (OOM, READONLY, LOADING, TRYAGAIN, CLUSTERDOWN,
+    MASTERDOWN, MISCONF), sind ein Ausfall (``BackendConnectionError``); jede
+    andere Ursache -- WRONGTYPE, Skriptfehler -- ein ``BackendResponseError``."""
+    if isinstance(exc, tuple(_TRANSIENT_ERRORS)) or _is_outage_reply(exc):
+        return BackendConnectionError(message)
+    return BackendResponseError(message)
+
 
 # Socket-level bounds for the owned client. Without
 # socket_timeout, an in-flight recv on a half-open connection (peer
@@ -173,7 +216,7 @@ class ValkeyConnection:
         except TimeoutError as exc:
             raise BackendConnectionError(f"{what} timed out after {op_timeout}s") from exc
         except (ValkeyError, OSError) as exc:
-            raise BackendConnectionError(str(exc)) from exc
+            raise as_backend_error(str(exc), exc) from exc
 
     def _pubsub(self) -> Any:
         return self._require_client().pubsub()

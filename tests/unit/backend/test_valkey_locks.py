@@ -3,6 +3,13 @@
 
 Die Fehler-Wrapping- und Rückgabe-Tests stammen aus ``tests/unit/test_locking.py``;
 dort bleiben die reinen Ableitungen (TTL-Formel, ``lock_key``).
+
+Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort):
+1. Antwortet Valkey mit einem Fehler (``ResponseError``, z. B. WRONGTYPE),
+   wirft ``acquire`` ``BackendResponseError`` -- kein Ausfall, das Gate
+   stellt dafuer nicht zurueck.
+2. Ein Transportfehler bleibt ein einfacher ``BackendConnectionError``.
+3. Dasselbe fuer ``release`` und ``renew``.
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ import pytest
 
 from swarmq.backend.valkey.locks import LockManager, ValkeyLockStore
 from swarmq.contracts import LockToken
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError
 
 
 def _make_lock_manager_with_scripts(acquire_returns=None, release_returns=None,
@@ -75,6 +82,44 @@ class TestLockManagerErrorWrapping:
         with pytest.raises(BackendConnectionError) as exc_info:
             await manager.release("name", "tok", 1)
         assert exc_info.value is original
+
+
+class TestLockManagerOutageVersusErrorReply:
+    async def test_acquire_error_reply_is_a_response_error(self):
+        """Liste 1."""
+        from valkey.exceptions import ResponseError
+
+        manager, acquire_script, _, _ = _make_lock_manager_with_scripts()
+        acquire_script.side_effect = ResponseError("WRONGTYPE Operation against a key")
+
+        with pytest.raises(BackendResponseError, match="lock acquire failed"):
+            await manager.acquire("name", "tok", 60_000, 1)
+
+
+    async def test_acquire_transport_error_is_a_plain_outage(self):
+        """Liste 2."""
+        from valkey.exceptions import ConnectionError as ValkeyConnectionError
+
+        manager, acquire_script, _, _ = _make_lock_manager_with_scripts()
+        acquire_script.side_effect = ValkeyConnectionError("refused")
+
+        with pytest.raises(BackendConnectionError) as exc_info:
+            await manager.acquire("name", "tok", 60_000, 1)
+        assert not isinstance(exc_info.value, BackendResponseError)
+
+    @pytest.mark.parametrize("op", ["release", "renew"])
+    async def test_release_and_renew_error_replies_are_response_errors(self, op):
+        """Liste 3."""
+        from valkey.exceptions import ResponseError
+
+        manager, _, release_script, renew_script = _make_lock_manager_with_scripts()
+        (release_script if op == "release" else renew_script).side_effect = ResponseError("WRONGTYPE")
+
+        with pytest.raises(BackendResponseError, match=f"lock {op} failed"):
+            if op == "release":
+                await manager.release("name", "tok", 1)
+            else:
+                await manager.renew("name", "tok", 60_000)
 
 
 class TestLockManagerReturnSemantics:

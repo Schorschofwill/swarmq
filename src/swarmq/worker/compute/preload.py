@@ -13,6 +13,11 @@ zurueck ("this process was forked, __main__ may already be populated"). Genau
 diesen Zustand stellt dieses Modul im Forkserver her; jedes Kind erbt ihn per
 fork. Ein per Pfad gestartetes Programm (Konsolenskript) kommt als
 ``"__main__"`` und braucht nichts davon.
+
+Vor jedem App-Import markiert es den Prozess als Fork-Quelle (Plan
+2026-10-06-1811, U6, KTD6): Loggt die App beim Import ueber eine Queue von
+swarmq (etwa nach ``SwarmQ(log_queue=True)``), geht der Record synchron
+hinaus, statt im Forkserver einen Listener-Thread zu starten.
 """
 
 from __future__ import annotations
@@ -21,8 +26,8 @@ import importlib
 import os
 import sys
 
-#: Gesetzt von ``wiring.start_compute_executor`` vor dem Forkserver-Start.
-MAIN_MODULE_ENV = "SWARMQ_MAIN_MODULE"
+from swarmq.logging_forksource import install_fork_source_sentinel, mark_fork_source
+from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV
 
 
 def register_main_module(name: str) -> None:
@@ -37,4 +42,7 @@ def register_main_module(name: str) -> None:
     sys.modules["__main__"] = importlib.import_module(name)
 
 
+mark_fork_source()
+if os.environ.get(SENTINEL_ENV) == "1":
+    install_fork_source_sentinel()
 register_main_module(os.environ.get(MAIN_MODULE_ENV, "__main__"))

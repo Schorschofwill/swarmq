@@ -79,6 +79,20 @@ class RecycleAckTimeout(RuntimeError):
     """Der Worker wollte recyceln, der Supervisor hat den Ersatz nicht bestaetigt."""
 
 
+#: Exit-Code eines Workers, dessen Pool die Kindquelle verworfen hat
+#: (Schluss-Review): EX_OSERR ("cannot fork"). Ungleich 0, 75 und 78 -- der
+#: Supervisor startet ihn ueber den gewoehnlichen Restart-Pfad mit frischem
+#: Forkserver neu, und im Betrieb ist der Fall am Code erkennbar.
+FORK_SOURCE_REJECTED_EXIT_CODE = 71
+
+
+class ForkSourceRejected(RuntimeError):
+    """Der CPU-Pool hat seine Kindquelle verworfen (still neu gestarteter,
+    mehrfaediger Forkserver): Der Worker hat aufgehoert zu konsumieren und
+    ist geordnet beendet. Ein Neustart des Prozesses bringt einen frischen
+    Forkserver; eingebettet entscheidet die App."""
+
+
 _current: SupervisorChannel | None = None
 
 
@@ -95,10 +109,12 @@ def current_channel() -> SupervisorChannel | None:
 __all__ = [
     "ACK_NONE",
     "ACK_REPLACEMENT_STARTED",
+    "FORK_SOURCE_REJECTED_EXIT_CODE",
     "INTENT_DRAINING",
     "INTENT_NONE",
     "INTENT_RECYCLE",
     "RECYCLE_NOACK_EXIT_CODE",
+    "ForkSourceRejected",
     "RecycleAckTimeout",
     "SupervisorChannel",
     "current_channel",

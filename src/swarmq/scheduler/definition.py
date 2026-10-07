@@ -192,15 +192,19 @@ class ScheduleStore:
         next_fire_ts_ms: int,
         updated_def: ScheduleDefinition | None,
         owner_token: str,
+        *,
+        fired_ts_ms: int | None = None,
     ) -> bool:
         """Atomically commit a fire event. ``next_fire_ts_ms=-1`` +
         ``updated_def=None`` removes a one-shot entirely. False when the
-        owner-check rejected it (stale leader)."""
+        owner-check rejected it (stale leader). With ``fired_ts_ms`` the
+        commit is discarded when the schedule changed since the poll."""
         return await self._store.commit_fire(
             schedule_name,
             next_fire_ts_ms=None if next_fire_ts_ms < 0 else next_fire_ts_ms,
             payload=msgspec.json.encode(updated_def) if updated_def is not None else None,
             owner=owner_token,
+            fired_ts_ms=fired_ts_ms,
         )
 
 

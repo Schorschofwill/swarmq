@@ -25,6 +25,7 @@ except SwarmQError as exc:
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
+| `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
@@ -169,6 +170,33 @@ TLS-Mismatch.
 `PONG` drucken. Laufzeit-Connection-Losses werden vom valkey-py-
 Reconnect-Loop automatisch erholt — diese Exception feuert nur,
 wenn das Retry-Fenster erschöpft ist.
+
+## `BackendResponseError`
+
+**Wann geraist.** Eine Backend-Operation hat Valkey erreicht, Valkey
+hat aber mit einem Fehler geantwortet: ein Key vom falschen Typ
+(`WRONGTYPE`), ein Fehler im Lua-Skript. Eine Unterklasse von
+`BackendConnectionError`, jedes `except BackendConnectionError` fängt
+sie also weiter.
+
+**Ursache.** Meist ein Key, den etwas anderes als SwarmQ unter einem
+SwarmQ-Namen geschrieben hat (etwa ein Lock-Key `sq:lock:...` als
+Hash), oder ein inkompatibler Server.
+
+**Recovery.** Warten hilft nicht, deshalb stellt der Worker eine
+Nachricht dafür vor der Ausführung nicht zurück (anders als bei einem
+nicht erreichbaren Backend): Sie geht an derselben Stelle in die Queue
+zurück und landet, wenn der Fehler bleibt, über das Zustelllimit in
+`{queue}.XQ`. Den im Fehler genannten Key prüfen und löschen oder
+korrigieren.
+
+Fehlerantworten, die durch Warten heilen, sind kein
+`BackendResponseError`, sondern ein einfacher `BackendConnectionError`
+und werden wie ein nicht erreichbares Backend behandelt: `OOM`
+(maxmemory erreicht), `READONLY` (der Client spricht nach einem
+Failover noch mit dem herabgestuften Primary), `LOADING`, `TRYAGAIN`,
+`CLUSTERDOWN`, `MASTERDOWN` und `MISCONF` (Persistenz scheitert, etwa
+bei voller Platte).
 
 ## `TaskNotFoundError`
 
@@ -460,6 +488,29 @@ werden, als die Konfliktgrenze erlaubt.
 (`at_least_once`); die Neuzustellung bringt den Workflow voran,
 deterministische Schritt-IDs halten das idempotent. Für Tests aus
 `swarmq.exceptions` importieren.
+
+## Außerhalb der Hierarchie: `ForkSourceRejected`
+
+`swarmq.supervision.ForkSourceRejected` ist ein `RuntimeError`, kein
+`SwarmQError`; `except SwarmQError` fängt ihn also nicht.
+
+**Wann geraist.** Von `Worker.start()` (und damit `app.start_worker()`)
+eines eingebetteten CPU-Pools, nachdem der Worker geordnet
+heruntergefahren ist, weil sein Pool den Forkserver verworfen hat: Der
+Forkserver wurde still neu gestartet und lief danach mit mehr als einem
+Thread, ein Fork aus ihm ist also nicht mehr sicher.
+
+**Ursache.** Ein Thread, der beim Import im Forkserver gestartet wurde,
+meist eine BLAS/OpenMP-Berechnung, ein logging-`QueueListener` deiner
+App oder die Opt-in-Log-Queue. Der Worker loggt
+`forkserver_restarted_multithreaded` mit den Thread-Namen und einem
+Hinweis, danach `compute_fork_source_rejected`.
+
+**Recovery.** Den Worker-Prozess neu starten; ein neuer Prozess bringt
+einen frischen Forkserver. Unter `swarmq worker` geschieht das von
+selbst: Der Worker-Subprozess endet mit Code `71`, und der Supervisor
+startet ihn im Restart-Budget neu (`worker_fork_source_rejected`).
+Siehe [CPU-Modus](../guides/cpu-mode.md).
 
 ## Siehe auch
 

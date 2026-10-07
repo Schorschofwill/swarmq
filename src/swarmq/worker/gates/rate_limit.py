@@ -2,8 +2,10 @@
 
 Limitiert → Zähler-Header ``x-swarmq-rate-limit-count`` erhöhen, Signal
 ``TASK_RATE_LIMITED``, Rückstellung über ``retry_later`` (Verzögerungsziel der
-Zustellungs-Queue, KTD2); Outcome ``Redelivered``. Limiter- oder Publish-Fehler
-→ ``redeliver`` (KTD3), ebenfalls ``Redelivered``.
+Zustellungs-Queue, KTD2); Outcome ``Redelivered``. Backend-Ausfall des Limiters
+→ Zurueckstellung mit Backoff (``backend_defer``); andere Limiter-Fehler (auch
+``BackendResponseError``) oder Publish-Fehler → ``redeliver_in_place`` (KTD3),
+ebenfalls ``Redelivered``.
 """
 
 from __future__ import annotations
@@ -13,7 +15,8 @@ from typing import Any
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -39,22 +42,34 @@ class RateLimitGate:
         config = parse_rate_limit(task_info.rate_limit)
         try:
             # RateLimitStore-Vertrag (U15): eine Entscheidung statt Tupel.
-            decision = await limiter.check(
-                ctx.task_name,
-                max_requests=config.max_requests,
-                window_ms=config.window_size_ms,
+            # Begrenzt: ein Blackhole zaehlt nach backend_op_timeout als
+            # Backend-Ausfall statt bis zum Socket-Timeout zu haengen.
+            decision = await bounded_backend_call(
+                deps,
+                limiter.check(
+                    ctx.task_name,
+                    max_requests=config.max_requests,
+                    window_ms=config.window_size_ms,
+                ),
+                what="rate limit check",
             )
             allowed, remaining, retry_after_ms = (
                 decision.allowed, decision.remaining, decision.retry_after_ms,
             )
         except Exception as exc:
             # The limiter is the only side-effect-free decision-point we
-            # have. If Valkey is unreachable we cannot decide safely;
-            # nack(requeue=True) so the broker hands the message to the
-            # next worker that may have a healthier client. Important:
-            # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
+            # have. If Valkey is unreachable we cannot decide safely: an
+            # outage defers the message with backoff, any other error
+            # requeues it (nack) so the delivery limit still applies.
+            # Important: this runs BEFORE any FIRE_AND_FORGET ack — no
+            # data loss.
+            if is_backend_outage(exc):
+                # Backend weg: zurueckstellen statt das Zustellbudget per
+                # Requeue zu verbrauchen; die Zurueckstellung loggt die eine
+                # WARNING-Zeile. Andere Fehler bleiben beim Requeue (ERROR).
+                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="rate_limit", stage="check")
             logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc))
-            await deps.broker.redeliver(delivery)
+            await redeliver_in_place(deps, delivery, ctx)
             return Redelivered
 
         if allowed:
@@ -65,7 +80,7 @@ class RateLimitGate:
         # task has been stuck in the limiter loop. We don't auto-DLQ
         # here — that decision belongs to the operator and is documented
         # as a Non-Goal in plan 005. The header is the visible knob.
-        original_headers = dict(delivery.headers) if delivery.headers else {}
+        original_headers = republish_headers(delivery, ctx)
         rl_count = int(original_headers.get("x-swarmq-rate-limit-count", 0)) + 1
         original_headers["x-swarmq-rate-limit-count"] = rl_count
 
@@ -97,6 +112,6 @@ class RateLimitGate:
             logger.error(
                 "rate_limit_requeue_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc)
             )
-            await deps.broker.redeliver(delivery)
+            await redeliver_in_place(deps, delivery, ctx)
 
         return Redelivered

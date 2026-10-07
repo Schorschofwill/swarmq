@@ -703,6 +703,11 @@ async def test_spawn_timings_are_recorded_for_diagnostics(ctx, signals):
 # 1. [x] Melden mehrere Kinder, dass die App das Logging hat, erscheint
 #        ``logging_reconfigured_by_app`` einmal je Pool, mit den Feldern aus
 #        der ersten Meldung.
+# Plan 2026-10-06-1811, U9 (KTD9):
+# 2. [x] Melden mehrere Kinder, dass die App neben swarmq Root-Handler
+#        angehaengt hat, erscheint ``logging_handlers_added_by_app`` (WARNING)
+#        einmal je Pool mit den Handler-Typen -- unabhaengig von einer
+#        Uebernahme-Meldung.
 
 
 @pytest.mark.timeout(5)
@@ -723,3 +728,115 @@ async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals, swar
     ]
     assert len(reports) == 1
     assert reports[0]["reenabled_loggers"] == 2
+
+
+@pytest.mark.timeout(5)
+async def test_app_handlers_added_next_to_swarmq_are_reported_once_per_pool(ctx, signals, swarmq_logs):
+    p = await _make_pool(ctx, slots=1)
+    for n, tid in enumerate(("a", "b"), start=1):
+        task = asyncio.create_task(p.run(_job(tid), use_di=False))
+        proc = await _started(n)
+        await _ready(p, proc, 0)
+        proc.channel.send(("logging_reconfigured_by_app", {"reenabled_loggers": 1}))
+        proc.channel.send(("logging_handlers_added_by_app", {"handler_types": ["StreamHandler"]}))
+        proc.channel.send(("result", _result(tid, 0)))
+        await task
+        proc.die()
+    await p.aclose()
+    pool_events = [e for e in swarmq_logs if e["logger"] == "swarmq.worker.compute.pool"]
+    added = [e for e in pool_events if e["event"] == "logging_handlers_added_by_app"]
+    assert [(e["log_level"], e["handler_types"]) for e in added] == [("warning", ["StreamHandler"])]
+    assert len([e for e in pool_events if e["event"] == "logging_reconfigured_by_app"]) == 1
+
+
+# Plan 2026-10-06-1811, U6 (R7, KTD7) -- Test-Liste:
+# 1. Meldet die Neustart-Pruefung eine unsichere Kindquelle
+#    (``ForkSourceUnsafe``), verwirft der Pool sie: ``SlotUnavailable``, kein
+#    Kind, ``healthy`` ist falsch -- auch beim naechsten Job, obwohl die
+#    Pruefung dann nichts Neues mehr meldet.
+@pytest.mark.timeout(5)
+async def test_unsafe_restarted_fork_source_is_rejected_for_good(ctx, signals):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    checks = iter([ForkSourceUnsafe("restarted forkserver has 2 threads")])
+
+    def restart_check() -> bool:
+        exc = next(checks, None)
+        if exc is not None:
+            raise exc
+        return False
+
+    p = await _make_pool(ctx, slots=1, restart_check=restart_check)
+    for tid in ("a", "b"):
+        with pytest.raises(SlotUnavailable, match="2 threads"):
+            await p.run(_job(tid), use_di=False)
+    assert FakeCtx.started == []
+    assert not p.healthy
+    await p.aclose()
+
+
+# Schluss-Review -- Test-Liste:
+# 1. [x] Verwirft der Pool die Kindquelle, meldet er das genau einmal an
+#    ``on_source_rejected`` (mit dem Grund): Der Worker hoert dann auf zu
+#    konsumieren, statt jede Nachricht neu zustellen zu lassen.
+# 2. [x] Startet der Forkserver zwischen Pruefung und Fork still neu (die
+#    Pruefung direkt nach ``process.start()`` meldet ``ForkSourceUnsafe``),
+#    bekommt das eben gestartete Kind keine Arbeit: Es wird getoetet, der Job
+#    endet in ``SlotUnavailable``. Gilt auch fuer das Ersatzkind beim
+#    Recycling (``_spawn_reuse``).
+@pytest.mark.timeout(5)
+async def test_a_child_forked_from_an_unsafe_restarted_source_gets_no_work(ctx, signals):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        if FakeCtx.started:  # der stille Neustart geschah in ``process.start()``
+            raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+        return False
+
+    p = await _make_pool(ctx, slots=1, restart_check=restart_check)
+    with pytest.raises(SlotUnavailable, match="2 threads"):
+        await p.run(_job("a"), use_di=True)
+    (proc,) = FakeCtx.started
+    assert not proc.is_alive()
+    assert not p.healthy
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_a_recycle_replacement_from_an_unsafe_restarted_source_is_killed(ctx, signals):
+    """Schutztest zu Punkt 2 der Liste (Recycling-Pfad, ohne eigenes Rot)."""
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        if len(FakeCtx.started) > 1:  # Neustart beim Fork des Ersatzkindes
+            raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+        return False
+
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, restart_check=restart_check)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    old.channel.send(("result", _result("a", 0, rss=10.0)))
+    await t1
+    replacement = await _started(2)
+    await _settle(lambda: p.stats.recycled == 1)
+    assert not replacement.is_alive()
+    assert not p.healthy
+    old.die()
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_a_rejected_fork_source_is_reported_once(ctx, signals):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+
+    reported: list[str] = []
+    p = await _make_pool(ctx, slots=1, restart_check=restart_check, on_source_rejected=reported.append)
+    for tid in ("a", "b"):
+        with pytest.raises(SlotUnavailable):
+            await p.run(_job(tid), use_di=False)
+    assert reported == ["restarted forkserver has 2 threads"]
+    await p.aclose()

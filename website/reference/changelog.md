@@ -6,6 +6,367 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-07
+
+### Changed (breaking)
+
+- **CPU pool: `logging.basicConfig()` in a task module no longer takes
+  effect, and `--log-format`, `--log-level` and `--log-config` apply in
+  the compute children.** Both pools now follow the same "app wins"
+  rule. Before, the forkserver imported your task modules with an
+  unconfigured root logger, so a `basicConfig()` at import time won in
+  every compute child: against `--log-format json` (plain-text lines in
+  the JSON stream), against `--log-config` (task lines in the app's
+  format) and against `--log-level` (INFO lines lost when `basicConfig`
+  set no level). Now the forkserver attaches a placeholder handler to the
+  root logger before it imports your modules (it starts no thread and
+  passes WARNING and above on to `lastResort` when no other handler gets
+  the record), and each compute child applies the rule of the IO worker: `basicConfig` has no effect, a
+  module that replaces the root handlers (for example with
+  `logging.config.dictConfig`) wins, and added handlers write next to
+  SwarmQ's. `logging_reconfigured_by_app` and
+  `logging_handlers_added_by_app` appear once per pool, from the logger
+  `swarmq.worker.compute.pool`. Every process forked from the forkserver
+  starts without the placeholder, so `basicConfig` works in processes
+  your app starts from the shared forkserver itself (for example a
+  `ProcessPoolExecutor` with the default start method `forkserver` on
+  Python 3.14). Under `--no-configure-logging`
+  (`configure_logging=False`) `basicConfig` takes effect in both pools.
+  The same applies to the compute children of an embedded CPU pool. A
+  main module started by path (`python app.py`) is imported by the
+  forkserver before SwarmQ's preload, so its import-time logging still
+  wins there; the rule is guaranteed with the `swarmq` command and
+  `python -m`. **Migration:** put the format you set with `basicConfig`
+  into a `--log-config` file, or pass `--no-configure-logging` if your
+  module should own logging in every process. If your app logs through
+  its own `QueueHandler`, start its `QueueListener` in the `--configure`
+  hook rather than at import time; SwarmQ then starts it in every
+  compute child. Details:
+  [Logging](logging.md#when-a-task-module-configures-logging).
+- **One log line per deferral when the backend is unreachable before
+  execution.** The gate warnings `cancel_check_backend_error`,
+  `workflow_cancel_check_backend_error`, `cancel_store_result_failed` and
+  `schedfire_dedup_backend_error` are gone; `rate_limit_check_failed`
+  and `lock_acquire_failed` (ERROR) now appear only for errors other
+  than an unreachable backend. Their details moved into
+  `task_deferred_backend_unavailable`: the new field `stage`
+  (`completed_check`, `inflight_claim`, `cancel_check`,
+  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
+  plus `schedfire_key`, `workflow_id` or `lock_name` where they apply.
+  `task_defer_failed_redelivered` carries the same fields and the
+  backend error as `backend_error_type` and `backend_error`. Alerts on
+  the removed events should match `task_deferred_backend_unavailable`
+  instead. When Valkey answers such a check with an error instead
+  (`WRONGTYPE`, script error), the schedule-fire and cancel checks log
+  the new ERROR event `task_gate_backend_error` and requeue in place;
+  `error_type` in these and other backend log lines then reads
+  `BackendResponseError` (see Added).
+
+### Changed
+
+- **The listener thread is now called `swarmq-log-lsnr`** (was
+  `swarmq-log-listener`): Linux keeps 15 characters of a thread name,
+  and the forkserver check recognises the thread by that name. Only code
+  that looks the thread up by name is affected.
+- **`log_records_dropped` is an ordinary record from the listener
+  thread** (logger `swarmq.logging`, level WARNING, field `count`),
+  written through the listener's own handlers at most once per second
+  and once more when it stops. Before, the code that logged printed the
+  notice to stderr itself. With the opt-in log queue your handlers
+  format it; `log_json` there only selects the format of the new
+  `log_drain_timeout_exceeded` line.
+- **`log_config_reload_failed` now comes from the logger
+  `swarmq.process_manager.reload`** (was `swarmq.process_manager.run`).
+  A check of the `--log-config` file that runs into its 30-second limit
+  is reported as `log_config_reload_probe_timeout` instead. The other
+  reload events `process_manager_reload_execvp`,
+  `reload_aborted_alive_children` and `reload_execvp_failed` moved to
+  the same logger (was `swarmq.process_manager.supervisor`).
+- **The `swarmq` command starts through `swarmq.cli:console_main`**
+  (was `swarmq.cli:main`), like `python -m swarmq.cli`. It ends the
+  process hard when a log thread is still stuck after the final flush
+  (see Added). `swarmq.cli.main()` is unchanged and never exits hard.
+
+### Added
+
+- **`BackendResponseError`** (`from swarmq import BackendResponseError`),
+  a subclass of `BackendConnectionError`: Valkey was reachable but
+  answered an operation with an error (`WRONGTYPE`, script error). Every
+  `except BackendConnectionError` still catches it. The checks before
+  execution do not defer a message for it (waiting does not help) but
+  requeue it in place, so a persistent error reaches `{queue}.XQ`
+  through the delivery limit. Error replies that heal by waiting count
+  as an outage and stay a plain `BackendConnectionError`: `OOM`
+  (maxmemory reached), `READONLY` (failover), `LOADING`, `TRYAGAIN`,
+  `CLUSTERDOWN`, `MASTERDOWN` and `MISCONF`. The schedule-fire and
+  cancel checks log
+  the new ERROR event `task_gate_backend_error` (fields `gate`, `stage`,
+  `error_type`, `error`, plus `schedfire_key` or `workflow_id`).
+- **`log_drain_timeout`** (`--log-drain-timeout SECONDS`,
+  `SWARMQ_LOG_DRAIN_TIMEOUT`, `SwarmQConfig(log_drain_timeout=...)`,
+  `LoggingSettings.drain_timeout`; default 5; precedence CLI > env >
+  config > default): upper bound for every flush of the log queues — at
+  process exit, when a worker subprocess ends, before the supervisor
+  re-executes itself for a reload, in a compute child before each
+  result, for the listeners of a `--log-config` file and in
+  `SwarmQ.__aexit__`. All listeners of a process share the deadline and
+  are stopped in parallel; records not written by then count as dropped.
+  A value that is not a finite number greater than 0 and at most
+  `threading.TIMEOUT_MAX` ends `swarmq worker` with exit `78` (a
+  `ConfigurationError` for `SwarmQConfig`). `shutdown_logging()` takes
+  an optional `timeout`.
+- **Hard exit of SwarmQ's own processes.** If a given-up log thread is
+  still stuck after the flush, the `swarmq` command, worker subprocesses
+  and compute children end via `os._exit` with the exit code they would
+  have had, instead of aborting with `Fatal Python error` (exit `134`)
+  or hanging. Registered `atexit` functions that have not run yet do
+  not run then; stdout is not flushed when it shares the stuck file or
+  pipe (`2>&1`, journald), and stdout and stderr are flushed for at
+  most 0.2 seconds. If the `swarmq` command, a worker subprocess or a
+  compute child ends with an exception, its traceback (or the message
+  of a `SystemExit`) is written to stderr first, shortened to 4096 bytes
+  and only if stderr does not block; Ctrl-C then ends the `swarmq`
+  command with `130`. Apps that embed SwarmQ are never ended hard.
+- **New events:** `log_handler_errors` (a handler, filter or formatter
+  raised; field `count`), `log_drain_timeout_exceeded` (a line written
+  directly to stderr when a flush exceeded the deadline, only if stderr
+  does not block; fields `count`, `timeout_s`),
+  `log_config_reload_probe_timeout` (fields `path`, `timeout_s`,
+  `hint`), `forkserver_restarted_multithreaded` (ERROR; fields `pid`,
+  `threads`, `thread_names`, `hint`), `compute_fork_source_rejected`
+  (ERROR; fields `reason`, `hint`) and `worker_fork_source_rejected`
+  (supervisor, WARNING; fields `worker_id`, `pid`, `exitcode`).
+- **The forkserver thread check names the threads** it found and the
+  likely cause: the opt-in log queue, a logging `QueueListener` of your
+  app started at import time, or else a BLAS/OpenMP computation. It
+  also runs after a silent restart of the forkserver, before the next
+  compute child gets work. A restarted forkserver with more than one
+  thread is rejected: `/ready` reports the pool as unhealthy, the worker
+  logs `compute_fork_source_rejected`, stops consuming and shuts down
+  gracefully (the running message goes back to the queue without a
+  retry count). A worker subprocess then exits with code `71`, and the
+  supervisor restarts it with a fresh forkserver (within the restart
+  budget). With an embedded CPU pool, `Worker.start()` raises
+  `swarmq.supervision.ForkSourceRejected` after the shutdown; your app
+  decides whether to restart.
+
+### Fixed
+
+- **Agent spec: exit codes.** `errors.json` gave `ConfigurationError` the
+  CLI exit code `1`; `swarmq worker` ends with `78`. `cli.json` now also
+  lists `78` and `130`.
+
+- **A scheduler fire is no longer lost when Valkey fails right after the
+  worker claimed it.** The worker claims a fire in Valkey before it runs
+  the task. When a later check (cancel check, delivery count) ended the
+  delivery, the claim was never released; when the release itself
+  failed (Valkey down), the deferred, retried or requeued copy saw the
+  claim, took itself for a duplicate and acked itself, so the fire never
+  ran (the claim lives up to `SWARMQ_SCHEDULER_INFLIGHT_TTL`, default
+  300 s). Now the claim stores an owner token, every
+  copy carries it in the new header `x-swarmq-schedfire-claim`, and a
+  copy that finds its own token takes the claim over (the token
+  rotates, so a broker redelivery of that copy is still a duplicate).
+  Real duplicates (a second publish of the fire, a redelivery of the
+  original) are still dropped. Checks that end the delivery before the
+  task, or end it with an exception, now also release the claim,
+  owner-checked. The token is chosen before the claim call: when its
+  reply is lost (timeout, reset) Valkey may or may not have written the
+  claim, so the copy carries the new token and the ones it was offered
+  (comma-separated, newest first, at most 16) and takes the claim over
+  either way. A requeue in place (`nack(requeue=True)`: shutdown, a
+  publish fallback, an error other than an outage) cannot carry a token,
+  so the claim is released before the requeue. If that release fails
+  (Valkey down, or a third-party store raises any exception), the worker
+  publishes a copy carrying the token to the delay queue instead, with
+  the backoff of a deferral, and acks the original once the broker
+  confirmed the copy (WARNING `task_requeued_as_copy`); only if that
+  publish fails too does it requeue in place
+  (`task_copy_failed_redelivered`), and the fire can then still be
+  dropped as a duplicate while the claim lives. A claim held by a
+  delivery whose checks are cancelled (shutdown) is released even if a
+  second cancel arrives during the release. The worker offers at most 16
+  tokens from the header to the claim script. New Lua script
+  `sched_fire_claim.lua`; `ScheduleStore.claim_fire` takes the new
+  optional keywords `owner` and `takeover` (one token or a sequence of
+  tokens), `ScheduleStore.release_fire_claim` the new optional keyword
+  `owner`, and `ScheduleStore.commit_fire` the new keyword `fired_ts_ms`
+  (see below). Worker and scheduler always pass them: a third-party
+  store that does not accept them raises `TypeError` on every fire.
+  **Rolling upgrade:** the protection needs every worker on 0.9.0; a
+  worker of an older version neither writes nor recognises the token,
+  so a copy it handles can still be dropped as a duplicate until all
+  workers run 0.9.0.
+- **Retry copies no longer inherit the broker's delivery counters.** The
+  copy published for a retry, a rate-limit hit or a lock conflict took
+  `x-delivery-count` and `x-acquired-count` from the original.
+  RabbitMQ 4 keeps a publisher-set `x-delivery-count` on delivery, and
+  RabbitMQ 3.13 also counts requeues; a copy whose inherited count
+  reached `SWARMQ_DELIVERY_LIMIT - 1` went to `{queue}.XQ` as
+  `WorkerHungError` although the task had retries left. These copies are
+  new messages with their own delivery budget now, like the deferral
+  copies.
+- **A backend outage before execution no longer drains the delivery
+  budget.** When a check that runs before the task (schedule-fire dedup,
+  cancel check, rate limit, lock) could not reach Valkey, the worker
+  requeued the message in place (`nack(requeue=True)`), roughly every
+  1.5 s (refused connection) to 5 s (blackhole). On a broker that counts
+  requeues against `x-delivery-limit` (RabbitMQ 3.13), the broker moved
+  the messages to `{queue}.XQ` after about 20 rounds, without
+  `TASK_DLQ`, error result or log line; on RabbitMQ 4 the message cycled
+  without backoff. Now the worker publishes a copy to the delay queue
+  and acks the original only after the broker confirmed the copy. The
+  wait grows from `SWARMQ_BACKEND_DEFER_BASE_DELAY` (new, default 1 s)
+  and doubles per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (new,
+  default 60 s), varied by ±20 % so messages deferred together do not
+  return together; the copy keeps all SwarmQ headers but not the broker's
+  delivery counters (new header `x-swarmq-backend-defer-count`). The
+  count starts over once the backend has answered: copies for a retry,
+  a rate-limit hit or a lock conflict do not carry it, and a message the
+  broker hands back after a delivery that did not defer (requeue after
+  the checks, crash; recognised by `x-delivery-count` or
+  `x-acquired-count` on quorum queues) waits the base delay again. It is
+  not a retry: `max_retries` stays untouched and no `TASK_RETRYING`
+  fires. Each deferral logs the new WARNING event
+  `task_deferred_backend_unavailable` (fields `gate`, `stage`,
+  `defer_count`, `delay_ms`, `error_type`, `error`; see Changed). If
+  the broker cannot take the copy either, the worker requeues in place
+  as before and logs `task_defer_failed_redelivered`.
+  Only an outage defers: an error reply from Valkey
+  (`BackendResponseError`, see Added) is requeued in place as before, so
+  a persistent error still ends in `{queue}.XQ` through the delivery
+  limit instead of being deferred forever.
+  `ValkeyRateLimitStore.check` now raises `BackendConnectionError` for
+  connection and timeout errors and for the error replies that heal by
+  waiting (see `BackendResponseError` under Added), and
+  `BackendResponseError` for other error replies (before, it raised the
+  raw `valkey.exceptions.ResponseError`). A third-party `RateLimitStore` gets the
+  deferral only if its `check` raises `BackendConnectionError` for
+  transport errors; any other exception keeps the requeue in place.
+- **Checks before execution no longer hang on an unresponsive
+  backend.** The rate-limit check, the lock acquire, the schedule-fire
+  dedup check and claim, and the result read of a cancelled workflow
+  step had no time limit of their own. When Valkey stopped answering
+  without closing the connection (a blackhole, for example a dropped
+  network path), the delivery waited for the Valkey client's socket
+  timeout (10 s per attempt, plus its retries). These calls are now
+  bounded by `SWARMQ_BACKEND_OP_TIMEOUT` (default 5 s); a timeout counts
+  as an unreachable backend, and the message is deferred as described
+  above. The result notification after a pre-start cancel and the
+  completion or release of a schedule-fire claim are bounded the same
+  way; a timeout there logs `publish_notification_failed` or
+  `schedfire_finalize_failed` and the worker carries on. A lock acquire
+  that times out after Valkey executed it leaves the lock held until its
+  TTL, as a socket timeout did before.
+- **A scheduler fire no longer overwrites a schedule change made while
+  it fires.** A `swarmq schedule remove` (disable or `--permanent`) or a
+  redeploy with a new cron that landed between poll and commit was
+  undone: the schedule came back enabled, was recreated, or got its old
+  cron back. The commit now applies only while the schedule still has
+  the score that was fired; `sched_commit.lua` checks this atomically
+  (new optional `ARGV[5]`, backwards compatible), and
+  `ScheduleStore.commit_fire` takes a new optional keyword
+  `fired_ts_ms`. A schedule removed and recreated with the same next
+  fire time between poll and commit cannot be told apart from the fired
+  one; the commit applies there.
+- **An aborted worker start no longer leaves the embedded scheduler
+  running.** Cancelling `start_worker()`, or a failure after the
+  scheduler had started (executor start, queue declaration,
+  `WORKER_ONLINE`), left its election and poll tasks running; the
+  process kept renewing the scheduler leader lock and no other worker
+  could become leader.
+- **A full log queue no longer stalls the code that logs.** With a
+  blocked stderr the drop notice was written by the caller — on the
+  event loop — which stood still for seconds (2.9 s measured; without a
+  reader of stderr indefinitely). With a closed stderr a log call raised
+  `ValueError` into application code. The caller now only counts.
+- **A raising handler, filter or formatter no longer kills the listener
+  thread.** Afterwards every record was silently dropped, and the flush
+  at exit hung forever. The same applied to the queue handlers of a
+  `--log-config` file, where a full bounded queue also printed a
+  traceback in the caller. Errors are now caught and counted
+  (`log_handler_errors`), and a dead listener restarts with the next
+  record.
+- **Flushing the log queues can no longer hang a process.** A blocked
+  stderr or a slow handler made every flush last as long as the target:
+  the exit of every SwarmQ process, the supervisor before a reload (its
+  workers were already stopped), and a compute child, whose result then
+  never arrived. Every flush is now bounded by `log_drain_timeout`.
+  Records left in a queue whose listener is not running are written
+  within the deadline or, after it, counted as dropped; until the flush
+  returns, no record starts a listener that the flush would give up at
+  once.
+- **`SwarmQ.__aexit__` with `log_queue=True` no longer blocks the event
+  loop** while the opt-in queue drains (up to 12 s measured with a slow
+  handler). If it is cancelled while waiting, the cancellation
+  propagates at once and the flush continues in the background up to
+  the deadline.
+- **`SwarmQ.__aexit__` with `log_queue=True` no longer raises when the
+  event loop's default executor is already shut down**
+  (`loop.shutdown_default_executor()`, as `asyncio.run` does at the
+  end). The flush raised `RuntimeError: Executor shutdown has been
+  called` into your code; it now waits on a thread of its own, bounded
+  by `log_drain_timeout` as before.
+- **CPU pool with the opt-in log queue:** a `swarmq.*` record logged at
+  import time while `SwarmQ(log_queue=True)` or `SWARMQ_LOG_QUEUE=1` was
+  active (also from calling `setup_dishka()` twice) started a listener
+  thread in the forkserver. The worker then refused to start with exit
+  `78` and a hint that blamed a BLAS computation. The forkserver now
+  writes such records synchronously.
+- **CPU pool with your own logging `QueueHandler`:** a `QueueListener`
+  started at import time made the worker refuse to start with the same
+  misleading hint; one started in the `--configure` hook was never
+  started in the compute children, so all their lines were lost although
+  `logging_reconfigured_by_app` was reported. SwarmQ now starts it in
+  every child, and the startup message names the app listener.
+- **CPU pool logging matched neither the IO pool nor the
+  documentation** (`basicConfig` won against `--log-format json`,
+  `--log-config` and `--log-level`); see Changed (breaking).
+- **A silently restarted forkserver was never checked for threads.**
+- **Hot reload with `--log-config`:** the file was checked inside the
+  `SIGHUP` signal handler, which froze supervision for up to 30 seconds
+  (dead workers were not replaced, autoscaling and the control channel
+  paused). A `SIGTERM` during the check turned into a restart instead of
+  a shutdown, a second `SIGHUP` started a second check in parallel, and
+  the file watcher triggered again during the check. A check that ran
+  into its time limit, or was interrupted by Ctrl-C, was reported as an
+  invalid configuration. The check now runs outside the signal handler,
+  in its own process group; several `SIGHUP`s lead to one check.
+- **`SIGTERM` always ends the supervisor.** A `SIGHUP` that arrived
+  shortly after a `SIGTERM` restarted the supervisor instead of shutting
+  it down — in every deployment, with or without `--log-config`. A
+  `SIGTERM` during the worker stop for a reload is honoured as well, and
+  one that another thread of the supervisor receives right before it
+  re-executes itself stays pending and ends the new supervisor.
+- **Forking from task code:** after `os.fork()` the queue handlers of a
+  `--log-config` file lost every record in the child (with a bounded
+  queue, each record printed a `Logging error`). A fork while a listener
+  was writing could leave the child with `RuntimeError: reentrant call`
+  on every record. The child now gets fresh queues, and the fork waits
+  up to 50 ms for running writes. A `multiprocessing` queue (or manager
+  proxy) stays shared with the parent: the child starts no listener of
+  its own, and the parent's listener writes the child's records. Under a
+  raw `os.fork()` SwarmQ restarts the queue's feeder thread in the
+  child, and a manager proxy opens its own connection to the manager
+  instead of sharing the parent's. A target that stays busy is waited
+  for only at the first fork, not again at every following one.
+- **Records logged while the interpreter shuts down** (for example
+  "Future exception was never retrieved" or from a `__del__`) caused a
+  `--- Logging error ---` and were lost; they are now written
+  synchronously.
+- **A `multiprocessing` queue in a `--log-config` file at process
+  exit:** the exit hook of `multiprocessing` usually runs before
+  SwarmQ's and closed the queue's pipe while the listener still read
+  from it. Records not yet read were lost, and the listener died with an
+  `EOFError`/`OSError` traceback — restarted over and over, often
+  hundreds of tracebacks. SwarmQ now flushes these listeners before
+  `multiprocessing` closes the queue. A record that still arrives after
+  that (for example from an `atexit` function registered before
+  `multiprocessing` was imported) counts as dropped, without a
+  traceback, and a queue that is already closed when the flush discards
+  its records after the deadline no longer raises `EOFError`/`OSError`
+  out of `shutdown_logging()`.
+
 ## [0.8.0] — 2026-10-06
 
 ### Changed (breaking)

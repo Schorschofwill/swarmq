@@ -555,12 +555,17 @@ class SchedulerLoop(SchedulerCronSync):
                     skipped_count=skipped_count,
                 )
 
+        # fired_ts_ms: the commit only lands while the zset still holds the
+        # score we fired. A `schedule remove` (disable/permanent) or a
+        # re-plan that raced this fire keeps its change instead of being
+        # overwritten with the pre-poll definition (0.9.0).
         try:
             committed = await self._store.commit_fire(
                 schedule_name,
                 next_fire_ts_ms,
                 updated_def,
                 self._owner_token,
+                fired_ts_ms=score_ms,
             )
         except BackendConnectionError as exc:
             logger.warning(

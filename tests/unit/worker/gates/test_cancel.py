@@ -1,10 +1,29 @@
-"""Pre-Start-Cancel-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle."""
+"""Pre-Start-Cancel-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle.
+
+Test-Liste 0.9.0 (eine Logzeile je Zurueckstellung):
+- [x] Cancel-Check scheitert -> genau eine WARNING-Zeile
+      (``task_deferred_backend_unavailable``, ``stage=cancel_check``), keine
+      zusaetzliche ``cancel_check_backend_error``
+- [x] Workflow-Cancel-Check -> ``stage=workflow_cancel_check`` mit ``workflow_id``
+- [x] Ergebnis-Schreiben scheitert -> ``stage=cancel_store_result``
+
+Test-Liste 0.9.0 (Zeitlimit):
+- [x] Workflow-Cancel: haengendes ``get_result`` (Blackhole) -> nach
+      ``backend_op_timeout`` zurueckgestellt (``stage=cancel_store_result``)
+- [x] haengendes ``notify_result`` -> nach ``backend_op_timeout`` weiter
+      (Warnung), Nachricht bestaetigt
+
+Test-Liste 0.9.0 (drittes Review):
+- [x] Fehlerantwort beim Cancel-Check (``BackendResponseError``) -> kein
+      Ausfall: Requeue an derselben Stelle, keine Zurueckstellung
+"""
 
 from __future__ import annotations
 
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import structlog
 
 from swarmq.exceptions import BackendConnectionError
@@ -20,6 +39,8 @@ from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
 )
+
+pytestmark = pytest.mark.timeout(5)
 
 
 class TestWorkerPreStartCancelCheck:
@@ -229,10 +250,11 @@ class TestWorkerPreStartCancelCheck:
         backend.store_result.assert_awaited_once()
         broker.ack.assert_awaited_once_with(msg)
 
-    async def test_cancel_is_cancelled_raises_nacks_with_requeue(
+    async def test_cancel_is_cancelled_raises_defers_via_delay_queue(
         self, worker, broker, backend,
     ):
-        """BackendConnectionError during is_cancelled → nack(requeue=True)."""
+        """BackendConnectionError during is_cancelled → Zurueckstellung ueber
+        die Delay-Queue (neue Nachricht), kein Requeue an derselben Stelle."""
         backend.is_cancelled = AsyncMock(
             side_effect=BackendConnectionError("valkey down")
         )
@@ -240,16 +262,18 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        assert broker.retry_later.await_args.args == (msg,)
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
         backend.store_result.assert_not_awaited()
         # Contextvars cleared even on error path.
         assert structlog.contextvars.get_contextvars() == {}
 
-    async def test_cancel_store_result_failure_nacks_and_keeps_flag(
+    async def test_cancel_store_result_failure_defers_and_keeps_flag(
         self, worker, broker, backend,
     ):
-        """store_result wirft → nack(requeue=True), flag stays for retry."""
+        """store_result wirft → Zurueckstellung, flag stays for the copy."""
         backend.is_cancelled = AsyncMock(return_value=True)
         backend.store_result = AsyncMock(
             side_effect=BackendConnectionError("write failed")
@@ -258,7 +282,8 @@ class TestWorkerPreStartCancelCheck:
 
         await worker._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
         # Flag was NOT cleared — redelivery will re-trigger the cancel branch.
         backend.clear_cancel_flag.assert_not_awaited()
@@ -380,7 +405,7 @@ class TestWorkflowCancelPickup:
         await worker._handle_message(msg)
         backend.is_workflow_cancelled.assert_not_awaited()
 
-    async def test_workflow_check_backend_error_nacks_requeue(
+    async def test_workflow_check_backend_error_defers(
         self, worker, broker, backend,
     ):
         from swarmq.exceptions import BackendConnectionError
@@ -393,7 +418,11 @@ class TestWorkflowCancelPickup:
         msg = self._wf_message()
         await worker._handle_message(msg)
 
-        broker.redeliver.assert_awaited_once_with(msg)
+        broker.retry_later.assert_awaited_once()
+        # Workflow-Kontext reist mit der Kopie.
+        headers = broker.retry_later.await_args.kwargs["headers"]
+        assert headers["x-swarmq-workflow-id"] == msg.headers["x-swarmq-workflow-id"]
+        broker.redeliver.assert_not_awaited()
         backend.store_result.assert_not_awaited()
 
 
@@ -443,6 +472,29 @@ class TestWorkflowCancelDoesNotOverwriteResult:
         broker.ack.assert_awaited_once_with(msg)
 
 
+    @pytest.mark.timeout(5)
+    async def test_hanging_existing_result_read_is_deferred(self, worker, broker, backend, swarmq_logs):
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(return_value=True)
+        backend.get_result = _hang
+        msg = make_message(
+            _default_payload(name="add", args=[1, 2], kwargs={}),
+            headers={"x-swarmq-workflow-id": self.WF_ID},
+        )
+        ctx = GateContext(task_id="abc-123", task_name="add", queue="default")
+        assert await worker._cancel_gate.apply(msg, ctx) is Redelivered
+        broker.retry_later.assert_awaited_once()
+        broker.ack.assert_not_awaited()
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["stage"] == "cancel_store_result" and entry["error_type"] == "BackendConnectionError"
+
+
 class TestCancelGateOutcomes:
     """Direkte Gate-Tests (Plan U7)."""
 
@@ -460,10 +512,21 @@ class TestCancelGateOutcomes:
         backend.clear_cancel_flag.assert_awaited_once()
         broker.ack.assert_awaited_once_with(msg)
 
-    async def test_backend_error_is_redelivered(self, worker, broker, backend):
+    async def test_backend_error_is_deferred(self, worker, broker, backend):
         backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("down"))
         msg = make_message(_default_payload())
         assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
+
+
+    async def test_error_reply_is_requeued_not_deferred(self, worker, broker, backend):
+        from swarmq.exceptions import BackendResponseError
+
+        backend.is_cancelled = AsyncMock(side_effect=BackendResponseError("WRONGTYPE"))
+        msg = make_message(_default_payload())
+        assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
+        broker.retry_later.assert_not_awaited()
         broker.redeliver.assert_awaited_once_with(msg)
 
 
@@ -482,32 +545,39 @@ class TestCancelGateLogging:
         [entry] = [e for e in logs if e["logger"] == "swarmq.worker.gates.cancel" and e["event"] == event]
         return entry
 
-    async def test_cancel_check_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+    @staticmethod
+    def _single_warning(logs):
+        [entry] = [e for e in logs if e["log_level"] == "warning"]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        return entry
+
+    async def test_cancel_check_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
 
-        entry = self._entry(swarmq_logs, "cancel_check_backend_error")
-        assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+        entry = self._single_warning(swarmq_logs)
+        assert entry["gate"] == "cancel" and entry["stage"] == "cancel_check"
+        assert entry["task_id"] == "abc-123"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_workflow_cancel_check_backend_error_is_a_warning_with_error_fields(
+    async def test_workflow_cancel_check_backend_error_logs_one_deferral_line(
         self, worker, backend, swarmq_logs
     ):
         backend.is_workflow_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         msg = make_message(_default_payload(), headers={"x-swarmq-workflow-id": self.WF_ID})
         await worker._cancel_gate.apply(msg, self._ctx())
 
-        entry = self._entry(swarmq_logs, "workflow_cancel_check_backend_error")
-        assert entry["log_level"] == "warning" and entry["workflow_id"] == self.WF_ID
+        entry = self._single_warning(swarmq_logs)
+        assert entry["stage"] == "workflow_cancel_check" and entry["workflow_id"] == self.WF_ID
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_cancel_store_result_failure_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+    async def test_cancel_store_result_failure_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         backend.is_cancelled = AsyncMock(return_value=True)
         backend.store_result = AsyncMock(side_effect=BackendConnectionError("write failed"))
         await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
 
-        entry = self._entry(swarmq_logs, "cancel_store_result_failed")
-        assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+        entry = self._single_warning(swarmq_logs)
+        assert entry["stage"] == "cancel_store_result" and entry["task_id"] == "abc-123"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "write failed"
 
     async def test_notify_failure_logs_warning_with_error_fields(self, worker, backend, swarmq_logs):
@@ -518,6 +588,23 @@ class TestCancelGateLogging:
         entry = self._entry(swarmq_logs, "publish_notification_failed")
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+
+    @pytest.mark.timeout(5)
+    async def test_hanging_notify_is_bounded_and_message_acked(self, worker, broker, backend, swarmq_logs):
+        worker._gate_deps.config.backend_op_timeout = 0.05
+        never = asyncio.Event()
+
+        async def _hang(*_args, **_kwargs):
+            await never.wait()
+
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.notify_result = _hang
+        msg = make_message(_default_payload())
+        assert await worker._cancel_gate.apply(msg, self._ctx()) == Terminal.already_released()
+
+        broker.ack.assert_awaited_once_with(msg)
+        entry = self._entry(swarmq_logs, "publish_notification_failed")
+        assert entry["error_type"] == "BackendConnectionError"
 
 
 class TestCancelGateLogContext:

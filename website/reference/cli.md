@@ -32,6 +32,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `2` | Bad arguments (argparse-detected usage error), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
 | `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. |
+| `130` | Interrupted by Ctrl-C (`KeyboardInterrupt`, 128 + `SIGINT`) outside the command's own handling, for example while modules are imported. A running command or worker treats Ctrl-C as a graceful shutdown and exits `0`. |
 
 `78` follows `sysexits.h`. Every configuration error, whether it
 surfaces in the parent process or inside a worker subprocess, ends the
@@ -44,7 +45,17 @@ Exit `75` (`EX_TEMPFAIL`) is internal: a worker child that asked for
 recycling without getting an acknowledgement logs
 `worker_recycle_ack_timeout` and exits with it, the supervisor logs
 `worker_recycle_noack` and restarts it within the
-budget; it never reaches the caller.
+budget; it never reaches the caller. Exit `71` (`EX_OSERR`) is internal
+too: a CPU worker whose silently restarted forkserver was rejected stops
+consuming, logs `compute_fork_source_rejected` and exits with it; the
+supervisor logs `worker_fork_source_rejected` and restarts it with a
+fresh forkserver within the budget.
+
+If a given-up log thread is still stuck after the final flush, the
+`swarmq` command ends via `os._exit` with the exit code it would have had
+(a traceback or `SystemExit` message goes to stderr first, if stderr
+does not block) instead of aborting with `Fatal Python error` (exit
+`134`) or hanging. See [Logging](logging.md#bounded-flushing).
 
 For `swarmq worker`, level `DEBUG` (`--log-level DEBUG` or
 `SWARMQ_LOG_LEVEL=DEBUG`) adds the full Python traceback to connection
@@ -67,6 +78,7 @@ swarmq worker --module DOTTED.PATH
               [--log-config PATH | --no-configure-logging]
               [--logger-level NAME=LEVEL]...
               [--log-queue-size N] [--log-lifecycle-level LEVEL]
+              [--log-drain-timeout SECONDS]
               [--burst] [--burst-idle-timeout SECONDS]
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
@@ -87,17 +99,18 @@ swarmq worker --module DOTTED.PATH
 | `--pool {io,cpu}` | `io` | Execution pool. `cpu` runs every task body in a compute child forked from a pre-warmed forkserver: the loop process never computes, `hard_timeout` and cancel kill the child. POSIX only; not combinable with `--autoscale`. See the [CPU mode guide](../guides/cpu-mode.md). |
 | `--log-level LEVEL` | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Root level of every SwarmQ process. Env var: `SWARMQ_LOG_LEVEL`. |
 | `--log-format FORMAT` | `human` | `human` or `json` on stderr. JSON is fit for Loki, Datadog, CloudWatch. Env var: `SWARMQ_LOG_FORMAT` (alias `SWARMQ_LOG_JSON=true/false`; `SWARMQ_LOG_FORMAT` wins). |
-| `--log-config PATH` | unset | Logging `dictConfig` file (JSON; YAML with PyYAML installed) applied in every SwarmQ process instead of the built-in setup. Validated once by the supervisor. Not combinable with an explicit format or `--no-configure-logging`. Env var: `SWARMQ_LOG_CONFIG`. See [Logging](logging.md#own-dictconfig-file-log-config). |
+| `--log-config PATH` | unset | Logging `dictConfig` file (JSON; YAML with PyYAML installed) applied in every SwarmQ process (compute children included) instead of the built-in setup. Validated once by the supervisor and again before every `SIGHUP` reload, in a separate process with a 30-second limit while supervision continues; an invalid file (`log_config_reload_failed`) or a check that runs out of time (`log_config_reload_probe_timeout`) keeps the running workers. Not combinable with an explicit format or `--no-configure-logging`. Env var: `SWARMQ_LOG_CONFIG`. See [Logging](logging.md#own-dictconfig-file-log-config). |
 | `--no-configure-logging` | configure | Set up no logging in any SwarmQ process; your task module or `--configure` hook owns it. Env var: `SWARMQ_CONFIGURE_LOGGING=false`. |
 | `--logger-level NAME=LEVEL` | none | Level for one logger, e.g. `aio_pika=WARNING` or `swarmq.task=WARNING`. Repeatable; applied last. Env var: `SWARMQ_LOGGER_LEVELS` (comma-separated). |
 | `--log-queue-size N` | `10000` | Capacity of the in-process log queue; when it is full, records are dropped instead of blocking. Env var: `SWARMQ_LOG_QUEUE_SIZE`. |
 | `--log-lifecycle-level LEVEL` | `DEBUG` | Level of the `task_received` and `task_started` events. Env var: `SWARMQ_LOG_LIFECYCLE_LEVEL`. |
+| `--log-drain-timeout SECONDS` | `5` | Upper bound for every flush of the log queues: at exit, before a reload, before each compute result. Records not written in time count as dropped. Must be greater than 0 and at most `threading.TIMEOUT_MAX`, otherwise exit `78`. Env var: `SWARMQ_LOG_DRAIN_TIMEOUT`. See [Logging](logging.md#bounded-flushing). |
 | `--burst` | off | Exit cleanly once all queues have been idle for `--burst-idle-timeout` seconds. Env var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. |
 | `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). A configuration error in any worker ends the run after a single attempt with exit `78`. |
+| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
 | `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
 | `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. See [control channel](#control-channel). |
 | `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |

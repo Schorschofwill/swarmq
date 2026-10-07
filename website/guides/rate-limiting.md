@@ -72,6 +72,15 @@ task_info = TaskInfo(
 )
 ```
 
+If Valkey is unreachable for the check (or does not answer within
+`SWARMQ_BACKEND_OP_TIMEOUT`), the message is not rate-limited but
+deferred through the delay queue with its own backoff: no
+`TASK_RATE_LIMITED`, `rate_limit_count` stays as it was, and the
+worker logs `task_deferred_backend_unavailable` (`gate="rate_limit"`).
+Any other error of the check logs `rate_limit_check_failed` (ERROR)
+and requeues the message in place. See
+[Delivery semantics](../explanation/delivery-semantics.md#what-aborts-the-ack).
+
 ## Global vs per-worker
 
 Every worker process hits the same Valkey counter, so the limit is

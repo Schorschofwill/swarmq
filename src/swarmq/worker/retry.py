@@ -32,7 +32,7 @@ from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ class RetryHandler:
             logger.warning(
                 "compute_slot_unavailable_redeliver", task_id=ctx.task_id, **_error_fields(exc),
             )
-            await deps.broker.redeliver(delivery)
+            await redeliver_in_place(deps, delivery, ctx)
             return Redelivered
 
         # 1. NoRetry -> direct DLQ
@@ -120,8 +120,9 @@ class RetryHandler:
 
         # 6. Retry with incremented retry count. R3.5 Unit 11: merge original
         # headers so x-swarmq-unique-hash (and any future stage-specific
-        # header) survives redelivery.
-        headers = {**(dict(delivery.headers) if delivery.headers else {})}
+        # header) survives redelivery -- ohne die Zustellzaehler des Brokers
+        # (neue Nachricht, eigenes Zustellbudget).
+        headers = republish_headers(delivery, ctx)
         headers["x-swarmq-retry-count"] = retry_count + 1
         headers["x-swarmq-traceback"] = error_message
         try:
@@ -129,7 +130,7 @@ class RetryHandler:
         except Exception as broker_exc:
             logger.error("retry_publish_failed", **_error_fields(broker_exc))
             try:
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
             except Exception:
                 pass
             return Redelivered
@@ -199,7 +200,7 @@ class RetryHandler:
                 )
                 if at_least_once:
                     try:
-                        await deps.broker.redeliver(delivery)
+                        await redeliver_in_place(deps, delivery, ctx)
                     except Exception:
                         pass
                     # Non-terminal — das Unique-Flag bleibt stehen, damit der
@@ -237,7 +238,7 @@ class RetryHandler:
         except Exception as broker_exc:
             logger.error("dlq_publish_failed", **_error_fields(broker_exc))
             try:
-                await deps.broker.redeliver(delivery)
+                await redeliver_in_place(deps, delivery, ctx)
             except Exception:
                 pass
             # Non-terminal — leave the flag so the redelivery's terminal

@@ -71,7 +71,7 @@ def _deps(**cfg: Any) -> GateDeps:
         broker=MagicMock(), backend=backend, config=config, signals=signals, registry=MagicMock(),
         rate_limiter=lambda: None, lock_manager=lambda: None, finalize_schedfire=AsyncMock(),
         maybe_release_unique=AsyncMock(), extract_valid_workflow_id=lambda _m: None,
-        claim_schedfire=lambda _m, _t: None, register_lock=lambda _h, _e: None,
+        register_lock=lambda _h, _e: None,
     )
 
 
@@ -257,6 +257,8 @@ async def test_fire_and_forget_error_logs_error_type_and_error(setup, swarmq_log
 #        Einstellungen aus ``SwarmQConfig.logging_settings``.
 # 2. [x] Eingebettet (ohne Settings-Objekt) stammen sie aus den Logging-Feldern
 #        von ``SwarmQConfig``.
+# 4. [x] Plan 2026-10-06-1811, U4 (KTD11): ``log_drain_timeout`` reist in
+#        beiden Faellen mit dem Job ins Kind.
 # 3. [ ] Eingebettet mit ``log_config`` laedt der Executor die Datei einmal und
 #        gibt sie als JSON mit; die Kinder lesen sie nie.
 
@@ -268,6 +270,7 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
     settings = LoggingSettings(
         level="DEBUG", level_explicit=True, log_config="/abs/logging.json",
         log_config_json='{"version": 1}', logger_levels=(("aio_pika", "WARNING"),), queue_size=500,
+        drain_timeout=0.75,
     )
     pool = FakePool()
     ex = ComputeExecutor(_deps(logging_settings=settings), pool, worker_id="w1")  # type: ignore[arg-type]
@@ -279,6 +282,7 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
     assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
         True, (("aio_pika", "WARNING"),), 500,
     )
+    assert job.log_drain_timeout == 0.75
 
 
 @pytest.mark.timeout(5)
@@ -286,7 +290,7 @@ async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
     pool = FakePool()
     deps = _deps(
         log_level="WARNING", log_json=False, configure_logging=False,
-        logger_levels=(("aio_pika", "ERROR"),), log_queue_size=200,
+        logger_levels=(("aio_pika", "ERROR"),), log_queue_size=200, log_drain_timeout=1.5,
     )
     ex = ComputeExecutor(deps, pool, worker_id="w1")  # type: ignore[arg-type]
     await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
@@ -295,6 +299,7 @@ async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
     assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
         False, (("aio_pika", "ERROR"),), 200,
     )
+    assert job.log_drain_timeout == 1.5
 
 
 @pytest.mark.timeout(5)

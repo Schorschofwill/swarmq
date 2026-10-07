@@ -27,7 +27,9 @@ Every row has the following columns:
 | `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `78` (`swarmq worker`), `1` (other subcommands) | `worker_config_error` log line (worker), `stderr line` (other subcommands) |
 | `swarmq.exceptions.LoggingConfigError` | `ConfigurationError` | library | startup, cli | no | n/a | `78` | `worker_config_error` log line with `path` |
 | `swarmq.exceptions.BrokerConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.PublishIndeterminate` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.BackendResponseError` | `BackendConnectionError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (cancel bypasses DLQ) | n/a | `is_cancelled=true` |
@@ -40,6 +42,7 @@ Every row has the following columns:
 | `swarmq.exceptions.WorkflowValidationError` | `SwarmQError` | library | schedule, run | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.WorkflowStateConflict` | `SwarmQError` | library | run | yes | no | n/a | redelivery of the step message |
 
 ## CLI exit codes
 
@@ -53,9 +56,13 @@ binary's contract:
 | `2` | Bad arguments (argparse) | — (printed by argparse) |
 | `3` | `dlq inspect` / `dlq retry <task_id>` not found | `_DLQNotFound` (internal sentinel) |
 | `78` | Configuration error of `swarmq worker` (`EX_CONFIG`) — in the parent process or in any worker child; the supervisor propagates it | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` of the task module, a raising `--configure` hook |
+| `130` | Interrupted by Ctrl-C outside the command's own handling | `KeyboardInterrupt` |
 
 `75` (`EX_TEMPFAIL`) is used between a worker child and the supervisor
 only (recycle without acknowledgement) and never reaches the caller.
+`71` (`EX_OSERR`) is internal as well: a CPU worker whose silently
+restarted forkserver was rejected (`ForkSourceRejected`) exits with it,
+and the supervisor restarts it with a fresh forkserver.
 Treat `78` as "do not restart without a change" and `1` as "retry with
 backoff".
 
@@ -85,6 +92,8 @@ For agents that need a quick action table:
 | Observed | Action |
 |---|---|
 | `BrokerConnectionError` / `BackendConnectionError` | Back off, retry — the library reconnects automatically. |
+| `PublishIndeterminate` | Do not blindly re-publish: the broker may already have the message. Check the result or make the task idempotent first. |
+| `BackendResponseError` | Valkey answered with an error (`WRONGTYPE`, script error); waiting does not help. Inspect the key or script, then retry. |
 | `ConfigurationError` | Do not retry. Fix the config and restart. |
 | `TaskNotFoundError` at `schedule()` | Report a bug; the task is not registered. |
 | `TaskError` at `get_result()` | Classify by `error_message`. Retry may or may not help depending on upstream cause. |

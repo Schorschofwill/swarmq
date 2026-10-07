@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from swarmq.workflow_orchestration import WorkflowHandle
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import ConfigurationError
-from swarmq.logging import _disable_log_queue, _enable_log_queue
+from swarmq.logging import _await_log_queue_drained, _disable_log_queue, _enable_log_queue
 from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.progress import ProgressInfo
 from swarmq.registry import TaskRegistry
@@ -65,6 +65,7 @@ class SwarmQ:
             self.config.log_level,
             json=self.config.log_json,
             queue_size=self.config.log_queue_size,
+            drain_timeout=self.config.log_drain_timeout,
         )
         self._middlewares: list[Middleware] = []
         self._signal_dispatcher = SignalDispatcher()
@@ -127,7 +128,11 @@ class SwarmQ:
             finally:
                 if self._log_queue_held:
                     self._log_queue_held = False
-                    _disable_log_queue()
+                    # Plan 2026-10-06-1811, KTD4: in O(1) abhaengen, dann
+                    # leeren, ohne den Event-Loop anzuhalten.
+                    await _await_log_queue_drained(
+                        _disable_log_queue(), self.config.log_drain_timeout,
+                    )
 
     async def schedule_many(
         self,

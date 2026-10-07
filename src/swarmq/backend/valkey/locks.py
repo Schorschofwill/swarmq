@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 
 import valkey.asyncio as valkey_asyncio
 
+from swarmq.backend.valkey.connection import as_backend_error
 from swarmq.contracts import LockToken
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import lock_key
@@ -29,10 +30,11 @@ class LockManager:
     not reimplement it.
 
     All Valkey-facing methods catch arbitrary exceptions and re-raise
-    them as :class:`BackendConnectionError`. The boundary is drawn here
-    so the worker's pre-execute pipeline (``_try_apply_lock``) sees one
-    error class regardless of whether the underlying transport raised
-    ``ConnectionError``, ``TimeoutError``, or a Valkey-specific error.
+    them as :class:`BackendConnectionError`: transport failures
+    (``ConnectionError``, ``TimeoutError``, ``OSError``) as the plain class
+    (an outage -- the lock gate defers), everything else (an error reply
+    such as ``WRONGTYPE``, a script error) as the subclass
+    :class:`BackendResponseError` (no outage -- the lock gate requeues).
     """
 
     def __init__(self, client: valkey_asyncio.Valkey) -> None:
@@ -59,7 +61,7 @@ class LockManager:
         except BackendConnectionError:
             raise
         except Exception as exc:
-            raise BackendConnectionError(f"lock acquire failed for {lock_name!r}: {exc}") from exc
+            raise as_backend_error(f"lock acquire failed for {lock_name!r}: {exc}", exc) from exc
         return int(result) == 1
 
     async def release(self, lock_name: str, owner_token: str, max_concurrency: int) -> bool:
@@ -76,7 +78,7 @@ class LockManager:
         except BackendConnectionError:
             raise
         except Exception as exc:
-            raise BackendConnectionError(f"lock release failed for {lock_name!r}: {exc}") from exc
+            raise as_backend_error(f"lock release failed for {lock_name!r}: {exc}", exc) from exc
         # Lua returns 1 (owned release), 2 (force release), 0 (no-op).
         # Both 1 and 2 count as "released" from the caller's perspective.
         return int(result) >= 1
@@ -98,7 +100,7 @@ class LockManager:
         except BackendConnectionError:
             raise
         except Exception as exc:
-            raise BackendConnectionError(f"lock renew failed for {lock_name!r}: {exc}") from exc
+            raise as_backend_error(f"lock renew failed for {lock_name!r}: {exc}", exc) from exc
         return int(result) == 1
 
 

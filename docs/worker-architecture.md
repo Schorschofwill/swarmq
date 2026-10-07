@@ -143,7 +143,7 @@ Fuer Worker-Subprozesse bleibt `spawn` die Wahl; fuer Rechenkinder ist es
 |--------|---------------|----------------|
 | **SIGINT** (Ctrl+C) | Shutdown einleiten, Event setzen | **IGNORIEREN** (`signal.SIG_IGN`) |
 | **SIGTERM** | Shutdown einleiten, Event setzen | `loop.add_signal_handler()` → lokales Shutdown-Event |
-| **SIGHUP** | Reload-Flag setzen, Shutdown einleiten | Ignoriert (Parent kuemmert sich) |
+| **SIGHUP** | Nur Reload vormerken; der Monitor-Loop prueft ggf. `--log-config` (Probe ausserhalb des Handlers), stoppt dann die Worker und fuehrt `execvpe` aus. SIGTERM/SIGINT verwerfen einen ausstehenden oder beschlossenen Reload | Ignoriert (Parent kuemmert sich) |
 | **SIGCHLD** | Zombie-Vermeidung via `os.waitpid()` | Nicht relevant |
 
 ## 3.3 Warum SIGINT im Worker ignorieren
@@ -317,13 +317,22 @@ def _on_sigchld(signum, frame):
 
 ## 5.4 Exit-Codes
 
+Stand 0.9.0 (`swarmq/supervision.py`, `Supervisor._handle_exit_code`); der
+urspruengliche Prototyp kannte noch einen Code 2 fuer "Restart angefordert",
+den es nicht mehr gibt (Reload laeuft per `SIGHUP` und `execvpe`).
+
 | Code | Bedeutung | Restart? |
 |------|-----------|----------|
-| 0 | Normaler Shutdown | Nein |
-| 1 | Unbehandelter Fehler | Ja (mit Backoff) |
-| 2 | Restart angefordert | Ja (sofort) |
+| 0 | Normaler Shutdown (Burst-Drain o. ae.) | Nein, Slot wird stillgelegt |
+| 78 | Konfigurationsfehler (`EX_CONFIG`, `worker_config_error`) | Nein, Supervisor endet mit 1 |
+| 75 | Recycling ohne Bestaetigung (`EX_TEMPFAIL`, `worker_recycle_noack`) | Ja (normaler Restart-Pfad) |
+| 71 | CPU-Pool hat seine Fork-Quelle verworfen (`ForkSourceRejected`, `worker_fork_source_rejected`) | Ja, mit frischem Forkserver (normaler Restart-Pfad) |
+| 1 / sonstige | Unbehandelter Fehler | Ja (mit Backoff, `MAX_RESTARTS`) |
 | -9 (137) | SIGKILL / OOM-Killer | Ja (mit Backoff) |
-| -15 | SIGTERM | Nein (kontrolliert) |
+| -15 | SIGTERM | Nur nach Supervisor-Entscheid (`expected_shutdown`) kein Restart |
+
+Haengt nach dem Leeren noch ein aufgegebener Log-Thread, endet der
+Worker-Subprozess per `os._exit` mit genau diesem Code (`logging_drain.py`).
 
 ## 5.5 Bekanntes Problem: `is_alive()` Verzoegerung bei `spawn`
 
@@ -388,10 +397,10 @@ Signal kann zwischen `Process.start()` und Handler-Setup eintreffen. **Loesung:*
 Bei `spawn` wird ein frischer Interpreter gestartet — Logging muss in jedem Kind neu eingerichtet werden. Umsetzung in SwarmQ (Plan 2026-10-06-0831):
 
 - **Die Bibliothek konfiguriert nie.** `SwarmQ()` laesst Root-Handler, Root-Level und structlog-Konfiguration unberuehrt. Konfiguriert wird nur in den Einstiegspunkten, je Prozess genau einmal per `swarmq.logging.configure_logging(settings)`: im Supervisor (`swarmq worker`), im Worker-Subprozess (`process_manager/entry.py`, **vor** dem App-Import) und im Compute-Kind (`worker/compute/child.py`). Ein zweiter Aufruf im selben Prozess ist ein No-op; neu aufgebaut wird nur ueber `shutdown_logging()` und danach `configure_logging()`.
-- **Einmal aufloesen, aufgeloest weitergeben.** Der Supervisor loest die Einstellungen einmal auf (CLI > Env > `SwarmQConfig` > Default) und gibt sie als pickle-sicheres `LoggingSettings` ueber `WorkerConfig` bzw. `ComputeJob` weiter. Die Kinder lesen kein Env. Eine `--log-config`-Datei prueft der Supervisor einmal und reicht die gepruefte Konfiguration als JSON-String weiter; Kinder lesen die Datei nie. Vor einem Reload (`SIGHUP`) prueft der laufende Supervisor die Datei erneut, ungueltig → `log_config_reload_failed`, kein `execvpe`.
-- **Nicht blockierend.** Eingebaut schreibt Root ueber einen `QueueHandler` mit begrenzter Queue (`--log-queue-size`, Vorgabe 10000) an einen `QueueListener`-Thread (`swarmq-log-listener`), der rendert und nach stderr schreibt. Der Listener startet lazy beim ersten Eintrag — der Forkserver bleibt so single-threaded. Volle Queue → Eintrag verwerfen statt blockieren (WARNING+ haben 10 % Reserve), Meldung `log_records_dropped` hoechstens 1/s, Metrik `swarmq_log_records_dropped_total`. `os.register_at_fork` setzt Queue und Listener im Kind zurueck.
-- **Leeren vor jedem Exit.** `shutdown_logging()` (auch per `atexit`) leert die Queue vor `execvpe`, vor Exit 78/75 und pro Job im wiederverwendeten Compute-Kind. Bei SIGKILL ist verloren, was in der Queue liegt.
-- **"App gewinnt".** Ersetzt das Task-Modul oder ein `--configure`-Hook die Root-Handler, stoppt SwarmQ seinen Root-Listener und leitet `swarmq.*` ueber eine eigene Queue an die Handler der App (`logging_reconfigured_by_app`); hinzugefuegte Handler → `logging_handlers_added_by_app`. Im CPU-Pool erben die Kinder die Handler aus dem Vorladen im Forkserver; die gewinnen ebenso.
+- **Einmal aufloesen, aufgeloest weitergeben.** Der Supervisor loest die Einstellungen einmal auf (CLI > Env > `SwarmQConfig` > Default) und gibt sie als pickle-sicheres `LoggingSettings` ueber `WorkerConfig` bzw. `ComputeJob` weiter. Die Kinder lesen kein Env. Eine `--log-config`-Datei prueft der Supervisor einmal und reicht die gepruefte Konfiguration als JSON-String weiter; Kinder lesen die Datei nie. Vor einem Reload (`SIGHUP`) prueft der laufende Supervisor die Datei erneut, ausserhalb des Signal-Handlers per `Popen`-Probe, die der Monitor-Loop pollt (`process_manager/reload.py`, Plan 2026-10-06-1811 KTD8): ungueltig → `log_config_reload_failed`, Frist von 30 s ueberschritten → `log_config_reload_probe_timeout`, jeweils kein `execvpe`. SIGTERM/SIGINT gewinnen immer gegen einen Reload.
+- **Nicht blockierend.** Eingebaut schreibt Root ueber einen `QueueHandler` mit begrenzter Queue (`--log-queue-size`, Vorgabe 10000) an einen `QueueListener`-Thread (`swarmq-log-lsnr`, hoechstens 15 Zeichen fuer `/proc/<pid>/task/*/comm`), der rendert und nach stderr schreibt. Der Listener startet lazy beim ersten Eintrag; im Forkserver (markiert von `worker/compute/preload.py`) startet er nie, Records gehen dort synchron hinaus — der Forkserver bleibt so single-threaded. Volle Queue → Eintrag verwerfen statt blockieren (WARNING+ haben 10 % Reserve); der Aufrufer zaehlt nur, der Listener meldet `log_records_dropped` hoechstens 1/s als Record, Metrik `swarmq_log_records_dropped_total`. Fehler in Handlern, Filtern und Formattern faengt der Listener (`log_handler_errors`); ein toter Listener startet mit dem naechsten Eintrag neu. `os.register_at_fork` setzt Queue und Listener im Kind zurueck (auch die der dictConfig-Datei); der `before`-Hook wartet hoechstens 50 ms auf laufende Schreibvorgaenge.
+- **Leeren vor jedem Exit, begrenzt.** `shutdown_logging()` (auch per `atexit`) leert die Queue vor `execvpe`, vor Exit 78/75 und pro Job im Compute-Kind vor dem Ergebnis, hoechstens `log_drain_timeout` (Vorgabe 5 s) ueber alle Listener gemeinsam (`logging_drain.py`); der Rest zaehlt als verworfen, Abschlusszeile `log_drain_timeout_exceeded`. Haengt danach noch ein aufgegebener Log-Thread, enden swarmq-eigene Prozesse (`console_main`, Worker-Subprozess, Compute-Kind) per `os._exit` mit dem urspruenglichen Exit-Code; eingebettete Apps nie. Bei SIGKILL ist verloren, was in der Queue liegt.
+- **"App gewinnt".** Ersetzt das Task-Modul oder ein `--configure`-Hook die Root-Handler, stoppt SwarmQ seinen Root-Listener und leitet `swarmq.*` ueber eine eigene Queue an die Handler der App (`logging_reconfigured_by_app`); hinzugefuegte Handler → `logging_handlers_added_by_app`. Im CPU-Pool haengt `preload.py` vor dem App-Import einen thread-freien Sentinel an Root (nur wenn swarmq konfiguriert); `configure_child_logging` wendet im Kind dieselbe Regel an (`basicConfig` wirkungslos, Ersatz → App gewinnt, `addHandler` → beide schreiben) und startet ungestartete Queue-Listener der App. Grenze: ein per Pfad gestartetes Hauptmodul wird vor dem Preload importiert.
 - **Dateirotation nur ausserhalb.** Mit `--log-config` wenden alle Prozesse dieselbe dictConfig an — nur Stream-Handler verwenden, Rotation per journald/logrotate (`copytruncate`)/Collector.
 
 Nutzerdoku: `website/reference/logging.md`.
@@ -633,4 +642,6 @@ nach `SHUTDOWN_TERM_S` SIGKILL; das zaehlt gegen ein eigenes Budget von
 Recycling-Absicht wird genauso beantwortet, ohne Kill; der Worker drainiert
 danach selbst. Exit 0 ohne `expected_shutdown` (Burst) wird nicht
 nachgefuellt; Exit 78 (Konfigurationsfehler) beendet den Supervisor mit 1;
-Exit 75 (Recycling ohne Bestaetigung) nimmt den normalen Restart-Pfad.
+Exit 75 (Recycling ohne Bestaetigung) und Exit 71 (verworfene Fork-Quelle
+des CPU-Pools, frischer Forkserver beim Neustart) nehmen den normalen
+Restart-Pfad.

@@ -115,8 +115,10 @@ long as RabbitMQ and Valkey are still there.
 | Locks | Valkey key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
 | Cancel flags | Valkey key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
 | Dedup markers | Valkey key `sq:unique:{hash}` | `unique_for` seconds |
-| Scheduler entries | Valkey ZSET `sq:sched:*` | Until fired or removed |
-| Leader election | Valkey key `sq:sched:leader` | Heartbeat-renewed |
+| Scheduler entries | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Until fired or removed |
+| Schedule-fire claims | Valkey key `sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
+| Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
+| Leader election | Valkey key `sq:lock:{sched}:leader` | Heartbeat-renewed |
 
 In-process state — the task registry, the middleware stack, the signal
 dispatcher — is rebuilt on every worker start from your task module.
@@ -136,9 +138,13 @@ queue actually needs:
 - **Quorum-queue redelivery limits.** `x-delivery-limit=20` caps the
   damage from a pathological redelivery loop without losing the
   message — the 21st attempt goes to the DLQ.
-- **Native DLQ routing.** When a worker nacks without requeue (retry
-  exhaustion, `NoRetry`, lock-render failure), RabbitMQ routes the
-  message to `{queue}.XQ` automatically. No application-level copy.
+- **Native DLQ routing.** Every queue is declared with a dead-letter
+  exchange: a message the worker rejects (undecodable, unregistered
+  task) or that hits the delivery limit lands in `{queue}.XQ` without
+  any worker code. For retry exhaustion, `NoRetry`, `max_age` and
+  lock failures the worker publishes to `{queue}.XQ` itself, with
+  diagnostic headers (`x-swarmq-traceback` and others), and acks the
+  original only after the broker confirmed the copy.
 - **Per-consumer prefetch.** Concurrency is a client-side AMQP
   setting, not a server-side feature. One flag changes the in-flight
   depth without touching the queue topology.
@@ -186,9 +192,9 @@ process. See the [CPU mode guide](../guides/cpu-mode.md).
 
 | Failure | Blast radius | Recovery |
 |---|---|---|
-| Worker process crash | In-flight tasks get redelivered by RabbitMQ after visibility | Supervisor restarts the worker (`--processes N` default) |
+| Worker process crash | In-flight tasks get redelivered by RabbitMQ as soon as the worker's channel or connection closes | Supervisor restarts the worker (`--processes N` default) |
 | Worker loses broker connection | That worker stops consuming; others continue | `connect_robust()` reconnects; unacked tasks redeliver |
-| Worker loses backend connection | Task execution continues; result writes buffer and retry | `valkey-py` auto-reconnects |
+| Worker loses backend connection | Checks before execution (schedule-fire dedup, cancel, rate limit, lock) defer the message to the delay queue with growing backoff; a failed result write requeues the message, and the task runs again | `valkey-py` reconnects; deferred messages return after at most `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) |
 | RabbitMQ restart | All workers reconnect; unacked messages redeliver | Quorum queues survive single-node loss natively |
 | Valkey restart | Active locks, rate counters, and leader lock expire | Clients and workers re-acquire on next operation |
 | Client crashes after publish | Task runs anyway; result sits in Valkey for `result_ttl` | Whoever holds `task_id` can still `get_result()` |

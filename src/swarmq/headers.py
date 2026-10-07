@@ -30,3 +30,14 @@ HEADER_ENQUEUED_AT = "x-swarmq-enqueued-at"
 # the advancement seam is a no-op for it.
 HEADER_WORKFLOW_ID = "x-swarmq-workflow-id"
 HEADER_WORKFLOW_STEP = "x-swarmq-workflow-step"
+
+# Zurueckstellung bei Backend-Ausfall: wie oft ein Gate diese Nachricht
+# schon wegen eines Backend-Fehlers ueber die Delay-Queue zurueckgestellt
+# hat. Bestimmt die naechste Wartezeit; kein Retry-Zaehler.
+HEADER_BACKEND_DEFER_COUNT = "x-swarmq-backend-defer-count"
+
+# Schedfire-Claim-Token: Owner des In-Flight-Claims, den die Zustellung hielt,
+# aus der diese Kopie (Zurueckstellung, Retry, Requeue) hervorging. Die Kopie
+# bietet es beim Claim zur Uebernahme an -- scheiterte die Freigabe am
+# Backend-Ausfall, erkennt sie den Claim als ihren statt als Duplikat.
+HEADER_SCHEDFIRE_CLAIM = "x-swarmq-schedfire-claim"

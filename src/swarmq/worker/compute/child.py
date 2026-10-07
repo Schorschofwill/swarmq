@@ -15,10 +15,12 @@ import ctypes
 import logging
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from swarmq.logging_drain import exit_code_for, exit_if_log_thread_stuck
 from swarmq.worker.compute.envelope import (
     ComputeJob,
     ResultEnvelope,
@@ -245,6 +247,7 @@ def _child_logging_settings(job: ComputeJob) -> Any:
         configure=job.configure_logging,
         logger_levels=job.logger_levels,
         queue_size=job.log_queue_size,
+        drain_timeout=job.log_drain_timeout,
     )
 
 
@@ -257,9 +260,8 @@ def _configure_child_logging(job: ComputeJob, channel: Any) -> None:
     """
     from swarmq.logging import configure_child_logging
 
-    takeover = configure_child_logging(_child_logging_settings(job))
-    if takeover is not None:
-        channel.send(("logging_reconfigured_by_app", takeover))
+    for report in configure_child_logging(_child_logging_settings(job)):
+        channel.send(report)
 
 
 def _send_result(channel: Any, envelope: ResultEnvelope) -> None:
@@ -282,6 +284,11 @@ def _shutdown_child_logging() -> None:
 
     shutdown_logging()
     logging.shutdown()
+    # Das Kind gehoert swarmq (Plan 2026-10-06-1811, KTD3): Haengt nach der
+    # Frist noch ein Log-Thread, endet es hart mit seinem Exit-Code; die
+    # Ausnahme, an der es endet, geht vorher auf fd 2 (wie ``console_main``).
+    exc = sys.exception()
+    exit_if_log_thread_stuck(exit_code_for(exc), exc)
 
 
 def child_once(job: ComputeJob, channel: Any, slot: int | None = None) -> None:

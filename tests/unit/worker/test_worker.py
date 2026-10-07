@@ -469,6 +469,24 @@ async def test_start_connects_and_declares_queues(worker, broker, backend):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_start_raises_after_the_drain_when_the_fork_source_was_rejected(worker, broker):
+    """Schluss-Review: Hat der CPU-Pool seine Kindquelle verworfen, endet
+    ``start`` nach dem geordneten Shutdown mit ``ForkSourceRejected`` --
+    der Worker-Subprozess macht daraus Exit 71."""
+    from swarmq.supervision import ForkSourceRejected
+    from swarmq.worker.compute.wiring import stop_on_rejected_fork_source
+
+    stop_on_rejected_fork_source(worker, "restarted forkserver has 2 threads")
+    worker._shutdown_event.set()
+
+    with pytest.raises(ForkSourceRejected, match="2 threads"):
+        await worker.start()
+
+    broker.close.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_stop_closes_connections(worker, broker, backend):
     await worker.stop()
 

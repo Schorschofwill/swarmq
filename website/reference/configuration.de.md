@@ -49,7 +49,9 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads je Rechenkind (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Sekunden zwischen In-Task-Cancel-Flag-Checks. |
-| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze einzelner Valkey-Operationen in der Cancel-/Dedup-Pipeline. |
+| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze in Sekunden für einzelne Valkey-Operationen in der Worker-Pipeline: Cancel-Check, Dedup-Prüfung und Claim eines Schedule-Fires, Rate-Limit-Prüfung, Lock-Acquire, Lesen des Ergebnisses eines abgebrochenen Workflow-Schritts, Ergebnis-Schreiben, Ergebnis-Benachrichtigung nach einem Abbruch vor dem Start sowie Abschluss oder Freigabe eines Schedule-Fire-Claims. Läuft eine Prüfung vor der Ausführung hinein, gilt das Backend als nicht erreichbar und die Nachricht wird zurückgestellt, statt auf das Socket-Timeout des Valkey-Clients zu warten. Muss `> 0` sein. |
+| `SWARMQ_BACKEND_DEFER_BASE_DELAY` | `1.0` | Sekunden, die eine Nachricht nach ihrer ersten Zurückstellung wartet, wenn eine Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) das Backend nicht erreicht. Jede weitere Zurückstellung derselben Nachricht verdoppelt die Wartezeit. Jede Wartezeit streut zufällig um ±20 %, damit gemeinsam zurückgestellte Nachrichten nicht gemeinsam wiederkommen. Die Nachricht geht als neue Nachricht über die Delay-Queue zurück, eine lange Backend-Störung verbraucht also weder `max_retries` noch das Zustelllimit. |
+| `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Obergrenze der verdoppelten Wartezeit in Sekunden, vor der Streuung um ±20 % (eine einzelne Wartezeit kann also bis zum 1,2-Fachen dieses Werts betragen); mindestens `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Begrenzt, wie lange eine Nachricht nach der Rückkehr des Backends noch wartet. |
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |
 | `SWARMQ_BURST_IDLE_TIMEOUT` | `5.0` | Sekunden Idle, bevor Burst exitet. |
 | `SWARMQ_PRIORITIES` | `false` | Bei `true` werden `.high`/`.normal`/`.low`-Triplets für jede Queue auto-deklariert und konsumiert. |
@@ -75,6 +77,7 @@ CPU-Pools. Details, Rezepte und den Event-Katalog findest du in der
 | `SWARMQ_LOGGER_LEVELS` | nicht gesetzt | Komma-separierte `NAME=LEVEL`-Paare, z. B. `aio_pika=WARNING,valkey=ERROR`. |
 | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Kapazität der prozessinternen Log-Queue. |
 | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level von `task_received` und `task_started`. |
+| `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Obergrenze in Sekunden für jedes Leeren der Log-Queues (beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds, in `SwarmQ.__aexit__`); nicht rechtzeitig geschriebene Einträge gelten als verworfen. Größer als 0 und höchstens `threading.TIMEOUT_MAX`. Siehe [begrenztes Leeren](logging.md#begrenztes-leeren). |
 | `SWARMQ_LOG_QUEUE` | `false` | Eingebettete Apps: `swarmq.*`-Events über einen Hintergrund-Thread von SwarmQ an deine Root-Handler leiten ([Opt-in-Log-Queue](logging.md#opt-in-log-queue)). |
 
 Der Supervisor von `swarmq worker` löst diese Werte einmal auf (CLI-Flag
@@ -92,7 +95,7 @@ beenden `swarmq worker` mit Exit `78`.
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Sekunden zwischen Leader-Heartbeat-Renews. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader-Lock-TTL; muss `≥ 2 × heartbeat_interval` sein. |
 | `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup-TTL für scheduler-initiierte Dispatches. |
-| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | Pre-Run-Marker-TTL während ein geplanter Task läuft. |
+| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL des Schedule-Fire-Claims, den ein Worker hält, während ein geplanter Task läuft. Ein Claim, der nicht freigegeben werden konnte, blockiert eine erneute Zustellung desselben Fires höchstens so lange als Duplikat. |
 
 ### Observability
 
@@ -232,10 +235,13 @@ gebunden.
 
 `SwarmQ(...)` konfiguriert kein Logging. Die Logging-Felder
 (`log_level`, `log_json`, `log_config`, `configure_logging`,
-`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`)
-steuern nur die [Opt-in-Log-Queue](logging.md#opt-in-log-queue), das
-Lebenszyklus-Level eines eingebetteten Workers und die Rechenkinder
-eines eingebetteten CPU-Pools.
+`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`,
+`log_drain_timeout`) steuern nur die
+[Opt-in-Log-Queue](logging.md#opt-in-log-queue), das Lebenszyklus-Level
+eines eingebetteten Workers und die Rechenkinder eines eingebetteten
+CPU-Pools. Mit `log_queue=True` begrenzt `log_drain_timeout` das Leeren
+in `__aexit__` und beim Prozessende; ein ungültiger Wert wirft
+`ConfigurationError`.
 
 ## `TaskInfo`-Felder
 

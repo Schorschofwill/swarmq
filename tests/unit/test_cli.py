@@ -1317,3 +1317,69 @@ class TestDlqNotFoundExitCode:
         monkeypatch.setattr(cli, "_run_dlq_async", raiser)
         rc = cli.main(["dlq", "inspect", "nope", "--queue", "x"])
         assert rc == 3
+
+
+class TestConsoleEntryHardExit:
+    """Plan 2026-10-06-1811, U4 (KTD3): Der ``swarmq``-Befehl gehoert
+    swarmq. Haengt nach dem begrenzten Leeren noch ein Log-Thread, endet er
+    per ``os._exit`` mit dem Exit-Code von ``main`` -- ``main`` selbst
+    bleibt fuer Tests und Aufrufer im Prozess ohne hartes Ende.
+
+    Test-Liste:
+    - [x] ``console_main`` gibt den Code von ``main`` an das harte Ende und
+      liefert ihn zurueck
+    - [x] (Review A2) wirft ``main``, prueft ``console_main`` mit dem Code
+      der Ausnahme (``exit_code_for``) und wirft sie weiter
+    - [x] (Schluss-Review) die Ausnahme selbst geht mit an das harte Ende,
+      das sie vorher auf fd 2 ausgibt
+    """
+
+    def test_console_main_hands_the_exit_code_of_main_to_the_hard_exit(self, monkeypatch):
+        calls: list[object] = []
+        monkeypatch.setattr(cli, "main", lambda argv=None: calls.append(("main", argv)) or 78)
+        monkeypatch.setattr(
+            "swarmq.logging_drain.exit_if_log_thread_stuck",
+            lambda code: calls.append(("exit_if_log_thread_stuck", code)),
+        )
+
+        assert cli.console_main(["worker"]) == 78
+
+        assert calls == [("main", ["worker"]), ("exit_if_log_thread_stuck", 78)]
+
+    @pytest.mark.parametrize(("exc", "code"), [(RuntimeError("boom"), 1), (SystemExit(4), 4)])
+    def test_console_main_checks_for_the_hard_exit_when_main_raises(
+        self, monkeypatch, exc, code,
+    ):
+        calls: list[object] = []
+
+        def failing_main(argv=None):
+            raise exc
+
+        monkeypatch.setattr(cli, "main", failing_main)
+        monkeypatch.setattr(
+            "swarmq.logging_drain.exit_if_log_thread_stuck",
+            lambda code, exc=None: calls.append(("exit_if_log_thread_stuck", code)),
+        )
+
+        with pytest.raises(type(exc)):
+            cli.console_main(["worker"])
+
+        assert calls == [("exit_if_log_thread_stuck", code)]
+
+    def test_console_main_hands_the_exception_of_main_to_the_hard_exit(self, monkeypatch):
+        calls: list[object] = []
+        exc = SystemExit("config broken")
+
+        def failing_main(argv=None):
+            raise exc
+
+        monkeypatch.setattr(cli, "main", failing_main)
+        monkeypatch.setattr(
+            "swarmq.logging_drain.exit_if_log_thread_stuck",
+            lambda code, exc=None: calls.append((code, exc)),
+        )
+
+        with pytest.raises(SystemExit):
+            cli.console_main(["worker"])
+
+        assert calls == [(1, exc)]

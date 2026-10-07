@@ -37,8 +37,10 @@ from swarmq.cli import _DLQ_NOT_FOUND_EXIT_CODE
 from swarmq.cli.parser import _build_parser
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import SwarmQError
+from swarmq.logging_drain import exit_code_for
 from swarmq.progress import ProgressInfo
 from swarmq.scheduler import ScheduleDefinition
+from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
 # Default output root when run from a source checkout. Only meaningful in the
 # repo; an installed consumer calls ``build_spec()`` and writes wherever it
@@ -78,8 +80,11 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         dlq_on_uncaught="yes", exit_code_on_cli=1, transport_field="error_class",
     ),
     "ConfigurationError": dict(
+        # `swarmq worker` endet mit EX_CONFIG (78); schedule/dlq/inspect mit 1
+        # (siehe CLI-Exit-Codes).
         origin="library", when=["startup", "cli"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+        dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
+        transport_field="stderr line",
     ),
     "LoggingConfigError": dict(
         # Ungueltige Logging-Einstellungen enden im Worker mit Exit 78
@@ -100,6 +105,14 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
     "BackendConnectionError": dict(
+        origin="library", when=["startup", "schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
+    "BackendResponseError": dict(
+        # Unterklasse von BackendConnectionError: das Backend antwortete mit
+        # einem Fehler (WRONGTYPE, Skriptfehler) -- kein Ausfall, kein Backoff.
+        # Selbstheilende Antworten (OOM, READONLY, ...) sind kein
+        # BackendResponseError, sondern ein Ausfall.
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
@@ -308,6 +321,16 @@ def _cli_exit_codes() -> list[dict[str, Any]]:
         {"code": 2, "meaning": "Bad arguments (argparse usage error)"},
         {"code": _DLQ_NOT_FOUND_EXIT_CODE, "meaning": (
             "`dlq inspect` / `dlq retry <task_id>` target not found in the DLQ"
+        )},
+        {"code": CONFIG_ERROR_EXIT_CODE, "meaning": (
+            "Configuration error of `swarmq worker` (EX_CONFIG): "
+            "ConfigurationError, task module not importable, `--configure` "
+            "hook failed, invalid logging settings (LoggingConfigError); "
+            "retrying without a change is pointless"
+        )},
+        {"code": exit_code_for(KeyboardInterrupt()), "meaning": (
+            "Interrupted by Ctrl-C (KeyboardInterrupt, 128 + SIGINT) outside "
+            "the command's own handling"
         )},
     ]
 

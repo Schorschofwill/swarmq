@@ -93,6 +93,12 @@
       "type": "str"
     },
     {
+      "default": 5.0,
+      "env_var": "SWARMQ_LOG_DRAIN_TIMEOUT",
+      "name": "log_drain_timeout",
+      "type": "float"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_LOG_QUEUE",
       "name": "log_queue",
@@ -154,6 +160,18 @@
       "default": 5.0,
       "env_var": "SWARMQ_BACKEND_OP_TIMEOUT",
       "name": "backend_op_timeout",
+      "type": "float"
+    },
+    {
+      "default": 1.0,
+      "env_var": "SWARMQ_BACKEND_DEFER_BASE_DELAY",
+      "name": "backend_defer_base_delay",
+      "type": "float"
+    },
+    {
+      "default": 60.0,
+      "env_var": "SWARMQ_BACKEND_DEFER_MAX_DELAY",
+      "name": "backend_defer_max_delay",
       "type": "float"
     },
     {

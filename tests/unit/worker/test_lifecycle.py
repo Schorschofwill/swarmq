@@ -4,6 +4,23 @@ und Observability-Autowire — zusammengeführt aus ``test_graceful_shutdown.py`
 
 Unit tests for graceful shutdown (Unit 2.5)."""
 
+# Test list (0.9.0, Start-Abbruch):
+# 1. Ein Abbruch von ``start()`` nach dem Scheduler-Start, aber vor
+#    WORKER_ONLINE (hier: haengendes ``declare_queue``) laesst keine
+#    Scheduler-Tasks zurueck (sonst erneuert der Prozess den Leader-Lock
+#    endlos).
+# 2. Ein Fehler in derselben Phase (``declare_queue`` wirft) laesst ebenso
+#    keine Scheduler-Tasks zurueck.
+# Drittes Review (Charakterisierung, ohne eigenes Rot):
+# 3. Ein Fehler beim Start der Observability (nach dem Scheduler-Start)
+#    laesst keine Scheduler-Tasks zurueck.
+# 4. Ebenso ein Fehler beim Start des Executors.
+# 5. Ein Fehler in ``_wire_coordination`` vor dem Scheduler (Workflow-
+#    Advancer) wirft weiter und startet keinen Scheduler.
+# 6. ``backend.connect`` scheitert: der Fehler kommt beim Aufrufer an, kein
+#    Scheduler entsteht; die Verbindungen gehoeren dem Aufrufer (kein close
+#    durch ``start()``), es gibt nichts Eigenes aufzuraeumen.
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +39,8 @@ from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
 from tests.support.messages import make_message
+
+pytestmark = pytest.mark.timeout(5)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -977,3 +996,90 @@ class TestWorkerIdentityInSignalsAndMetrics:
 
 async def _collect(sink: list[dict], kwargs: dict) -> None:
     sink.append(kwargs)
+
+
+def _pending_scheduler_tasks() -> list[asyncio.Task]:
+    names = ("_election_loop", "_poll_loop")
+    return [
+        t for t in asyncio.all_tasks()
+        if not t.done() and getattr(t.get_coro(), "__qualname__", "").endswith(names)
+    ]
+
+
+class TestStartupAbortLeavesNoScheduler:
+    """Zwischen ``scheduler.start()`` und WORKER_ONLINE liegen awaits
+    (Executor, Queue-Deklaration, Online-Signal). Bricht ``start()`` dort ab,
+    muss der Scheduler mit abgebaut werden."""
+
+    async def test_cancel_during_queue_declaration(self, broker, backend, registry, config):
+        declaring = asyncio.Event()
+
+        async def _hang(*_a, **_kw):
+            declaring.set()
+            await asyncio.Event().wait()
+
+        broker.declare_queue = AsyncMock(side_effect=_hang)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        start = asyncio.create_task(w.start())
+        await asyncio.wait_for(declaring.wait(), timeout=2)
+        assert _pending_scheduler_tasks(), "precondition: scheduler running"
+
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+
+        assert _pending_scheduler_tasks() == []
+
+    async def test_failure_during_queue_declaration(self, broker, backend, registry, config):
+        broker.declare_queue = AsyncMock(side_effect=RuntimeError("PRECONDITION_FAILED"))
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        with pytest.raises(RuntimeError, match="PRECONDITION_FAILED"):
+            await w.start()
+
+        assert _pending_scheduler_tasks() == []
+
+
+class TestStartupFailureLeavesNothingBehind:
+    """Drittes Review, Liste 3-6."""
+
+    async def test_observability_failure_after_scheduler_start(self, broker, backend, registry, config, monkeypatch):
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        monkeypatch.setattr(w, "_start_observability", AsyncMock(side_effect=OSError("port in use")))
+
+        with pytest.raises(OSError, match="port in use"):
+            await w.start()
+
+        assert _pending_scheduler_tasks() == []
+
+    async def test_executor_failure_after_scheduler_start(self, broker, backend, registry, config, monkeypatch):
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        monkeypatch.setattr(w, "_start_executor", AsyncMock(side_effect=RuntimeError("fork source")))
+
+        with pytest.raises(RuntimeError, match="fork source"):
+            await w.start()
+
+        assert _pending_scheduler_tasks() == []
+
+    async def test_wiring_failure_before_the_scheduler(self, broker, backend, registry, config, monkeypatch):
+        from swarmq.worker import lifecycle
+
+        monkeypatch.setattr(lifecycle, "WorkflowAdvancer", MagicMock(side_effect=RuntimeError("chord script")))
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        with pytest.raises(RuntimeError, match="chord script"):
+            await w.start()
+
+        assert w._scheduler is None
+        assert _pending_scheduler_tasks() == []
+
+    async def test_backend_connect_failure_reaches_the_caller(self, broker, backend, registry, config):
+        backend.connect = AsyncMock(side_effect=ConnectionError("valkey refused"))
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        with pytest.raises(ConnectionError, match="valkey refused"):
+            await w.start()
+
+        assert w._scheduler is None
+        assert _pending_scheduler_tasks() == []
+        broker.close.assert_not_awaited()

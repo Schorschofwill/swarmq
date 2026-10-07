@@ -83,7 +83,25 @@ Orchestrierung den Worker ersetzen können.
   Bild. Überschreiben mit `SWARMQ_MALLOC_TRIM_THRESHOLD` / `SWARMQ_MALLOC_ARENA_MAX`.
 - Der Forkserver lädt die Module der registrierten Tasks vor und darf beim
   Import nie rechnen: Nach dem Aufwärmen muss er genau einen Thread haben,
-  sonst verweigert der Worker den Start.
+  sonst verweigert der Worker den Start (Exit `78`). Die Meldung nennt die
+  zusätzlichen Threads und die wahrscheinliche Ursache: SwarmQs
+  Opt-in-Log-Queue (`swarmq-log-lsnr`), einen logging-`QueueListener`, den
+  deine App beim Import gestartet hat, oder sonst eine BLAS-/OpenMP-Rechnung.
+  SwarmQ selbst startet im Forkserver keinen Log-Thread. Wird der
+  Forkserver still neu gestartet, läuft dieselbe Prüfung erneut, bevor das
+  nächste Rechenkind Arbeit bekommt; mit mehr als einem Thread loggt der
+  Worker `forkserver_restarted_multithreaded`, verwirft den Forkserver und
+  meldet den Pool auf `/ready` als ungesund. Danach loggt er
+  `compute_fork_source_rejected`, hört auf zu konsumieren und fährt
+  geordnet herunter; die laufende Nachricht geht ohne Retry-Zählung zurück
+  in die Queue. Unter `swarmq worker` endet der Worker-Subprozess mit Code
+  `71`, und der Supervisor startet ihn mit frischem Forkserver neu. Mit
+  eingebettetem CPU-Pool wirft `Worker.start()` nach dem Herunterfahren
+  `swarmq.supervision.ForkSourceRejected`, und deine App entscheidet, wie
+  es weitergeht — SwarmQ beendet deinen Prozess nicht.
+- Logging, das deine Task-Module beim Import einrichten, folgt derselben
+  Regel „App gewinnt“ wie im IO-Pool; `logging.basicConfig()` wirkt dort
+  nicht ([Logging](../reference/logging.md#wenn-ein-task-modul-das-logging-konfiguriert)).
 - `--pool cpu` ist nicht mit `--autoscale` kombinierbar (spätere Stufe) und
   braucht eine POSIX-Plattform mit `forkserver`. Speicher- und Thread-Prüfung
   lesen `/proc`.

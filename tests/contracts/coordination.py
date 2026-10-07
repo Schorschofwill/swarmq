@@ -7,10 +7,35 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 über seinen ``LockStore``).
 """
 
+# Test list (0.9.0, Scheduler-Commit-Wettlauf) -- ScheduleStoreContract:
+# 1. commit_fire mit ``fired_ts_ms`` verwirft den Commit, wenn der Eintrag
+#    inzwischen deaktiviert wurde (Fire-Index leer, Definition bleibt).
+# 2. ... wenn der Eintrag inzwischen dauerhaft entfernt wurde.
+# 3. ... wenn der Fire-Index-Score inzwischen ein anderer ist (``put``).
+# 4. commit_fire mit passendem ``fired_ts_ms`` wendet den Commit an.
+# 4b. (Vertrag, dokumentierte Grenze) Entfernt und mit DEMSELBEN Score neu
+#     angelegt (ABA): der Commit greift -- der Score ist das einzige
+#     Merkmal, die Neuanlage ist vom gefeuerten Eintrag nicht zu
+#     unterscheiden; ihre Definition wird ueberschrieben.
+#
+# Test list (0.9.0, Schedfire-Claim-Token) -- ScheduleStoreContract:
+# 5. claim_fire mit ``owner``: ein zweiter Claim ohne Uebernahme verliert.
+# 6. Uebernahme mit dem gespeicherten Token gewinnt und rotiert den Owner;
+#    das alte Token gewinnt danach nicht mehr (echte Duplikate bleiben
+#    Duplikate).
+# 7. Uebernahme mit fremdem Token verliert.
+# 8. release_fire_claim mit fremdem ``owner`` laesst den Claim stehen, mit
+#    eigenem gibt es ihn frei.
+# 9. Die Uebernahme setzt die TTL neu.
+# 10. Uebernahme mit mehreren angebotenen Tokens (Kopie nach unklarem
+#     Claim-Ausgang): jedes davon gewinnt, der Owner rotiert.
+
 from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
+
+import pytest
 
 from swarmq.contracts import ChordStore, LockStore, LockToken, RateLimitStore, ScheduleStore
 from tests.contracts._support import Clock
@@ -22,6 +47,7 @@ def _name(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+@pytest.mark.timeout(5)
 class LockStoreContract:
     async def test_acquire_returns_token_and_blocks_second_owner(self, impl: LockStore) -> None:
         name = _name("lock")
@@ -89,6 +115,7 @@ class LockStoreContract:
         assert await impl.current_owner(_name("lock")) is None
 
 
+@pytest.mark.timeout(5)
 class RateLimitStoreContract:
     async def test_allows_up_to_limit_then_reports_retry_after(self, impl: RateLimitStore) -> None:
         name = _name("rl")
@@ -120,6 +147,7 @@ class RateLimitStoreContract:
         assert (await impl.check(b, max_requests=1, window_ms=60_000)).allowed is True
 
 
+@pytest.mark.timeout(5)
 class ChordStoreContract:
     async def test_completes_when_expected_distinct_members_recorded(self, impl: ChordStore) -> None:
         wf, chord = _name("wf"), "c1"
@@ -140,6 +168,7 @@ class ChordStoreContract:
         assert await impl.record_member(b, "c", "m2", expected=2, ttl_ms=60_000) is False
 
 
+@pytest.mark.timeout(5)
 class ScheduleStoreContract:
     async def test_add_is_insert_if_absent(self, impl: ScheduleStore) -> None:
         name = _name("sched")
@@ -213,6 +242,79 @@ class ScheduleStoreContract:
         assert await impl.exists(name) is False
         assert all(n != name for n, _, _ in await impl.poll_due(10_000))
 
+    async def test_commit_fire_discards_when_disabled_since_poll(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.disable(name, b"off")
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"off"
+        assert all(n != name for n, _, _ in await impl.poll_due(10_000))
+
+    async def test_commit_fire_discards_when_removed_since_poll(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.remove(name)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.exists(name) is False
+        assert all(n != name for n, _, _ in await impl.poll_due(10_000))
+
+    async def test_commit_fire_discards_when_replanned_since_poll(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.put(name, b"replanned", fire_ts_ms=5_000)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"replanned"
+        assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 5_000
+
+    async def test_commit_fire_applies_when_fired_score_unchanged(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"v2"
+        assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 2_000
+
+    async def test_commit_fire_owner_check_precedes_superseded_check(self, impl: ScheduleStore, leader: Leader) -> None:
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.remove(name)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="impostor", fired_ts_ms=1_000)
+            is False
+        )
+
+    async def test_commit_fire_cannot_tell_a_recreation_with_the_same_score(
+        self, impl: ScheduleStore, leader: Leader,
+    ) -> None:
+        """Liste 4b: dokumentierte Grenze des Verwerf-Schutzes (ABA)."""
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.remove(name)
+        await impl.add(name, b"recreated", fire_ts_ms=1_000)
+        assert (
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
+            is True
+        )
+        assert await impl.get(name) == b"v2"
+        assert {n: ts for n, ts, _ in await impl.poll_due(2_000)}[name] == 2_000
+
     async def test_fire_markers(self, impl: ScheduleStore) -> None:
         key = _name("fire")
         assert await impl.is_fire_completed(key) is False
@@ -223,6 +325,47 @@ class ScheduleStoreContract:
         assert await impl.mark_fire_completed(key, ttl_ms=60_000) is True
         assert await impl.mark_fire_completed(key, ttl_ms=60_000) is False
         assert await impl.is_fire_completed(key) is True
+
+    async def test_fire_claim_with_owner_blocks_second_claim(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is False
+
+    async def test_fire_claim_takeover_with_stored_token_rotates_owner(self, impl: ScheduleStore) -> None:
+        """Eine Kopie, die das Token ihres Vorgaengers traegt, uebernimmt den
+        Claim; eine Zustellung mit dem alten Token (Broker-Redelivery der
+        Kopie) ist danach wieder ein Duplikat."""
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="c", takeover="a") is False
+
+    async def test_fire_claim_takeover_accepts_any_offered_token(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="c", takeover=("b", "a")) is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="d", takeover=("b", "a")) is False
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="e", takeover=("c",)) is True
+
+    async def test_fire_claim_takeover_with_foreign_token_loses(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="x") is False
+
+    async def test_fire_claim_takeover_renews_ttl(self, impl: ScheduleStore, clock: Clock) -> None:
+        key = _name("fire")
+        await impl.claim_fire(key, ttl_ms=300, owner="a")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="a") is True
+        await clock.advance(0.8)
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="c") is False
+
+    async def test_release_fire_claim_checks_owner(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        await impl.claim_fire(key, ttl_ms=60_000, owner="a")
+        await impl.release_fire_claim(key, owner="x")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is False
+        await impl.release_fire_claim(key, owner="a")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is True
 
     async def test_fire_claim_expires(self, impl: ScheduleStore, clock: Clock) -> None:
         key = _name("fire")

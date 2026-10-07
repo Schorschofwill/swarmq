@@ -86,7 +86,7 @@ class _MissingType:
         return False
 
 
-_MISSING = _MissingType()
+_MISSING: _MissingType = _MissingType()
 
 
 

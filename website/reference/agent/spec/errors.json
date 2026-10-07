@@ -21,6 +21,24 @@
     },
     {
       "dlq_on_uncaught": "n/a",
+      "doc": "Das Backend war erreichbar, hat die Operation aber mit einem Fehler\nbeantwortet (z. B. ``WRONGTYPE``, Skriptfehler).\n\nFehlerantworten, die durch Warten heilen (OOM, READONLY, LOADING,\nTRYAGAIN, CLUSTERDOWN, MASTERDOWN, MISCONF), sind KEIN\n``BackendResponseError``, sondern ein einfacher\n``BackendConnectionError`` (``as_backend_error``).\n\nKein Ausfall, der sich von selbst erholt: die Gates vor der Ausfuehrung\nstellen dafuer nicht mit Backoff zurueck, sondern nehmen den alten Weg\n(Requeue an derselben Stelle, das Zustelllimit fuehrt eine dauerhaft\nscheiternde Nachricht ins Dead-Letter-Ziel). Absichtlich eine\nUnterklasse von :class:`BackendConnectionError` (wie\n:class:`PublishIndeterminate`): bestehende ``except\nBackendConnectionError``-Stellen fangen sie unveraendert weiter.",
+      "exception_class": "swarmq.exceptions.BackendResponseError",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "BackendResponseError",
+      "origin": "library",
+      "parent": "BackendConnectionError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "startup",
+        "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.BrokerConnectionError",
       "exit_code_on_cli": 1,
@@ -41,7 +59,7 @@
       "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.ConfigurationError",
-      "exit_code_on_cli": 1,
+      "exit_code_on_cli": 78,
       "init_params": [],
       "module": "swarmq.exceptions",
       "name": "ConfigurationError",

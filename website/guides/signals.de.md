@@ -67,7 +67,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `TASK_STARTED` | Vor Aufruf von `run()` | `task_id`, `task_name`, `queue` |
 | `TASK_COMPLETED` | Nach Erfolg von `run()` | `task_id`, `task_name`, `queue`, `duration_ms` |
 | `TASK_FAILED` | Nach **jedem** fehlgeschlagenen Versuch (`run()` hat geraist oder ist in einen Timeout gelaufen), vor der Entscheidung Retry oder DLQ | `task_id`, `task_name`, `queue`, `exception` (String) |
-| `TASK_RETRYING` | Vor Publish eines Retry | `task_id`, `task_name`, `queue`, `retry_count` (Retry-Nummer des kommenden Versuchs), `delay` (Sekunden) |
+| `TASK_RETRYING` | Vor Publish eines Retry (nicht, wenn eine Nachricht zurückgestellt wird, weil das Backend vor der Ausführung nicht erreichbar ist; diese Zurückstellung feuert kein Signal) | `task_id`, `task_name`, `queue`, `retry_count` (Retry-Nummer des kommenden Versuchs), `delay` (Sekunden) |
 | `TASK_CANCELLED` | Wenn Cancel-Flag mitten im Run beobachtet | `task_id`, `task_name`, `queue` |
 | `TASK_EXPIRED` | Wenn `max_age` bei Pickup überschritten ist; die Nachricht geht in die DLQ | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` |
 | `TASK_LOCKED` | Wenn der Lock des Tasks bei Pickup von einer anderen Ausführung gehalten wird (Lock-Konflikt); die Nachricht wird verzögert neu eingereiht | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |

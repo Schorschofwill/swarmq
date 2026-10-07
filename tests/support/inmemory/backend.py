@@ -399,9 +399,19 @@ class InMemoryScheduleStore:
         due = sorted(((ts, n) for n, ts in self._fires.items() if ts <= now_ms and n in self._defs))
         return [(n, ts, self._defs[n]) for ts, n in due[:limit]]
 
-    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None, payload: bytes | None, owner: str) -> bool:
+    async def commit_fire(
+        self,
+        name: str,
+        *,
+        next_fire_ts_ms: int | None,
+        payload: bytes | None,
+        owner: str,
+        fired_ts_ms: int | None = None,
+    ) -> bool:
         if await self._locks.current_owner(SCHEDULER_LOCK_NAME) != owner:
             return False
+        if fired_ts_ms is not None and self._fires.get(name) != fired_ts_ms:
+            return True
         self._fires.pop(name, None)
         if next_fire_ts_ms is not None and next_fire_ts_ms >= 0:
             self._fires[name] = next_fire_ts_ms
@@ -414,11 +424,20 @@ class InMemoryScheduleStore:
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool:
         return self._completed.set_if_absent(fire_key, "1", ttl_ms)
 
-    async def claim_fire(self, fire_key: str, ttl_ms: int) -> bool:
-        return self._inflight.set_if_absent(fire_key, "1", ttl_ms)
+    async def claim_fire(
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        takeover: str | Sequence[str] | None = None,
+    ) -> bool:
+        current = self._inflight.get(fire_key)
+        offered = (takeover,) if isinstance(takeover, str) else tuple(takeover or ())
+        if current is not None and current not in offered:
+            return False
+        self._inflight.set(fire_key, owner or "1", ttl_ms)
+        return True
 
-    async def release_fire_claim(self, fire_key: str) -> None:
-        self._inflight.pop(fire_key)
+    async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
+        if owner is None or self._inflight.get(fire_key) == owner:
+            self._inflight.pop(fire_key)
 
     async def is_fire_completed(self, fire_key: str) -> bool:
         return fire_key in self._completed

@@ -6,7 +6,8 @@ Cancel-Flag (Task oder Workflow) gesetzt → Cancel-Ergebnis speichern,
 Benachrichtigung, Flag löschen, Schedfire-Claim finalisieren, Dedup-Flag
 freigeben, bestätigen, Signal ``TASK_CANCELLED`` nach dem Ack; Outcome
 ``Terminal.already_released()``. Backend-Fehler und Result-Write-Fehler →
-``nack(requeue=True)`` (``Redelivered``). Der Runner behandelt dieses Gate
+Zurueckstellung ueber die Delay-Queue (``backend_defer``, ``Redelivered``;
+scheitert deren Publish, ``nack(requeue=True)``). Der Runner behandelt dieses Gate
 wie heute *vor* seinem ``try/finally``.
 """
 
@@ -21,7 +22,8 @@ from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.gates import GateContext, GateDeps
-from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
 
 logger = get_logger(__name__)
 
@@ -36,13 +38,10 @@ class CancelGate:
         try:
             is_cancelled = await deps.backend.is_cancelled(task_id, op_timeout=deps.config.backend_op_timeout)
         except BackendConnectionError as exc:
-            # Observability is via the structured log event only:
-            # AMQP nack(requeue=True) redelivers the stored
-            # message, so in-memory header mutations would be lost anyway.
-            # KTD11: die Redelivery erholt sich selbst -> WARNING.
-            logger.warning("cancel_check_backend_error", task_id=task_id, **_error_fields(exc))
-            await deps.broker.redeliver(delivery)
-            return Redelivered
+            # Kein Requeue an derselben Stelle: das verbrauchte das
+            # Zustellbudget, nach delivery_limit Zyklen laege die Nachricht
+            # still im .XQ. Die Zurueckstellung loggt die eine WARNING-Zeile.
+            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel", stage="cancel_check")
 
         workflow_cancel = False
         if not is_cancelled:
@@ -59,11 +58,9 @@ class CancelGate:
                     wf_id, op_timeout=deps.config.backend_op_timeout
                 )
             except BackendConnectionError as exc:
-                logger.warning(
-                    "workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id, **_error_fields(exc)
+                return await defer_backend_unavailable(
+                    deps, delivery, ctx, exc, gate="cancel", stage="workflow_cancel_check", workflow_id=wf_id,
                 )
-                await deps.broker.redeliver(delivery)
-                return Redelivered
             if not wf_cancelled:
                 return Continue
             workflow_cancel = True
@@ -97,7 +94,9 @@ class CancelGate:
             # unconditional write (the flag only exists pre-/mid-run).
             store_cancel_result = result_ttl > 0
             if store_cancel_result and workflow_cancel:
-                existing = await deps.backend.get_result(task_id)
+                existing = await bounded_backend_call(
+                    deps, deps.backend.get_result(task_id), what="cancel existing result read",
+                )
                 store_cancel_result = existing is None
             if store_cancel_result:
                 result_bytes = encode_result(
@@ -107,7 +106,9 @@ class CancelGate:
                     task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
                 )
                 try:
-                    await deps.backend.notify_result(task_id)
+                    await bounded_backend_call(
+                        deps, deps.backend.notify_result(task_id), what="cancel result notification",
+                    )
                 except Exception as exc:
                     logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
@@ -118,7 +119,7 @@ class CancelGate:
             # completed so a redelivery after in-flight-TTL expiry does not
             # re-run the task (Unit 1). User-initiated cancel is
             # terminal — "this fire was processed."
-            await deps.finalize_schedfire(delivery, True)
+            await deps.finalize_schedfire(ctx, True)
 
             # R3.5 Unit 11: pre-start cancel is a terminal path — the task
             # never ran; release the dedup flag so a future legitimate
@@ -128,12 +129,12 @@ class CancelGate:
             await deps.broker.ack(delivery)
 
         except BackendConnectionError as exc:
-            # Result-write failure: nack(requeue=True) so a redelivery
-            # re-runs this branch. Flag stays in Valkey (that's what
-            # triggers the re-cancel on redelivery).
-            logger.warning("cancel_store_result_failed", task_id=task_id, **_error_fields(exc))
-            await deps.broker.redeliver(delivery)
-            return Redelivered
+            # Result-write failure: zurueckstellen, damit die Kopie diesen
+            # Zweig erneut durchlaeuft. Flag stays in Valkey (that's what
+            # triggers the re-cancel on the deferred copy).
+            return await defer_backend_unavailable(
+                deps, delivery, ctx, exc, gate="cancel", stage="cancel_store_result",
+            )
 
         # Signal AFTER the broker ack so a handler that raises doesn't
         # prevent the message from being committed.

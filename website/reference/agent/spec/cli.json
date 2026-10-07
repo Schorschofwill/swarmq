@@ -557,6 +557,17 @@
           "type": "str"
         },
         {
+          "default": null,
+          "flags": [
+            "--log-drain-timeout"
+          ],
+          "help": "Upper bound for flushing the log queues at exit, before a reload and before each compute result (default: 5). Records not written in time are counted as dropped. Overrides SWARMQ_LOG_DRAIN_TIMEOUT.",
+          "name": "--log-drain-timeout",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
           "choices": [
             "human",
             "json"
@@ -768,6 +779,14 @@
     {
       "code": 3,
       "meaning": "`dlq inspect` / `dlq retry <task_id>` target not found in the DLQ"
+    },
+    {
+      "code": 78,
+      "meaning": "Configuration error of `swarmq worker` (EX_CONFIG): ConfigurationError, task module not importable, `--configure` hook failed, invalid logging settings (LoggingConfigError); retrying without a change is pointless"
+    },
+    {
+      "code": 130,
+      "meaning": "Interrupted by Ctrl-C (KeyboardInterrupt, 128 + SIGINT) outside the command's own handling"
     }
   ],
   "program": "swarmq",

@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import signal as _signal
+import sys
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -14,14 +15,17 @@ if TYPE_CHECKING:  # pragma: no cover — import-time only
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import configure_logging, get_logger, shutdown_logging
+from swarmq.logging_drain import exit_code_for, exit_if_log_thread_stuck
 from swarmq.logging_settings import LoggingSettings
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.supervision import (
     CONFIG_ERROR_EXIT_CODE as _CONFIG_ERROR_EXIT_CODE,
 )
 from swarmq.supervision import (
+    FORK_SOURCE_REJECTED_EXIT_CODE,
     RECYCLE_NOACK_EXIT_CODE,
     SHUTDOWN_TERM_S,
+    ForkSourceRejected,
     RecycleAckTimeout,
     SupervisorChannel,
     set_current_channel,
@@ -116,11 +120,14 @@ def worker_subprocess_entry(
         # Worker in einer Schleife neu (R29). Die Zeile schreibt das
         # eingebaute Logging (wie ``_setup_fallback_logging`` im Supervisor,
         # R14) -- ohne es gaebe ``logging.lastResort`` nur den Event-Namen aus.
-        configure_logging(LoggingSettings(format=settings.format))
+        configure_logging(
+            LoggingSettings(format=settings.format, drain_timeout=settings.drain_timeout),
+        )
         try:
             _log_config_error(worker_id, exc)
         finally:
             shutdown_logging()
+            exit_if_log_thread_stuck(CONFIG_ERROR_EXIT_CODE)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
 
     # Flach statt ``dataclasses.asdict``: das wandelte ``logging_settings``
@@ -194,6 +201,11 @@ def worker_subprocess_entry(
             error=f"{type(exc).__name__}: {exc}",
         )
         raise SystemExit(RECYCLE_NOACK_EXIT_CODE) from None
+    except ForkSourceRejected:
+        # Schluss-Review: Der Worker hat aufgehoert zu konsumieren und ist
+        # geordnet beendet; ``compute_fork_source_rejected`` (ERROR) steht
+        # schon im Log. Der Supervisor startet ihn mit frischem Forkserver neu.
+        raise SystemExit(FORK_SOURCE_REJECTED_EXIT_CODE) from None
     except (ConfigurationError, ModuleNotFoundError) as exc:
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
         # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code
@@ -209,5 +221,9 @@ def worker_subprocess_entry(
     finally:
         # R15: an jedem Exit-Pfad leeren. Ohne das endet der Prozess, bevor
         # der Listener-Thread die letzten Zeilen geschrieben hat -- der
-        # Supervisor saehe im Fehlerfall nur den Exit-Code.
+        # Supervisor saehe im Fehlerfall nur den Exit-Code. Begrenzt (Plan
+        # 2026-10-06-1811, KTD3); haengt danach noch ein Log-Thread, endet
+        # der Prozess hart mit dem Code, mit dem er ohnehin endete -- und
+        # gibt die Ausnahme vorher auf fd 2 aus wie ``console_main``.
         shutdown_logging()
+        exit_if_log_thread_stuck(exit_code_for(sys.exception()), sys.exception())

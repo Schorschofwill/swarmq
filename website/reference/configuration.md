@@ -48,7 +48,9 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads per compute child (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Seconds between in-task cancel-flag checks. |
-| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Upper bound on individual Valkey ops in the cancel / dedup pipeline. |
+| `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Upper bound in seconds on individual Valkey ops in the worker pipeline: cancel check, schedule-fire dedup and claim, rate-limit check, lock acquire, the result read of a cancelled workflow step, result writes, the result notification after a pre-start cancel, and the completion or release of a schedule-fire claim. A check before execution that runs into it counts as an unreachable backend and defers the message instead of waiting for the Valkey client's socket timeout. Must be `> 0`. |
+| `SWARMQ_BACKEND_DEFER_BASE_DELAY` | `1.0` | Seconds a message waits after its first deferral when a check before execution (schedule-fire dedup, cancel check, rate limit, lock) cannot reach the backend. Each further deferral of the same message doubles the wait. Every wait varies randomly by ±20 % so messages deferred together do not return together. The message goes back through the delay queue as a new message, so a long backend outage neither consumes `max_retries` nor the delivery limit. |
+| `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Upper bound for the doubled wait in seconds, before the ±20 % variation (so a single wait can be up to 1.2 times this value); must be at least `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Bounds how long a message can wait after the backend is back. |
 | `SWARMQ_BURST_MODE` | `false` | If `true`, worker exits after `SWARMQ_BURST_IDLE_TIMEOUT` seconds of queue silence. |
 | `SWARMQ_BURST_IDLE_TIMEOUT` | `5.0` | Seconds of idle needed before burst exits. |
 | `SWARMQ_PRIORITIES` | `false` | If `true`, auto-declare and consume the `.high`/`.normal`/`.low` triplet for every queue. |
@@ -74,6 +76,7 @@ Details, recipes and the event catalog:
 | `SWARMQ_LOGGER_LEVELS` | unset | Comma-separated `NAME=LEVEL` pairs, e.g. `aio_pika=WARNING,valkey=ERROR`. |
 | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Capacity of the in-process log queue. |
 | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level of `task_received` and `task_started`. |
+| `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Upper bound in seconds for every flush of the log queues (at exit, before a reload, before each compute result, in `SwarmQ.__aexit__`); records not written in time count as dropped. Greater than 0 and at most `threading.TIMEOUT_MAX`. See [bounded flushing](logging.md#bounded-flushing). |
 | `SWARMQ_LOG_QUEUE` | `false` | Embedded apps: route `swarmq.*` events through a SwarmQ background thread to your root handlers ([opt-in log queue](logging.md#opt-in-log-queue)). |
 
 The supervisor of `swarmq worker` resolves these values once (CLI flag
@@ -91,7 +94,7 @@ with exit `78`.
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Seconds between leader heartbeat renewals. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × heartbeat_interval`. |
 | `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup TTL for scheduler-originated dispatches. |
-| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | Pre-run marker TTL while a scheduled task is executing. |
+| `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL of the schedule-fire claim a worker holds while a scheduled task runs. A claim that could not be released blocks a redelivery of the same fire as a duplicate for at most this long. |
 
 ### Observability
 
@@ -229,10 +232,13 @@ so `metrics_port` and `health_port` are bound as given.
 
 `SwarmQ(...)` does not configure logging. The logging fields
 (`log_level`, `log_json`, `log_config`, `configure_logging`,
-`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`)
-steer only the [opt-in log queue](logging.md#opt-in-log-queue), the
-lifecycle level of an embedded worker and the compute children of an
-embedded CPU pool.
+`logger_levels`, `log_queue_size`, `log_lifecycle_level`, `log_queue`,
+`log_drain_timeout`) steer only the
+[opt-in log queue](logging.md#opt-in-log-queue), the lifecycle level of
+an embedded worker and the compute children of an embedded CPU pool.
+With `log_queue=True`, `log_drain_timeout` bounds the flush in
+`__aexit__` and at process exit; an invalid value raises
+`ConfigurationError`.
 
 ## `TaskInfo` fields
 

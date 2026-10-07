@@ -185,6 +185,14 @@ verbrennt. Eine Delay-Queue gibt dir gratis exponentielles /
 lineares / festes Backoff und hält die Prefetch-Slots des Workers
 offen für andere Arbeit.
 
+Dasselbe gilt, wenn Valkey bei einer Prüfung vor der Ausführung
+(Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) nicht erreichbar
+ist: Der Worker stellt eine Kopie mit eigenem Backoff über die
+Delay-Queue zurück, statt an derselben Stelle neu einzureihen; auf
+einem Broker, der Requeues zählt, wäre das Zustelllimit sonst nach
+etwa 20 Runden aufgebraucht. Siehe
+[Zustellsemantik](delivery-semantics.md#was-den-ack-abbricht).
+
 **Was dich das kostet.** Leicht mehr AMQP-Traffic pro Retry (ein
 zusätzliches Publish + ein DLX-Route). Im Gegenzug hören
 Retry-Stürme auf zu existieren.

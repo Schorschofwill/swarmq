@@ -3,10 +3,15 @@ und die drei terminalen Varianten des ``DeliveryOutcome``.
 
 Die Tests sprechen nur die Aufrufreihenfolge an Broker und Backend an — nicht
 die inneren Flags des Runners (AGENTS.md: Verhalten, nicht Struktur).
+
+Test-Liste 0.9.0 (Zeitlimit):
+- [x] haengende Schedfire-Finalisierung (Blackhole) blockiert den Runner
+      nicht: nach ``backend_op_timeout`` Warnung, Zustellung abgeschlossen
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -488,6 +493,29 @@ async def test_schedfire_finalize_failure_is_a_warning_with_error_fields(broker,
     assert entry["log_level"] == "warning"
     assert entry["schedfire_key"] == "cron_a:1700000000000" and entry["terminal"] is True
     assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+
+@pytest.mark.timeout(5)
+async def test_hanging_schedfire_finalize_is_bounded_by_backend_op_timeout(broker, backend, swarmq_logs) -> None:
+    registry = TaskRegistry()
+    registry.register(_ScheduledForLog)
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", backend_op_timeout=0.05)
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    never = asyncio.Event()
+
+    async def _hang(*_args, **_kwargs):
+        await never.wait()
+
+    backend.schedules.mark_fire_completed.side_effect = _hang
+    msg = make_message(
+        _default_payload(name="scheduled_for_log", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
+    )
+
+    await worker._handle_message(msg)
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_finalize_failed"]
+    assert entry["error_type"] == "BackendConnectionError"
 
 
 class _EnqueueRecorder(Middleware):

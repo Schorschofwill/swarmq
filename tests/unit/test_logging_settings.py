@@ -17,6 +17,12 @@ Test-Liste:
 - [x] ``level_explicit``: wahr bei Level aus CLI, Env oder SwarmQConfig, sonst falsch (U7, KTD8)
 - [x] fallback_log_format: Format fuer die Fehlerzeile, wenn die Aufloesung scheitert --
       CLI, dann Env, ungueltig oder fehlend ``human`` (U7, R14)
+
+Plan 2026-10-06-1811, U4 (R14, KTD11) -- ``log_drain_timeout``:
+- [x] Prioritaet CLI > Env > SwarmQConfig > Default 5.0; Bruchteile erlaubt
+- [x] Wert <= 0, nicht numerisch oder nicht endlich: ConfigurationError mit Quelle
+- [x] Wert > ``threading.TIMEOUT_MAX`` (etwa ``1e10``): ConfigurationError --
+      ``Thread.join`` wuerfe sonst ``OverflowError`` (Review A1)
 """
 
 from __future__ import annotations
@@ -119,6 +125,17 @@ class TestPriority:
         assert resolve_logging_settings(_cli(log_queue_size="100"), env, config).queue_size == 100
         assert resolve_logging_settings(_cli(), env, config).queue_size == 200
         assert resolve_logging_settings(_cli(), {}, config).queue_size == 300
+
+    def test_drain_timeout_follows_cli_then_env_then_config_then_default(self) -> None:
+        env = {"SWARMQ_LOG_DRAIN_TIMEOUT": "2.5"}
+        config = {"log_drain_timeout": 3}
+
+        assert resolve_logging_settings(
+            _cli(log_drain_timeout="0.25"), env, config,
+        ).drain_timeout == 0.25
+        assert resolve_logging_settings(_cli(), env, config).drain_timeout == 2.5
+        assert resolve_logging_settings(_cli(), {}, config).drain_timeout == 3.0
+        assert resolve_logging_settings(_cli(), {}, None).drain_timeout == 5.0
 
     def test_lifecycle_level_follows_cli_then_env_then_config(self) -> None:
         env = {"SWARMQ_LOG_LIFECYCLE_LEVEL": "WARNING"}
@@ -224,6 +241,13 @@ class TestValidation:
     ) -> None:
         with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_QUEUE_SIZE.*{raw!r}"):
             resolve_logging_settings(_cli(), {"SWARMQ_LOG_QUEUE_SIZE": raw}, None)
+
+    @pytest.mark.parametrize("raw", ["0", "-1", "abc", "nan", "inf", "1e10"])
+    def test_non_positive_non_numeric_or_infinite_drain_timeout_is_a_configuration_error(
+        self, raw: str,
+    ) -> None:
+        with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_DRAIN_TIMEOUT.*{raw!r}"):
+            resolve_logging_settings(_cli(), {"SWARMQ_LOG_DRAIN_TIMEOUT": raw}, None)
 
 
 class TestInvalidCombinations:

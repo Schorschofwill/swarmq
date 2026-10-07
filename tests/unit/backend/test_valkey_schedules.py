@@ -1,6 +1,13 @@
 """``ValkeyScheduleStore`` (Plan U18): Vertrag ``ScheduleStore`` auf Bytes
 gegen einen gemockten valkey-Client — Key-Wahl, Skript-Argumente und
 Fehler-Wrapping. Der Store-Teil der früheren ``test_scheduler_store.py``.
+
+Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort, rollendes Upgrade):
+1. Fehlerantwort von Valkey (``ResponseError``) -> ``BackendResponseError``;
+   Transportfehler bleiben einfacher ``BackendConnectionError``.
+2. ``commit_fire``: Skriptergebnis 2 (verworfen) -> ``True``.
+3. ``commit_fire`` ohne ``fired_ts_ms`` sendet vier ARGV (altes Skript-
+   Protokoll; rollendes Upgrade).
 """
 
 from __future__ import annotations
@@ -11,8 +18,10 @@ import pytest
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 
 from swarmq.backend.valkey.schedules import DEFS_KEY, ZSET_KEY, ValkeyScheduleStore
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError
 from swarmq.locking import SCHEDULER_LOCK_KEY
+
+pytestmark = pytest.mark.timeout(5)
 
 
 def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, MagicMock, dict[str, AsyncMock]]:
@@ -21,8 +30,10 @@ def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, M
         "poll": AsyncMock(return_value=[]),
         "commit": AsyncMock(return_value=1),
         "disable": AsyncMock(return_value=1),
+        "fire_claim": AsyncMock(return_value=1),
+        "owner_release": AsyncMock(return_value=1),
     }
-    client.register_script = MagicMock(side_effect=[scripts["poll"], scripts["commit"], scripts["disable"]])
+    client.register_script = MagicMock(side_effect=list(scripts.values()))
     client.hexists = AsyncMock(return_value=hexists)
     client.hsetnx = AsyncMock(return_value=hsetnx)
     client.hset = AsyncMock()
@@ -99,6 +110,22 @@ class TestScripts:
         await store.commit_fire("once", next_fire_ts_ms=None, payload=None, owner="chief")
         assert scripts["commit"].await_args.kwargs["args"] == ["once", -1, b"", "chief"]
 
+    async def test_commit_fire_superseded_result_counts_as_committed(self) -> None:
+        """Liste 2: verworfen (Ergebnis 2) ist kein Owner-Konflikt."""
+        store, _, scripts = _store()
+        scripts["commit"].return_value = 2
+        assert await store.commit_fire("s", next_fire_ts_ms=1, payload=b"x", owner="chief", fired_ts_ms=1_000) is True
+
+    async def test_commit_fire_sends_fired_ts_only_when_given(self) -> None:
+        """Liste 3: ohne ``fired_ts_ms`` vier ARGV -- das Protokoll eines
+        Leaders vor 0.9.0, den das Skript im rollenden Upgrade weiter
+        bedient (ohne Verwerf-Pruefung); mit ``fired_ts_ms`` fuenf."""
+        store, _, scripts = _store()
+        await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief")
+        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief"]
+        await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_ts_ms=1_000)
+        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000]
+
     async def test_commit_fire_rejected_by_owner_check(self) -> None:
         store, _, scripts = _store()
         scripts["commit"].return_value = 0
@@ -134,12 +161,51 @@ class TestSchedfireClaims:
         assert await store.mark_fire_completed("cron_a:1700000000000", 60_000) is False
 
     async def test_claim_fire_and_release(self) -> None:
-        store, client, _ = _store()
-        client.set = AsyncMock(return_value=True)
+        store, client, scripts = _store()
         assert await store.claim_fire("k", 5_000) is True
-        client.set.assert_awaited_once_with("sq:sched:inflight:k", "1", nx=True, px=5_000)
+        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["1", 5_000, ""])
         await store.release_fire_claim("k")
         client.delete.assert_awaited_once_with("sq:sched:inflight:k")
+
+    async def test_claim_fire_with_owner_and_takeover(self) -> None:
+        store, _, scripts = _store()
+        scripts["fire_claim"].return_value = 0
+        assert await store.claim_fire("k", 5_000, owner="b", takeover="a") is False
+        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["b", 5_000, "a"])
+
+    async def test_claim_fire_passes_every_takeover_token(self) -> None:
+        store, _, scripts = _store()
+        await store.claim_fire("k", 5_000, owner="c", takeover=("b", "a"))
+        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["c", 5_000, "b", "a"])
+
+    async def test_release_fire_claim_with_owner_uses_compare_and_delete(self) -> None:
+        store, client, scripts = _store()
+        await store.release_fire_claim("k", owner="a")
+        scripts["owner_release"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["a"])
+        client.delete.assert_not_awaited()
+
+    async def test_claim_fire_transport_error_is_backend_connection_error(self) -> None:
+        store, _, scripts = _store()
+        scripts["fire_claim"].side_effect = ValkeyConnectionError("down")
+        with pytest.raises(BackendConnectionError):
+            await store.claim_fire("k", 5_000, owner="b")
+
+    async def test_claim_fire_error_reply_is_a_response_error(self) -> None:
+        """Liste 1."""
+        from valkey.exceptions import ResponseError
+
+        store, _, scripts = _store()
+        scripts["fire_claim"].side_effect = ResponseError("WRONGTYPE")
+        with pytest.raises(BackendResponseError):
+            await store.claim_fire("k", 5_000, owner="b")
+
+    async def test_claim_fire_transport_error_is_a_plain_outage(self) -> None:
+        """Liste 1."""
+        store, _, scripts = _store()
+        scripts["fire_claim"].side_effect = ValkeyConnectionError("down")
+        with pytest.raises(BackendConnectionError) as exc_info:
+            await store.claim_fire("k", 5_000, owner="b")
+        assert not isinstance(exc_info.value, BackendResponseError)
 
     async def test_is_fire_completed(self) -> None:
         store, client, _ = _store()

@@ -33,7 +33,6 @@ import subprocess
 import sys
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
 import aio_pika
@@ -48,8 +47,12 @@ from swarmq.exceptions import ResultSerializationError
 from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
 from swarmq.task import Task
 from tests.chaos.conftest import ChaosStack
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from tests.support.worker_subprocess import (
+    kill_subprocess,
+    spawn_worker,
+    wait_for_worker_children,
+    worker_children,
+)
 
 pytestmark = [pytest.mark.timeout(120)]
 
@@ -77,26 +80,14 @@ def _spawn_worker(
     *,
     concurrency: int = 2,
 ) -> subprocess.Popen[str]:
-    env = dict(os.environ)
-    env["SWARMQ_BROKER_URL"] = stack.rabbitmq_url
-    env["SWARMQ_BACKEND_URL"] = stack.valkey_url
-    env["CLI_TEST_QUEUE"] = queue_name
-    env["PYTHONUNBUFFERED"] = "1"
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m", "swarmq.cli",
-            "worker",
-            "--module", "tests.chaos._chaos_fixture_tasks",
-            "--queues", queue_name,
-            "--concurrency", str(concurrency),
-            "--log-format", "json",
-        ],
-        cwd=str(REPO_ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    """Worker subprocess in its own process group (teardown reaps the
+    worker children too)."""
+    return spawn_worker(
+        queue_name,
+        fixture_module="tests.chaos._chaos_fixture_tasks",
+        broker_url=stack.rabbitmq_url,
+        backend_url=stack.valkey_url,
+        concurrency=concurrency,
     )
 
 
@@ -118,11 +109,13 @@ def _wait_for_worker_started(
 
 
 def _kill_subprocess(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is None:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=10)
+    kill_subprocess(proc)
+
+
+def _child_pids(proc: subprocess.Popen[str]) -> set[int]:
+    """PIDs of the supervisor's worker children. The supervisor restarts a
+    crashed child, so "supervisor alive" alone does not prove "no crash"."""
+    return {child.pid for child in worker_children(proc)}
 
 
 async def _queue_message_count(stack: ChaosStack, queue: str) -> int:
@@ -257,6 +250,7 @@ class TestMessageCorruption:
         proc = _spawn_worker(chaos_stack, queue, concurrency=2)
         try:
             _wait_for_worker_started(proc)
+            children = {c.pid for c in wait_for_worker_children(proc)}
 
             broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
             backend = ValkeyBackend(chaos_stack.valkey_url)
@@ -266,10 +260,12 @@ class TestMessageCorruption:
                 # couple of seconds.
                 await asyncio.sleep(1.5)
 
-                # Worker still alive?
+                # Worker still alive -- supervisor AND the same worker child
+                # (a crashed child would have been restarted).
                 assert proc.poll() is None, (
                     f"worker crashed on corrupt headers; rc={proc.returncode}"
                 )
+                assert _child_pids(proc) == children, "worker child crashed on corrupt headers"
 
                 # Valid task still processed end-to-end.
                 tid = await app.schedule("chaos_sleep", 0.1, queue=queue)
@@ -544,6 +540,7 @@ class TestMessageCorruption:
         proc = _spawn_worker(chaos_stack, queue, concurrency=2)
         try:
             _wait_for_worker_started(proc)
+            children = {c.pid for c in wait_for_worker_children(proc)}
 
             broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
             backend = ValkeyBackend(chaos_stack.valkey_url)
@@ -569,11 +566,13 @@ class TestMessageCorruption:
                         type(exc).__name__ == "ResultNotReadyError"
                     ), f"unexpected error shape: {type(exc).__name__}: {exc}"
 
-                # Worker still alive regardless of outcome.
+                # Worker still alive regardless of outcome -- supervisor AND
+                # the same worker child.
                 assert proc.poll() is None, (
                     f"worker crashed on bad unique-hash; "
                     f"rc={proc.returncode}"
                 )
+                assert _child_pids(proc) == children, "worker child crashed on bad unique-hash"
 
                 # Document pinned outcome via a marker — future
                 # refactors that change this will fail here and force

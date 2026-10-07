@@ -25,7 +25,7 @@ the child died with "An attempt has been made to start a new process
 before the current process has finished its bootstrapping phase".
 """
 
-from swarmq.cli import main
+from swarmq.cli import console_main
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(console_main())

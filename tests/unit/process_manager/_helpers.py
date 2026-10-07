@@ -62,3 +62,43 @@ def _report_pdeathsig_entry(conn):
     rc = libc.prctl(2, ctypes.byref(value), 0, 0, 0)  # PR_GET_PDEATHSIG
     conn.send(int(value.value) if rc == 0 else -1)
     conn.close()
+
+
+class FakeProbe:
+    """Gefaelschte Probe: ``rc`` None = laeuft noch."""
+
+    def __init__(self, rc: int | None = None, error: str = "") -> None:
+        self.rc = rc
+        self.err = error
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.rc
+
+    def error(self) -> str:
+        return self.err
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class FakeProbeFactory:
+    """Probe-Fabrik (U8): merkt sich die Konfigurationen, liefert die Proben der Reihe nach."""
+
+    def __init__(self, *probes: FakeProbe) -> None:
+        self.probes = list(probes)
+        self.raws: list[str] = []
+
+    def __call__(self, raw: str) -> FakeProbe:
+        self.raws.append(raw)
+        return self.probes.pop(0)
+
+
+class FakeClock:
+    """Monotone Uhr zum Vorstellen (``now``)."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now

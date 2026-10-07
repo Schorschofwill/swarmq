@@ -2,11 +2,11 @@
 
 Async-first Python task queue on RabbitMQ + Valkey.
 
-> **Status:** 0.8.x on PyPI. Core, workflow primitives, optional
+> **Status:** 0.9.x on PyPI. Core, workflow primitives, optional
 > dependency injection (Dishka), operator features (priorities, expiry,
 > burst, supervisor, autoscaling, control channel), CPU worker mode,
 > structured non-blocking logging, metrics, health, hot reload and the
-> machine-readable agent spec are all shipped. About 3 100 tests across
+> machine-readable agent spec are all shipped. About 3 600 tests across
 > unit / integration / e2e / chaos / property / fuzz / stress / soak
 > suites, plus a separate load-test suite that gates every release with
 > conformance, smoke and one-hour reference runs. Not yet in production
@@ -139,6 +139,15 @@ Things to know:
 
 - **At-least-once delivery** with Quorum-Queue durability and
   `x-delivery-limit=20` against pathological redelivery loops.
+- **Backend outages before execution** — when a check before the task
+  (schedule-fire dedup, cancel check, rate limit, lock) cannot reach
+  Valkey, the message is deferred through the delay queue with
+  exponential backoff (`SWARMQ_BACKEND_DEFER_BASE_DELAY` 1 s, doubling
+  up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` 60 s, ±20 % jitter) instead of
+  spending its delivery budget; no retry is counted. Each of these
+  checks is bounded by `SWARMQ_BACKEND_OP_TIMEOUT`, and an error reply
+  (`BackendResponseError`) still reaches the DLQ through the delivery
+  limit.
 - **Retries** with exponential / linear / fixed backoff +
   configurable `max_retries`, `NoRetry`, `Retry(delay=...)`.
 - **DLQ** routing for retry-exhaustion + `swarmq dlq list/inspect/
@@ -212,7 +221,9 @@ result = await (await app.apply(
   and
   takes its children down with it even on SIGKILL. Configuration errors
   end the run with exit code `78` on every level; connection errors stay
-  at `1`.
+  at `1`. A `SIGTERM` always ends the supervisor, even during a reload;
+  a worker whose CPU pool rejected its forkserver exits with `71` and is
+  restarted with a fresh one.
 - **Multi-process workers** (`--processes N`) with a stable slot
   identity: `worker_id` is `<host>:<slot>` in signals, metrics and logs,
   and `--metrics-port` / `--health-port` are base ports — slot `s`
@@ -251,8 +262,9 @@ result = await (await app.apply(
   Bring your own `dictConfig` file (`--log-config`, JSON or YAML), leave
   logging to your app (`--no-configure-logging`), set per-logger levels
   (`--logger-level aio_pika=WARNING`), size the queue
-  (`--log-queue-size`) and raise the `task_received`/`task_started`
-  events (`--log-lifecycle-level`). Task lifecycle events go to the
+  (`--log-queue-size`), bound every flush of the queue
+  (`--log-drain-timeout`, default 5 s) and raise the
+  `task_received`/`task_started` events (`--log-lifecycle-level`). Task lifecycle events go to the
   `swarmq.task` logger; every event inside a task carries `task_id`,
   `task_name`, `queue`, `worker_id`, `workflow_id`, `attempt` (and
   `compute_child` in CPU mode); exceptions are reported as `error_type`
@@ -298,7 +310,8 @@ Worker behaviour is configured via env vars and CLI flags.
 Other flags: `--processes`, `--autoscale`, `--max-processes`,
 `--group`, `--pool`, `--metrics-port`, `--health-port`, `--burst`,
 `--burst-idle-timeout`, `--priorities`, `--reload`, `--watch-dir`,
-`--configure`, `--check`, `--log-queue-size`, `--log-lifecycle-level`.
+`--configure`, `--check`, `--log-queue-size`, `--log-lifecycle-level`,
+`--log-drain-timeout`.
 
 Most worker-behaviour flags have an env-var twin (`SWARMQ_QUEUES`,
 `SWARMQ_CONCURRENCY`, `SWARMQ_POOL`, `SWARMQ_LOG_FORMAT`, …); `--module`,
@@ -354,7 +367,11 @@ src/swarmq/
   workflow_state.py         Persisted workflow state schema
   workflow_topology.py      Step addressing + topology helpers
   dishka.py                 Optional Dishka DI (setup_dishka, TaskContext, SwarmQProvider)
-  logging.py                Logging setup, non-blocking queue, get_logger
+  logging.py                Logging setup, get_logger
+  logging_queue.py          Non-blocking queue, listener, shutdown_logging
+  logging_drain.py          Bounded flush (log_drain_timeout)
+  logging_fork.py           Fork safety of the log listeners
+  logging_forksource.py     Forkserver as fork source (no listener thread)
   logging_settings.py       LoggingSettings + CLI > env > default resolution
   logging_format.py         build_formatter (human / JSON)
   logging_file.py           --log-config dictConfig loading
@@ -376,9 +393,9 @@ src/swarmq/
   contracts/                Broker / backend / coordination protocols
   lua/                      Lua scripts loaded into Valkey
 tests/
-  unit/                     ~2 500 fast, no infra
-  integration/              ~300, broker + backend, real Docker
-  e2e/                      ~270, full client + worker round-trip
+  unit/                     ~2 850 fast, no infra
+  integration/              ~360, broker + backend, real Docker
+  e2e/                      ~285, full client + worker round-trip
   contracts/                shared contract test classes (bound in unit + integration)
   chaos/                    toxiproxy + container restarts (opt-in)
   property/                 hypothesis property-based (opt-in)

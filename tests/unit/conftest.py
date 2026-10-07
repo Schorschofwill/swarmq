@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 # Task registry reset is handled by root conftest.py (_reset_task_registry).
+import threading
+import weakref
+
 import pytest
 
+from swarmq.worker.compute.forkserver import SENTINEL_ENV
 from tests.unit._log_capture import capture_swarmq_logs, preserved_root_logger
 
 # Logging-Umgebungsvariablen, die swarmq auswertet (Plan 2026-10-06-0831, U4).
@@ -18,6 +22,8 @@ _SWARMQ_LOGGING_ENV_VARS = (
     "SWARMQ_LOG_QUEUE_SIZE",
     "SWARMQ_LOG_LIFECYCLE_LEVEL",
     "SWARMQ_LOG_QUEUE",
+    "SWARMQ_LOG_DRAIN_TIMEOUT",
+    SENTINEL_ENV,
 )
 
 
@@ -41,6 +47,40 @@ def swarmq_logs():
     """
     with capture_swarmq_logs() as entries:
         yield entries
+
+
+@pytest.fixture(autouse=True)
+def _no_hard_exit_from_logging(monkeypatch):
+    """Plan 2026-10-06-1811, U4: Haengt ein aufgegebener Listener-Thread
+    eines Tests noch, wenn ein anderer Test einen Einstiegspunkt durchlaeuft,
+    beendete ``exit_if_log_thread_stuck`` sonst den Testprozess. Stattdessen
+    scheitert der Test."""
+
+    def refuse(code: int) -> None:
+        msg = f"unexpected hard exit({code}) from swarmq.logging_drain"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr("swarmq.logging_drain._hard_exit", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_abandoned_log_threads(monkeypatch):
+    """Review B4: Aufgegebene Threads und steckende Streams sind
+    Prozesszustand von ``swarmq.logging_drain``. Jeder Test beginnt ohne sie,
+    damit keiner von den Resten eines frueheren abhaengt (etwa ein
+    uebersprungenes ``flush`` oder ein vermeintlich haengender Thread)."""
+    monkeypatch.setattr("swarmq.logging_drain._ABANDONED", [])
+    monkeypatch.setattr("swarmq.logging_drain._STUCK_HANDLERS", weakref.WeakKeyDictionary())
+    monkeypatch.setattr("swarmq.logging_drain._STUCK_STREAMS", set())
+    monkeypatch.setattr("swarmq.logging_drain._STUCK_FILES", set())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_fork_held_locks(monkeypatch):
+    """Schluss-Review: Die vom ``before``-Fork-Hook gehaltenen Locks sind
+    Prozesszustand von ``swarmq.logging_fork``. Jeder Test beginnt ohne die
+    Reste eines frueheren (etwa eines Tests, der den Hook direkt ruft)."""
+    monkeypatch.setattr("swarmq.logging_fork._HELD", threading.local())
 
 
 @pytest.fixture(autouse=True)

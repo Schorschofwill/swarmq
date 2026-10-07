@@ -54,21 +54,20 @@ flowchart TD
     Run["await Task.run(*args, **kwargs)"]
     Store["store result in Valkey<br/>(sq:result:{task_id})"]
     Ack["basic.ack"]
-    Nack["basic.nack(requeue=False)"]
-    DLQ["RabbitMQ routes to {queue}.XQ"]
+    DLQ["worker publishes to {queue}.XQ<br/>(confirmed), then basic.ack"]
 
     Deliver --> Run
     Run -->|success or handled error| Store
     Store --> Ack
-    Run -->|retry_exhausted / NoRetry / expired| Nack
-    Nack --> DLQ
+    Run -->|retry_exhausted / NoRetry / expired| DLQ
 ```
 
 The ack-after-store sequence is the reason for the delivery
 guarantee: if the worker crashes between `Run` and `Store`, RabbitMQ
 still holds the message and will redeliver it. If the worker crashes
-between `Store` and `Ack`, the result is already durable — the
-redelivery will see the finished state and skip the rerun.
+between `Store` and `Ack`, the result is already durable, but the
+redelivery runs the task again (see
+[Redelivery scenarios](#1-worker-crash-between-store-and-ack)).
 
 ## What aborts the ack
 
@@ -77,18 +76,77 @@ it to the DLQ:
 
 | Abort source | Where it goes |
 |---|---|
-| Worker process killed (`SIGKILL`, OOM, node crash) | Redelivered by RabbitMQ after visibility timeout |
+| Worker process killed (`SIGKILL`, OOM, node crash) | Redelivered by RabbitMQ as soon as the worker's channel or connection closes |
 | Worker restarted mid-task (graceful `SIGTERM`) | Drained in-flight tasks finish; pending messages redeliver to a new worker |
 | `Task.run()` raises a retryable exception, retries remaining | New message to the delay queue, original acked (`TASK_RETRYING`) |
 | `Task.run()` raises after `max_retries` reached | Worker publishes to `{queue}.XQ`, original acked (`TASK_DLQ`) |
 | `raise NoRetry("reason")` | Worker publishes to `{queue}.XQ` immediately, original acked (`TASK_DLQ`) |
 | RabbitMQ's `x-delivery-limit=20` reached | Broker-native DLQ route |
+| Backend unreachable for a check before execution (schedule-fire dedup, cancel check, rate limit, lock) | New message to the delay queue with growing backoff, original acked (`task_deferred_backend_unavailable`); not a retry |
 | Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
 | Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (conflict cap) header |
 
 The worker never calls `basic.nack(requeue=True)` with the primary
 retry path. Requeue-in-place would bypass the retry backoff and hot-
 loop the broker. All retries go through the delay queue.
+
+The same holds for a backend outage before execution. When a check
+that runs before the task (schedule-fire dedup, cancel check, rate
+limit, lock) cannot reach Valkey, the worker publishes a copy of the
+message to the delay queue and acks the original only after the
+broker confirmed the copy. The copy keeps every SwarmQ header (retry
+count, workflow context, unique hash, enqueue time) but not the
+broker's delivery counters, so it starts with a fresh delivery budget.
+A check also counts as failed when Valkey does not answer within
+`SWARMQ_BACKEND_OP_TIMEOUT` (5 s), so a backend that silently drops
+traffic defers the message instead of holding it until the client's
+socket timeout. The wait starts at `SWARMQ_BACKEND_DEFER_BASE_DELAY`
+(1 s) and doubles per consecutive deferral up to
+`SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s); each wait varies by ±20 %, so
+messages deferred together do not hit the recovering backend together.
+Only an outage defers: when Valkey answers a check with an error
+(`BackendResponseError`, for example `WRONGTYPE`), waiting does not
+help, and the message goes back to the queue in place, so a persistent
+error reaches `{queue}.XQ` through the delivery limit. Error replies
+that heal by waiting (`OOM`, `READONLY` during a failover, `LOADING`,
+`TRYAGAIN`, `CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`) count as an outage
+and defer. Once the backend has answered,
+the count starts over: retry, rate-limit and lock copies do not carry
+`x-swarmq-backend-defer-count`, and a message the broker hands back
+after a delivery that got past the checks (on quorum queues recognised
+by its delivery counter) waits the base delay again. Each
+deferral logs one line, `task_deferred_backend_unavailable` (WARNING),
+whose fields `gate` and `stage` name the check that failed. It is not
+a retry: `max_retries` is untouched and no `TASK_RETRYING` fires. Only
+if the broker cannot take the copy either does the worker fall back to
+`basic.nack(requeue=True)`. Fire-and-forget tasks are deferred the
+same way, because these checks run before their early ack.
+
+Retry copies and the copies after a rate-limit hit or a lock conflict
+drop the broker's delivery counters the same way, so an inherited
+`x-delivery-count` cannot send them to `{queue}.XQ` as a hung message.
+
+A schedule fire (`x-swarmq-schedfire`) is claimed in Valkey before it
+runs, so a second publish of the same fire is dropped. A copy of a
+claimed fire (deferral, retry, requeue) carries the claim's owner token
+in `x-swarmq-schedfire-claim`. If the worker could not release the
+claim, for example because Valkey went down right after the claim, the
+copy recognises the claim as its own and takes it over instead of
+acking itself as a duplicate. The token changes on each takeover, so a
+redelivery of the same copy is still a duplicate. When the reply to the
+claim itself is lost (Valkey may or may not have written it), the copy
+carries the new token together with the ones it was offered, and takes
+the claim over either way. A requeue in place (`nack(requeue=True)`)
+cannot carry a token, so the worker releases the claim before it
+requeues. If that release fails, the worker publishes a copy carrying
+the token to the delay queue instead (with the backoff of a deferral)
+and acks the original once the broker confirmed the copy. Only if the
+broker cannot take that copy either does it requeue in place; the
+redelivery then finds the claim still held and is acked as a duplicate
+until the claim expires (`SWARMQ_SCHEDULER_INFLIGHT_TTL`), so that fire
+is lost. The claim
+protection needs every worker on 0.9.0 or later: a worker of an older
+version neither writes nor recognises the token.
 
 ## Redelivery scenarios
 
@@ -169,13 +227,16 @@ that, write idempotent task bodies.
 Retries are a first-class path. The DLQ is the terminal path. A task
 reaches the DLQ by one of four routes:
 
-1. **Retry exhaustion.** The last retry raised. The worker nacks with
-   `requeue=False`, the broker routes via DLX to `{queue}.XQ`.
+1. **Retry exhaustion.** The last retry raised. The worker publishes
+   the message to `{queue}.XQ` (with `x-swarmq-traceback`) and acks
+   the original once the broker confirmed it.
 2. **`NoRetry`.** The task body raised `NoRetry("reason")`. This
    skips the retry decision entirely — straight to DLQ.
 3. **Broker-native delivery-limit.** RabbitMQ has redelivered the
    message 20 times without an ack landing. This is the pathological-
-   loop guard; it protects the broker from a buggy worker.
+   loop guard; it protects the broker from a buggy worker. A backend
+   outage does not count against it: the checks before execution defer
+   the message as a new message instead of requeuing it (see above).
 4. **Expiry / lock-render / conflict-cap.** `max_age` exceeded,
    lock key cannot be rendered (e.g. missing kwarg), or lock
    conflict budget hit. DLQ carries the message with diagnostic

@@ -10,7 +10,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import valkey.asyncio as valkey_asyncio
+import valkey.exceptions
 
+from swarmq.backend.valkey.connection import as_backend_error
 from swarmq.contracts import RateLimitDecision
 from swarmq.limits import RateLimitConfig
 from swarmq.lua import load_script
@@ -67,9 +69,16 @@ class ValkeyRateLimitStore:
         return self._limiter
 
     async def check(self, name: str, *, max_requests: int, window_ms: int) -> RateLimitDecision:
-        allowed, remaining, retry_after_ms = await self._limiter.check(
-            name, RateLimitConfig(max_requests=max_requests, window_size_ms=window_ms)
-        )
+        try:
+            allowed, remaining, retry_after_ms = await self._limiter.check(
+                name, RateLimitConfig(max_requests=max_requests, window_size_ms=window_ms)
+            )
+        except (valkey.exceptions.ValkeyError, OSError) as exc:
+            # Dieselbe Einordnung wie die anderen Stores: Ausfall (Transport,
+            # OOM/READONLY/...) -> ``BackendConnectionError``, das Gate stellt
+            # zurueck; Fehlerantwort (Skript, WRONGTYPE) ->
+            # ``BackendResponseError``, das Gate requeut zum Zustelllimit.
+            raise as_backend_error(f"rate limit check failed for {name!r}: {exc}", exc) from exc
         return RateLimitDecision(allowed=allowed, remaining=remaining, retry_after_ms=retry_after_ms)
 
 
