@@ -20,15 +20,10 @@ from typing import Any
 from swarmq.backoff import backend_defer_delay
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT
 from swarmq.logging import _error_fields, get_logger
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
-
-# Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Die Kopie ist
-# eine neue Nachricht: mitkopiert hielte das Delivery-Count-Gate sie fuer
-# haengend, obwohl der Broker sie noch nie zugestellt hat.
-_BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
 
 
 def _prior_deferrals(raw: Any) -> int:
@@ -42,6 +37,7 @@ def _prior_deferrals(raw: Any) -> int:
 
 async def defer_backend_unavailable(
     deps: GateDeps, delivery: Any, ctx: GateContext, exc: BaseException, *, gate: str,
+    stage: str | None = None, **context: Any,
 ) -> DeliveryOutcome:
     """Stellt *delivery* mit wachsendem Backoff zurueck; Outcome ``Redelivered``.
 
@@ -50,11 +46,13 @@ async def defer_backend_unavailable(
     zaehlt ``x-swarmq-backend-defer-count`` hoch. Kein Retry: kein Retry-
     Budget, kein ``TASK_RETRYING``. Nur Gates vor dem FIRE_AND_FORGET-Ack
     rufen das auf -- das Original ist hier immer noch unbestaetigt.
+
+    Das Gate loggt selbst nichts: ``task_deferred_backend_unavailable`` ist
+    die eine Zeile je Zurueckstellung; ``stage`` und ``context`` (z. B.
+    ``schedfire_key``, ``workflow_id``, ``lock_name``) tragen, was frueher
+    in der zusaetzlichen Gate-Warnung stand.
     """
-    headers = {
-        key: value for key, value in (delivery.headers or {}).items()
-        if key not in _BROKER_DELIVERY_COUNTERS
-    }
+    headers = republish_headers(delivery, ctx)
     attempt = _prior_deferrals(headers.get(HEADER_BACKEND_DEFER_COUNT)) + 1
     headers[HEADER_BACKEND_DEFER_COUNT] = attempt
     delay_s = backend_defer_delay(
@@ -71,13 +69,15 @@ async def defer_backend_unavailable(
         # (Duplikat statt Verlust, at-least-once).
         logger.warning(
             "task_defer_failed_redelivered",
-            task_id=ctx.task_id, task_name=ctx.task_name, gate=gate, **_error_fields(publish_exc),
+            task_id=ctx.task_id, task_name=ctx.task_name, gate=gate, stage=stage, **context,
+            **{f"backend_{key}": value for key, value in _error_fields(exc).items()},
+            **_error_fields(publish_exc),
         )
         await deps.broker.redeliver(delivery)
         return Redelivered
     logger.warning(
         "task_deferred_backend_unavailable",
         task_id=ctx.task_id, task_name=ctx.task_name, gate=gate,
-        defer_count=attempt, delay_ms=delay_ms, **_error_fields(exc),
+        defer_count=attempt, delay_ms=delay_ms, stage=stage, **context, **_error_fields(exc),
     )
     return Redelivered

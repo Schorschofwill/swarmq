@@ -107,12 +107,30 @@ Enqueue-Zeit), aber nicht die Zustellzähler des Brokers; sie beginnt
 also mit frischem Zustellbudget. Die Wartezeit beginnt bei
 `SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) und verdoppelt sich je
 Zurückstellung bis `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Jede
-Zurückstellung loggt `task_deferred_backend_unavailable` (WARNING).
-Das ist kein Retry: `max_retries` bleibt unberührt, `TASK_RETRYING`
-feuert nicht. Nur wenn auch der Broker die Kopie nicht annimmt, fällt
-der Worker auf `basic.nack(requeue=True)` zurück. Fire-and-forget-Tasks
-werden genauso zurückgestellt, denn diese Prüfungen laufen vor ihrem
-frühen Ack.
+Zurückstellung loggt eine Zeile, `task_deferred_backend_unavailable`
+(WARNING), deren Felder `gate` und `stage` die gescheiterte Prüfung
+nennen. Das ist kein Retry: `max_retries` bleibt unberührt,
+`TASK_RETRYING` feuert nicht. Nur wenn auch der Broker die Kopie nicht
+annimmt, fällt der Worker auf `basic.nack(requeue=True)` zurück.
+Fire-and-forget-Tasks werden genauso zurückgestellt, denn diese
+Prüfungen laufen vor ihrem frühen Ack.
+
+Retry-Kopien und die Kopien nach einem Rate-Limit-Treffer oder
+Lock-Konflikt lassen die Zustellzähler des Brokers genauso weg; ein
+geerbter `x-delivery-count` kann sie also nicht als hängende Nachricht
+nach `{queue}.XQ` schicken.
+
+Ein Schedule-Fire (`x-swarmq-schedfire`) wird vor dem Lauf in Valkey
+beansprucht, damit ein zweites Publish desselben Fires verworfen wird.
+Eine Kopie eines beanspruchten Fires (Zurückstellung, Retry, Requeue)
+trägt das Owner-Token des Claims in `x-swarmq-schedfire-claim`. Konnte
+der Worker den Claim nicht freigeben, etwa weil Valkey direkt nach dem
+Claim ausfiel, erkennt die Kopie den Claim als ihren und übernimmt ihn,
+statt sich als Duplikat zu bestätigen. Das Token wechselt bei jeder
+Übernahme, eine Redelivery derselben Kopie bleibt also ein Duplikat.
+Nur ein Neueinreihen an derselben Stelle kann kein Token tragen:
+scheitern in diesem Moment Broker und Backend, wartet der Fire auf
+`SWARMQ_SCHEDULER_INFLIGHT_TTL`.
 
 ## Redelivery-Szenarien
 

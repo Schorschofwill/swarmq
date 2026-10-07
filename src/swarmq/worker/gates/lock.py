@@ -29,7 +29,7 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, route_via_dlx
+from swarmq.worker.gates import GateContext, GateDeps, republish_headers, route_via_dlx
 from swarmq.worker.gates.backend_defer import defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
@@ -137,14 +137,17 @@ class LockGate:
             # other failure means we cannot decide safely. nack(requeue)
             # so the broker hands the message to the next worker. Runs
             # BEFORE FIRE_AND_FORGET ack — no data loss.
+            if isinstance(exc, BackendConnectionError):
+                # Backend weg: zurueckstellen statt per Requeue das
+                # Zustellbudget zu verbrauchen (kein Lock-Konflikt); die
+                # Zurueckstellung loggt die eine WARNING-Zeile.
+                return await defer_backend_unavailable(
+                    deps, delivery, ctx, exc, gate="lock", stage="acquire", lock_name=lock_name,
+                )
             logger.error(
                 "lock_acquire_failed", task_id=ctx.task_id, task_name=ctx.task_name, lock_name=lock_name,
                 **_error_fields(exc),
             )
-            if isinstance(exc, BackendConnectionError):
-                # Backend weg: zurueckstellen statt per Requeue das
-                # Zustellbudget zu verbrauchen (kein Lock-Konflikt).
-                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="lock")
             await deps.broker.redeliver(delivery)
             return Redelivered
 
@@ -155,7 +158,7 @@ class LockGate:
         # Track how often this exact message has bounced so operators can
         # see a wedged lock. Plan 005 set the precedent — visibility-first,
         # auto-DLQ at the cap is the safety net.
-        original_headers = dict(delivery.headers) if delivery.headers else {}
+        original_headers = republish_headers(delivery, ctx)
         prior_count = int(original_headers.get("x-swarmq-lock-conflict-count", 0))
         new_count = prior_count + 1
         original_headers["x-swarmq-lock-conflict-count"] = new_count

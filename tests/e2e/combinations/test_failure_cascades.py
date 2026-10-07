@@ -1669,6 +1669,119 @@ class TestLongBackendOutageBeforeStartCombo:
 
 
 # ---------------------------------------------------------------------------
+# Combo 22 — Backend-Ausfall zwischen Schedfire-Claim und Cancel-Check (Tier 2)
+# ---------------------------------------------------------------------------
+
+
+class TestSchedfireClaimAcrossBackendOutageCombo:
+    """Combo #22: Valkey faellt direkt nach dem gewonnenen Schedfire-Claim aus.
+
+    Vorher: Der Cancel-Check scheiterte, die Nachricht wurde zurueckgestellt,
+    die Freigabe des In-Flight-Claims scheiterte ebenfalls (Valkey weg). Die
+    Kopie sah nach der Wiederherstellung den stehengebliebenen Claim als
+    fremden Lauf und bestaetigte sich als Duplikat -- der Fire ging verloren,
+    solange der Claim lebte (``scheduler_inflight_ttl``).
+
+    Jetzt: Die Kopie traegt das Owner-Token (``x-swarmq-schedfire-claim``),
+    uebernimmt den Claim und laeuft genau einmal.
+
+    Test-Liste:
+    - [x] Valkey-Ausfall nach ``claim_fire`` -> der Fire laeuft nach der
+          Wiederherstellung genau einmal und ist danach abgeschlossen
+    """
+
+    @pytest.mark.chaos
+    @pytest.mark.timeout(90)
+    async def test_deferred_fire_runs_once_after_outage(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_url: str,
+        valkey_proxied_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from swarmq.backend.valkey.schedules import ValkeyScheduleStore
+        from swarmq.serialization import encode_json
+
+        queue = _uq("schedfire-outage")
+        task_name = _task_name("schedfire_outage")
+        fire_key = f"{_task_name('cron')}:1700000000000"
+        runs: list[str] = []
+        cut = asyncio.Event()
+        release_failed = asyncio.Event()
+        completed = asyncio.Event()
+
+        class FireTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            async def run(self) -> str:
+                runs.append("run")
+                return "ok"
+
+        real_claim = ValkeyScheduleStore.claim_fire
+        real_release = ValkeyScheduleStore.release_fire_claim
+        real_mark = ValkeyScheduleStore.mark_fire_completed
+
+        async def claim_then_cut(self: Any, key: str, ttl_ms: int, **kwargs: Any) -> bool:
+            claimed = await real_claim(self, key, ttl_ms, **kwargs)
+            if key == fire_key and claimed and not cut.is_set():
+                # Valkey faellt genau zwischen Claim und Cancel-Check aus.
+                await toxiproxy.set_proxy_enabled("valkey", False)
+                cut.set()
+            return claimed
+
+        async def observed_release(self: Any, key: str, **kwargs: Any) -> None:
+            try:
+                await real_release(self, key, **kwargs)
+            except BackendConnectionError:
+                if key == fire_key:
+                    release_failed.set()
+                raise
+
+        async def observed_mark(self: Any, key: str, ttl_ms: int) -> bool:
+            first = await real_mark(self, key, ttl_ms)
+            if key == fire_key:
+                completed.set()
+            return first
+
+        monkeypatch.setattr(ValkeyScheduleStore, "claim_fire", claim_then_cut)
+        monkeypatch.setattr(ValkeyScheduleStore, "mark_fire_completed", observed_mark)
+        monkeypatch.setattr(ValkeyScheduleStore, "release_fire_claim", observed_release)
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url, valkey_proxied_url, queue,
+                backend_defer_base_delay=0.5, backend_defer_max_delay=2.0,
+                scheduler_inflight_ttl=600,
+            ):
+                body = encode_json({
+                    "task": {"id": str(uuid.uuid4()), "queue": queue, "name": task_name},
+                    "args": [], "kwargs": {},
+                })
+                try:
+                    await broker.publish(queue, body, headers={"x-swarmq-schedfire": fire_key})
+                    await asyncio.wait_for(cut.wait(), timeout=15.0)
+                    # Zurueckgestellt UND Freigabe gescheitert -- der Claim steht.
+                    await asyncio.wait_for(release_failed.wait(), timeout=15.0)
+                    assert not runs
+                finally:
+                    await toxiproxy.set_proxy_enabled("valkey", True)
+                # Vorher: die Kopie bestaetigte sich als Duplikat, der Fire
+                # lief nie (Claim lebt scheduler_inflight_ttl = 600 s).
+                await asyncio.wait_for(completed.wait(), timeout=30.0)
+                is_completed = await backend.schedules.is_fire_completed(fire_key)
+                xq_depth = await broker.dead_letter_depth(queue)
+
+        assert runs == ["run"], f"Fire genau einmal: {runs}"
+        assert is_completed is True
+        assert xq_depth == 0
+
+
+# ---------------------------------------------------------------------------
 # §Assumptions
 # ---------------------------------------------------------------------------
 # A1. MiddlewareChain._swallow: pre_execute and post_execute exceptions are

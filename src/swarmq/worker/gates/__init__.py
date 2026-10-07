@@ -26,6 +26,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
+from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
 
@@ -76,6 +77,9 @@ class GateContext:
     handler_id: uuid.UUID | None = None
     acquired_locks: list[LockEntry] = field(default_factory=list)
     workflow_id: str | None = None  # gepruefter Workflow-Header (U10: Logkontext im Kind)
+    # Owner-Token des Schedfire-Claims, den diese Zustellung gewonnen hat;
+    # jede Kopie traegt es als ``x-swarmq-schedfire-claim`` weiter.
+    schedfire_claim: str | None = None
 
 
 @dataclass
@@ -96,8 +100,30 @@ class GateDeps:
     finalize_schedfire: Callable[[Any, bool], Awaitable[None]]
     maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
-    claim_schedfire: Callable[[Any, str], None]
+    claim_schedfire: Callable[[Any, str, str], None]  # (delivery, fire_key, owner_token)
     register_lock: Callable[[uuid.UUID, LockEntry], None]
+
+
+# Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie
+# ueber ``retry_later`` ist eine neue Nachricht mit eigenem Zustellbudget:
+# mitkopiert hielte das Delivery-Count-Gate sie fuer haengend, obwohl der
+# Broker sie noch nie zugestellt hat (RabbitMQ 4 behaelt einen vom Publisher
+# gesetzten ``x-delivery-count`` bei, 3.13 zaehlt zudem Requeues).
+BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
+
+
+def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
+    """Header fuer eine neue Kopie von *delivery* (Retry, Zurueckstellung,
+    Requeue): alle Header des Originals ohne die Zustellzaehler des Brokers.
+    Hielt die Zustellung einen Schedfire-Claim, traegt die Kopie dessen
+    Owner-Token -- sie uebernimmt den Claim, falls dessen Freigabe scheitert."""
+    headers = {
+        key: value for key, value in (delivery.headers or {}).items()
+        if key not in BROKER_DELIVERY_COUNTERS
+    }
+    if ctx.schedfire_claim is not None:
+        headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim
+    return headers
 
 
 class Gate(Protocol):

@@ -38,12 +38,10 @@ class CancelGate:
         try:
             is_cancelled = await deps.backend.is_cancelled(task_id, op_timeout=deps.config.backend_op_timeout)
         except BackendConnectionError as exc:
-            # KTD11: die Zurueckstellung erholt sich selbst -> WARNING.
             # Kein Requeue an derselben Stelle: das verbrauchte das
             # Zustellbudget, nach delivery_limit Zyklen laege die Nachricht
-            # still im .XQ.
-            logger.warning("cancel_check_backend_error", task_id=task_id, **_error_fields(exc))
-            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel")
+            # still im .XQ. Die Zurueckstellung loggt die eine WARNING-Zeile.
+            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel", stage="cancel_check")
 
         workflow_cancel = False
         if not is_cancelled:
@@ -60,10 +58,9 @@ class CancelGate:
                     wf_id, op_timeout=deps.config.backend_op_timeout
                 )
             except BackendConnectionError as exc:
-                logger.warning(
-                    "workflow_cancel_check_backend_error", task_id=task_id, workflow_id=wf_id, **_error_fields(exc)
+                return await defer_backend_unavailable(
+                    deps, delivery, ctx, exc, gate="cancel", stage="workflow_cancel_check", workflow_id=wf_id,
                 )
-                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel")
             if not wf_cancelled:
                 return Continue
             workflow_cancel = True
@@ -131,8 +128,9 @@ class CancelGate:
             # Result-write failure: zurueckstellen, damit die Kopie diesen
             # Zweig erneut durchlaeuft. Flag stays in Valkey (that's what
             # triggers the re-cancel on the deferred copy).
-            logger.warning("cancel_store_result_failed", task_id=task_id, **_error_fields(exc))
-            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="cancel")
+            return await defer_backend_unavailable(
+                deps, delivery, ctx, exc, gate="cancel", stage="cancel_store_result",
+            )
 
         # Signal AFTER the broker ack so a handler that raises doesn't
         # prevent the message from being committed.

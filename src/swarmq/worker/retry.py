@@ -32,7 +32,7 @@ from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
@@ -120,8 +120,9 @@ class RetryHandler:
 
         # 6. Retry with incremented retry count. R3.5 Unit 11: merge original
         # headers so x-swarmq-unique-hash (and any future stage-specific
-        # header) survives redelivery.
-        headers = {**(dict(delivery.headers) if delivery.headers else {})}
+        # header) survives redelivery -- ohne die Zustellzaehler des Brokers
+        # (neue Nachricht, eigenes Zustellbudget).
+        headers = republish_headers(delivery, ctx)
         headers["x-swarmq-retry-count"] = retry_count + 1
         headers["x-swarmq-traceback"] = error_message
         try:

@@ -6,6 +6,7 @@ x-swarmq-lock-render-error
 x-swarmq-rate-limit-count
 x-swarmq-retry-count
 x-swarmq-schedfire
+x-swarmq-schedfire-claim
 x-swarmq-traceback
 x-swarmq-unique-hash
 x-swarmq-unique-until

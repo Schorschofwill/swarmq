@@ -44,6 +44,8 @@ means the feature is not active.
 | `x-swarmq-unique-hash` | `string` (hex) | Client | SHA-256 of canonical `(name, args, kwargs)`. |
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | When the worker releases the dedup flag. |
 | `x-swarmq-schedfire` | `int` (unix ms) | Scheduler | Present on scheduler-published messages; worker dedupes on it. |
+| `x-swarmq-schedfire-claim` | `string` | Worker (copy of a schedule fire) | Owner token of the fire's in-flight claim held by the delivery this copy came from; the copy takes that claim over instead of treating it as a duplicate. |
+| `x-swarmq-backend-defer-count` | `int` | Worker (backend deferral) | How often a check before execution deferred this message because the backend was unreachable; sets the next wait. Not a retry count. |
 | `x-swarmq-lock-render-error` | `string` | Worker (lock render failure) | Why the lock template could not be rendered; the message is DLQ-routed. |
 | `x-swarmq-lock-conflict-count` | `int` | Worker (lock conflict) | Conflicts so far; at 10 the message is DLQ-routed. |
 | `x-swarmq-lock-name` | `string` | Worker (lock conflict) | Rendered lock name the conflicts refer to. |

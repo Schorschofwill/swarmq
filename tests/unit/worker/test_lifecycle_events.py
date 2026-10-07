@@ -65,7 +65,7 @@ def _deps(backend: Any = None, **cfg: Any) -> GateDeps:
         registry=MagicMock(), rate_limiter=lambda: None, lock_manager=lambda: None,
         finalize_schedfire=AsyncMock(), maybe_release_unique=AsyncMock(),
         extract_valid_workflow_id=lambda _m: None,
-        claim_schedfire=lambda _m, _t: None, register_lock=lambda _h, _e: None,
+        claim_schedfire=lambda _m, _k, _o: None, register_lock=lambda _h, _e: None,
     )
 
 

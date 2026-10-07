@@ -8,14 +8,23 @@ Claim vor dem Lauf). Duplikate werden bestätigt und übersprungen
 → Zurueckstellung ueber die Delay-Queue (``backend_defer``, ``Redelivered``).
 Der Runner behandelt dieses Gate wie heute *vor* seinem ``try/finally``
 (Plan-Fortschrittsprotokoll U19).
+
+Claim-Token (0.9.0): Der In-Flight-Claim speichert ein Owner-Token je
+Zustellung. Jede Kopie (Zurueckstellung, Retry, Requeue) traegt es als
+``x-swarmq-schedfire-claim`` und bietet es beim Claim zur Uebernahme an --
+scheiterte die Freigabe am Backend-Ausfall, gilt der Claim fuer die Kopie
+als ihrer statt als Duplikat. Die Uebernahme rotiert das Token; eine
+Zustellung ohne oder mit altem Token bleibt ein Duplikat.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
-from swarmq.logging import _error_fields, get_logger
+from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
+from swarmq.logging import get_logger
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.gates.backend_defer import defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
@@ -47,12 +56,10 @@ class SchedfireGate:
         try:
             already_completed = await deps.backend.schedules.is_fire_completed(header_value)
         except BackendConnectionError as exc:
-            # KTD11: die Zurueckstellung erholt sich selbst -> WARNING.
-            logger.warning(
-                "schedfire_dedup_backend_error", schedfire_key=header_value, stage="completed_check",
-                **_error_fields(exc),
+            # KTD11: die Zurueckstellung erholt sich selbst -> eine WARNING-Zeile.
+            return await defer_backend_unavailable(
+                deps, delivery, ctx, exc, gate="schedfire", stage="completed_check", schedfire_key=header_value,
             )
-            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="schedfire")
 
         if already_completed:
             logger.info("schedfire_completed_duplicate_acked", schedfire_key=header_value)
@@ -73,19 +80,26 @@ class SchedfireGate:
         if hard_timeout is not None:
             inflight_ttl_s = max(inflight_ttl_s, hard_timeout + 30)
         inflight_ttl_ms = int(inflight_ttl_s * 1000)
+        # Frisches Owner-Token je Zustellung; eine Kopie bietet das Token
+        # ihres Vorgaengers zur Uebernahme an (der Claim rotiert dabei, eine
+        # Broker-Redelivery derselben Kopie bleibt ein Duplikat).
+        owner = uuid.uuid4().hex
+        carried = (delivery.headers or {}).get(HEADER_SCHEDFIRE_CLAIM)
+        takeover = carried if isinstance(carried, str) and carried else None
         try:
-            claimed = await deps.backend.schedules.claim_fire(header_value, inflight_ttl_ms)
-        except BackendConnectionError as exc:
-            logger.warning(
-                "schedfire_dedup_backend_error", schedfire_key=header_value, stage="inflight_claim",
-                **_error_fields(exc),
+            claimed = await deps.backend.schedules.claim_fire(
+                header_value, inflight_ttl_ms, owner=owner, takeover=takeover,
             )
-            return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="schedfire")
+        except BackendConnectionError as exc:
+            return await defer_backend_unavailable(
+                deps, delivery, ctx, exc, gate="schedfire", stage="inflight_claim", schedfire_key=header_value,
+            )
 
         if claimed:
             # This worker owns the run; the runner's finally finalizes the
             # claim (completed marker on terminal, in-flight clear otherwise).
-            deps.claim_schedfire(delivery, header_value)
+            deps.claim_schedfire(delivery, header_value, owner)
+            ctx.schedfire_claim = owner
             return Continue
 
         # Another worker is running it right now.

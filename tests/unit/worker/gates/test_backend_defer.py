@@ -16,6 +16,11 @@ Test-Liste:
 - [x] WARNING ``task_deferred_backend_unavailable`` mit Feldern
 - [x] kein Retry: Retry-Zaehler unveraendert (Header-Test), kein Signal
 - [x] Publish scheitert -> ``redeliver`` (alter Weg), kein Ack, Log
+- [x] 0.9.0: eine Zeile je Zurueckstellung -- das Event traegt die Stufe
+      (``stage``) und den Kontext des Gates (z. B. ``workflow_id``), die
+      bisher nur die zusaetzliche Gate-Warnung trug
+- [x] 0.9.0: der Fallback-Log traegt Stufe, Kontext und den Backend-Fehler
+      (``backend_error_type``/``backend_error``) neben dem Publish-Fehler
 """
 
 from __future__ import annotations
@@ -160,3 +165,34 @@ async def test_failed_deferral_publish_falls_back_to_redeliver(worker, broker, s
     assert entry["task_id"] == "abc-123"
     assert entry["error_type"] == type(publish_error).__name__
     assert not [e for e in swarmq_logs if e["event"] == "task_deferred_backend_unavailable"]
+
+
+async def test_deferral_event_carries_stage_and_gate_context(worker, broker, swarmq_logs):
+    msg = make_message(_default_payload())
+
+    await defer_backend_unavailable(
+        worker._gate_deps, msg, _ctx(), BackendConnectionError("valkey down"),
+        gate="cancel", stage="workflow_cancel_check", workflow_id="wf-1",
+    )
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "task_deferred_backend_unavailable"]
+    assert entry["stage"] == "workflow_cancel_check"
+    assert entry["workflow_id"] == "wf-1"
+
+
+async def test_failed_deferral_log_keeps_stage_context_and_backend_error(worker, broker, swarmq_logs):
+    """Ohne die frueheren Gate-Warnungen traegt der Fallback-Log den
+    Backend-Fehler selbst -- sonst stuende nur der Publish-Fehler da."""
+    broker.retry_later.side_effect = BrokerConnectionError("rmq down")
+    msg = make_message(_default_payload())
+
+    await defer_backend_unavailable(
+        worker._gate_deps, msg, _ctx(), BackendConnectionError("valkey down"),
+        gate="schedfire", stage="completed_check", schedfire_key="s:1",
+    )
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "task_defer_failed_redelivered"]
+    assert entry["stage"] == "completed_check" and entry["schedfire_key"] == "s:1"
+    assert entry["backend_error_type"] == "BackendConnectionError"
+    assert entry["backend_error"] == "valkey down"
+    assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "rmq down"

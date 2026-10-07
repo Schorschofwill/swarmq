@@ -100,9 +100,17 @@ class ScheduleStore(Protocol):
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 
-    async def claim_fire(self, fire_key: str, ttl_ms: int) -> bool: ...
+    async def claim_fire(
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None, takeover: str | None = None,
+    ) -> bool:
+        """In-Flight-Claim mit Owner-Token (atomar). ``True``, wenn der Claim
+        frei war oder sein Wert ``takeover`` ist -- dann gehoert er danach
+        ``owner`` mit neuer TTL (Uebernahme durch die eigene Kopie).
+        Ohne ``owner`` speichert der Claim einen Platzhalter."""
 
-    async def release_fire_claim(self, fire_key: str) -> None: ...
+    async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
+        """Gibt den In-Flight-Claim frei; mit ``owner`` nur, wenn er noch
+        diesem Token gehoert (atomar)."""
 
     async def is_fire_completed(self, fire_key: str) -> bool: ...
 

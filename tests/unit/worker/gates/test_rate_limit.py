@@ -1,4 +1,13 @@
-"""Rate-Limit-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle plus direkte Outcome-Tests."""
+"""Rate-Limit-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle plus direkte Outcome-Tests.
+
+Test-Liste 0.9.0 (Kopie und Broker-Zaehler):
+- [x] die Rueckstellungs-Kopie bei Limit-Treffer traegt weder
+      ``x-delivery-count`` noch ``x-acquired-count`` des Originals
+- [x] Backend-Fehler beim Check -> genau eine Zeile (WARNING
+      ``task_deferred_backend_unavailable``, ``stage=check``), kein ERROR
+      ``rate_limit_check_failed`` mehr fuer den selbstheilenden Fall
+- [x] anderer Fehler beim Check -> weiter ERROR ``rate_limit_check_failed``
+"""
 
 from __future__ import annotations
 
@@ -371,6 +380,19 @@ class TestRateLimitGateOutcomes:
         assert kwargs["delay_ms"] == 1500 and kwargs["headers"]["x-swarmq-rate-limit-count"] == 3
         broker.ack.assert_not_awaited()  # retry_later bestätigt selbst (U8)
 
+    async def test_limited_copy_drops_broker_delivery_counters(self, worker, broker):
+        """Die Kopie ist eine neue Nachricht: ein vererbter ``x-delivery-count``
+        liesse das Delivery-Count-Gate sie als haengend dead-lettern."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(
+            return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=1500)
+        )
+        msg = make_message(_default_payload(), headers={"x-delivery-count": 18, "x-acquired-count": 30})
+        await worker._rate_limit_gate.apply(msg, self._ctx())
+        headers = broker.retry_later.await_args.kwargs["headers"]
+        assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
+        assert headers["x-swarmq-rate-limit-count"] == 1
+
     async def test_backend_error_is_deferred_without_ack(self, worker, broker):
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
@@ -382,16 +404,29 @@ class TestRateLimitGateOutcomes:
         broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
 
-    async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
-        """Plan 2026-10-06-0831, U9 (R17)."""
+    async def test_check_backend_error_logs_one_deferral_line(self, worker, swarmq_logs):
+        """0.9.0: die Zurueckstellung erholt sich selbst -- eine WARNING-Zeile
+        statt ERROR plus WARNING."""
         worker._rate_limiter = MagicMock()
         worker._rate_limiter.check = AsyncMock(side_effect=BackendConnectionError("down"))
+        await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
+
+        [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
+        assert entry["task_id"] == self._ctx().task_id
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+
+    async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17): kein Backend-Ausfall -> ERROR."""
+        worker._rate_limiter = MagicMock()
+        worker._rate_limiter.check = AsyncMock(side_effect=RuntimeError("bug"))
         await worker._rate_limit_gate.apply(make_message(_default_payload()), self._ctx())
 
         [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_check_failed"]
         assert entry["logger"] == "swarmq.worker.gates.rate_limit"
         assert entry["log_level"] == "error" and entry["task_id"] == self._ctx().task_id
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
 
     async def test_requeue_failure_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._rate_limiter = MagicMock()

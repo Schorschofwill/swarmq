@@ -13,6 +13,16 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 2. ... wenn der Eintrag inzwischen dauerhaft entfernt wurde.
 # 3. ... wenn der Fire-Index-Score inzwischen ein anderer ist (``put``).
 # 4. commit_fire mit passendem ``fired_ts_ms`` wendet den Commit an.
+#
+# Test list (0.9.0, Schedfire-Claim-Token) -- ScheduleStoreContract:
+# 5. claim_fire mit ``owner``: ein zweiter Claim ohne Uebernahme verliert.
+# 6. Uebernahme mit dem gespeicherten Token gewinnt und rotiert den Owner;
+#    das alte Token gewinnt danach nicht mehr (echte Duplikate bleiben
+#    Duplikate).
+# 7. Uebernahme mit fremdem Token verliert.
+# 8. release_fire_claim mit fremdem ``owner`` laesst den Claim stehen, mit
+#    eigenem gibt es ihn frei.
+# 9. Die Uebernahme setzt die TTL neu.
 
 from __future__ import annotations
 
@@ -287,6 +297,40 @@ class ScheduleStoreContract:
         assert await impl.mark_fire_completed(key, ttl_ms=60_000) is True
         assert await impl.mark_fire_completed(key, ttl_ms=60_000) is False
         assert await impl.is_fire_completed(key) is True
+
+    async def test_fire_claim_with_owner_blocks_second_claim(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is False
+
+    async def test_fire_claim_takeover_with_stored_token_rotates_owner(self, impl: ScheduleStore) -> None:
+        """Eine Kopie, die das Token ihres Vorgaengers traegt, uebernimmt den
+        Claim; eine Zustellung mit dem alten Token (Broker-Redelivery der
+        Kopie) ist danach wieder ein Duplikat."""
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="c", takeover="a") is False
+
+    async def test_fire_claim_takeover_with_foreign_token_loses(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="x") is False
+
+    async def test_fire_claim_takeover_renews_ttl(self, impl: ScheduleStore, clock: Clock) -> None:
+        key = _name("fire")
+        await impl.claim_fire(key, ttl_ms=300, owner="a")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="a") is True
+        await clock.advance(0.8)
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="c") is False
+
+    async def test_release_fire_claim_checks_owner(self, impl: ScheduleStore) -> None:
+        key = _name("fire")
+        await impl.claim_fire(key, ttl_ms=60_000, owner="a")
+        await impl.release_fire_claim(key, owner="x")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is False
+        await impl.release_fire_claim(key, owner="a")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is True
 
     async def test_fire_claim_expires(self, impl: ScheduleStore, clock: Clock) -> None:
         key = _name("fire")

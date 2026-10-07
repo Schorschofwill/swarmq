@@ -66,6 +66,21 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   hart, wenn nach dem letzten Leeren noch ein Log-Thread feststeckt
   (siehe Hinzugefügt). `swarmq.cli.main()` bleibt unverändert und endet
   nie hart.
+- **Eine Logzeile je Zurückstellung, wenn das Backend vor der Ausführung
+  nicht erreichbar ist.** Die Gate-Warnungen
+  `cancel_check_backend_error`, `workflow_cancel_check_backend_error`,
+  `cancel_store_result_failed` und `schedfire_dedup_backend_error`
+  entfallen; `rate_limit_check_failed` und `lock_acquire_failed` (ERROR)
+  erscheinen nur noch bei anderen Fehlern als einem unerreichbaren
+  Backend. Ihre Angaben stehen jetzt in
+  `task_deferred_backend_unavailable`: im neuen Feld `stage`
+  (`completed_check`, `inflight_claim`, `cancel_check`,
+  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
+  sowie, wo zutreffend, in `schedfire_key`, `workflow_id` oder
+  `lock_name`. `task_defer_failed_redelivered` trägt dieselben Felder
+  und den Backend-Fehler als `backend_error_type` und `backend_error`.
+  Alarme auf die entfallenen Events sollten stattdessen auf
+  `task_deferred_backend_unavailable` prüfen.
 
 ### Hinzugefügt
 
@@ -122,6 +137,38 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein Scheduler-Fire geht nicht mehr verloren, wenn Valkey direkt
+  nach seinem Claim ausfällt.** Der Worker beansprucht einen Fire in
+  Valkey, bevor er den Task ausführt. Beendete eine spätere Prüfung
+  (Cancel-Check, Zustellzähler) die Zustellung, wurde der Claim nie
+  freigegeben; scheiterte die Freigabe selbst (Valkey weg), sah die
+  zurückgestellte, wiederholte oder neu eingereihte Kopie den Claim,
+  hielt sich für ein Duplikat und bestätigte sich, der Fire lief also
+  nie (der Claim lebt bis zu `SWARMQ_SCHEDULER_INFLIGHT_TTL`, Standard
+  300 s). Jetzt speichert der Claim ein Owner-Token, jede Kopie
+  trägt es im neuen Header `x-swarmq-schedfire-claim`, und eine Kopie,
+  die ihr eigenes Token findet, übernimmt den Claim (das Token rotiert
+  dabei, eine Broker-Redelivery dieser Kopie bleibt also ein Duplikat).
+  Echte Duplikate (ein zweites Publish des Fires, eine Redelivery des
+  Originals) werden weiter verworfen. Prüfungen, die die Zustellung vor
+  dem Task beenden, geben den Claim jetzt ebenfalls frei, mit
+  Owner-Prüfung. Neues Lua-Skript `sched_fire_claim.lua`;
+  `ScheduleStore.claim_fire` hat die neuen optionalen Keywords `owner`
+  und `takeover`, `ScheduleStore.release_fire_claim` das neue optionale
+  Keyword `owner` (Stores von Dritten müssen sie annehmen). Ein
+  Neueinreihen an derselben Stelle (`nack(requeue=True)`, wenn auch der
+  Broker die Kopie nicht annimmt) kann kein Token tragen; scheitert dann
+  auch die Freigabe, wartet dieser Fire weiter auf die Claim-TTL.
+- **Retry-Kopien erben die Zustellzähler des Brokers nicht mehr.** Die
+  Kopie für einen Retry, einen Rate-Limit-Treffer oder einen
+  Lock-Konflikt übernahm `x-delivery-count` und `x-acquired-count` vom
+  Original. RabbitMQ 4 behält einen vom Publisher gesetzten
+  `x-delivery-count` bei der Zustellung bei, RabbitMQ 3.13 zählt
+  zusätzlich Requeues; eine Kopie, deren geerbter Zähler
+  `SWARMQ_DELIVERY_LIMIT - 1` erreichte, landete als `WorkerHungError`
+  in `{queue}.XQ`, obwohl der Task noch Retries hatte. Diese Kopien sind
+  jetzt neue Nachrichten mit eigenem Zustellbudget, wie die Kopien der
+  Zurückstellung.
 - **Ein Backend-Ausfall vor der Ausführung verbraucht das Zustellbudget
   nicht mehr.** Erreichte eine Prüfung vor dem Task (Schedule-Fire-Dedup,
   Cancel-Check, Rate-Limit, Lock) Valkey nicht, reihte der Worker die
@@ -140,7 +187,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `x-swarmq-backend-defer-count`). Das ist kein Retry: `max_retries`
   bleibt unberührt, `TASK_RETRYING` feuert nicht. Jede Zurückstellung
   loggt das neue WARNING-Event `task_deferred_backend_unavailable`
-  (Felder `gate`, `defer_count`, `delay_ms`, `error_type`, `error`).
+  (Felder `gate`, `stage`, `defer_count`, `delay_ms`, `error_type`,
+  `error`; siehe Geändert).
   Nimmt auch der Broker die Kopie nicht an, reiht der Worker wie bisher
   an derselben Stelle neu ein und loggt `task_defer_failed_redelivered`.
   `ValkeyRateLimitStore.check` wirft bei Verbindungs- und

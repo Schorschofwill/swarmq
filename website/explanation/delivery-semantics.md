@@ -100,11 +100,27 @@ count, workflow context, unique hash, enqueue time) but not the
 broker's delivery counters, so it starts with a fresh delivery budget.
 The wait starts at `SWARMQ_BACKEND_DEFER_BASE_DELAY` (1 s) and doubles
 per deferral up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` (60 s). Each
-deferral logs `task_deferred_backend_unavailable` (WARNING). It is not
+deferral logs one line, `task_deferred_backend_unavailable` (WARNING),
+whose fields `gate` and `stage` name the check that failed. It is not
 a retry: `max_retries` is untouched and no `TASK_RETRYING` fires. Only
 if the broker cannot take the copy either does the worker fall back to
 `basic.nack(requeue=True)`. Fire-and-forget tasks are deferred the
 same way, because these checks run before their early ack.
+
+Retry copies and the copies after a rate-limit hit or a lock conflict
+drop the broker's delivery counters the same way, so an inherited
+`x-delivery-count` cannot send them to `{queue}.XQ` as a hung message.
+
+A schedule fire (`x-swarmq-schedfire`) is claimed in Valkey before it
+runs, so a second publish of the same fire is dropped. A copy of a
+claimed fire (deferral, retry, requeue) carries the claim's owner token
+in `x-swarmq-schedfire-claim`. If the worker could not release the
+claim, for example because Valkey went down right after the claim, the
+copy recognises the claim as its own and takes it over instead of
+acking itself as a duplicate. The token changes on each takeover, so a
+redelivery of the same copy is still a duplicate. Only a requeue in
+place cannot carry the token: if both broker and backend fail at that
+moment, the fire waits for `SWARMQ_SCHEDULER_INFLIGHT_TTL`.
 
 ## Redelivery scenarios
 

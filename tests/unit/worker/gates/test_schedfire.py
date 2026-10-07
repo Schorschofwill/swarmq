@@ -1,4 +1,20 @@
-"""Schedfire-Dedup-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle."""
+"""Schedfire-Dedup-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle.
+
+Test-Liste 0.9.0 (Schedfire-Claim bei Nicht-Ausfuehrung, Claim-Token):
+1. Stellt ein spaeteres Prae-Pipeline-Gate (Cancel-Check) die Nachricht nach
+   gewonnenem Claim zurueck, wird der Claim freigegeben und der Eintrag im
+   Claim-Register entfernt.
+2. Dasselbe fuer den Dead-Letter des Delivery-Count-Gates.
+3. Der Claim laeuft mit einem frischen Owner-Token; ohne Claim-Header gibt es
+   keine Uebernahme (``takeover=None``).
+4. Traegt die Zustellung ``x-swarmq-schedfire-claim``, bietet das Gate dieses
+   Token zur Uebernahme an.
+5. Die zurueckgestellte Kopie traegt das Owner-Token als
+   ``x-swarmq-schedfire-claim`` -- sie erkennt den Claim als ihren, auch
+   wenn die Freigabe am Backend-Ausfall scheitert.
+6. Die nicht-terminale Freigabe im finally ist owner-geprueft (Token).
+7. Verlorener Claim bleibt Duplikat (Ack, kein Lauf) -- auch mit fremdem Token.
+"""
 
 from __future__ import annotations
 
@@ -248,6 +264,66 @@ class TestSchedfireDedup:
         # Headers unchanged — no mutation, no counter addition
         assert msg.headers == original_headers
 
+    async def test_claim_is_released_when_cancel_check_defers(self, worker, broker, backend):
+        """Liste 1: Fiel Valkey zwischen ``claim_fire`` und Cancel-Check aus,
+        blieb der Claim stehen; die zurueckgestellte Kopie sah ihn und wurde
+        als Duplikat bestaetigt -- der Fire ging verloren."""
+        from swarmq.exceptions import BackendConnectionError as BCE
+
+        backend.is_cancelled.side_effect = BCE("valkey down")
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        await worker._handle_message(msg)
+
+        broker.retry_later.assert_awaited_once()
+        backend.schedules.release_fire_claim.assert_awaited_once()
+        assert backend.schedules.release_fire_claim.await_args.args[0] == "cron_a:1700000000000"
+        backend.schedules.mark_fire_completed.assert_not_awaited()
+        assert id(msg) not in worker._schedfire_inflight_claims
+
+    async def test_deferred_copy_carries_claim_token(self, worker, broker, backend):
+        """Liste 5: scheitert auch die Freigabe (Valkey weg), erkennt die
+        Kopie den Claim an diesem Token als ihren."""
+        from swarmq.exceptions import BackendConnectionError as BCE
+
+        backend.is_cancelled.side_effect = BCE("valkey down")
+        backend.schedules.release_fire_claim.side_effect = BCE("valkey down")
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        await worker._handle_message(msg)
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        headers = broker.retry_later.await_args.kwargs["headers"]
+        assert headers["x-swarmq-schedfire-claim"] == owner
+        assert headers["x-swarmq-schedfire"] == "cron_a:1700000000000"
+
+    async def test_release_is_owner_checked(self, worker, broker, backend):
+        """Liste 6: eine verspaetete Freigabe darf den Claim, den die Kopie
+        inzwischen uebernommen hat, nicht loeschen."""
+        from swarmq.exceptions import BackendConnectionError as BCE
+
+        backend.is_cancelled.side_effect = BCE("valkey down")
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
+
+        await worker._handle_message(msg)
+
+        owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
+        assert backend.schedules.release_fire_claim.await_args.kwargs["owner"] == owner
+
+    async def test_claim_is_released_when_delivery_count_gate_dead_letters(self, worker, broker, backend, config):
+        """Liste 2: der Dead-Letter des Delivery-Count-Gates endet ebenfalls
+        vor dem finally; der Claim darf nicht bis zur TTL stehen bleiben."""
+        msg = make_message(
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "cron_a:1700000000000", "x-delivery-count": config.delivery_limit},
+        )
+
+        await worker._handle_message(msg)
+
+        broker.dead_letter.assert_awaited_once()
+        backend.schedules.release_fire_claim.assert_awaited_once()
+        assert id(msg) not in worker._schedfire_inflight_claims
+
     async def test_worker_start_instantiates_scheduler(
         self, broker, backend, config, monkeypatch
     ):
@@ -345,7 +421,25 @@ class TestSchedfireGateOutcomes:
     async def test_won_claim_is_continue_and_records_claim(self, worker, backend):
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
         assert await worker._schedfire_gate.apply(msg, self._ctx()) is Continue
-        assert worker._schedfire_inflight_claims[id(msg)] == "s:1"
+        assert worker._schedfire_inflight_claims[id(msg)][0] == "s:1"
+
+    async def test_claim_uses_fresh_owner_token_without_takeover(self, worker, backend):
+        """Liste 3."""
+        msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
+        await worker._schedfire_gate.apply(msg, self._ctx())
+        kwargs = backend.schedules.claim_fire.await_args.kwargs
+        assert isinstance(kwargs["owner"], str) and kwargs["owner"]
+        assert kwargs["takeover"] is None
+
+    async def test_claim_offers_carried_token_for_takeover(self, worker, backend):
+        """Liste 4: die Kopie traegt das Token ihres Vorgaengers."""
+        msg = make_message(
+            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
+        )
+        await worker._schedfire_gate.apply(msg, self._ctx())
+        kwargs = backend.schedules.claim_fire.await_args.kwargs
+        assert kwargs["takeover"] == "tok-a"
+        assert kwargs["owner"] != "tok-a"
 
     async def test_inflight_ttl_grows_with_hard_timeout(self, worker, backend, config):
         worker._registry.register(LongTask)
@@ -365,28 +459,30 @@ class TestSchedfireGateOutcomes:
         broker.redeliver.assert_not_awaited()
         assert id(msg) not in worker._schedfire_inflight_claims
 
-    async def test_completed_check_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
-        """Plan 2026-10-06-0831, U9 (R17, KTD11): Redelivery erholt sich selbst."""
+    async def test_completed_check_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
+        """Plan 2026-10-06-0831, U9 (R17, KTD11): die Zurueckstellung erholt
+        sich selbst -> WARNING; 0.9.0: eine Zeile mit Stufe und Fire-Key."""
         from swarmq.exceptions import BackendConnectionError
 
         backend.schedules.is_fire_completed = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
         await worker._schedfire_gate.apply(msg, self._ctx())
 
-        [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_dedup_backend_error"]
-        assert entry["logger"] == "swarmq.worker.gates.schedfire"
-        assert entry["log_level"] == "warning" and entry["stage"] == "completed_check"
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["event"] == "task_deferred_backend_unavailable" and entry["gate"] == "schedfire"
+        assert entry["stage"] == "completed_check" and entry["schedfire_key"] == "s:1"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_inflight_claim_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+    async def test_inflight_claim_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         from swarmq.exceptions import BackendConnectionError
 
         backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
         await worker._schedfire_gate.apply(msg, self._ctx())
 
-        [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_dedup_backend_error"]
-        assert entry["log_level"] == "warning" and entry["stage"] == "inflight_claim"
+        [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["stage"] == "inflight_claim" and entry["schedfire_key"] == "s:1"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
 

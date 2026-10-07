@@ -424,11 +424,18 @@ class InMemoryScheduleStore:
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool:
         return self._completed.set_if_absent(fire_key, "1", ttl_ms)
 
-    async def claim_fire(self, fire_key: str, ttl_ms: int) -> bool:
-        return self._inflight.set_if_absent(fire_key, "1", ttl_ms)
+    async def claim_fire(
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None, takeover: str | None = None,
+    ) -> bool:
+        current = self._inflight.get(fire_key)
+        if current is not None and (takeover is None or current != takeover):
+            return False
+        self._inflight.set(fire_key, owner or "1", ttl_ms)
+        return True
 
-    async def release_fire_claim(self, fire_key: str) -> None:
-        self._inflight.pop(fire_key)
+    async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
+        if owner is None or self._inflight.get(fire_key) == owner:
+            self._inflight.pop(fire_key)
 
     async def is_fire_completed(self, fire_key: str) -> bool:
         return fire_key in self._completed

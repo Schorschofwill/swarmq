@@ -128,7 +128,8 @@ class Worker(WorkerLifecycle):
         # assignment. Populated when _pre_start_schedfire_dedup wins
         # the inflight SETNX, read + popped by _finalize_schedfire
         # in the finally block (Unit 1).
-        self._schedfire_inflight_claims: dict[int, str] = {}
+        # Wert: (schedfire_key, owner_token) -- die Freigabe ist owner-geprueft.
+        self._schedfire_inflight_claims: dict[int, tuple[str, str]] = {}
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
         # AT_LEAST_ONCE redelivery within the same worker). Values are the
@@ -149,7 +150,8 @@ class Worker(WorkerLifecycle):
             finalize_schedfire=lambda message, terminal: self._finalize_schedfire(message, terminal=terminal),
             maybe_release_unique=self._maybe_release_unique,
             extract_valid_workflow_id=self._extract_valid_workflow_id,
-            claim_schedfire=lambda message, key: self._schedfire_inflight_claims.__setitem__(id(message), key),
+            claim_schedfire=lambda message, key, owner: self._schedfire_inflight_claims.__setitem__(
+                id(message), (key, owner)),
             register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
         )
         self._schedfire_gate = SchedfireGate(gate_deps)
@@ -258,16 +260,19 @@ class Worker(WorkerLifecycle):
         self-heals via its short TTL."""
         # Pop from the Worker-local claims dict (see __init__). No-op
         # when the message was not a schedfire delivery we claimed.
-        schedfire_key = self._schedfire_inflight_claims.pop(id(message), None)
-        if not schedfire_key:
+        claim = self._schedfire_inflight_claims.pop(id(message), None)
+        if claim is None:
             return
+        schedfire_key, owner = claim
         try:
             if terminal:
                 assert self._config.scheduler_dedup_ttl is not None  # Config-Default
                 ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
                 await self._backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
             else:
-                await self._backend.schedules.release_fire_claim(schedfire_key)
+                # Owner-geprueft: hat eine Kopie den Claim schon uebernommen
+                # (verspaetete Freigabe), bleibt er ihr.
+                await self._backend.schedules.release_fire_claim(schedfire_key, owner=owner)
         except BackendConnectionError as exc:
             logger.warning(
                 "schedfire_finalize_failed",
@@ -468,9 +473,16 @@ class Worker(WorkerLifecycle):
         2a Schedfire-Dedup (nur ein SETNX), 2b Pre-Start-Cancel, 2c Delivery-
         Count (Plan 2026-09-03-001, KTD10) — alle vor Semaphore, Rate-Limit/
         Lock und dem FIRE_AND_FORGET-Früh-Ack. Den Task-Kontext stellt der
-        Scope in ``_handle_message`` wieder her (KTD13), nicht die Gates."""
+        Scope in ``_handle_message`` wieder her (KTD13), nicht die Gates.
+
+        Diese Gates liegen vor dem ``try/finally``: endet die Zustellung nach
+        gewonnenem Schedfire-Claim hier (Zurueckstellung, Dead-Letter), gibt
+        dieser Zweig den Claim frei -- sonst saehe die Kopie ihn als Duplikat.
+        Ein Gate, das selbst finalisiert hat (Pre-Start-Cancel), hinterlaesst
+        keinen Eintrag mehr (No-op)."""
         for gate in (self._schedfire_gate, self._cancel_gate, self._delivery_count_gate):
             if await gate.apply(message, ctx) is not Continue:
+                await self._finalize_schedfire(message, terminal=False)
                 return False
         return True
 

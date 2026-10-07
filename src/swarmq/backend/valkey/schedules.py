@@ -51,6 +51,10 @@ class ValkeyScheduleStore:
         self._poll_script = client.register_script(load_script("sched_poll"))
         self._commit_script = client.register_script(load_script("sched_commit"))
         self._disable_script = client.register_script(load_script("sched_disable"))
+        self._fire_claim_script = client.register_script(load_script("sched_fire_claim"))
+        # Compare-and-delete mit Owner-Check: dieselbe Logik wie die
+        # Unique-Freigabe (GET == Token -> DEL).
+        self._owner_release_script = client.register_script(load_script("unique_release"))
 
     async def _run(self, what: str, coro: Any) -> Any:
         try:
@@ -145,11 +149,26 @@ class ValkeyScheduleStore:
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool:
         return await self.set_schedfire_dedup(fire_key, ttl_ms)
 
-    async def claim_fire(self, fire_key: str, ttl_ms: int) -> bool:
-        return await self.set_schedfire_inflight(fire_key, ttl_ms)
+    async def claim_fire(
+        self, fire_key: str, ttl_ms: int, *, owner: str | None = None, takeover: str | None = None,
+    ) -> bool:
+        """``sched_fire_claim.lua``: frei oder Wert == ``takeover`` -> Owner
+        ``owner`` mit neuer TTL, sonst ``False`` (Duplikat)."""
+        result = await self._run(
+            "sched_fire_claim",
+            self._fire_claim_script(
+                keys=[inflight_key(fire_key)], args=[owner or "1", ttl_ms, takeover or ""],
+            ),
+        )
+        return int(result) == 1
 
-    async def release_fire_claim(self, fire_key: str) -> None:
-        await self.clear_schedfire_inflight(fire_key)
+    async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
+        if owner is None:
+            await self.clear_schedfire_inflight(fire_key)
+            return
+        await self._run(
+            "release_fire_claim", self._owner_release_script(keys=[inflight_key(fire_key)], args=[owner]),
+        )
 
     async def is_fire_completed(self, fire_key: str) -> bool:
         return await self.is_schedfire_completed(fire_key)

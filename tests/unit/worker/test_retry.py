@@ -19,6 +19,14 @@ Test-Liste U9 (Plan 2026-10-06-0831, R17/KTD11) — Logs ueber ``swarmq_logs``:
    (``NoRetry``, Retry-Filter, Erschoepfung inkl. ``max_retries=0``).
 10. Delivery-Count-Gate ohne Ausnahme: ``error_type`` ist fest
     ``WorkerHungError`` (siehe ``test_delivery_count.py``).
+
+Test-Liste 0.9.0 (Retry-Kopie und Broker-Zaehler):
+
+11. Die Retry-Kopie traegt weder ``x-delivery-count`` noch
+    ``x-acquired-count`` des Originals (neue Nachricht, eigenes
+    Zustellbudget); alle anderen Header bleiben.
+12. Haelt die Zustellung einen Schedfire-Claim, traegt die Retry-Kopie das
+    Claim-Token (``x-swarmq-schedfire-claim``).
 """
 
 from __future__ import annotations
@@ -237,3 +245,49 @@ async def test_task_sent_to_dlq_carries_error_type_of_triggering_exception(
     [entry] = _events(swarmq_logs, "task_sent_to_dlq")
     assert entry["error_type"] == type(exc).__name__
     assert entry["error"] == "Traceback: boom"
+
+
+@pytest.mark.timeout(5)
+async def test_retry_copy_drops_broker_delivery_counters(broker, backend, config):
+    """Liste 11: Die Retry-Kopie ist eine neue Nachricht. Ein mitkopierter
+    ``x-delivery-count`` (RabbitMQ 4 behaelt einen Publisher-Wert bei, 3.13
+    zaehlt Requeues) liesse das Delivery-Count-Gate sie als haengend in den
+    Dead-Letter schicken."""
+    from swarmq.middleware import MiddlewareChain
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=3)
+
+    handler, _ = _handler(broker, backend, config, RetryingTask)
+    msg = make_message(
+        _default_payload(name="retrying-task"),
+        headers={"x-delivery-count": 18, "x-acquired-count": 30, "x-swarmq-unique-hash": "h1"},
+    )
+    await handler.evaluate(
+        msg, _ctx(RetryingTask), RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([])
+    )
+
+    headers = broker.retry_later.await_args.kwargs["headers"]
+    assert "x-delivery-count" not in headers
+    assert "x-acquired-count" not in headers
+    assert headers["x-swarmq-unique-hash"] == "h1"
+    assert headers["x-swarmq-retry-count"] == 1
+
+
+@pytest.mark.timeout(5)
+async def test_retry_copy_carries_schedfire_claim_token(broker, backend, config):
+    """Liste 12: scheitert die Freigabe des Claims im finally, uebernimmt die
+    Retry-Kopie ihn ueber das Token, statt als Duplikat zu enden."""
+    from swarmq.middleware import MiddlewareChain
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=3)
+
+    handler, _ = _handler(broker, backend, config, RetryingTask)
+    msg = make_message(_default_payload(name="retrying-task"), headers={"x-swarmq-schedfire": "s:1"})
+    ctx = _ctx(RetryingTask)
+    ctx.schedfire_claim = "tok-1"
+    await handler.evaluate(msg, ctx, RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([]))
+
+    headers = broker.retry_later.await_args.kwargs["headers"]
+    assert headers["x-swarmq-schedfire-claim"] == "tok-1"

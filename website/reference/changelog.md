@@ -63,6 +63,20 @@ All notable changes to SwarmQ. This project follows
   (was `swarmq.cli:main`), like `python -m swarmq.cli`. It ends the
   process hard when a log thread is still stuck after the final flush
   (see Added). `swarmq.cli.main()` is unchanged and never exits hard.
+- **One log line per deferral when the backend is unreachable before
+  execution.** The gate warnings `cancel_check_backend_error`,
+  `workflow_cancel_check_backend_error`, `cancel_store_result_failed` and
+  `schedfire_dedup_backend_error` are gone; `rate_limit_check_failed`
+  and `lock_acquire_failed` (ERROR) now appear only for errors other
+  than an unreachable backend. Their details moved into
+  `task_deferred_backend_unavailable`: the new field `stage`
+  (`completed_check`, `inflight_claim`, `cancel_check`,
+  `workflow_cancel_check`, `cancel_store_result`, `check`, `acquire`)
+  plus `schedfire_key`, `workflow_id` or `lock_name` where they apply.
+  `task_defer_failed_redelivered` carries the same fields and the
+  backend error as `backend_error_type` and `backend_error`. Alerts on
+  the removed events should match `task_deferred_backend_unavailable`
+  instead.
 
 ### Added
 
@@ -116,6 +130,36 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A scheduler fire is no longer lost when Valkey fails right after the
+  worker claimed it.** The worker claims a fire in Valkey before it runs
+  the task. When a later check (cancel check, delivery count) ended the
+  delivery, the claim was never released; when the release itself
+  failed (Valkey down), the deferred, retried or requeued copy saw the
+  claim, took itself for a duplicate and acked itself, so the fire never
+  ran (the claim lives up to `SWARMQ_SCHEDULER_INFLIGHT_TTL`, default
+  300 s). Now the claim stores an owner token, every
+  copy carries it in the new header `x-swarmq-schedfire-claim`, and a
+  copy that finds its own token takes the claim over (the token
+  rotates, so a broker redelivery of that copy is still a duplicate).
+  Real duplicates (a second publish of the fire, a redelivery of the
+  original) are still dropped. Checks that end the delivery before the
+  task now also release the claim, owner-checked. New Lua script
+  `sched_fire_claim.lua`; `ScheduleStore.claim_fire` takes the new
+  optional keywords `owner` and `takeover`,
+  `ScheduleStore.release_fire_claim` the new optional keyword `owner`
+  (third-party stores must accept them). A requeue in place
+  (`nack(requeue=True)`, when the broker cannot take the copy either)
+  cannot carry the token; if the release fails too, that fire still
+  waits for the claim TTL.
+- **Retry copies no longer inherit the broker's delivery counters.** The
+  copy published for a retry, a rate-limit hit or a lock conflict took
+  `x-delivery-count` and `x-acquired-count` from the original.
+  RabbitMQ 4 keeps a publisher-set `x-delivery-count` on delivery, and
+  RabbitMQ 3.13 also counts requeues; a copy whose inherited count
+  reached `SWARMQ_DELIVERY_LIMIT - 1` went to `{queue}.XQ` as
+  `WorkerHungError` although the task had retries left. These copies are
+  new messages with their own delivery budget now, like the deferral
+  copies.
 - **A backend outage before execution no longer drains the delivery
   budget.** When a check that runs before the task (schedule-fire dedup,
   cancel check, rate limit, lock) could not reach Valkey, the worker
@@ -132,11 +176,12 @@ All notable changes to SwarmQ. This project follows
   delivery counters (new header `x-swarmq-backend-defer-count`). It is
   not a retry: `max_retries` stays untouched and no `TASK_RETRYING`
   fires. Each deferral logs the new WARNING event
-  `task_deferred_backend_unavailable` (fields `gate`, `defer_count`,
-  `delay_ms`, `error_type`, `error`). If the broker cannot take the copy
-  either, the worker requeues in place as before and logs
-  `task_defer_failed_redelivered`. `ValkeyRateLimitStore.check` now
-  raises `BackendConnectionError` for connection and timeout errors.
+  `task_deferred_backend_unavailable` (fields `gate`, `stage`,
+  `defer_count`, `delay_ms`, `error_type`, `error`; see Changed). If
+  the broker cannot take the copy either, the worker requeues in place
+  as before and logs `task_defer_failed_redelivered`.
+  `ValkeyRateLimitStore.check` now raises `BackendConnectionError` for
+  connection and timeout errors.
 - **A scheduler fire no longer overwrites a schedule change made while
   it fires.** A `swarmq schedule remove` (disable or `--permanent`) or a
   redeploy with a new cron that landed between poll and commit was

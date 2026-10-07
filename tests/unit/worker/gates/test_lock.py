@@ -1,4 +1,12 @@
-"""Lock-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle plus direkte Outcome-Tests."""
+"""Lock-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle plus direkte Outcome-Tests.
+
+Test-Liste 0.9.0 (Kopie und Broker-Zaehler):
+- [x] die Rueckstellungs-Kopie bei Lock-Konflikt traegt weder
+      ``x-delivery-count`` noch ``x-acquired-count`` des Originals
+- [x] Backend-Fehler beim Acquire -> genau eine Zeile (WARNING
+      ``task_deferred_backend_unavailable``, ``stage=acquire``, ``lock_name``)
+- [x] anderer Fehler beim Acquire -> weiter ERROR ``lock_acquire_failed``
+"""
 
 from __future__ import annotations
 
@@ -647,6 +655,15 @@ class TestLockGateOutcomes:
         assert kwargs["delay_ms"] == 400  # 100 * 2**(3-1)
         assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
 
+    async def test_conflict_copy_drops_broker_delivery_counters(self, worker, broker):
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(return_value=None)
+        msg = make_message(_default_payload(), headers={"x-delivery-count": 18, "x-acquired-count": 30})
+        await worker._lock_gate.apply(msg, self._ctx())
+        headers = broker.retry_later.await_args.kwargs["headers"]
+        assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
+        assert headers["x-swarmq-lock-conflict-count"] == 1
+
     async def test_conflict_at_cap_dead_letters_with_diagnostics(self, worker, broker):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(return_value=None)
@@ -720,14 +737,24 @@ class TestLockGateLogging:
         assert entry["log_level"] == "error" and entry["lock_template"] == "user-{user_id}"
         assert entry["error_type"] == "ValueError" and "failed to render lock name" in entry["error"]
 
-    async def test_acquire_failure_logs_error_fields(self, worker, swarmq_logs):
+    async def test_acquire_backend_error_logs_one_deferral_line(self, worker, swarmq_logs):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
 
+        [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "lock" and entry["stage"] == "acquire" and entry["lock_name"] == "resource"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_acquire_failure_logs_error_fields(self, worker, swarmq_logs):
+        worker._lock_manager = MagicMock()
+        worker._lock_manager.acquire = AsyncMock(side_effect=RuntimeError("bug"))
+        await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
+
         entry = self._entry(swarmq_logs, "lock_acquire_failed")
         assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
 
     async def test_conflict_dlq_failure_at_cap_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._lock_manager = MagicMock()

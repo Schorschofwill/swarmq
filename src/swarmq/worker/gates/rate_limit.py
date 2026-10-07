@@ -15,7 +15,7 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, republish_headers
 from swarmq.worker.gates.backend_defer import defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
@@ -56,11 +56,12 @@ class RateLimitGate:
             # nack(requeue=True) so the broker hands the message to the
             # next worker that may have a healthier client. Important:
             # this runs BEFORE any FIRE_AND_FORGET ack — no data loss.
-            logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc))
             if isinstance(exc, BackendConnectionError):
                 # Backend weg: zurueckstellen statt das Zustellbudget per
-                # Requeue zu verbrauchen. Andere Fehler bleiben beim Requeue.
-                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="rate_limit")
+                # Requeue zu verbrauchen; die Zurueckstellung loggt die eine
+                # WARNING-Zeile. Andere Fehler bleiben beim Requeue (ERROR).
+                return await defer_backend_unavailable(deps, delivery, ctx, exc, gate="rate_limit", stage="check")
+            logger.error("rate_limit_check_failed", task_id=ctx.task_id, task_name=ctx.task_name, **_error_fields(exc))
             await deps.broker.redeliver(delivery)
             return Redelivered
 
@@ -72,7 +73,7 @@ class RateLimitGate:
         # task has been stuck in the limiter loop. We don't auto-DLQ
         # here — that decision belongs to the operator and is documented
         # as a Non-Goal in plan 005. The header is the visible knob.
-        original_headers = dict(delivery.headers) if delivery.headers else {}
+        original_headers = republish_headers(delivery, ctx)
         rl_count = int(original_headers.get("x-swarmq-rate-limit-count", 0)) + 1
         original_headers["x-swarmq-rate-limit-count"] = rl_count
 

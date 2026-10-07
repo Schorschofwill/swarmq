@@ -1,4 +1,12 @@
-"""Pre-Start-Cancel-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle."""
+"""Pre-Start-Cancel-Gate (Plan U7): aus ``test_worker.py`` verschobene Fälle.
+
+Test-Liste 0.9.0 (eine Logzeile je Zurueckstellung):
+- [x] Cancel-Check scheitert -> genau eine WARNING-Zeile
+      (``task_deferred_backend_unavailable``, ``stage=cancel_check``), keine
+      zusaetzliche ``cancel_check_backend_error``
+- [x] Workflow-Cancel-Check -> ``stage=workflow_cancel_check`` mit ``workflow_id``
+- [x] Ergebnis-Schreiben scheitert -> ``stage=cancel_store_result``
+"""
 
 from __future__ import annotations
 
@@ -491,32 +499,39 @@ class TestCancelGateLogging:
         [entry] = [e for e in logs if e["logger"] == "swarmq.worker.gates.cancel" and e["event"] == event]
         return entry
 
-    async def test_cancel_check_backend_error_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+    @staticmethod
+    def _single_warning(logs):
+        [entry] = [e for e in logs if e["log_level"] == "warning"]
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        return entry
+
+    async def test_cancel_check_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
 
-        entry = self._entry(swarmq_logs, "cancel_check_backend_error")
-        assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+        entry = self._single_warning(swarmq_logs)
+        assert entry["gate"] == "cancel" and entry["stage"] == "cancel_check"
+        assert entry["task_id"] == "abc-123"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_workflow_cancel_check_backend_error_is_a_warning_with_error_fields(
+    async def test_workflow_cancel_check_backend_error_logs_one_deferral_line(
         self, worker, backend, swarmq_logs
     ):
         backend.is_workflow_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         msg = make_message(_default_payload(), headers={"x-swarmq-workflow-id": self.WF_ID})
         await worker._cancel_gate.apply(msg, self._ctx())
 
-        entry = self._entry(swarmq_logs, "workflow_cancel_check_backend_error")
-        assert entry["log_level"] == "warning" and entry["workflow_id"] == self.WF_ID
+        entry = self._single_warning(swarmq_logs)
+        assert entry["stage"] == "workflow_cancel_check" and entry["workflow_id"] == self.WF_ID
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_cancel_store_result_failure_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
+    async def test_cancel_store_result_failure_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         backend.is_cancelled = AsyncMock(return_value=True)
         backend.store_result = AsyncMock(side_effect=BackendConnectionError("write failed"))
         await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
 
-        entry = self._entry(swarmq_logs, "cancel_store_result_failed")
-        assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
+        entry = self._single_warning(swarmq_logs)
+        assert entry["stage"] == "cancel_store_result" and entry["task_id"] == "abc-123"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "write failed"
 
     async def test_notify_failure_logs_warning_with_error_fields(self, worker, backend, swarmq_logs):
