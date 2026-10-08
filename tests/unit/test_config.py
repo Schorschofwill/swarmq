@@ -539,6 +539,7 @@ _NUMERIC_ENV_VARS = [
     "SWARMQ_SCHEDULER_LOCK_TTL",
     "SWARMQ_SCHEDULER_DEDUP_TTL",
     "SWARMQ_SCHEDULER_INFLIGHT_TTL",
+    "SWARMQ_SCHEDULER_SEEN_INTERVAL_S",
     "SWARMQ_BURST_IDLE_TIMEOUT",
     "SWARMQ_MAX_MESSAGE_BODY_BYTES",
 ]
@@ -1006,3 +1007,26 @@ def test_scheduler_timezone_utc_normalized_to_none(value):
 
 def test_scheduler_timezone_defaults_to_none():
     assert _cfg().scheduler_timezone is None
+
+
+# ---------------------------------------------------------------------------
+# Meldetakt der Cron-Meldungen (Plan 2026-10-08-1541, U12, KTD10)
+# ---------------------------------------------------------------------------
+# - [x] Default 60 s
+# - [x] Env SWARMQ_SCHEDULER_SEEN_INTERVAL_S
+# - [x] <= 0 -> ConfigurationError mit Feldnamen
+
+
+def test_scheduler_seen_interval_defaults_to_sixty_seconds():
+    assert _cfg().scheduler_seen_interval_s == 60.0
+
+
+def test_scheduler_seen_interval_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "15")
+    assert _cfg().scheduler_seen_interval_s == 15.0
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+def test_scheduler_seen_interval_must_be_positive(value):
+    with pytest.raises(ConfigurationError, match="scheduler_seen_interval_s"):
+        _cfg(scheduler_seen_interval_s=value)

@@ -14,5 +14,8 @@
   "sq:wf:chord:golden-wf-0001:c1": "set",
   "sq:wf:golden-wf-0001": "string",
   "sq:{sched}:defs": "hash",
+  "sq:{sched}:report:def": "hash",
+  "sq:{sched}:report:first_seen": "hash",
+  "sq:{sched}:report:last_seen": "hash",
   "sq:{sched}:zset": "zset"
 }

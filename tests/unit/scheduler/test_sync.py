@@ -1,4 +1,9 @@
-"""Cron-Sync-Tests (Plan U11) — verbatim: ``sync_taskinfo_crons``."""
+"""Cron-Sync-Tests (Plan U11): Insert-or-Update statischer Definitionen.
+
+Seit U12 (Plan 2026-10-08-1541) übernimmt der Leader die Crons aus den
+Meldungen aller Worker; ``_sync`` speist hier die statischen Definitionen der
+registrierten Tasks direkt in ``apply_static_definition`` — derselbe Weg wie
+eine gewählte Meldung."""
 
 # Test list (Plan 2026-10-06-0831, U9, R17): Fehler-Events des Syncs
 # tragen ``error_type``/``error``.
@@ -39,6 +44,8 @@ from swarmq.scheduler import (
     ScheduleDefinition,
     ScheduleStore,
 )
+from swarmq.scheduler import sync as sync_module
+from swarmq.scheduler.reports import static_definitions
 from swarmq.task import Task, TaskInfo
 from tests.support.inmemory import InMemoryBackend
 from tests.support.inmemory.clock import FakeClock
@@ -50,9 +57,17 @@ from tests.unit.scheduler._helpers import _make_loop
 pytestmark = [pytest.mark.timeout(5)]
 
 
+async def _sync(loop, default_timezone: str | None = None) -> None:
+    """Statische Crons der registrierten Tasks wie gewählte Meldungen
+    übernehmen (Uhr: ``swarmq.scheduler.sync.time``, in Tests fixiert)."""
+    now_ms = int(sync_module.time.time() * 1000)
+    for desired in static_definitions(Task._registered_tasks, default_timezone):
+        await loop.apply_static_definition(desired, now_ms)
 
 
-class TestSyncTaskinfoCrons:
+
+
+class TestApplyStaticDefinition:
     async def test_sync_inserts_new_static_crons(
         self, backend, broker, config, lock_manager, store, signal_dispatcher,
         _cleanup_tasks,
@@ -68,7 +83,7 @@ class TestSyncTaskinfoCrons:
         )
         backend.schedules.get.return_value = None  # fresh
 
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         store.add_schedule.assert_awaited()
 
@@ -89,11 +104,13 @@ class TestSyncTaskinfoCrons:
         )
         import msgspec
         backend.schedules.get.return_value = msgspec.json.encode(existing)
+        # Geplant (Score im Fire-Index); ohne Score heilte der Sync (U12).
+        backend.schedules.fire_ts.return_value = 1_700_000_000_000
 
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         store.add_schedule.assert_not_awaited()
         store.update_static_schedule.assert_not_awaited()
@@ -119,7 +136,7 @@ class TestSyncTaskinfoCrons:
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         store.update_static_schedule.assert_awaited_once()
         store.add_schedule.assert_not_awaited()
@@ -152,7 +169,7 @@ class TestSyncTaskinfoCrons:
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         store.update_static_schedule.assert_awaited_once()
         propagated = store.update_static_schedule.await_args.args[0]
@@ -185,7 +202,7 @@ class TestSyncTaskinfoCrons:
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         propagated = store.update_static_schedule.await_args.args[0]
         assert propagated.disabled is False
@@ -213,7 +230,7 @@ class TestSyncTaskinfoCrons:
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         store.update_static_schedule.assert_not_awaited()
         store.add_schedule.assert_not_awaited()
@@ -237,7 +254,7 @@ class TestSyncTaskinfoCrons:
         loop = _make_loop(
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         store.add_schedule.assert_not_awaited()
         store.update_static_schedule.assert_not_awaited()
@@ -269,13 +286,13 @@ class TestSyncTaskinfoCrons:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
         # Must not raise — per-schedule error is logged and swallowed
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         # Both schedules were attempted even though the first failed
         assert store.add_schedule.await_count == 2
 
 
-class TestSyncTaskinfoCronsLogging:
+class TestApplyStaticDefinitionLogging:
     @pytest.fixture
     def loop(self, backend, broker, config, lock_manager, store, signal_dispatcher, _cleanup_tasks):
         class LoggedCron(Task):
@@ -294,7 +311,7 @@ class TestSyncTaskinfoCronsLogging:
 
     async def test_hget_failure_logs_error_fields(self, loop, backend, swarmq_logs):
         backend.schedules.get.side_effect = BackendConnectionError("valkey down")
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_hget_failed")
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
@@ -302,14 +319,14 @@ class TestSyncTaskinfoCronsLogging:
     async def test_add_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
         backend.schedules.get.return_value = None
         store.add_schedule.side_effect = BackendConnectionError("valkey flap")
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_add_failed")
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
 
     async def test_decode_error_logs_error_fields(self, loop, backend, swarmq_logs):
         backend.schedules.get.return_value = b"{not valid json"
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_decode_error_skipped")
         assert entry["log_level"] == "error" and "hint" in entry
         assert entry["error_type"] == "DecodeError" and entry["error"]
@@ -321,7 +338,7 @@ class TestSyncTaskinfoCronsLogging:
         )
         backend.schedules.get.return_value = msgspec.json.encode(existing)
         store.update_static_schedule.side_effect = BackendConnectionError("valkey flap")
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_update_failed")
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
@@ -360,7 +377,7 @@ class TestSyncTimezone:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
 
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         assert self._added(store).fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
 
@@ -377,7 +394,7 @@ class TestSyncTimezone:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
 
-        await loop.sync_taskinfo_crons()
+        await _sync(loop)
 
         assert self._added(store).timezone == "Asia/Tokyo"
 
@@ -399,7 +416,7 @@ class TestSyncTimezone:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
 
-        await loop.sync_taskinfo_crons()
+        await _sync(loop, config.scheduler_timezone)
 
         added = self._added(store)
         assert added.fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
@@ -423,7 +440,7 @@ class TestSyncTimezone:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
 
-        await loop.sync_taskinfo_crons()
+        await _sync(loop, config.scheduler_timezone)
 
         added = self._added(store)
         assert added.fire_ts_ms == _utc_ms(2026, 10, 6, 9, 0) + 86_400_000
@@ -492,7 +509,7 @@ class TestSyncInsertOrUpdate:
         await self._seed(memory, _LATER_MS)
         self._task(timezone="Asia/Tokyo")
 
-        await sync_loop.sync_taskinfo_crons()
+        await _sync(sync_loop)
 
         stored, score = await self._stored(memory)
         assert stored.timezone == "Asia/Tokyo"
@@ -502,7 +519,7 @@ class TestSyncInsertOrUpdate:
         await self._seed(memory, _LATER_MS, queue="old")
         self._task(queues=["new"])
 
-        await sync_loop.sync_taskinfo_crons()
+        await _sync(sync_loop)
 
         stored, _ = await self._stored(memory)
         assert stored.queue == "new"
@@ -511,7 +528,7 @@ class TestSyncInsertOrUpdate:
         await self._seed(memory, _LATER_MS, task_name="renamed")
         self._task()
 
-        await sync_loop.sync_taskinfo_crons()
+        await _sync(sync_loop)
 
         stored, _ = await self._stored(memory)
         assert stored.task_name == "tz"
@@ -520,7 +537,7 @@ class TestSyncInsertOrUpdate:
         await self._seed(memory, _LATER_MS, disabled=True)
         self._task(timezone="Asia/Tokyo")
 
-        await sync_loop.sync_taskinfo_crons()
+        await _sync(sync_loop)
 
         stored, score = await self._stored(memory)
         assert stored.timezone == "Asia/Tokyo" and stored.disabled is True
@@ -532,7 +549,7 @@ class TestSyncInsertOrUpdate:
         await self._seed(memory, _EARLIER_MS)
         self._task(timezone="Asia/Tokyo")
 
-        await sync_loop.sync_taskinfo_crons()
+        await _sync(sync_loop)
 
         [(name, score, payload)] = await memory.schedules.poll_due(_NOW_MS)
         assert (name, score) == ("tz", _EARLIER_MS)
@@ -546,7 +563,7 @@ class TestSyncInsertOrUpdate:
         await self._seed(memory, _LATER_MS, source="cli")
         self._task(timezone="Asia/Tokyo")
 
-        await sync_loop.sync_taskinfo_crons()
+        await _sync(sync_loop)
 
         stored, score = await self._stored(memory)
         assert (stored.source, stored.timezone, score) == ("cli", None, _LATER_MS)

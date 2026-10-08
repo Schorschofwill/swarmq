@@ -237,6 +237,10 @@ class SwarmQConfig:
     # (Plan 2026-10-08-1541, KTD1). None heisst UTC. Muss im selben Deploy
     # umgestellt werden wie die Ausdruecke, die sie betrifft.
     scheduler_timezone: str | None = None
+    # Meldetakt der Cron-Meldungen (Plan 2026-10-08-1541, KTD10): jeder Worker
+    # meldet seine statischen Crons beim Start und danach in diesem Abstand;
+    # der Leader waehlt im selben Takt. Eine Meldung lebt 3 Takte.
+    scheduler_seen_interval_s: float = 60.0
     # R4.5 Burst-Mode: when True, the worker exits cleanly once all
     # configured queues have been idle for `burst_idle_timeout` seconds
     # without delivering a single message. Used for batch/cron-style
@@ -340,6 +344,7 @@ class SwarmQConfig:
         ("SWARMQ_SCHEDULER_DEDUP_TTL", "scheduler_dedup_ttl", "float"),
         ("SWARMQ_SCHEDULER_INFLIGHT_TTL", "scheduler_inflight_ttl", "float"),
         ("SWARMQ_SCHEDULER_TIMEZONE", "scheduler_timezone", "str"),
+        ("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "scheduler_seen_interval_s", "float"),
         ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
         # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
         # Port-Ranges werden beim Parsen validiert, damit eine kaputte
@@ -375,6 +380,7 @@ class SwarmQConfig:
         "metrics_sample_interval",
         "scheduler_lock_ttl",
         "scheduler_inflight_ttl",
+        "scheduler_seen_interval_s",
         "burst_idle_timeout",
         "publish_timeout_s",
         "delivery_limit",

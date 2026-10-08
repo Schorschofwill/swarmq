@@ -145,6 +145,9 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await backend.schedules.mark_fire_completed(f"{SCHEDULE}:{FIRE_TS_MS}", TTL_MS)
     await backend.schedules.claim_fire(f"{SCHEDULE}:{FIRE_TS_MS + 60_000}", TTL_MS)
     await backend.schedules.set_handover_marker("golden-owner", TTL_MS)
+    await backend.schedules.report_cron(
+        SCHEDULE, "0" * 16, value_fixtures()["schedule_definition.json"], live_window_ms=TTL_MS
+    )
     locks = LockManager(client)
     await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
     await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)
@@ -214,6 +217,8 @@ def lua_contract() -> str:
         "sched_commit": ["sq:{sched}:zset", "sq:{sched}:defs", "sq:lock:{sched}:leader"],
         "sched_disable": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_poll": ["sq:{sched}:zset", "sq:{sched}:defs"],
+        "sched_report": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
+        "sched_report_prune": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
         "sliding_window_counter": ["sq:rl:{golden-task}:1700000000000", "sq:rl:{golden-task}:1699999940000"],
     }
     for script, keys_ in multi.items():

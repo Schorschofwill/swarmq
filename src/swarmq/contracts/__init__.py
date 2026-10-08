@@ -15,6 +15,8 @@ from swarmq.contracts.broker import (
 from swarmq.contracts.control import Setpoint, SetpointRead, SetpointUnreadable
 from swarmq.contracts.coordination import (
     ChordStore,
+    CronReport,
+    CronReports,
     LockStore,
     LockToken,
     RateLimitDecision,
@@ -30,6 +32,8 @@ __all__ = [
     "BrokerAdmin",
     "ChordStore",
     "Consumer",
+    "CronReport",
+    "CronReports",
     "Delivery",
     "DeliveryCallback",
     "LockStore",

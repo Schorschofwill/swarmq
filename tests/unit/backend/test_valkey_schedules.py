@@ -36,6 +36,8 @@ def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, M
         "disable": AsyncMock(return_value=1),
         "fire_claim": AsyncMock(return_value=1),
         "owner_release": AsyncMock(return_value=1),
+        "report": AsyncMock(return_value=1),
+        "report_prune": AsyncMock(return_value=0),
     }
     client.register_script = MagicMock(side_effect=list(scripts.values()))
     client.hexists = AsyncMock(return_value=hexists)

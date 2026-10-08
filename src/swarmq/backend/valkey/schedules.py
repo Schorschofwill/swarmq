@@ -15,6 +15,7 @@ import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import as_backend_error
+from swarmq.contracts.coordination import CronReport, CronReports
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.lua import load_script
@@ -26,6 +27,12 @@ from swarmq.lua import load_script
 # (fired/inflight/handover) deliberately carry no tag.
 ZSET_KEY = "sq:{sched}:zset"
 DEFS_KEY = "sq:{sched}:defs"
+# Cron-Meldungen der Worker (Plan 2026-10-08-1541, KTD10): drei Hashes mit
+# demselben Hash-Tag, Feld jeweils ``name|fingerprint``.
+REPORT_FIRST_SEEN_KEY = "sq:{sched}:report:first_seen"
+REPORT_LAST_SEEN_KEY = "sq:{sched}:report:last_seen"
+REPORT_DEF_KEY = "sq:{sched}:report:def"
+_REPORT_KEYS = [REPORT_FIRST_SEEN_KEY, REPORT_LAST_SEEN_KEY, REPORT_DEF_KEY]
 
 
 def fired_key(schedfire_key: str) -> str:
@@ -56,6 +63,8 @@ class ValkeyScheduleStore:
         # Compare-and-delete mit Owner-Check: dieselbe Logik wie die
         # Unique-Freigabe (GET == Token -> DEL).
         self._owner_release_script = client.register_script(load_script("unique_release"))
+        self._report_script = client.register_script(load_script("sched_report"))
+        self._report_prune_script = client.register_script(load_script("sched_report_prune"))
 
     async def _run(self, what: str, coro: Any) -> Any:
         """Transportfehler -> ``BackendConnectionError``, Fehlerantworten und
@@ -193,6 +202,41 @@ class ValkeyScheduleStore:
 
     async def take_handover_marker(self) -> bool:
         return await self.get_and_del_schedfire_handover_marker()
+
+    async def report_cron(
+        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+    ) -> None:
+        """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``)."""
+        await self._run(
+            f"sched_report for {name!r}",
+            self._report_script(
+                keys=_REPORT_KEYS, args=[f"{name}|{fingerprint}", payload, live_window_ms],
+            ),
+        )
+
+    async def cron_reports(self) -> CronReports:
+        """``TIME`` und die drei Meldungs-Hashes in einer Transaktion."""
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.time()
+            for key in _REPORT_KEYS:
+                pipe.hgetall(key)
+            (seconds, micros), first, last, defs = await self._run("cron_reports", pipe.execute())
+        reports: list[CronReport] = []
+        for raw_field, raw_first in first.items():
+            field = _decode(raw_field)
+            raw_last, payload = last.get(raw_field), defs.get(raw_field)
+            if raw_last is None or payload is None:
+                continue
+            name, fingerprint = field.rsplit("|", 1)
+            reports.append(CronReport(name, fingerprint, int(raw_first), int(raw_last), payload))
+        return CronReports(now_ms=int(seconds) * 1000 + int(micros) // 1000, reports=tuple(reports))
+
+    async def prune_cron_reports(self, *, max_age_ms: int) -> int:
+        """``sched_report_prune.lua``: Prüfen und Löschen in einem Schritt."""
+        result = await self._run(
+            "sched_report_prune", self._report_prune_script(keys=_REPORT_KEYS, args=[max_age_ms]),
+        )
+        return int(result)
 
     # ------------------------------------------------------------------
     # Primitive (heutige Fassaden-Namen; die Fassade delegiert hierher)

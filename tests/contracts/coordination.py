@@ -36,6 +36,18 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 10. Uebernahme mit mehreren angebotenen Tokens (Kopie nach unklarem
 #     Claim-Ausgang): jedes davon gewinnt, der Owner rotiert.
 
+# Test list (Plan 2026-10-08-1541, U12, KTD10) -- ScheduleStoreContract:
+# 14. ``report_cron`` legt eine Meldung an: ``first_seen == last_seen`` in
+#     Backend-Zeit, Payload abrufbar; ``cron_reports`` liefert die
+#     Backend-Zeit des Lesens mit.
+# 15. Eine erneute Meldung im Lebendigkeitsfenster rückt nur ``last_seen``
+#     vor und ersetzt den Payload.
+# 16. Eine Meldung nach Ablauf des Fensters (Abdruck war tot) setzt
+#     ``first_seen`` neu (Revert A→B→A gilt wieder als neu).
+# 17. Zwei Abdrücke eines Namens sind getrennte Meldungen.
+# 18. ``prune_cron_reports`` löscht nur Meldungen, deren ``last_seen``
+#     älter als die Frist ist.
+
 from __future__ import annotations
 
 import uuid
@@ -43,7 +55,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from swarmq.contracts import ChordStore, LockStore, LockToken, RateLimitStore, ScheduleStore
+from swarmq.contracts import ChordStore, CronReport, LockStore, LockToken, RateLimitStore, ScheduleStore
 from tests.contracts._support import Clock
 
 Leader = Callable[[str], Awaitable[None]]
@@ -420,6 +432,55 @@ class ScheduleStoreContract:
         await impl.claim_fire(key, ttl_ms=300)
         await clock.advance(0.8)
         assert await impl.claim_fire(key, ttl_ms=60_000) is True
+
+    @staticmethod
+    async def _reports_of(impl: ScheduleStore, name: str) -> list[CronReport]:
+        snapshot = await impl.cron_reports()
+        return [r for r in snapshot.reports if r.name == name]
+
+    async def test_report_cron_records_a_report_in_backend_time(self, impl: ScheduleStore) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def-1", live_window_ms=60_000)
+        snapshot = await impl.cron_reports()
+        [report] = [r for r in snapshot.reports if r.name == name]
+        assert (report.fingerprint, report.payload) == ("fp1", b"def-1")
+        assert report.first_seen_ms == report.last_seen_ms <= snapshot.now_ms
+
+    async def test_report_within_live_window_keeps_first_seen(self, impl: ScheduleStore, clock: Clock) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def-1", live_window_ms=60_000)
+        [first] = await self._reports_of(impl, name)
+        await clock.advance(0.05)
+        await impl.report_cron(name, "fp1", b"def-2", live_window_ms=60_000)
+        [again] = await self._reports_of(impl, name)
+        assert again.first_seen_ms == first.first_seen_ms
+        assert again.last_seen_ms > first.last_seen_ms
+        assert again.payload == b"def-2"
+
+    async def test_report_after_dead_window_resets_first_seen(self, impl: ScheduleStore, clock: Clock) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=100)
+        [first] = await self._reports_of(impl, name)
+        await clock.advance(0.2)
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=100)
+        [revived] = await self._reports_of(impl, name)
+        assert revived.first_seen_ms == revived.last_seen_ms > first.first_seen_ms
+
+    async def test_fingerprints_of_one_name_are_separate_reports(self, impl: ScheduleStore) -> None:
+        name = _name("cron|with-bar")
+        await impl.report_cron(name, "fp1", b"old", live_window_ms=60_000)
+        await impl.report_cron(name, "fp2", b"new", live_window_ms=60_000)
+        reports = await self._reports_of(impl, name)
+        assert sorted((r.fingerprint, r.payload) for r in reports) == [("fp1", b"old"), ("fp2", b"new")]
+
+    async def test_prune_cron_reports_deletes_only_stale_reports(self, impl: ScheduleStore, clock: Clock) -> None:
+        stale, fresh = _name("cron"), _name("cron")
+        await impl.report_cron(stale, "fp", b"s", live_window_ms=60_000)
+        await clock.advance(0.2)
+        await impl.report_cron(fresh, "fp", b"f", live_window_ms=60_000)
+        await impl.prune_cron_reports(max_age_ms=100)
+        assert await self._reports_of(impl, stale) == []
+        assert [r.payload for r in await self._reports_of(impl, fresh)] == [b"f"]
 
     async def test_handover_marker_is_taken_once(self, impl: ScheduleStore) -> None:
         assert await impl.take_handover_marker() is False

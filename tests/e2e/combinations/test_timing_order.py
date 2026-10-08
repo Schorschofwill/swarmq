@@ -164,7 +164,7 @@ async def _inject_cron_fires(
     """
     client = valkey_asyncio.Valkey.from_url(valkey_url)
     try:
-        # Be the LAST writer. The scheduler's initial sync_taskinfo_crons runs
+        # Be the LAST writer. The scheduler's initial adopt_reported_crons runs
         # in the election tick AFTER the SCHEDULER_LEADER signal and
         # add_schedule()s this cron entry with the *next cron-minute* score.
         # Under load that ZADD can land after ours, clobbering our due score so

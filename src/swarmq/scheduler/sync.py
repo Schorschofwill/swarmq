@@ -1,31 +1,42 @@
-"""Cron-Sync (Plan U11) — verbatim: ``sync_taskinfo_crons`` gleicht
-statische ``TaskInfo``-Crons mit dem Store ab (CLI-Einträge schatten mit
-Warnung; geänderte Cron behält ``disabled``)."""
+"""Cron-Sync (Plan U11, seit U12 aus Meldungen): ``adopt_reported_crons``
+übernimmt pro Name die jüngste lebende Cron-Meldung aller Worker
+(Plan 2026-10-08-1541, KTD10) per ``apply_static_definition`` in den Store
+(CLI-Einträge schatten mit Warnung; geänderte Cron behält ``disabled``)."""
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgspec
 
-from swarmq.config import SwarmQConfig, normalize_timezone
+from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.scheduler.cron_time import next_fire_ms
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
-from swarmq.task import Task
+from swarmq.scheduler.reports import (
+    REPORT_MAX_AGE_MS,
+    choose_reports,
+    code_fields,
+    live_window_ms,
+)
+from swarmq.signals import Signal
 
 logger = get_logger(__name__)
 
 
-def _code_fields(definition: ScheduleDefinition) -> tuple[Any, ...]:
-    """Die aus dem Code stammenden Felder einer statischen Definition
-    (Plan 2026-10-08-1541, KTD10): Cron, normalisierte Zeitzone, Queue,
-    Task-Name. Weicht eines ab, übernimmt der Leader die Definition."""
-    return (
-        definition.cron, definition.timezone, definition.queue,
-        definition.task_name,
-    )
+def _validated(payload: bytes, now_ms: int) -> ScheduleDefinition:
+    """Gemeldete Definition dekodieren und prüfen, bevor der Leader sie
+    übernimmt (KTD10): Quelle ``static``, ein Cron-Ausdruck, und der nächste
+    Termin lässt sich in der Zone berechnen (unbekannte Zone, kaputter
+    Ausdruck). Wirft bei jedem Mangel."""
+    definition = msgspec.json.decode(payload, type=ScheduleDefinition)
+    if definition.source != "static":
+        raise ValueError(f"reported definition has source {definition.source!r}, not 'static'")
+    if definition.cron is None:
+        raise ValueError("reported definition has no cron expression")
+    next_fire_ms(definition.cron, definition.timezone, now_ms)
+    return definition
 
 
 class SchedulerCronSync:
@@ -35,35 +46,84 @@ class SchedulerCronSync:
     _backend: Any
     _config: SwarmQConfig
     _store: ScheduleStore
+    _reported_names: frozenset[str] = frozenset()
 
-    async def sync_taskinfo_crons(self) -> None:
-        """Reconcile static ``TaskInfo(cron=...)`` declarations into the
-        ``sq:sched:defs`` hash via :meth:`apply_static_definition`."""
+    if TYPE_CHECKING:
+        async def _emit(self, signal: Signal, **extra: Any) -> None: ...
+
+    async def _replan_if_unscored(
+        self, existing: ScheduleDefinition, fire_ts_ms: int | None,
+    ) -> None:
+        """Heilung (U3): eine aktive, unveränderte Definition ohne Score im
+        Fire-Index (etwa nach ``scheduler_next_fire_failed``) neu einplanen."""
+        name = existing.schedule_name
+        try:
+            if await self._backend.schedules.fire_ts(name) is None:
+                await self._store.update_static_schedule(
+                    msgspec.structs.replace(existing, fire_ts_ms=fire_ts_ms)
+                )
+        except BackendConnectionError as exc:
+            logger.warning(
+                "scheduler_sync_update_failed",
+                schedule_name=name,
+                **_error_fields(exc),
+            )
+
+    async def adopt_reported_crons(self) -> None:
+        """Leader-Takt (KTD10): pro Name die jüngste lebende Meldung aller
+        Worker übernehmen."""
+        try:
+            snapshot = await self._backend.schedules.cron_reports()
+        except BackendConnectionError as exc:
+            logger.warning(
+                "scheduler_cron_reports_read_failed", **_error_fields(exc)
+            )
+            return
         now_ms = int(time.time() * 1000)
-        for task_class in Task._registered_tasks:
-            task_info = getattr(task_class, "task_info", None)
-            if task_info is None or not task_info.cron:
+        choices = choose_reports(
+            snapshot,
+            live_window_ms=live_window_ms(self._config.scheduler_seen_interval_s),
+        )
+        # Crons, die irgendein lebender Worker meldet: beim Fire keine
+        # Registry-Warnung, auch wenn der Task in einer fremden App lebt.
+        self._reported_names = frozenset(c.report.name for c in choices)
+        for choice in choices:
+            if choice.conflict:
+                logger.warning(
+                    "scheduler_cron_conflict",
+                    schedule_name=choice.report.name,
+                    fingerprints=list(choice.conflict),
+                    chosen=choice.report.fingerprint,
+                    hint=(
+                        "several definitions of this cron have been live for "
+                        "more than 10 minutes; typical cause: tasks with the "
+                        "same name in two apps on one Valkey"
+                    ),
+                )
+                await self._emit(
+                    Signal.SCHEDULER_CRON_CONFLICT,
+                    schedule_name=choice.report.name,
+                    fingerprints=list(choice.conflict),
+                )
+            try:
+                desired = _validated(choice.report.payload, now_ms)
+            except Exception as exc:
+                logger.error(
+                    "scheduler_cron_report_invalid",
+                    schedule_name=choice.report.name,
+                    fingerprint=choice.report.fingerprint,
+                    **_error_fields(exc),
+                )
                 continue
-
-            # KTD1: eigene Zone des Tasks (auch ein ausdrückliches "UTC"),
-            # sonst der globale Standard; gespeichert wird UTC als None.
-            timezone = normalize_timezone(
-                task_info.timezone
-                if task_info.timezone is not None
-                else self._config.scheduler_timezone
-            )
-            desired = ScheduleDefinition(
-                schedule_name=task_info.name,
-                task_name=task_info.name,
-                args=(),
-                kwargs={},
-                queue=task_info.queues[0],
-                cron=task_info.cron,
-                fire_ts_ms=None,
-                source="static",
-                timezone=timezone,
-            )
             await self.apply_static_definition(desired, now_ms)
+        try:
+            await self._backend.schedules.prune_cron_reports(
+                max_age_ms=REPORT_MAX_AGE_MS
+            )
+        except BackendConnectionError as exc:
+            logger.warning(
+                "scheduler_cron_reports_prune_failed", **_error_fields(exc)
+            )
 
     async def apply_static_definition(
         self, desired: ScheduleDefinition, now_ms: int,
@@ -84,7 +144,9 @@ class SchedulerCronSync:
            (CD11 — CLI ownership beats code, but the shadow is
            surfaced so operators can discover it).
         5. Existing ``source="static"`` entry with the same code fields
-           (:func:`_code_fields`) → no-op, no write.
+           (:func:`~swarmq.scheduler.reports.code_fields`) → no-op, no
+           write — unless it is enabled but has no fire-index score; then
+           it is planned again (healing after ``scheduler_next_fire_failed``).
         6. Otherwise → ``update_static_schedule``. The existing
            ``disabled`` flag is preserved so an operator's
            ``schedule remove`` is not silently reversed.
@@ -144,8 +206,12 @@ class SchedulerCronSync:
                 cli_cron=existing.cron,
             )
             return
-        if _code_fields(existing) == _code_fields(definition):
-            return  # Unchanged static
+        if code_fields(existing) == code_fields(definition):
+            # Unchanged static. Heilung (U3): ohne Score (etwa nach
+            # ``scheduler_next_fire_failed``) plant der Leader neu ein.
+            if not existing.disabled:
+                await self._replan_if_unscored(existing, definition.fire_ts_ms)
+            return
         propagated = msgspec.structs.replace(
             definition, disabled=existing.disabled
         )

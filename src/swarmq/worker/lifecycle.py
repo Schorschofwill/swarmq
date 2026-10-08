@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from swarmq.dishka import _Missing, get_registered_container
 from swarmq.logging import _error_fields, get_logger, sanitize_url
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
+from swarmq.scheduler.reports import static_definitions
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
 from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout, current_channel
@@ -155,6 +156,12 @@ class WorkerLifecycle:
             store=schedule_store,
             signal_dispatcher=self._signal_dispatcher,
             worker_id=self._config.worker_identity,
+            # KTD10: die eigenen statischen Crons (Registry dieses Workers,
+            # Zone aufgelöst) werden gemeldet, auch wenn er nie Leader wird.
+            static_crons=static_definitions(
+                self._registry.get_all().values(),
+                self._config.scheduler_timezone,
+            ),
         )
         await self._scheduler.start()
 

@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 
 from swarmq.contracts import (
     ChordStore,
+    CronReport,
+    CronReports,
     LockStore,
     LockToken,
     RateLimitDecision,
@@ -361,6 +363,8 @@ class InMemoryScheduleStore:
         self._completed: _TTLDict[str] = _TTLDict(clock)
         self._inflight: _TTLDict[str] = _TTLDict(clock)
         self._handover: _TTLDict[str] = _TTLDict(clock)
+        # Cron-Meldungen (KTD10): (name, fingerprint) -> [first, last, payload]
+        self._reports: dict[tuple[str, str], tuple[int, int, bytes]] = {}
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -454,6 +458,30 @@ class InMemoryScheduleStore:
         for key in keys:
             self._handover.pop(key)
         return bool(keys)
+
+    async def report_cron(
+        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+    ) -> None:
+        now = self._clock.now_ms()
+        previous = self._reports.get((name, fingerprint))
+        # first_seen bleibt nur, solange der Abdruck lebt (KTD10).
+        alive = previous is not None and previous[1] >= now - live_window_ms
+        first = previous[0] if previous is not None and alive else now
+        self._reports[(name, fingerprint)] = (first, now, payload)
+
+    async def prune_cron_reports(self, *, max_age_ms: int) -> int:
+        cutoff = self._clock.now_ms() - max_age_ms
+        stale = [key for key, (_, last, _) in self._reports.items() if last < cutoff]
+        for key in stale:
+            del self._reports[key]
+        return len(stale)
+
+    async def cron_reports(self) -> CronReports:
+        reports = tuple(
+            CronReport(name, fp, first, last, payload)
+            for (name, fp), (first, last, payload) in self._reports.items()
+        )
+        return CronReports(now_ms=self._clock.now_ms(), reports=reports)
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

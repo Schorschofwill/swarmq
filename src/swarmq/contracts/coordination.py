@@ -63,6 +63,27 @@ class ChordStore(Protocol):
         """Idempotent; ``True`` bei jedem Aufruf, sobald ``expected`` erreicht ist."""
 
 
+@dataclass(frozen=True, slots=True)
+class CronReport:
+    """Meldung eines statischen Crons durch einen Worker (Plan 2026-10-08-1541,
+    KTD10). Zeiten in Backend-Zeit (ms), nicht in Worker-Uhrzeit."""
+
+    name: str
+    fingerprint: str
+    first_seen_ms: int
+    last_seen_ms: int
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class CronReports:
+    """Alle Meldungen samt der Backend-Zeit des Lesens; der Leader misst die
+    Lebendigkeit gegen ``now_ms``, nicht gegen die eigene Uhr."""
+
+    now_ms: int
+    reports: tuple[CronReport, ...]
+
+
 @runtime_checkable
 class ScheduleStore(Protocol):
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
@@ -137,3 +158,18 @@ class ScheduleStore(Protocol):
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None: ...
 
     async def take_handover_marker(self) -> bool: ...
+
+    async def report_cron(
+        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+    ) -> None:
+        """Meldet einen statischen Cron (KTD10), atomar und in Backend-Zeit:
+        ``last_seen`` und Payload werden gesetzt; ``first_seen`` nur, wenn
+        die Meldung fehlt oder ihr ``last_seen`` älter als *live_window_ms*
+        ist (der Abdruck war tot)."""
+
+    async def cron_reports(self) -> CronReports:
+        """Alle Meldungen samt Backend-Zeit des Lesens."""
+
+    async def prune_cron_reports(self, *, max_age_ms: int) -> int:
+        """Löscht atomar die Meldungen, deren ``last_seen`` (Backend-Zeit)
+        älter als *max_age_ms* ist; liefert ihre Anzahl."""

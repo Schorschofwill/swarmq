@@ -13,6 +13,10 @@ and Fork-1 static-update paths.
 #    wird vom Commit nicht ueberschrieben.
 # 4. Ohne parallele Aenderung schreibt der Commit den naechsten Fire-Zeitpunkt
 #    wie bisher (Regression).
+#
+# Test list (Plan 2026-10-08-1541, U12) -- TestCronReportsServerTime:
+# 5. Eine Meldung traegt Valkey-Zeit, auch wenn die Uhr des meldenden
+#    Workers weit abweicht (Uhrabweichung aendert die Auswahl nicht).
 
 from __future__ import annotations
 
@@ -327,3 +331,29 @@ class TestCommitVsConcurrentChange:
         committed = msgspec.json.decode(raw, type=ScheduleDefinition)
         assert committed.last_fire_at is not None
         assert await valkey_client.zscore("sq:{sched}:zset", sched_name) == committed.fire_ts_ms
+
+
+class TestCronReportsServerTime:
+    async def test_report_uses_valkey_time_not_worker_clock(
+        self, valkey_url, valkey_client, sched_name, monkeypatch
+    ):
+        import time as time_module
+
+        backend = ValkeyBackend(valkey_url)
+        await backend.connect()
+        try:
+            real_time = time_module.time
+            # Worker-Uhr einen Tag voraus.
+            monkeypatch.setattr(time_module, "time", lambda: real_time() + 86_400)
+            seconds, micros = await valkey_client.time()
+            before_ms = seconds * 1000 + micros // 1000
+            await backend.schedules.report_cron(
+                sched_name, "fp", b"def", live_window_ms=60_000
+            )
+            snapshot = await backend.schedules.cron_reports()
+        finally:
+            await backend.close()
+
+        [report] = [r for r in snapshot.reports if r.name == sched_name]
+        assert before_ms <= report.first_seen_ms <= snapshot.now_ms
+        assert snapshot.now_ms - before_ms < 60_000

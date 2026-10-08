@@ -350,3 +350,22 @@ class TestLogRecordsDroppedCounter:
             handler.enqueue(record)
 
         assert m.registry.get_sample_value(name) == before + 2
+
+
+async def test_cron_conflict_signal_increments_conflict_counter():
+    """Plan 2026-10-08-1541 (U12, R12): ein langer Cron-Konflikt ist alertbar."""
+    from swarmq.metrics import Metrics, install_signal_collectors
+    from swarmq.signals import Signal, SignalDispatcher
+
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+    for _ in range(2):
+        await disp.dispatch(
+            Signal.SCHEDULER_CRON_CONFLICT, worker_id="w",
+            schedule_name="nightly", fingerprints=["a", "b"],
+        )
+    body = m.render().decode()
+    assert 'swarmq_scheduler_cron_conflicts_total{schedule_name="nightly"} 2.0' in body

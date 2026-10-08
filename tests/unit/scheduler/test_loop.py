@@ -6,7 +6,7 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 2. Fehler-Events tragen ``error_type``/``error`` (je Aufrufstelle ein Test):
 #    handover_marker_failed, lock_release_failed, election_tick_error,
 #    renew_error, acquire_error, handover_marker_read_failed,
-#    sync_taskinfo_crons_failed, poll_tick_error, poll_due_failed,
+#    cron_adopt_failed (U12), poll_tick_error, poll_due_failed,
 #    unique_setnx_failed, publish_failed, commit_failed,
 #    duplicate_signal_dispatch_error, signal_dispatch_error.
 # 3. ``scheduler_task_not_in_local_registry`` ueber ``swarmq_logs`` statt
@@ -894,12 +894,25 @@ class TestSchedulerLoopLogging:
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_sync_taskinfo_crons_failure_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
-        monkeypatch.setattr(loop, "sync_taskinfo_crons", AsyncMock(side_effect=RuntimeError("sync broke")))
-        await loop._election_tick()
-        entry = self._entry(swarmq_logs, "scheduler_sync_taskinfo_crons_failed")
+    async def test_cron_adopt_failure_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
+        """U12: die Übernahme der Cron-Meldungen läuft im eigenen Leader-Takt;
+        ein Fehler wird geloggt, der Takt läuft weiter."""
+        failed = asyncio.Event()
+
+        async def _broken():
+            failed.set()
+            raise RuntimeError("adopt broke")
+
+        monkeypatch.setattr(loop, "adopt_reported_crons", _broken)
+        await loop.start()
+        try:
+            await asyncio.wait_for(failed.wait(), timeout=2)
+            await loop._election_tick()  # Renew: der Loop lebt weiter.
+        finally:
+            await loop.stop()
+        entry = self._entry(swarmq_logs, "scheduler_cron_adopt_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "sync broke"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "adopt broke"
 
     async def test_poll_tick_error_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
         async def _boom():
