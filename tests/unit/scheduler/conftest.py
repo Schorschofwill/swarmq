@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.config import SwarmQConfig
+from swarmq.contracts import LeaderInfo
 from swarmq.signals import SignalDispatcher
 from swarmq.task import Task
 from tests.unit.scheduler._helpers import _LEADER_TOKEN
@@ -43,6 +44,10 @@ def backend():
     be.zrem_schedule = AsyncMock()
     be.schedules.set_handover_marker = AsyncMock()
     be.schedules.take_handover_marker = AsyncMock(return_value=False)
+    # Leader-Version (U13, KTD11): kein Leader, keine Meldungen.
+    be.schedules.set_leader_version = AsyncMock()
+    be.schedules.leader_info = AsyncMock(return_value=LeaderInfo(owner=None, version=None))
+    be.schedules.report_worker_version = AsyncMock()
     return be
 
 

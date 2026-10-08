@@ -148,6 +148,8 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await backend.schedules.report_cron(
         SCHEDULE, "0" * 16, value_fixtures()["schedule_definition.json"], live_window_ms=TTL_MS
     )
+    await backend.schedules.report_worker_version("golden-worker", "0.10.0", ttl_ms=TTL_MS)
+    await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
     locks = LockManager(client)
     await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
     await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)

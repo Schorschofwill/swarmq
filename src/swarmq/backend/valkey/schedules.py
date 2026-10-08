@@ -15,7 +15,7 @@ import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import as_backend_error
-from swarmq.contracts.coordination import CronReport, CronReports
+from swarmq.contracts.coordination import CronReport, CronReports, LeaderInfo
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.lua import load_script
@@ -33,6 +33,12 @@ REPORT_FIRST_SEEN_KEY = "sq:{sched}:report:first_seen"
 REPORT_LAST_SEEN_KEY = "sq:{sched}:report:last_seen"
 REPORT_DEF_KEY = "sq:{sched}:report:def"
 _REPORT_KEYS = [REPORT_FIRST_SEEN_KEY, REPORT_LAST_SEEN_KEY, REPORT_DEF_KEY]
+# Version des Leaders neben dem Leader-Lock (KTD11), Wert ``owner|version``
+# mit der Lock-TTL; 0.9.0-Leader schreiben ihn nie.
+LEADER_VERSION_KEY = "sq:{sched}:leader_version"
+# Versionen der meldenden Worker (KTD11): ein String-Key je Worker mit der
+# Lebendigkeits-TTL der Cron-Meldungen; abgelaufene verschwinden von selbst.
+WORKER_VERSION_PREFIX = "sq:{sched}:worker_version:"
 
 
 def fired_key(schedfire_key: str) -> str:
@@ -237,6 +243,46 @@ class ValkeyScheduleStore:
             "sched_report_prune", self._report_prune_script(keys=_REPORT_KEYS, args=[max_age_ms]),
         )
         return int(result)
+
+    async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
+        await self._run(
+            "report_worker_version",
+            self._client.set(f"{WORKER_VERSION_PREFIX}{worker_id}", version, px=ttl_ms),
+        )
+
+    async def worker_versions(self) -> Mapping[str, str]:
+        """SCAN über die Worker-Keys (nur für ``schedule status``), dann MGET;
+        zwischendurch abgelaufene Keys fehlen im Ergebnis."""
+        try:
+            keys = [key async for key in self._client.scan_iter(match=f"{WORKER_VERSION_PREFIX}*", count=100)]
+        except (ValkeyError, OSError) as exc:
+            raise as_backend_error(str(exc), exc) from exc
+        if not keys:
+            return {}
+        values = await self._run("worker_versions", self._client.mget(keys))
+        return {
+            _decode(key).removeprefix(WORKER_VERSION_PREFIX): _decode(value)
+            for key, value in zip(keys, values, strict=True)
+            if value is not None
+        }
+
+    async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
+        await self._run(
+            "set_leader_version", self._client.set(LEADER_VERSION_KEY, f"{owner}|{version}", px=ttl_ms),
+        )
+
+    async def leader_info(self) -> LeaderInfo:
+        """Lock-Owner und Versions-Key in einer Transaktion."""
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.get(SCHEDULER_LOCK_KEY)
+            pipe.get(LEADER_VERSION_KEY)
+            raw_owner, raw_version = await self._run("leader_info", pipe.execute())
+        owner = None if raw_owner is None else _decode(raw_owner)
+        version = None
+        if raw_version is not None:
+            writer, _, written = _decode(raw_version).rpartition("|")
+            version = written if owner is not None and writer == owner else None
+        return LeaderInfo(owner=owner, version=version)
 
     # ------------------------------------------------------------------
     # Primitive (heutige Fassaden-Namen; die Fassade delegiert hierher)

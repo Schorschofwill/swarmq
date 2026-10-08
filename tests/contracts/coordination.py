@@ -48,6 +48,15 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 18. ``prune_cron_reports`` löscht nur Meldungen, deren ``last_seen``
 #     älter als die Frist ist.
 
+# Test list (Plan 2026-10-08-1541, U13, KTD11) -- ScheduleStoreContract:
+# 19. ``leader_info`` liefert den Lock-Owner; ohne Versions-Key (0.9.0-
+#     Leader) ist ``version`` ``None``.
+# 20. ``set_leader_version`` des Lock-Owners erscheint in ``leader_info``.
+# 21. Der Versions-Key eines anderen Owners (Vorgänger) gilt nicht.
+# 22. Der Versions-Key läuft nach seiner TTL ab.
+# 23. ``report_worker_version`` erscheint in ``worker_versions`` und läuft
+#     nach seiner TTL ab.
+
 from __future__ import annotations
 
 import uuid
@@ -55,7 +64,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from swarmq.contracts import ChordStore, CronReport, LockStore, LockToken, RateLimitStore, ScheduleStore
+from swarmq.contracts import ChordStore, CronReport, LeaderInfo, LockStore, LockToken, RateLimitStore, ScheduleStore
 from tests.contracts._support import Clock
 
 Leader = Callable[[str], Awaitable[None]]
@@ -481,6 +490,40 @@ class ScheduleStoreContract:
         await impl.prune_cron_reports(max_age_ms=100)
         assert await self._reports_of(impl, stale) == []
         assert [r.payload for r in await self._reports_of(impl, fresh)] == [b"f"]
+
+    async def test_leader_info_without_version_key(self, impl: ScheduleStore, leader: Leader) -> None:
+        owner = _name("old-leader")
+        await leader(owner)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version=None)
+
+    async def test_leader_version_of_the_lock_owner(self, impl: ScheduleStore, leader: Leader) -> None:
+        owner = _name("leader")
+        await leader(owner)
+        await impl.set_leader_version(owner, "0.10.0", ttl_ms=60_000)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version="0.10.0")
+
+    async def test_leader_version_of_another_owner_does_not_count(self, impl: ScheduleStore, leader: Leader) -> None:
+        predecessor, owner = _name("leader"), _name("old-leader")
+        await impl.set_leader_version(predecessor, "0.10.0", ttl_ms=60_000)
+        await leader(owner)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version=None)
+
+    async def test_leader_version_expires(self, impl: ScheduleStore, leader: Leader, clock: Clock) -> None:
+        owner = _name("leader")
+        await leader(owner)
+        await impl.set_leader_version(owner, "0.10.0", ttl_ms=100)
+        await clock.advance(0.2)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version=None)
+
+    async def test_worker_versions_are_reported_until_their_ttl(self, impl: ScheduleStore, clock: Clock) -> None:
+        stale, fresh = _name("host:1"), _name("host:2")
+        await impl.report_worker_version(stale, "0.10.0", ttl_ms=100)
+        await impl.report_worker_version(fresh, "0.10.1", ttl_ms=60_000)
+        assert {stale: "0.10.0", fresh: "0.10.1"}.items() <= dict(await impl.worker_versions()).items()
+        await clock.advance(0.2)
+        versions = await impl.worker_versions()
+        assert stale not in versions
+        assert versions[fresh] == "0.10.1"
 
     async def test_handover_marker_is_taken_once(self, impl: ScheduleStore) -> None:
         assert await impl.take_handover_marker() is False

@@ -16,6 +16,8 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
+from swarmq.contracts import LeaderInfo
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import (
     SchedulerLoop,
     ScheduleStore,
@@ -26,7 +28,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
 async def _make_loop(rabbitmq_url, valkey_url, *, owner_token,
-                     dispatcher, lock_ttl=1.0):
+                     dispatcher, lock_ttl=1.0, version=None):
     broker = RabbitMQBroker(rabbitmq_url)
     await broker.connect()
     backend = ValkeyBackend(valkey_url)
@@ -48,6 +50,7 @@ async def _make_loop(rabbitmq_url, valkey_url, *, owner_token,
         store=store,
         signal_dispatcher=dispatcher,
         owner_token=owner_token,
+        version=version,
     )
     return loop, broker, backend
 
@@ -262,3 +265,71 @@ class TestLeaderElectionIntegration:
             await br_b.close()
             await be_a.close()
             await be_b.close()
+
+
+class TestLeaderVersionIntegration:
+    """Plan 2026-10-08-1541, U13 (KTD11, AE9) gegen echtes Valkey."""
+
+    async def test_leader_writes_its_version_next_to_the_lock(
+        self, rabbitmq_url, valkey_url,
+    ):
+        dispatcher = SignalDispatcher()
+        leader_evt = asyncio.Event()
+
+        @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
+        @dispatcher.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
+        async def _leader(**kw) -> None:
+            leader_evt.set()
+
+        owner = f"A-{uuid.uuid4().hex[:6]}"
+        loop, broker, backend = await _make_loop(
+            rabbitmq_url, valkey_url, owner_token=owner, dispatcher=dispatcher,
+            version="0.10.0",
+        )
+        try:
+            await backend.locks.force_release(SCHEDULER_LOCK_NAME, max_concurrency=1)
+            await loop.start()
+            await asyncio.wait_for(leader_evt.wait(), timeout=3)
+            assert await backend.schedules.leader_info() == LeaderInfo(owner=owner, version="0.10.0")
+        finally:
+            await loop.stop()
+            await broker.close()
+            await backend.close()
+
+    async def test_standby_reports_a_leader_without_version(
+        self, rabbitmq_url, valkey_url,
+    ):
+        """Covers AE9: ein 0.9.0-Leader hält das Lock und schreibt keine
+        Version; der 0.10.0-Standby meldet ihn."""
+        dispatcher = SignalDispatcher()
+        outdated: list[dict] = []
+        outdated_evt = asyncio.Event()
+
+        @dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw) -> None:
+            outdated.append(kw)
+            outdated_evt.set()
+
+        loop, broker, backend = await _make_loop(
+            rabbitmq_url, valkey_url, owner_token=f"B-{uuid.uuid4().hex[:6]}",
+            dispatcher=dispatcher, version="0.10.0",
+        )
+        legacy = f"legacy-{uuid.uuid4().hex[:6]}"
+        try:
+            await backend.locks.force_release(SCHEDULER_LOCK_NAME, max_concurrency=1)
+            token = await backend.locks.acquire(
+                SCHEDULER_LOCK_NAME, owner=legacy, ttl_ms=10_000, max_concurrency=1,
+            )
+            assert token is not None
+            await loop.start()
+            await asyncio.wait_for(outdated_evt.wait(), timeout=3)
+            assert loop.state == "standby"
+            assert outdated == [{
+                "worker_id": loop.owner_token, "leader": legacy,
+                "leader_version": None, "outdated": True,
+            }]
+        finally:
+            await loop.stop()
+            await backend.locks.force_release(SCHEDULER_LOCK_NAME, max_concurrency=1)
+            await broker.close()
+            await backend.close()

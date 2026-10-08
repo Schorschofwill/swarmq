@@ -113,6 +113,14 @@ class Signal(enum.Enum):
                                    e.g. same-named tasks in two apps; the
                                    leader emits it on every selection tick
                                    while the conflict lasts)
+      * SCHEDULER_LEADER_OUTDATED: worker_id, leader, leader_version,
+                                   outdated (a non-leader saw the scheduler
+                                   leader run an older swarmq without
+                                   timezone support — leader_version None
+                                   means before 0.10.0; once per leader
+                                   change with outdated=True, and with
+                                   outdated=False when a current leader
+                                   follows)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -148,6 +156,7 @@ class Signal(enum.Enum):
     SCHEDULER_LEADER_FAILOVER = "scheduler_leader_failover"
     SCHEDULER_FIRE_SKIPPED = "scheduler_fire_skipped"
     SCHEDULER_CRON_CONFLICT = "scheduler_cron_conflict"
+    SCHEDULER_LEADER_OUTDATED = "scheduler_leader_outdated"
 
 
 class SignalDispatcher:

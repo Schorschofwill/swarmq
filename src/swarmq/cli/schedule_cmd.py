@@ -272,6 +272,12 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
         await backend.close()
 
 
+def _leader_version_text(leader: str | None, version: str | None) -> str:
+    if leader is None:
+        return "-"
+    return version or "(not reported: swarmq before 0.10.0)"
+
+
 async def _run_schedule_status(args: argparse.Namespace) -> None:
     backend = await _get_backend_factory()()
     try:
@@ -281,6 +287,9 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         # errors propagate so ``schedule status`` surfaces an outage
         # via exit code rather than silently printing "no leader".
         leader = await backend.get_scheduler_leader()
+        # KTD11: Version des Leaders (None = vor 0.10.0, schreibt keine).
+        leader_info = await backend.schedules.leader_info()
+        workers = sorted((await backend.schedules.worker_versions()).items())
 
         store = ScheduleStore(backend)
         now_ms = int(time.time() * 1000)
@@ -292,6 +301,7 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         if args.format == "json":
             payload = {
                 "leader": leader,
+                "leader_version": leader_info.version,
                 "now_ms": now_ms,
                 "upcoming": [
                     {
@@ -306,12 +316,17 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
                     }
                     for name, score, defn in upcoming
                 ],
+                "workers": [
+                    {"worker_id": worker_id, "version": version}
+                    for worker_id, version in workers
+                ],
             }
             sys.stdout.write(json.dumps(payload, indent=2) + "\n")
             return
 
         # Table format
         sys.stdout.write(f"LEADER: {leader or '(none)'}\n")
+        sys.stdout.write(f"LEADER_VERSION: {_leader_version_text(leader, leader_info.version)}\n")
         sys.stdout.write(f"NOW:    {datetime.fromtimestamp(now_ms/1000, tz=UTC).isoformat()}\n")
         sys.stdout.write("UPCOMING:\n")
         if not upcoming:
@@ -324,6 +339,11 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
                     f"  {fire_at}  {name}  task={defn.task_name}"
                     f"  queue={defn.queue}{disabled}\n"
                 )
+        sys.stdout.write("WORKERS:\n")
+        if not workers:
+            sys.stdout.write("  (none)\n")
+        for worker_id, version in workers:
+            sys.stdout.write(f"  {worker_id}  {version}\n")
     finally:
         await backend.close()
 

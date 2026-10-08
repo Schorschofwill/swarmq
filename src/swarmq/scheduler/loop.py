@@ -31,6 +31,7 @@ from swarmq.contracts.coordination import LockToken
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.scheduler.cron_time import iter_fire_ms, next_fire_ms
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
+from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
 
@@ -72,7 +73,7 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop(SchedulerCronSync):
+class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
     """Embedded scheduler — one instance per worker.
 
     Runs four cooperating coroutines:
@@ -114,6 +115,7 @@ class SchedulerLoop(SchedulerCronSync):
         owner_token: str | None = None,
         worker_id: str | None = None,
         static_crons: Sequence[ScheduleDefinition] = (),
+        version: str | None = None,
     ) -> None:
         self._backend = backend
         self._broker = broker
@@ -131,6 +133,9 @@ class SchedulerLoop(SchedulerCronSync):
         # Statische Crons dieses Workers (eigene Registry, Zone aufgelöst);
         # gemeldet beim Start und danach im Meldetakt (KTD10).
         self._static_crons = tuple(static_crons)
+        # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
+        self._version = version or swarmq_version()
+        self._leader_watch = LeaderVersionWatch(self._version)
 
         self._state: _SchedulerState = "standby"
         self._prev_leader_seen = False
@@ -282,7 +287,7 @@ class SchedulerLoop(SchedulerCronSync):
             return
 
     async def _report_crons(self) -> None:
-        """Jeden eigenen statischen Cron melden — unabhängig von der Rolle."""
+        """Eigene statische Crons und swarmq-Version melden, in jeder Rolle."""
         live_window = live_window_ms(self._config.scheduler_seen_interval_s)
         try:
             for definition in self._static_crons:
@@ -292,6 +297,9 @@ class SchedulerLoop(SchedulerCronSync):
                     msgspec.json.encode(definition),
                     live_window_ms=live_window,
                 )
+            await self._backend.schedules.report_worker_version(
+                self._worker_id, self._version, ttl_ms=live_window,
+            )
         except Exception as exc:
             # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
             logger.warning("scheduler_cron_report_failed", **_error_fields(exc))
@@ -370,6 +378,7 @@ class SchedulerLoop(SchedulerCronSync):
                 return
             self._renew_failures = 0
             if still_leader:
+                await self._write_leader_version()
                 await self._emit(Signal.SCHEDULER_HEARTBEAT)
             else:
                 logger.warning("scheduler_lock_lost")
@@ -399,6 +408,7 @@ class SchedulerLoop(SchedulerCronSync):
 
         if not acquired:
             self._prev_leader_seen = True
+            await self._check_leader_version()
             return
 
         # Acquired the lock — decide which signal to emit.
@@ -414,6 +424,8 @@ class SchedulerLoop(SchedulerCronSync):
 
         self._state = "leader"
         self._renew_failures = 0  # fresh term, fresh renew budget
+        await self._write_leader_version()
+        await self._observe_leader(self._owner_token, self._version)
         if had_handover or not self._prev_leader_seen:
             await self._emit(Signal.SCHEDULER_LEADER)
         else:

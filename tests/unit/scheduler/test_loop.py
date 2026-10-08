@@ -27,6 +27,19 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 8. ... und der Eintrag wird aus dem Fire-Index genommen (Definition bleibt).
 # 9. Eine Uebernahme zwischen Poll und Commit wird vom Commit nicht
 #    zurueckgesetzt (In-Memory-Store, echter ScheduleStore).
+#
+# Test list (Plan 2026-10-08-1541, U13, KTD11): Leader-Version.
+# 10. Nach dem Lock-Erwerb schreibt der Leader seine Version mit Lock-TTL.
+# 11. ... ebenso nach jeder erfolgreichen Verlängerung.
+# 12. Schlägt das Schreiben fehl, bleibt er Leader; Warnung mit Fehlerfeldern.
+# 13. Covers AE9: ein Nicht-Leader, der das Lock ohne Versionsangabe sieht,
+#     loggt ``scheduler_leader_outdated`` einmal pro Wechsel und sendet
+#     ``SCHEDULER_LEADER_OUTDATED`` (``outdated=True``, Metrik).
+# 14. Lock mit gleicher Version: keine Warnung, kein Signal.
+# 15. Wird der Beobachter selbst Leader, nimmt er die Warnung zurück
+#     (Signal mit ``outdated=False``).
+# 16. Lesefehler bei der Beobachtung: Warnung, die Election läuft weiter.
+# 17. Jeder Melde-Takt meldet die eigene Version (TTL = Lebendigkeitsfenster).
 
 from __future__ import annotations
 
@@ -39,12 +52,14 @@ import msgspec
 import pytest
 
 from swarmq.config import SwarmQConfig
+from swarmq.contracts import LeaderInfo
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import (
     ScheduleDefinition,
     ScheduleStore,
 )
+from swarmq.scheduler.reports import live_window_ms
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.inmemory import InMemoryBackend
@@ -254,6 +269,143 @@ class TestElectionLoop:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
         assert loop._renew_failure_limit == 2
+
+
+class TestLeaderVersion:
+    async def test_leader_writes_version_after_acquire(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        backend.schedules.set_leader_version.assert_awaited_once_with(
+            "test-owner", "0.10.0", ttl_ms=1_000,
+        )
+
+    async def test_leader_writes_version_after_each_renew(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = "leader"
+
+        await loop._election_tick()
+        await loop._election_tick()
+
+        assert backend.schedules.set_leader_version.await_count == 2
+        backend.schedules.set_leader_version.assert_awaited_with(
+            "test-owner", "0.10.0", ttl_ms=1_000,
+        )
+
+    @pytest.mark.parametrize("state", ["standby", "leader"])
+    async def test_version_write_failure_keeps_leadership(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs, state,
+    ):
+        backend.schedules.set_leader_version.side_effect = BackendConnectionError("valkey down")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = state
+
+        await loop._election_tick()
+
+        assert loop.state == "leader"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_version_write_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_outdated_leader_is_reported_once_per_change(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+    ):
+        """Covers AE9: 0.9.0-Leader (kein Versions-Key)."""
+        signals: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw):
+            signals.append(kw)
+
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="old:1:aa", version=None)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        for _ in range(3):
+            await loop._election_tick()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_outdated"]
+        assert entry["log_level"] == "warning"
+        assert (entry["leader"], entry["leader_version"], entry["version"]) == ("old:1:aa", None, "0.10.0")
+        assert "timezone" in entry["hint"]
+        assert signals == [
+            {"worker_id": "w-1", "leader": "old:1:aa", "leader_version": None, "outdated": True},
+        ]
+
+    async def test_leader_with_same_version_is_not_reported(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+    ):
+        signals: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw):
+            signals.append(kw)
+
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="new:1:aa", version="0.10.0")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        for _ in range(3):
+            await loop._election_tick()
+
+        assert [e for e in swarmq_logs if e["event"] == "scheduler_leader_outdated"] == []
+        assert signals == []
+        assert backend.schedules.leader_info.await_count == 3
+
+    async def test_becoming_leader_withdraws_the_warning(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+    ):
+        signals: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw):
+            signals.append(kw)
+
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="old:1:aa", version=None)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        await loop._election_tick()
+        await loop._election_tick()
+        lock_manager.acquire.return_value = _LEADER_TOKEN
+
+        await loop._election_tick()
+
+        assert loop.state == "leader"
+        assert [kw["outdated"] for kw in signals] == [True, False]
+        assert signals[-1] == {
+            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.10.0", "outdated": False,
+        }
+
+    async def test_version_check_failure_is_logged(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+    ):
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.side_effect = BackendConnectionError("valkey down")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        assert loop.state == "standby" and loop._prev_leader_seen is True
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_version_check_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_report_tick_reports_own_version(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+    ):
+        """Auch ohne statische Crons; TTL = Lebendigkeitsfenster der Meldungen."""
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._report_crons()
+
+        backend.schedules.report_worker_version.assert_awaited_once_with(
+            "w-1", "0.10.0", ttl_ms=live_window_ms(config.scheduler_seen_interval_s),
+        )
 
 
 class TestPollLoop:

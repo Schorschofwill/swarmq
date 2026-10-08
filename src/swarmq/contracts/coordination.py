@@ -84,6 +84,16 @@ class CronReports:
     reports: tuple[CronReport, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class LeaderInfo:
+    """Scheduler-Leader samt seiner swarmq-Version (Plan 2026-10-08-1541,
+    KTD11). ``version`` ist ``None``, wenn der Leader keine Version neben das
+    Lock geschrieben hat (Versionen vor 0.10.0)."""
+
+    owner: str | None
+    version: str | None
+
+
 @runtime_checkable
 class ScheduleStore(Protocol):
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
@@ -173,3 +183,19 @@ class ScheduleStore(Protocol):
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         """Löscht atomar die Meldungen, deren ``last_seen`` (Backend-Zeit)
         älter als *max_age_ms* ist; liefert ihre Anzahl."""
+
+    async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
+        """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
+        (KTD11, Anzeige in ``schedule status``)."""
+
+    async def worker_versions(self) -> Mapping[str, str]:
+        """Worker-ID → swarmq-Version aller noch gültigen Meldungen."""
+
+    async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
+        """Schreibt die swarmq-Version des Leaders *owner* neben das
+        Leader-Lock, mit der TTL des Locks (KTD11)."""
+
+    async def leader_info(self) -> LeaderInfo:
+        """Owner des Leader-Locks und seine Version, gelesen in einem
+        Schritt; eine Version, die ein anderer Owner geschrieben hat, gilt
+        nicht (KTD11)."""

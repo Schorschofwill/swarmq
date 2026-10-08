@@ -18,6 +18,7 @@ from swarmq.contracts import (
     ChordStore,
     CronReport,
     CronReports,
+    LeaderInfo,
     LockStore,
     LockToken,
     RateLimitDecision,
@@ -365,6 +366,9 @@ class InMemoryScheduleStore:
         self._handover: _TTLDict[str] = _TTLDict(clock)
         # Cron-Meldungen (KTD10): (name, fingerprint) -> [first, last, payload]
         self._reports: dict[tuple[str, str], tuple[int, int, bytes]] = {}
+        # Leader-Version (KTD11): "leader" -> (owner, version)
+        self._leader_version: _TTLDict[tuple[str, str]] = _TTLDict(clock)
+        self._worker_versions: _TTLDict[str] = _TTLDict(clock)
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -482,6 +486,22 @@ class InMemoryScheduleStore:
             for (name, fp), (first, last, payload) in self._reports.items()
         )
         return CronReports(now_ms=self._clock.now_ms(), reports=reports)
+
+    async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
+        self._worker_versions.set(worker_id, version, ttl_ms)
+
+    async def worker_versions(self) -> Mapping[str, str]:
+        live = self._worker_versions.keys()  # purgt abgelaufene Meldungen
+        return {worker_id: version for worker_id in live if (version := self._worker_versions.get(worker_id))}
+
+    async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
+        self._leader_version.set("leader", (owner, version), ttl_ms)
+
+    async def leader_info(self) -> LeaderInfo:
+        owner = await self._locks.current_owner(SCHEDULER_LOCK_NAME)
+        written = self._leader_version.get("leader")
+        version = written[1] if written is not None and written[0] == owner else None
+        return LeaderInfo(owner=owner, version=version)
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

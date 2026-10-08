@@ -20,9 +20,16 @@ insert-if-absent vs. update-static branches that live in Python.
 # Test list (Plan 2026-10-08-1541, U1, R6, KTD1):
 # 4. Hin- und Rückweg mit ``timezone`` verlustfrei.
 # 5. Alte JSON ohne ``timezone`` wird mit ``None`` gelesen.
+#
+# Test list (Plan 2026-10-08-1541, U13, KTD11):
+# 6. Charakterisierung: ein Leader mit der alten Struct-Form (0.9.0, ohne
+#    ``timezone``) dekodiert eine 0.10.0-Definition, setzt beim Fire per
+#    ``replace`` den naechsten Score und verliert beim Re-Encode die Zone --
+#    der Grund fuer das Upgrade in zwei Schritten.
 
 from __future__ import annotations
 
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import msgspec
@@ -168,6 +175,33 @@ class TestScheduleDefinition:
         )
         decoded = msgspec.json.decode(legacy, type=ScheduleDefinition)
         assert decoded.timezone is None
+
+    def test_legacy_struct_drops_timezone_on_reencode(self):
+        """Charakterisierung (KTD11): so verhaelt sich ein 0.9.0-Leader beim
+        Fire. msgspec ignoriert unbekannte Felder beim Dekodieren, also fehlt
+        die Zone im Re-Encode; der naechste 0.10.0-Leader liest UTC."""
+
+        class LegacyScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
+            schedule_name: str
+            task_name: str
+            args: tuple[Any, ...]
+            kwargs: dict[str, Any]
+            queue: str
+            cron: str | None
+            fire_ts_ms: int | None
+            source: Literal["static", "cli", "cli_unique"]
+            disabled: bool = False
+            last_fire_at: int | None = None
+            dedup_hash: str | None = None
+            unique_until: Literal["start", "completion"] = "completion"
+
+        current = _def(cron="0 3 * * *", timezone="Europe/Berlin")
+        legacy = msgspec.json.decode(msgspec.json.encode(current), type=LegacyScheduleDefinition)
+        fired = msgspec.structs.replace(legacy, fire_ts_ms=1_700_000_060_000, last_fire_at=1)
+        reread = msgspec.json.decode(msgspec.json.encode(fired), type=ScheduleDefinition)
+        assert b"timezone" not in msgspec.json.encode(fired)
+        assert reread.timezone is None
+        assert reread.cron == "0 3 * * *"
 
 
 # ---------------------------------------------------------------------------
