@@ -19,6 +19,19 @@ Test-Liste U9 (Plan 2026-10-06-0831, R17/R18) — Logs ueber ``swarmq_logs``:
 9. FAF-Guard: ``workflow_faf_fail_mark_error``.
 10. ``result_serialization_failed`` und ``publish_notification_failed`` mit
     ``error_type``/``error``.
+
+Test-Liste B23 (0.9.1, Level-Regel KTD11: selbstheilend → WARNING):
+
+11. [x] ``backend_connection_error`` bei AT_LEAST_ONCE: WARNING mit
+    ``error_type``/``error``; im Worker traegt er task_id/task_name aus dem
+    gebundenen Kontext.
+12. [x] Derselbe Fehler bei FIRE_AND_FORGET: ERROR (Ergebnis verloren).
+13. [x] ``workflow_advance_backend_error`` mit Fehlerfeldern, WARNING bei
+    AT_LEAST_ONCE (Neuzustellung).
+14. [x] ... ERROR bei FIRE_AND_FORGET (kein Advance, keine Neuzustellung).
+15. [x] ``workflow_advance_broker_error`` mit Fehlerfeldern, WARNING bei
+    AT_LEAST_ONCE.
+16. [x] ... ERROR bei FIRE_AND_FORGET.
 """
 
 from __future__ import annotations
@@ -321,3 +334,84 @@ async def test_unserializable_result_logs_error_with_error_fields(broker, backen
     [entry] = _events(swarmq_logs, "result_serialization_failed")
     assert entry["log_level"] == "error"
     assert entry["error_type"] == "ResultSerializationError" and entry["error"]
+
+
+async def test_backend_store_error_at_least_once_logs_warning_with_error_fields_and_task_context(
+    broker, backend, config, swarmq_logs
+):
+    """B23: im Worker, damit der gebundene Task-Kontext mitzaehlt."""
+    backend.store_result = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+    _, worker = _tail(broker, backend, config)
+
+    await worker._handle_message(make_message(_default_payload(task_id="t-store", name="tail-task", args=[])))
+
+    [entry] = _events(swarmq_logs, "backend_connection_error")
+    assert entry["log_level"] == "warning"
+    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["task_id"] == "t-store" and entry["task_name"] == "tail-task"
+
+
+async def test_backend_store_error_fire_and_forget_logs_error_because_the_result_is_lost(
+    broker, backend, config, swarmq_logs
+):
+    backend.store_result = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+    tail, _ = _tail(broker, backend, config, TailFafStoreTask)
+
+    await tail.finish(make_message(_default_payload(name="tail-faf-store")), _ctx(TailFafStoreTask), _execution())
+
+    [entry] = _events(swarmq_logs, "backend_connection_error")
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+
+def _wf_message(name: str = "tail-task"):
+    return make_message(_default_payload(name=name), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"})
+
+
+async def test_advance_backend_error_at_least_once_logs_warning_with_error_fields(
+    broker, backend, config, swarmq_logs
+):
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=WorkflowStateConflict("25 rounds lost"))
+
+    await tail.finish(_wf_message(), _ctx(), _execution())
+
+    [entry] = _events(swarmq_logs, "workflow_advance_backend_error")
+    assert entry["log_level"] == "warning" and entry["workflow_id"] == _WF_ID
+    assert entry["error_type"] == "WorkflowStateConflict" and entry["error"] == "25 rounds lost"
+
+
+async def test_advance_backend_error_fire_and_forget_logs_error(broker, backend, config, swarmq_logs):
+    """Ohne Neuzustellung bleibt der Workflow haengen -- nicht selbstheilend."""
+    tail, worker = _tail(broker, backend, config, TailFafStoreTask)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+
+    await tail.finish(_wf_message("tail-faf-store"), _ctx(TailFafStoreTask), _execution())
+
+    [entry] = _events(swarmq_logs, "workflow_advance_backend_error")
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+
+async def test_advance_broker_error_at_least_once_logs_warning_with_error_fields(
+    broker, backend, config, swarmq_logs
+):
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+
+    await tail.finish(_wf_message(), _ctx(), _execution())
+
+    [entry] = _events(swarmq_logs, "workflow_advance_broker_error")
+    assert entry["log_level"] == "warning" and entry["workflow_id"] == _WF_ID
+    assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"
+
+
+async def test_advance_broker_error_fire_and_forget_logs_error(broker, backend, config, swarmq_logs):
+    tail, worker = _tail(broker, backend, config, TailFafStoreTask)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+
+    await tail.finish(_wf_message("tail-faf-store"), _ctx(TailFafStoreTask), _execution())
+
+    [entry] = _events(swarmq_logs, "workflow_advance_broker_error")
+    assert entry["log_level"] == "error"
+    assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"

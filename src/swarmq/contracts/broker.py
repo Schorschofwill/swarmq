@@ -70,10 +70,15 @@ class Consumer(Protocol):
         """Keine weiteren Zustellungen; bereits zugestellte bleiben bestätigbar."""
 
     async def ack(self, delivery: Delivery) -> None:
-        """Erledigt. Danach ist kein weiteres Verb auf dieser Zustellung zulässig."""
+        """Erledigt. Danach ist kein weiteres Verb auf dieser Zustellung zulässig.
+
+        Kanal- oder Verbindungsverlust → ``BrokerConnectionError``; die
+        Zustellung bleibt unbestätigt und kommt erneut. Gilt ebenso für
+        ``redeliver`` und ``route_via_dlx``."""
 
     async def redeliver(self, delivery: Delivery) -> None:
-        """Transient: dieselbe Nachricht wird ohne Verzögerung erneut zugestellt."""
+        """Transient: dieselbe Nachricht wird ohne Verzögerung erneut zugestellt.
+        Kanal- oder Verbindungsverlust → ``BrokerConnectionError``."""
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         """Veröffentlicht Body + ``headers`` an das Verzögerungsziel von
@@ -117,7 +122,8 @@ class BrokerAdmin(Protocol):
         """Leitet die Zustellung ohne Diagnose-Header über die Broker-
         Konfiguration an das Dead-Letter-Ziel (heute ``nack(requeue=False)``).
         Terminaler Pfad für nicht dekodierbare oder unbekannte Nachrichten und
-        Fallback der Lock-Pfade, wenn ``dead_letter`` scheitert."""
+        Fallback der Lock-Pfade, wenn ``dead_letter`` scheitert. Kanal- oder
+        Verbindungsverlust → ``BrokerConnectionError``."""
 
 
 @runtime_checkable

@@ -20,6 +20,9 @@ Unit tests for graceful shutdown (Unit 2.5)."""
 # 6. ``backend.connect`` scheitert: der Fehler kommt beim Aufrufer an, kein
 #    Scheduler entsteht; die Verbindungen gehoeren dem Aufrufer (kein close
 #    durch ``start()``), es gibt nichts Eigenes aufzuraeumen.
+#
+# Test list (0.9.1, B23):
+# 7. ``cancel_consume_partial_failure`` traegt ``error_type``/``error``.
 
 from __future__ import annotations
 
@@ -469,6 +472,22 @@ class TestShutdownLockDrain:
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "TimeoutError" and entry["error"] == "TimeoutError"
         backend.close.assert_awaited_once()
+
+    async def test_partial_cancel_consume_is_a_warning_with_error_fields(self, worker, broker, swarmq_logs):
+        """B23 (0.9.1): ohne Fehlerfelder war nicht zu sehen, welcher Consumer
+        warum nicht abbestellt wurde."""
+        from swarmq.exceptions import BrokerConnectionError
+
+        worker._state = WorkerState.RUNNING
+        broker.cancel_consume.side_effect = BrokerConnectionError("cancel_consume: 1 consumer(s) failed to cancel")
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "cancel_consume_partial_failure"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "cancel_consume: 1 consumer(s) failed to cancel"
 
     @pytest.mark.asyncio
     async def test_drain_skipped_when_lock_manager_never_initialised(

@@ -547,8 +547,8 @@ class WorkerLifecycle:
         # (in-flight drain, lock release, scheduler stop). 2026-06-02 audit.
         try:
             await self._broker.cancel_consume()
-        except Exception:
-            logger.warning("cancel_consume_partial_failure")
+        except Exception as exc:
+            logger.warning("cancel_consume_partial_failure", **_error_fields(exc))
 
         # 2. Wait for in-flight tasks to complete
         tasks_snapshot = set(self._active_tasks)

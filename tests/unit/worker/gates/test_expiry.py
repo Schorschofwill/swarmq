@@ -171,3 +171,55 @@ class TestCheckMaxAgeExpired:
         w._broker.dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
         w._broker.ack.assert_not_awaited()
+
+
+class TestExpiryErrorFields:
+    """B23 (0.9.1): Fehler-Logs des Expiry-Gates tragen ``error_type``/``error``.
+
+    Test-Liste:
+    - [x] ``task_expired_result_store_failed`` (WARNING) mit Fehlerfeldern.
+    - [x] ``task_expired_dlq_publish_failed`` (WARNING) mit Fehlerfeldern.
+    - [x] ``task_expired_nack_also_failed`` (ERROR) mit den Fehlerfeldern des Nack.
+    """
+
+    async def test_result_store_failure_carries_error_fields(self, swarmq_logs):
+        from swarmq.exceptions import BackendConnectionError
+
+        w = _make_worker()
+        w._backend.store_result = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        ti = TaskInfo(name="t", queues=["q"], max_age=10)
+
+        await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "task_expired_result_store_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_dlq_publish_failure_carries_error_fields(self, swarmq_logs):
+        from swarmq.exceptions import BrokerConnectionError
+
+        w = _make_worker()
+        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+        w._broker.redeliver = AsyncMock()
+        ti = TaskInfo(name="t", queues=["q"], max_age=10)
+
+        await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "task_expired_dlq_publish_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"
+
+    async def test_double_failure_carries_error_fields_of_the_nack(self, swarmq_logs):
+        from swarmq.exceptions import BrokerConnectionError
+
+        w = _make_worker()
+        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+        w._broker.redeliver = AsyncMock(side_effect=BrokerConnectionError("redeliver failed, channel lost"))
+        ti = TaskInfo(name="t", queues=["q"], max_age=10)
+
+        await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "task_expired_nack_also_failed"]
+        assert entry["log_level"] == "error"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "redeliver failed, channel lost"

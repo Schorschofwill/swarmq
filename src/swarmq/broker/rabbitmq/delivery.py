@@ -11,7 +11,7 @@ entfernt; die Delay-/DLQ-Publishes sind private Helfer der Verben.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from typing import Any, cast
 
 import aio_pika
@@ -35,6 +35,24 @@ def message_of(delivery: object) -> aio_pika.abc.AbstractIncomingMessage:
     umgestellt sind)."""
     handle = delivery.handle if isinstance(delivery, Delivery) else delivery
     return cast("aio_pika.abc.AbstractIncomingMessage", handle)
+
+
+async def settle(action: Awaitable[None], verb: str) -> None:
+    """Fuehrt ein Abschluss-Verb (ack/nack) aus und uebersetzt einen
+    Kanal- oder Verbindungsverlust in ``BrokerConnectionError`` (B22).
+
+    Der Ausgang ist dabei klar: RabbitMQ stellt unbestaetigte Nachrichten
+    nach dem Kanalverlust neu zu. Der Abbruch der eigenen Task geht wie im
+    Publish-Pfad unveraendert durch; nur aio_pikas interne
+    ``CancelledError`` zaehlt als Kanalverlust."""
+    try:
+        await action
+    except _CHANNEL_TRANSIENT_ERRORS as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+        raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
 
 
 class RabbitMQDelivery(RabbitMQConnection):
@@ -294,10 +312,10 @@ class RabbitMQDelivery(RabbitMQConnection):
     # ------------------------------------------------------------------
 
     async def ack(self, delivery: Delivery) -> None:
-        await message_of(delivery).ack()
+        await settle(message_of(delivery).ack(), "ack")
 
     async def redeliver(self, delivery: Delivery) -> None:
-        await message_of(delivery).nack(requeue=True)
+        await settle(message_of(delivery).nack(requeue=True), "redeliver")
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)

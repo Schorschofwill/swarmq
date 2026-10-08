@@ -6,6 +6,34 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Behoben
+
+- **Ein verlorener Broker-Kanal beim abschließenden Ack endet nicht
+  mehr als „Task exception was never retrieved“.** Fiel RabbitMQ weg,
+  während der Worker eine Zustellung abschloss, entwich aiormqs
+  `ChannelInvalidStateError` aus der Nachrichten-Task, und asyncio
+  loggte ihn auf ERROR ohne Task-Kontext. Der Ausgang stimmte schon
+  (RabbitMQ stellt unbestätigte Nachrichten neu zu), nur das Log war
+  falsch. `ack`, `redeliver` und `route_via_dlx` werfen bei verlorenem
+  Kanal oder verlorener Verbindung jetzt `BrokerConnectionError`, wie
+  es der Broker-Vertrag beschreibt; der Abbruch der aufrufenden Task
+  wirft weiterhin `CancelledError`. Der Worker loggt eine WARNING
+  `delivery_settle_failed` mit Task-Kontext, `error_type` und `error`.
+  Jeder andere unerwartete Fehler, der eine Zustellung beendet, wird als
+  ERROR `delivery_handler_failed` mit Task-Kontext und Traceback
+  geloggt, statt aus der Task zu entweichen.
+
+- **Fehler-Logs im Worker tragen `error_type` und `error`.**
+  `backend_connection_error` (Ergebnis ließ sich nicht speichern) hatte
+  beides nicht und war immer ERROR; jetzt WARNING bei `AT_LEAST_ONCE`,
+  wo die Neuzustellung heilt, und weiter ERROR bei `FIRE_AND_FORGET`, wo
+  das Ergebnis verloren ist. `workflow_advance_backend_error` und
+  `workflow_advance_broker_error` folgen derselben Regel. Ebenfalls mit
+  Fehlerfeldern: `task_expired_result_store_failed`,
+  `task_expired_dlq_publish_failed`, `task_expired_nack_also_failed`,
+  `cancel_consume_partial_failure` und
+  `compute_recycle_replacement_failed`.
+
 ## [0.9.0] — 2026-10-07
 
 ### Geändert (breaking)

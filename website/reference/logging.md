@@ -641,7 +641,10 @@ selection, not every event SwarmQ emits.
 | `dlq_publish_failed` | `swarmq.worker.retry` | ERROR | Dead-letter publish failed; the message is redelivered. |
 | `result_serialization_failed` | `swarmq.worker.results` | ERROR | Task result cannot be serialized; stored as an error. |
 | `workflow_advance_failed` | `swarmq.worker.results` | ERROR | Unexpected error while advancing a workflow; the workflow is marked failed. Field `workflow_id`. |
-| `workflow_advance_backend_error`, `workflow_advance_broker_error` | `swarmq.worker.results` | ERROR | Backend/broker error (or state conflict) while advancing; the step is redelivered. Field `workflow_id`. |
+| `workflow_advance_backend_error`, `workflow_advance_broker_error` | `swarmq.worker.results` | WARNING / ERROR | Backend/broker error (or state conflict) while advancing. WARNING for `AT_LEAST_ONCE`: the step is redelivered and the idempotent advance runs again. ERROR for `FIRE_AND_FORGET`: there is no redelivery, the workflow does not advance. Fields `workflow_id`, `error_type`, `error`. |
+| `backend_connection_error` | `swarmq.worker.results` | WARNING / ERROR | The task result could not be stored. WARNING for `AT_LEAST_ONCE`: the message is redelivered and the task runs again. ERROR for `FIRE_AND_FORGET`: the result is lost. Fields `error_type`, `error`. |
+| `delivery_settle_failed` | `swarmq.worker.settle` | WARNING | A delivery could not be settled because the broker channel or connection was lost (usually the final ack). RabbitMQ redelivers the unacknowledged message, so the task may run again. Fields `error_type`, `error`, `hint`. |
+| `delivery_handler_failed` | `swarmq.worker.settle` | ERROR | An unexpected error ended the processing of a delivery; with traceback. Before 0.9.1 such errors only showed up as asyncio's "Task exception was never retrieved" without task context. Fields `error_type`, `error`. |
 | `middleware_hook_failed` | `swarmq.middleware` | ERROR | A middleware hook other than `pre_enqueue` raised; with traceback. Fields `hook`, `middleware`. |
 | `signal_handler_error` | `swarmq.signals` | WARNING | A signal handler raised; with traceback. Fields `signal`, `handler`. |
 | `signal_handler_timeout` | `swarmq.signals` | WARNING | A lifecycle signal handler exceeded its time budget. Fields `signal`, `handler`, `timeout_s`. |

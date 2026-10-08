@@ -361,14 +361,17 @@ class TestSchedfireDedup:
         broker.dead_letter.assert_awaited_once()
         backend.schedules.release_fire_claim.assert_awaited_once()
 
-    async def test_claim_is_released_when_a_later_gate_raises(self, worker, broker, backend):
+    async def test_claim_is_released_when_a_later_gate_raises(self, worker, broker, backend, swarmq_logs):
         """Liste 10: blieb der Claim im Register liegen, konnte eine spaetere
-        Zustellung mit wiederverwendeter ``id()`` ihn als erledigt markieren."""
+        Zustellung mit wiederverwendeter ``id()`` ihn als erledigt markieren.
+        Seit B22 entweicht der Fehler nicht mehr, er wird geloggt."""
         backend.is_cancelled.side_effect = RuntimeError("boom")
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "cron_a:1700000000000"})
 
-        with pytest.raises(RuntimeError, match="boom"):
-            await worker._handle_message(msg)
+        await worker._handle_message(msg)
+
+        [failed] = [e for e in swarmq_logs if e["event"] == "delivery_handler_failed"]
+        assert failed["error"] == "boom"
 
         owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
         backend.schedules.release_fire_claim.assert_awaited_once_with("cron_a:1700000000000", owner=owner)

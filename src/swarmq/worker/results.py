@@ -192,26 +192,28 @@ class ResultTail:
             step_path = ""
         try:
             await advancer.advance(wf_id, step_path, ctx.task_id, execution.result_value)
-        except (BackendConnectionError, WorkflowStateConflict):
+        except (BackendConnectionError, WorkflowStateConflict) as exc:
             # Die Konfliktgrenze des Compare-and-Set (U9) heisst: der Advance
             # ist nicht fertig, nicht gescheitert — wie ein Backend-Ausfall
             # behandeln, nicht fail-markieren.
-            logger.error("workflow_advance_backend_error", workflow_id=wf_id)
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 # Transient — redelivery retries the idempotent advance.
+                logger.warning("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
+            logger.error("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
             return Terminal.release_in_finally()
-        except BrokerConnectionError:
+        except BrokerConnectionError as exc:
             # A workflow-step publish failed transiently (e.g. a
             # publisher-confirm Nack past the broker's retry budget). Do NOT
             # mark the workflow failed — a Nack means the message was not
             # committed, so redelivery re-runs the idempotent advance and
             # re-publishes safely (deterministic step ids + step_tasks).
-            logger.error("workflow_advance_broker_error", workflow_id=wf_id)
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                logger.warning("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
+            logger.error("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
             return Terminal.release_in_finally()
         except Exception as exc:
             # Unexpected advance bug: fail the workflow so get() raises
@@ -245,13 +247,16 @@ class ResultTail:
                 ctx.task_id, result_bytes, result_ttl * 1000,
                 op_timeout=deps.config.backend_op_timeout,
             )
-        except BackendConnectionError:
-            logger.error("backend_connection_error")
+        except BackendConnectionError as exc:
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+                # Selbstheilend (KTD11): die Neuzustellung speichert erneut.
+                logger.warning("backend_connection_error", **_error_fields(exc))
                 # Non-terminal — redelivery will re-run the task from
                 # scratch; keep the flag so next terminal path can release.
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
+            # FIRE_AND_FORGET: keine Neuzustellung, das Ergebnis ist verloren.
+            logger.error("backend_connection_error", **_error_fields(exc))
             return Terminal.release_in_finally()
 
         try:

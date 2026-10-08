@@ -6,6 +6,33 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lost broker channel during the final ack no longer ends as
+  "Task exception was never retrieved".** When RabbitMQ went away while
+  the worker settled a delivery, aiormq's `ChannelInvalidStateError`
+  escaped from the message task, and asyncio logged it at ERROR without
+  task context. The outcome was already right (RabbitMQ redelivers
+  unacknowledged messages), only the log was wrong. `ack`, `redeliver`
+  and `route_via_dlx` now raise `BrokerConnectionError` on a lost
+  channel or connection, as the broker contract documents; cancelling
+  the calling task still raises `CancelledError`. The worker logs one
+  WARNING `delivery_settle_failed` with task context, `error_type` and
+  `error`. Any other unexpected error that ends a delivery is logged as
+  ERROR `delivery_handler_failed` with task context and traceback
+  instead of escaping from the task.
+
+- **Error logs in the worker carry `error_type` and `error`.**
+  `backend_connection_error` (result could not be stored) had neither
+  and was always ERROR; it is now WARNING for `AT_LEAST_ONCE`, where
+  the redelivery heals it, and stays ERROR for `FIRE_AND_FORGET`, where
+  the result is lost. `workflow_advance_backend_error` and
+  `workflow_advance_broker_error` follow the same rule. Also with error
+  fields now: `task_expired_result_store_failed`,
+  `task_expired_dlq_publish_failed`, `task_expired_nack_also_failed`,
+  `cancel_consume_partial_failure` and
+  `compute_recycle_replacement_failed`.
+
 ## [0.9.0] — 2026-10-07
 
 ### Changed (breaking)

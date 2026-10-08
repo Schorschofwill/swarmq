@@ -69,6 +69,7 @@ from swarmq.worker.lifecycle import WorkerLifecycle, WorkerState  # Re-Export (F
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 from swarmq.worker.results import ResultTail
 from swarmq.worker.retry import RetryHandler
+from swarmq.worker.settle import contain_delivery_errors
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
 )
@@ -614,8 +615,10 @@ class Worker(WorkerLifecycle):
         return None
 
     async def _handle_message(self, message: Any) -> None:
-        """Core message handler logic."""
-        decoded = await self._decode_and_validate(message)
+        """Core message handler logic. Nichts entweicht aus der Task (B22)."""
+        decoded = None
+        with contain_delivery_errors():
+            decoded = await self._decode_and_validate(message)
         if decoded is None:
             return
         task_id, queue, task_name, args, kwargs = decoded
@@ -623,7 +626,7 @@ class Worker(WorkerLifecycle):
             task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs,
             workflow_id=self._extract_valid_workflow_id(message),
         )
-        with self._log_context(message, ctx):
+        with self._log_context(message, ctx), contain_delivery_errors():
             task_logger.log(self._lifecycle_level, "task_received")
             await self._process_message(message, ctx)
 
