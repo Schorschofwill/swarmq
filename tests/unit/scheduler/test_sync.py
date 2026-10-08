@@ -6,12 +6,21 @@
 # 2. ``scheduler_sync_add_failed`` (WARNING)
 # 3. ``scheduler_sync_decode_error_skipped`` (ERROR)
 # 4. ``scheduler_sync_update_failed`` (WARNING)
+#
+# Test list (Plan 2026-10-08-1541, U2): erster Score in der Zone des Crons.
+# 5. ``TaskInfo.timezone`` bestimmt den Score einer neuen Definition.
+# 6. Die neue Definition traegt die Zone.
+# 7. Ohne ``TaskInfo.timezone`` gilt ``config.scheduler_timezone``.
 
 from __future__ import annotations
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import msgspec
 import pytest
 
+from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.scheduler import (
     ScheduleDefinition,
@@ -300,3 +309,82 @@ class TestSyncTaskinfoCronsLogging:
         entry = self._entry(swarmq_logs, "scheduler_sync_update_failed")
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
+
+
+
+def _utc_ms(*args: int) -> int:
+    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+
+
+class TestSyncTimezone:
+    """Plan 2026-10-08-1541 (U2): der erste Score einer neuen statischen
+    Definition gilt in der Zone des Crons. Die Uhr ist fest."""
+
+    @pytest.fixture(autouse=True)
+    def _fixed_clock(self, monkeypatch, _cleanup_tasks):
+        # 2026-10-06 10:00 UTC = 19:00 in Tokio.
+        fake_time = SimpleNamespace(time=lambda: _utc_ms(2026, 10, 6, 10, 0) / 1000)
+        monkeypatch.setattr("swarmq.scheduler.sync.time", fake_time)
+
+    @staticmethod
+    def _added(store) -> ScheduleDefinition:
+        [call] = store.add_schedule.await_args_list
+        return call.args[0]
+
+    async def test_first_score_uses_taskinfo_timezone(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+    ):
+        class TokyoCron(Task):
+            task_info = TaskInfo(name="tokyo", queues=["default"],
+                                 cron="0 9 * * *", timezone="Asia/Tokyo")
+            async def run(self):
+                return None
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+
+        await loop.sync_taskinfo_crons()
+
+        assert self._added(store).fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
+
+    async def test_new_definition_carries_timezone(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+    ):
+        class TokyoCron(Task):
+            task_info = TaskInfo(name="tokyo", queues=["default"],
+                                 cron="0 9 * * *", timezone="Asia/Tokyo")
+            async def run(self):
+                return None
+
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+
+        await loop.sync_taskinfo_crons()
+
+        assert self._added(store).timezone == "Asia/Tokyo"
+
+    async def test_config_scheduler_timezone_is_the_default(
+        self, backend, broker, lock_manager, store, signal_dispatcher,
+    ):
+        class PlainCron(Task):
+            task_info = TaskInfo(name="plain", queues=["default"],
+                                 cron="0 9 * * *")
+            async def run(self):
+                return None
+
+        config = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            scheduler_timezone="Asia/Tokyo",
+        )
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+
+        await loop.sync_taskinfo_crons()
+
+        added = self._added(store)
+        assert added.fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
+        assert added.timezone == "Asia/Tokyo"

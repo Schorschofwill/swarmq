@@ -111,15 +111,19 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
     """``--cron`` → (cron, erster Fire-Zeitpunkt); ``--at`` → (None, ts)."""
     if args.cron is not None:
         cron = args.cron
-        # Compute first fire via croniter so the zset has a real score.
-        from croniter import CroniterBadCronError, croniter
+        # Compute the first fire with the scheduler's shared rule
+        # (KTD2) so the zset has a real score. CLI schedules stay UTC
+        # (no --tz before 0.10.1).
+        from croniter import CroniterBadCronError
+
+        from swarmq.scheduler.cron_time import next_fire_ms
         try:
-            next_dt = croniter(cron, datetime.now(UTC)).get_next(datetime)
+            fire_ts_ms = next_fire_ms(cron, None, int(time.time() * 1000))
         except (CroniterBadCronError, ValueError) as exc:
             raise ConfigurationError(
                 f"invalid cron expression: {cron!r} ({exc})"
             ) from exc
-        return cron, int(next_dt.timestamp() * 1000)
+        return cron, fire_ts_ms
     # --at <iso-datetime>
     try:
         dt = datetime.fromisoformat(args.at.replace("Z", "+00:00"))

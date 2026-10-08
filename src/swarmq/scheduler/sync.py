@@ -3,14 +3,15 @@ statische ``TaskInfo``-Crons mit dem Store ab (CLI-Einträge schatten mit
 Warnung; geänderte Cron behält ``disabled``)."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import time
 from typing import Any
 
 import msgspec
-from croniter import croniter
 
+from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields, get_logger
+from swarmq.scheduler.cron_time import next_fire_ms
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
 from swarmq.task import Task
 
@@ -22,6 +23,7 @@ class SchedulerCronSync:
     # (``_backend`` trägt dort das ``SchedulerBackend``-Protocol; hier ``Any``,
     # weil ein Import aus ``loop`` einen Zyklus schüfe).
     _backend: Any
+    _config: SwarmQConfig
     _store: ScheduleStore
 
     async def sync_taskinfo_crons(self) -> None:
@@ -53,9 +55,11 @@ class SchedulerCronSync:
 
             schedule_name = task_info.name
             queue = task_info.queues[0]
-            now = datetime.now(UTC)
-            next_dt = croniter(task_info.cron, now).get_next(datetime)
-            fire_ts_ms = int(next_dt.timestamp() * 1000)
+            # KTD1: eigene Zone des Tasks, sonst der globale Standard.
+            timezone = task_info.timezone or self._config.scheduler_timezone
+            fire_ts_ms = next_fire_ms(
+                task_info.cron, timezone, int(time.time() * 1000),
+            )
 
             definition = ScheduleDefinition(
                 schedule_name=schedule_name,
@@ -66,6 +70,7 @@ class SchedulerCronSync:
                 cron=task_info.cron,
                 fire_ts_ms=fire_ts_ms,
                 source="static",
+                timezone=timezone,
             )
 
             try:

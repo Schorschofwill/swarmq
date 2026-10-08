@@ -8,11 +8,9 @@ import os
 import socket
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import msgspec
-from croniter import croniter
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
@@ -28,6 +26,7 @@ if TYPE_CHECKING:
 
 from swarmq.contracts.coordination import LockToken
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
+from swarmq.scheduler.cron_time import iter_fire_ms, next_fire_ms
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
 from swarmq.scheduler.sync import SchedulerCronSync
 
@@ -519,29 +518,30 @@ class SchedulerLoop(SchedulerCronSync):
         # schedule re-fires on every poll tick forever — see plan
         # Unit 9 Risks "Double-SETNX-Race" commit-on-fail rationale).
         #
-        # Cron semantics: expressions are evaluated in UTC against the
-        # leader clock (croniter over datetime.now(UTC)) — there is no
-        # timezone/DST handling; `0 3 * * *` fires at 03:00 UTC.
-        # Catch-up after downtime is SKIP: get_next(now) yields exactly
-        # one catch-up fire, never a backlog storm.
+        # Cron semantics: expressions are evaluated in the definition's
+        # timezone (None = UTC) against the leader clock, with the DST
+        # rule of ``cron_time`` (Plan 2026-10-08-1541, KTD2).
+        # Catch-up after downtime is SKIP: the next fire after "now"
+        # yields exactly one catch-up fire, never a backlog storm.
         if definition.cron is None:
             next_fire_ts_ms = -1
             updated_def: ScheduleDefinition | None = None
         else:
-            now = datetime.now(UTC)
-            next_dt = croniter(definition.cron, now).get_next(datetime)
-            next_fire_ts_ms = int(next_dt.timestamp() * 1000)
+            now_ms = int(time.time() * 1000)
+            next_fire_ts_ms = next_fire_ms(
+                definition.cron, definition.timezone, now_ms,
+            )
             updated_def = msgspec.structs.replace(
                 definition,
                 fire_ts_ms=next_fire_ts_ms,
-                last_fire_at=int(time.time() * 1000),
+                last_fire_at=now_ms,
             )
             # Catch-up-skip was correct but invisible —
             # a skipped daily report went unnoticed. Count the cron
             # occurrences that fell between the due score and now (they
             # will never fire) and surface them as a signal.
             skipped_count = self._count_skipped_fires(
-                definition.cron, score_ms, now,
+                definition.cron, definition.timezone, score_ms, now_ms,
             )
             if skipped_count > 0:
                 logger.warning(
@@ -659,23 +659,20 @@ class SchedulerLoop(SchedulerCronSync):
 
     @staticmethod
     def _count_skipped_fires(
-        cron: str, score_ms: int, now: datetime,
+        cron: str, timezone: str | None, score_ms: int, now_ms: int,
     ) -> int:
-        """Count cron occurrences in ``(score_ms, now]`` — fires that
+        """Count cron occurrences in ``(score_ms, now_ms]`` — fires that
         catch-up-skip will never run.
 
         The due score itself is the fire we ARE running; everything
-        between it and ``now`` is lost to the skip semantics. Iteration
+        between it and ``now_ms`` is lost to the skip semantics. Iteration
         is capped at 1000 — a week-long outage on a minutely cron does
-        not need an exact count to alert on.
+        not need an exact count to alert on. Occurrences are computed in
+        the definition's *timezone* with the same DST rule as the score.
         """
-        start = datetime.fromtimestamp(score_ms / 1000, tz=UTC)
-        it = croniter(cron, start)
         skipped = 0
-        now_ts = now.timestamp()
-        while skipped < 1000:
-            nxt = it.get_next(datetime)
-            if nxt.timestamp() > now_ts:
+        for fire_ms in iter_fire_ms(cron, timezone, score_ms):
+            if fire_ms > now_ms or skipped >= 1000:
                 break
             skipped += 1
         return skipped

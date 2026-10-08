@@ -15,13 +15,19 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # Test list (0.9.0, Scheduler-Commit-Wettlauf):
 # 4. Der Fire-Commit traegt den gefeuerten Index-Score (``fired_ts_ms``),
 #    damit eine Aenderung zwischen Poll und Commit nicht ueberschrieben wird.
+#
+# Test list (Plan 2026-10-08-1541, U2): Termine in der Zone der Definition.
+# 5. Der naechste Score nach dem Fire gilt in ``definition.timezone``.
+# 6. Die Zaehlung uebersprungener Fires rechnet in derselben Zone.
 
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 
 from swarmq.config import SwarmQConfig
@@ -952,3 +958,58 @@ class TestSchedulerLoopLogging:
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "RuntimeError" and entry["error"] == "dispatch broke"
         assert entry["signal"] == Signal.SCHEDULER_HEARTBEAT.value
+
+
+
+def _utc_ms(*args: int) -> int:
+    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+
+
+class TestSchedulerLoopTimezone:
+    """Plan 2026-10-08-1541 (U2): Score und Skip-Zaehlung in der Zone der
+    Definition. Die Uhr ist fest (``time.time`` im Loop-Modul gepatcht)."""
+
+    @pytest.fixture
+    def loop(self, backend, broker, config, lock_manager, store, signal_dispatcher, monkeypatch):
+        # 2026-10-06 10:00 UTC = 19:00 in Tokio.
+        fake_time = SimpleNamespace(time=lambda: _utc_ms(2026, 10, 6, 10, 0) / 1000)
+        monkeypatch.setattr("swarmq.scheduler.loop.time", fake_time)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = "leader"
+        return loop
+
+    @staticmethod
+    def _tokyo_def() -> ScheduleDefinition:
+        # Faellig war 09:00 Tokio am 06.10. (= 00:00 UTC).
+        return msgspec.structs.replace(
+            _def(name="tokyo", cron="0 9 * * *", fire_ts_ms=_utc_ms(2026, 10, 6, 0, 0)),
+            timezone="Asia/Tokyo",
+        )
+
+    async def test_next_score_uses_definition_timezone(self, loop, store):
+        d = self._tokyo_def()
+        store.poll_due.return_value = [("tokyo", d.fire_ts_ms, d)]
+
+        await loop._poll_tick()
+
+        commit_args = store.commit_fire.await_args
+        assert commit_args.args[1] == _utc_ms(2026, 10, 7, 0, 0)
+        assert commit_args.args[2].fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
+
+    async def test_skipped_fires_are_counted_in_definition_timezone(
+        self, loop, store, signal_dispatcher
+    ):
+        """Zwischen 00:00 und 10:00 UTC liegt kein Termin ``0 9`` in Tokio
+        (09:00 UTC waere es in UTC gewesen) -- also nichts uebersprungen."""
+        skipped: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
+        async def _sk(**kw):
+            skipped.append(kw)
+
+        d = self._tokyo_def()
+        store.poll_due.return_value = [("tokyo", d.fire_ts_ms, d)]
+
+        await loop._poll_tick()
+
+        assert skipped == []
