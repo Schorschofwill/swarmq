@@ -318,8 +318,6 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
                 if self._state == "leader":
                     try:
                         await self.adopt_reported_crons()
-                    except asyncio.CancelledError:
-                        raise
                     except Exception as exc:
                         logger.warning(
                             "scheduler_cron_adopt_failed", **_error_fields(exc)
@@ -715,9 +713,9 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).
 
         Scheduler has no direct registry reference — it walks the global
-        ``Task._registered_tasks`` list. Linear scan is O(n); with n typically < 100 tasks this
-        is well below the per-fire ScheduleStore + broker round-trip
-        cost, so no index is introduced.
+        ``Task._registered_tasks`` list. Linear scan is O(n); with n
+        typically < 100 tasks this is well below the per-fire
+        ScheduleStore + broker round-trip cost, so no index is introduced.
         """
         for task_class in Task._registered_tasks:
             ti: TaskInfo | None = getattr(task_class, "task_info", None)

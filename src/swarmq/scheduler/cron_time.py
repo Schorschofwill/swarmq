@@ -7,7 +7,7 @@ CLI ``schedule add``), rechnen hierueber."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from itertools import islice
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,11 @@ _ALIASES = {
     "@yearly": "0 0 1 1 *",
     "@annually": "0 0 1 1 *",
 }
+
+
+def _zone(timezone: str | None) -> tzinfo:
+    """IANA-Zone des Crons; ``None`` heisst UTC."""
+    return UTC if timezone is None else ZoneInfo(timezone)
 
 
 def next_fire_times(
@@ -48,14 +53,12 @@ def next_fire_times(
     echten Zeit. In der Fruehjahrsluecke gilt das Verhalten von croniter.
     Ungueltige Ausdruecke werfen croniters ``CroniterBadCronError``.
     """
-    zone = UTC if timezone is None else ZoneInfo(timezone)
-    return list(islice(_iter_fires(cron, start.astimezone(zone)), count))
+    return list(islice(_iter_fires(cron, start.astimezone(_zone(timezone))), count))
 
 
 def iter_fire_ms(cron: str, timezone: str | None, ref_ms: int) -> Iterator[int]:
     """Termine nach *ref_ms* als Unix-ms (Score im Schedule-Index), endlos."""
-    zone = UTC if timezone is None else ZoneInfo(timezone)
-    start = datetime.fromtimestamp(ref_ms / 1000, tz=zone)
+    start = datetime.fromtimestamp(ref_ms / 1000, tz=_zone(timezone))
     for fire in _iter_fires(cron, start):
         yield int(fire.timestamp() * 1000)
 
