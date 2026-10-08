@@ -67,6 +67,11 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # deterministic. Optional default "completion" matches the producer
     # default used when the Client sees _MISSING.
     unique_until: Literal["start", "completion"] = "completion"
+    # Plan 2026-10-08-1541 (KTD1): IANA-Zone, in der ``cron`` gilt; None
+    # heisst UTC ("UTC"/"Etc/UTC" werden schon beim Definieren zu None).
+    # Neues Feld am Ende mit Default None, damit Eintraege aus aelteren
+    # Versionen weiter dekodieren und ihr Fingerabdruck gleich bleibt.
+    timezone: str | None = None
 
 
 def make_schedfire_key(schedule_name: str, fire_ts_ms: int) -> str:

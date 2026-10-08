@@ -369,6 +369,54 @@ def test_taskinfo_catchup_false_with_cron_accepted():
 
 
 # ---------------------------------------------------------------------------
+# Cron-Zeitzone (Plan 2026-10-08-1541, U1, R6, KTD1)
+#
+# Test-Liste:
+# - cron mit IANA-Zone wird angenommen, Zone bleibt erhalten
+# - ohne Angabe ist die Zone None
+# - unbekannte Zone -> ValueError mit dem Namen
+# - timezone ohne cron -> ValueError
+# - "UTC" und "Etc/UTC" werden zu None normalisiert
+# - leerer String -> ValueError (kein stilles UTC)
+# ---------------------------------------------------------------------------
+
+
+def test_taskinfo_cron_with_timezone_accepted():
+    info = TaskInfo(
+        name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Berlin"
+    )
+    assert info.timezone == "Europe/Berlin"
+
+
+def test_taskinfo_unknown_timezone_raises_with_name():
+    with pytest.raises(ValueError, match="Europe/Atlantis"):
+        TaskInfo(
+            name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Atlantis"
+        )
+
+
+def test_taskinfo_malformed_timezone_key_raises():
+    """Leerer oder pfadartiger Schlüssel ist kein stilles UTC."""
+    for key in ("", "../etc/passwd"):
+        with pytest.raises(ValueError, match="timezone"):
+            TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone=key)
+
+
+def test_taskinfo_timezone_without_cron_raises():
+    with pytest.raises(ValueError, match="timezone requires cron"):
+        TaskInfo(name="task", queues=["q"], timezone="Europe/Berlin")
+
+
+def test_taskinfo_utc_timezone_normalized_to_none():
+    """KTD1: "UTC", "Etc/UTC" und keine Angabe sind gleichwertig; der
+    Fingerabdruck einer gespeicherten Definition ändert sich beim
+    Upgrade nicht."""
+    for key in ("UTC", "Etc/UTC", None):
+        info = TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone=key)
+        assert info.timezone is None
+
+
+# ---------------------------------------------------------------------------
 # Task registration delay/eta signature-guard (P1-3)
 # ---------------------------------------------------------------------------
 

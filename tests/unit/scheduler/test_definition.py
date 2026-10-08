@@ -16,6 +16,10 @@ insert-if-absent vs. update-static branches that live in Python.
 # Test list (0.9.0, Scheduler-Commit-Wettlauf):
 # 3. ``commit_fire`` reicht den gefeuerten Score als ``fired_ts_ms`` an den
 #    Bytes-Store durch.
+#
+# Test list (Plan 2026-10-08-1541, U1, R6, KTD1):
+# 4. Hin- und Rückweg mit ``timezone`` verlustfrei.
+# 5. Alte JSON ohne ``timezone`` wird mit ``None`` gelesen.
 
 from __future__ import annotations
 
@@ -146,6 +150,24 @@ class TestScheduleDefinition:
         raw = msgspec.json.encode(original)
         decoded = msgspec.json.decode(raw, type=ScheduleDefinition)
         assert decoded == original
+
+    def test_msgspec_roundtrip_keeps_timezone(self):
+        original = _def(cron="0 3 * * *", timezone="Europe/Berlin")
+        raw = msgspec.json.encode(original)
+        decoded = msgspec.json.decode(raw, type=ScheduleDefinition)
+        assert decoded == original
+        assert decoded.timezone == "Europe/Berlin"
+
+    def test_decode_legacy_json_without_timezone_yields_none(self):
+        """Einträge aus 0.9.x tragen kein ``timezone``-Feld (Pattern 7)."""
+        legacy = (
+            b'{"schedule_name":"daily","task_name":"backup","args":[],'
+            b'"kwargs":{},"queue":"default","cron":"0 3 * * *",'
+            b'"fire_ts_ms":1700000000000,"source":"static","disabled":false,'
+            b'"last_fire_at":null,"dedup_hash":null,"unique_until":"completion"}'
+        )
+        decoded = msgspec.json.decode(legacy, type=ScheduleDefinition)
+        assert decoded.timezone is None
 
 
 # ---------------------------------------------------------------------------

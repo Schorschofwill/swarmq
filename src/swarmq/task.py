@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from croniter import CroniterBadCronError, croniter
 
+from swarmq.config import normalize_timezone
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
@@ -108,6 +109,9 @@ class TaskInfo:
     # is gated on SwarmQConfig.priorities=True (opt-in to keep existing
     # single-queue deployments unchanged).
     priority: PriorityLevel = "normal"
+    # Cron-Zeitzone (Plan 2026-10-08-1541, KTD1): IANA-Name, in dem der
+    # Cron-Ausdruck gilt. None heißt UTC.
+    timezone: str | None = None
 
     def __init__(
         self,
@@ -130,6 +134,7 @@ class TaskInfo:
         unique_until: UniqueUntil = "completion",
         max_age: int | None = None,
         priority: PriorityLevel = "normal",
+        timezone: str | None = None,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -154,6 +159,7 @@ class TaskInfo:
         object.__setattr__(self, "unique_until", unique_until)
         object.__setattr__(self, "max_age", max_age)
         object.__setattr__(self, "priority", priority)
+        object.__setattr__(self, "timezone", timezone)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -247,6 +253,15 @@ class TaskInfo:
                 raise ValueError(
                     f"cron is not a valid expression: {self.cron!r} ({exc})"
                 ) from exc
+
+        if self.timezone is not None:
+            if self.cron is None:
+                raise ValueError(
+                    f"timezone requires cron (got timezone={self.timezone!r})"
+                )
+            # KTD1: "UTC"/"Etc/UTC" werden zu None, damit sich der
+            # Fingerabdruck gespeicherter Definitionen nicht ändert.
+            object.__setattr__(self, "timezone", normalize_timezone(self.timezone))
 
 
     def _validate_unique(self) -> None:
