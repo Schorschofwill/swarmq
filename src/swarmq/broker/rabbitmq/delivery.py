@@ -22,6 +22,7 @@ from swarmq.broker.rabbitmq.connection import (
     _PUBLISH_MAX_ATTEMPTS,
     RabbitMQConnection,
 )
+from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
 from swarmq.logging import _error_fields, get_logger
@@ -279,33 +280,54 @@ class RabbitMQDelivery(RabbitMQConnection):
             await on_delivery(delivery)
 
         consumer_tag = await amqp_queue.consume(_on_raw)
-        self._consumer_tags.append((amqp_queue, consumer_tag))
+        self._consumer_watch.add(queue, amqp_queue, _on_raw, consumer_tag)
+
+    @property
+    def consumer_watch(self) -> ConsumerWatch:
+        """Der Consumer-Wächter (U6); Settle-Regeln (U7) stoßen ihn an und
+        fragen die selbst abgemeldeten Tags ab."""
+        return self._consumer_watch
+
+    def start_consumer_watch(self, interval_s: float, on_reregistered: ReregisteredHook | None = None) -> None:
+        """Startet den Consumer-Wächter (U6, KTD3) nach den ``consume``-Aufrufen.
+
+        ``on_reregistered(queue, reason)`` zählt jede Neuanmeldung für die
+        Metrik. ``cancel_consume`` und ``close`` stoppen den Wächter."""
+        self._consumer_watch.on_reregistered = on_reregistered
+        self._consumer_watch.start(interval_s)
+
+    def consumer_gaps(self) -> dict[str, float]:
+        """Je konsumierter Queue: Sekunden ohne aktiven Consumer (0.0 = aktiv).
+
+        Leer vor dem ersten ``consume`` und nach ``cancel_consume``; Grundlage
+        des Consumer-Checks von ``/ready`` (U6, R2)."""
+        return self._consumer_watch.gaps()
 
     async def cancel_consume(self) -> None:
         """Cancel all active consumers to stop receiving new messages.
 
+        Stoppt zuerst den Consumer-Wächter, damit er nichts mehr neu anmeldet,
+        und meldet dann die aktuellen Tags ab — nach einer Neuanmeldung (U6)
+        sind das nicht mehr die aus ``consume``.
+
         Per-consumer error isolation: with multiple
         queues/priority-bands a single ``queue.cancel`` that raises (e.g.
         channel transition, AMQP error) must not abort cancellation of the
-        remaining consumers, nor leave ``_consumer_tags`` populated. A leak
+        remaining consumers, nor leave the registry populated. A leak
         here would let the worker keep pulling messages during the DRAINING
         window and could abort the graceful-shutdown sequence
         (in-flight drain, lock release, scheduler stop) in _execute_shutdown.
         """
-        errors: list[Exception] = []
-        for amqp_queue, consumer_tag in self._consumer_tags:
-            try:
-                await amqp_queue.cancel(consumer_tag)
-            except Exception as exc:
-                errors.append(exc)
-                logger.warning("consumer_cancel_failed", consumer_tag=consumer_tag, **_error_fields(exc))
-        self._consumer_tags.clear()
+        errors = await self._consumer_watch.cancel_all()
+        for consumer_tag, exc in errors:
+            logger.warning("consumer_cancel_failed", consumer_tag=consumer_tag, **_error_fields(exc))
         if errors:
             # Surface that cancellation was imperfect, but only after every
             # consumer has been attempted and the registry cleared.
+            first = errors[0][1]
             raise BrokerConnectionError(
-                f"cancel_consume: {len(errors)} consumer(s) failed to cancel; first error: {errors[0]}"
-            ) from errors[0]
+                f"cancel_consume: {len(errors)} consumer(s) failed to cancel; first error: {first}"
+            ) from first
 
     # ------------------------------------------------------------------
     # Die vier Verben (KTD2)

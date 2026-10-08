@@ -285,6 +285,11 @@ class SwarmQConfig:
     heartbeat_interval_s: float = 5.0
     heartbeat_timeout_s: float = 60.0
     consumer_timeout_s: float = 1800.0
+    # Consumer-Waechter (Plan 2026-10-08-1541, U6, KTD3): Takt, in dem der
+    # Worker seine Consumer gegen den Broker prueft und verlorene neu anmeldet,
+    # und die Frist, ab der ``/ready`` eine Queue ohne aktiven Consumer meldet.
+    consumer_watch_interval_s: float = 5.0
+    consumer_ready_grace_s: float = 30.0
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -362,6 +367,8 @@ class SwarmQConfig:
         ("SWARMQ_HEARTBEAT_INTERVAL_S", "heartbeat_interval_s", "float"),
         ("SWARMQ_HEARTBEAT_TIMEOUT_S", "heartbeat_timeout_s", "float"),
         ("SWARMQ_CONSUMER_TIMEOUT_S", "consumer_timeout_s", "float"),
+        ("SWARMQ_CONSUMER_WATCH_INTERVAL_S", "consumer_watch_interval_s", "float"),
+        ("SWARMQ_CONSUMER_READY_GRACE_S", "consumer_ready_grace_s", "float"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -387,6 +394,8 @@ class SwarmQConfig:
         "heartbeat_interval_s",
         "heartbeat_timeout_s",
         "consumer_timeout_s",
+        "consumer_watch_interval_s",
+        "consumer_ready_grace_s",
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",
@@ -424,6 +433,25 @@ class SwarmQConfig:
     # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
     # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
     # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+
+    @property
+    def consumed_queues(self) -> list[str]:
+        """Die Queues, die ein Worker konsumiert — Grundlage fuer Deklaration,
+        Consumer-Waechter und ``/ready`` (Plan 2026-10-08-1541, U6).
+
+        R4.3 Task Priorities: with priorities each base queue expands into
+        the high/normal/low triplet. High-priority drains first under LIGHT
+        load simply because RabbitMQ delivers from whichever of the three
+        queues has a message. Under FULL saturation the channel-level
+        prefetch is shared fairly — true weighted prefetch (3:2:1) would
+        require separate channels per priority, which is deferred. Operators
+        still get queue-level visibility of priority splits (DLQ list,
+        queue-depth metrics per priority) and the routing contract
+        (priority="high" → {queue}.high).
+        """
+        if not self.priorities:
+            return list(self.queues)
+        return [name for base in self.queues for name in (f"{base}.high", base, f"{base}.low")]
 
     @property
     def worker_identity(self) -> str:

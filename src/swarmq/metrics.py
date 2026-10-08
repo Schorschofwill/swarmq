@@ -221,6 +221,15 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            self.consumer_reregistrations_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_consumer_reregistrations_total",
+                (
+                    "Consumers the worker registered again after the broker "
+                    "ended them (consumer timeout, channel close)"
+                ),
+                labelnames=("queue",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -237,10 +246,16 @@ class Metrics:
             self.scheduler_leader = noop
             self.scheduler_cron_conflicts_total = noop
             self.scheduler_leader_outdated = noop
+            self.consumer_reregistrations_total = noop
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    def count_consumer_reregistration(self, queue: str, reason: str) -> None:
+        """Hook des Consumer-Waechters (Plan 2026-10-08-1541, U6). Der Grund
+        steht im Log ``consumer_reregistered``, nicht im Label."""
+        self.consumer_reregistrations_total.labels(queue=queue).inc()
 
     def render(self) -> bytes:
         """Return the Prometheus text-exposition payload.

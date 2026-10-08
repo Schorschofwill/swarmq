@@ -197,7 +197,7 @@ class TestBrokerCancelConsume:
 
     async def test_cancel_consume_isolates_per_consumer_failure(self):
         """A consumer whose cancel() raises must not prevent the remaining
-        consumers from being cancelled, and _consumer_tags must be cleared
+        consumers from being cancelled, and the registry must be cleared
         regardless (2026-06-02 audit, P1-2). The error is surfaced only
         after every consumer has been attempted."""
         from swarmq.exceptions import BrokerConnectionError
@@ -223,7 +223,7 @@ class TestBrokerCancelConsume:
         # The second consumer was still cancelled despite the first raising.
         mock_queue_2.cancel.assert_awaited_once_with("tag-2")
         # Registry cleared so a redelivery window cannot reuse stale tags.
-        assert broker._consumer_tags == []
+        assert broker.consumer_gaps() == {}
 
 
 class TestRequestShutdown:

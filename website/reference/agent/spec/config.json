@@ -307,6 +307,18 @@
       "type": "float"
     },
     {
+      "default": 5.0,
+      "env_var": "SWARMQ_CONSUMER_WATCH_INTERVAL_S",
+      "name": "consumer_watch_interval_s",
+      "type": "float"
+    },
+    {
+      "default": 30.0,
+      "env_var": "SWARMQ_CONSUMER_READY_GRACE_S",
+      "name": "consumer_ready_grace_s",
+      "type": "float"
+    },
+    {
       "default": 131072,
       "env_var": "SWARMQ_MALLOC_TRIM_THRESHOLD",
       "name": "malloc_trim_threshold",

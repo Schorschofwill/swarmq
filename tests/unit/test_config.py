@@ -1030,3 +1030,39 @@ def test_scheduler_seen_interval_from_env(monkeypatch):
 def test_scheduler_seen_interval_must_be_positive(value):
     with pytest.raises(ConfigurationError, match="scheduler_seen_interval_s"):
         _cfg(scheduler_seen_interval_s=value)
+
+
+# --- Plan 2026-10-08-1541, U6: Consumer-Wächter und Readiness ---
+# Test-Liste:
+# 1. Standards: consumer_watch_interval_s 5 s, consumer_ready_grace_s 30 s.
+# 2. Beide über SWARMQ_CONSUMER_WATCH_INTERVAL_S / SWARMQ_CONSUMER_READY_GRACE_S.
+# 3. Beide müssen > 0 sein.
+# 4. ``consumed_queues``: die Queues, die ein Worker konsumiert (mit
+#    Prioritäten das Tripel je Basis-Queue).
+
+
+def test_consumer_watch_defaults():
+    cfg = _cfg()
+    assert cfg.consumer_watch_interval_s == 5.0
+    assert cfg.consumer_ready_grace_s == 30.0
+
+
+def test_consumer_watch_env_overrides(monkeypatch):
+    monkeypatch.setenv("SWARMQ_CONSUMER_WATCH_INTERVAL_S", "2.5")
+    monkeypatch.setenv("SWARMQ_CONSUMER_READY_GRACE_S", "45")
+    cfg = _cfg()
+    assert cfg.consumer_watch_interval_s == 2.5
+    assert cfg.consumer_ready_grace_s == 45.0
+
+
+@pytest.mark.parametrize("field", ["consumer_watch_interval_s", "consumer_ready_grace_s"])
+def test_consumer_watch_fields_must_be_positive(field):
+    with pytest.raises(ConfigurationError, match=f"{field} must be > 0"):
+        _cfg(**{field: 0})
+
+
+def test_consumed_queues_expand_priorities():
+    assert _cfg(queues=["a", "b"]).consumed_queues == ["a", "b"]
+    assert _cfg(queues=["a", "b"], priorities=True).consumed_queues == [
+        "a.high", "a", "a.low", "b.high", "b", "b.low",
+    ]

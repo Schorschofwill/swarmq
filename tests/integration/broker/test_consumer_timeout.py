@@ -28,11 +28,16 @@ Test-Liste:
 - [x] 4.2.9 und 4.3.6: Ein Ack auf ein unbekanntes Delivery-Tag schließt den
       Consume-Channel sofort (deterministischer Ersatz für den Timer) — mit
       demselben Restore-Verhalten wie der 4.2-Timeout.
+
+Worker mit Consumer-Wächter (Plan 2026-10-08-1541, U6, R1):
+- [x] 4.3.6: Nach dem Timeout konsumiert der Worker weiter, ohne Neustart;
+      am Broker hängt genau ein Consumer, kein Zombie.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -41,10 +46,15 @@ from dataclasses import dataclass
 
 import aio_pika
 import aiormq.abc
+import httpx
 import pytest
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustQueue
 from aio_pika.exceptions import ChannelInvalidStateError
 
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.task import Task, TaskInfo
 from tests.support.services import RABBITMQ_42, RABBITMQ_MAIN, RabbitMQNode, require_rabbitmq
 
 pytestmark = [pytest.mark.integration]
@@ -296,3 +306,75 @@ async def test_unknown_delivery_tag_closes_channel_and_restore_keeps_tag(any_rab
     with pytest.raises(ChannelInvalidStateError):
         await first.ack()
     await again.ack()
+
+
+# --- Worker mit Consumer-Wächter (U6) ----------------------------------------
+
+
+async def _consumer_count(node: RabbitMQNode, queue: str) -> int:
+    """Echtzeit-Zahl aus ``queue.declare-ok`` (ohne Statistik-Verzug)."""
+    connection = await aio_pika.connect(node.amqp_url)
+    async with connection:
+        channel = await connection.channel()
+        declared = await channel.declare_queue(queue, passive=True)
+        return int(declared.declaration_result.consumer_count)
+
+
+def _management_consumer_tags(node: RabbitMQNode, queue: str) -> set[str]:
+    response = httpx.get(f"{node.management_url}/consumers/%2F", auth=("guest", "guest"), timeout=5.0)
+    response.raise_for_status()
+    return {c["consumer_tag"] for c in response.json() if c["queue"]["name"] == queue}
+
+
+@pytest.mark.timeout(40)
+async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43, valkey_url):
+    queue = f"ct_{uuid.uuid4().hex[:8]}"
+    broker = RabbitMQBroker(rabbitmq43.amqp_url)
+
+    class OutlivesTimeout(Task):
+        """Läuft, bis der Wächter den vom Broker beendeten Consumer selbst
+        abgemeldet hat — deterministisch statt einer festen Schlafdauer. Das
+        späte Ack fällt so in die Lage nach dem eigenen Cancel (KTD3)."""
+
+        task_info = TaskInfo(name="ct_outlives_timeout", queues=[queue])
+
+        async def run(self) -> str:
+            deadline = time.monotonic() + TIMEOUT_DEADLINE_S
+            while not broker.consumer_watch.self_cancelled_tags and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            return "slow"
+
+    class Quick(Task):
+        task_info = TaskInfo(name="ct_quick", queues=[queue])
+
+        async def run(self) -> str:
+            return "quick"
+
+    app = SwarmQ(
+        broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2, consumer_watch_interval_s=0.5
+    )
+    try:
+        async with rabbitmq43.consumer_timeout_policy(queue, CONSUMER_TIMEOUT_MS), app:
+            await app.broker.declare_queue(queue)  # sonst geht der Publish ins Leere
+            worker = asyncio.create_task(app.start_worker())
+            try:
+                slow_id = await app.schedule("ct_outlives_timeout")
+                assert await app.get_result(slow_id, timeout=TIMEOUT_DEADLINE_S + 5) == "slow"
+
+                quick_id = await app.schedule("ct_quick")
+                assert await app.get_result(quick_id, timeout=EVENT_DEADLINE_S) == "quick"
+
+                assert await _consumer_count(rabbitmq43, queue) == 1
+                [(_, current_tag)] = broker.consumer_watch.tags()
+                await wait_until(
+                    lambda: _management_consumer_tags(rabbitmq43, queue) == {current_tag},
+                    TIMEOUT_DEADLINE_S,
+                )
+            finally:
+                worker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+    finally:
+        Task._clear_registered_tasks()
+        for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
+            await _delete_queue(rabbitmq43, name)
