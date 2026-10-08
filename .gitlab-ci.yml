@@ -61,12 +61,15 @@ variables:
     - apt-get update && apt-get install -y --no-install-recommends build-essential
 
 # Real RabbitMQ + Valkey services + a readiness gate. Reused by the
-# integration and e2e jobs. (rabbitmq gets the alias `rabbitmq` automatically
-# from its image name; only valkey/valkey:8 needs an explicit `valkey` alias.)
+# integration and e2e jobs. RabbitMQ is pinned exactly (Plan 2026-10-08-1541,
+# KTD9): consumer-timeout behaviour differs between 4.2 and 4.3. Explicit
+# aliases, because the integration job adds a second rabbitmq image and both
+# would otherwise get the automatic alias `rabbitmq`.
 .with-services:
   extends: .uv
   services:
-    - name: rabbitmq:4-management
+    - name: rabbitmq:4.3.6-management
+      alias: rabbitmq
     - name: valkey/valkey:8
       alias: valkey
   variables:
@@ -74,6 +77,8 @@ variables:
     SWARMQ_TEST_RABBITMQ_PORT: "5672"
     SWARMQ_TEST_VALKEY_HOST: valkey
     SWARMQ_TEST_VALKEY_PORT: "6379"
+    # host:port pairs the readiness gate waits for (space separated).
+    SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 valkey:6379"
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends build-essential
     # Block until both services accept connections. check_docker SKIPS (not
@@ -82,8 +87,8 @@ variables:
     # warms the uv venv (build + extras) once before the test step.
     - |
       $UV_RUN python - <<'PY'
-      import socket, sys, time
-      targets = [("rabbitmq", 5672), ("valkey", 6379)]
+      import os, socket, sys, time
+      targets = [(h, int(p)) for h, p in (t.rsplit(":", 1) for t in os.environ["SWARMQ_CI_WAIT_FOR"].split())]
       deadline = time.time() + 120
       for host, port in targets:
           while True:
@@ -142,9 +147,30 @@ unit-tests:
     - $UV_RUN pytest tests/fuzz/test_parser_fuzz.py -m fuzz -q
 
 # Tier 2a — integration against real RabbitMQ + Valkey (deterministic).
+# Second broker 4.2.9 only here, for tests/integration/broker/
+# test_consumer_timeout.py. Its RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS is a
+# service-level variable: job variables reach every service container, and
+# the tick interval must not leak into the main broker. Both brokers need the
+# management API (port 15672) for the consumer-timeout policy, so the gate
+# waits for it too.
 integration-tests:
   extends: .with-services
   stage: test
+  services:
+    - name: rabbitmq:4.3.6-management
+      alias: rabbitmq
+    - name: rabbitmq:4.2.9-management
+      alias: rabbitmq42
+      variables:
+        RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit channel_tick_interval 1000"
+    - name: valkey/valkey:8
+      alias: valkey
+  variables:
+    SWARMQ_TEST_RABBITMQ_MGMT_PORT: "15672"
+    SWARMQ_TEST_RABBITMQ42_HOST: rabbitmq42
+    SWARMQ_TEST_RABBITMQ42_PORT: "5672"
+    SWARMQ_TEST_RABBITMQ42_MGMT_PORT: "15672"
+    SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 rabbitmq:15672 rabbitmq42:5672 rabbitmq42:15672 valkey:6379"
   script:
     - $UV_RUN pytest tests/integration -q
 

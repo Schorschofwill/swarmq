@@ -1,6 +1,9 @@
 services:
+  # Exakt gepinnt (Plan 2026-10-08-1541, KTD9): Das Verhalten beim
+  # Consumer-Timeout unterscheidet sich zwischen 4.2 und 4.3, und
+  # tests/integration/broker/test_consumer_timeout.py hält es pro Version fest.
   rabbitmq:
-    image: rabbitmq:4-management
+    image: rabbitmq:4.3.6-management
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -14,6 +17,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Zweiter Broker nur für die 4.2-Charakterisierung (SWARMQ_TEST_RABBITMQ42_*).
+  # channel_tick_interval 1000 ms: Bis 4.2 prüft der Channel den
+  # Consumer-Timeout nur je Tick (Standard 60 s); so schließt er nach ~4 s.
+  # Healthcheck als Benutzer rabbitmq: Ein CLI-Aufruf als root vor dem
+  # Serverstart legt /var/lib/rabbitmq/.erlang.cookie root-eigen an, und der
+  # Server bricht mit "eacces" ab.
+  rabbitmq42:
+    image: rabbitmq:4.2.9-management
+    ports:
+      - "5742:5672"
+      - "15742:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit channel_tick_interval 1000"
+    healthcheck:
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   valkey:
     image: valkey/valkey:8

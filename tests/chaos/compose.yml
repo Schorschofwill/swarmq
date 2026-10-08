@@ -4,7 +4,9 @@
 
 services:
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    # Exakt gepinnt (Plan 2026-10-08-1541, KTD9) auf die Version, gegen die
+    # die Suite bisher lief; ein Wechsel auf 4.x ist eine eigene Entscheidung.
+    image: rabbitmq:3.13.7-management-alpine
     healthcheck:
       # `ping` only proves the Erlang VM is up — it goes green BEFORE the
       # AMQP listener (5672) actually accepts connections. `compose --wait`

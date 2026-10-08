@@ -1,6 +1,6 @@
 services:
   rabbitmq:
-    image: rabbitmq:4-management
+    image: rabbitmq:4.3.6-management
     container_name: swarmq-dev-rabbitmq
     ports:
       - "5673:5672"
