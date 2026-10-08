@@ -55,6 +55,10 @@ from __future__ import annotations
 # 20. [x] Ein Record nach dem Schliessen der Pipe (etwa aus einer spaeteren
 #         atexit-Funktion der App): kein Traceback, kein Neustart-Sturm, der
 #         Record zaehlt als verworfen.
+# Flake unter CPU-Last (Fund nach 0.9.0):
+# 21. [x] Wie 20, aber der vom Record neu gestartete Listener liest erst nach
+#         dem Sentinel von ``shutdown_logging``: Der Sentinel bleibt in der
+#         geschlossenen Queue liegen und zaehlt nicht als verworfener Record.
 import json
 import logging
 import logging.handlers
@@ -65,6 +69,7 @@ import threading
 import time
 import weakref
 from collections.abc import Iterator
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -597,6 +602,54 @@ def test_a_record_after_multiprocessing_closed_the_pipe_is_counted_as_dropped(
         shutdown_logging()
 
         assert thread_errors == []
+        assert dropped_log_records() - before == 1
+        assert _messages() == ["evt_before_exit"]
+
+    assert run_in_forked_child(child, timeout=3.0) == 0
+
+
+def test_a_sentinel_left_in_a_closed_queue_is_not_counted_as_dropped(
+    tmp_path: pathlib.Path,
+) -> None:
+    def child() -> None:
+        import multiprocessing.process
+        import multiprocessing.util
+
+        from swarmq.logging import dropped_log_records
+
+        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.process._children.clear()  # type: ignore[attr-defined]
+        handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
+        listener = handler.listener
+        assert listener is not None
+        log = logging.getLogger("app")
+        log.warning("evt_before_exit")
+        multiprocessing.util._exit_function()  # type: ignore[attr-defined]
+        before = dropped_log_records()
+
+        # Reihenfolge wie unter CPU-Last: Der neu gestartete Listener liest
+        # (und bemerkt die geschlossene Pipe) erst, nachdem
+        # ``shutdown_logging`` ihm den Sentinel angeboten hat.
+        mp_queue: Any = handler.queue
+        sentinel_offered = threading.Event()
+        put_nowait, get = mp_queue.put_nowait, mp_queue.get
+
+        def put_nowait_and_signal(item: object) -> None:
+            put_nowait(item)
+            if item is listener._sentinel:  # type: ignore[attr-defined]
+                sentinel_offered.set()
+
+        def get_after_the_sentinel(*args: object, **kwargs: object) -> object:
+            assert sentinel_offered.wait(2)
+            return get(*args, **kwargs)
+
+        mp_queue.put_nowait = put_nowait_and_signal
+        mp_queue.get = get_after_the_sentinel
+
+        log.warning("evt_after_exit")
+        shutdown_logging()
+
+        assert sentinel_offered.is_set()
         assert dropped_log_records() - before == 1
         assert _messages() == ["evt_before_exit"]
 
