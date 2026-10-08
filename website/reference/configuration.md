@@ -126,7 +126,7 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_dlq_messages` | gauge | `queue` | Messages in `{queue}.XQ`, sampled. |
 | `swarmq_worker_uptime_seconds` | gauge | `worker_id` | Seconds since the worker started, sampled. |
 | `swarmq_scheduler_leader` | gauge | `worker_id` | `1` while this worker holds the scheduler leader lock, else `0`. |
-| `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running an older swarmq without time zone support, else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
+| `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq before 0.10.0 without time zone support, else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
 | `swarmq_scheduler_cron_conflicts_total` | counter | `schedule_name` | Leader selection ticks that saw several live definitions of one static cron for more than 10 minutes ([conflicts](../guides/scheduling-and-retries.md#conflicts)). |
 | `swarmq_log_records_dropped_total` | counter | none | Log records dropped because the log queue was full (see [Logging](logging.md#non-blocking-output-and-dropped-records)). |
 

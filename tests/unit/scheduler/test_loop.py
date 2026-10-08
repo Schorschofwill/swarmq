@@ -40,6 +40,18 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 #     (Signal mit ``outdated=False``).
 # 16. Lesefehler bei der Beobachtung: Warnung, die Election läuft weiter.
 # 17. Jeder Melde-Takt meldet die eigene Version (TTL = Lebendigkeitsfenster).
+#
+# Test list (Review-Befund #1): Uebernahme und Poll im Leader serialisiert.
+# 18. Eine Uebernahme, die waehrend eines Fires (zwischen Poll und Commit)
+#     faellig wird, wartet bis nach dem Commit; der Folge-Score kommt aus
+#     Cron und Zone der uebernommenen Definition.
+# 19. Laeuft die Uebernahme vor dem Poll, feuert der Poll die uebernommene
+#     Definition und plant den Folge-Score nach deren Cron und Zone.
+#
+# Test list (Review-Befund #3): Parken einer nicht planbaren Definition.
+# 20. Ein ``BackendConnectionError`` beim Parken bricht den Batch nicht ab;
+#     ``scheduler_park_failed`` wird geloggt.
+# 21. Ein Owner-Mismatch beim Parken wird geloggt.
 
 from __future__ import annotations
 
@@ -47,6 +59,7 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import msgspec
 import pytest
@@ -59,7 +72,7 @@ from swarmq.scheduler import (
     ScheduleDefinition,
     ScheduleStore,
 )
-from swarmq.scheduler.reports import live_window_ms
+from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.inmemory import InMemoryBackend
@@ -1238,6 +1251,35 @@ class TestNextFireFailure:
         assert broken_commit.args[1:4] == (-1, batch[0][2], "test-owner")
         assert broken_commit.kwargs["fired_ts_ms"] == 1_000
 
+    async def test_park_connection_error_does_not_abort_batch(
+        self, loop, broker, store, swarmq_logs,
+    ):
+        """Liste 20 (Review-Befund #3): R18-Isolation auch beim Parken."""
+        store.poll_due.return_value = self._batch()
+
+        async def _commit(name, *_args, **_kwargs):
+            if name == "broken":
+                raise BackendConnectionError("valkey down")
+            return True
+
+        store.commit_fire.side_effect = _commit
+
+        await loop._poll_tick()
+
+        assert broker.publish.await_args.kwargs["headers"]["x-swarmq-schedfire"] == "good:1000"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_failed"]
+        assert entry["schedule_name"] == "broken" and entry["error_type"]
+
+    async def test_park_owner_mismatch_is_logged(self, loop, store, swarmq_logs):
+        """Liste 21 (Review-Befund #3): das abgelehnte Parken bleibt sichtbar."""
+        store.poll_due.return_value = self._batch()[:1]
+        store.commit_fire.return_value = False
+
+        await loop._poll_tick()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_owner_mismatch"]
+        assert entry["schedule_name"] == "broken"
+
 
 class TestTakeoverBetweenPollAndCommit:
     """Liste 9 (KTD12): echter ScheduleStore ueber dem In-Memory-Backend.
@@ -1271,3 +1313,89 @@ class TestTakeoverBetweenPollAndCommit:
         assert stored == taken_over
         assert await memory.schedules.fire_ts("cron_a") > 1_000
 
+
+
+class TestAdoptDuringFire:
+    """Liste 18/19 (Review-Befund #1): echter ScheduleStore ueber dem
+    In-Memory-Backend, Uebernahme ueber eine Cron-Meldung eines Workers."""
+
+    _NEW_CRON = "7 3 * * *"  # Minute 7 trifft nie ein */5-Raster
+    _NEW_ZONE = "Asia/Tokyo"
+
+    async def _setup(self, broker, config, lock_manager, signal_dispatcher):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        await memory.locks.acquire(
+            SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1,
+        )
+        polled = _def(name="cron_a", fire_ts_ms=1_000)
+        reported = msgspec.structs.replace(
+            polled, cron=self._NEW_CRON, timezone=self._NEW_ZONE,
+        )
+        await memory.schedules.add("cron_a", msgspec.json.encode(polled), 1_000)
+        await memory.schedules.report_cron(
+            "cron_a", cron_fingerprint(reported), msgspec.json.encode(reported),
+            live_window_ms=live_window_ms(config.scheduler_seen_interval_s),
+        )
+        loop = _make_loop(
+            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+        )
+        loop._state = "leader"
+        adopted = asyncio.Event()
+        adopt = loop.adopt_reported_crons
+
+        async def _adopt_and_signal():
+            await adopt()
+            adopted.set()
+
+        loop.adopt_reported_crons = _adopt_and_signal
+        return memory, loop, adopted
+
+    def _assert_scored_by_new_cron(self, score_ms):
+        local = datetime.fromtimestamp(score_ms / 1000, ZoneInfo(self._NEW_ZONE))
+        assert (local.hour, local.minute) == (3, 7)
+
+    async def _stop(self, loop, *tasks):
+        loop._stop_event.set()
+        loop._adopt_now.set()
+        await asyncio.gather(*tasks)
+
+    async def test_adoption_waits_for_running_fire(
+        self, broker, config, lock_manager, signal_dispatcher,
+    ):
+        memory, loop, adopted = await self._setup(
+            broker, config, lock_manager, signal_dispatcher,
+        )
+        published, release = asyncio.Event(), asyncio.Event()
+
+        async def _publish_and_trigger_adoption(*_args, **_kwargs):
+            loop._adopt_now.set()
+            published.set()
+            await release.wait()
+
+        broker.publish.side_effect = _publish_and_trigger_adoption
+        adopt_task = asyncio.create_task(loop._adopt_loop())
+        poll_task = asyncio.create_task(loop._poll_loop())
+        await published.wait()
+        release.set()
+        await adopted.wait()
+        await self._stop(loop, adopt_task, poll_task)
+
+        self._assert_scored_by_new_cron(await memory.schedules.fire_ts("cron_a"))
+
+    async def test_adoption_before_poll_plans_with_new_cron(
+        self, broker, config, lock_manager, signal_dispatcher,
+    ):
+        memory, loop, adopted = await self._setup(
+            broker, config, lock_manager, signal_dispatcher,
+        )
+        loop._adopt_now.set()
+        adopt_task = asyncio.create_task(loop._adopt_loop())
+        await adopted.wait()
+
+        await loop._poll_tick()
+        await self._stop(loop, adopt_task)
+
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert headers["x-swarmq-schedfire"] == "cron_a:1000"
+        self._assert_scored_by_new_cron(await memory.schedules.fire_ts("cron_a"))

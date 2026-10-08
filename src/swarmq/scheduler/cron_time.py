@@ -45,6 +45,10 @@ def next_fire_times(
     die vor dem Umstellen pruefen wollen, dass ein Ausdruck mit Zeitzone
     dieselben Termine liefert wie der alte UTC-Ausdruck (R20).
 
+    *start* muss zeitzonenbehaftet sein (z. B. ``datetime.now(UTC)``); ein
+    naiver Zeitpunkt wirft ``ValueError``, statt stillschweigend als
+    Ortszeit des Hosts gelesen zu werden.
+
     DST-Regel (KTD2): In der Rueckstellungsnacht feuert ein Cron, dessen
     Stundenfeld kein ``*`` enthaelt, nur im ersten Durchlauf der doppelten
     Wanduhrzeit; liefert croniter einen Termin im zweiten Durchlauf, wird
@@ -53,6 +57,12 @@ def next_fire_times(
     echten Zeit. In der Fruehjahrsluecke gilt das Verhalten von croniter.
     Ungueltige Ausdruecke werfen croniters ``CroniterBadCronError``.
     """
+    if start.utcoffset() is None:
+        raise ValueError(
+            "next_fire_times() needs a timezone-aware start, "
+            "e.g. datetime.now(UTC); a naive datetime would be read as "
+            "the host's local time"
+        )
     return list(islice(_iter_fires(cron, start.astimezone(_zone(timezone))), count))
 
 

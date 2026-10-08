@@ -1,7 +1,8 @@
-"""Leader-Version (Plan 2026-10-08-1541, KTD11): ein Leader älterer swarmq-
-Version ohne Zeitzonen-Unterstützung verwirft ``timezone`` bei jedem Fire.
-Nicht-Leader erkennen ihn am fehlenden oder älteren Versions-Key neben dem
-Leader-Lock."""
+"""Leader-Version (Plan 2026-10-08-1541, KTD11): ein Leader vor swarmq 0.10
+kennt keine Zeitzonen und verwirft ``timezone`` bei jedem Fire. Nicht-Leader
+erkennen ihn am fehlenden Versions-Key neben dem Leader-Lock oder an einer
+Version unter 0.10. Ein älterer Leader ab 0.10 (rollendes Upgrade) ist kein
+Fall für die Warnung."""
 
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ from swarmq.signals import Signal
 logger = get_logger(__name__)
 
 _RELEASE = re.compile(r"\d+(?:\.\d+)*")
+
+# Erste swarmq-Version, deren Leader die Zeitzone eines Crons beachtet.
+TIMEZONE_FLOOR = (0, 10)
 
 
 def _release(version: str) -> tuple[int, ...] | None:
@@ -39,13 +43,15 @@ def swarmq_version() -> str:
         return "unknown"
 
 
-def is_outdated(leader_version: str | None, own_version: str) -> bool:
-    """``True``, wenn der Leader älter ist als diese swarmq-Version. Ohne
-    Versionsangabe ist er eine Version vor 0.10.0."""
+def is_outdated(leader_version: str | None) -> bool:
+    """``True``, wenn der Leader keine Zeitzonen kennt: ohne Versionsangabe
+    (vor 0.10.0) oder mit einem Release unter 0.10. Ein älterer Leader ab
+    0.10 (rollendes Upgrade) gilt nicht als veraltet; eine nicht lesbare
+    Leader-Version ebenfalls nicht."""
     if leader_version is None:
         return True
-    leader, own = _release(leader_version), _release(own_version)
-    return leader is not None and own is not None and leader < own
+    leader = _release(leader_version)
+    return leader is not None and leader < TIMEZONE_FLOOR
 
 
 class LeaderVersionWatch:
@@ -58,8 +64,10 @@ class LeaderVersionWatch:
     Folgt einem gemeldeten ein aktueller Leader, liefert sie ``"current"``.
     """
 
-    def __init__(self, own_version: str) -> None:
-        self._own_version = own_version
+    def __init__(self, own_version: str | None = None) -> None:
+        # *own_version* ist seit der Untergrenzen-Regel ohne Wirkung; der
+        # Parameter bleibt, bis der Loop ihn nicht mehr übergibt.
+        del own_version
         self._pending: tuple[str, str | None] | None = None
         self._reported: tuple[str, str | None] | None = None
 
@@ -67,7 +75,7 @@ class LeaderVersionWatch:
         if owner is None:
             self._pending = None
             return None
-        if not is_outdated(version, self._own_version):
+        if not is_outdated(version):
             self._pending = None
             if self._reported is None:
                 return None
@@ -128,9 +136,10 @@ class SchedulerLeaderVersion:
                 leader_version=version,
                 version=self._version,
                 hint=(
-                    "the scheduler leader runs an older swarmq and drops a "
-                    "cron's timezone on every fire; upgrade every app on "
-                    "this Valkey before changing crons or timezones"
+                    "the scheduler leader runs a swarmq before 0.10 and drops "
+                    "a cron's timezone on every fire; upgrade every app on "
+                    "this Valkey to 0.10 or later before changing crons or "
+                    "timezones"
                 ),
             )
         await self._emit(

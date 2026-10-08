@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 
 from swarmq.contracts.coordination import LockToken
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
-from swarmq.scheduler.cron_time import iter_fire_ms, next_fire_ms
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
+from swarmq.scheduler.fire_plan import SchedulerFirePlan
 from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
@@ -73,7 +73,7 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
+class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion, SchedulerFirePlan):
     """Embedded scheduler — one instance per worker.
 
     Runs four cooperating coroutines:
@@ -149,6 +149,9 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
         self._report_task: asyncio.Task[None] | None = None
         self._adopt_task: asyncio.Task[None] | None = None
         self._adopt_now = asyncio.Event()
+        # Poll-Tick und Übernahme schließen sich aus: eine Übernahme zwischen
+        # poll_due und commit_fire plante sonst nach der alten Cron.
+        self._fire_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
 
         # Consecutive renew-ERROR counter. A renew that
@@ -317,7 +320,8 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
                 self._adopt_now.clear()
                 if self._state == "leader":
                     try:
-                        await self.adopt_reported_crons()
+                        async with self._fire_lock:
+                            await self.adopt_reported_crons()
                     except Exception as exc:
                         logger.warning(
                             "scheduler_cron_adopt_failed", **_error_fields(exc)
@@ -441,7 +445,8 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
             while not self._stop_event.is_set():
                 if self._state == "leader":
                     try:
-                        await self._poll_tick()
+                        async with self._fire_lock:
+                            await self._poll_tick()
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -486,10 +491,9 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
         schedfire_key = make_schedfire_key(schedule_name, score_ms)
 
         now_ms = int(time.time() * 1000)
-        next_fire_ts_ms = await self._plan_next_fire(
-            schedule_name, score_ms, definition, now_ms,
-        )
+        next_fire_ts_ms = self._plan_next_fire(schedule_name, definition, now_ms)
         if next_fire_ts_ms is None:
+            await self._park_unplannable(schedule_name, score_ms, definition)
             return
 
         # Build the task message body — same shape as Client.schedule.
@@ -637,78 +641,6 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
             )
             self._state = "standby"
 
-    async def _advanced_definition(
-        self,
-        schedule_name: str,
-        score_ms: int,
-        definition: ScheduleDefinition,
-        next_fire_ts_ms: int,
-        now_ms: int,
-    ) -> ScheduleDefinition | None:
-        """Definition to commit after a fire (``None`` removes a one-shot);
-        reports cron occurrences lost to catch-up-skip."""
-        if definition.cron is None:
-            return None
-        # Catch-up-skip was correct but invisible —
-        # a skipped daily report went unnoticed. Count the cron
-        # occurrences that fell between the due score and now (they
-        # will never fire) and surface them as a signal.
-        skipped_count = self._count_skipped_fires(
-            definition.cron, definition.timezone, score_ms, now_ms,
-        )
-        if skipped_count > 0:
-            logger.warning(
-                "scheduler_fires_skipped",
-                schedule_name=schedule_name,
-                skipped_count=skipped_count,
-            )
-            await self._emit(
-                Signal.SCHEDULER_FIRE_SKIPPED,
-                schedule_name=schedule_name,
-                skipped_count=skipped_count,
-            )
-        return msgspec.structs.replace(
-            definition, fire_ts_ms=next_fire_ts_ms, last_fire_at=now_ms,
-        )
-
-    async def _plan_next_fire(
-        self,
-        schedule_name: str,
-        score_ms: int,
-        definition: ScheduleDefinition,
-        now_ms: int,
-    ) -> int | None:
-        """Next fire for a cron, ``-1`` for one-shots — computed BEFORE the
-        publish (KTD12, R18). A definition whose next fire cannot be
-        computed in this leader (unknown zone, broken expression) is logged
-        and leaves the fire index (``-1``, definition kept); ``None`` tells
-        the caller to skip it without blocking the rest of the batch.
-
-        Cron semantics: expressions are evaluated in the definition's
-        timezone (None = UTC) against the leader clock, with the DST rule
-        of ``cron_time`` (Plan 2026-10-08-1541, KTD2). Catch-up after
-        downtime is SKIP: the next fire after "now" yields exactly one
-        catch-up fire, never a backlog storm.
-        """
-        if definition.cron is None:
-            return -1
-        try:
-            return next_fire_ms(definition.cron, definition.timezone, now_ms)
-        except Exception as exc:
-            logger.error(
-                "scheduler_next_fire_failed",
-                schedule_name=schedule_name,
-                cron=definition.cron,
-                timezone=definition.timezone,
-                **_error_fields(exc),
-            )
-        # Without a next score the entry would be due again on every tick.
-        await self._store.commit_fire(
-            schedule_name, -1, definition, self._owner_token,
-            fired_ts_ms=score_ms,
-        )
-        return None
-
     def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).
 
@@ -751,9 +683,6 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
                 **_error_fields(exc),
             )
 
-    # ---- static-cron sync (Fork 1) -------------------------------------
-
-
     # ---- helpers --------------------------------------------------------
 
     async def _sleep_until_stop(self, seconds: float) -> None:
@@ -776,23 +705,3 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion):
                 signal=signal.value,
                 **_error_fields(exc),
             )
-
-    @staticmethod
-    def _count_skipped_fires(
-        cron: str, timezone: str | None, score_ms: int, now_ms: int,
-    ) -> int:
-        """Count cron occurrences in ``(score_ms, now_ms]`` — fires that
-        catch-up-skip will never run.
-
-        The due score itself is the fire we ARE running; everything
-        between it and ``now_ms`` is lost to the skip semantics. Iteration
-        is capped at 1000 — a week-long outage on a minutely cron does
-        not need an exact count to alert on. Occurrences are computed in
-        the definition's *timezone* with the same DST rule as the score.
-        """
-        skipped = 0
-        for fire_ms in iter_fire_ms(cron, timezone, score_ms):
-            if fire_ms > now_ms or skipped >= 1000:
-                break
-            skipped += 1
-        return skipped

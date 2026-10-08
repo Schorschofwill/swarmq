@@ -111,7 +111,7 @@ crons before 25 October 2026, 01:00 UTC:
   `swarmq_scheduler_cron_conflicts_total{schedule_name}`.
 - **Leader version.** The leader writes its swarmq version next to the
   lock, every worker reports its own. A worker that sees a leader
-  without a version or with an older one logs
+  without a version or with one before 0.10.0 logs
   `scheduler_leader_outdated` (logger `swarmq.scheduler.leader_version`,
   once per leader), sends `Signal.SCHEDULER_LEADER_OUTDATED`
   (`worker_id`, `leader`, `leader_version`, `outdated`) and sets the

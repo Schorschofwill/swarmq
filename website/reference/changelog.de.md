@@ -115,7 +115,7 @@ bekommt**, und von Hand umgerechnete UTC-Crons vor dem 25. Oktober
   `swarmq_scheduler_cron_conflicts_total{schedule_name}`.
 - **Leader-Version.** Der Leader schreibt seine swarmq-Version neben das
   Lock, jeder Worker meldet seine eigene. Ein Worker, der einen Leader
-  ohne Version oder mit älterer sieht, loggt `scheduler_leader_outdated`
+  ohne Version oder vor 0.10.0 sieht, loggt `scheduler_leader_outdated`
   (Logger `swarmq.scheduler.leader_version`, einmal pro Leader), sendet
   `Signal.SCHEDULER_LEADER_OUTDATED` (`worker_id`, `leader`,
   `leader_version`, `outdated`) und setzt die Gauge

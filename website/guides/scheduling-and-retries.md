@@ -155,8 +155,8 @@ next_fire_times("0 3 * * *", datetime.now(UTC), timezone="Europe/Berlin", count=
 # [datetime(…, 3, 0, tzinfo=ZoneInfo('Europe/Berlin')), …]
 ```
 
-`start` must be timezone-aware; the fires come back aware in the given
-zone (UTC without `timezone`). An invalid expression raises croniter's
+`start` must be timezone-aware (a naive `start` raises `ValueError`);
+the fires come back aware in the given zone (UTC without `timezone`). An invalid expression raises croniter's
 `CroniterBadCronError`.
 
 ### Cron reports and the leader
@@ -229,12 +229,14 @@ before 0.10.0 writes no version and does not know the `timezone`
 field: as leader it drops the zone of every cron it fires and fires
 it in UTC again.
 
-A worker that sees such a leader (no version, or an older one) on two
+A worker that sees such a leader (no version, or one before 0.10.0) on two
 election ticks in a row (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`) logs `scheduler_leader_outdated` once per
 leader, sends the `SCHEDULER_LEADER_OUTDATED` signal and sets the
 gauge `swarmq_scheduler_leader_outdated{worker_id}` to `1`. When a
 current leader follows, the signal comes again with `outdated=False`
-and the gauge drops to `0`.
+and the gauge drops to `0`. A leader on 0.10.0 or later that is older
+than the worker (a rolling upgrade) knows time zones and triggers no
+warning.
 
 `swarmq schedule status` shows `LEADER_VERSION` and the reporting
 workers with their versions (see

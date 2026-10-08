@@ -17,6 +17,11 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.schedules import (
+    REPORT_DEF_KEY,
+    REPORT_FIRST_SEEN_KEY,
+    REPORT_LAST_SEEN_KEY,
+)
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
@@ -826,6 +831,34 @@ async def _wait_definition(
     raise TimeoutError(f"defs never held {name!r} with {cron!r} in {timezone!r}")
 
 
+async def _wait_adopt_ticks(
+    client: object, ticks: int = 2, timeout: float = _EVENT_TIMEOUT,
+) -> None:
+    """Block until the leader has finished *ticks* adoption ticks from now.
+
+    Every adoption tick ends with ``prune_cron_reports``, which deletes
+    reports whose ``last_seen`` is older than seven days. A probe report
+    with ``last_seen = 0`` is therefore gone once a tick has finished. The
+    probes are planted one after another, so the tick that removes the
+    second one read its report snapshot after the first probe was removed,
+    i.e. entirely after this call started. The probes never become live
+    and are never adopted.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    for _ in range(ticks):
+        field = f"probe_{uuid.uuid4().hex[:8]}|0"
+        async with client.pipeline(transaction=True) as pipe:  # type: ignore[attr-defined]
+            pipe.hset(REPORT_FIRST_SEEN_KEY, field, 0)
+            pipe.hset(REPORT_LAST_SEEN_KEY, field, 0)
+            pipe.hset(REPORT_DEF_KEY, field, b"{}")
+            await pipe.execute()
+        while await client.hexists(REPORT_LAST_SEEN_KEY, field):  # type: ignore[attr-defined]
+            if time.monotonic() >= deadline:
+                raise TimeoutError("the leader ran no adoption tick")
+            await asyncio.sleep(0.05)
+
+
 class TestCronReportsAcrossApps:
     async def test_change_in_never_leader_app_is_adopted(
         self, rabbitmq_url, valkey_url, _cleanup_tasks,
@@ -903,9 +936,10 @@ class TestCronReportsAcrossApps:
                 await _online(b_new)
                 await _wait_definition(client, name, "0 3 * * *", "Europe/Berlin")
 
+                # The worker reports its crons before WORKER_ONLINE; two
+                # finished adoption ticks after that have seen the report.
                 await _online(b_old_again)
-                # Absence check: several report and selection ticks pass.
-                await asyncio.sleep(4 * seen_interval)
+                await _wait_adopt_ticks(client)
                 await _wait_definition(
                     client, name, "0 3 * * *", "Europe/Berlin", timeout=0.1,
                 )

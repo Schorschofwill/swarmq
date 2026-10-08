@@ -127,7 +127,7 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_dlq_messages` | Gauge | `queue` | Nachrichten in `{queue}.XQ`, abgetastet. |
 | `swarmq_worker_uptime_seconds` | Gauge | `worker_id` | Sekunden seit Worker-Start, abgetastet. |
 | `swarmq_scheduler_leader` | Gauge | `worker_id` | `1`, solange dieser Worker den Scheduler-Leader-Lock hält, sonst `0`. |
-| `swarmq_scheduler_leader_outdated` | Gauge | `worker_id` | `1`, solange dieser Worker einen Scheduler-Leader mit älterem swarmq ohne Zeitzonen-Unterstützung sieht, sonst `0` ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)). |
+| `swarmq_scheduler_leader_outdated` | Gauge | `worker_id` | `1`, solange dieser Worker einen Scheduler-Leader mit swarmq vor 0.10.0 ohne Zeitzonen-Unterstützung sieht, sonst `0` ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)). |
 | `swarmq_scheduler_cron_conflicts_total` | Counter | `schedule_name` | Auswahltakte des Leaders, in denen mehrere Definitionen eines statischen Crons länger als 10 Minuten gleichzeitig lebten ([Konflikte](../guides/scheduling-and-retries.md#konflikte)). |
 | `swarmq_log_records_dropped_total` | Counter | keine | Log-Einträge, die verworfen wurden, weil die Log-Queue voll war (siehe [Logging](logging.md#nicht-blockierende-ausgabe-und-verworfene-eintrage)). |
 

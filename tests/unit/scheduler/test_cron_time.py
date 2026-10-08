@@ -30,6 +30,8 @@ Die erwarteten Termine stammen aus der Belastungspruefung vom 08.10.2026
 #     identisch, ab 25.10. verschieden.
 # 14. Interne Unix-ms-Variante entspricht der oeffentlichen Funktion.
 # 15. Ungueltiger Ausdruck wirft croniters Fehler (nicht IndexError).
+# 16. Naiver ``start`` (ohne tzinfo) wirft ValueError statt als Hostzeit
+#     gelesen zu werden.
 
 from __future__ import annotations
 
@@ -259,6 +261,13 @@ class TestNextFireTimes:
 
         with pytest.raises(CroniterBadCronError):
             next_fire_times("not-a-cron", start)
+
+    def test_naive_start_raises_value_error(self) -> None:
+        """Ein naiver ``start`` haengt nicht von der Zeitzone des Hosts ab."""
+        start = datetime(2026, 10, 8, 12, 0)
+
+        with pytest.raises(ValueError, match="timezone-aware"):
+            next_fire_times("0 3 * * *", start, timezone=BERLIN)
 
 
 class TestNextFireMs:

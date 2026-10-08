@@ -452,7 +452,8 @@ Die nächsten `count` Termine von `cron` nach `start`
 einschließlich der
 [Regel für die Zeitumstellung](../guides/scheduling-and-retries.md#zeitumstellung).
 `timezone` ist eine IANA-Zone, `None` heißt UTC; die Termine kommen
-zeitzonenbehaftet in dieser Zone zurück. Ein ungültiger Ausdruck wirft
+zeitzonenbehaftet in dieser Zone zurück. Ein naiver `start` wirft
+`ValueError`, statt als Ortszeit des Hosts gelesen zu werden. Ein ungültiger Ausdruck wirft
 croniters `CroniterBadCronError`. Damit lässt sich prüfen, dass ein auf
 eine Zeitzone umgestellter Cron seine Termine behält
 ([Rezept](../guides/scheduling-and-retries.md#von-hand-umgerechnete-utc-crons-umstellen)).

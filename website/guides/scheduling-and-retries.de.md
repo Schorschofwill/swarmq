@@ -158,7 +158,8 @@ next_fire_times("0 3 * * *", datetime.now(UTC), timezone="Europe/Berlin", count=
 # [datetime(…, 3, 0, tzinfo=ZoneInfo('Europe/Berlin')), …]
 ```
 
-`start` muss zeitzonenbehaftet sein; die Termine kommen
+`start` muss zeitzonenbehaftet sein (ein naiver `start` wirft
+`ValueError`); die Termine kommen
 zeitzonenbehaftet in der angegebenen Zone zurück (ohne `timezone` in
 UTC). Ein ungültiger Ausdruck wirft croniters `CroniterBadCronError`.
 
@@ -237,13 +238,14 @@ swarmq vor 0.10.0 schreibt keine Version und kennt das Feld
 `timezone` nicht: Als Leader verwirft er die Zone jedes Crons, den er
 feuert, und feuert ihn danach wieder in UTC.
 
-Ein Worker, der einen solchen Leader (ohne Version oder mit älterer)
+Ein Worker, der einen solchen Leader (ohne Version oder vor 0.10.0)
 in zwei Wahl-Takten in Folge sieht (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`),
 loggt einmal pro Leader `scheduler_leader_outdated`, sendet das Signal
 `SCHEDULER_LEADER_OUTDATED` und setzt die Gauge
 `swarmq_scheduler_leader_outdated{worker_id}` auf `1`. Folgt ein
 aktueller Leader, kommt das Signal erneut mit `outdated=False`, und die
-Gauge fällt auf `0`.
+Gauge fällt auf `0`. Ein Leader ab 0.10.0, der älter ist als der
+Worker (rollendes Upgrade), kennt Zeitzonen und löst keine Warnung aus.
 
 `swarmq schedule status` zeigt `LEADER_VERSION` und die meldenden
 Worker mit ihren Versionen (siehe

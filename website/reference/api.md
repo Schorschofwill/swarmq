@@ -440,7 +440,8 @@ The next `count` fires of `cron` after `start` (timezone-aware),
 calculated with the scheduler's own rule, including the
 [rule for clock changes](../guides/scheduling-and-retries.md#clock-changes).
 `timezone` is an IANA zone, `None` means UTC; the fires come back
-aware in that zone. An invalid expression raises croniter's
+aware in that zone. A naive `start` raises `ValueError` instead of
+being read as the host's local time. An invalid expression raises croniter's
 `CroniterBadCronError`. Use it to check that a cron converted to a
 time zone keeps its fires
 ([recipe](../guides/scheduling-and-retries.md#migrating-hand-converted-utc-crons)).
