@@ -32,6 +32,13 @@ Test-Liste:
 Worker mit Consumer-Wächter (Plan 2026-10-08-1541, U6, R1):
 - [x] 4.3.6: Nach dem Timeout konsumiert der Worker weiter, ohne Neustart;
       am Broker hängt genau ein Consumer, kein Zombie.
+
+Settle-Regeln (U7, KTD4):
+- [x] 4.3.6: Ein spätes Ack des Originals wartet auf den eigenen Cancel des
+      Wächters und weckt keinen Zombie; weitere Nachrichten werden normal
+      konsumiert.
+- [x] 4.2.9: Ein spätes Ack nach dem Channel-Close fängt
+      ``contain_delivery_errors`` ab; der neue Channel bleibt offen.
 """
 
 from __future__ import annotations
@@ -54,8 +61,11 @@ from aio_pika.exceptions import ChannelInvalidStateError
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.contracts import Delivery
 from swarmq.task import Task, TaskInfo
+from swarmq.worker.settle import contain_delivery_errors
 from tests.support.services import RABBITMQ_42, RABBITMQ_MAIN, RabbitMQNode, require_rabbitmq
+from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration]
 
@@ -378,3 +388,102 @@ async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43
         Task._clear_registered_tasks()
         for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
             await _delete_queue(rabbitmq43, name)
+
+
+# --- Settle-Regeln (U7) -------------------------------------------------------
+
+
+@dataclass
+class BrokerConsumer:
+    broker: RabbitMQBroker
+    queue: str
+    deliveries: asyncio.Queue[Delivery]
+
+    async def next_delivery(self) -> Delivery:
+        return await asyncio.wait_for(self.deliveries.get(), EVENT_DEADLINE_S)
+
+
+@pytest.fixture
+async def broker_consumer_on() -> AsyncIterator[Callable[[RabbitMQNode], Awaitable[BrokerConsumer]]]:
+    """Fabrik: ``RabbitMQBroker`` mit Queue unter Timeout-Policy, einem
+    Consumer und gestartetem Wächter, der nur auf Anstoß prüft (langer Takt).
+    Ein erster Takt merkt sich den Channel, sodass ein später fehlender Tag
+    als ``basic.cancel`` gilt."""
+    async with AsyncExitStack() as stack:
+
+        async def _make(node: RabbitMQNode) -> BrokerConsumer:
+            name = f"ct_{uuid.uuid4().hex[:8]}"
+            await stack.enter_async_context(node.consumer_timeout_policy(name, CONSUMER_TIMEOUT_MS))
+            for queue_name in (name, f"{name}.DQ", f"{name}.XQ"):
+                stack.push_async_callback(_delete_queue, node, queue_name)
+            broker = RabbitMQBroker(node.amqp_url)
+            stack.push_async_callback(broker.close)
+            await broker.connect()
+            await broker.declare_queue(name)
+            deliveries: asyncio.Queue[Delivery] = asyncio.Queue()
+
+            async def _on_delivery(delivery: Delivery) -> None:
+                deliveries.put_nowait(delivery)
+
+            await broker.consume(name, _on_delivery, concurrency=10)
+            await broker.consumer_watch.tick()
+            broker.start_consumer_watch(interval_s=3600.0)
+            return BrokerConsumer(broker, name, deliveries)
+
+        yield _make
+
+
+@pytest.mark.timeout(30)
+async def test_43_late_ack_waits_for_own_cancel_and_wakes_no_zombie(rabbitmq43, broker_consumer_on):
+    c = await broker_consumer_on(rabbitmq43)
+    await c.broker.publish(c.queue, b"A")
+    first = await c.next_delivery()
+    message = first.handle
+    [(_, old_tag)] = c.broker.consumer_watch.tags()
+    channel = message.channel
+    await wait_until(lambda: old_tag not in channel.consumers, TIMEOUT_DEADLINE_S)
+
+    await c.broker.ack(first)  # spätes Ack: erst nach dem eigenen Cancel
+
+    assert old_tag in c.broker.consumer_watch.self_cancelled_tags
+    zombie = _spy_on_dead_tag(channel, old_tag)
+    await c.broker.publish(c.queue, b"B")
+    got = [await c.next_delivery() for _ in range(2)]
+    assert sorted(d.body for d in got) == [b"A", b"B"]
+    [(_, new_tag)] = c.broker.consumer_watch.tags()
+    assert {d.handle.consumer_tag for d in got} == {new_tag}
+    for delivery in got:
+        await c.broker.ack(delivery)
+    assert zombie.empty()
+    assert not channel.is_closed
+    await wait_until(lambda: _management_consumer_tags(rabbitmq43, c.queue) == {new_tag}, TIMEOUT_DEADLINE_S)
+
+
+@pytest.mark.timeout(30)
+async def test_42_late_ack_after_channel_close_is_contained_and_new_channel_stays_open(
+    rabbitmq42, broker_consumer_on
+):
+    c = await broker_consumer_on(rabbitmq42)
+    await c.broker.publish(c.queue, b"A")
+    first = await c.next_delivery()
+    channel = await c.broker._consume_channel.get_underlay_channel()
+    await asyncio.wait({channel.closing}, timeout=TIMEOUT_DEADLINE_S)
+    again = await c.next_delivery()
+    assert again.body == b"A"
+
+    with capture_swarmq_logs() as logs, contain_delivery_errors():
+        await c.broker.ack(first)  # B22: Kanalverlust, keine rohe Exception
+
+    assert [e["event"] for e in logs] == ["delivery_settle_failed"]
+
+    restored = await c.broker._consume_channel.get_underlay_channel()
+    assert restored is not channel
+    assert not restored.is_closed
+    await c.broker.ack(again)
+    await c.broker.publish(c.queue, b"B")
+    later = await c.next_delivery()
+    assert later.body == b"B"
+    await c.broker.ack(later)
+    await restored.basic_qos(prefetch_count=10)  # Round-Trip: Acks verarbeitet
+    assert not restored.is_closed
+    assert await _consumer_count(rabbitmq42, c.queue) == 1

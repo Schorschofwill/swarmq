@@ -4,7 +4,9 @@ Abbildung auf AMQP: ``redeliver`` → ``nack(requeue=True)``; ``retry_later`` �
 Publish an ``{queue}.DQ`` mit Per-Message-``expiration`` + ``ack``;
 ``dead_letter`` → Publish an ``{queue}.XQ`` + ``ack``. Beide werfen
 ``BrokerConnectionError``, wenn der Publish scheitert, und lassen das Original
-unbestätigt. Die Legacy-Namen (``nack``, ``publish_to_*``) sind seit U15
+unbestätigt. Ab RabbitMQ 4.3 hält ``_may_settle`` ein Settle auf einen vom
+Broker beendeten Consumer zurück, bis der Wächter ihn selbst abgemeldet hat
+(Plan 2026-10-08-1541, U7, KTD4). Die Legacy-Namen (``nack``, ``publish_to_*``) sind seit U15
 entfernt; die Delay-/DLQ-Publishes sind private Helfer der Verben.
 """
 
@@ -15,7 +17,7 @@ from collections.abc import Awaitable, Mapping
 from typing import Any, cast
 
 import aio_pika
-from aio_pika.exceptions import DeliveryError
+from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError
 
 from swarmq.broker.rabbitmq.connection import (
     _CHANNEL_TRANSIENT_ERRORS,
@@ -57,6 +59,11 @@ async def settle(action: Awaitable[None], verb: str) -> None:
 
 
 class RabbitMQDelivery(RabbitMQConnection):
+    #: Höchstens so lange wartet ein Settle auf einen vom Broker beendeten
+    #: Consumer auf den eigenen Cancel des Wächters (U7, KTD4). Deckt einen
+    #: Takt mit Channel-, Cancel- und Consume-RPC (je 2 s) mit Luft ab.
+    settle_cancel_wait_s: float = 10.0
+
     # ------------------------------------------------------------------
     # Deklaration
     # ------------------------------------------------------------------
@@ -329,15 +336,63 @@ class RabbitMQDelivery(RabbitMQConnection):
                 f"cancel_consume: {len(errors)} consumer(s) failed to cancel; first error: {first}"
             ) from first
 
+    async def _may_settle(self, message: aio_pika.abc.AbstractIncomingMessage, verb: str) -> bool:
+        """Settle-Regel ab RabbitMQ 4.3 (U7, KTD4): ``False`` heißt, das Verb
+        wird nicht gesendet.
+
+        Fehlt der Tag eines vom Wächter geführten Consumers auf dem noch
+        offenen Channel, hat der Broker ihn per ``basic.cancel`` beendet. Ein
+        Settle darauf weckte den Zombie-Consumer; es geht erst raus, nachdem
+        der Wächter den Tag selbst abgemeldet hat (danach unschädlich, auf
+        4.3.6 belegt). Kommt dieser Cancel nicht binnen
+        ``settle_cancel_wait_s``, unterbleibt das Settle: Die Nachricht hat
+        der Broker mit dem Cancel ohnehin zurückgenommen.
+
+        Ohne Wartezeit durch: gültige Tags, von swarmq selbst abgemeldete
+        (``cancel_consume``, Wächter — sie stehen nicht mehr in ``tags()``)
+        und geschlossene Channels (bis 4.2; ``settle`` übersetzt den Fehler
+        in ``BrokerConnectionError``, B22).
+        """
+        tag = message.consumer_tag
+        if tag not in {watched for _, watched in self._consumer_watch.tags()}:
+            return True
+        try:
+            # ``consumers`` steht nur am konkreten aiormq-Channel, nicht am ABC.
+            channel: Any = message.channel
+        except ChannelInvalidStateError:
+            return True
+        if tag in channel.consumers:
+            return True
+        self._consumer_watch.request_check()
+        if await self._consumer_watch.wait_cancelled(tag, self.settle_cancel_wait_s):
+            logger.info("delivery_settle_deferred", verb=verb, consumer_tag=tag)
+            return True
+        logger.warning(
+            "delivery_settle_withheld",
+            verb=verb,
+            consumer_tag=tag,
+            wait_s=self.settle_cancel_wait_s,
+            hint=(
+                "consumer was cancelled by the broker and the own cancel did not "
+                "complete in time; settle not sent to avoid reviving it — the broker "
+                "redelivers the message"
+            ),
+        )
+        return False
+
     # ------------------------------------------------------------------
     # Die vier Verben (KTD2)
     # ------------------------------------------------------------------
 
     async def ack(self, delivery: Delivery) -> None:
-        await settle(message_of(delivery).ack(), "ack")
+        message = message_of(delivery)
+        if await self._may_settle(message, "ack"):
+            await settle(message.ack(), "ack")
 
     async def redeliver(self, delivery: Delivery) -> None:
-        await settle(message_of(delivery).nack(requeue=True), "redeliver")
+        message = message_of(delivery)
+        if await self._may_settle(message, "redeliver"):
+            await settle(message.nack(requeue=True), "redeliver")
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)

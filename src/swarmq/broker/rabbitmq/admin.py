@@ -29,7 +29,9 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """``nack(requeue=False)``: RabbitMQ leitet über die Queue-Argumente
         nach ``{queue}.XQ`` und ergänzt ``x-death`` — ohne ``x-swarmq-*``-
         Diagnose-Header (Entwurf §7)."""
-        await settle(message_of(delivery).nack(requeue=False), "route_via_dlx")
+        message = message_of(delivery)
+        if await self._may_settle(message, "route_via_dlx"):
+            await settle(message.nack(requeue=False), "route_via_dlx")
 
     # ------------------------------------------------------------------
     # R3.10 DLQ inspection / recovery primitives
