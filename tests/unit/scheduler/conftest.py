@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.config import SwarmQConfig
+from swarmq.contracts import LeaderInfo
 from swarmq.signals import SignalDispatcher
 from swarmq.task import Task
 from tests.unit.scheduler._helpers import _LEADER_TOKEN
@@ -35,6 +36,9 @@ def config():
 def backend():
     be = MagicMock()
     be.schedules.get = AsyncMock(return_value=None)
+    be.schedules.fire_ts = AsyncMock(return_value=None)
+    # Heilung (Review #4): atomar im Store; ``False`` = schon eingeplant.
+    be.schedules.replan_if_unchanged = AsyncMock(return_value=False)
     be.hset_schedule_def = AsyncMock()
     be.hdel_schedule_def = AsyncMock()
     be.schedules.list_all = AsyncMock(return_value={})
@@ -42,6 +46,10 @@ def backend():
     be.zrem_schedule = AsyncMock()
     be.schedules.set_handover_marker = AsyncMock()
     be.schedules.take_handover_marker = AsyncMock(return_value=False)
+    # Leader-Version (U13, KTD11): kein Leader, keine Meldungen.
+    be.schedules.set_leader_version = AsyncMock()
+    be.schedules.leader_info = AsyncMock(return_value=LeaderInfo(owner=None, version=None))
+    be.schedules.report_worker_version = AsyncMock()
     return be
 
 

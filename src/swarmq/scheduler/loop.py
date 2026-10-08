@@ -1,6 +1,8 @@
 """Scheduler-Loop (Plan U11) — verbatim aus ``scheduler.py``: Election
 (Leader-Lock über den ``LockStore``-Vertrag), Poll/Fire mit Schedfire-Dedup
-und Handover-Marker. Der Cron-Sync lebt als Mixin in ``sync.py``."""
+und Handover-Marker. Seit U12 (Plan 2026-10-08-1541) meldet jeder Loop die
+statischen Crons seines Workers; der Leader übernimmt die Meldungen aller
+Worker im Meldetakt. Der Cron-Sync lebt als Mixin in ``sync.py``."""
 from __future__ import annotations
 
 import asyncio
@@ -8,11 +10,10 @@ import os
 import socket
 import time
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import msgspec
-from croniter import croniter
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
 from swarmq.contracts.coordination import LockToken
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
+from swarmq.scheduler.fire_plan import SchedulerFirePlan
+from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
+from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
 
 logger = get_logger(__name__)
@@ -69,10 +73,10 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop(SchedulerCronSync):
+class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion, SchedulerFirePlan):
     """Embedded scheduler — one instance per worker.
 
-    Runs two cooperating coroutines:
+    Runs four cooperating coroutines:
 
     - ``_election_loop``: at each ``heartbeat_interval`` tick either
       attempts ``acquire`` (standby) or ``renew`` (leader). On acquire
@@ -86,10 +90,15 @@ class SchedulerLoop(SchedulerCronSync):
       the leader reads due schedules, publishes to the main queue
       with an ``x-swarmq-schedfire`` header, and commits via the
       owner-checked Lua script.
+    - ``_report_loop``: every ``scheduler_seen_interval_s`` (and once in
+      :meth:`start`) reports this worker's static crons, in any role.
+    - ``_adopt_loop``: the leader adopts the youngest live report per
+      cron right after acquiring the lock and then every
+      ``scheduler_seen_interval_s`` (Plan 2026-10-08-1541, KTD10).
 
     :meth:`stop` is the graceful path: emits HANDOVER, writes a
     short-TTL marker under the outgoing token, releases the lock, and
-    cancels both sub-coroutines. A non-graceful exit (crash/SIGKILL)
+    cancels the sub-coroutines. A non-graceful exit (crash/SIGKILL)
     leaves no marker, and the next standby to acquire observes the
     missing marker and emits FAILOVER.
     """
@@ -105,6 +114,8 @@ class SchedulerLoop(SchedulerCronSync):
         signal_dispatcher: SignalDispatcher,
         owner_token: str | None = None,
         worker_id: str | None = None,
+        static_crons: Sequence[ScheduleDefinition] = (),
+        version: str | None = None,
     ) -> None:
         self._backend = backend
         self._broker = broker
@@ -119,6 +130,12 @@ class SchedulerLoop(SchedulerCronSync):
             name=SCHEDULER_LOCK_NAME, owner=self._owner_token, max_concurrency=1
         )
         self._worker_id = worker_id or self._owner_token
+        # Statische Crons dieses Workers (eigene Registry, Zone aufgelöst);
+        # gemeldet beim Start und danach im Meldetakt (KTD10).
+        self._static_crons = tuple(static_crons)
+        # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
+        self._version = version or swarmq_version()
+        self._leader_watch = LeaderVersionWatch()
 
         self._state: _SchedulerState = "standby"
         self._prev_leader_seen = False
@@ -129,6 +146,12 @@ class SchedulerLoop(SchedulerCronSync):
 
         self._election_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._report_task: asyncio.Task[None] | None = None
+        self._adopt_task: asyncio.Task[None] | None = None
+        self._adopt_now = asyncio.Event()
+        # Poll-Tick und Übernahme schließen sich aus: eine Übernahme zwischen
+        # poll_due und commit_fire plante sonst nach der alten Cron.
+        self._fire_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
 
         # Consecutive renew-ERROR counter. A renew that
@@ -164,8 +187,11 @@ class SchedulerLoop(SchedulerCronSync):
         if self._election_task is not None:
             return
         self._stop_event.clear()
+        await self._report_crons()
         self._election_task = asyncio.create_task(self._election_loop())
         self._poll_task = asyncio.create_task(self._poll_loop())
+        self._report_task = asyncio.create_task(self._report_loop())
+        self._adopt_task = asyncio.create_task(self._adopt_loop())
 
     async def stop(self) -> None:
         """Graceful shutdown. Releases the leader lock if held, sets
@@ -213,17 +239,7 @@ class SchedulerLoop(SchedulerCronSync):
         # early-transition block was skipped entirely. Do not remove
         # either call; they belong to different control-flow branches.
         self._stop_event.set()
-        for task in (self._election_task, self._poll_task):
-            if task is not None and not task.done():
-                task.cancel()
-        for task in (self._election_task, self._poll_task):
-            if task is not None:
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-        self._election_task = None
-        self._poll_task = None
+        await self._cancel_sub_tasks()
         self._state = "stopped"
 
     async def abort(self) -> None:
@@ -240,10 +256,17 @@ class SchedulerLoop(SchedulerCronSync):
         """
         self._stop_event.set()
         self._state = "stopped"
-        for task in (self._election_task, self._poll_task):
+        await self._cancel_sub_tasks()
+
+    async def _cancel_sub_tasks(self) -> None:
+        tasks = (
+            self._election_task, self._poll_task, self._report_task,
+            self._adopt_task,
+        )
+        for task in tasks:
             if task is not None and not task.done():
                 task.cancel()
-        for task in (self._election_task, self._poll_task):
+        for task in tasks:
             if task is not None:
                 try:
                     await task
@@ -251,6 +274,60 @@ class SchedulerLoop(SchedulerCronSync):
                     pass
         self._election_task = None
         self._poll_task = None
+        self._report_task = None
+        self._adopt_task = None
+
+    # ---- cron reports (KTD10) -------------------------------------------
+
+    async def _report_loop(self) -> None:
+        interval = self._config.scheduler_seen_interval_s
+        try:
+            while not self._stop_event.is_set():
+                await self._sleep_until_stop(interval)
+                if not self._stop_event.is_set():
+                    await self._report_crons()
+        except asyncio.CancelledError:
+            return
+
+    async def _report_crons(self) -> None:
+        """Eigene statische Crons und swarmq-Version melden, in jeder Rolle."""
+        live_window = live_window_ms(self._config.scheduler_seen_interval_s)
+        try:
+            for definition in self._static_crons:
+                await self._backend.schedules.report_cron(
+                    definition.schedule_name,
+                    cron_fingerprint(definition),
+                    msgspec.json.encode(definition),
+                    live_window_ms=live_window,
+                )
+            await self._backend.schedules.report_worker_version(
+                self._worker_id, self._version, ttl_ms=live_window,
+            )
+        except Exception as exc:
+            # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
+            logger.warning("scheduler_cron_report_failed", **_error_fields(exc))
+
+    async def _adopt_loop(self) -> None:
+        """Leader-Takt der Übernahme (KTD10): sofort nach dem Erwerb der
+        Leader-Rolle, danach alle ``scheduler_seen_interval_s``."""
+        interval = self._config.scheduler_seen_interval_s
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await asyncio.wait_for(self._adopt_now.wait(), timeout=interval)
+                except TimeoutError:
+                    pass
+                self._adopt_now.clear()
+                if self._state == "leader":
+                    try:
+                        async with self._fire_lock:
+                            await self.adopt_reported_crons()
+                    except Exception as exc:
+                        logger.warning(
+                            "scheduler_cron_adopt_failed", **_error_fields(exc)
+                        )
+        except asyncio.CancelledError:
+            return
 
     # ---- election loop --------------------------------------------------
 
@@ -303,6 +380,7 @@ class SchedulerLoop(SchedulerCronSync):
                 return
             self._renew_failures = 0
             if still_leader:
+                await self._write_leader_version()
                 await self._emit(Signal.SCHEDULER_HEARTBEAT)
             else:
                 logger.warning("scheduler_lock_lost")
@@ -332,6 +410,7 @@ class SchedulerLoop(SchedulerCronSync):
 
         if not acquired:
             self._prev_leader_seen = True
+            await self._check_leader_version()
             return
 
         # Acquired the lock — decide which signal to emit.
@@ -347,18 +426,16 @@ class SchedulerLoop(SchedulerCronSync):
 
         self._state = "leader"
         self._renew_failures = 0  # fresh term, fresh renew budget
+        await self._write_leader_version()
+        await self._observe_leader(self._owner_token, self._version)
         if had_handover or not self._prev_leader_seen:
             await self._emit(Signal.SCHEDULER_LEADER)
         else:
             await self._emit(Signal.SCHEDULER_LEADER_FAILOVER)
 
-        # Sync static TaskInfo(cron=...) declarations (Fork 1).
-        try:
-            await self.sync_taskinfo_crons()
-        except Exception as exc:
-            logger.warning(
-                "scheduler_sync_taskinfo_crons_failed", **_error_fields(exc)
-            )
+        # KTD10: die Cron-Meldungen aller Worker sofort übernehmen, nicht erst
+        # nach einem Meldetakt.
+        self._adopt_now.set()
 
     # ---- poll loop ------------------------------------------------------
 
@@ -368,7 +445,8 @@ class SchedulerLoop(SchedulerCronSync):
             while not self._stop_event.is_set():
                 if self._state == "leader":
                     try:
-                        await self._poll_tick()
+                        async with self._fire_lock:
+                            await self._poll_tick()
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -412,6 +490,12 @@ class SchedulerLoop(SchedulerCronSync):
         # same SETNX cell.
         schedfire_key = make_schedfire_key(schedule_name, score_ms)
 
+        now_ms = int(time.time() * 1000)
+        next_fire_ts_ms = self._plan_next_fire(schedule_name, definition, now_ms)
+        if next_fire_ts_ms is None:
+            await self._park_unplannable(schedule_name, score_ms, definition)
+            return
+
         # Build the task message body — same shape as Client.schedule.
         task_id = str(uuid.uuid7())
         body = encode_json({
@@ -447,12 +531,14 @@ class SchedulerLoop(SchedulerCronSync):
         else:
             # Static cron or plain CLI — resolve TaskInfo and SETNX here.
             task_info = self._resolve_task_info(definition.task_name)
-            if task_info is None:
+            if task_info is None and schedule_name not in self._reported_names:
                 # A schedule whose task was renamed or
                 # removed previously published into the void with no
                 # trace. Warn-only, deliberately NOT a skip: in multi-
                 # module deployments the task may live in ANOTHER
                 # worker's registry — a hard skip would break those.
+                # Crons a live worker reports (U12, KTD10) belong to such
+                # a registry and therefore do not warn.
                 logger.warning(
                     "scheduler_task_not_in_local_registry",
                     schedule_name=schedule_name,
@@ -514,46 +600,13 @@ class SchedulerLoop(SchedulerCronSync):
                 )
                 return  # Do NOT commit — retry on the next poll tick.
 
-        # Compute next_fire for cron, -1 for one-shots. Runs even on dup-
-        # skip: commit_fire MUST advance the zset (otherwise the same
-        # schedule re-fires on every poll tick forever — see plan
-        # Unit 9 Risks "Double-SETNX-Race" commit-on-fail rationale).
-        #
-        # Cron semantics: expressions are evaluated in UTC against the
-        # leader clock (croniter over datetime.now(UTC)) — there is no
-        # timezone/DST handling; `0 3 * * *` fires at 03:00 UTC.
-        # Catch-up after downtime is SKIP: get_next(now) yields exactly
-        # one catch-up fire, never a backlog storm.
-        if definition.cron is None:
-            next_fire_ts_ms = -1
-            updated_def: ScheduleDefinition | None = None
-        else:
-            now = datetime.now(UTC)
-            next_dt = croniter(definition.cron, now).get_next(datetime)
-            next_fire_ts_ms = int(next_dt.timestamp() * 1000)
-            updated_def = msgspec.structs.replace(
-                definition,
-                fire_ts_ms=next_fire_ts_ms,
-                last_fire_at=int(time.time() * 1000),
-            )
-            # Catch-up-skip was correct but invisible —
-            # a skipped daily report went unnoticed. Count the cron
-            # occurrences that fell between the due score and now (they
-            # will never fire) and surface them as a signal.
-            skipped_count = self._count_skipped_fires(
-                definition.cron, score_ms, now,
-            )
-            if skipped_count > 0:
-                logger.warning(
-                    "scheduler_fires_skipped",
-                    schedule_name=schedule_name,
-                    skipped_count=skipped_count,
-                )
-                await self._emit(
-                    Signal.SCHEDULER_FIRE_SKIPPED,
-                    schedule_name=schedule_name,
-                    skipped_count=skipped_count,
-                )
+        # The commit runs even on dup-skip: commit_fire MUST advance the
+        # zset (otherwise the same schedule re-fires on every poll tick
+        # forever — see plan Unit 9 Risks "Double-SETNX-Race"
+        # commit-on-fail rationale).
+        updated_def = await self._advanced_definition(
+            schedule_name, score_ms, definition, next_fire_ts_ms, now_ms,
+        )
 
         # fired_ts_ms: the commit only lands while the zset still holds the
         # score we fired. A `schedule remove` (disable/permanent) or a
@@ -591,11 +644,10 @@ class SchedulerLoop(SchedulerCronSync):
     def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).
 
-        Scheduler has no direct registry reference — it reuses the same
-        ``Task._registered_tasks`` list that ``sync_taskinfo_crons``
-        walks. Linear scan is O(n); with n typically < 100 tasks this
-        is well below the per-fire ScheduleStore + broker round-trip
-        cost, so no index is introduced.
+        Scheduler has no direct registry reference — it walks the global
+        ``Task._registered_tasks`` list. Linear scan is O(n); with n
+        typically < 100 tasks this is well below the per-fire
+        ScheduleStore + broker round-trip cost, so no index is introduced.
         """
         for task_class in Task._registered_tasks:
             ti: TaskInfo | None = getattr(task_class, "task_info", None)
@@ -631,9 +683,6 @@ class SchedulerLoop(SchedulerCronSync):
                 **_error_fields(exc),
             )
 
-    # ---- static-cron sync (Fork 1) -------------------------------------
-
-
     # ---- helpers --------------------------------------------------------
 
     async def _sleep_until_stop(self, seconds: float) -> None:
@@ -656,26 +705,3 @@ class SchedulerLoop(SchedulerCronSync):
                 signal=signal.value,
                 **_error_fields(exc),
             )
-
-    @staticmethod
-    def _count_skipped_fires(
-        cron: str, score_ms: int, now: datetime,
-    ) -> int:
-        """Count cron occurrences in ``(score_ms, now]`` — fires that
-        catch-up-skip will never run.
-
-        The due score itself is the fire we ARE running; everything
-        between it and ``now`` is lost to the skip semantics. Iteration
-        is capped at 1000 — a week-long outage on a minutely cron does
-        not need an exact count to alert on.
-        """
-        start = datetime.fromtimestamp(score_ms / 1000, tz=UTC)
-        it = croniter(cron, start)
-        skipped = 0
-        now_ts = now.timestamp()
-        while skipped < 1000:
-            nxt = it.get_next(datetime)
-            if nxt.timestamp() > now_ts:
-                break
-            skipped += 1
-        return skipped

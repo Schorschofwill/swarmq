@@ -107,6 +107,20 @@ class Signal(enum.Enum):
                                    many cron occurrences — exactly one
                                    catch-up fire runs, the rest never
                                    will; alert on important crons)
+      * SCHEDULER_CRON_CONFLICT:   worker_id, schedule_name, fingerprints
+                                   (several definitions of one static cron
+                                   have been live for more than 10 minutes,
+                                   e.g. same-named tasks in two apps; the
+                                   leader emits it on every selection tick
+                                   while the conflict lasts)
+      * SCHEDULER_LEADER_OUTDATED: worker_id, leader, leader_version,
+                                   outdated (a non-leader saw the scheduler
+                                   leader run a swarmq before 0.10 without
+                                   timezone support — leader_version None
+                                   means before 0.10.0; once per leader
+                                   change with outdated=True, and with
+                                   outdated=False when a current leader
+                                   follows)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -141,6 +155,8 @@ class Signal(enum.Enum):
     SCHEDULER_LEADER_HANDOVER = "scheduler_leader_handover"
     SCHEDULER_LEADER_FAILOVER = "scheduler_leader_failover"
     SCHEDULER_FIRE_SKIPPED = "scheduler_fire_skipped"
+    SCHEDULER_CRON_CONFLICT = "scheduler_cron_conflict"
+    SCHEDULER_LEADER_OUTDATED = "scheduler_leader_outdated"
 
 
 class SignalDispatcher:

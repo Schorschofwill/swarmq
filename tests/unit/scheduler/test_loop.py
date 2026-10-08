@@ -6,7 +6,7 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 2. Fehler-Events tragen ``error_type``/``error`` (je Aufrufstelle ein Test):
 #    handover_marker_failed, lock_release_failed, election_tick_error,
 #    renew_error, acquire_error, handover_marker_read_failed,
-#    sync_taskinfo_crons_failed, poll_tick_error, poll_due_failed,
+#    cron_adopt_failed (U12), poll_tick_error, poll_due_failed,
 #    unique_setnx_failed, publish_failed, commit_failed,
 #    duplicate_signal_dispatch_error, signal_dispatch_error.
 # 3. ``scheduler_task_not_in_local_registry`` ueber ``swarmq_logs`` statt
@@ -15,22 +15,68 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # Test list (0.9.0, Scheduler-Commit-Wettlauf):
 # 4. Der Fire-Commit traegt den gefeuerten Index-Score (``fired_ts_ms``),
 #    damit eine Aenderung zwischen Poll und Commit nicht ueberschrieben wird.
+#
+# Test list (Plan 2026-10-08-1541, U2): Termine in der Zone der Definition.
+# 5. Der naechste Score nach dem Fire gilt in ``definition.timezone``.
+# 6. Die Zaehlung uebersprungener Fires rechnet in derselben Zone.
+#
+# Test list (Plan 2026-10-08-1541, U3, R18, KTD12): Fire ohne Vergiftung.
+# 7. Laesst sich die Folgezeit nicht berechnen, wird der Eintrag nicht
+#    publiziert, ``scheduler_next_fire_failed`` geloggt, und die anderen
+#    faelligen Crons im selben Batch feuern.
+# 8. ... und der Eintrag wird aus dem Fire-Index genommen (Definition bleibt).
+# 9. Eine Uebernahme zwischen Poll und Commit wird vom Commit nicht
+#    zurueckgesetzt (In-Memory-Store, echter ScheduleStore).
+#
+# Test list (Plan 2026-10-08-1541, U13, KTD11): Leader-Version.
+# 10. Nach dem Lock-Erwerb schreibt der Leader seine Version mit Lock-TTL.
+# 11. ... ebenso nach jeder erfolgreichen Verlängerung.
+# 12. Schlägt das Schreiben fehl, bleibt er Leader; Warnung mit Fehlerfeldern.
+# 13. Covers AE9: ein Nicht-Leader, der das Lock ohne Versionsangabe sieht,
+#     loggt ``scheduler_leader_outdated`` einmal pro Wechsel und sendet
+#     ``SCHEDULER_LEADER_OUTDATED`` (``outdated=True``, Metrik).
+# 14. Lock mit gleicher Version: keine Warnung, kein Signal.
+# 15. Wird der Beobachter selbst Leader, nimmt er die Warnung zurück
+#     (Signal mit ``outdated=False``).
+# 16. Lesefehler bei der Beobachtung: Warnung, die Election läuft weiter.
+# 17. Jeder Melde-Takt meldet die eigene Version (TTL = Lebendigkeitsfenster).
+#
+# Test list (Review-Befund #1): Uebernahme und Poll im Leader serialisiert.
+# 18. Eine Uebernahme, die waehrend eines Fires (zwischen Poll und Commit)
+#     faellig wird, wartet bis nach dem Commit; der Folge-Score kommt aus
+#     Cron und Zone der uebernommenen Definition.
+# 19. Laeuft die Uebernahme vor dem Poll, feuert der Poll die uebernommene
+#     Definition und plant den Folge-Score nach deren Cron und Zone.
+#
+# Test list (Review-Befund #3): Parken einer nicht planbaren Definition.
+# 20. Ein ``BackendConnectionError`` beim Parken bricht den Batch nicht ab;
+#     ``scheduler_park_failed`` wird geloggt.
+# 21. Ein Owner-Mismatch beim Parken wird geloggt.
 
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
+import msgspec
 import pytest
 
 from swarmq.config import SwarmQConfig
+from swarmq.contracts import LeaderInfo
 from swarmq.exceptions import BackendConnectionError
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import (
     ScheduleDefinition,
+    ScheduleStore,
 )
+from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.inmemory import InMemoryBackend
+from tests.support.inmemory.clock import FakeClock
 from tests.unit.scheduler._helpers import _LEADER_TOKEN, _cron_def, _def, _make_loop
 
 # AGENTS.md §Async-Code testen rule 3: 5s per-test timeout. Narrower
@@ -236,6 +282,143 @@ class TestElectionLoop:
             backend, broker, config, lock_manager, store, signal_dispatcher
         )
         assert loop._renew_failure_limit == 2
+
+
+class TestLeaderVersion:
+    async def test_leader_writes_version_after_acquire(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        backend.schedules.set_leader_version.assert_awaited_once_with(
+            "test-owner", "0.10.0", ttl_ms=1_000,
+        )
+
+    async def test_leader_writes_version_after_each_renew(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = "leader"
+
+        await loop._election_tick()
+        await loop._election_tick()
+
+        assert backend.schedules.set_leader_version.await_count == 2
+        backend.schedules.set_leader_version.assert_awaited_with(
+            "test-owner", "0.10.0", ttl_ms=1_000,
+        )
+
+    @pytest.mark.parametrize("state", ["standby", "leader"])
+    async def test_version_write_failure_keeps_leadership(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs, state,
+    ):
+        backend.schedules.set_leader_version.side_effect = BackendConnectionError("valkey down")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = state
+
+        await loop._election_tick()
+
+        assert loop.state == "leader"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_version_write_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_outdated_leader_is_reported_once_per_change(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+    ):
+        """Covers AE9: 0.9.0-Leader (kein Versions-Key)."""
+        signals: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw):
+            signals.append(kw)
+
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="old:1:aa", version=None)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        for _ in range(3):
+            await loop._election_tick()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_outdated"]
+        assert entry["log_level"] == "warning"
+        assert (entry["leader"], entry["leader_version"], entry["version"]) == ("old:1:aa", None, "0.10.0")
+        assert "timezone" in entry["hint"]
+        assert signals == [
+            {"worker_id": "w-1", "leader": "old:1:aa", "leader_version": None, "outdated": True},
+        ]
+
+    async def test_leader_with_same_version_is_not_reported(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+    ):
+        signals: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw):
+            signals.append(kw)
+
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="new:1:aa", version="0.10.0")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        for _ in range(3):
+            await loop._election_tick()
+
+        assert [e for e in swarmq_logs if e["event"] == "scheduler_leader_outdated"] == []
+        assert signals == []
+        assert backend.schedules.leader_info.await_count == 3
+
+    async def test_becoming_leader_withdraws_the_warning(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+    ):
+        signals: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+        async def _outdated(**kw):
+            signals.append(kw)
+
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="old:1:aa", version=None)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        await loop._election_tick()
+        await loop._election_tick()
+        lock_manager.acquire.return_value = _LEADER_TOKEN
+
+        await loop._election_tick()
+
+        assert loop.state == "leader"
+        assert [kw["outdated"] for kw in signals] == [True, False]
+        assert signals[-1] == {
+            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.10.0", "outdated": False,
+        }
+
+    async def test_version_check_failure_is_logged(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+    ):
+        lock_manager.acquire.return_value = None
+        backend.schedules.leader_info.side_effect = BackendConnectionError("valkey down")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        assert loop.state == "standby" and loop._prev_leader_seen is True
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_version_check_failed"]
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+
+    async def test_report_tick_reports_own_version(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+    ):
+        """Auch ohne statische Crons; TTL = Lebendigkeitsfenster der Meldungen."""
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._report_crons()
+
+        backend.schedules.report_worker_version.assert_awaited_once_with(
+            "w-1", "0.10.0", ttl_ms=live_window_ms(config.scheduler_seen_interval_s),
+        )
 
 
 class TestPollLoop:
@@ -876,12 +1059,25 @@ class TestSchedulerLoopLogging:
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-    async def test_sync_taskinfo_crons_failure_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
-        monkeypatch.setattr(loop, "sync_taskinfo_crons", AsyncMock(side_effect=RuntimeError("sync broke")))
-        await loop._election_tick()
-        entry = self._entry(swarmq_logs, "scheduler_sync_taskinfo_crons_failed")
+    async def test_cron_adopt_failure_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
+        """U12: die Übernahme der Cron-Meldungen läuft im eigenen Leader-Takt;
+        ein Fehler wird geloggt, der Takt läuft weiter."""
+        failed = asyncio.Event()
+
+        async def _broken():
+            failed.set()
+            raise RuntimeError("adopt broke")
+
+        monkeypatch.setattr(loop, "adopt_reported_crons", _broken)
+        await loop.start()
+        try:
+            await asyncio.wait_for(failed.wait(), timeout=2)
+            await loop._election_tick()  # Renew: der Loop lebt weiter.
+        finally:
+            await loop.stop()
+        entry = self._entry(swarmq_logs, "scheduler_cron_adopt_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "sync broke"
+        assert entry["error_type"] == "RuntimeError" and entry["error"] == "adopt broke"
 
     async def test_poll_tick_error_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
         async def _boom():
@@ -952,3 +1148,254 @@ class TestSchedulerLoopLogging:
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "RuntimeError" and entry["error"] == "dispatch broke"
         assert entry["signal"] == Signal.SCHEDULER_HEARTBEAT.value
+
+
+
+def _utc_ms(*args: int) -> int:
+    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+
+
+class TestSchedulerLoopTimezone:
+    """Plan 2026-10-08-1541 (U2): Score und Skip-Zaehlung in der Zone der
+    Definition. Die Uhr ist fest (``time.time`` im Loop-Modul gepatcht)."""
+
+    @pytest.fixture
+    def loop(self, backend, broker, config, lock_manager, store, signal_dispatcher, monkeypatch):
+        # 2026-10-06 10:00 UTC = 19:00 in Tokio.
+        fake_time = SimpleNamespace(time=lambda: _utc_ms(2026, 10, 6, 10, 0) / 1000)
+        monkeypatch.setattr("swarmq.scheduler.loop.time", fake_time)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = "leader"
+        return loop
+
+    @staticmethod
+    def _tokyo_def() -> ScheduleDefinition:
+        # Faellig war 09:00 Tokio am 06.10. (= 00:00 UTC).
+        return msgspec.structs.replace(
+            _def(name="tokyo", cron="0 9 * * *", fire_ts_ms=_utc_ms(2026, 10, 6, 0, 0)),
+            timezone="Asia/Tokyo",
+        )
+
+    async def test_next_score_uses_definition_timezone(self, loop, store):
+        d = self._tokyo_def()
+        store.poll_due.return_value = [("tokyo", d.fire_ts_ms, d)]
+
+        await loop._poll_tick()
+
+        commit_args = store.commit_fire.await_args
+        assert commit_args.args[1] == _utc_ms(2026, 10, 7, 0, 0)
+        assert commit_args.args[2].fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
+
+    async def test_skipped_fires_are_counted_in_definition_timezone(
+        self, loop, store, signal_dispatcher
+    ):
+        """Zwischen 00:00 und 10:00 UTC liegt kein Termin ``0 9`` in Tokio
+        (09:00 UTC waere es in UTC gewesen) -- also nichts uebersprungen."""
+        skipped: list[dict] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
+        async def _sk(**kw):
+            skipped.append(kw)
+
+        d = self._tokyo_def()
+        store.poll_due.return_value = [("tokyo", d.fire_ts_ms, d)]
+
+        await loop._poll_tick()
+
+        assert skipped == []
+
+
+class TestNextFireFailure:
+    """Plan 2026-10-08-1541 (U3, R18): eine Definition, deren naechster
+    Termin sich im Leader nicht berechnen laesst, blockiert nichts."""
+
+    @pytest.fixture
+    def loop(self, backend, broker, config, lock_manager, store, signal_dispatcher):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = "leader"
+        return loop
+
+    @staticmethod
+    def _batch():
+        broken = msgspec.structs.replace(
+            _def(name="broken", fire_ts_ms=1_000), timezone="Europe/Atlantis",
+        )
+        good = _def(name="good", fire_ts_ms=1_000)
+        return [("broken", 1_000, broken), ("good", 1_000, good)]
+
+    async def test_broken_entry_is_logged_and_rest_of_batch_fires(
+        self, loop, broker, store, swarmq_logs,
+    ):
+        store.poll_due.return_value = self._batch()
+
+        await loop._poll_tick()
+
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert broker.publish.await_count == 1
+        assert headers["x-swarmq-schedfire"] == "good:1000"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_next_fire_failed"]
+        assert entry["schedule_name"] == "broken" and entry["error_type"]
+
+
+    async def test_broken_entry_leaves_the_fire_index(self, loop, store):
+        """Ohne Folgezeit kein neuer Score: der Eintrag verlaesst den
+        Fire-Index (``-1``), die Definition bleibt stehen."""
+        batch = self._batch()
+        store.poll_due.return_value = batch
+
+        await loop._poll_tick()
+
+        [broken_commit] = [
+            c for c in store.commit_fire.await_args_list if c.args[0] == "broken"
+        ]
+        assert broken_commit.args[1:4] == (-1, batch[0][2], "test-owner")
+        assert broken_commit.kwargs["fired_ts_ms"] == 1_000
+
+    async def test_park_connection_error_does_not_abort_batch(
+        self, loop, broker, store, swarmq_logs,
+    ):
+        """Liste 20 (Review-Befund #3): R18-Isolation auch beim Parken."""
+        store.poll_due.return_value = self._batch()
+
+        async def _commit(name, *_args, **_kwargs):
+            if name == "broken":
+                raise BackendConnectionError("valkey down")
+            return True
+
+        store.commit_fire.side_effect = _commit
+
+        await loop._poll_tick()
+
+        assert broker.publish.await_args.kwargs["headers"]["x-swarmq-schedfire"] == "good:1000"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_failed"]
+        assert entry["schedule_name"] == "broken" and entry["error_type"]
+
+    async def test_park_owner_mismatch_is_logged(self, loop, store, swarmq_logs):
+        """Liste 21 (Review-Befund #3): das abgelehnte Parken bleibt sichtbar."""
+        store.poll_due.return_value = self._batch()[:1]
+        store.commit_fire.return_value = False
+
+        await loop._poll_tick()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_owner_mismatch"]
+        assert entry["schedule_name"] == "broken"
+
+
+class TestTakeoverBetweenPollAndCommit:
+    """Liste 9 (KTD12): echter ScheduleStore ueber dem In-Memory-Backend.
+    Die Uebernahme laeuft waehrend des Publish, also zwischen Poll und
+    Commit; der faellige Score blieb dabei stehen."""
+
+    async def test_commit_does_not_reset_taken_over_definition(
+        self, broker, config, lock_manager, signal_dispatcher,
+    ):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        await memory.locks.acquire(
+            SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1,
+        )
+        polled = _def(name="cron_a", fire_ts_ms=1_000)
+        taken_over = msgspec.structs.replace(polled, timezone="Asia/Tokyo")
+        await memory.schedules.add("cron_a", msgspec.json.encode(polled), 1_000)
+
+        async def _takeover(*_args, **_kwargs):
+            await memory.schedules.put("cron_a", msgspec.json.encode(taken_over), None)
+
+        broker.publish.side_effect = _takeover
+        loop = _make_loop(
+            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+        )
+        loop._state = "leader"
+
+        await loop._poll_tick()
+
+        stored = msgspec.json.decode(await memory.schedules.get("cron_a"), type=ScheduleDefinition)
+        assert stored == taken_over
+        assert await memory.schedules.fire_ts("cron_a") > 1_000
+
+
+
+class TestAdoptDuringFire:
+    """Liste 18/19 (Review-Befund #1): echter ScheduleStore ueber dem
+    In-Memory-Backend, Uebernahme ueber eine Cron-Meldung eines Workers."""
+
+    _NEW_CRON = "7 3 * * *"  # Minute 7 trifft nie ein */5-Raster
+    _NEW_ZONE = "Asia/Tokyo"
+
+    async def _setup(self, broker, config, lock_manager, signal_dispatcher):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        await memory.locks.acquire(
+            SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1,
+        )
+        polled = _def(name="cron_a", fire_ts_ms=1_000)
+        reported = msgspec.structs.replace(
+            polled, cron=self._NEW_CRON, timezone=self._NEW_ZONE,
+        )
+        await memory.schedules.add("cron_a", msgspec.json.encode(polled), 1_000)
+        await memory.schedules.report_cron(
+            "cron_a", cron_fingerprint(reported), msgspec.json.encode(reported),
+            live_window_ms=live_window_ms(config.scheduler_seen_interval_s),
+        )
+        loop = _make_loop(
+            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+        )
+        loop._state = "leader"
+        adopted = asyncio.Event()
+        adopt = loop.adopt_reported_crons
+
+        async def _adopt_and_signal():
+            await adopt()
+            adopted.set()
+
+        loop.adopt_reported_crons = _adopt_and_signal
+        return memory, loop, adopted
+
+    def _assert_scored_by_new_cron(self, score_ms):
+        local = datetime.fromtimestamp(score_ms / 1000, ZoneInfo(self._NEW_ZONE))
+        assert (local.hour, local.minute) == (3, 7)
+
+    async def _stop(self, loop, *tasks):
+        loop._stop_event.set()
+        loop._adopt_now.set()
+        await asyncio.gather(*tasks)
+
+    async def test_adoption_waits_for_running_fire(
+        self, broker, config, lock_manager, signal_dispatcher,
+    ):
+        memory, loop, adopted = await self._setup(
+            broker, config, lock_manager, signal_dispatcher,
+        )
+        published, release = asyncio.Event(), asyncio.Event()
+
+        async def _publish_and_trigger_adoption(*_args, **_kwargs):
+            loop._adopt_now.set()
+            published.set()
+            await release.wait()
+
+        broker.publish.side_effect = _publish_and_trigger_adoption
+        adopt_task = asyncio.create_task(loop._adopt_loop())
+        poll_task = asyncio.create_task(loop._poll_loop())
+        await published.wait()
+        release.set()
+        await adopted.wait()
+        await self._stop(loop, adopt_task, poll_task)
+
+        self._assert_scored_by_new_cron(await memory.schedules.fire_ts("cron_a"))
+
+    async def test_adoption_before_poll_plans_with_new_cron(
+        self, broker, config, lock_manager, signal_dispatcher,
+    ):
+        memory, loop, adopted = await self._setup(
+            broker, config, lock_manager, signal_dispatcher,
+        )
+        loop._adopt_now.set()
+        adopt_task = asyncio.create_task(loop._adopt_loop())
+        await adopted.wait()
+
+        await loop._poll_tick()
+        await self._stop(loop, adopt_task)
+
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert headers["x-swarmq-schedfire"] == "cron_a:1000"
+        self._assert_scored_by_new_cron(await memory.schedules.fire_ts("cron_a"))

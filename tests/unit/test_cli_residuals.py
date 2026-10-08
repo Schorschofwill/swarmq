@@ -469,6 +469,14 @@ class TestScheduleStatusUsesPublicAPI:
         fake_backend.get_scheduler_leader = AsyncMock(return_value="leader-xyz")
         fake_backend.close = AsyncMock()
         fake_backend._client = MagicMock()  # sync surface; lock-key get must not be called
+        # U13 (KTD11): Leader- und Worker-Versionen fuer die Status-Ansicht.
+        from swarmq.contracts import LeaderInfo
+
+        fake_backend.schedules = MagicMock()
+        fake_backend.schedules.leader_info = AsyncMock(
+            return_value=LeaderInfo(owner="leader-xyz", version="0.10.0")
+        )
+        fake_backend.schedules.worker_versions = AsyncMock(return_value={})
 
         async def _factory() -> object:
             return fake_backend

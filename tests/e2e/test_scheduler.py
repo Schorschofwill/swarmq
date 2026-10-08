@@ -17,6 +17,11 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.schedules import (
+    REPORT_DEF_KEY,
+    REPORT_FIRST_SEEN_KEY,
+    REPORT_LAST_SEEN_KEY,
+)
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
@@ -67,7 +72,7 @@ async def _wait_zscore_present(
 ) -> None:
     """Block until the scheduler has written ``member`` into its due-zset.
 
-    The leadership cron-sync (``sync_taskinfo_crons``) runs AFTER the leader
+    The leadership cron adoption (``adopt_reported_crons``) runs AFTER the leader
     signal is emitted, so a manual zadd issued the instant leadership is
     observed can be overwritten by that lagging sync with a future cron score —
     the fire then never comes due (an environment-sensitive timeout). Waiting
@@ -255,7 +260,7 @@ class TestCronSchedule:
             leader_event = _leader_event(app)
             worker_task = asyncio.create_task(app.start_worker())
             try:
-                # SCHEDULER_LEADER is emitted *before* sync_taskinfo_crons in
+                # SCHEDULER_LEADER is emitted *before* the cron adoption (adopt loop) in
                 # the same election tick (see SchedulerLoop._election_tick), so
                 # observing leadership does NOT mean the cron entry is written
                 # yet. Wait for the scheduler to write it, then re-score it to a
@@ -603,7 +608,7 @@ class TestRecurringAcrossLeaderChange:
 
                 # Fire #1 — A is leader. Wait until A's leadership cron-sync
                 # has written the entry FIRST, so our manual due-score is the
-                # last writer; otherwise a lagging sync_taskinfo_crons (it runs
+                # last writer; otherwise a lagging adopt_reported_crons (it runs
                 # after the LEADER signal) overwrites our score with the next
                 # cron minute and the fire never comes due (the flaky timeout).
                 # A past score is immediately due.
@@ -801,3 +806,146 @@ class TestCronWithRateLimit:
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker_task
+
+
+# ---------------------------------------------------------------------------
+# Cron-Meldungen über App-Grenzen (Plan 2026-10-08-1541, U12, AE8, R9/R12)
+# ---------------------------------------------------------------------------
+
+
+async def _wait_definition(
+    client: object, name: str, cron: str, timezone: str | None,
+    timeout: float = _EVENT_TIMEOUT,
+) -> None:
+    """Block until ``sq:{sched}:defs`` holds *name* with *cron*/*timezone*."""
+    import json
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = await client.hget("sq:{sched}:defs", name)  # type: ignore[attr-defined]
+        if raw is not None:
+            stored = json.loads(raw)
+            if (stored["cron"], stored.get("timezone")) == (cron, timezone):
+                return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"defs never held {name!r} with {cron!r} in {timezone!r}")
+
+
+async def _wait_adopt_ticks(
+    client: object, ticks: int = 2, timeout: float = _EVENT_TIMEOUT,
+) -> None:
+    """Block until the leader has finished *ticks* adoption ticks from now.
+
+    Every adoption tick ends with ``prune_cron_reports``, which deletes
+    reports whose ``last_seen`` is older than seven days. A probe report
+    with ``last_seen = 0`` is therefore gone once a tick has finished. The
+    probes are planted one after another, so the tick that removes the
+    second one read its report snapshot after the first probe was removed,
+    i.e. entirely after this call started. The probes never become live
+    and are never adopted.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    for _ in range(ticks):
+        field = f"probe_{uuid.uuid4().hex[:8]}|0"
+        async with client.pipeline(transaction=True) as pipe:  # type: ignore[attr-defined]
+            pipe.hset(REPORT_FIRST_SEEN_KEY, field, 0)
+            pipe.hset(REPORT_LAST_SEEN_KEY, field, 0)
+            pipe.hset(REPORT_DEF_KEY, field, b"{}")
+            await pipe.execute()
+        while await client.hexists(REPORT_LAST_SEEN_KEY, field):  # type: ignore[attr-defined]
+            if time.monotonic() >= deadline:
+                raise TimeoutError("the leader ran no adoption tick")
+            await asyncio.sleep(0.05)
+
+
+class TestCronReportsAcrossApps:
+    async def test_change_in_never_leader_app_is_adopted(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        """AE8: App B (nie Leader) stellt ``0 1 * * *`` UTC auf ``0 3 * * *``
+        Berlin um. Der Leader aus App A übernimmt die neue Definition; ein
+        danach neu startender Worker des alten Stands (der alte Stand lebt
+        noch) ändert sie nicht zurück."""
+        seen_interval = 0.3
+        name = _task_name("nightly")
+        queue_a, queue_b = _unique_queue(), _unique_queue()
+        cfg = dict(
+            concurrency=1,
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=1.0,
+            scheduler_seen_interval_s=seen_interval,
+        )
+
+        def _app(queue: str) -> SwarmQ:
+            # Jede App hält ihre eigene Registry (Momentaufnahme bei der
+            # Konstruktion); danach wird die globale Liste geleert, damit
+            # die nächste App nur ihre eigenen Tasks sieht.
+            app = SwarmQ(
+                RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
+                queues=[queue], **cfg,
+            )
+            Task._clear_registered_tasks()
+            return app
+
+        def _app_b(cron: str, timezone: str | None) -> SwarmQ:
+            class Nightly(Task):
+                task_info = TaskInfo(
+                    name=name, queues=[queue_b], cron=cron, timezone=timezone,
+                )
+
+                async def run(self) -> None:
+                    return None
+
+            return _app(queue_b)
+
+        async def _online(app: SwarmQ) -> asyncio.Task[None]:
+            online = asyncio.Event()
+
+            @app.on_signal(Signal.WORKER_ONLINE)
+            async def _on(**kw) -> None:
+                online.set()
+
+            task = asyncio.create_task(app.start_worker())
+            tasks.append(task)
+            await asyncio.wait_for(online.wait(), timeout=_EVENT_TIMEOUT)
+            return task
+
+        tasks: list[asyncio.Task[None]] = []
+        app_a = _app(queue_a)
+        b_old, b_new, b_old_again = (
+            _app_b("0 1 * * *", None),
+            _app_b("0 3 * * *", "Europe/Berlin"),
+            _app_b("0 1 * * *", None),
+        )
+        client = valkey_asyncio.Valkey.from_url(valkey_url)
+        async with contextlib.AsyncExitStack() as stack:
+            for app in (app_a, b_old, b_new, b_old_again):
+                await stack.enter_async_context(app)
+            await app_a.broker.declare_queue(queue_a)
+            await app_a.broker.declare_queue(queue_b)
+            a_leader = _leader_event(app_a)
+            try:
+                tasks.append(asyncio.create_task(app_a.start_worker()))
+                await asyncio.wait_for(a_leader.wait(), timeout=_EVENT_TIMEOUT)
+
+                await _online(b_old)
+                await _wait_definition(client, name, "0 1 * * *", None)
+
+                await _online(b_new)
+                await _wait_definition(client, name, "0 3 * * *", "Europe/Berlin")
+
+                # The worker reports its crons before WORKER_ONLINE; two
+                # finished adoption ticks after that have seen the report.
+                await _online(b_old_again)
+                await _wait_adopt_ticks(client)
+                await _wait_definition(
+                    client, name, "0 3 * * *", "Europe/Berlin", timeout=0.1,
+                )
+            finally:
+                await client.aclose()
+                for task in tasks:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task

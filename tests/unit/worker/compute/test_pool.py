@@ -826,6 +826,33 @@ async def test_a_recycle_replacement_from_an_unsafe_restarted_source_is_killed(c
     await p.aclose()
 
 
+# B23 (0.9.1) -- Test-Liste:
+# 1. [x] ``compute_recycle_replacement_failed`` traegt ``error_type``/``error``:
+#    ohne sie blieb offen, warum das Ersatzkind nicht bereit wurde.
+@pytest.mark.timeout(5)
+async def test_a_failed_recycle_replacement_logs_error_fields(ctx, signals, swarmq_logs):
+    from swarmq.worker.compute.forkserver import ForkSourceUnsafe
+
+    def restart_check() -> bool:
+        if len(FakeCtx.started) > 1:
+            raise ForkSourceUnsafe("restarted forkserver has 2 threads")
+        return False
+
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, restart_check=restart_check)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    old.channel.send(("result", _result("a", 0, rss=10.0)))
+    await t1
+    await _settle(lambda: p.stats.recycled == 1)
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "compute_recycle_replacement_failed"]
+    assert entry["log_level"] == "warning" and entry["slot"] == 0
+    assert entry["error_type"] == "SlotUnavailable" and "2 threads" in entry["error"]
+    old.die()
+    await p.aclose()
+
+
 @pytest.mark.timeout(5)
 async def test_a_rejected_fork_source_is_reported_once(ctx, signals):
     from swarmq.worker.compute.forkserver import ForkSourceUnsafe

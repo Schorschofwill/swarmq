@@ -6,6 +6,180 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-08
+
+Crons get a time zone with a fixed rule for clock changes, and every
+worker reports its crons, so crons of apps whose workers never become
+leader arrive too. **Upgrade every app on a shared Valkey to 0.10.0
+before you give any cron a time zone**, and move hand-converted UTC
+crons before 25 October 2026, 01:00 UTC:
+[migration guide](../guides/scheduling-and-retries.md#migrating-hand-converted-utc-crons).
+
+### Changed (breaking)
+
+- **Upgrade in two steps when crons get time zones.** A scheduler
+  leader before 0.10.0 does not know the new `timezone` field: it drops
+  the zone of every cron it fires and fires it in UTC again. Upgrade
+  every app on the same Valkey first, without changing crons, and check
+  with `swarmq schedule status` that `LEADER_VERSION` and all `WORKERS`
+  show 0.10.0; only then set zones and change the expressions back to
+  local time, both in the same commit. Details and the equivalence
+  recipe:
+  [migration guide](../guides/scheduling-and-retries.md#migrating-hand-converted-utc-crons).
+- **A `ScheduleStore` of your own needs new methods.** `fire_ts(name)`;
+  `put(..., fire_ts_ms=None)` must leave the fire index untouched;
+  `commit_fire` takes the new keyword `fired_payload`; `replan_if_unchanged` re-plans an unscored entry atomically; for cron reports
+  `report_cron`, `cron_reports` and `prune_cron_reports`; for the
+  leader version `report_worker_version`, `worker_versions`,
+  `set_leader_version` and `leader_info`. New types in
+  `swarmq.contracts`: `CronReport`, `CronReports`, `LeaderInfo`.
+  Signatures and semantics:
+  [API reference](api.md#coordination-store-protocols).
+
+### Changed
+
+- **Static crons arrive through cron reports instead of the leader's
+  registry.** Before, the leader wrote the crons of its own task
+  registry when it took over leadership, and only inserted or updated
+  them. Crons of an app whose workers never became leader never
+  arrived, and a change waited for the next leader change. Now every
+  worker reports its static crons at start and every
+  `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` (default 60 s); the leader adopts,
+  per name, the live definition that appeared most recently. A change
+  in the code of any app takes effect within two intervals after the
+  first worker with the new code starts; during a rolling deploy the
+  newer code state wins, and an old worker that restarts later does
+  not reset it. See
+  [cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader).
+- **`swarmq schedule remove --permanent` on a static cron that a live
+  worker reports:** the cron comes back within one interval (before:
+  at the next leader change). It stays gone once no code reports it
+  anymore. A cron disabled without `--permanent` stays disabled.
+- **Log events of the cron sync.** `scheduler_sync_taskinfo_crons_failed`
+  is gone. New: `scheduler_cron_report_failed`,
+  `scheduler_cron_reports_read_failed`,
+  `scheduler_cron_reports_prune_failed`, `scheduler_cron_adopt_failed`
+  (WARNING) and `scheduler_cron_report_invalid` (ERROR). A cron that a
+  live worker reports no longer logs
+  `scheduler_task_not_in_local_registry` when it fires on a leader of
+  another app. See the
+  [event catalog](logging.md#event-catalog).
+- **New Valkey keys**, all under the `{sched}` hash tag:
+  `sq:{sched}:report:first_seen`, `sq:{sched}:report:last_seen`,
+  `sq:{sched}:report:def` (field `name|fingerprint`),
+  `sq:{sched}:leader_version` (with the lock's TTL) and
+  `sq:{sched}:worker_version:<worker_id>` (TTL three report
+  intervals). The leader deletes reports not refreshed for 7 days. The
+  golden fixtures of the backend contract (`keys.json`,
+  `lua_contract.txt`, schedule definition) are regenerated for the new
+  keys, scripts and the `timezone` field; the queue arguments are
+  unchanged.
+- **Dependencies:** `croniter>=6.2` (was `>=2`; its behaviour in the
+  doubled hour is only established for these versions) and new
+  `tzdata`, so zones resolve in images without `/usr/share/zoneinfo`.
+- **Tests and CI pin RabbitMQ exactly:** `4.3.6` as the main broker, a
+  second `4.2.9` for the consumer-timeout characterisation, `3.13.7`
+  in the chaos stack. Behaviour after a consumer timeout differs
+  between 4.2 and 4.3; the tests record it per version.
+
+### Added
+
+- **Time zones for crons.** `TaskInfo(timezone="Europe/Berlin")` (IANA
+  name, checked at class definition) or the default
+  `SWARMQ_SCHEDULER_TIMEZONE` / `SwarmQConfig(scheduler_timezone=...)`.
+  A zone on the task beats the default, also an explicit `"UTC"`.
+  Without a zone nothing changes: `"UTC"`, `"Etc/UTC"` and no zone are
+  stored the same way, so existing schedules keep their fingerprint.
+  [Time zones](../guides/scheduling-and-retries.md#time-zones).
+- **Rule for clock changes.** In the doubled autumn hour a cron
+  without `*` in its hour field fires only in the first pass; with `*`
+  (also `*/n`, `@hourly`) it follows real time. In the spring gap a
+  fixed hour fires once at the next existing time. Table and examples:
+  [clock changes](../guides/scheduling-and-retries.md#clock-changes).
+- **`swarmq.scheduler.next_fire_times(cron, start, *, timezone=None,
+  count=1)`** calculates fires with the scheduler's rule, for example
+  to check before the switch that a converted expression keeps its
+  fires ([API](api.md#next_fire_times)).
+- **`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`** (default `60`, `> 0`): interval
+  of the cron reports and of the leader's adoption. A report lives three
+  intervals; use the same value in every app on one Valkey.
+- **Conflicts:** when several definitions of one cron stay live for
+  more than 10 minutes (typically same-named tasks in two apps), the
+  leader logs `scheduler_cron_conflict`, sends
+  `Signal.SCHEDULER_CRON_CONFLICT` (`worker_id`, `schedule_name`,
+  `fingerprints`) and counts
+  `swarmq_scheduler_cron_conflicts_total{schedule_name}`.
+- **Leader version.** The leader writes its swarmq version next to the
+  lock, every worker reports its own. A worker that sees a leader
+  without a version or with one before 0.10.0 logs
+  `scheduler_leader_outdated` (logger `swarmq.scheduler.leader_version`,
+  once per leader), sends `Signal.SCHEDULER_LEADER_OUTDATED`
+  (`worker_id`, `leader`, `leader_version`, `outdated`) and sets the
+  gauge `swarmq_scheduler_leader_outdated{worker_id}`.
+  `swarmq schedule status` shows `LEADER_VERSION` and a `WORKERS`
+  block; `--format json` adds `leader_version` and `workers`.
+  Write or read errors log `scheduler_leader_version_write_failed` and
+  `scheduler_leader_version_check_failed`.
+- `SchedulerLoop(static_crons=..., version=...)` for code that runs the
+  scheduler loop itself.
+- **Guide: bounding `{queue}.XQ` with a broker policy.** The DLQ has
+  neither TTL nor length limit, and every terminal failure lands
+  there, also with `max_retries=0`. As an immediate workaround, a
+  RabbitMQ policy on `\.XQ$` with `message-ttl` and `max-length`
+  bounds it. Only one policy applies per queue, and overflow is
+  deleted, not dead-lettered further:
+  [Dead letter queues](../guides/dead-letter-queues.md#bounding-the-xq-with-a-broker-policy).
+
+### Fixed
+
+- **A due fire is no longer lost when a static cron changes.** If the
+  old fire is already due, it stays and fires once with the new
+  content; otherwise the next fire is recalculated.
+- **A changed queue, time zone or task name of a static cron is
+  adopted.** Before, only a changed expression replaced the stored
+  definition.
+- **A cron whose next fire cannot be calculated no longer stalls the
+  poll loop.** Before, the next fire was calculated after the publish,
+  and an error ended the whole poll tick: the following entries of the
+  batch did not fire, and the entry stayed due for the next tick. Now
+  the next fire is calculated before the publish; on an error only this
+  entry is logged (`scheduler_next_fire_failed`, ERROR) and leaves the
+  fire index, and the leader plans it again once a live worker reports
+  it and the fire can be calculated. This re-planning is atomic: a
+  `swarmq schedule remove` that lands meanwhile stays in effect. If the
+  entry cannot be taken out of the index, the leader logs
+  `scheduler_park_failed` (WARNING, logger `swarmq.scheduler.fire_plan`)
+  and tries again on the next tick; `scheduler_park_owner_mismatch`
+  (WARNING) means it lost the leader lock meanwhile.
+- **Disabled definitions get no fire-index entry.** Entries that older
+  versions left in the index are still skipped.
+- **A fire no longer resets a definition adopted meanwhile.** The
+  commit after a fire writes the definition back only if it has not
+  changed since the poll.
+- **A lost broker channel during the final ack no longer ends as
+  "Task exception was never retrieved".** When RabbitMQ went away while
+  the worker settled a delivery, aiormq's `ChannelInvalidStateError`
+  escaped from the message task, and asyncio logged it at ERROR without
+  task context. The outcome was already right (RabbitMQ redelivers
+  unacknowledged messages), only the log was wrong. `ack`, `redeliver`
+  and `route_via_dlx` now raise `BrokerConnectionError` on a lost
+  channel or connection, as the broker contract documents; cancelling
+  the calling task still raises `CancelledError`. The worker logs one
+  WARNING `delivery_settle_failed` with task context, `error_type` and
+  `error`. Any other unexpected error that ends a delivery is logged as
+  ERROR `delivery_handler_failed` with task context and traceback
+  instead of escaping from the task.
+- **Error logs in the worker carry `error_type` and `error`.**
+  `backend_connection_error` (result could not be stored) had neither
+  and was always ERROR; it is now WARNING for `AT_LEAST_ONCE`, where
+  the redelivery heals it, and stays ERROR for `FIRE_AND_FORGET`, where
+  the result is lost. `workflow_advance_backend_error` and
+  `workflow_advance_broker_error` follow the same rule. Also with error
+  fields now: `task_expired_result_store_failed`,
+  `task_expired_dlq_publish_failed`, `task_expired_nack_also_failed`,
+  `cancel_consume_partial_failure` and
+  `compute_recycle_replacement_failed`.
+
 ## [0.9.0] — 2026-10-07
 
 ### Changed (breaking)

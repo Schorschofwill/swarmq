@@ -175,6 +175,36 @@ class TestStatus:
             await client.delete(SCHEDULER_LOCK_KEY)
             await client.aclose()
 
+    async def test_status_shows_leader_and_worker_versions(self, _env, valkey_url):
+        """U13 (KTD11): Leader-Version neben dem Lock, Worker-Versionen."""
+        import json
+
+        from swarmq.backend.valkey.schedules import ValkeyScheduleStore
+
+        client = valkey_asyncio.Valkey.from_url(valkey_url)
+        schedules = ValkeyScheduleStore(client)
+        worker = f"host-{uuid.uuid4().hex[:8]}:0"
+        try:
+            await client.set(SCHEDULER_LOCK_KEY, "w1:42:abcdef12")
+            await schedules.set_leader_version("w1:42:abcdef12", "0.10.0", ttl_ms=60_000)
+            await schedules.report_worker_version(worker, "0.10.0", ttl_ms=60_000)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                await cli._run_schedule_status(_ns_status(format="json"))
+            data = json.loads(buf.getvalue())
+            assert data["leader_version"] == "0.10.0"
+            assert {"worker_id": worker, "version": "0.10.0"} in data["workers"]
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                await cli._run_schedule_status(_ns_status(format="table"))
+            assert "LEADER_VERSION: 0.10.0\n" in buf.getvalue()
+            assert f"  {worker}  0.10.0\n" in buf.getvalue()
+        finally:
+            await client.delete(SCHEDULER_LOCK_KEY)
+            await client.aclose()
+
 
 class TestAddRemoveJsonOutput:
     """Unit 4 / M-2: agent-parseable JSON output for mutating

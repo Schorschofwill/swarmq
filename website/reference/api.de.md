@@ -426,11 +426,37 @@ TaskInfo(
     unique_until: Literal["start", "completion"] = "completion",
     max_age: int | None = None,
     priority: Literal["high", "normal", "low"] = "normal",
+    timezone: str | None = None,
 )
 ```
 
 Feld-Semantik und Validierungsregeln leben in
 [Konfigurations-Referenz — TaskInfo-Felder](configuration.md#taskinfo-felder).
+
+## `next_fire_times()`
+
+```python
+from swarmq.scheduler import next_fire_times
+
+next_fire_times(
+    cron: str,
+    start: datetime,
+    *,
+    timezone: str | None = None,
+    count: int = 1,
+) -> list[datetime]
+```
+
+Die nächsten `count` Termine von `cron` nach `start`
+(zeitzonenbehaftet), berechnet mit der Regel des Schedulers,
+einschließlich der
+[Regel für die Zeitumstellung](../guides/scheduling-and-retries.md#zeitumstellung).
+`timezone` ist eine IANA-Zone, `None` heißt UTC; die Termine kommen
+zeitzonenbehaftet in dieser Zone zurück. Ein naiver `start` wirft
+`ValueError`, statt als Ortszeit des Hosts gelesen zu werden. Ein ungültiger Ausdruck wirft
+croniters `CroniterBadCronError`. Damit lässt sich prüfen, dass ein auf
+eine Zeitzone umgestellter Cron seine Termine behält
+([Rezept](../guides/scheduling-and-retries.md#von-hand-umgerechnete-utc-crons-umstellen)).
 
 ## `class Task`
 
@@ -609,6 +635,8 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | `worker_id` | Leader-Wahl und -Erneuerung. |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` | Leader gibt beim Shutdown ab / übernimmt nach abgelaufenem Lock. |
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Nachholen nach Ausfallzeit hat Cron-Termine übersprungen. |
+| `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Mehrere Definitionen eines statischen Crons leben seit mehr als 10 Minuten; der Leader sendet es in jedem Übernahme-Takt, solange der Konflikt besteht. |
+| `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | Ein Nicht-Leader hat einen Scheduler-Leader ohne Zeitzonen-Unterstützung gesehen (`leader_version` `None` heißt vor 0.10.0); einmal pro Leader mit `outdated=True`, erneut mit `outdated=False`, wenn ein aktueller Leader folgt. |
 
 Handler müssen `**kwargs` akzeptieren. Nutze `kwargs.get("batch_index")` für das nur in
 `TASK_DUPLICATE_DETECTED` vorhandene Feld, da Nicht-Batch-Quellen
@@ -811,6 +839,60 @@ class ScheduleStore(Protocol):
 Worker und Scheduler übergeben die neuen Schlüsselwörter immer; ein Store
 von Dritten, der sie nicht annimmt, wirft daher bei jedem Fire
 `TypeError`.
+
+Vertragsänderungen in 0.10.0. Ein eigener Store muss diese Methoden
+umsetzen; der Scheduler und `swarmq schedule status` rufen sie auf:
+
+```python
+from swarmq.contracts import CronReport, CronReports, LeaderInfo, ScheduleStore
+
+class ScheduleStore(Protocol):
+    async def put(self, name: str, payload: bytes,
+                  fire_ts_ms: int | None) -> None: ...
+    async def fire_ts(self, name: str) -> int | None: ...
+    async def commit_fire(self, name: str, *, next_fire_ts_ms: int | None,
+                          payload: bytes | None, owner: str,
+                          fired_ts_ms: int | None = None,
+                          fired_payload: bytes | None = None) -> bool: ...
+    async def replan_if_unchanged(self, name: str, expected: bytes,
+                                  payload: bytes, fire_ts_ms: int) -> bool: ...
+    async def report_cron(self, name: str, fingerprint: str, payload: bytes,
+                          *, live_window_ms: int) -> None: ...
+    async def cron_reports(self) -> CronReports: ...
+    async def prune_cron_reports(self, *, max_age_ms: int) -> int: ...
+    async def report_worker_version(self, worker_id: str, version: str,
+                                    *, ttl_ms: int) -> None: ...
+    async def worker_versions(self) -> Mapping[str, str]: ...
+    async def set_leader_version(self, owner: str, version: str,
+                                 *, ttl_ms: int) -> None: ...
+    async def leader_info(self) -> LeaderInfo: ...
+```
+
+- `put(..., fire_ts_ms=None)` schreibt die Definition und lässt den
+  Fire-Index unberührt; ein fälliger Termin behält seinen Score.
+- `fire_ts(name)` liefert den Score im Fire-Index, `None` ohne Eintrag
+  (deaktiviert oder unbekannt).
+- `commit_fire(fired_payload=...)` schreibt `payload` nur, solange die
+  gespeicherte Definition noch genau `fired_payload` (die gepollte) ist;
+  sonst rückt nur der Score vor, und eine zwischen Poll und Commit
+  übernommene Definition wird nicht zurückgeschrieben.
+- `replan_if_unchanged(name, expected, payload, fire_ts_ms)` plant einen
+  Eintrag ohne Score in einem atomaren Schritt neu ein: Es schreibt
+  `payload` und den Score nur, solange die gespeicherte Definition noch
+  genau `expected` ist und der Eintrag keinen Score hat, und meldet, ob
+  es geschrieben hat. Ein zwischendurch deaktivierter oder entfernter
+  Schedule bleibt, wie er ist.
+- `report_cron` setzt `last_seen` und Payload von `name|fingerprint`
+  atomar in Backend-Zeit; `first_seen` nur, wenn die Meldung fehlt oder
+  ihr `last_seen` älter als `live_window_ms` ist. `cron_reports()`
+  liefert alle Meldungen samt Backend-Zeit des Lesens
+  (`CronReports.now_ms`); `prune_cron_reports` löscht Meldungen, deren
+  `last_seen` älter als `max_age_ms` ist, und liefert ihre Anzahl.
+- `report_worker_version` / `worker_versions` halten die swarmq-Version
+  pro Worker für `ttl_ms`; `set_leader_version` schreibt die Version
+  des Leaders mit der TTL des Locks neben das Leader-Lock;
+  `leader_info()` liefert den Owner des Locks und diese Version
+  (`LeaderInfo.version` ist `None` bei einem Leader vor 0.10.0).
 
 ## Dependency Injection (Dishka)
 

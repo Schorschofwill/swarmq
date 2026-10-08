@@ -265,7 +265,9 @@ async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend
     assert "backend.release_unique" not in rec.calls
 
 
-async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(broker, backend, rec) -> None:
+async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
+    broker, backend, rec, swarmq_logs
+) -> None:
     chain = MagicMock()
     chain.run_pre_execute = AsyncMock(side_effect=RuntimeError("hook exploded"))
     worker = _worker(broker, backend, rec, PlainTask, middleware_chain=lambda: chain)
@@ -273,8 +275,11 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
         _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
     )
 
-    with pytest.raises(RuntimeError, match="hook exploded"):
-        await worker._handle_message(msg)
+    await worker._handle_message(msg)
+
+    # Seit B22 entweicht der Fehler nicht mehr aus der Task, er wird geloggt.
+    [failed] = [e for e in swarmq_logs if e["event"] == "delivery_handler_failed"]
+    assert failed["error"] == "hook exploded"
 
     assert "backend.release_unique" in rec.calls
     assert "backend.schedules.mark_fire_completed" in rec.calls

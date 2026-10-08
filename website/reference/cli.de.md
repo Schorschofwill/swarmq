@@ -312,8 +312,12 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 ```
 
 Ohne `--permanent` wird der Schedule nur deaktiviert, bleibt aber
-erhalten. Mit `--permanent` wird er hart gelöscht, damit
-Insert-if-absent aus Code resync'en kann.
+erhalten; er bleibt deaktiviert, wenn sich sein Code ändert. Mit
+`--permanent` wird er hart gelöscht. Einen statischen Cron, den ein
+lebender Worker noch meldet, übernimmt der Leader binnen eines
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S` wieder; dauerhaft weg ist er erst,
+wenn ihn kein Code mehr meldet (siehe
+[Cron-Meldungen](../guides/scheduling-and-retries.md#cron-meldungen-und-leader)).
 
 ### `swarmq schedule status`
 
@@ -321,9 +325,34 @@ Insert-if-absent aus Code resync'en kann.
 swarmq schedule status [--limit N] [--format (table|json)]
 ```
 
-Druckt den aktuellen Leader-Worker (falls vorhanden) und die
-nächsten N Schedules, die innerhalb 24 Stunden anstehen (`--limit`,
-Default `10`).
+Druckt den aktuellen Leader-Worker (falls vorhanden), seine
+swarmq-Version, die nächsten N Schedules, die innerhalb 24 Stunden
+anstehen (`--limit`, Default `10`), und die Worker, die Crons melden,
+mit ihren swarmq-Versionen.
+
+```text
+LEADER: host-a:4711:3f9c2a1b
+LEADER_VERSION: 0.10.0
+NOW:    2026-10-20T08:00:00+00:00
+UPCOMING:
+  2026-10-21T01:00:00+00:00  daily_report  task=daily_report  queue=reports
+WORKERS:
+  worker-a  0.10.0
+  worker-b  0.10.0
+```
+
+`LEADER_VERSION` ist `(not reported: swarmq before 0.10.0)`, wenn der
+Leader ein swarmq ohne Versionsangabe ausführt, und `-` ohne Leader.
+`WORKERS` listet jeden Worker mit lebender Meldung (drei
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), ohne einen `(none)`. Bevor Crons
+oder Zeitzonen umgestellt werden, sollten alle hier gezeigten Versionen
+0.10.0 oder neuer sein (siehe
+[Leader-Version](../guides/scheduling-and-retries.md#leader-version)).
+Termine erscheinen in UTC.
+
+`--format json` ergänzt `leader`, `now_ms` und `upcoming` um die Felder
+`leader_version` (String oder `null`) und `workers` (Liste von
+`{"worker_id": ..., "version": ...}`).
 
 ## `swarmq dlq`
 

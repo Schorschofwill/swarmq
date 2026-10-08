@@ -1,6 +1,7 @@
 """Tests for swarmq.config — SwarmQConfig dataclass."""
 
 import os
+import re
 
 import pytest
 
@@ -538,6 +539,7 @@ _NUMERIC_ENV_VARS = [
     "SWARMQ_SCHEDULER_LOCK_TTL",
     "SWARMQ_SCHEDULER_DEDUP_TTL",
     "SWARMQ_SCHEDULER_INFLIGHT_TTL",
+    "SWARMQ_SCHEDULER_SEEN_INTERVAL_S",
     "SWARMQ_BURST_IDLE_TIMEOUT",
     "SWARMQ_MAX_MESSAGE_BODY_BYTES",
 ]
@@ -974,3 +976,57 @@ def test_backend_defer_delays_must_be_positive(field, value):
 def test_backend_defer_max_delay_below_base_raises():
     with pytest.raises(ConfigurationError, match="backend_defer_max_delay must be >= backend_defer_base_delay"):
         _cfg(backend_defer_base_delay=10.0, backend_defer_max_delay=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Cron-Zeitzone als globaler Standard (Plan 2026-10-08-1541, U1, R6, KTD1)
+# ---------------------------------------------------------------------------
+# - [x] Default None (UTC)
+# - [x] Env SWARMQ_SCHEDULER_TIMEZONE setzt den Standard
+# - [x] Unbekannte oder fehlgeformte Zone -> ConfigurationError mit dem Namen
+# - [x] "UTC" / "Etc/UTC" -> None
+
+
+def test_scheduler_timezone_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_TIMEZONE", "Europe/Berlin")
+    cfg = _cfg()
+    assert cfg.scheduler_timezone == "Europe/Berlin"
+
+
+@pytest.mark.parametrize("value", ["Europe/Atlantis", "../etc/passwd"])
+def test_scheduler_timezone_invalid_env_raises(monkeypatch, value):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_TIMEZONE", value)
+    with pytest.raises(ConfigurationError, match=r"scheduler_timezone .*" + re.escape(value)):
+        _cfg()
+
+
+@pytest.mark.parametrize("value", ["UTC", "Etc/UTC"])
+def test_scheduler_timezone_utc_normalized_to_none(value):
+    assert _cfg(scheduler_timezone=value).scheduler_timezone is None
+
+
+def test_scheduler_timezone_defaults_to_none():
+    assert _cfg().scheduler_timezone is None
+
+
+# ---------------------------------------------------------------------------
+# Meldetakt der Cron-Meldungen (Plan 2026-10-08-1541, U12, KTD10)
+# ---------------------------------------------------------------------------
+# - [x] Default 60 s
+# - [x] Env SWARMQ_SCHEDULER_SEEN_INTERVAL_S
+# - [x] <= 0 -> ConfigurationError mit Feldnamen
+
+
+def test_scheduler_seen_interval_defaults_to_sixty_seconds():
+    assert _cfg().scheduler_seen_interval_s == 60.0
+
+
+def test_scheduler_seen_interval_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "15")
+    assert _cfg().scheduler_seen_interval_s == 15.0
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+def test_scheduler_seen_interval_must_be_positive(value):
+    with pytest.raises(ConfigurationError, match="scheduler_seen_interval_s"):
+        _cfg(scheduler_seen_interval_s=value)

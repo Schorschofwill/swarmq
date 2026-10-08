@@ -119,6 +119,9 @@ long as RabbitMQ and Valkey are still there.
 | Schedule-fire claims | Valkey key `sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
 | Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
 | Leader election | Valkey key `sq:lock:{sched}:leader` | Heartbeat-renewed |
+| Leader version | Valkey key `sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
+| Cron reports | Valkey HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report |
+| Worker versions | Valkey key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-process state — the task registry, the middleware stack, the signal
 dispatcher — is rebuilt on every worker start from your task module.

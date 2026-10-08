@@ -369,6 +369,56 @@ def test_taskinfo_catchup_false_with_cron_accepted():
 
 
 # ---------------------------------------------------------------------------
+# Cron-Zeitzone (Plan 2026-10-08-1541, U1, R6, KTD1)
+#
+# Test-Liste:
+# - cron mit IANA-Zone wird angenommen, Zone bleibt erhalten
+# - ohne Angabe ist die Zone None
+# - unbekannte Zone -> ValueError mit dem Namen
+# - timezone ohne cron -> ValueError
+# - "UTC" und "Etc/UTC" bleiben als ausdrückliches "UTC" erhalten
+#   (Plan U3: None heißt „nicht gesetzt“, dann gilt der globale Standard)
+# - leerer String -> ValueError (kein stilles UTC)
+# ---------------------------------------------------------------------------
+
+
+def test_taskinfo_cron_with_timezone_accepted():
+    info = TaskInfo(
+        name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Berlin"
+    )
+    assert info.timezone == "Europe/Berlin"
+
+
+def test_taskinfo_unknown_timezone_raises_with_name():
+    with pytest.raises(ValueError, match="Europe/Atlantis"):
+        TaskInfo(
+            name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Atlantis"
+        )
+
+
+def test_taskinfo_malformed_timezone_key_raises():
+    """Leerer oder pfadartiger Schlüssel ist kein stilles UTC."""
+    for key in ("", "../etc/passwd"):
+        with pytest.raises(ValueError, match="timezone"):
+            TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone=key)
+
+
+def test_taskinfo_timezone_without_cron_raises():
+    with pytest.raises(ValueError, match="timezone requires cron"):
+        TaskInfo(name="task", queues=["q"], timezone="Europe/Berlin")
+
+
+def test_taskinfo_explicit_utc_is_kept_as_utc():
+    """Plan U3: eine ausdrückliche UTC-Angabe ("UTC", "Etc/UTC") bleibt als
+    "UTC" erhalten, damit sie nicht auf ``config.scheduler_timezone``
+    zurückfällt; ohne Angabe bleibt die Zone None („nicht gesetzt“)."""
+    for key in ("UTC", "Etc/UTC"):
+        info = TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone=key)
+        assert info.timezone == "UTC"
+    assert TaskInfo(name="task", queues=["q"], cron="0 3 * * *").timezone is None
+
+
+# ---------------------------------------------------------------------------
 # Task registration delay/eta signature-guard (P1-3)
 # ---------------------------------------------------------------------------
 

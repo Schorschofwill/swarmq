@@ -82,6 +82,8 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler-Leader-Übergänge | `worker_id` |
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader-Swap-Quellen | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up nach Downtime hat Cron-Termine übersprungen | `worker_id`, `schedule_name`, `skipped_count` |
+| `SCHEDULER_CRON_CONFLICT` | Mehrere Definitionen eines statischen Crons leben länger als 10 Minuten (Leader, in jedem Übernahme-Takt, solange er besteht) | `worker_id`, `schedule_name`, `fingerprints` |
+| `SCHEDULER_LEADER_OUTDATED` | Der Scheduler-Leader führt ein swarmq ohne Zeitzonen-Unterstützung aus (`outdated=True`, einmal pro Leader), oder ein aktueller Leader folgt (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = vor 0.10.0), `outdated` |
 
 `TASK_FAILED` gilt pro Versuch: Ein Task mit `max_retries=3`, der immer
 scheitert, feuert es viermal, im Wechsel mit drei `TASK_RETRYING`. Um

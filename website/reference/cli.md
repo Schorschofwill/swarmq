@@ -303,9 +303,12 @@ swarmq schedule add nightly-billing \
 swarmq schedule remove NAME [--permanent] [--format (table|json)]
 ```
 
-Without `--permanent`, the schedule is disabled but kept. With
-`--permanent`, it is hard-deleted so insert-if-absent can re-sync
-from code.
+Without `--permanent`, the schedule is disabled but kept; it stays
+disabled when its code changes. With `--permanent`, it is hard-deleted.
+A static cron that a live worker still reports is adopted again by the
+leader within one `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`; it only stays
+gone once no code reports it anymore (see
+[cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader)).
 
 ### `swarmq schedule status`
 
@@ -313,8 +316,33 @@ from code.
 swarmq schedule status [--limit N] [--format (table|json)]
 ```
 
-Prints the current leader worker (if any) and the next N schedules
-due within 24 hours (`--limit`, default `10`).
+Prints the current leader worker (if any), its swarmq version, the
+next N schedules due within 24 hours (`--limit`, default `10`) and the
+workers that report crons, with their swarmq versions.
+
+```text
+LEADER: host-a:4711:3f9c2a1b
+LEADER_VERSION: 0.10.0
+NOW:    2026-10-20T08:00:00+00:00
+UPCOMING:
+  2026-10-21T01:00:00+00:00  daily_report  task=daily_report  queue=reports
+WORKERS:
+  worker-a  0.10.0
+  worker-b  0.10.0
+```
+
+`LEADER_VERSION` is `(not reported: swarmq before 0.10.0)` when the
+leader runs a swarmq that writes no version, and `-` without a leader.
+`WORKERS` lists every worker whose report is live (three
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Before you
+change crons or time zones, every version shown here should be 0.10.0
+or later (see
+[leader version](../guides/scheduling-and-retries.md#leader-version)).
+Fire times are shown in UTC.
+
+`--format json` adds the fields `leader_version` (string or `null`)
+and `workers` (a list of `{"worker_id": ..., "version": ...}`) to
+`leader`, `now_ms` and `upcoming`.
 
 ## `swarmq dlq`
 

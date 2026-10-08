@@ -11,7 +11,7 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.9.0"
+version = "0.10.0"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
@@ -23,7 +23,9 @@ requires-python = ">=3.14"
 # API; valkey>=6 the asyncio client surface; msgspec>=0.18 the
 # Struct/JSON APIs; structlog>=24 contextvars/testing surfaces (<27:
 # get_logger relies on stdlib.BoundLogger frame depth, KTD1/KTD2);
-# croniter>=2 tz-aware get_next/get_prev.
+# croniter>=6.2: fold-Verhalten in der Rückstellungsnacht nur dafür
+# belegt (KTD1); tzdata, weil schlanke Images kein /usr/share/zoneinfo
+# mitbringen und Cron-Zeitzonen per zoneinfo aufgelöst werden.
 dependencies = [
     "msgspec>=0.18",
     "msgpack>=1.0",
@@ -35,7 +37,8 @@ dependencies = [
     # valkey-py picks libvalkey up automatically when present — opt in
     # via the [fast] extra.
     "valkey>=6",
-    "croniter>=2",
+    "croniter>=6.2",
+    "tzdata",
 ]
 
 [project.optional-dependencies]

@@ -22,7 +22,7 @@ _LEADER_TOKEN = LockToken(name=SCHEDULER_LOCK_NAME, owner="test-owner", max_conc
 
 
 def _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher,
-               owner_token="test-owner"):
+               owner_token="test-owner", version="0.10.0"):
     return SchedulerLoop(
         backend=backend,
         broker=broker,
@@ -32,6 +32,7 @@ def _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher,
         signal_dispatcher=signal_dispatcher,
         owner_token=owner_token,
         worker_id="w-1",
+        version=version,
     )
 
 

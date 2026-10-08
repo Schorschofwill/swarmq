@@ -14,7 +14,7 @@ from typing import Any
 from swarmq.cancellation import build_result_dict
 from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
 from swarmq.headers import HEADER_ENQUEUED_AT
-from swarmq.logging import get_logger
+from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
@@ -89,10 +89,10 @@ class ExpiryGate:
                     ttl_ms=ttl_ms,
                     op_timeout=deps.config.backend_op_timeout,
                 )
-            except BackendConnectionError:
+            except BackendConnectionError as exc:
                 # Best-effort: if the backend is down, the message still
                 # routes to the DLQ for operator inspection.
-                logger.warning("task_expired_result_store_failed")
+                logger.warning("task_expired_result_store_failed", **_error_fields(exc))
 
         # Route to DLQ + ack. Same pattern as the dead-letter path but
         # inline because the DLQ semantics of 'expired' differ from
@@ -107,12 +107,12 @@ class ExpiryGate:
         # terminal path.
         try:
             await deps.broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
-        except BrokerConnectionError:
-            logger.warning("task_expired_dlq_publish_failed")
+        except BrokerConnectionError as exc:
+            logger.warning("task_expired_dlq_publish_failed", **_error_fields(exc))
             try:
                 await redeliver_in_place(deps, delivery, ctx)
-            except BrokerConnectionError:
+            except BrokerConnectionError as nack_exc:
                 # Double-failure — let the message TTL / broker
                 # redeliver-limit be the safety net.
-                logger.error("task_expired_nack_also_failed")
+                logger.error("task_expired_nack_also_failed", **_error_fields(nack_exc))
         return Terminal.never_release()

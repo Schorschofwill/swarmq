@@ -95,6 +95,8 @@ with exit `78`.
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × heartbeat_interval`. |
 | `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup TTL for scheduler-originated dispatches. |
 | `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL of the schedule-fire claim a worker holds while a scheduled task runs. A claim that could not be released blocks a redelivery of the same fire as a duplicate for at most this long. |
+| `SWARMQ_SCHEDULER_TIMEZONE` | *unset* (UTC) | IANA zone for cron expressions of tasks without their own `TaskInfo.timezone`, e.g. `Europe/Berlin`. `UTC` and `Etc/UTC` mean UTC. An unknown zone is a configuration error. Change it in the same deploy as the expressions it affects; prefer the zone per task ([time zones](../guides/scheduling-and-retries.md#time-zones)). |
+| `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` | `60.0` | Seconds between [cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader): every worker reports its static crons at start and then at this interval; the leader adopts reported crons at the same interval. A report stays live for three intervals. Must be `> 0`; use the same value in every app on one Valkey. |
 
 ### Observability
 
@@ -124,6 +126,8 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_dlq_messages` | gauge | `queue` | Messages in `{queue}.XQ`, sampled. |
 | `swarmq_worker_uptime_seconds` | gauge | `worker_id` | Seconds since the worker started, sampled. |
 | `swarmq_scheduler_leader` | gauge | `worker_id` | `1` while this worker holds the scheduler leader lock, else `0`. |
+| `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq before 0.10.0 without time zone support, else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
+| `swarmq_scheduler_cron_conflicts_total` | counter | `schedule_name` | Leader selection ticks that saw several live definitions of one static cron for more than 10 minutes ([conflicts](../guides/scheduling-and-retries.md#conflicts)). |
 | `swarmq_log_records_dropped_total` | counter | none | Log records dropped because the log queue was full (see [Logging](logging.md#non-blocking-output-and-dropped-records)). |
 
 `task_name` and `queue` are taken verbatim from the message; keep task
@@ -290,6 +294,7 @@ definition time and cannot be mutated afterwards.
 |---|---|---|---|
 | `cron` | `str \| None` | `None` | Standard 5-field cron expression. Extended syntax (`L`, `W`, `#`) is rejected. |
 | `catchup` | `bool` | `False` | Reserved for a future release. `True` raises `ValueError`. |
+| `timezone` | `str \| None` | `None` | IANA zone in which `cron` is evaluated, e.g. `"Europe/Berlin"`. `None` falls back to `SWARMQ_SCHEDULER_TIMEZONE`, otherwise UTC; an explicit `"UTC"` beats that default. Requires `cron`; an unknown zone raises `ValueError`. See [time zones](../guides/scheduling-and-retries.md#time-zones). |
 
 ### Deduplication
 

@@ -1,8 +1,10 @@
 """Unit tests for RabbitMQBroker."""
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import aio_pika
+import aiormq.exceptions
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -552,6 +554,82 @@ class TestRabbitMQBrokerAckNack:
         await broker.redeliver(mock_message)
 
         mock_message.nack.assert_awaited_once_with(requeue=True)
+
+
+class TestSettleOnLostChannel:
+    """B22: Abschluss-Verben auf einem verlorenen Kanal.
+
+    Test-Liste:
+    - [x] ``ack`` auf geschlossenem Kanal (``ChannelInvalidStateError``) →
+          ``BrokerConnectionError``, Ursache als ``__cause__``.
+    - [x] ``redeliver`` ebenso (``ConnectionClosed``).
+    - [x] ``route_via_dlx`` ebenso (``ChannelClosed``).
+    - [x] Abbruch der eigenen Task: ``CancelledError`` geht unveraendert durch.
+    - [x] aio_pikas interne ``CancelledError`` (eigene Task nicht abgebrochen)
+          → ``BrokerConnectionError``.
+    """
+
+    async def test_ack_on_closed_channel_raises_broker_connection_error(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        cause = aiormq.exceptions.ChannelInvalidStateError("channel closed")
+        mock_message = AsyncMock()
+        mock_message.ack.side_effect = cause
+
+        with pytest.raises(BrokerConnectionError) as info:
+            await broker.ack(mock_message)
+
+        assert info.value.__cause__ is cause
+
+    async def test_redeliver_on_lost_connection_raises_broker_connection_error(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        cause = aiormq.exceptions.ConnectionClosed(320, "CONNECTION_FORCED")
+        mock_message = AsyncMock()
+        mock_message.nack.side_effect = cause
+
+        with pytest.raises(BrokerConnectionError) as info:
+            await broker.redeliver(mock_message)
+
+        assert info.value.__cause__ is cause
+
+    async def test_route_via_dlx_on_closed_channel_raises_broker_connection_error(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        cause = aiormq.exceptions.ChannelClosed(406, "PRECONDITION_FAILED")
+        mock_message = AsyncMock()
+        mock_message.nack.side_effect = cause
+
+        with pytest.raises(BrokerConnectionError) as info:
+            await broker.route_via_dlx(mock_message)
+
+        assert info.value.__cause__ is cause
+
+    @pytest.mark.timeout(5)
+    async def test_cancelling_the_own_task_passes_cancelled_error_through(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        started = asyncio.Event()
+
+        async def _hanging_ack() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        mock_message = AsyncMock()
+        mock_message.ack.side_effect = _hanging_ack
+        task = asyncio.create_task(broker.ack(mock_message))
+        await started.wait()
+
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_internal_cancelled_error_of_aio_pika_counts_as_lost_channel(self):
+        """aio_pikas ``drain_future`` endet bei geschlossenem Transport als
+        ``CancelledError``, ohne dass die eigene Task abgebrochen wurde."""
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        mock_message = AsyncMock()
+        mock_message.ack.side_effect = asyncio.CancelledError()
+
+        with pytest.raises(BrokerConnectionError):
+            await broker.ack(mock_message)
 
 
 class TestRabbitMQBrokerConnectGuard:

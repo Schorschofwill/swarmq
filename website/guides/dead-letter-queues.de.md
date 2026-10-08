@@ -152,6 +152,37 @@ Nachrichten sind verloren. Nutze, wenn:
 `--format json` gibt `{"purged": N, "queue": "..."}` zurück, damit
 Skripte Zählungen aufzeichnen können.
 
+## Die `.XQ` per Broker-Policy begrenzen
+
+`{queue}.XQ` hat weder TTL noch Längengrenze: Nachrichten bleiben, bis
+jemand sie retryt oder purgt, und jeder terminale Fehlschlag landet
+dort, auch mit `max_retries=0`. SwarmQ ändert die Argumente bestehender
+Queues nicht. Eine RabbitMQ-Policy begrenzt die Dead-Letter-Queues
+sofort:
+
+```bash
+rabbitmqctl set_policy swarmq-xq '\.XQ$' \
+  '{"message-ttl": 604800000, "max-length": 100000}' \
+  --apply-to queues
+```
+
+Damit bleiben dead-geletterte Nachrichten höchstens 7 Tage
+(`message-ttl` in Millisekunden) und höchstens 100 000 pro Queue; die
+Werte an das eigene Volumen anpassen. Für einen anderen vhost als `/`
+`-p VHOST` ergänzen.
+
+!!! warning "Bevor du die Policy setzt"
+    - **Pro Queue gilt nur eine Policy**: die passende mit der höchsten
+      Priorität. Passt schon eine andere Policy auf deine `.XQ`-Queues
+      (etwa ein allgemeines `.*`), werden die beiden nicht
+      zusammengeführt: Entweder ersetzt deine deren Einstellungen für
+      diese Queues, oder sie wirkt gar nicht. Alle Schlüssel in eine
+      Policy mit höherer `--priority` legen.
+    - **Überlauf wird verworfen.** Nachrichten über `max-length` (per
+      Default die ältesten) und abgelaufene Nachrichten werden
+      gelöscht, nicht weiter dead-gelettert, und kein SwarmQ-Signal
+      meldet das. Was du vielleicht noch retryen wolltest, ist weg.
+
 ## Exit-Codes fürs Scripting
 
 Die `swarmq dlq`-Subcommands teilen den CLI-Exit-Code-Vertrag:

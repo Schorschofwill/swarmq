@@ -146,6 +146,36 @@ Messages are lost. Use when:
 `--format json` returns `{"purged": N, "queue": "..."}` so scripts
 can record counts.
 
+## Bounding the `.XQ` with a broker policy
+
+`{queue}.XQ` has neither a TTL nor a length limit: messages stay until
+someone retries or purges them, and every terminal failure lands
+there, also with `max_retries=0`. SwarmQ does not change the arguments
+of existing queues. A RabbitMQ policy bounds the dead-letter queues
+right away:
+
+```bash
+rabbitmqctl set_policy swarmq-xq '\.XQ$' \
+  '{"message-ttl": 604800000, "max-length": 100000}' \
+  --apply-to queues
+```
+
+This keeps dead-lettered messages for at most 7 days (`message-ttl` in
+milliseconds) and at most 100 000 per queue; pick values that fit your
+volume. Add `-p VHOST` for a vhost other than `/`.
+
+!!! warning "Before you set the policy"
+    - **Only one policy applies per queue**: the matching one with the
+      highest priority. If another policy already matches your `.XQ`
+      queues (for example a catch-all `.*`), the two do not merge:
+      either yours replaces the other's settings for these queues, or
+      it has no effect. Put all keys into one policy with a higher
+      `--priority`.
+    - **Overflow is dropped.** Messages beyond `max-length` (by
+      default the oldest ones) and expired messages are deleted, not
+      dead-lettered further, and no SwarmQ signal reports it. Whatever
+      you might still have wanted to retry is gone.
+
 ## Exit codes for scripting
 
 `swarmq dlq` subcommands share the CLI exit-code contract:

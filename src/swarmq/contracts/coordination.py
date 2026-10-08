@@ -63,13 +63,44 @@ class ChordStore(Protocol):
         """Idempotent; ``True`` bei jedem Aufruf, sobald ``expected`` erreicht ist."""
 
 
+@dataclass(frozen=True, slots=True)
+class CronReport:
+    """Meldung eines statischen Crons durch einen Worker (Plan 2026-10-08-1541,
+    KTD10). Zeiten in Backend-Zeit (ms), nicht in Worker-Uhrzeit."""
+
+    name: str
+    fingerprint: str
+    first_seen_ms: int
+    last_seen_ms: int
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class CronReports:
+    """Alle Meldungen samt der Backend-Zeit des Lesens; der Leader misst die
+    Lebendigkeit gegen ``now_ms``, nicht gegen die eigene Uhr."""
+
+    now_ms: int
+    reports: tuple[CronReport, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderInfo:
+    """Scheduler-Leader samt seiner swarmq-Version (Plan 2026-10-08-1541,
+    KTD11). ``version`` ist ``None``, wenn der Leader keine Version neben das
+    Lock geschrieben hat (Versionen vor 0.10.0)."""
+
+    owner: str | None
+    version: str | None
+
+
 @runtime_checkable
 class ScheduleStore(Protocol):
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         """Insert-if-absent; ``False``, wenn ``name`` existiert."""
 
     async def put(self, name: str, payload: bytes, fire_ts_ms: int | None) -> None:
-        """Überschreibt."""
+        """Überschreibt; ``fire_ts_ms=None`` lässt den Fire-Index unberührt."""
 
     async def exists(self, name: str) -> bool: ...
 
@@ -77,7 +108,19 @@ class ScheduleStore(Protocol):
 
     async def get(self, name: str) -> bytes | None: ...
 
+    async def fire_ts(self, name: str) -> int | None:
+        """Score im Fire-Index; ``None`` ohne Eintrag (deaktiviert, unbekannt)."""
+
     async def list_all(self) -> Mapping[str, bytes]: ...
+
+    async def replan_if_unchanged(
+        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+    ) -> bool:
+        """Heilung eines Eintrags ohne Score, atomar: nur wenn die
+        gespeicherte Definition noch genau *expected* ist und der Eintrag
+        keinen Score im Fire-Index hat, wird *payload* geschrieben und
+        *fire_ts_ms* eingeplant. ``False`` ohne jede Änderung, wenn
+        zwischenzeitlich deaktiviert, entfernt, geändert oder eingeplant."""
 
     async def disable(self, name: str, payload: bytes) -> bool:
         """Atomar: Definition ersetzen und aus dem Fire-Index nehmen."""
@@ -93,6 +136,7 @@ class ScheduleStore(Protocol):
         payload: bytes | None,
         owner: str,
         fired_ts_ms: int | None = None,
+        fired_payload: bytes | None = None,
     ) -> bool:
         """Owner-Check gegen den Leader im selben atomaren Schritt;
         ``payload=None`` löscht die Definition (One-Shot).
@@ -105,7 +149,12 @@ class ScheduleStore(Protocol):
         Grenze: entfernt und mit demselben Score neu angelegt, ist der
         Eintrag nicht vom gefeuerten zu unterscheiden; der Commit greift.
         Der Scheduler übergibt ``fired_ts_ms`` immer -- Stores Dritter müssen
-        das Schlüsselwort annehmen."""
+        das Schlüsselwort annehmen.
+
+        Mit ``fired_payload`` (der gepollten Definition) wird ``payload`` nur
+        geschrieben, wenn die gespeicherte Definition noch genau diese ist
+        (Plan 2026-10-08-1541, KTD12); sonst rückt nur der Score vor und eine
+        zwischenzeitliche Übernahme bleibt stehen."""
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 
@@ -128,3 +177,34 @@ class ScheduleStore(Protocol):
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None: ...
 
     async def take_handover_marker(self) -> bool: ...
+
+    async def report_cron(
+        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+    ) -> None:
+        """Meldet einen statischen Cron (KTD10), atomar und in Backend-Zeit:
+        ``last_seen`` und Payload werden gesetzt; ``first_seen`` nur, wenn
+        die Meldung fehlt oder ihr ``last_seen`` älter als *live_window_ms*
+        ist (der Abdruck war tot)."""
+
+    async def cron_reports(self) -> CronReports:
+        """Alle Meldungen samt Backend-Zeit des Lesens."""
+
+    async def prune_cron_reports(self, *, max_age_ms: int) -> int:
+        """Löscht atomar die Meldungen, deren ``last_seen`` (Backend-Zeit)
+        älter als *max_age_ms* ist; liefert ihre Anzahl."""
+
+    async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
+        """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
+        (KTD11, Anzeige in ``schedule status``)."""
+
+    async def worker_versions(self) -> Mapping[str, str]:
+        """Worker-ID → swarmq-Version aller noch gültigen Meldungen."""
+
+    async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
+        """Schreibt die swarmq-Version des Leaders *owner* neben das
+        Leader-Lock, mit der TTL des Locks (KTD11)."""
+
+    async def leader_info(self) -> LeaderInfo:
+        """Owner des Leader-Locks und seine Version, gelesen in einem
+        Schritt; eine Version, die ein anderer Owner geschrieben hat, gilt
+        nicht (KTD11)."""

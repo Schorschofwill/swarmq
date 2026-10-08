@@ -16,9 +16,27 @@ insert-if-absent vs. update-static branches that live in Python.
 # Test list (0.9.0, Scheduler-Commit-Wettlauf):
 # 3. ``commit_fire`` reicht den gefeuerten Score als ``fired_ts_ms`` an den
 #    Bytes-Store durch.
+#
+# Test list (Plan 2026-10-08-1541, U1, R6, KTD1):
+# 4. Hin- und Rückweg mit ``timezone`` verlustfrei.
+# 5. Alte JSON ohne ``timezone`` wird mit ``None`` gelesen.
+#
+# Test list (Plan 2026-10-08-1541, U13, KTD11):
+# 6. Charakterisierung: ein Leader mit der alten Struct-Form (0.9.0, ohne
+#    ``timezone``) dekodiert eine 0.10.0-Definition, setzt beim Fire per
+#    ``replace`` den naechsten Score und verliert beim Re-Encode die Zone --
+#    der Grund fuer das Upgrade in zwei Schritten.
+#
+# Test list (Review, KTD12 -- ``fired_payload`` aus dem Poll):
+# 7. Gepollter Score == ``fired_ts_ms`` -> der gepollte Payload geht als
+#    ``fired_payload`` mit.
+# 8. Gepollter Score != ``fired_ts_ms`` -> kein ``fired_payload``.
+# 9. Ohne Poll -> kein ``fired_payload``.
+# 10. Der Poll-Eintrag gilt nur für einen Commit.
 
 from __future__ import annotations
 
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import msgspec
@@ -146,6 +164,51 @@ class TestScheduleDefinition:
         raw = msgspec.json.encode(original)
         decoded = msgspec.json.decode(raw, type=ScheduleDefinition)
         assert decoded == original
+
+    def test_msgspec_roundtrip_keeps_timezone(self):
+        original = _def(cron="0 3 * * *", timezone="Europe/Berlin")
+        raw = msgspec.json.encode(original)
+        decoded = msgspec.json.decode(raw, type=ScheduleDefinition)
+        assert decoded == original
+        assert decoded.timezone == "Europe/Berlin"
+
+    def test_decode_legacy_json_without_timezone_yields_none(self):
+        """Einträge aus 0.9.x tragen kein ``timezone``-Feld (Pattern 7)."""
+        legacy = (
+            b'{"schedule_name":"daily","task_name":"backup","args":[],'
+            b'"kwargs":{},"queue":"default","cron":"0 3 * * *",'
+            b'"fire_ts_ms":1700000000000,"source":"static","disabled":false,'
+            b'"last_fire_at":null,"dedup_hash":null,"unique_until":"completion"}'
+        )
+        decoded = msgspec.json.decode(legacy, type=ScheduleDefinition)
+        assert decoded.timezone is None
+
+    def test_legacy_struct_drops_timezone_on_reencode(self):
+        """Charakterisierung (KTD11): so verhaelt sich ein 0.9.0-Leader beim
+        Fire. msgspec ignoriert unbekannte Felder beim Dekodieren, also fehlt
+        die Zone im Re-Encode; der naechste 0.10.0-Leader liest UTC."""
+
+        class LegacyScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
+            schedule_name: str
+            task_name: str
+            args: tuple[Any, ...]
+            kwargs: dict[str, Any]
+            queue: str
+            cron: str | None
+            fire_ts_ms: int | None
+            source: Literal["static", "cli", "cli_unique"]
+            disabled: bool = False
+            last_fire_at: int | None = None
+            dedup_hash: str | None = None
+            unique_until: Literal["start", "completion"] = "completion"
+
+        current = _def(cron="0 3 * * *", timezone="Europe/Berlin")
+        legacy = msgspec.json.decode(msgspec.json.encode(current), type=LegacyScheduleDefinition)
+        fired = msgspec.structs.replace(legacy, fire_ts_ms=1_700_000_060_000, last_fire_at=1)
+        reread = msgspec.json.decode(msgspec.json.encode(fired), type=ScheduleDefinition)
+        assert b"timezone" not in msgspec.json.encode(fired)
+        assert reread.timezone is None
+        assert reread.cron == "0 3 * * *"
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +403,36 @@ class TestScheduleStorePollAndCommit:
         store, schedules = _make_store()
         await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
         assert schedules.commit_fire.await_args.kwargs["fired_ts_ms"] == 1_000
+
+    @staticmethod
+    async def _polled_store(score: int):
+        polled = msgspec.json.encode(_def(schedule_name="s"))
+        store, schedules = _make_store()
+        schedules.poll_due.return_value = [("s", score, polled)]
+        await store.poll_due(2_000)
+        return store, schedules, polled
+
+    async def test_commit_fire_passes_polled_payload_for_the_fired_score(self):
+        store, schedules, polled = await self._polled_store(1_000)
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_payload"] == polled
+
+    async def test_commit_fire_without_payload_when_polled_score_differs(self):
+        store, schedules, _ = await self._polled_store(1_000)
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_500)
+        kwargs = schedules.commit_fire.await_args.kwargs
+        assert kwargs["fired_payload"] is None and kwargs["fired_ts_ms"] == 1_500
+
+    async def test_commit_fire_without_poll_passes_no_payload(self):
+        store, schedules = _make_store()
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_payload"] is None
+
+    async def test_polled_payload_is_used_for_one_commit_only(self):
+        store, schedules, _ = await self._polled_store(1_000)
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        await store.commit_fire("s", 2_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_payload"] is None
 
     async def test_commit_fire_one_shot_maps_minus_one_to_none(self):
         store, schedules = _make_store()

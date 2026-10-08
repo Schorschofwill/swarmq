@@ -71,6 +71,17 @@
         "task_name": {
           "type": "string"
         },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "unique_until": {
           "default": "completion",
           "enum": [

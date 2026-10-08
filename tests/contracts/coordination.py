@@ -18,6 +18,12 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 #     Merkmal, die Neuanlage ist vom gefeuerten Eintrag nicht zu
 #     unterscheiden; ihre Definition wird ueberschrieben.
 #
+# Test list (Plan 2026-10-08-1541, U3, KTD12) -- ScheduleStoreContract:
+# 11. ``fire_ts`` liefert den Score im Fire-Index, ``None`` ohne Eintrag.
+# 12. commit_fire mit ``fired_payload``: hat sich die Definition seit dem
+#     Poll geaendert, rueckt der Score vor, die Definition bleibt.
+# 13. ... ist sie unveraendert, wird sie zurueckgeschrieben.
+#
 # Test list (0.9.0, Schedfire-Claim-Token) -- ScheduleStoreContract:
 # 5. claim_fire mit ``owner``: ein zweiter Claim ohne Uebernahme verliert.
 # 6. Uebernahme mit dem gespeicherten Token gewinnt und rotiert den Owner;
@@ -30,6 +36,34 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 10. Uebernahme mit mehreren angebotenen Tokens (Kopie nach unklarem
 #     Claim-Ausgang): jedes davon gewinnt, der Owner rotiert.
 
+# Test list (Plan 2026-10-08-1541, U12, KTD10) -- ScheduleStoreContract:
+# 14. ``report_cron`` legt eine Meldung an: ``first_seen == last_seen`` in
+#     Backend-Zeit, Payload abrufbar; ``cron_reports`` liefert die
+#     Backend-Zeit des Lesens mit.
+# 15. Eine erneute Meldung im Lebendigkeitsfenster rückt nur ``last_seen``
+#     vor und ersetzt den Payload.
+# 16. Eine Meldung nach Ablauf des Fensters (Abdruck war tot) setzt
+#     ``first_seen`` neu (Revert A→B→A gilt wieder als neu).
+# 17. Zwei Abdrücke eines Namens sind getrennte Meldungen.
+# 18. ``prune_cron_reports`` löscht nur Meldungen, deren ``last_seen``
+#     älter als die Frist ist.
+
+# Test list (Plan 2026-10-08-1541, U13, KTD11) -- ScheduleStoreContract:
+# 19. ``leader_info`` liefert den Lock-Owner; ohne Versions-Key (0.9.0-
+#     Leader) ist ``version`` ``None``.
+# 20. ``set_leader_version`` des Lock-Owners erscheint in ``leader_info``.
+# 21. Der Versions-Key eines anderen Owners (Vorgänger) gilt nicht.
+# 22. Der Versions-Key läuft nach seiner TTL ab.
+# 23. ``report_worker_version`` erscheint in ``worker_versions`` und läuft
+#     nach seiner TTL ab.
+
+# Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
+# 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
+#     gespeicherte Definition die gelesene ist und kein Score existiert.
+# 25. ... ändert nichts, wenn sie inzwischen deaktiviert/geändert wurde.
+# 26. ... ändert nichts, wenn inzwischen ein Score existiert.
+# 27. ... ändert nichts, wenn der Eintrag inzwischen entfernt wurde.
+
 from __future__ import annotations
 
 import uuid
@@ -37,7 +71,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from swarmq.contracts import ChordStore, LockStore, LockToken, RateLimitStore, ScheduleStore
+from swarmq.contracts import ChordStore, CronReport, LeaderInfo, LockStore, LockToken, RateLimitStore, ScheduleStore
 from tests.contracts._support import Clock
 
 Leader = Callable[[str], Awaitable[None]]
@@ -185,6 +219,14 @@ class ScheduleStoreContract:
         assert await impl.get(name) == b"v2"
         assert [n for n, _, _ in await impl.poll_due(2_000)] .count(name) == 1
 
+    async def test_fire_ts_reports_index_score(self, impl: ScheduleStore) -> None:
+        planned, disabled = _name("sched"), _name("sched")
+        await impl.add(planned, b"v1", fire_ts_ms=1_000)
+        await impl.add(disabled, b"off", fire_ts_ms=None)
+        assert await impl.fire_ts(planned) == 1_000
+        assert await impl.fire_ts(disabled) is None
+        assert await impl.fire_ts(_name("sched")) is None
+
     async def test_remove_reports_prior_existence(self, impl: ScheduleStore) -> None:
         name = _name("sched")
         assert await impl.remove(name) is False
@@ -222,6 +264,37 @@ class ScheduleStoreContract:
         assert await impl.get(name) == b"off"
         assert all(n != name for n, _, _ in await impl.poll_due(10_000))
         assert await impl.disable(_name("sched"), b"x") is False
+
+    async def test_replan_if_unchanged_plans_an_unchanged_unscored_entry(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is True
+        assert await impl.get(name) == b"healed"
+        assert await impl.fire_ts(name) == 4_000
+
+    async def test_replan_if_unchanged_keeps_a_disable_since_the_read(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        await impl.disable(name, b"off")
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
+        assert await impl.get(name) == b"off"
+        assert await impl.fire_ts(name) is None
+
+    async def test_replan_if_unchanged_keeps_a_score_set_since_the_read(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        await impl.put(name, b"stuck", fire_ts_ms=2_000)
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
+        assert await impl.get(name) == b"stuck"
+        assert await impl.fire_ts(name) == 2_000
+
+    async def test_replan_if_unchanged_does_not_recreate_a_removed_entry(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        await impl.remove(name)
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
+        assert await impl.exists(name) is False
+        assert await impl.fire_ts(name) is None
 
     async def test_commit_fire_requires_leader(self, impl: ScheduleStore, leader: Leader) -> None:
         name = _name("sched")
@@ -288,6 +361,40 @@ class ScheduleStoreContract:
         )
         assert await impl.get(name) == b"v2"
         assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 2_000
+
+    async def test_commit_fire_keeps_definition_changed_since_poll(
+        self, impl: ScheduleStore, leader: Leader,
+    ) -> None:
+        """Liste 12: eine Uebernahme zwischen Poll und Commit (Score blieb
+        faellig) wird nicht zurueckgesetzt; der Score rueckt trotzdem vor,
+        sonst feuerte der Termin ein zweites Mal."""
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.put(name, b"taken-over", fire_ts_ms=None)
+        assert (
+            await impl.commit_fire(
+                name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief",
+                fired_ts_ms=1_000, fired_payload=b"v1",
+            )
+            is True
+        )
+        assert await impl.get(name) == b"taken-over"
+        assert await impl.fire_ts(name) == 2_000
+
+    async def test_commit_fire_writes_back_unchanged_polled_definition(
+        self, impl: ScheduleStore, leader: Leader,
+    ) -> None:
+        """Liste 13."""
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.commit_fire(
+            name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief",
+            fired_ts_ms=1_000, fired_payload=b"v1",
+        )
+        assert await impl.get(name) == b"v2"
+        assert await impl.fire_ts(name) == 2_000
 
     async def test_commit_fire_owner_check_precedes_superseded_check(self, impl: ScheduleStore, leader: Leader) -> None:
         name = _name("sched")
@@ -372,6 +479,89 @@ class ScheduleStoreContract:
         await impl.claim_fire(key, ttl_ms=300)
         await clock.advance(0.8)
         assert await impl.claim_fire(key, ttl_ms=60_000) is True
+
+    @staticmethod
+    async def _reports_of(impl: ScheduleStore, name: str) -> list[CronReport]:
+        snapshot = await impl.cron_reports()
+        return [r for r in snapshot.reports if r.name == name]
+
+    async def test_report_cron_records_a_report_in_backend_time(self, impl: ScheduleStore) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def-1", live_window_ms=60_000)
+        snapshot = await impl.cron_reports()
+        [report] = [r for r in snapshot.reports if r.name == name]
+        assert (report.fingerprint, report.payload) == ("fp1", b"def-1")
+        assert report.first_seen_ms == report.last_seen_ms <= snapshot.now_ms
+
+    async def test_report_within_live_window_keeps_first_seen(self, impl: ScheduleStore, clock: Clock) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def-1", live_window_ms=60_000)
+        [first] = await self._reports_of(impl, name)
+        await clock.advance(0.05)
+        await impl.report_cron(name, "fp1", b"def-2", live_window_ms=60_000)
+        [again] = await self._reports_of(impl, name)
+        assert again.first_seen_ms == first.first_seen_ms
+        assert again.last_seen_ms > first.last_seen_ms
+        assert again.payload == b"def-2"
+
+    async def test_report_after_dead_window_resets_first_seen(self, impl: ScheduleStore, clock: Clock) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=100)
+        [first] = await self._reports_of(impl, name)
+        await clock.advance(0.2)
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=100)
+        [revived] = await self._reports_of(impl, name)
+        assert revived.first_seen_ms == revived.last_seen_ms > first.first_seen_ms
+
+    async def test_fingerprints_of_one_name_are_separate_reports(self, impl: ScheduleStore) -> None:
+        name = _name("cron|with-bar")
+        await impl.report_cron(name, "fp1", b"old", live_window_ms=60_000)
+        await impl.report_cron(name, "fp2", b"new", live_window_ms=60_000)
+        reports = await self._reports_of(impl, name)
+        assert sorted((r.fingerprint, r.payload) for r in reports) == [("fp1", b"old"), ("fp2", b"new")]
+
+    async def test_prune_cron_reports_deletes_only_stale_reports(self, impl: ScheduleStore, clock: Clock) -> None:
+        stale, fresh = _name("cron"), _name("cron")
+        await impl.report_cron(stale, "fp", b"s", live_window_ms=60_000)
+        await clock.advance(0.2)
+        await impl.report_cron(fresh, "fp", b"f", live_window_ms=60_000)
+        await impl.prune_cron_reports(max_age_ms=100)
+        assert await self._reports_of(impl, stale) == []
+        assert [r.payload for r in await self._reports_of(impl, fresh)] == [b"f"]
+
+    async def test_leader_info_without_version_key(self, impl: ScheduleStore, leader: Leader) -> None:
+        owner = _name("old-leader")
+        await leader(owner)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version=None)
+
+    async def test_leader_version_of_the_lock_owner(self, impl: ScheduleStore, leader: Leader) -> None:
+        owner = _name("leader")
+        await leader(owner)
+        await impl.set_leader_version(owner, "0.10.0", ttl_ms=60_000)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version="0.10.0")
+
+    async def test_leader_version_of_another_owner_does_not_count(self, impl: ScheduleStore, leader: Leader) -> None:
+        predecessor, owner = _name("leader"), _name("old-leader")
+        await impl.set_leader_version(predecessor, "0.10.0", ttl_ms=60_000)
+        await leader(owner)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version=None)
+
+    async def test_leader_version_expires(self, impl: ScheduleStore, leader: Leader, clock: Clock) -> None:
+        owner = _name("leader")
+        await leader(owner)
+        await impl.set_leader_version(owner, "0.10.0", ttl_ms=100)
+        await clock.advance(0.2)
+        assert await impl.leader_info() == LeaderInfo(owner=owner, version=None)
+
+    async def test_worker_versions_are_reported_until_their_ttl(self, impl: ScheduleStore, clock: Clock) -> None:
+        stale, fresh = _name("host:1"), _name("host:2")
+        await impl.report_worker_version(stale, "0.10.0", ttl_ms=100)
+        await impl.report_worker_version(fresh, "0.10.1", ttl_ms=60_000)
+        assert {stale: "0.10.0", fresh: "0.10.1"}.items() <= dict(await impl.worker_versions()).items()
+        await clock.advance(0.2)
+        versions = await impl.worker_versions()
+        assert stale not in versions
+        assert versions[fresh] == "0.10.1"
 
     async def test_handover_marker_is_taken_once(self, impl: ScheduleStore) -> None:
         assert await impl.take_handover_marker() is False

@@ -18,13 +18,21 @@
 -- ARGV[2] next_fire_ts_ms       (int; -1 means one-shot, skip ZADD)
 -- ARGV[3] updated_def_json      (bytes; "" means delete def via HDEL)
 -- ARGV[4] owner_token           (caller's identity — must match KEYS[3])
--- ARGV[5] fired_ts_ms           (optional; the zset score that was fired)
+-- ARGV[5] fired_ts_ms           (optional; the zset score that was fired;
+--                                "" = no superseded guard)
+-- ARGV[6] fired_def_json        (optional; the def payload that was polled)
 --
 -- Superseded guard (0.9.0): with ARGV[5] the commit only applies while the
 -- member still sits in the zset with exactly the fired score. A schedule
 -- that was disabled (ZREM), removed (ZREM + HDEL) or re-planned (new
 -- score) between poll and commit keeps that change — the commit is
 -- discarded instead of reviving or overwriting it.
+--
+-- Takeover guard (Plan 2026-10-08-1541, KTD12): with ARGV[6] the def is
+-- only written back while the hash still holds exactly the polled payload.
+-- A takeover between poll and commit that kept the due score therefore
+-- keeps its new content; the score still advances so the fire that just
+-- went out is not repeated.
 --
 -- Returns:
 --   1 -> commit applied (zset/defs mutated according to ARGV)
@@ -51,7 +59,7 @@ end
 
 if ARGV[3] == '' then
     redis.call('HDEL', KEYS[2], ARGV[1])
-else
+elseif ARGV[6] == nil or redis.call('HGET', KEYS[2], ARGV[1]) == ARGV[6] then
     redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
 end
 

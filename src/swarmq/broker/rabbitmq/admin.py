@@ -15,7 +15,7 @@ import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity
 
 from swarmq.broker.rabbitmq.connection import RabbitMQConnection
-from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, message_of
+from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, message_of, settle
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
 
@@ -29,7 +29,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """``nack(requeue=False)``: RabbitMQ leitet über die Queue-Argumente
         nach ``{queue}.XQ`` und ergänzt ``x-death`` — ohne ``x-swarmq-*``-
         Diagnose-Header (Entwurf §7)."""
-        await message_of(delivery).nack(requeue=False)
+        await settle(message_of(delivery).nack(requeue=False), "route_via_dlx")
 
     # ------------------------------------------------------------------
     # R3.10 DLQ inspection / recovery primitives

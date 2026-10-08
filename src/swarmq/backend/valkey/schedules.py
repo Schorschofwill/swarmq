@@ -1,4 +1,4 @@
-"""Valkey-Schedules (Plan U18, KTD4): ``sched_poll/commit/disable.lua`` und
+"""Valkey-Schedules (Plan U18, KTD4): ``sched_poll/commit/disable/replan.lua`` und
 die Schedule-/Schedfire-Primitive der bisherigen Fassade.
 
 ``ValkeyScheduleStore`` erfüllt den Vertrag ``ScheduleStore`` auf ``bytes``
@@ -15,6 +15,7 @@ import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import as_backend_error
+from swarmq.contracts.coordination import CronReport, CronReports, LeaderInfo
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.lua import load_script
@@ -26,6 +27,18 @@ from swarmq.lua import load_script
 # (fired/inflight/handover) deliberately carry no tag.
 ZSET_KEY = "sq:{sched}:zset"
 DEFS_KEY = "sq:{sched}:defs"
+# Cron-Meldungen der Worker (Plan 2026-10-08-1541, KTD10): drei Hashes mit
+# demselben Hash-Tag, Feld jeweils ``name|fingerprint``.
+REPORT_FIRST_SEEN_KEY = "sq:{sched}:report:first_seen"
+REPORT_LAST_SEEN_KEY = "sq:{sched}:report:last_seen"
+REPORT_DEF_KEY = "sq:{sched}:report:def"
+_REPORT_KEYS = [REPORT_FIRST_SEEN_KEY, REPORT_LAST_SEEN_KEY, REPORT_DEF_KEY]
+# Version des Leaders neben dem Leader-Lock (KTD11), Wert ``owner|version``
+# mit der Lock-TTL; 0.9.0-Leader schreiben ihn nie.
+LEADER_VERSION_KEY = "sq:{sched}:leader_version"
+# Versionen der meldenden Worker (KTD11): ein String-Key je Worker mit der
+# Lebendigkeits-TTL der Cron-Meldungen; abgelaufene verschwinden von selbst.
+WORKER_VERSION_PREFIX = "sq:{sched}:worker_version:"
 
 
 def fired_key(schedfire_key: str) -> str:
@@ -52,10 +65,13 @@ class ValkeyScheduleStore:
         self._poll_script = client.register_script(load_script("sched_poll"))
         self._commit_script = client.register_script(load_script("sched_commit"))
         self._disable_script = client.register_script(load_script("sched_disable"))
+        self._replan_script = client.register_script(load_script("sched_replan"))
         self._fire_claim_script = client.register_script(load_script("sched_fire_claim"))
         # Compare-and-delete mit Owner-Check: dieselbe Logik wie die
         # Unique-Freigabe (GET == Token -> DEL).
         self._owner_release_script = client.register_script(load_script("unique_release"))
+        self._report_script = client.register_script(load_script("sched_report"))
+        self._report_prune_script = client.register_script(load_script("sched_report_prune"))
 
     async def _run(self, what: str, coro: Any) -> Any:
         """Transportfehler -> ``BackendConnectionError``, Fehlerantworten und
@@ -101,9 +117,25 @@ class ValkeyScheduleStore:
     async def get(self, name: str) -> bytes | None:
         return await self.hget_schedule_def(name)
 
+    async def fire_ts(self, name: str) -> int | None:
+        """ZSCORE im Fire-Index; ``None`` ohne Eintrag."""
+        score = await self._run("fire_ts", self._client.zscore(ZSET_KEY, name))
+        return None if score is None else int(score)
+
     async def list_all(self) -> Mapping[str, bytes]:
         raw = await self.hgetall_schedule_defs()
         return {_decode(k): v for k, v in raw.items()}
+
+    async def replan_if_unchanged(
+        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+    ) -> bool:
+        """``sched_replan.lua``: HGET-Vergleich, Score-Prüfung, HSET + ZADD
+        in einem EVAL (Review #4)."""
+        result = await self._run(
+            f"sched_replan for {name!r}",
+            self._replan_script(keys=[DEFS_KEY, ZSET_KEY], args=[name, expected, payload, fire_ts_ms]),
+        )
+        return int(result) == 1
 
     async def disable(self, name: str, payload: bytes) -> bool:
         """``sched_disable.lua``: HEXISTS-Guard, dann HSET + ZREM atomar."""
@@ -129,20 +161,25 @@ class ValkeyScheduleStore:
         payload: bytes | None,
         owner: str,
         fired_ts_ms: int | None = None,
+        fired_payload: bytes | None = None,
     ) -> bool:
         """``sched_commit.lua``: Owner-Check gegen den Leader-Lock im selben
         EVAL; ``next_fire_ts_ms=None`` + ``payload=None`` entfernt einen
         One-Shot. ``False``, wenn der Owner-Check ablehnt (stale leader).
         Mit ``fired_ts_ms`` verwirft das Skript den Commit (Ergebnis 2,
-        hier ``True``), wenn der Fire-Index-Score inzwischen ein anderer ist."""
+        hier ``True``), wenn der Fire-Index-Score inzwischen ein anderer ist.
+        Mit ``fired_payload`` schreibt es die Definition nur zurück, wenn sie
+        seit dem Poll unverändert ist (KTD12)."""
         args: list[Any] = [
             name,
             -1 if next_fire_ts_ms is None else next_fire_ts_ms,
             payload if payload is not None else b"",
             owner,
         ]
-        if fired_ts_ms is not None:
-            args.append(fired_ts_ms)
+        if fired_ts_ms is not None or fired_payload is not None:
+            args.append("" if fired_ts_ms is None else fired_ts_ms)
+        if fired_payload is not None:
+            args.append(fired_payload)
         result = await self._run(
             f"sched_commit for {name!r}",
             self._commit_script(keys=[ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY], args=args),
@@ -183,6 +220,81 @@ class ValkeyScheduleStore:
 
     async def take_handover_marker(self) -> bool:
         return await self.get_and_del_schedfire_handover_marker()
+
+    async def report_cron(
+        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+    ) -> None:
+        """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``)."""
+        await self._run(
+            f"sched_report for {name!r}",
+            self._report_script(
+                keys=_REPORT_KEYS, args=[f"{name}|{fingerprint}", payload, live_window_ms],
+            ),
+        )
+
+    async def cron_reports(self) -> CronReports:
+        """``TIME`` und die drei Meldungs-Hashes in einer Transaktion."""
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.time()
+            for key in _REPORT_KEYS:
+                pipe.hgetall(key)
+            (seconds, micros), first, last, defs = await self._run("cron_reports", pipe.execute())
+        reports: list[CronReport] = []
+        for raw_field, raw_first in first.items():
+            field = _decode(raw_field)
+            raw_last, payload = last.get(raw_field), defs.get(raw_field)
+            if raw_last is None or payload is None:
+                continue
+            name, fingerprint = field.rsplit("|", 1)
+            reports.append(CronReport(name, fingerprint, int(raw_first), int(raw_last), payload))
+        return CronReports(now_ms=int(seconds) * 1000 + int(micros) // 1000, reports=tuple(reports))
+
+    async def prune_cron_reports(self, *, max_age_ms: int) -> int:
+        """``sched_report_prune.lua``: Prüfen und Löschen in einem Schritt."""
+        result = await self._run(
+            "sched_report_prune", self._report_prune_script(keys=_REPORT_KEYS, args=[max_age_ms]),
+        )
+        return int(result)
+
+    async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
+        await self._run(
+            "report_worker_version",
+            self._client.set(f"{WORKER_VERSION_PREFIX}{worker_id}", version, px=ttl_ms),
+        )
+
+    async def worker_versions(self) -> Mapping[str, str]:
+        """SCAN über die Worker-Keys (nur für ``schedule status``), dann MGET;
+        zwischendurch abgelaufene Keys fehlen im Ergebnis."""
+        try:
+            keys = [key async for key in self._client.scan_iter(match=f"{WORKER_VERSION_PREFIX}*", count=100)]
+        except (ValkeyError, OSError) as exc:
+            raise as_backend_error(str(exc), exc) from exc
+        if not keys:
+            return {}
+        values = await self._run("worker_versions", self._client.mget(keys))
+        return {
+            _decode(key).removeprefix(WORKER_VERSION_PREFIX): _decode(value)
+            for key, value in zip(keys, values, strict=True)
+            if value is not None
+        }
+
+    async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
+        await self._run(
+            "set_leader_version", self._client.set(LEADER_VERSION_KEY, f"{owner}|{version}", px=ttl_ms),
+        )
+
+    async def leader_info(self) -> LeaderInfo:
+        """Lock-Owner und Versions-Key in einer Transaktion."""
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.get(SCHEDULER_LOCK_KEY)
+            pipe.get(LEADER_VERSION_KEY)
+            raw_owner, raw_version = await self._run("leader_info", pipe.execute())
+        owner = None if raw_owner is None else _decode(raw_owner)
+        version = None
+        if raw_version is not None:
+            writer, _, written = _decode(raw_version).rpartition("|")
+            version = written if owner is not None and writer == owner else None
+        return LeaderInfo(owner=owner, version=version)
 
     # ------------------------------------------------------------------
     # Primitive (heutige Fassaden-Namen; die Fassade delegiert hierher)

@@ -203,6 +203,24 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            self.scheduler_cron_conflicts_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_scheduler_cron_conflicts_total",
+                (
+                    "Leader selection ticks that saw several live definitions "
+                    "of one static cron for more than 10 minutes"
+                ),
+                labelnames=("schedule_name",),
+                registry=self.registry,
+            )
+            self.scheduler_leader_outdated: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_scheduler_leader_outdated",
+                (
+                    "1 while this worker sees a scheduler leader running a "
+                    "swarmq before 0.10 without timezone support, else 0"
+                ),
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -217,6 +235,8 @@ class Metrics:
             self.tasks_rejected_total = noop
             self.dlq_messages = noop
             self.scheduler_leader = noop
+            self.scheduler_cron_conflicts_total = noop
+            self.scheduler_leader_outdated = noop
 
     @property
     def enabled(self) -> bool:
@@ -393,7 +413,9 @@ def _install_scheduler_gauge(
     dispatcher: SignalDispatcher, metrics: Metrics,
 ) -> None:
     """Leader-Status als 0/1-Gauge, damit Split-Brain (zwei Leader) und
-    Zero-Leader (Cron still gestoppt) alertbar sind."""
+    Zero-Leader (Cron still gestoppt) alertbar sind; dazu der Zähler langer
+    Cron-Konflikte (Plan 2026-10-08-1541, R12) und die Gauge eines veralteten
+    Leaders (KTD11)."""
     from swarmq.signals import Signal
 
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER)
@@ -402,6 +424,18 @@ def _install_scheduler_gauge(
         metrics.scheduler_leader.labels(
             worker_id=str(kw.get("worker_id", "")),
         ).set(1)
+
+    @dispatcher.on_signal(Signal.SCHEDULER_CRON_CONFLICT)
+    async def _cron_conflict(**kw: Any) -> None:
+        metrics.scheduler_cron_conflicts_total.labels(
+            schedule_name=str(kw.get("schedule_name", "")),
+        ).inc()
+
+    @dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
+    async def _leader_outdated(**kw: Any) -> None:
+        metrics.scheduler_leader_outdated.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(1 if kw.get("outdated") else 0)
 
     @dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)

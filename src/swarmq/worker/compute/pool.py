@@ -520,8 +520,8 @@ class SlotPool:
         try:
             try:
                 await self._spawn_reuse(slot)
-            except SlotUnavailable:
-                logger.warning("compute_recycle_replacement_failed", slot=slot.index)
+            except SlotUnavailable as exc:
+                logger.warning("compute_recycle_replacement_failed", slot=slot.index, **_error_fields(exc))
             except Exception:
                 logger.exception("compute_recycle_replacement_error", slot=slot.index)
             finally:

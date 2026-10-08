@@ -8,6 +8,10 @@ Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort, rollendes Upgrade):
 2. ``commit_fire``: Skriptergebnis 2 (verworfen) -> ``True``.
 3. ``commit_fire`` ohne ``fired_ts_ms`` sendet vier ARGV (altes Skript-
    Protokoll; rollendes Upgrade).
+
+Test-Liste Plan 2026-10-08-1541 (U3, KTD12):
+4. ``commit_fire`` mit ``fired_payload`` sendet sechs ARGV; ohne
+   ``fired_ts_ms`` steht an fünfter Stelle ``""`` (kein Verwerf-Schutz).
 """
 
 from __future__ import annotations
@@ -30,8 +34,11 @@ def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, M
         "poll": AsyncMock(return_value=[]),
         "commit": AsyncMock(return_value=1),
         "disable": AsyncMock(return_value=1),
+        "replan": AsyncMock(return_value=1),
         "fire_claim": AsyncMock(return_value=1),
         "owner_release": AsyncMock(return_value=1),
+        "report": AsyncMock(return_value=1),
+        "report_prune": AsyncMock(return_value=0),
     }
     client.register_script = MagicMock(side_effect=list(scripts.values()))
     client.hexists = AsyncMock(return_value=hexists)
@@ -92,6 +99,14 @@ class TestScripts:
         assert call.kwargs["keys"] == [DEFS_KEY, ZSET_KEY]
         assert call.kwargs["args"] == ["s", b"disabled"]
 
+    async def test_replan_if_unchanged_calls_script_with_defs_and_zset(self) -> None:
+        store, _, scripts = _store()
+        scripts["replan"].return_value = 0
+        assert await store.replan_if_unchanged("s", b"read", b"healed", 4_000) is False
+        scripts["replan"].assert_awaited_once_with(
+            keys=[DEFS_KEY, ZSET_KEY], args=["s", b"read", b"healed", 4_000],
+        )
+
     async def test_poll_due_decodes_rows(self) -> None:
         store, _, scripts = _store()
         scripts["poll"].return_value = [(b"s", b"1700", b"payload")]
@@ -125,6 +140,17 @@ class TestScripts:
         assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief"]
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_ts_ms=1_000)
         assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000]
+
+    async def test_commit_fire_sends_fired_payload_as_sixth_argv(self) -> None:
+        """Liste 4."""
+        store, _, scripts = _store()
+        await store.commit_fire(
+            "s", next_fire_ts_ms=1_900, payload=b"next", owner="chief",
+            fired_ts_ms=1_000, fired_payload=b"polled",
+        )
+        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000, b"polled"]
+        await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_payload=b"polled")
+        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", "", b"polled"]
 
     async def test_commit_fire_rejected_by_owner_check(self) -> None:
         store, _, scripts = _store()
@@ -228,3 +254,38 @@ class TestSchedfireClaims:
         client.set = AsyncMock(side_effect=ValkeyConnectionError("down"))
         with pytest.raises(BackendConnectionError):
             await store.mark_fire_completed("k", 1_000)
+
+
+def _scan(*keys: bytes, error: BaseException | None = None) -> MagicMock:
+    async def _iter(**_kwargs):
+        for key in keys:
+            yield key
+        if error is not None:
+            raise error
+
+    return MagicMock(side_effect=_iter)
+
+
+class TestWorkerVersions:
+    """``worker_versions`` (KTD11, nur ``schedule status``): SCAN + MGET."""
+
+    async def test_no_worker_keys_returns_empty_without_mget(self) -> None:
+        store, client, _ = _store()
+        client.scan_iter = _scan()
+        client.mget = AsyncMock()
+        assert await store.worker_versions() == {}
+        client.mget.assert_not_awaited()
+
+    @pytest.mark.parametrize("error", [ValkeyConnectionError("down"), OSError("reset")])
+    async def test_scan_transport_error_is_a_plain_outage(self, error: BaseException) -> None:
+        store, client, _ = _store()
+        client.scan_iter = _scan(b"sq:{sched}:worker_version:w-1", error=error)
+        with pytest.raises(BackendConnectionError) as exc_info:
+            await store.worker_versions()
+        assert not isinstance(exc_info.value, BackendResponseError)
+
+    async def test_versions_are_keyed_by_worker_and_expired_keys_skipped(self) -> None:
+        store, client, _ = _store()
+        client.scan_iter = _scan(b"sq:{sched}:worker_version:w-1", b"sq:{sched}:worker_version:w-2")
+        client.mget = AsyncMock(return_value=[b"0.10.0", None])
+        assert await store.worker_versions() == {"w-1": "0.10.0"}

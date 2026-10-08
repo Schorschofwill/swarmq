@@ -205,6 +205,18 @@
       "type": "float"
     },
     {
+      "default": null,
+      "env_var": "SWARMQ_SCHEDULER_TIMEZONE",
+      "name": "scheduler_timezone",
+      "type": "str | None"
+    },
+    {
+      "default": 60.0,
+      "env_var": "SWARMQ_SCHEDULER_SEEN_INTERVAL_S",
+      "name": "scheduler_seen_interval_s",
+      "type": "float"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_BURST_MODE",
       "name": "burst_mode",
