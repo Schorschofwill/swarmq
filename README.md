@@ -2,7 +2,7 @@
 
 Async-first Python task queue on RabbitMQ + Valkey.
 
-> **Status:** 0.9.x on PyPI. Core, workflow primitives, optional
+> **Status:** 0.10.x on PyPI. Core, workflow primitives, optional
 > dependency injection (Dishka), operator features (priorities, expiry,
 > burst, supervisor, autoscaling, control channel), CPU worker mode,
 > structured non-blocking logging, metrics, health, hot reload and the
@@ -173,8 +173,10 @@ Things to know:
   schedules one task and waits for its result.
 - **Cancellation** — pre-pickup + during-execution via
   `app.cancel(task_id)`, dedicated `TASK_CANCELLED` signal.
-- **Scheduler** — cron, delayed (`eta=...`), recurring with
-  leader-election failover.
+- **Scheduler** — cron with an IANA time zone per task and a fixed
+  rule for clock changes, delayed (`eta=...`), recurring with
+  leader-election failover; every worker reports its crons, so several
+  apps can share one Valkey.
 - **Progress tracking** — `Task.update_progress(current, total, msg)`
   + `app.get_progress` / `app.watch_progress` AsyncIterator.
 - **Dependency injection** (`pip install swarmq[dishka]`) — register a

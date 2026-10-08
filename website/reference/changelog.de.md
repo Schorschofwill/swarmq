@@ -6,8 +6,158 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-08
+
+Crons bekommen eine Zeitzone mit fester Regel für die Zeitumstellung,
+und jeder Worker meldet seine Crons, sodass auch Crons von Apps
+ankommen, deren Worker nie Leader werden. **Alle Apps auf einem
+gemeinsamen Valkey auf 0.10.0 bringen, bevor ein Cron eine Zeitzone
+bekommt**, und von Hand umgerechnete UTC-Crons vor dem 25. Oktober
+2026, 01:00 UTC umstellen:
+[Migrationsanleitung](../guides/scheduling-and-retries.md#von-hand-umgerechnete-utc-crons-umstellen).
+
+### Geändert (breaking)
+
+- **Upgrade in zwei Schritten, wenn Crons Zeitzonen bekommen.** Ein
+  Scheduler-Leader vor 0.10.0 kennt das neue Feld `timezone` nicht: Er
+  verwirft die Zone jedes Crons, den er feuert, und feuert ihn danach
+  wieder in UTC. Zuerst alle Apps auf demselben Valkey upgraden, ohne
+  Crons zu ändern, und mit `swarmq schedule status` prüfen, dass
+  `LEADER_VERSION` und alle `WORKERS` 0.10.0 zeigen; erst dann Zonen
+  setzen und die Ausdrücke auf Ortszeit zurückführen, beides im selben
+  Commit. Details und Rezept für die Äquivalenzprüfung:
+  [Migrationsanleitung](../guides/scheduling-and-retries.md#von-hand-umgerechnete-utc-crons-umstellen).
+- **Ein eigener `ScheduleStore` braucht neue Methoden.**
+  `fire_ts(name)`; `put(..., fire_ts_ms=None)` muss den Fire-Index
+  unberührt lassen; `commit_fire` nimmt das neue Schlüsselwort
+  `fired_payload`; für Cron-Meldungen `report_cron`, `cron_reports` und
+  `prune_cron_reports`; für die Leader-Version `report_worker_version`,
+  `worker_versions`, `set_leader_version` und `leader_info`. Neue Typen
+  in `swarmq.contracts`: `CronReport`, `CronReports`, `LeaderInfo`.
+  Signaturen und Semantik:
+  [API-Referenz](api.md#protokolle-der-koordinations-stores).
+
+### Geändert
+
+- **Statische Crons kommen über Cron-Meldungen statt über die Registry
+  des Leaders.** Bisher schrieb der Leader die Crons seiner eigenen
+  Task-Registry, wenn er die Leader-Rolle übernahm, und fügte nur ein
+  oder aktualisierte. Crons einer App, deren Worker nie Leader wurden,
+  kamen nie an, und eine Änderung wartete auf den nächsten
+  Leader-Wechsel. Jetzt meldet jeder Worker seine statischen Crons beim
+  Start und alle `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` (Standard 60 s);
+  der Leader übernimmt pro Name die lebende Definition, die zuletzt neu
+  aufgetaucht ist. Eine Änderung im Code einer beliebigen App gilt
+  binnen zwei Takten nach dem Start des ersten Workers mit dem neuen
+  Code; im Rolling Deploy gewinnt der neuere Code-Stand, und ein später
+  neu startender alter Worker setzt ihn nicht zurück. Siehe
+  [Cron-Meldungen](../guides/scheduling-and-retries.md#cron-meldungen-und-leader).
+- **`swarmq schedule remove --permanent` auf einen statischen Cron, den
+  ein lebender Worker meldet:** Der Cron ist binnen eines Takts wieder
+  da (bisher: beim nächsten Leader-Wechsel). Dauerhaft weg ist er, wenn
+  ihn kein Code mehr meldet. Ein ohne `--permanent` deaktivierter Cron
+  bleibt deaktiviert.
+- **Log-Events des Cron-Syncs.** `scheduler_sync_taskinfo_crons_failed`
+  entfällt. Neu: `scheduler_cron_report_failed`,
+  `scheduler_cron_reports_read_failed`,
+  `scheduler_cron_reports_prune_failed`, `scheduler_cron_adopt_failed`
+  (WARNING) und `scheduler_cron_report_invalid` (ERROR). Ein Cron, den
+  ein lebender Worker meldet, loggt beim Fire auf dem Leader einer
+  anderen App kein `scheduler_task_not_in_local_registry` mehr. Siehe
+  [Event-Katalog](logging.md#event-katalog).
+- **Neue Valkey-Keys**, alle unter dem Hash-Tag `{sched}`:
+  `sq:{sched}:report:first_seen`, `sq:{sched}:report:last_seen`,
+  `sq:{sched}:report:def` (Feld `name|fingerprint`),
+  `sq:{sched}:leader_version` (mit der TTL des Locks) und
+  `sq:{sched}:worker_version:<worker_id>` (TTL drei Meldetakte). Der
+  Leader löscht Meldungen, die 7 Tage nicht erneuert wurden. Die
+  Golden-Fixtures des Backend-Vertrags (`keys.json`,
+  `lua_contract.txt`, Schedule-Definition) sind für die neuen Keys,
+  Skripte und das Feld `timezone` neu erzeugt; die Queue-Argumente sind
+  unverändert.
+- **Abhängigkeiten:** `croniter>=6.2` (bisher `>=2`; sein Verhalten in
+  der doppelten Stunde ist nur für diese Versionen belegt) und neu
+  `tzdata`, damit Zonen auch in Images ohne `/usr/share/zoneinfo`
+  aufgelöst werden.
+- **Tests und CI pinnen RabbitMQ exakt:** `4.3.6` als Hauptbroker, ein
+  zweiter `4.2.9` für die Charakterisierung des Consumer-Timeouts,
+  `3.13.7` im Chaos-Stack. Das Verhalten nach einem Consumer-Timeout
+  unterscheidet sich zwischen 4.2 und 4.3; die Tests halten es pro
+  Version fest.
+
+### Hinzugefügt
+
+- **Zeitzonen für Crons.** `TaskInfo(timezone="Europe/Berlin")`
+  (IANA-Name, bei der Klassendefinition geprüft) oder der Standard
+  `SWARMQ_SCHEDULER_TIMEZONE` / `SwarmQConfig(scheduler_timezone=...)`.
+  Eine Zone am Task schlägt den Standard, auch ein ausdrückliches
+  `"UTC"`. Ohne Zone ändert sich nichts: `"UTC"`, `"Etc/UTC"` und keine
+  Angabe werden gleich gespeichert, bestehende Schedules behalten ihren
+  Fingerabdruck. [Zeitzonen](../guides/scheduling-and-retries.md#zeitzonen).
+- **Regel für die Zeitumstellung.** In der doppelten Stunde im Herbst
+  feuert ein Cron ohne `*` im Stundenfeld nur im ersten Durchlauf; mit
+  `*` (auch `*/n`, `@hourly`) folgt er der echten Zeit. In der Lücke im
+  Frühjahr feuert eine feste Stunde einmal zur nächsten existierenden
+  Uhrzeit. Tabelle und Beispiele:
+  [Zeitumstellung](../guides/scheduling-and-retries.md#zeitumstellung).
+- **`swarmq.scheduler.next_fire_times(cron, start, *, timezone=None,
+  count=1)`** berechnet Termine mit der Regel des Schedulers, etwa um
+  vor der Umstellung zu prüfen, dass ein umgerechneter Ausdruck seine
+  Termine behält ([API](api.md#next_fire_times)).
+- **`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`** (Standard `60`, `> 0`): Takt
+  der Cron-Meldungen und der Übernahme durch den Leader. Eine Meldung
+  lebt drei Takte; alle Apps auf einem Valkey sollten denselben Wert
+  nutzen.
+- **Konflikte:** Leben mehrere Definitionen eines Crons länger als 10
+  Minuten (typisch: gleichnamige Tasks in zwei Apps), loggt der Leader
+  `scheduler_cron_conflict`, sendet `Signal.SCHEDULER_CRON_CONFLICT`
+  (`worker_id`, `schedule_name`, `fingerprints`) und zählt
+  `swarmq_scheduler_cron_conflicts_total{schedule_name}`.
+- **Leader-Version.** Der Leader schreibt seine swarmq-Version neben das
+  Lock, jeder Worker meldet seine eigene. Ein Worker, der einen Leader
+  ohne Version oder mit älterer sieht, loggt `scheduler_leader_outdated`
+  (Logger `swarmq.scheduler.leader_version`, einmal pro Leader), sendet
+  `Signal.SCHEDULER_LEADER_OUTDATED` (`worker_id`, `leader`,
+  `leader_version`, `outdated`) und setzt die Gauge
+  `swarmq_scheduler_leader_outdated{worker_id}`.
+  `swarmq schedule status` zeigt `LEADER_VERSION` und einen Block
+  `WORKERS`; `--format json` ergänzt `leader_version` und `workers`.
+  Schreib- oder Lesefehler loggen `scheduler_leader_version_write_failed`
+  und `scheduler_leader_version_check_failed`.
+- `SchedulerLoop(static_crons=..., version=...)` für Code, der die
+  Scheduler-Schleife selbst betreibt.
+- **Guide: `{queue}.XQ` per Broker-Policy begrenzen.** Die DLQ hat
+  weder TTL noch Längengrenze, und jeder terminale Fehlschlag landet
+  dort, auch mit `max_retries=0`. Als sofortiger Notbehelf begrenzt eine
+  RabbitMQ-Policy auf `\.XQ$` mit `message-ttl` und `max-length` sie.
+  Pro Queue gilt nur eine Policy, und Überlauf wird gelöscht, nicht
+  weiter dead-gelettert:
+  [Dead-Letter-Queues](../guides/dead-letter-queues.md#die-xq-per-broker-policy-begrenzen).
+
 ### Behoben
 
+- **Ein fälliger Termin geht nicht mehr verloren, wenn sich ein
+  statischer Cron ändert.** Ist der alte Termin schon fällig, bleibt er
+  und feuert einmal mit dem neuen Inhalt; sonst wird der nächste Termin
+  neu berechnet.
+- **Eine geänderte Queue, Zeitzone oder ein geänderter Task-Name eines
+  statischen Crons wird übernommen.** Bisher ersetzte nur ein geänderter
+  Ausdruck die gespeicherte Definition.
+- **Ein Cron, dessen nächster Termin sich nicht berechnen lässt,
+  blockiert die Poll-Schleife nicht mehr.** Bisher wurde der nächste
+  Termin nach dem Publish berechnet, und ein Fehler beendete den ganzen
+  Poll-Tick: Die folgenden Einträge des Batches feuerten nicht, und der
+  Eintrag blieb für den nächsten Tick fällig. Jetzt wird der nächste
+  Termin vor dem Publish berechnet; bei einem Fehler wird nur dieser
+  Eintrag geloggt (`scheduler_next_fire_failed`, ERROR) und verlässt
+  den Fire-Index, und der Leader plant ihn wieder ein, sobald ein
+  lebender Worker ihn meldet und sich der Termin berechnen lässt.
+- **Deaktivierte Definitionen bekommen keinen Eintrag im Fire-Index.**
+  Einträge, die ältere Versionen dort hinterlassen haben, werden
+  weiterhin übersprungen.
+- **Ein Fire setzt eine zwischenzeitlich übernommene Definition nicht
+  mehr zurück.** Der Commit nach einem Fire schreibt die Definition nur
+  zurück, wenn sie sich seit dem Poll nicht geändert hat.
 - **Ein verlorener Broker-Kanal beim abschließenden Ack endet nicht
   mehr als „Task exception was never retrieved“.** Fiel RabbitMQ weg,
   während der Worker eine Zustellung abschloss, entwich aiormqs

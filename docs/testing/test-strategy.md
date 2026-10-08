@@ -154,6 +154,34 @@ HYPOTHESIS_PROFILE=thorough uv run --extra test pytest tests/property -m propert
 SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
 ```
 
+## RabbitMQ-Versionen
+
+Die Broker sind exakt gepinnt, weil sich das Verhalten beim
+Consumer-Timeout zwischen 4.2 und 4.3 unterscheidet
+(`tests/integration/broker/test_consumer_timeout.py` hält es pro Version
+fest):
+
+| Dienst | Image | Zweck |
+|---|---|---|
+| `rabbitmq` (Compose, CI) | `rabbitmq:4.3.6-management` | Hauptbroker aller Integrations- und e2e-Tests |
+| `rabbitmq42` (Compose, CI-Job `integration-tests`) | `rabbitmq:4.2.9-management` | nur die 4.2-Charakterisierung; gestartet mit `channel_tick_interval 1000`, denn bis 4.2 prüft der Channel den Timeout nur je Tick (Standard 60 s); so schließt er nach etwa 4 s |
+| Chaos-Stack (`tests/chaos/compose.yml`) | `rabbitmq:3.13.7-management-alpine` | Stand, gegen den die Chaos-Suite bisher lief; ein Wechsel auf 4.x ist eine eigene Entscheidung |
+
+Die Consumer-Timeout-Tests setzen per Management-API eine Policy und
+brauchen dafür zusätzlich die Management-Ports. Variablen (Defaults
+passen zu `docker-compose.yml`):
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `SWARMQ_TEST_RABBITMQ_MGMT_PORT` | `15672` | Management-API des Hauptbrokers |
+| `SWARMQ_TEST_RABBITMQ42_HOST` | `localhost` | Host des 4.2-Brokers |
+| `SWARMQ_TEST_RABBITMQ42_PORT` | `5742` | AMQP-Port des 4.2-Brokers |
+| `SWARMQ_TEST_RABBITMQ42_MGMT_PORT` | `15742` | Management-API des 4.2-Brokers |
+
+Ist ein Broker nicht erreichbar, werden seine Tests übersprungen; läuft
+dort eine andere Version als gepinnt (Präfix `4.3.` bzw. `4.2.`), schlagen
+sie fehl. Örtlich: `docker compose up -d rabbitmq42`.
+
 ## Chaos-Architektur
 
 Hybrid-Isolation:

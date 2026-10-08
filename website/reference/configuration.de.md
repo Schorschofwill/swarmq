@@ -96,6 +96,8 @@ beenden `swarmq worker` mit Exit `78`.
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader-Lock-TTL; muss `≥ 2 × heartbeat_interval` sein. |
 | `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup-TTL für scheduler-initiierte Dispatches. |
 | `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL des Schedule-Fire-Claims, den ein Worker hält, während ein geplanter Task läuft. Ein Claim, der nicht freigegeben werden konnte, blockiert eine erneute Zustellung desselben Fires höchstens so lange als Duplikat. |
+| `SWARMQ_SCHEDULER_TIMEZONE` | *nicht gesetzt* (UTC) | IANA-Zone für Cron-Ausdrücke von Tasks ohne eigene `TaskInfo.timezone`, z. B. `Europe/Berlin`. `UTC` und `Etc/UTC` bedeuten UTC. Eine unbekannte Zone ist ein Konfigurationsfehler. Im selben Deploy umstellen wie die Ausdrücke, die sie betrifft; besser die Zone pro Task angeben ([Zeitzonen](../guides/scheduling-and-retries.md#zeitzonen)). |
+| `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` | `60.0` | Sekunden zwischen [Cron-Meldungen](../guides/scheduling-and-retries.md#cron-meldungen-und-leader): Jeder Worker meldet seine statischen Crons beim Start und danach in diesem Abstand; der Leader übernimmt gemeldete Crons im selben Takt. Eine Meldung lebt drei Takte. Muss `> 0` sein; alle Apps auf einem Valkey sollten denselben Wert nutzen. |
 
 ### Observability
 
@@ -125,6 +127,8 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_dlq_messages` | Gauge | `queue` | Nachrichten in `{queue}.XQ`, abgetastet. |
 | `swarmq_worker_uptime_seconds` | Gauge | `worker_id` | Sekunden seit Worker-Start, abgetastet. |
 | `swarmq_scheduler_leader` | Gauge | `worker_id` | `1`, solange dieser Worker den Scheduler-Leader-Lock hält, sonst `0`. |
+| `swarmq_scheduler_leader_outdated` | Gauge | `worker_id` | `1`, solange dieser Worker einen Scheduler-Leader mit älterem swarmq ohne Zeitzonen-Unterstützung sieht, sonst `0` ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)). |
+| `swarmq_scheduler_cron_conflicts_total` | Counter | `schedule_name` | Auswahltakte des Leaders, in denen mehrere Definitionen eines statischen Crons länger als 10 Minuten gleichzeitig lebten ([Konflikte](../guides/scheduling-and-retries.md#konflikte)). |
 | `swarmq_log_records_dropped_total` | Counter | keine | Log-Einträge, die verworfen wurden, weil die Log-Queue voll war (siehe [Logging](logging.md#nicht-blockierende-ausgabe-und-verworfene-eintrage)). |
 
 `task_name` und `queue` kommen unverändert aus der Nachricht; halte
@@ -294,6 +298,7 @@ mutiert werden.
 |---|---|---|---|
 | `cron` | `str \| None` | `None` | Standard-5-Feld-Cron-Expression. Extended Syntax (`L`, `W`, `#`) wird abgelehnt. |
 | `catchup` | `bool` | `False` | Für ein künftiges Release reserviert. `True` raist `ValueError`. |
+| `timezone` | `str \| None` | `None` | IANA-Zone, in der `cron` ausgewertet wird, z. B. `"Europe/Berlin"`. `None` fällt auf `SWARMQ_SCHEDULER_TIMEZONE` zurück, sonst UTC; ein ausdrückliches `"UTC"` schlägt diesen Standard. Braucht `cron`; eine unbekannte Zone wirft `ValueError`. Siehe [Zeitzonen](../guides/scheduling-and-retries.md#zeitzonen). |
 
 ### Deduplizierung
 

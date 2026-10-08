@@ -118,7 +118,7 @@ Connect-Timeouts nicht erreichbar ist, oder bei einem Reconnect-
 Versuch, der das Retry-Budget erschöpft. Außerdem, wenn ein Publish
 `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet (Default 120 s) — siehe den
 Zustellvorbehalt unten.
-Seit 0.9.1 auch, wenn der Worker eine Zustellung bestätigt, neu
+Seit 0.10.0 auch, wenn der Worker eine Zustellung bestätigt, neu
 einreiht oder an den DLX gibt, nachdem Kanal oder Verbindung verloren
 gingen; der Worker loggt `delivery_settle_failed`, und RabbitMQ stellt
 die unbestätigte Nachricht neu zu.

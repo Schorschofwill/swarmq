@@ -47,7 +47,7 @@ class DailyReport(Task):
     task_info = TaskInfo(
         name="daily_report",
         queues=["reports"],
-        cron="0 3 * * *",  # every day at 03:00 UTC
+        cron="0 3 * * *",  # every day at 03:00 UTC (no time zone set)
     )
 
     async def run(self) -> None:
@@ -58,18 +58,266 @@ Standard 5-field cron only; extended syntax (`L`, `W`, `#`) is
 rejected at class definition. The worker's embedded scheduler picks
 up the declaration automatically — no separate cron daemon.
 
-!!! warning "Cron expressions are evaluated in UTC"
-    There is no timezone or DST handling: `0 3 * * *` fires at
-    03:00 **UTC**, year-round. Relative to local wall-clock time the
-    fire point shifts by an hour across DST transitions — convert
-    your intended local time to UTC when writing the expression.
-
 !!! info "Missed fires are skipped, not replayed"
     After scheduler downtime each cron fires exactly **once** as
     catch-up; occurrences missed during the outage never run. The
     scheduler emits a `SCHEDULER_FIRE_SKIPPED` signal (with
     `schedule_name` and `skipped_count`) so important crons can be
     alerted on.
+
+### Time zones
+
+Without a time zone a cron expression is evaluated in UTC: `0 3 * * *`
+fires at 03:00 UTC, year-round. Set `timezone` to an IANA zone to have
+it fire at the local wall-clock time instead:
+
+```python
+class DailyReport(Task):
+    task_info = TaskInfo(
+        name="daily_report",
+        queues=["reports"],
+        cron="0 3 * * *",
+        timezone="Europe/Berlin",  # 03:00 in Berlin, summer and winter
+    )
+```
+
+- The zone is checked when the class is defined; an unknown name
+  raises `ValueError`. `timezone` without `cron` is rejected as well.
+- `SWARMQ_SCHEDULER_TIMEZONE` (`SwarmQConfig(scheduler_timezone=...)`)
+  sets a default for every cron task without its own `timezone`. An
+  unknown zone there is a `ConfigurationError`.
+- A `timezone` on the task always wins over the default, including an
+  explicit `timezone="UTC"`. Use that for crons that must stay in UTC
+  when the default is set.
+- `"UTC"`, `"Etc/UTC"` and no zone at all are the same: the stored
+  definition carries no zone, so existing schedules keep their
+  fingerprint when you upgrade.
+- swarmq depends on `tzdata`, so zones resolve in slim images without
+  `/usr/share/zoneinfo`.
+
+Prefer the zone per task. A global default that changes in a different
+deploy than the expressions it affects shifts every cron of that app by
+the UTC offset.
+
+Crons created with `swarmq schedule add --cron` are always UTC; the CLI
+has no zone option yet.
+
+### Clock changes
+
+In a zone with daylight saving time, one night a year has an hour
+twice (autumn) and one night has an hour missing (spring). The rule
+depends on whether the hour field of the expression contains a `*`
+(also `*/n`; `@hourly` and the other `@` aliases count in their
+five-field form, so `@hourly` is `0 * * * *` and `@daily` is
+`0 0 * * *`):
+
+| Where the fire falls | Hour field without `*` (e.g. `30 2 * * *`) | Hour field with `*` (e.g. `15 * * * *`, `*/30 * * * *`) |
+|---|---|---|
+| normal time | fires | fires |
+| doubled hour, first pass | fires | fires |
+| doubled hour, second pass | does not fire; the next fire is searched from the end of the doubled hour | fires (follows real time) |
+| spring gap | fires once at the next existing time | croniter's behaviour, see below |
+
+Examples for `Europe/Berlin` in 2026:
+
+- `30 2 * * *` fires on 25 October at 02:30 CEST only, not again at
+  02:30 CET; on 29 March, when 02:30 does not exist, it fires at 03:00
+  CEST.
+- `15 * * * *` fires on 25 October at 02:15 CEST and again at 02:15
+  CET (one hour of real time apart). On 29 March 02:15 is skipped: the
+  next fire after 01:15 CET is 03:15 CEST.
+- `45 */2 * * *` fires on 29 March at 00:45, then at 03:00 instead of
+  the missing 02:45, then at 04:45.
+
+With a `*` in the hour field the spring gap follows croniter and can
+depend on the point the calculation starts from. In
+`Australia/Lord_Howe`, where the clock moves by half an hour,
+`15 * * * *` fires on 4 October 2026 at 01:15 (+10:30) and then at
+02:30 (+11:00). If the calculation starts during the second pass of a
+doubled hour, a cron without `*` in its hour field fires next on the
+following day: `30 2 * * *` started at 02:10 CET on 25 October fires
+next on 26 October at 02:30.
+
+A cron whose next fire cannot be calculated (for example a zone the
+leader's `tzdata` does not know) blocks no other cron: the leader logs
+`scheduler_next_fire_failed`, takes the entry out of the fire index
+and keeps the definition. As long as a live worker reports the cron,
+the next adoption tick plans it again once the fire can be calculated.
+
+`swarmq.scheduler.next_fire_times` calculates fires with the same rule
+the scheduler uses:
+
+```python
+from datetime import UTC, datetime
+from swarmq.scheduler import next_fire_times
+
+next_fire_times("0 3 * * *", datetime.now(UTC), timezone="Europe/Berlin", count=3)
+# [datetime(…, 3, 0, tzinfo=ZoneInfo('Europe/Berlin')), …]
+```
+
+`start` must be timezone-aware; the fires come back aware in the given
+zone (UTC without `timezone`). An invalid expression raises croniter's
+`CroniterBadCronError`.
+
+### Cron reports and the leader
+
+Every worker reports the static crons of its own task registry to
+Valkey: at start and then every `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`
+seconds (default `60`). A report holds the name, the full definition
+and a fingerprint over the fields that come from code: cron
+expression, time zone (already resolved from the task or the worker's
+default), queue and task name. Reports carry the Valkey server time,
+so clock skew between workers does not matter.
+
+The scheduler leader adopts reported crons on the same interval, right
+after it takes over and then every interval. For each name it picks,
+among the live reports, the definition that appeared most recently. A
+report is live while it was refreshed within the last three intervals.
+The leader checks the definition (zone, expression) before it writes
+it; an invalid report leaves the stored definition untouched and logs
+`scheduler_cron_report_invalid` on every tick.
+
+What this means in practice:
+
+- A cron changed in the code of any app, also one whose workers never
+  become leader, takes effect within two intervals after the first
+  worker with the new code starts.
+- A fire that is already due when a definition changes is not lost:
+  it fires once with the new content. A fire that is not due yet is
+  recalculated.
+- During a rolling deploy the newer code state wins. An old worker
+  that restarts later does not reset it, because its definition is
+  not new. A definition counts as new again once no worker has
+  reported it for three intervals, so a revert from B back to A wins
+  as well.
+- A schedule disabled with `swarmq schedule remove NAME` stays
+  disabled when its code changes.
+- A static cron that a live worker reports comes back within one
+  interval after `swarmq schedule remove --permanent`. It only stays
+  gone once no code reports it anymore.
+- A cron removed from code stays in Valkey and keeps firing; remove it
+  with `swarmq schedule remove --permanent NAME` once no worker reports
+  it anymore.
+- A CLI schedule of the same name still beats the static cron, with
+  the warning `scheduler_static_cron_shadowed_by_cli`.
+- Crons of other apps on the same Valkey fire without the warning
+  `scheduler_task_not_in_local_registry`, as long as a live worker
+  reports them. The leader still does not know their `TaskInfo`, so
+  `unique_for` of such a task has no effect on its cron fires.
+
+The leader deletes reports that were not refreshed for 7 days.
+
+Use the same `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` in every app on one
+Valkey: the leader judges liveness with its own interval.
+
+### Conflicts
+
+When several definitions of one cron name stay live side by side for
+more than 10 minutes, the leader logs `scheduler_cron_conflict` (with
+all live fingerprints and the chosen one) on every adoption tick,
+sends the `SCHEDULER_CRON_CONFLICT` signal and counts
+`swarmq_scheduler_cron_conflicts_total{schedule_name}`. The definition
+that appeared most recently keeps firing. A short overlap during a
+rolling deploy is not a conflict. The typical cause is tasks with the
+same name in two apps on one Valkey; give them different names.
+
+### Leader version
+
+The leader writes its swarmq version next to the leader lock, and
+every worker reports its version with its cron reports. A swarmq
+before 0.10.0 writes no version and does not know the `timezone`
+field: as leader it drops the zone of every cron it fires and fires
+it in UTC again.
+
+A worker that sees such a leader (no version, or an older one) on two
+election ticks in a row (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`) logs `scheduler_leader_outdated` once per
+leader, sends the `SCHEDULER_LEADER_OUTDATED` signal and sets the
+gauge `swarmq_scheduler_leader_outdated{worker_id}` to `1`. When a
+current leader follows, the signal comes again with `outdated=False`
+and the gauge drops to `0`.
+
+`swarmq schedule status` shows `LEADER_VERSION` and the reporting
+workers with their versions (see
+[CLI reference](../reference/cli.md#swarmq-schedule-status)).
+
+### Migrating hand-converted UTC crons
+
+Before 0.10.0, crons that should fire at a local time had to be
+converted to UTC by hand. In the EU such an expression is right for
+summer time only: after the clocks go back on 25 October 2026 at
+01:00 UTC it fires an hour late. To move such crons to a zone:
+
+1. **Upgrade every app on the same Valkey to 0.10.0 first, without
+   changing any cron.** A leader before 0.10.0 drops `timezone` on
+   every fire. Check with `swarmq schedule status` that
+   `LEADER_VERSION` and every entry under `WORKERS` show 0.10.0 or
+   later before you go on.
+2. **Per app, set the zone on each task and change the expression
+   back to local time in the same commit.** A zone without the
+   converted expression, or the other way round, shifts the cron by
+   the UTC offset. Prefer `timezone=` per task over
+   `SWARMQ_SCHEDULER_TIMEZONE`; if you use the variable, change it in
+   the same deploy as the expressions. Watch for these pitfalls:
+    - **Weekday and day of month.** A conversion that crossed midnight
+      also shifted the day: `30 22 * * 0` (Sunday 22:30 UTC) is
+      `30 0 * * 1` (Monday 00:30) in `Europe/Berlin`. The same applies
+      to the day of month and to month boundaries.
+    - **`*/n` and ranges in the hour field.** `0 */2 * * *` happens to
+      fire at the same instants in UTC and in Berlin, `0 */5 * * *`
+      does not: the hand-converted hours were 0, 5, 10, 15, 20 UTC,
+      which is `0 2,7,12,17,22 * * *` in Berlin summer time. Write such
+      hours out explicitly and check them with the recipe below.
+    - **`*` in the hour field.** An expression like `*/15 * * * *`
+      without day restrictions fires at the same instants in UTC and
+      in a zone whose offset is whole hours; it needs no zone. Note
+      the different rule for the doubled hour in the
+      [table above](#clock-changes).
+3. **Deploy before 25 October 2026, 01:00 UTC**, and check the
+   equivalence before you deploy: until the switch, the new
+   expression with zone must produce the same fires as the old UTC
+   expression (recipe below).
+4. **Do not deploy between 24 October 22:00 and 25 October 04:00
+   UTC**, so no rolling deploy of crons overlaps the switch.
+5. **Rollback:** roll back the expressions together with the zone, in
+   one commit. swarmq before 0.10.0 does not accept `timezone=`, so
+   rolling back swarmq itself also means going back to the
+   hand-converted UTC expressions.
+
+Recipe for the equivalence check, for example as a test in your
+project:
+
+```python
+from datetime import UTC, datetime
+
+from swarmq.scheduler import next_fire_times
+
+# End of summer time in the EU: 2026-10-25 01:00 UTC.
+SWITCH = datetime(2026, 10, 25, 1, 0, tzinfo=UTC)
+
+
+def fires_until(cron: str, start: datetime, end: datetime, timezone: str | None = None) -> list[datetime]:
+    """Every fire of *cron* after *start* and before *end*, in UTC."""
+    fires = []
+    while True:
+        (fire,) = next_fire_times(cron, start, timezone=timezone)
+        fire = fire.astimezone(UTC)  # compare instants, not wall clocks
+        if fire >= end:
+            return fires
+        fires.append(fire)
+        start = fire
+
+
+def test_daily_report_keeps_its_fires() -> None:
+    start = datetime.now(UTC)
+    old = fires_until("0 1 * * *", start, SWITCH)  # hand-converted from 03:00 CEST
+    new = fires_until("0 3 * * *", start, SWITCH, timezone="Europe/Berlin")
+    assert new == old
+```
+
+Convert to UTC before comparing: Python never treats two datetimes in
+different zones as equal when one of them lies in the doubled hour,
+even if they denote the same instant. After the switch the two
+expressions differ by design.
 
 ### CLI-defined schedules
 

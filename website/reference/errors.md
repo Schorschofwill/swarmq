@@ -113,7 +113,7 @@ and `error`. During a reload the running supervisor logs
 the connect timeout, or during a reconnect attempt that exceeds the
 retry budget. Also when a publish exceeds `SWARMQ_PUBLISH_TIMEOUT_S`
 (default 120s) — see the delivery caveat below.
-Since 0.9.1 also when the worker acknowledges, requeues or
+Since 0.10.0 also when the worker acknowledges, requeues or
 dead-letters a delivery after the channel or connection was lost; the
 worker logs `delivery_settle_failed`, and RabbitMQ redelivers the
 unacknowledged message.

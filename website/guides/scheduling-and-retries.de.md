@@ -48,7 +48,7 @@ class DailyReport(Task):
     task_info = TaskInfo(
         name="daily_report",
         queues=["reports"],
-        cron="0 3 * * *",  # jeden Tag um 03:00 UTC
+        cron="0 3 * * *",  # jeden Tag um 03:00 UTC (ohne Zeitzone)
     )
 
     async def run(self) -> None:
@@ -60,19 +60,274 @@ Klassendefinitionszeit abgelehnt. Der eingebettete Scheduler des
 Workers nimmt die Deklaration automatisch auf — kein separater
 Cron-Daemon.
 
-!!! warning "Cron-Ausdrücke werden in UTC ausgewertet"
-    Es gibt keine Zeitzonen- oder DST-Behandlung: `0 3 * * *` feuert
-    ganzjährig um 03:00 **UTC**. Relativ zur lokalen Wanduhr
-    verschiebt sich der Zeitpunkt über Sommerzeit-Wechsel um eine
-    Stunde — die gewünschte Lokalzeit beim Schreiben des Ausdrucks
-    nach UTC umrechnen.
-
 !!! info "Verpasste Fires werden übersprungen, nicht nachgeholt"
     Nach Scheduler-Downtime feuert jeder Cron genau **einmal** als
     Catch-up; während des Ausfalls verpasste Termine laufen nie. Der
     Scheduler emittiert ein `SCHEDULER_FIRE_SKIPPED`-Signal (mit
     `schedule_name` und `skipped_count`), damit wichtige Crons
     alarmierbar sind.
+
+### Zeitzonen
+
+Ohne Zeitzone wird ein Cron-Ausdruck in UTC ausgewertet: `0 3 * * *`
+feuert ganzjährig um 03:00 UTC. Mit `timezone` und einer IANA-Zone
+feuert er stattdessen zur lokalen Uhrzeit:
+
+```python
+class DailyReport(Task):
+    task_info = TaskInfo(
+        name="daily_report",
+        queues=["reports"],
+        cron="0 3 * * *",
+        timezone="Europe/Berlin",  # 03:00 in Berlin, Sommer wie Winter
+    )
+```
+
+- Die Zone wird bei der Klassendefinition geprüft; ein unbekannter
+  Name wirft `ValueError`. `timezone` ohne `cron` wird ebenfalls
+  abgelehnt.
+- `SWARMQ_SCHEDULER_TIMEZONE` (`SwarmQConfig(scheduler_timezone=...)`)
+  setzt einen Standard für alle Cron-Tasks ohne eigene `timezone`. Eine
+  unbekannte Zone ist dort ein `ConfigurationError`.
+- Eine `timezone` am Task schlägt immer den Standard, auch ein
+  ausdrückliches `timezone="UTC"`. Damit bleiben Crons in UTC, wenn der
+  Standard gesetzt ist.
+- `"UTC"`, `"Etc/UTC"` und keine Angabe sind gleichwertig: Die
+  gespeicherte Definition trägt dann keine Zone, bestehende Schedules
+  behalten beim Upgrade ihren Fingerabdruck.
+- swarmq hängt von `tzdata` ab, damit Zonen auch in schlanken Images
+  ohne `/usr/share/zoneinfo` aufgelöst werden.
+
+Die Zone besser pro Task angeben. Ein globaler Standard, der in einem
+anderen Deploy umgestellt wird als die betroffenen Ausdrücke,
+verschiebt alle Crons dieser App um den UTC-Versatz.
+
+Mit `swarmq schedule add --cron` angelegte Crons gelten immer in UTC;
+die CLI hat noch keine Zonen-Option.
+
+### Zeitumstellung
+
+In einer Zone mit Sommerzeit gibt es eine Nacht im Jahr mit einer
+doppelten Stunde (Herbst) und eine mit einer fehlenden Stunde
+(Frühjahr). Die Regel hängt davon ab, ob das Stundenfeld des
+Ausdrucks ein `*` enthält (auch `*/n`; `@hourly` und die anderen
+`@`-Aliase zählen in ihrer Fünf-Feld-Form, `@hourly` ist also
+`0 * * * *` und `@daily` ist `0 0 * * *`):
+
+| Lage des Termins | Stundenfeld ohne `*` (z. B. `30 2 * * *`) | Stundenfeld mit `*` (z. B. `15 * * * *`, `*/30 * * * *`) |
+|---|---|---|
+| normale Zeit | feuert | feuert |
+| doppelte Stunde, erster Durchlauf | feuert | feuert |
+| doppelte Stunde, zweiter Durchlauf | feuert nicht; der nächste Termin wird ab dem Ende der doppelten Stunde gesucht | feuert (folgt der echten Zeit) |
+| Lücke im Frühjahr | feuert einmal zur nächsten existierenden Uhrzeit | Verhalten von croniter, siehe unten |
+
+Beispiele für `Europe/Berlin` im Jahr 2026:
+
+- `30 2 * * *` feuert am 25. Oktober nur um 02:30 MESZ, nicht noch
+  einmal um 02:30 MEZ; am 29. März, an dem es 02:30 nicht gibt, feuert
+  er um 03:00 MESZ.
+- `15 * * * *` feuert am 25. Oktober um 02:15 MESZ und noch einmal um
+  02:15 MEZ (eine Stunde echter Zeit später). Am 29. März entfällt
+  02:15: Nach 01:15 MEZ folgt 03:15 MESZ.
+- `45 */2 * * *` feuert am 29. März um 00:45, dann um 03:00 statt zur
+  fehlenden 02:45, dann um 04:45.
+
+Mit `*` im Stundenfeld folgt die Lücke im Frühjahr croniter und kann
+vom Ausgangspunkt der Rechnung abhängen. In `Australia/Lord_Howe`, wo
+die Uhr um eine halbe Stunde springt, feuert `15 * * * *` am
+4. Oktober 2026 um 01:15 (+10:30) und dann um 02:30 (+11:00). Beginnt
+die Rechnung im zweiten Durchlauf einer doppelten Stunde, feuert ein
+Cron ohne `*` im Stundenfeld erst am Folgetag: `30 2 * * *` ab 02:10
+MEZ am 25. Oktober feuert als Nächstes am 26. Oktober um 02:30.
+
+Ein Cron, dessen nächster Termin sich nicht berechnen lässt (etwa eine
+Zone, die das `tzdata` des Leaders nicht kennt), blockiert keine
+anderen Crons: Der Leader loggt `scheduler_next_fire_failed`, nimmt den
+Eintrag aus dem Fire-Index und behält die Definition. Solange ein
+lebender Worker den Cron meldet, plant ihn der nächste Übernahme-Takt
+wieder ein, sobald sich der Termin berechnen lässt.
+
+`swarmq.scheduler.next_fire_times` berechnet Termine mit derselben
+Regel wie der Scheduler:
+
+```python
+from datetime import UTC, datetime
+from swarmq.scheduler import next_fire_times
+
+next_fire_times("0 3 * * *", datetime.now(UTC), timezone="Europe/Berlin", count=3)
+# [datetime(…, 3, 0, tzinfo=ZoneInfo('Europe/Berlin')), …]
+```
+
+`start` muss zeitzonenbehaftet sein; die Termine kommen
+zeitzonenbehaftet in der angegebenen Zone zurück (ohne `timezone` in
+UTC). Ein ungültiger Ausdruck wirft croniters `CroniterBadCronError`.
+
+### Cron-Meldungen und Leader
+
+Jeder Worker meldet die statischen Crons seiner eigenen Task-Registry
+an Valkey: beim Start und danach alle
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S` Sekunden (Standard `60`). Eine
+Meldung enthält den Namen, die vollständige Definition und einen
+Fingerabdruck über die Felder aus dem Code: Cron-Ausdruck, Zeitzone
+(bereits aufgelöst aus Task oder Standard des Workers), Queue und
+Task-Name. Meldungen tragen die Serverzeit von Valkey, Uhrabweichungen
+zwischen Workern spielen keine Rolle.
+
+Der Scheduler-Leader übernimmt gemeldete Crons im selben Takt: sofort
+nach der Übernahme der Leader-Rolle und danach in jedem Takt. Pro Name
+wählt er unter den lebenden Meldungen die Definition, die zuletzt neu
+aufgetaucht ist. Lebendig ist eine Meldung, die in den letzten drei
+Takten erneuert wurde. Der Leader prüft die Definition (Zone,
+Ausdruck), bevor er sie schreibt; eine ungültige Meldung lässt die
+gespeicherte Definition unverändert und loggt in jedem Takt
+`scheduler_cron_report_invalid`.
+
+Was das praktisch heißt:
+
+- Ein im Code einer beliebigen App geänderter Cron, auch einer App,
+  deren Worker nie Leader werden, gilt binnen zwei Takten nach dem
+  Start des ersten Workers mit dem neuen Code.
+- Ein Termin, der beim Ändern einer Definition schon fällig ist, geht
+  nicht verloren: Er feuert einmal mit dem neuen Inhalt. Ein noch nicht
+  fälliger Termin wird neu berechnet.
+- Bei einem Rolling Deploy gewinnt der neuere Code-Stand. Ein alter
+  Worker, der später neu startet, setzt ihn nicht zurück, weil seine
+  Definition nicht neu ist. Neu ist eine Definition wieder, wenn sie
+  drei Takte lang kein Worker gemeldet hat; so gewinnt auch ein Revert
+  von B zurück auf A.
+- Ein mit `swarmq schedule remove NAME` deaktivierter Schedule bleibt
+  deaktiviert, wenn sich sein Code ändert.
+- Ein statischer Cron, den ein lebender Worker meldet, ist nach
+  `swarmq schedule remove --permanent` binnen eines Takts wieder da.
+  Dauerhaft weg ist er erst, wenn ihn kein Code mehr meldet.
+- Ein aus dem Code entfernter Cron bleibt in Valkey und feuert weiter;
+  mit `swarmq schedule remove --permanent NAME` entfernen, sobald ihn
+  kein Worker mehr meldet.
+- Ein gleichnamiger CLI-Schedule schlägt den statischen Cron weiterhin,
+  mit der Warnung `scheduler_static_cron_shadowed_by_cli`.
+- Crons anderer Apps auf demselben Valkey feuern ohne die Warnung
+  `scheduler_task_not_in_local_registry`, solange ein lebender Worker
+  sie meldet. Ihre `TaskInfo` kennt der Leader weiterhin nicht;
+  `unique_for` eines solchen Tasks wirkt also nicht auf seine
+  Cron-Fires.
+
+Meldungen, die 7 Tage lang nicht erneuert wurden, löscht der Leader.
+
+Alle Apps auf einem Valkey sollten dasselbe
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S` nutzen: Der Leader beurteilt die
+Lebendigkeit mit seinem eigenen Takt.
+
+### Konflikte
+
+Leben mehrere Definitionen eines Cron-Namens länger als 10 Minuten
+nebeneinander, loggt der Leader in jedem Übernahme-Takt
+`scheduler_cron_conflict` (mit allen lebenden Fingerabdrücken und dem
+gewählten), sendet das Signal `SCHEDULER_CRON_CONFLICT` und zählt
+`swarmq_scheduler_cron_conflicts_total{schedule_name}`. Es feuert
+weiter die Definition, die zuletzt neu aufgetaucht ist. Eine kurze
+Überlappung im Rolling Deploy ist kein Konflikt. Typische Ursache sind
+gleichnamige Tasks in zwei Apps auf einem Valkey; sie brauchen
+verschiedene Namen.
+
+### Leader-Version
+
+Der Leader schreibt seine swarmq-Version neben das Leader-Lock, und
+jeder Worker meldet seine Version mit seinen Cron-Meldungen. Ein
+swarmq vor 0.10.0 schreibt keine Version und kennt das Feld
+`timezone` nicht: Als Leader verwirft er die Zone jedes Crons, den er
+feuert, und feuert ihn danach wieder in UTC.
+
+Ein Worker, der einen solchen Leader (ohne Version oder mit älterer)
+in zwei Wahl-Takten in Folge sieht (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`),
+loggt einmal pro Leader `scheduler_leader_outdated`, sendet das Signal
+`SCHEDULER_LEADER_OUTDATED` und setzt die Gauge
+`swarmq_scheduler_leader_outdated{worker_id}` auf `1`. Folgt ein
+aktueller Leader, kommt das Signal erneut mit `outdated=False`, und die
+Gauge fällt auf `0`.
+
+`swarmq schedule status` zeigt `LEADER_VERSION` und die meldenden
+Worker mit ihren Versionen (siehe
+[CLI-Referenz](../reference/cli.md#swarmq-schedule-status)).
+
+### Von Hand umgerechnete UTC-Crons umstellen
+
+Vor 0.10.0 mussten Crons, die zu einer lokalen Uhrzeit feuern sollen,
+von Hand nach UTC umgerechnet werden. In der EU stimmt ein solcher
+Ausdruck nur in der Sommerzeit: Nach der Rückstellung am 25. Oktober
+2026 um 01:00 UTC feuert er eine Stunde zu spät. So werden solche
+Crons auf eine Zone umgestellt:
+
+1. **Zuerst alle Apps auf demselben Valkey auf 0.10.0 bringen, ohne
+   einen Cron zu ändern.** Ein Leader vor 0.10.0 verwirft `timezone`
+   bei jedem Fire. Mit `swarmq schedule status` prüfen, dass
+   `LEADER_VERSION` und alle Einträge unter `WORKERS` 0.10.0 oder neuer
+   zeigen, bevor es weitergeht.
+2. **Pro App die Zone an jedem Task setzen und den Ausdruck im selben
+   Commit auf Ortszeit zurückführen.** Eine Zone ohne zurückgeführten
+   Ausdruck oder umgekehrt verschiebt den Cron um den UTC-Versatz.
+   `timezone=` pro Task ist `SWARMQ_SCHEDULER_TIMEZONE` vorzuziehen;
+   wer die Variable nutzt, stellt sie im selben Deploy um wie die
+   Ausdrücke. Fallstricke:
+    - **Wochentag und Tag im Monat.** Eine Umrechnung über Mitternacht
+      hat auch den Tag verschoben: `30 22 * * 0` (Sonntag 22:30 UTC)
+      ist in `Europe/Berlin` `30 0 * * 1` (Montag 00:30). Dasselbe gilt
+      für den Tag im Monat und für Monatsgrenzen.
+    - **`*/n` und Bereiche im Stundenfeld.** `0 */2 * * *` feuert in
+      UTC und in Berlin zufällig zu denselben Zeitpunkten,
+      `0 */5 * * *` nicht: Die umgerechneten Stunden waren 0, 5, 10,
+      15, 20 UTC, in Berliner Sommerzeit also `0 2,7,12,17,22 * * *`.
+      Solche Stunden ausschreiben und mit dem Rezept unten prüfen.
+    - **`*` im Stundenfeld.** Ein Ausdruck wie `*/15 * * * *` ohne
+      Einschränkung der Tage feuert in UTC und in einer Zone mit
+      ganzstündigem Versatz zu denselben Zeitpunkten; er braucht keine
+      Zone. Die abweichende Regel für die doppelte Stunde steht in der
+      [Tabelle oben](#zeitumstellung).
+3. **Vor dem 25. Oktober 2026, 01:00 UTC deployen** und vorher die
+   Äquivalenz prüfen: Bis zur Umstellung muss der neue Ausdruck mit
+   Zone dieselben Termine liefern wie der alte UTC-Ausdruck (Rezept
+   unten).
+4. **Kein Deploy zwischen 24. Oktober 22:00 und 25. Oktober 04:00
+   UTC**, damit kein Rolling Deploy von Crons die Umstellung
+   überlappt.
+5. **Rollback:** Ausdrücke und Zone gemeinsam in einem Commit
+   zurückrollen. swarmq vor 0.10.0 kennt `timezone=` nicht; wer swarmq
+   selbst zurückrollt, muss also auch zu den umgerechneten
+   UTC-Ausdrücken zurück.
+
+Rezept für die Äquivalenzprüfung, etwa als Test im eigenen Projekt:
+
+```python
+from datetime import UTC, datetime
+
+from swarmq.scheduler import next_fire_times
+
+# Ende der Sommerzeit in der EU: 2026-10-25 01:00 UTC.
+SWITCH = datetime(2026, 10, 25, 1, 0, tzinfo=UTC)
+
+
+def fires_until(cron: str, start: datetime, end: datetime, timezone: str | None = None) -> list[datetime]:
+    """Alle Termine von *cron* nach *start* und vor *end*, in UTC."""
+    fires = []
+    while True:
+        (fire,) = next_fire_times(cron, start, timezone=timezone)
+        fire = fire.astimezone(UTC)  # Zeitpunkte vergleichen, keine Wanduhrzeiten
+        if fire >= end:
+            return fires
+        fires.append(fire)
+        start = fire
+
+
+def test_daily_report_keeps_its_fires() -> None:
+    start = datetime.now(UTC)
+    old = fires_until("0 1 * * *", start, SWITCH)  # von Hand aus 03:00 MESZ umgerechnet
+    new = fires_until("0 3 * * *", start, SWITCH, timezone="Europe/Berlin")
+    assert new == old
+```
+
+Vor dem Vergleich nach UTC umrechnen: Python hält zwei Datetimes in
+verschiedenen Zonen nie für gleich, wenn einer davon in der doppelten
+Stunde liegt, auch wenn beide denselben Zeitpunkt bezeichnen. Nach der
+Umstellung unterscheiden sich die beiden Ausdrücke gewollt.
 
 ### CLI-definierte Schedules
 
