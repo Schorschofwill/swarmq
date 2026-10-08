@@ -58,40 +58,40 @@ class TestIsOutdated:
 
 class TestLeaderVersionWatch:
     def test_outdated_leader_is_reported_on_second_observation(self) -> None:
-        watch = LeaderVersionWatch("0.10.0")
+        watch = LeaderVersionWatch()
         assert watch.observe("old:1:aa", None) is None
         assert watch.observe("old:1:aa", None) == "outdated"
 
     def test_outdated_leader_is_reported_once(self) -> None:
-        watch = LeaderVersionWatch("0.10.0")
+        watch = LeaderVersionWatch()
         observed = [watch.observe("old:1:aa", None) for _ in range(4)]
         assert observed == [None, "outdated", None, None]
 
     def test_current_leader_is_never_reported(self) -> None:
-        watch = LeaderVersionWatch("0.10.0")
+        watch = LeaderVersionWatch()
         observed = [watch.observe("new:1:aa", "0.10.0") for _ in range(3)]
         assert observed == [None, None, None]
 
     def test_older_leader_with_timezone_support_is_never_reported(self) -> None:
         """Rollendes Upgrade: ein 0.10-Leader kennt Zeitzonen schon."""
-        watch = LeaderVersionWatch("0.11.0")
+        watch = LeaderVersionWatch()
         observed = [watch.observe("old:1:aa", "0.10.0") for _ in range(3)]
         assert observed == [None, None, None]
 
     def test_new_outdated_leader_is_reported_again(self) -> None:
-        watch = LeaderVersionWatch("0.10.0")
+        watch = LeaderVersionWatch()
         first = [watch.observe("old:1:aa", None) for _ in range(2)]
         second = [watch.observe("old:2:bb", "0.9.0") for _ in range(3)]
         assert (first, second) == ([None, "outdated"], [None, "outdated", None])
 
     def test_current_leader_after_reported_outdated_one_clears(self) -> None:
-        watch = LeaderVersionWatch("0.10.0")
+        watch = LeaderVersionWatch()
         [watch.observe("old:1:aa", None) for _ in range(2)]
         observed = [watch.observe("new:1:bb", "0.10.0") for _ in range(2)]
         assert observed == ["current", None]
 
     def test_no_leader_restarts_the_confirmation(self) -> None:
-        watch = LeaderVersionWatch("0.10.0")
+        watch = LeaderVersionWatch()
         observed = [
             watch.observe("old:1:aa", None),
             watch.observe(None, None),

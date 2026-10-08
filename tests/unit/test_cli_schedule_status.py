@@ -7,6 +7,9 @@
 # 3. Text: ``LEADER_VERSION`` mit Version; ohne Versionsangabe ein Hinweis
 #    auf eine Version vor 0.10.0; ohne Leader ``-``.
 # 4. Text: ``WORKERS`` listet die meldenden Worker; ohne Meldung ``(none)``.
+# 5. Valkey-Ausfall beim Lesen von Leader-Version oder Worker-Versionen:
+#    wie beim Leader selbst propagiert ``BackendConnectionError`` (Exit 1 über
+#    ``_run_command``), keine halbe Ausgabe, das Backend wird geschlossen.
 
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ import pytest
 
 from swarmq.cli import schedule_cmd
 from swarmq.contracts import LeaderInfo
+from swarmq.exceptions import BackendConnectionError
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -91,3 +95,19 @@ async def test_table_without_reporting_workers(monkeypatch) -> None:
     backend = _backend(leader=None, version=None, workers={})
     output = await _status(monkeypatch, backend, "table")
     assert output.endswith("WORKERS:\n  (none)\n")
+
+
+@pytest.mark.parametrize("failing", ["leader_info", "worker_versions"])
+@pytest.mark.parametrize("fmt", ["json", "table"])
+async def test_backend_outage_propagates_without_partial_output(monkeypatch, failing, fmt) -> None:
+    backend = _backend(leader="a:0", version="0.10.1", workers={"a:0": "0.10.1"})
+    getattr(backend.schedules, failing).side_effect = BackendConnectionError("valkey down")
+    async def _factory() -> MagicMock:
+        return backend
+
+    monkeypatch.setattr(schedule_cmd, "_get_backend_factory", lambda: _factory)
+    buf = io.StringIO()
+    with redirect_stdout(buf), pytest.raises(BackendConnectionError, match="valkey down"):
+        await schedule_cmd._run_schedule_status(argparse.Namespace(format=fmt, limit=5))
+    assert buf.getvalue() == ""
+    backend.close.assert_awaited_once()

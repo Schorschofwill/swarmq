@@ -57,6 +57,13 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 23. ``report_worker_version`` erscheint in ``worker_versions`` und läuft
 #     nach seiner TTL ab.
 
+# Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
+# 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
+#     gespeicherte Definition die gelesene ist und kein Score existiert.
+# 25. ... ändert nichts, wenn sie inzwischen deaktiviert/geändert wurde.
+# 26. ... ändert nichts, wenn inzwischen ein Score existiert.
+# 27. ... ändert nichts, wenn der Eintrag inzwischen entfernt wurde.
+
 from __future__ import annotations
 
 import uuid
@@ -257,6 +264,37 @@ class ScheduleStoreContract:
         assert await impl.get(name) == b"off"
         assert all(n != name for n, _, _ in await impl.poll_due(10_000))
         assert await impl.disable(_name("sched"), b"x") is False
+
+    async def test_replan_if_unchanged_plans_an_unchanged_unscored_entry(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is True
+        assert await impl.get(name) == b"healed"
+        assert await impl.fire_ts(name) == 4_000
+
+    async def test_replan_if_unchanged_keeps_a_disable_since_the_read(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        await impl.disable(name, b"off")
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
+        assert await impl.get(name) == b"off"
+        assert await impl.fire_ts(name) is None
+
+    async def test_replan_if_unchanged_keeps_a_score_set_since_the_read(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        await impl.put(name, b"stuck", fire_ts_ms=2_000)
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
+        assert await impl.get(name) == b"stuck"
+        assert await impl.fire_ts(name) == 2_000
+
+    async def test_replan_if_unchanged_does_not_recreate_a_removed_entry(self, impl: ScheduleStore) -> None:
+        name = _name("sched")
+        await impl.add(name, b"stuck", fire_ts_ms=None)
+        await impl.remove(name)
+        assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
+        assert await impl.exists(name) is False
+        assert await impl.fire_ts(name) is None
 
     async def test_commit_fire_requires_leader(self, impl: ScheduleStore, leader: Leader) -> None:
         name = _name("sched")

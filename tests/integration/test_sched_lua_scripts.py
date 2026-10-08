@@ -236,3 +236,53 @@ class TestSchedCommitTakeoverGuard:
         assert int(result) == 1
         assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"next":1}'
 
+
+
+class TestSchedReplan:
+    """``sched_replan.lua`` (Review #4): Heilung nur, solange die Definition
+    die gelesene ist und kein Score existiert -- in einem EVAL."""
+
+    @pytest.fixture
+    def replan_script(self, valkey_client):
+        return valkey_client.register_script(load_script("sched_replan"))
+
+    async def _replan(self, script, sched_name):
+        return await script(
+            keys=[DEFS_KEY, ZSET_KEY],
+            args=[sched_name, b'{"read":1}', b'{"healed":1}', 4_000],
+        )
+
+    async def test_unchanged_unscored_def_is_planned(
+        self, valkey_client, replan_script, sched_name
+    ):
+        await valkey_client.hset(DEFS_KEY, sched_name, b'{"read":1}')
+
+        assert int(await self._replan(replan_script, sched_name)) == 1
+        assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"healed":1}'
+        assert float(await valkey_client.zscore(ZSET_KEY, sched_name)) == 4_000.0
+
+    async def test_disabled_since_read_stays_disabled(
+        self, valkey_client, replan_script, sched_name
+    ):
+        await valkey_client.hset(DEFS_KEY, sched_name, b'{"disabled":true}')
+
+        assert int(await self._replan(replan_script, sched_name)) == 0
+        assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"disabled":true}'
+        assert await valkey_client.zscore(ZSET_KEY, sched_name) is None
+
+    async def test_scored_since_read_keeps_its_score(
+        self, valkey_client, replan_script, sched_name
+    ):
+        await valkey_client.hset(DEFS_KEY, sched_name, b'{"read":1}')
+        await valkey_client.zadd(ZSET_KEY, {sched_name: 2_000})
+
+        assert int(await self._replan(replan_script, sched_name)) == 0
+        assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"read":1}'
+        assert float(await valkey_client.zscore(ZSET_KEY, sched_name)) == 2_000.0
+
+    async def test_removed_since_read_is_not_recreated(
+        self, valkey_client, replan_script, sched_name
+    ):
+        assert int(await self._replan(replan_script, sched_name)) == 0
+        assert await valkey_client.hexists(DEFS_KEY, sched_name) == 0
+        assert await valkey_client.zscore(ZSET_KEY, sched_name) is None

@@ -1,4 +1,4 @@
-"""Valkey-Schedules (Plan U18, KTD4): ``sched_poll/commit/disable.lua`` und
+"""Valkey-Schedules (Plan U18, KTD4): ``sched_poll/commit/disable/replan.lua`` und
 die Schedule-/Schedfire-Primitive der bisherigen Fassade.
 
 ``ValkeyScheduleStore`` erfüllt den Vertrag ``ScheduleStore`` auf ``bytes``
@@ -65,6 +65,7 @@ class ValkeyScheduleStore:
         self._poll_script = client.register_script(load_script("sched_poll"))
         self._commit_script = client.register_script(load_script("sched_commit"))
         self._disable_script = client.register_script(load_script("sched_disable"))
+        self._replan_script = client.register_script(load_script("sched_replan"))
         self._fire_claim_script = client.register_script(load_script("sched_fire_claim"))
         # Compare-and-delete mit Owner-Check: dieselbe Logik wie die
         # Unique-Freigabe (GET == Token -> DEL).
@@ -124,6 +125,17 @@ class ValkeyScheduleStore:
     async def list_all(self) -> Mapping[str, bytes]:
         raw = await self.hgetall_schedule_defs()
         return {_decode(k): v for k, v in raw.items()}
+
+    async def replan_if_unchanged(
+        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+    ) -> bool:
+        """``sched_replan.lua``: HGET-Vergleich, Score-Prüfung, HSET + ZADD
+        in einem EVAL (Review #4)."""
+        result = await self._run(
+            f"sched_replan for {name!r}",
+            self._replan_script(keys=[DEFS_KEY, ZSET_KEY], args=[name, expected, payload, fire_ts_ms]),
+        )
+        return int(result) == 1
 
     async def disable(self, name: str, payload: bytes) -> bool:
         """``sched_disable.lua``: HEXISTS-Guard, dann HSET + ZREM atomar."""

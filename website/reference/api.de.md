@@ -854,6 +854,8 @@ class ScheduleStore(Protocol):
                           payload: bytes | None, owner: str,
                           fired_ts_ms: int | None = None,
                           fired_payload: bytes | None = None) -> bool: ...
+    async def replan_if_unchanged(self, name: str, expected: bytes,
+                                  payload: bytes, fire_ts_ms: int) -> bool: ...
     async def report_cron(self, name: str, fingerprint: str, payload: bytes,
                           *, live_window_ms: int) -> None: ...
     async def cron_reports(self) -> CronReports: ...
@@ -874,6 +876,12 @@ class ScheduleStore(Protocol):
   gespeicherte Definition noch genau `fired_payload` (die gepollte) ist;
   sonst rückt nur der Score vor, und eine zwischen Poll und Commit
   übernommene Definition wird nicht zurückgeschrieben.
+- `replan_if_unchanged(name, expected, payload, fire_ts_ms)` plant einen
+  Eintrag ohne Score in einem atomaren Schritt neu ein: Es schreibt
+  `payload` und den Score nur, solange die gespeicherte Definition noch
+  genau `expected` ist und der Eintrag keinen Score hat, und meldet, ob
+  es geschrieben hat. Ein zwischendurch deaktivierter oder entfernter
+  Schedule bleibt, wie er ist.
 - `report_cron` setzt `last_seen` und Payload von `name|fingerprint`
   atomar in Backend-Zeit; `first_seen` nur, wenn die Meldung fehlt oder
   ihr `last_seen` älter als `live_window_ms` ist. `cron_reports()`

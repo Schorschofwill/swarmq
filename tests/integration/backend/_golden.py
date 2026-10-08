@@ -219,6 +219,7 @@ def lua_contract() -> str:
         "sched_commit": ["sq:{sched}:zset", "sq:{sched}:defs", "sq:lock:{sched}:leader"],
         "sched_disable": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_poll": ["sq:{sched}:zset", "sq:{sched}:defs"],
+        "sched_replan": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_report": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
         "sched_report_prune": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
         "sliding_window_counter": ["sq:rl:{golden-task}:1700000000000", "sq:rl:{golden-task}:1699999940000"],

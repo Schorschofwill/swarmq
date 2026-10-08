@@ -64,10 +64,7 @@ class LeaderVersionWatch:
     Folgt einem gemeldeten ein aktueller Leader, liefert sie ``"current"``.
     """
 
-    def __init__(self, own_version: str | None = None) -> None:
-        # *own_version* ist seit der Untergrenzen-Regel ohne Wirkung; der
-        # Parameter bleibt, bis der Loop ihn nicht mehr übergibt.
-        del own_version
+    def __init__(self) -> None:
         self._pending: tuple[str, str | None] | None = None
         self._reported: tuple[str, str | None] | None = None
 

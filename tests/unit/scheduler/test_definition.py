@@ -26,6 +26,13 @@ insert-if-absent vs. update-static branches that live in Python.
 #    ``timezone``) dekodiert eine 0.10.0-Definition, setzt beim Fire per
 #    ``replace`` den naechsten Score und verliert beim Re-Encode die Zone --
 #    der Grund fuer das Upgrade in zwei Schritten.
+#
+# Test list (Review, KTD12 -- ``fired_payload`` aus dem Poll):
+# 7. Gepollter Score == ``fired_ts_ms`` -> der gepollte Payload geht als
+#    ``fired_payload`` mit.
+# 8. Gepollter Score != ``fired_ts_ms`` -> kein ``fired_payload``.
+# 9. Ohne Poll -> kein ``fired_payload``.
+# 10. Der Poll-Eintrag gilt nur für einen Commit.
 
 from __future__ import annotations
 
@@ -396,6 +403,36 @@ class TestScheduleStorePollAndCommit:
         store, schedules = _make_store()
         await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
         assert schedules.commit_fire.await_args.kwargs["fired_ts_ms"] == 1_000
+
+    @staticmethod
+    async def _polled_store(score: int):
+        polled = msgspec.json.encode(_def(schedule_name="s"))
+        store, schedules = _make_store()
+        schedules.poll_due.return_value = [("s", score, polled)]
+        await store.poll_due(2_000)
+        return store, schedules, polled
+
+    async def test_commit_fire_passes_polled_payload_for_the_fired_score(self):
+        store, schedules, polled = await self._polled_store(1_000)
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_payload"] == polled
+
+    async def test_commit_fire_without_payload_when_polled_score_differs(self):
+        store, schedules, _ = await self._polled_store(1_000)
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_500)
+        kwargs = schedules.commit_fire.await_args.kwargs
+        assert kwargs["fired_payload"] is None and kwargs["fired_ts_ms"] == 1_500
+
+    async def test_commit_fire_without_poll_passes_no_payload(self):
+        store, schedules = _make_store()
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_payload"] is None
+
+    async def test_polled_payload_is_used_for_one_commit_only(self):
+        store, schedules, _ = await self._polled_store(1_000)
+        await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        await store.commit_fire("s", 2_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_000)
+        assert schedules.commit_fire.await_args.kwargs["fired_payload"] is None
 
     async def test_commit_fire_one_shot_maps_minus_one_to_none(self):
         store, schedules = _make_store()

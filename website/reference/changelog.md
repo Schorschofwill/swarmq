@@ -28,7 +28,7 @@ crons before 25 October 2026, 01:00 UTC:
   [migration guide](../guides/scheduling-and-retries.md#migrating-hand-converted-utc-crons).
 - **A `ScheduleStore` of your own needs new methods.** `fire_ts(name)`;
   `put(..., fire_ts_ms=None)` must leave the fire index untouched;
-  `commit_fire` takes the new keyword `fired_payload`; for cron reports
+  `commit_fire` takes the new keyword `fired_payload`; `replan_if_unchanged` re-plans an unscored entry atomically; for cron reports
   `report_cron`, `cron_reports` and `prune_cron_reports`; for the
   leader version `report_worker_version`, `worker_versions`,
   `set_leader_version` and `leader_info`. New types in
@@ -145,7 +145,12 @@ crons before 25 October 2026, 01:00 UTC:
   the next fire is calculated before the publish; on an error only this
   entry is logged (`scheduler_next_fire_failed`, ERROR) and leaves the
   fire index, and the leader plans it again once a live worker reports
-  it and the fire can be calculated.
+  it and the fire can be calculated. This re-planning is atomic: a
+  `swarmq schedule remove` that lands meanwhile stays in effect. If the
+  entry cannot be taken out of the index, the leader logs
+  `scheduler_park_failed` (WARNING, logger `swarmq.scheduler.fire_plan`)
+  and tries again on the next tick; `scheduler_park_owner_mismatch`
+  (WARNING) means it lost the leader lock meanwhile.
 - **Disabled definitions get no fire-index entry.** Entries that older
   versions left in the index are still skipped.
 - **A fire no longer resets a definition adopted meanwhile.** The

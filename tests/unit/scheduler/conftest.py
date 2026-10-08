@@ -37,6 +37,8 @@ def backend():
     be = MagicMock()
     be.schedules.get = AsyncMock(return_value=None)
     be.schedules.fire_ts = AsyncMock(return_value=None)
+    # Heilung (Review #4): atomar im Store; ``False`` = schon eingeplant.
+    be.schedules.replan_if_unchanged = AsyncMock(return_value=False)
     be.hset_schedule_def = AsyncMock()
     be.hdel_schedule_def = AsyncMock()
     be.schedules.list_all = AsyncMock(return_value={})

@@ -833,6 +833,8 @@ class ScheduleStore(Protocol):
                           payload: bytes | None, owner: str,
                           fired_ts_ms: int | None = None,
                           fired_payload: bytes | None = None) -> bool: ...
+    async def replan_if_unchanged(self, name: str, expected: bytes,
+                                  payload: bytes, fire_ts_ms: int) -> bool: ...
     async def report_cron(self, name: str, fingerprint: str, payload: bytes,
                           *, live_window_ms: int) -> None: ...
     async def cron_reports(self) -> CronReports: ...
@@ -853,6 +855,11 @@ class ScheduleStore(Protocol):
   stored definition is still exactly `fired_payload` (the polled one);
   otherwise only the score moves on, so a definition adopted between
   poll and commit is not written back.
+- `replan_if_unchanged(name, expected, payload, fire_ts_ms)` re-plans an
+  entry without score in one atomic step: it writes `payload` and the
+  score only while the stored definition is still exactly `expected` and
+  the entry has no score, and returns whether it wrote. A schedule
+  disabled or removed in between stays as it is.
 - `report_cron` sets `last_seen` and the payload of `name|fingerprint`
   atomically in backend time; `first_seen` only when the report is
   missing or its `last_seen` is older than `live_window_ms`.

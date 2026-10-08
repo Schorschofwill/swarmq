@@ -135,7 +135,7 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion, SchedulerFirePlan
         self._static_crons = tuple(static_crons)
         # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
         self._version = version or swarmq_version()
-        self._leader_watch = LeaderVersionWatch(self._version)
+        self._leader_watch = LeaderVersionWatch()
 
         self._state: _SchedulerState = "standby"
         self._prev_leader_seen = False

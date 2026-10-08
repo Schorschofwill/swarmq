@@ -52,16 +52,18 @@ class SchedulerCronSync:
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
 
     async def _replan_if_unscored(
-        self, existing: ScheduleDefinition, fire_ts_ms: int | None,
+        self, existing: ScheduleDefinition, existing_raw: bytes, fire_ts_ms: int,
     ) -> None:
         """Heilung (U3): eine aktive, unveränderte Definition ohne Score im
-        Fire-Index (etwa nach ``scheduler_next_fire_failed``) neu einplanen."""
+        Fire-Index (etwa nach ``scheduler_next_fire_failed``) neu einplanen.
+        Atomar gegen die gelesenen Bytes: ein ``schedule remove`` nach dem
+        Lesen bleibt stehen (Review #4)."""
         name = existing.schedule_name
+        healed = msgspec.structs.replace(existing, fire_ts_ms=fire_ts_ms)
         try:
-            if await self._backend.schedules.fire_ts(name) is None:
-                await self._store.update_static_schedule(
-                    msgspec.structs.replace(existing, fire_ts_ms=fire_ts_ms)
-                )
+            await self._backend.schedules.replan_if_unchanged(
+                name, existing_raw, msgspec.json.encode(healed), fire_ts_ms,
+            )
         except BackendConnectionError as exc:
             logger.warning(
                 "scheduler_sync_update_failed",
@@ -210,7 +212,10 @@ class SchedulerCronSync:
             # Unchanged static. Heilung (U3): ohne Score (etwa nach
             # ``scheduler_next_fire_failed``) plant der Leader neu ein.
             if not existing.disabled:
-                await self._replan_if_unscored(existing, definition.fire_ts_ms)
+                assert definition.fire_ts_ms is not None  # aus der Cron berechnet
+                await self._replan_if_unscored(
+                    existing, existing_raw, definition.fire_ts_ms
+                )
             return
         propagated = msgspec.structs.replace(
             definition, disabled=existing.disabled

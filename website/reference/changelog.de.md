@@ -30,7 +30,8 @@ bekommt**, und von Hand umgerechnete UTC-Crons vor dem 25. Oktober
 - **Ein eigener `ScheduleStore` braucht neue Methoden.**
   `fire_ts(name)`; `put(..., fire_ts_ms=None)` muss den Fire-Index
   unberührt lassen; `commit_fire` nimmt das neue Schlüsselwort
-  `fired_payload`; für Cron-Meldungen `report_cron`, `cron_reports` und
+  `fired_payload`; `replan_if_unchanged` plant einen Eintrag ohne Score
+  atomar neu ein; für Cron-Meldungen `report_cron`, `cron_reports` und
   `prune_cron_reports`; für die Leader-Version `report_worker_version`,
   `worker_versions`, `set_leader_version` und `leader_info`. Neue Typen
   in `swarmq.contracts`: `CronReport`, `CronReports`, `LeaderInfo`.
@@ -151,7 +152,13 @@ bekommt**, und von Hand umgerechnete UTC-Crons vor dem 25. Oktober
   Termin vor dem Publish berechnet; bei einem Fehler wird nur dieser
   Eintrag geloggt (`scheduler_next_fire_failed`, ERROR) und verlässt
   den Fire-Index, und der Leader plant ihn wieder ein, sobald ein
-  lebender Worker ihn meldet und sich der Termin berechnen lässt.
+  lebender Worker ihn meldet und sich der Termin berechnen lässt. Dieses
+  Wiedereinplanen ist atomar: Ein `swarmq schedule remove`, das
+  dazwischen landet, bleibt wirksam. Lässt sich der Eintrag nicht aus
+  dem Fire-Index nehmen, loggt der Leader `scheduler_park_failed`
+  (WARNING, Logger `swarmq.scheduler.fire_plan`) und versucht es im
+  nächsten Takt erneut; `scheduler_park_owner_mismatch` (WARNING) heißt,
+  dass er den Leader-Lock inzwischen verloren hat.
 - **Deaktivierte Definitionen bekommen keinen Eintrag im Fire-Index.**
   Einträge, die ältere Versionen dort hinterlassen haben, werden
   weiterhin übersprungen.

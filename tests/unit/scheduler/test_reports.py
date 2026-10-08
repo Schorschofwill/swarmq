@@ -422,6 +422,32 @@ class TestAdoptReportedCrons:
 
         assert await self._stored(memory) == (off, None)
 
+    async def test_healing_does_not_revive_a_schedule_disabled_after_the_read(
+        self, memory, leader, monkeypatch,
+    ):
+        """Review #4: ``schedule remove`` (HSET disabled + ZREM) landet
+        zwischen dem Lesen der Definition und dem Schreiben der Heilung; die
+        Heilung darf die alte aktive Definition nicht zurückschreiben."""
+        stuck = _static()
+        await memory.schedules.add("nightly", msgspec.json.encode(stuck), None)
+        await self._report(memory, _static())
+        real_get = memory.schedules.get
+
+        async def _get_then_disable(name):
+            raw = await real_get(name)
+            if name == "nightly":  # wie ``disable_schedule`` der CLI
+                off = msgspec.structs.replace(stuck, disabled=True)
+                assert await memory.schedules.disable("nightly", msgspec.json.encode(off))
+            return raw
+
+        monkeypatch.setattr(memory.schedules, "get", _get_then_disable)
+
+        await leader.adopt_reported_crons()
+
+        stored, score = await self._stored(memory)
+        assert stored is not None and stored.disabled is True
+        assert score is None
+
     async def test_failed_healing_is_logged_and_does_not_stop_the_tick(
         self, memory, leader, monkeypatch, swarmq_logs,
     ):
@@ -429,14 +455,14 @@ class TestAdoptReportedCrons:
         await memory.schedules.add("nightly", msgspec.json.encode(stuck), None)
         await self._report(memory, _static())
         await self._report(memory, _static(schedule_name="other", task_name="other"))
-        real_fire_ts = memory.schedules.fire_ts
+        real_replan = memory.schedules.replan_if_unchanged
 
-        async def _flaky(name):
+        async def _flaky(name, *args):
             if name == "nightly":
                 raise BackendConnectionError("valkey flap")
-            return await real_fire_ts(name)
+            return await real_replan(name, *args)
 
-        monkeypatch.setattr(memory.schedules, "fire_ts", _flaky)
+        monkeypatch.setattr(memory.schedules, "replan_if_unchanged", _flaky)
 
         await leader.adopt_reported_crons()
 

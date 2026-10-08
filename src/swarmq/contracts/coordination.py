@@ -113,6 +113,15 @@ class ScheduleStore(Protocol):
 
     async def list_all(self) -> Mapping[str, bytes]: ...
 
+    async def replan_if_unchanged(
+        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+    ) -> bool:
+        """Heilung eines Eintrags ohne Score, atomar: nur wenn die
+        gespeicherte Definition noch genau *expected* ist und der Eintrag
+        keinen Score im Fire-Index hat, wird *payload* geschrieben und
+        *fire_ts_ms* eingeplant. ``False`` ohne jede Änderung, wenn
+        zwischenzeitlich deaktiviert, entfernt, geändert oder eingeplant."""
+
     async def disable(self, name: str, payload: bytes) -> bool:
         """Atomar: Definition ersetzen und aus dem Fire-Index nehmen."""
 

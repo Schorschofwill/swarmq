@@ -399,6 +399,15 @@ class InMemoryScheduleStore:
     async def list_all(self) -> Mapping[str, bytes]:
         return dict(self._defs)
 
+    async def replan_if_unchanged(
+        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+    ) -> bool:
+        if self._defs.get(name) != expected or name in self._fires:
+            return False
+        self._defs[name] = payload
+        self._fires[name] = fire_ts_ms
+        return True
+
     async def disable(self, name: str, payload: bytes) -> bool:
         if name not in self._defs:
             return False
