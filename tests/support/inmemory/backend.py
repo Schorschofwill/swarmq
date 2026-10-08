@@ -385,6 +385,9 @@ class InMemoryScheduleStore:
     async def get(self, name: str) -> bytes | None:
         return self._defs.get(name)
 
+    async def fire_ts(self, name: str) -> int | None:
+        return self._fires.get(name)
+
     async def list_all(self) -> Mapping[str, bytes]:
         return dict(self._defs)
 
@@ -407,6 +410,7 @@ class InMemoryScheduleStore:
         payload: bytes | None,
         owner: str,
         fired_ts_ms: int | None = None,
+        fired_payload: bytes | None = None,
     ) -> bool:
         if await self._locks.current_owner(SCHEDULER_LOCK_NAME) != owner:
             return False
@@ -417,7 +421,7 @@ class InMemoryScheduleStore:
             self._fires[name] = next_fire_ts_ms
         if payload is None:
             self._defs.pop(name, None)
-        else:
+        elif fired_payload is None or self._defs.get(name) == fired_payload:
             self._defs[name] = payload
         return True
 

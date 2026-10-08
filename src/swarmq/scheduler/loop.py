@@ -411,6 +411,13 @@ class SchedulerLoop(SchedulerCronSync):
         # same SETNX cell.
         schedfire_key = make_schedfire_key(schedule_name, score_ms)
 
+        now_ms = int(time.time() * 1000)
+        next_fire_ts_ms = await self._plan_next_fire(
+            schedule_name, score_ms, definition, now_ms,
+        )
+        if next_fire_ts_ms is None:
+            return
+
         # Build the task message body — same shape as Client.schedule.
         task_id = str(uuid.uuid7())
         body = encode_json({
@@ -513,47 +520,13 @@ class SchedulerLoop(SchedulerCronSync):
                 )
                 return  # Do NOT commit — retry on the next poll tick.
 
-        # Compute next_fire for cron, -1 for one-shots. Runs even on dup-
-        # skip: commit_fire MUST advance the zset (otherwise the same
-        # schedule re-fires on every poll tick forever — see plan
-        # Unit 9 Risks "Double-SETNX-Race" commit-on-fail rationale).
-        #
-        # Cron semantics: expressions are evaluated in the definition's
-        # timezone (None = UTC) against the leader clock, with the DST
-        # rule of ``cron_time`` (Plan 2026-10-08-1541, KTD2).
-        # Catch-up after downtime is SKIP: the next fire after "now"
-        # yields exactly one catch-up fire, never a backlog storm.
-        if definition.cron is None:
-            next_fire_ts_ms = -1
-            updated_def: ScheduleDefinition | None = None
-        else:
-            now_ms = int(time.time() * 1000)
-            next_fire_ts_ms = next_fire_ms(
-                definition.cron, definition.timezone, now_ms,
-            )
-            updated_def = msgspec.structs.replace(
-                definition,
-                fire_ts_ms=next_fire_ts_ms,
-                last_fire_at=now_ms,
-            )
-            # Catch-up-skip was correct but invisible —
-            # a skipped daily report went unnoticed. Count the cron
-            # occurrences that fell between the due score and now (they
-            # will never fire) and surface them as a signal.
-            skipped_count = self._count_skipped_fires(
-                definition.cron, definition.timezone, score_ms, now_ms,
-            )
-            if skipped_count > 0:
-                logger.warning(
-                    "scheduler_fires_skipped",
-                    schedule_name=schedule_name,
-                    skipped_count=skipped_count,
-                )
-                await self._emit(
-                    Signal.SCHEDULER_FIRE_SKIPPED,
-                    schedule_name=schedule_name,
-                    skipped_count=skipped_count,
-                )
+        # The commit runs even on dup-skip: commit_fire MUST advance the
+        # zset (otherwise the same schedule re-fires on every poll tick
+        # forever — see plan Unit 9 Risks "Double-SETNX-Race"
+        # commit-on-fail rationale).
+        updated_def = await self._advanced_definition(
+            schedule_name, score_ms, definition, next_fire_ts_ms, now_ms,
+        )
 
         # fired_ts_ms: the commit only lands while the zset still holds the
         # score we fired. A `schedule remove` (disable/permanent) or a
@@ -587,6 +560,78 @@ class SchedulerLoop(SchedulerCronSync):
                 schedule_name=schedule_name,
             )
             self._state = "standby"
+
+    async def _advanced_definition(
+        self,
+        schedule_name: str,
+        score_ms: int,
+        definition: ScheduleDefinition,
+        next_fire_ts_ms: int,
+        now_ms: int,
+    ) -> ScheduleDefinition | None:
+        """Definition to commit after a fire (``None`` removes a one-shot);
+        reports cron occurrences lost to catch-up-skip."""
+        if definition.cron is None:
+            return None
+        # Catch-up-skip was correct but invisible —
+        # a skipped daily report went unnoticed. Count the cron
+        # occurrences that fell between the due score and now (they
+        # will never fire) and surface them as a signal.
+        skipped_count = self._count_skipped_fires(
+            definition.cron, definition.timezone, score_ms, now_ms,
+        )
+        if skipped_count > 0:
+            logger.warning(
+                "scheduler_fires_skipped",
+                schedule_name=schedule_name,
+                skipped_count=skipped_count,
+            )
+            await self._emit(
+                Signal.SCHEDULER_FIRE_SKIPPED,
+                schedule_name=schedule_name,
+                skipped_count=skipped_count,
+            )
+        return msgspec.structs.replace(
+            definition, fire_ts_ms=next_fire_ts_ms, last_fire_at=now_ms,
+        )
+
+    async def _plan_next_fire(
+        self,
+        schedule_name: str,
+        score_ms: int,
+        definition: ScheduleDefinition,
+        now_ms: int,
+    ) -> int | None:
+        """Next fire for a cron, ``-1`` for one-shots — computed BEFORE the
+        publish (KTD12, R18). A definition whose next fire cannot be
+        computed in this leader (unknown zone, broken expression) is logged
+        and leaves the fire index (``-1``, definition kept); ``None`` tells
+        the caller to skip it without blocking the rest of the batch.
+
+        Cron semantics: expressions are evaluated in the definition's
+        timezone (None = UTC) against the leader clock, with the DST rule
+        of ``cron_time`` (Plan 2026-10-08-1541, KTD2). Catch-up after
+        downtime is SKIP: the next fire after "now" yields exactly one
+        catch-up fire, never a backlog storm.
+        """
+        if definition.cron is None:
+            return -1
+        try:
+            return next_fire_ms(definition.cron, definition.timezone, now_ms)
+        except Exception as exc:
+            logger.error(
+                "scheduler_next_fire_failed",
+                schedule_name=schedule_name,
+                cron=definition.cron,
+                timezone=definition.timezone,
+                **_error_fields(exc),
+            )
+        # Without a next score the entry would be due again on every tick.
+        await self._store.commit_fire(
+            schedule_name, -1, definition, self._owner_token,
+            fired_ts_ms=score_ms,
+        )
+        return None
 
     def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).

@@ -130,6 +130,10 @@ class ScheduleStore:
             raise RuntimeError(
                 "ScheduleStore requires a connected ValkeyBackend (backend.connect() must have been awaited first)"
             ) from exc
+        # KTD12: zuletzt gepollter (Score, Payload) je Name; commit_fire
+        # reicht den Payload als ``fired_payload`` durch, damit der Commit
+        # eine Übernahme zwischen Poll und Commit nicht zurücksetzt.
+        self._polled: dict[str, tuple[int, bytes]] = {}
 
     # ---- CRUD -----------------------------------------------------------
 
@@ -138,9 +142,20 @@ class ScheduleStore:
         (insert-if-absent via HSETNX, Unit 8)."""
         return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
 
-    async def update_static_schedule(self, definition: ScheduleDefinition) -> None:
-        """Unconditionally write a static-sourced definition (Fork 1)."""
-        await self._store.put(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
+    async def update_static_schedule(
+        self, definition: ScheduleDefinition, *, keep_fire_index: bool = False,
+    ) -> None:
+        """Unconditionally write a static-sourced definition (Fork 1). A
+        disabled definition gets no fire-index entry (KTD12): it is written
+        via ``disable`` (HSET + ZREM) instead of ``put``. With
+        ``keep_fire_index`` only the definition is written and the current
+        fire-index score stays untouched (a due fire is not lost)."""
+        payload = msgspec.json.encode(definition)
+        if definition.disabled:
+            await self._store.disable(definition.schedule_name, payload)
+            return
+        fire_ts_ms = None if keep_fire_index else definition.fire_ts_ms
+        await self._store.put(definition.schedule_name, payload, fire_ts_ms)
 
     async def remove_schedule(self, schedule_name: str) -> bool:
         """Permanently remove a schedule (ZREM + HDEL). True only when an
@@ -189,6 +204,7 @@ class ScheduleStore:
         """Schedules whose fire-ts is <= ``now_ms`` as
         ``(schedule_name, score_ms, ScheduleDefinition)``."""
         rows = await self._store.poll_due(now_ms, limit=limit)
+        self._polled.update({name: (score, payload) for name, score, payload in rows})
         return [(name, score, msgspec.json.decode(payload, type=ScheduleDefinition)) for name, score, payload in rows]
 
     async def commit_fire(
@@ -203,13 +219,19 @@ class ScheduleStore:
         """Atomically commit a fire event. ``next_fire_ts_ms=-1`` +
         ``updated_def=None`` removes a one-shot entirely. False when the
         owner-check rejected it (stale leader). With ``fired_ts_ms`` the
-        commit is discarded when the schedule changed since the poll."""
+        commit is discarded when the schedule changed since the poll; when
+        that score came from :meth:`poll_due`, the polled payload goes along
+        so a definition taken over since the poll is not written back
+        (KTD12)."""
+        polled = self._polled.pop(schedule_name, None)
+        fired_payload = polled[1] if polled is not None and polled[0] == fired_ts_ms else None
         return await self._store.commit_fire(
             schedule_name,
             next_fire_ts_ms=None if next_fire_ts_ms < 0 else next_fire_ts_ms,
             payload=msgspec.json.encode(updated_def) if updated_def is not None else None,
             owner=owner_token,
             fired_ts_ms=fired_ts_ms,
+            fired_payload=fired_payload,
         )
 
 

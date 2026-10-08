@@ -11,6 +11,19 @@
 # 5. ``TaskInfo.timezone`` bestimmt den Score einer neuen Definition.
 # 6. Die neue Definition traegt die Zone.
 # 7. Ohne ``TaskInfo.timezone`` gilt ``config.scheduler_timezone``.
+#
+# Test list (Plan 2026-10-08-1541, U3, R9/R18, KTD12): Übernahme ohne Verlust.
+# 8. Ausdrückliches ``timezone="UTC"`` schlägt einen globalen Standard; die
+#    gespeicherte Definition trägt UTC als None.
+# 9. Geänderte Zeitzone, Score nicht fällig → Definition und Score neu.
+# 10. Geänderte Queue → aktualisiert.
+# 11. Geänderter Task-Name → aktualisiert.
+# 12. Geänderte Definition bei ``disabled=True`` → bleibt deaktiviert, kein
+#     Eintrag im Fire-Index.
+# 13. Geänderte Zeitzone, Score bereits fällig → Score bleibt, der Termin
+#     feuert mit dem neuen Inhalt.
+# 14. CLI-Definition gleichen Namens mit anderer Zone → Warnung, keine
+#     Änderung (Regression).
 
 from __future__ import annotations
 
@@ -24,8 +37,11 @@ from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.scheduler import (
     ScheduleDefinition,
+    ScheduleStore,
 )
 from swarmq.task import Task, TaskInfo
+from tests.support.inmemory import InMemoryBackend
+from tests.support.inmemory.clock import FakeClock
 from tests.unit.scheduler._helpers import _make_loop
 
 # AGENTS.md §Async-Code testen rule 3: 5s per-test timeout. Narrower
@@ -388,3 +404,150 @@ class TestSyncTimezone:
         added = self._added(store)
         assert added.fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
         assert added.timezone == "Asia/Tokyo"
+
+    async def test_explicit_utc_beats_config_default(
+        self, backend, broker, lock_manager, store, signal_dispatcher,
+    ):
+        class UtcCron(Task):
+            task_info = TaskInfo(name="utc", queues=["default"],
+                                 cron="0 9 * * *", timezone="UTC")
+            async def run(self):
+                return None
+
+        config = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            scheduler_timezone="Asia/Tokyo",
+        )
+        loop = _make_loop(
+            backend, broker, config, lock_manager, store, signal_dispatcher
+        )
+
+        await loop.sync_taskinfo_crons()
+
+        added = self._added(store)
+        assert added.fire_ts_ms == _utc_ms(2026, 10, 6, 9, 0) + 86_400_000
+        assert added.timezone is None
+
+
+_NOW_MS = _utc_ms(2026, 10, 6, 10, 0)  # 19:00 in Tokio
+_LATER_MS = _NOW_MS + 3_600_000  # nicht fällig
+_EARLIER_MS = _NOW_MS - 60_000  # bereits fällig
+
+
+class TestSyncInsertOrUpdate:
+    """Plan 2026-10-08-1541 (U3, KTD12): Übernahme einer statischen
+    Definition gegen den Bestand eines In-Memory-Stores; die Uhr ist fest."""
+
+    @pytest.fixture(autouse=True)
+    def _fixed_clock(self, monkeypatch, _cleanup_tasks):
+        fake_time = SimpleNamespace(time=lambda: _NOW_MS / 1000)
+        monkeypatch.setattr("swarmq.scheduler.sync.time", fake_time)
+
+    @pytest.fixture
+    async def memory(self):
+        be = InMemoryBackend(FakeClock(_NOW_MS))
+        await be.connect()
+        return be
+
+    @pytest.fixture
+    def sync_loop(self, memory, broker, config, lock_manager, signal_dispatcher):
+        return _make_loop(
+            memory, broker, config, lock_manager, ScheduleStore(memory),
+            signal_dispatcher,
+        )
+
+    @staticmethod
+    async def _seed(memory, score_ms, **fields):
+        base = {
+            "schedule_name": "tz", "task_name": "tz", "args": (), "kwargs": {},
+            "queue": "default", "cron": "0 9 * * *", "fire_ts_ms": score_ms,
+            "source": "static",
+        }
+        base.update(fields)
+        definition = ScheduleDefinition(**base)
+        fire = None if definition.disabled else score_ms
+        await memory.schedules.add("tz", msgspec.json.encode(definition), fire)
+
+    @staticmethod
+    async def _stored(memory) -> tuple[ScheduleDefinition, int | None]:
+        raw = await memory.schedules.get("tz")
+        due = {n: ts for n, ts, _ in await memory.schedules.poll_due(2**62)}
+        return msgspec.json.decode(raw, type=ScheduleDefinition), due.get("tz")
+
+    @staticmethod
+    def _task(**fields):
+        info = {"name": "tz", "queues": ["default"], "cron": "0 9 * * *"}
+        info.update(fields)
+
+        class TzCron(Task):
+            task_info = TaskInfo(**info)
+
+            async def run(self):
+                return None
+
+        return TzCron
+
+    async def test_changed_timezone_with_future_score_replans(self, memory, sync_loop):
+        await self._seed(memory, _LATER_MS)
+        self._task(timezone="Asia/Tokyo")
+
+        await sync_loop.sync_taskinfo_crons()
+
+        stored, score = await self._stored(memory)
+        assert stored.timezone == "Asia/Tokyo"
+        assert score == stored.fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
+
+    async def test_changed_queue_updates_definition(self, memory, sync_loop):
+        await self._seed(memory, _LATER_MS, queue="old")
+        self._task(queues=["new"])
+
+        await sync_loop.sync_taskinfo_crons()
+
+        stored, _ = await self._stored(memory)
+        assert stored.queue == "new"
+
+    async def test_changed_task_name_updates_definition(self, memory, sync_loop):
+        await self._seed(memory, _LATER_MS, task_name="renamed")
+        self._task()
+
+        await sync_loop.sync_taskinfo_crons()
+
+        stored, _ = await self._stored(memory)
+        assert stored.task_name == "tz"
+
+    async def test_changed_disabled_definition_gets_no_fire_entry(self, memory, sync_loop):
+        await self._seed(memory, _LATER_MS, disabled=True)
+        self._task(timezone="Asia/Tokyo")
+
+        await sync_loop.sync_taskinfo_crons()
+
+        stored, score = await self._stored(memory)
+        assert stored.timezone == "Asia/Tokyo" and stored.disabled is True
+        assert score is None
+
+    async def test_changed_timezone_keeps_due_score(self, memory, sync_loop):
+        """KTD12: ein fälliger, noch nicht gefeuerter Termin geht nicht
+        verloren; der nächste Poll liefert ihn mit dem neuen Inhalt."""
+        await self._seed(memory, _EARLIER_MS)
+        self._task(timezone="Asia/Tokyo")
+
+        await sync_loop.sync_taskinfo_crons()
+
+        [(name, score, payload)] = await memory.schedules.poll_due(_NOW_MS)
+        assert (name, score) == ("tz", _EARLIER_MS)
+        assert msgspec.json.decode(payload, type=ScheduleDefinition).timezone == "Asia/Tokyo"
+
+    async def test_cli_definition_with_other_timezone_is_left_alone(
+        self, memory, sync_loop, swarmq_logs,
+    ):
+        """Regression (CD11): Code ändert keine CLI-Definition, auch nicht
+        deren Zone; der Schatten wird als Warnung sichtbar."""
+        await self._seed(memory, _LATER_MS, source="cli")
+        self._task(timezone="Asia/Tokyo")
+
+        await sync_loop.sync_taskinfo_crons()
+
+        stored, score = await self._stored(memory)
+        assert (stored.source, stored.timezone, score) == ("cli", None, _LATER_MS)
+        assert [e for e in swarmq_logs if e["event"] == "scheduler_static_cron_shadowed_by_cli"]

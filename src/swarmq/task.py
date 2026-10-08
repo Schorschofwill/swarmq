@@ -259,9 +259,12 @@ class TaskInfo:
                 raise ValueError(
                     f"timezone requires cron (got timezone={self.timezone!r})"
                 )
-            # KTD1: "UTC"/"Etc/UTC" werden zu None, damit sich der
-            # Fingerabdruck gespeicherter Definitionen nicht ändert.
-            object.__setattr__(self, "timezone", normalize_timezone(self.timezone))
+            # Plan U3: eine ausdrückliche UTC-Angabe bleibt "UTC" (None
+            # heißt „nicht gesetzt“ und fiele auf den globalen Standard
+            # zurück); erst die gespeicherte Definition kennt UTC als None.
+            object.__setattr__(
+                self, "timezone", normalize_timezone(self.timezone) or "UTC"
+            )
 
 
     def _validate_unique(self) -> None:

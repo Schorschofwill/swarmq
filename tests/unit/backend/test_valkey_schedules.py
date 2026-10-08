@@ -8,6 +8,10 @@ Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort, rollendes Upgrade):
 2. ``commit_fire``: Skriptergebnis 2 (verworfen) -> ``True``.
 3. ``commit_fire`` ohne ``fired_ts_ms`` sendet vier ARGV (altes Skript-
    Protokoll; rollendes Upgrade).
+
+Test-Liste Plan 2026-10-08-1541 (U3, KTD12):
+4. ``commit_fire`` mit ``fired_payload`` sendet sechs ARGV; ohne
+   ``fired_ts_ms`` steht an fünfter Stelle ``""`` (kein Verwerf-Schutz).
 """
 
 from __future__ import annotations
@@ -125,6 +129,17 @@ class TestScripts:
         assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief"]
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_ts_ms=1_000)
         assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000]
+
+    async def test_commit_fire_sends_fired_payload_as_sixth_argv(self) -> None:
+        """Liste 4."""
+        store, _, scripts = _store()
+        await store.commit_fire(
+            "s", next_fire_ts_ms=1_900, payload=b"next", owner="chief",
+            fired_ts_ms=1_000, fired_payload=b"polled",
+        )
+        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000, b"polled"]
+        await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_payload=b"polled")
+        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", "", b"polled"]
 
     async def test_commit_fire_rejected_by_owner_check(self) -> None:
         store, _, scripts = _store()

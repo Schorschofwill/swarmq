@@ -101,6 +101,11 @@ class ValkeyScheduleStore:
     async def get(self, name: str) -> bytes | None:
         return await self.hget_schedule_def(name)
 
+    async def fire_ts(self, name: str) -> int | None:
+        """ZSCORE im Fire-Index; ``None`` ohne Eintrag."""
+        score = await self._run("fire_ts", self._client.zscore(ZSET_KEY, name))
+        return None if score is None else int(score)
+
     async def list_all(self) -> Mapping[str, bytes]:
         raw = await self.hgetall_schedule_defs()
         return {_decode(k): v for k, v in raw.items()}
@@ -129,20 +134,25 @@ class ValkeyScheduleStore:
         payload: bytes | None,
         owner: str,
         fired_ts_ms: int | None = None,
+        fired_payload: bytes | None = None,
     ) -> bool:
         """``sched_commit.lua``: Owner-Check gegen den Leader-Lock im selben
         EVAL; ``next_fire_ts_ms=None`` + ``payload=None`` entfernt einen
         One-Shot. ``False``, wenn der Owner-Check ablehnt (stale leader).
         Mit ``fired_ts_ms`` verwirft das Skript den Commit (Ergebnis 2,
-        hier ``True``), wenn der Fire-Index-Score inzwischen ein anderer ist."""
+        hier ``True``), wenn der Fire-Index-Score inzwischen ein anderer ist.
+        Mit ``fired_payload`` schreibt es die Definition nur zurück, wenn sie
+        seit dem Poll unverändert ist (KTD12)."""
         args: list[Any] = [
             name,
             -1 if next_fire_ts_ms is None else next_fire_ts_ms,
             payload if payload is not None else b"",
             owner,
         ]
-        if fired_ts_ms is not None:
-            args.append(fired_ts_ms)
+        if fired_ts_ms is not None or fired_payload is not None:
+            args.append("" if fired_ts_ms is None else fired_ts_ms)
+        if fired_payload is not None:
+            args.append(fired_payload)
         result = await self._run(
             f"sched_commit for {name!r}",
             self._commit_script(keys=[ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY], args=args),

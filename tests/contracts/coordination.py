@@ -18,6 +18,12 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 #     Merkmal, die Neuanlage ist vom gefeuerten Eintrag nicht zu
 #     unterscheiden; ihre Definition wird ueberschrieben.
 #
+# Test list (Plan 2026-10-08-1541, U3, KTD12) -- ScheduleStoreContract:
+# 11. ``fire_ts`` liefert den Score im Fire-Index, ``None`` ohne Eintrag.
+# 12. commit_fire mit ``fired_payload``: hat sich die Definition seit dem
+#     Poll geaendert, rueckt der Score vor, die Definition bleibt.
+# 13. ... ist sie unveraendert, wird sie zurueckgeschrieben.
+#
 # Test list (0.9.0, Schedfire-Claim-Token) -- ScheduleStoreContract:
 # 5. claim_fire mit ``owner``: ein zweiter Claim ohne Uebernahme verliert.
 # 6. Uebernahme mit dem gespeicherten Token gewinnt und rotiert den Owner;
@@ -185,6 +191,14 @@ class ScheduleStoreContract:
         assert await impl.get(name) == b"v2"
         assert [n for n, _, _ in await impl.poll_due(2_000)] .count(name) == 1
 
+    async def test_fire_ts_reports_index_score(self, impl: ScheduleStore) -> None:
+        planned, disabled = _name("sched"), _name("sched")
+        await impl.add(planned, b"v1", fire_ts_ms=1_000)
+        await impl.add(disabled, b"off", fire_ts_ms=None)
+        assert await impl.fire_ts(planned) == 1_000
+        assert await impl.fire_ts(disabled) is None
+        assert await impl.fire_ts(_name("sched")) is None
+
     async def test_remove_reports_prior_existence(self, impl: ScheduleStore) -> None:
         name = _name("sched")
         assert await impl.remove(name) is False
@@ -288,6 +302,40 @@ class ScheduleStoreContract:
         )
         assert await impl.get(name) == b"v2"
         assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 2_000
+
+    async def test_commit_fire_keeps_definition_changed_since_poll(
+        self, impl: ScheduleStore, leader: Leader,
+    ) -> None:
+        """Liste 12: eine Uebernahme zwischen Poll und Commit (Score blieb
+        faellig) wird nicht zurueckgesetzt; der Score rueckt trotzdem vor,
+        sonst feuerte der Termin ein zweites Mal."""
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.put(name, b"taken-over", fire_ts_ms=None)
+        assert (
+            await impl.commit_fire(
+                name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief",
+                fired_ts_ms=1_000, fired_payload=b"v1",
+            )
+            is True
+        )
+        assert await impl.get(name) == b"taken-over"
+        assert await impl.fire_ts(name) == 2_000
+
+    async def test_commit_fire_writes_back_unchanged_polled_definition(
+        self, impl: ScheduleStore, leader: Leader,
+    ) -> None:
+        """Liste 13."""
+        name = _name("sched")
+        await impl.add(name, b"v1", fire_ts_ms=1_000)
+        await leader("chief")
+        await impl.commit_fire(
+            name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief",
+            fired_ts_ms=1_000, fired_payload=b"v1",
+        )
+        assert await impl.get(name) == b"v2"
+        assert await impl.fire_ts(name) == 2_000
 
     async def test_commit_fire_owner_check_precedes_superseded_check(self, impl: ScheduleStore, leader: Leader) -> None:
         name = _name("sched")

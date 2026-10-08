@@ -69,13 +69,16 @@ class ScheduleStore(Protocol):
         """Insert-if-absent; ``False``, wenn ``name`` existiert."""
 
     async def put(self, name: str, payload: bytes, fire_ts_ms: int | None) -> None:
-        """Überschreibt."""
+        """Überschreibt; ``fire_ts_ms=None`` lässt den Fire-Index unberührt."""
 
     async def exists(self, name: str) -> bool: ...
 
     async def remove(self, name: str) -> bool: ...
 
     async def get(self, name: str) -> bytes | None: ...
+
+    async def fire_ts(self, name: str) -> int | None:
+        """Score im Fire-Index; ``None`` ohne Eintrag (deaktiviert, unbekannt)."""
 
     async def list_all(self) -> Mapping[str, bytes]: ...
 
@@ -93,6 +96,7 @@ class ScheduleStore(Protocol):
         payload: bytes | None,
         owner: str,
         fired_ts_ms: int | None = None,
+        fired_payload: bytes | None = None,
     ) -> bool:
         """Owner-Check gegen den Leader im selben atomaren Schritt;
         ``payload=None`` löscht die Definition (One-Shot).
@@ -105,7 +109,12 @@ class ScheduleStore(Protocol):
         Grenze: entfernt und mit demselben Score neu angelegt, ist der
         Eintrag nicht vom gefeuerten zu unterscheiden; der Commit greift.
         Der Scheduler übergibt ``fired_ts_ms`` immer -- Stores Dritter müssen
-        das Schlüsselwort annehmen."""
+        das Schlüsselwort annehmen.
+
+        Mit ``fired_payload`` (der gepollten Definition) wird ``payload`` nur
+        geschrieben, wenn die gespeicherte Definition noch genau diese ist
+        (Plan 2026-10-08-1541, KTD12); sonst rückt nur der Score vor und eine
+        zwischenzeitliche Übernahme bleibt stehen."""
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 

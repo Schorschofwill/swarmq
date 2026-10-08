@@ -376,7 +376,8 @@ def test_taskinfo_catchup_false_with_cron_accepted():
 # - ohne Angabe ist die Zone None
 # - unbekannte Zone -> ValueError mit dem Namen
 # - timezone ohne cron -> ValueError
-# - "UTC" und "Etc/UTC" werden zu None normalisiert
+# - "UTC" und "Etc/UTC" bleiben als ausdrückliches "UTC" erhalten
+#   (Plan U3: None heißt „nicht gesetzt“, dann gilt der globale Standard)
 # - leerer String -> ValueError (kein stilles UTC)
 # ---------------------------------------------------------------------------
 
@@ -407,13 +408,14 @@ def test_taskinfo_timezone_without_cron_raises():
         TaskInfo(name="task", queues=["q"], timezone="Europe/Berlin")
 
 
-def test_taskinfo_utc_timezone_normalized_to_none():
-    """KTD1: "UTC", "Etc/UTC" und keine Angabe sind gleichwertig; der
-    Fingerabdruck einer gespeicherten Definition ändert sich beim
-    Upgrade nicht."""
-    for key in ("UTC", "Etc/UTC", None):
+def test_taskinfo_explicit_utc_is_kept_as_utc():
+    """Plan U3: eine ausdrückliche UTC-Angabe ("UTC", "Etc/UTC") bleibt als
+    "UTC" erhalten, damit sie nicht auf ``config.scheduler_timezone``
+    zurückfällt; ohne Angabe bleibt die Zone None („nicht gesetzt“)."""
+    for key in ("UTC", "Etc/UTC"):
         info = TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone=key)
-        assert info.timezone is None
+        assert info.timezone == "UTC"
+    assert TaskInfo(name="task", queues=["q"], cron="0 3 * * *").timezone is None
 
 
 # ---------------------------------------------------------------------------

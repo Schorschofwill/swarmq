@@ -35,6 +35,7 @@ def config():
 def backend():
     be = MagicMock()
     be.schedules.get = AsyncMock(return_value=None)
+    be.schedules.fire_ts = AsyncMock(return_value=None)
     be.hset_schedule_def = AsyncMock()
     be.hdel_schedule_def = AsyncMock()
     be.schedules.list_all = AsyncMock(return_value={})

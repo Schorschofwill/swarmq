@@ -19,6 +19,14 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # Test list (Plan 2026-10-08-1541, U2): Termine in der Zone der Definition.
 # 5. Der naechste Score nach dem Fire gilt in ``definition.timezone``.
 # 6. Die Zaehlung uebersprungener Fires rechnet in derselben Zone.
+#
+# Test list (Plan 2026-10-08-1541, U3, R18, KTD12): Fire ohne Vergiftung.
+# 7. Laesst sich die Folgezeit nicht berechnen, wird der Eintrag nicht
+#    publiziert, ``scheduler_next_fire_failed`` geloggt, und die anderen
+#    faelligen Crons im selben Batch feuern.
+# 8. ... und der Eintrag wird aus dem Fire-Index genommen (Definition bleibt).
+# 9. Eine Uebernahme zwischen Poll und Commit wird vom Commit nicht
+#    zurueckgesetzt (In-Memory-Store, echter ScheduleStore).
 
 from __future__ import annotations
 
@@ -32,11 +40,15 @@ import pytest
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import (
     ScheduleDefinition,
+    ScheduleStore,
 )
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.inmemory import InMemoryBackend
+from tests.support.inmemory.clock import FakeClock
 from tests.unit.scheduler._helpers import _LEADER_TOKEN, _cron_def, _def, _make_loop
 
 # AGENTS.md §Async-Code testen rule 3: 5s per-test timeout. Narrower
@@ -1013,3 +1025,84 @@ class TestSchedulerLoopTimezone:
         await loop._poll_tick()
 
         assert skipped == []
+
+
+class TestNextFireFailure:
+    """Plan 2026-10-08-1541 (U3, R18): eine Definition, deren naechster
+    Termin sich im Leader nicht berechnen laesst, blockiert nichts."""
+
+    @pytest.fixture
+    def loop(self, backend, broker, config, lock_manager, store, signal_dispatcher):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop._state = "leader"
+        return loop
+
+    @staticmethod
+    def _batch():
+        broken = msgspec.structs.replace(
+            _def(name="broken", fire_ts_ms=1_000), timezone="Europe/Atlantis",
+        )
+        good = _def(name="good", fire_ts_ms=1_000)
+        return [("broken", 1_000, broken), ("good", 1_000, good)]
+
+    async def test_broken_entry_is_logged_and_rest_of_batch_fires(
+        self, loop, broker, store, swarmq_logs,
+    ):
+        store.poll_due.return_value = self._batch()
+
+        await loop._poll_tick()
+
+        headers = broker.publish.await_args.kwargs["headers"]
+        assert broker.publish.await_count == 1
+        assert headers["x-swarmq-schedfire"] == "good:1000"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_next_fire_failed"]
+        assert entry["schedule_name"] == "broken" and entry["error_type"]
+
+
+    async def test_broken_entry_leaves_the_fire_index(self, loop, store):
+        """Ohne Folgezeit kein neuer Score: der Eintrag verlaesst den
+        Fire-Index (``-1``), die Definition bleibt stehen."""
+        batch = self._batch()
+        store.poll_due.return_value = batch
+
+        await loop._poll_tick()
+
+        [broken_commit] = [
+            c for c in store.commit_fire.await_args_list if c.args[0] == "broken"
+        ]
+        assert broken_commit.args[1:4] == (-1, batch[0][2], "test-owner")
+        assert broken_commit.kwargs["fired_ts_ms"] == 1_000
+
+
+class TestTakeoverBetweenPollAndCommit:
+    """Liste 9 (KTD12): echter ScheduleStore ueber dem In-Memory-Backend.
+    Die Uebernahme laeuft waehrend des Publish, also zwischen Poll und
+    Commit; der faellige Score blieb dabei stehen."""
+
+    async def test_commit_does_not_reset_taken_over_definition(
+        self, broker, config, lock_manager, signal_dispatcher,
+    ):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        await memory.locks.acquire(
+            SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1,
+        )
+        polled = _def(name="cron_a", fire_ts_ms=1_000)
+        taken_over = msgspec.structs.replace(polled, timezone="Asia/Tokyo")
+        await memory.schedules.add("cron_a", msgspec.json.encode(polled), 1_000)
+
+        async def _takeover(*_args, **_kwargs):
+            await memory.schedules.put("cron_a", msgspec.json.encode(taken_over), None)
+
+        broker.publish.side_effect = _takeover
+        loop = _make_loop(
+            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+        )
+        loop._state = "leader"
+
+        await loop._poll_tick()
+
+        stored = msgspec.json.decode(await memory.schedules.get("cron_a"), type=ScheduleDefinition)
+        assert stored == taken_over
+        assert await memory.schedules.fire_ts("cron_a") > 1_000
+

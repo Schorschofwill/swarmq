@@ -195,3 +195,44 @@ class TestSchedCommitOneShot:
         assert await valkey_client.hget(DEFS_KEY, sched_name) is None
 
         await valkey_client.delete(LOCK_KEY)
+
+
+class TestSchedCommitTakeoverGuard:
+    """Plan 2026-10-08-1541 (U3, KTD12): ARGV[6] = gepollte Definition.
+    Der Commit schreibt die Definition nur zurueck, wenn sie seit dem Poll
+    unveraendert ist; der Score rueckt in beiden Faellen vor."""
+
+    async def _commit(self, valkey_client, commit_script, sched_name, polled):
+        owner = uuid.uuid4().hex
+        await valkey_client.set(LOCK_KEY, owner)
+        try:
+            return await commit_script(
+                keys=[ZSET_KEY, DEFS_KEY, LOCK_KEY],
+                args=[sched_name, 2_000, b'{"next":1}', owner, 1_000, polled],
+            )
+        finally:
+            await valkey_client.delete(LOCK_KEY)
+
+    async def test_changed_def_is_kept_and_score_advances(
+        self, valkey_client, commit_script, sched_name
+    ):
+        await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
+        await valkey_client.hset(DEFS_KEY, sched_name, b'{"taken":"over"}')
+
+        result = await self._commit(valkey_client, commit_script, sched_name, b'{"polled":1}')
+
+        assert int(result) == 1
+        assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"taken":"over"}'
+        assert float(await valkey_client.zscore(ZSET_KEY, sched_name)) == 2_000.0
+
+    async def test_unchanged_def_is_written_back(
+        self, valkey_client, commit_script, sched_name
+    ):
+        await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
+        await valkey_client.hset(DEFS_KEY, sched_name, b'{"polled":1}')
+
+        result = await self._commit(valkey_client, commit_script, sched_name, b'{"polled":1}')
+
+        assert int(result) == 1
+        assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"next":1}'
+
