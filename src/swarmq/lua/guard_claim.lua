@@ -26,10 +26,19 @@ local superseded = tonumber(redis.call('HGET', KEYS[2], 'sup'))
 if superseded and tonumber(ARGV[3]) < superseded then
     return {'superseded', 0}
 end
-if redis.call('GET', KEYS[1]) then
+local orphans = tonumber(redis.call('HGET', KEYS[2], 'orphans')) or 0
+local holder = redis.call('GET', KEYS[1])
+if holder == ARGV[1] then
+    -- Wiederholung desselben Claims (Transport-Retry nach verlorener
+    -- Antwort): idempotent, keine weitere Waise.
+    if orphans >= tonumber(ARGV[5]) then
+        return {'orphan_limit', orphans}
+    end
+    return {'claimed', orphans}
+end
+if holder then
     return {'running', 0}
 end
-local orphans = tonumber(redis.call('HGET', KEYS[2], 'orphans')) or 0
 if redis.call('HEXISTS', KEYS[2], 'lease') == 1 then
     orphans = redis.call('HINCRBY', KEYS[2], 'orphans', 1)
 end

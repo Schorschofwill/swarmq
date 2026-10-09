@@ -17,6 +17,8 @@ Test-Liste:
 9. ``renew`` verlängert nur für den Owner; nach Ablauf liefert es ``False``.
 10. Done- und Superseded-Marker laufen nach ``state_ttl_ms`` ab.
 11. Der Superseded-Zähler wächst nur.
+12. Ein wiederholter Claim desselben Owners (Transport-Retry nach verlorener
+    Antwort) ist idempotent: ``claimed``, keine zusätzliche Waise.
 """
 
 from __future__ import annotations
@@ -46,6 +48,14 @@ async def _claim(impl: ExecutionGuardStore, identity: str, owner: str, *, retry_
 class ExecutionGuardStoreContract:
     async def test_claim_on_fresh_identity_succeeds(self, impl: ExecutionGuardStore) -> None:
         assert await _claim(impl, _identity(), "a") == "claimed"
+
+    async def test_repeated_claim_by_the_same_owner_is_idempotent(self, impl: ExecutionGuardStore) -> None:
+        identity = _identity()
+        await _claim(impl, identity, "a")
+        claim = await impl.claim(
+            identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=STATE_TTL, max_orphans=3,
+        )
+        assert claim == GuardClaim("claimed", orphans=0)
 
     async def test_second_claim_while_running_reports_running(self, impl: ExecutionGuardStore) -> None:
         identity = _identity()

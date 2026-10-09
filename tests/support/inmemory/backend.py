@@ -577,9 +577,12 @@ class InMemoryExecutionGuardStore:
         superseded = state.get("sup")
         if isinstance(superseded, int) and retry_count < superseded:
             return GuardClaim("superseded")
+        orphans = int(state.get("orphans", 0))  # type: ignore[call-overload]
+        if self._running.get(identity) == owner:
+            # Wiederholung desselben Claims (Transport-Retry): idempotent.
+            return GuardClaim("orphan_limit" if orphans >= max_orphans else "claimed", orphans=orphans)
         if identity in self._running:
             return GuardClaim("running")
-        orphans = int(state.get("orphans", 0))  # type: ignore[call-overload]
         if "lease" in state:
             orphans += 1
         self._running.set(identity, owner, ttl_ms)

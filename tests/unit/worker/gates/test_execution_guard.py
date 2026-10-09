@@ -93,9 +93,11 @@ def _ctx(task_id: str = "t-1", **info: object) -> GateContext:
     )
 
 
-async def _other_claim(backend: InMemoryBackend, identity: str = "t-1", retry_count: int = 0) -> str:
+async def _other_claim(
+    backend: InMemoryBackend, identity: str = "t-1", retry_count: int = 0, owner: str = "other",
+) -> str:
     claim = await backend.execution_guard.claim(
-        identity, owner="other", retry_count=retry_count, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3,
+        identity, owner=owner, retry_count=retry_count, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3,
     )
     return claim.status
 
@@ -324,7 +326,8 @@ async def test_lost_marker_is_logged_counted_and_not_touched(
     assert lost["log_level"] == "warning" and lost["task_id"] == "t-1"
     assert events == ["lease_lost"]
     await clock.advance(30)
-    assert await _other_claim(backend) == "running"
+    # Der fremde Marker steht noch (ein Dritter sieht ihn als laufend).
+    assert await _other_claim(backend, owner="third") == "running"
 
 
 async def test_lost_marker_is_reported_once(
