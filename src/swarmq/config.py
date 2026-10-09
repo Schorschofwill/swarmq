@@ -648,8 +648,8 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
         # Eine Meldung lebt drei Meldetakte; eine kuerzere Frist raeumte
-        # Crons lebender Worker ab.
-        if self.scheduler_prune_after_s < 3 * self.scheduler_seen_interval_s:
+        # Crons lebender Worker ab. Gerundet, damit 3 x 0.1 == 0.3 gilt.
+        if self.scheduler_prune_after_s < round(3 * self.scheduler_seen_interval_s, 9):
             msg = (
                 "scheduler_prune_after_s must be >= 3x scheduler_seen_interval_s, "
                 f"got prune_after_s={self.scheduler_prune_after_s}, "

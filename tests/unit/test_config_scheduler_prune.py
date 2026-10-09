@@ -59,3 +59,9 @@ def test_env_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _cfg()
     assert cfg.scheduler_prune == "log"
     assert cfg.scheduler_prune_after_s == 3600.0
+
+
+@pytest.mark.parametrize(("seen", "prune_after"), [(0.05, 0.15), (0.1, 0.3)])
+def test_exact_multiple_is_accepted_despite_float_rounding(seen: float, prune_after: float) -> None:
+    cfg = _cfg(scheduler_seen_interval_s=seen, scheduler_prune_after_s=prune_after)
+    assert cfg.scheduler_prune_after_s == prune_after
