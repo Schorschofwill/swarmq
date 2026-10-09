@@ -102,3 +102,28 @@ Alle Befunde stammen aus Code- und Doku-Analyse. Keiner ist durch einen Test bes
 | BZ-26 | `tests/unit/test_befund_bz26_backoff.py` |
 | BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` |
 | BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
+
+## Entscheidungen (Georg, 2026-10-09)
+
+Grundlage für den Fix-Plan 0.12.0. BZ-01, -02, -07, -13, -16, -17, -21, -22 und -28 brauchten keine Produktentscheidung.
+
+| ID | Entscheidung |
+|---|---|
+| BZ-03 | Unroutbarer Publish wirft eine eigene Ausnahme (mandatory + Return-Erkennung). Der Leader loggt und zählt verlorene Cron-Fires. |
+| BZ-04 | Verdrängende `maxmemory-policy`: Worker und Leader verweigern den Start (`ConfigurationError`, Exit 78), abschaltbar per Umgebungsvariable. Dazu `swarmq check`, Doku (noeviction + AOF) und Korrektur der Empfehlung `volatile-lru`. |
+| BZ-05 | Lock-Konflikt wartet zeitbasiert bis `max_age` bzw. Lock-TTL + Puffer statt 10 Versuchen. Erst dann DLQ, mit `TASK_DLQ`, Fehlerergebnis und Workflow-Fail. |
+| BZ-06 | Unbekannte Tasks werden mit Backoff zurückgestellt (Zähler-Header), erst nach einer Gnadenfrist (Richtwert 15 min) DLQ mit eigenem Event. Deploy-Reihenfolge wird dokumentiert. |
+| BZ-08/BZ-12 | `x-death` bzw. `x-swarmq-dead-lettered-at` gilt als bewusstes Replay und umgeht den Done-Marker. Normale Neuzustellung wird weiter abgewiesen. Die Marker-TTL wird an `max_age`/Rückstand gekoppelt. |
+| BZ-09 | `unique_for`/`unique_until` werden in Cron-Report und `ScheduleDefinition` mitgeführt. |
+| BZ-10 | Optionaler App-Namensraum (`SWARMQ_NAMESPACE`) als Präfix für `sq:*`, Leader und Default-Queue; ohne Angabe unverändert (nicht BREAKING). Der Leader tritt nach wiederholten Publish-Fehlern zurück. |
+| BZ-11 | Der Leader feuert keinen Cron, den kein lebender Worker meldet und den er selbst nicht kennt (eigenes Event). Fires über `route_via_dlx` bekommen zusätzlich eine Ablaufzeit. |
+| BZ-14 | Worker tragen ihre Queues mit Heartbeat in Valkey ein. Der Leader meldet Queues ohne lebenden Consumer mit Inhalt (Event + Metrik), `swarmq check` listet sie. Keine Management-API. |
+| BZ-15 | `PRECONDITION_FAILED` bei geänderten Queue-Argumenten wird erkannt: klare Meldung (alt vs. neu), Exit 78 statt Neustartschleife. Doku beschreibt die Migration. Delivery-Limit bleibt Argument. |
+| BZ-18 | Drain läuft höchstens `shutdown_timeout` minus Reserve für die Aufräumphasen. Doku nennt `terminationGracePeriodSeconds` ≥ `shutdown_timeout` + 15 und Docker `stop_grace_period`. |
+| BZ-19 | Neue Queues bekommen `x-dead-letter-strategy=at-least-once` (mit `overflow=reject-publish`). Für bestehende Queues Policy-Empfehlung und Erkennung über den BZ-15-Mechanismus. Doku korrigiert das Versprechen. |
+| BZ-20 | `concurrency` ist Obergrenze für den ganzen Worker (gemeinsamer Kanal mit QoS). |
+| BZ-23 | Das Cancel-Flag lebt bis ETA + `max_age` + Puffer (mindestens 24 h) und wird bei Zustellung gelöscht. |
+| BZ-24 | Einmalige WARNING pro Task-Name, wenn ein Producer ohne TaskInfo sendet. Doku erklärt die Abhängigkeit von der Registry. |
+| BZ-25 | Mutex- und Semaphore-Leases werden während des Laufs im Takt erneuert. Scheitert die Erneuerung, Event + Log. Kein Fencing-Token. |
+| BZ-26 | Nur Deckel-Jitter und Overflow werden behoben. `fixed` bleibt bewusst ohne Jitter; der Nachweis dafür ist entfallen. |
+| BZ-27 | Abkühlzeit statt Dauersperre (auch beim Hang-Budget), Gauge für gesperrte Slots plus Event. |
