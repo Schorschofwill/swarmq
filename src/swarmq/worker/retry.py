@@ -26,6 +26,7 @@ from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
     Retry,
+    SettleFailedAfterPublish,
     TaskNotFoundError,
     WorkflowStateConflict,
 )
@@ -251,7 +252,13 @@ class RetryHandler:
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
         headers["x-swarmq-traceback"] = error_message
         try:
-            await deps.broker.dead_letter(delivery, headers=headers)
+            try:
+                await deps.broker.dead_letter(delivery, headers=headers)
+            except SettleFailedAfterPublish as exc:
+                # Die Kopie liegt in der XQ, nur das Ack scheiterte: terminal.
+                # Die Neuzustellung des Originals ueberspringt der
+                # Ausfuehrungsschutz als ``done`` und gibt nichts frei.
+                logger.warning("dlq_ack_failed_after_publish", **_error_fields(exc))
             # Release AFTER successful ack (dead_letter bestätigt das
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to

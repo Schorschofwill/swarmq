@@ -44,6 +44,12 @@ Test-Liste U9 (Plan 2026-10-08-1541, R15/KTD7) — abschaltbares Dead-Lettering:
     ``task_info.result_ttl`` statt ``config.result_ttl``.
 20. Delivery-Count-Gate und undecodierbare Nachricht bei ausgeschaltetem
     Dead-Lettering -> weiterhin XQ.
+
+Review Phase 2 (2026-10-09):
+
+21. ``dead_letter`` wirft ``SettleFailedAfterPublish`` (Kopie liegt in der
+    XQ, nur das Ack scheiterte): terminal wie ein Erfolg -- ``TASK_DLQ``,
+    Unique-Freigabe, kein ``dlq_publish_failed``, kein Requeue.
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from swarmq.exceptions import BackendConnectionError, NoRetry, WorkflowStateConflict
+from swarmq.exceptions import BackendConnectionError, NoRetry, SettleFailedAfterPublish, WorkflowStateConflict
 from swarmq.headers import HEADER_WORKFLOW_ID
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
@@ -455,3 +461,21 @@ async def test_delivery_count_gate_and_undecodable_messages_still_reach_the_dlq(
 
     await worker._handle_message(make_message(body=b"not json"))
     broker.route_via_dlx.assert_awaited_once()
+
+
+async def test_dead_letter_with_failed_ack_after_publish_is_terminal(broker, backend, config, swarmq_logs):
+    """Die Kopie liegt in der XQ; die Neuzustellung des Originals ueberspringt
+    der Ausfuehrungsschutz als ``done`` -- also gibt dieser Pfad frei."""
+    handler, worker = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
+    broker.redeliver = AsyncMock()
+    worker._gate_deps.maybe_release_unique = AsyncMock()
+    msg = make_message(_default_payload(name="dlq-task"))
+
+    await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
+
+    assert _events(swarmq_logs, "dlq_publish_failed") == []
+    broker.redeliver.assert_not_awaited()
+    worker._gate_deps.maybe_release_unique.assert_awaited_once()
+    signals = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
+    assert Signal.TASK_DLQ in signals
