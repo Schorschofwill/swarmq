@@ -58,3 +58,10 @@ HEADER_GUARD_DEFER_COUNT = "x-swarmq-guard-defer-count"
 # wurde (``retry_later`` mit erhoehtem Zaehler). Der Ausfuehrungsschutz
 # erkennt daran eine durch einen Retry ueberholte Kopie (KTD5).
 HEADER_RETRY_COUNT = "x-swarmq-retry-count"
+
+# Zeitpunkt des Dead-Letterings in Epoch-Millisekunden (Plan 2026-10-08-1541,
+# KTD6). ``dlq list``/``inspect`` berechnen daraus die Rest-TTL, mit der sie
+# eine gelesene Nachricht zurücklegen -- Lesen verlängert die Frist nicht.
+# Millisekunden statt Sekunden: AMQP kodiert Gleitkommazahlen in Header-
+# Tabellen nur einfach genau.
+HEADER_DEAD_LETTERED_AT = "x-swarmq-dead-lettered-at"

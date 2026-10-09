@@ -19,7 +19,16 @@ from swarmq.broker.rabbitmq.connection import RabbitMQConnection
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, message_of, settle
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
-from swarmq.headers import HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+from swarmq.headers import HEADER_DEAD_LETTERED_AT, HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+
+
+def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
+    """``x-swarmq-dead-lettered-at`` als Epoch-Millisekunden; None, wenn er
+    fehlt oder unlesbar ist (dann zaehlt er wie fehlend)."""
+    value = headers.get(HEADER_DEAD_LETTERED_AT)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 class RabbitMQAdmin(RabbitMQDelivery):
@@ -157,6 +166,8 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     break
                 body = msg.body
                 headers = self._normalise_header_keys(dict(msg.headers or {}))
+                if self._stamp_or_expire(headers):
+                    continue
                 task_id, task_name, payload = self._parse_task_fields(body)
                 entry: dict[str, Any] = {
                     "task_id": task_id,
@@ -204,6 +215,9 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         # Reset retry-count so the operator's "try this
                         # again" intent isn't blocked by a stale counter.
                         forward_headers.pop(HEADER_RETRY_COUNT, None)
+                        # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und
+                        # Zeitstempel; ein erneutes Dead-Lettering stempelt neu.
+                        forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
                         # Neue Ausfuehrungs-Identitaet (KTD5): der Ausfuehrungs-
                         # schutz liesse die Wiederholung sonst als abgeschlossen
                         # fallen, solange der Done-Marker des ersten Laufs steht.
@@ -215,10 +229,12 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         )
                         await self._publish_with_retry(queue_name, msg_out)
                     else:
-                        # Back into the DLQ. Headers preserved verbatim.
+                        # Back into the DLQ. Headers preserved verbatim,
+                        # mit der Rest-TTL (KTD6): Lesen verlaengert nichts.
                         msg_out = aio_pika.Message(
                             body=body,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                            expiration=self._remaining_dead_letter_ttl(headers[HEADER_DEAD_LETTERED_AT]),
                             headers=dict(headers),
                         )
                         await self._publish_with_retry(f"{queue_name}.XQ", msg_out)
@@ -240,6 +256,27 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     f"dlq republish failed on {len(errors)} of {len(drained)} message(s); first error: {errors[0]}"
                 ) from errors[0]
         return entries, matched
+
+    def _remaining_dead_letter_ttl(self, dead_lettered_at_ms: int) -> float | None:
+        """Rest der Verfallsfrist in Sekunden ab dem Dead-Lettering (KTD6);
+        None ohne Frist (``dead_letter_ttl_s=None``)."""
+        if self.dead_letter_ttl_s is None:
+            return None
+        return self.dead_letter_ttl_s - (self.clock() * 1000 - dead_lettered_at_ms) / 1000
+
+    def _stamp_or_expire(self, headers: dict[str, Any]) -> bool:
+        """True, wenn die gelesene DLQ-Nachricht abgelaufen ist (KTD6):
+        RabbitMQ verwirft sie erst am Kopf der Queue -- beim Lesen faellt sie
+        weg, statt mit neuer Frist zurueckzukehren.
+
+        Ohne lesbaren Zeitstempel (Altbestand, DLX-Wege) zaehlt die Frist ab
+        jetzt und wird in ``headers`` festgehalten."""
+        dead_lettered_at_ms = _dead_lettered_at_ms(headers)
+        if dead_lettered_at_ms is None:
+            headers[HEADER_DEAD_LETTERED_AT] = int(self.clock() * 1000)
+            return False
+        remaining = self._remaining_dead_letter_ttl(dead_lettered_at_ms)
+        return remaining is not None and remaining <= 0
 
     async def list_dead_letters(self, queue: str, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
         """Return up to *limit* messages from ``{queue}.XQ``.

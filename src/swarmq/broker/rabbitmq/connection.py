@@ -55,6 +55,9 @@ _PUBLISH_MAX_ATTEMPTS = 5
 # ist ``SwarmQConfig.publish_timeout_s`` (Plan 2026-08-28-001, R3).
 _DEFAULT_PUBLISH_TIMEOUT_S = 120.0
 _DEFAULT_DELIVERY_LIMIT = 20
+# Fallback fuer einen ohne App konstruierten Broker; kanonisch ist
+# ``SwarmQConfig.dead_letter_ttl_s`` (Plan 2026-10-08-1541, KTD6).
+_DEFAULT_DEAD_LETTER_TTL_S = 604800.0
 # Frist fuer das nebenlaeufige Schliessen eines verworfenen Kanals. Kurz:
 # gelingt es nicht, ist der Transport ohnehin tot und der Kanal verwaist.
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
@@ -123,6 +126,9 @@ class RabbitMQConnection:
         # ueberschreibt aus der Konfiguration, ein direkt konstruierter
         # Broker behaelt den Default.
         self.delivery_limit: int = _DEFAULT_DELIVERY_LIMIT
+        # Verfallsfrist der von swarmq in die DLQ gelegten Nachrichten (KTD6);
+        # None heisst unbegrenzt. Wie oben aus der Konfiguration ueberschrieben.
+        self.dead_letter_ttl_s: float | None = _DEFAULT_DEAD_LETTER_TTL_S
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
         # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden

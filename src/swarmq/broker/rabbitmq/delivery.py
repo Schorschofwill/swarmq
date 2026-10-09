@@ -13,7 +13,8 @@ entfernt; die Delay-/DLQ-Publishes sind private Helfer der Verben.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Mapping
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import aio_pika
@@ -27,6 +28,7 @@ from swarmq.broker.rabbitmq.connection import (
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
+from swarmq.headers import HEADER_DEAD_LETTERED_AT
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
@@ -63,6 +65,8 @@ class RabbitMQDelivery(RabbitMQConnection):
     #: Consumer auf den eigenen Cancel des Wächters (U7, KTD4). Deckt einen
     #: Takt mit Channel-, Cancel- und Consume-RPC (je 2 s) mit Luft ab.
     settle_cancel_wait_s: float = 10.0
+    #: Wanduhr fuer ``x-swarmq-dead-lettered-at`` und die Rest-TTL (KTD6).
+    clock: Callable[[], float] = staticmethod(time.time)
 
     # ------------------------------------------------------------------
     # Deklaration
@@ -162,7 +166,8 @@ class RabbitMQDelivery(RabbitMQConnection):
         msg = aio_pika.Message(
             body=message_body,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-            headers=dict(headers or {}),
+            expiration=self.dead_letter_ttl_s,
+            headers={**(headers or {}), HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000)},
         )
         await self._publish_with_retry(f"{queue_name}.XQ", msg)
 

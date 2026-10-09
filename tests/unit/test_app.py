@@ -785,3 +785,13 @@ class TestDeliveryLimitWiring:
         monkeypatch.setenv("SWARMQ_DELIVERY_LIMIT", "7")
         SwarmQ(broker, backend)
         assert broker.delivery_limit == 7
+
+
+class TestDeadLetterTtlWiring:
+    """Plan 2026-10-08-1541, U9 (KTD6): die App reicht ``dead_letter_ttl_s``
+    an den Broker durch -- gleicher Weg wie ``delivery_limit``."""
+
+    @pytest.mark.parametrize("ttl", [3600.0, None])
+    def test_configured_ttl_reaches_broker(self, broker, backend, ttl):
+        SwarmQ(broker, backend, dead_letter_ttl_s=ttl)
+        assert broker.dead_letter_ttl_s == ttl

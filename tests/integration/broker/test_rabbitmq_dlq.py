@@ -7,7 +7,9 @@ concurrent test runs don't collide.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
 
 import pytest
@@ -385,3 +387,32 @@ async def test_purge_removes_all_messages(broker_and_queue):
 async def test_purge_empty_returns_zero(broker_and_queue):
     broker, qname = broker_and_queue
     assert await broker.purge_dead_letters(qname) == 0
+
+
+# ---------------------------------------------------------------------------
+# Plan 2026-10-08-1541, U9 (KTD6): Rest-TTL pro Nachricht
+# ---------------------------------------------------------------------------
+
+
+async def test_inspect_at_half_ttl_keeps_the_original_expiry(broker_and_queue):
+    """Covers AE10: ``dlq inspect`` nach der halben Frist legt die Nachricht
+    mit der Rest-TTL zurueck; sie verfaellt zum urspruenglichen Zeitpunkt.
+
+    Die Uhr des Lesers wird um die halbe Frist vorgestellt, statt real zu
+    warten: Mit Verlaengerung lebte die Kopie wieder volle 4 s, ohne sie
+    noch 2 s."""
+    broker, qname = broker_and_queue
+    broker.dead_letter_ttl_s = 4.0
+    published_at = time.time()
+    broker.clock = lambda: published_at
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-ae10"))
+
+    broker.clock = lambda: published_at + 2.0
+    match, _ = await broker.inspect_dead_letter(qname, "t-ae10")
+    assert match is not None
+    inspected = time.monotonic()
+
+    while await _dlq_depth(broker, qname) > 0:
+        assert time.monotonic() - inspected < 3.5, "Lesen hat die Frist verlaengert"
+        await asyncio.sleep(0.05)
+    assert time.monotonic() - inspected >= 1.5

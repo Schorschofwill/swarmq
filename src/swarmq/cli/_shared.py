@@ -14,7 +14,7 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging_settings import VALID_LOG_FORMATS, VALID_LOG_LEVELS
@@ -261,6 +261,18 @@ async def _broker_from_env() -> RabbitMQBroker:
             "e.g. SWARMQ_BROKER_URL=amqp://guest:guest@localhost:5672/"
         )
     broker = RabbitMQBroker(broker_url)
+    # Die DLQ-Befehle legen gelesene Nachrichten mit der Rest-TTL zurueck
+    # (Plan 2026-10-08-1541, KTD6) und brauchen dafuer die konfigurierte Frist.
+    ttl_raw = os.environ.get("SWARMQ_DEAD_LETTER_TTL_S", "")
+    if ttl_raw:
+        from swarmq.config import parse_env_value
+
+
+        ttl = cast("float | None", parse_env_value("optional_float", ttl_raw, "SWARMQ_DEAD_LETTER_TTL_S"))
+        if ttl is not None and ttl <= 0:
+            msg = f"dead_letter_ttl_s must be > 0, got {ttl}"
+            raise ConfigurationError(msg)
+        broker.dead_letter_ttl_s = ttl
     await broker.connect()
     return broker
 
