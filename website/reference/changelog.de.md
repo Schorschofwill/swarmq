@@ -141,7 +141,7 @@ entfernt werden; siehe die
   `true`) mit **`TaskInfo(dead_letter=...)`**, das über die globale
   Einstellung gewinnt. Abgeschaltet speichern `NoRetry`, eine Exception
   außerhalb von `retry_exceptions` und erschöpfte Retries das
-  Fehlerergebnis und bestätigen die Nachricht, wie vor 0.1.0. Ein Alarm
+  Fehlerergebnis und bestätigen die Nachricht, wie es Tasks mit `max_retries=0` vor 0.1.2 taten. Ein Alarm
   auf `swarmq_tasks_total{outcome="dlq"}` deckt diese Tasks dann nicht
   mehr ab; `TASK_FAILED` und `outcome="failed"` feuern weiter je
   Versuch. Zustellzähler-Prüfung, Waisen-Grenze, nicht dekodierbare
@@ -201,6 +201,12 @@ entfernt werden; siehe die
 - `log_records_dropped` zählt nicht mehr das Stopp-Signal einer
   Log-Queue, deren Pipe multiprocessing beim Prozessende schon
   geschlossen hatte (unter CPU-Last meldete es 2 statt 1).
+- Liegt die Kopie eines fehlgeschlagenen Tasks in der DLQ und scheitert
+  nur das Ack des Originals (Channel weg), gilt der Fehlschlag jetzt als
+  dead-gelettert: Das Unique-Flag wird freigegeben, `TASK_DLQ` feuert,
+  und der Worker loggt `dlq_ack_failed_after_publish` (WARNING) statt
+  `dlq_publish_failed`. Der Ausführungsschutz überspringt die
+  Neuzustellung.
 
 ### Upgrade von 0.10.x
 

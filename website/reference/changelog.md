@@ -132,7 +132,7 @@ older app can be removed; see the
   `true`) with **`TaskInfo(dead_letter=...)`**, which wins over the
   global setting. Switched off, `NoRetry`, an exception outside
   `retry_exceptions` and exhausted retries store the error result and
-  acknowledge the message, as before 0.1.0. An alert
+  acknowledge the message, as tasks with `max_retries=0` did before 0.1.2. An alert
   on `swarmq_tasks_total{outcome="dlq"}` then no longer covers these
   tasks; `TASK_FAILED` and `outcome="failed"` keep firing per attempt.
   The delivery-count check, the orphan limit, undecodable messages,
@@ -186,6 +186,11 @@ older app can be removed; see the
 - `log_records_dropped` no longer counts the stop sentinel of a log
   queue whose pipe multiprocessing had already closed at process exit
   (it reported 2 instead of 1 under CPU load).
+- When the copy of a failed task is in the DLQ and only the ack of the
+  original fails (channel lost), the failure now counts as
+  dead-lettered: the unique flag is released, `TASK_DLQ` fires, and
+  the worker logs `dlq_ack_failed_after_publish` (WARNING) instead of
+  `dlq_publish_failed`. The execution guard skips the redelivery.
 
 ### Upgrading from 0.10.x
 

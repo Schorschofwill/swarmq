@@ -229,9 +229,9 @@ volume. Add `-p VHOST` for a vhost other than `/`.
 ## Switching off dead-lettering of task failures
 
 Every terminal task failure goes into `{queue}.XQ`, also with
-`max_retries=0`. Earlier versions stored the error result and
-acknowledged the message instead. To get that behaviour back for
-terminal task failures:
+`max_retries=0`. Before 0.1.2, a task with `max_retries=0` stored the
+error result and acknowledged the message instead. To get that
+behaviour for every terminal task failure:
 
 ```python
 class SyncInventory(Task):

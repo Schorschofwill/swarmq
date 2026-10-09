@@ -239,9 +239,9 @@ Werte an das eigene Volumen anpassen. Für einen anderen vhost als `/`
 ## Dead-Lettering von Task-Fehlern abschalten
 
 Jeder terminale Task-Fehler landet in `{queue}.XQ`, auch mit
-`max_retries=0`. Frühere Versionen haben stattdessen das
-Fehlerergebnis gespeichert und die Nachricht bestätigt. So bekommst du
-dieses Verhalten für terminale Task-Fehler zurück:
+`max_retries=0`. Vor 0.1.2 hat ein Task mit `max_retries=0`
+stattdessen das Fehlerergebnis gespeichert und die Nachricht bestätigt.
+So bekommst du dieses Verhalten für jeden terminalen Task-Fehler:
 
 ```python
 class SyncInventory(Task):

@@ -247,6 +247,11 @@ alt ist.
   solange einer ihrer Worker innerhalb von
   `SWARMQ_SCHEDULER_PRUNE_AFTER_S` meldet. Die Frist anheben, wenn eine
   App länger stehen darf.
+- **Es gelten die Einstellungen des Leaders.** `SWARMQ_SCHEDULER_PRUNE`
+  und `SWARMQ_SCHEDULER_PRUNE_AFTER_S` liest der Worker, der gerade
+  Scheduler-Leader ist, aus welcher App auf dem Valkey auch immer. In
+  jeder App dieselben Werte setzen; eine längere Frist in nur einer App
+  wirkt nicht, solange eine andere App den Leader stellt.
 - **Deaktivierte Crons kommen deaktiviert zurück.** Der Leader merkt
   sich einen Cron, der beim Entfernen deaktiviert war
   (`sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er

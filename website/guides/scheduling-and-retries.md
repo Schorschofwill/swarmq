@@ -236,6 +236,11 @@ old.
   with its next report; App B's crons stay as long as one of B's
   workers reports within `SWARMQ_SCHEDULER_PRUNE_AFTER_S`. Raise the
   period if an app may be down longer.
+- **The leader's settings apply.** `SWARMQ_SCHEDULER_PRUNE` and
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` are read by whichever worker is
+  scheduler leader, from any app on the Valkey. Set the same values in
+  every app; raising the period in one app alone has no effect while
+  another app leads.
 - **Disabled crons come back disabled.** The leader remembers a cron
   that was disabled when it was removed (`sq:{sched}:disabled`); when a
   worker reports it again, it is created disabled. This also applies
