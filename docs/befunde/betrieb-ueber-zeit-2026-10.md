@@ -1,7 +1,9 @@
 <!-- Befundregister. IDs BZ-nn sind die Ticketnummern fuer xfail-Marker (AGENTS.md: kein Skip ohne Ticket). -->
 # Befundregister „Betrieb über Zeit“ – swarmq v0.11.0 (fb9e067), 2026-10-09
 
-Status: offen, Nachweis-Tests auf Branch test/betrieb-ueber-zeit (pytest-Marker `befund`, xfail strict).
+Status: alle 28 Befunde durch Tests bestätigt (2026-10-09), offen. BZ-03 präzisiert: stiller Verlust mit Erfolgsquittung, kein 120-s-Hänger. BZ-19: Verlust nur im Cluster beobachtbar, lokal belegt ist das fehlende `x-dead-letter-strategy`.
+
+Nachweis-Tests tragen `@pytest.mark.befund("BZ-nn")` und `xfail(strict=True)`: Wird ein Befund behoben, wird sein Test XPASS (rot) und die Markierung muss entfernt werden. Alle Nachweise: `pytest -m befund --runxfail` (Integration nur über die Testports).
 
 Quellen (Untersuchungsberichte der Sitzung): 1-lebenszyklus.md (L), 2-zurueckgestellt.md (Z), 3-aenderungen.md (D), 4-fremdkatalog.md (F), 5-umgebung.md (E).
 Alle Befunde stammen aus Code- und Doku-Analyse. Keiner ist durch einen Test bestätigt. „Treffer“ = Zahl der unabhängigen Untersuchungen, die den Befund fanden.
@@ -67,3 +69,36 @@ Alle Befunde stammen aus Code- und Doku-Analyse. Keiner ist durch einen Test bes
 - `architecture.md:202` (DQ) und `:204` (Valkey-Neustart harmlos) sind falsch.
 - B20 und B21 sind offen.
 - Die Fehlertabelle im Workflow-Guide ist unvollständig.
+
+## Nachweis-Tests
+
+| ID | Testdateien |
+|---|---|
+| BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` |
+| BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
+| BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` |
+| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` |
+| BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` |
+| BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` |
+| BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
+| BZ-08 | `tests/integration/test_befund_bz08_replay_without_id.py` |
+| BZ-09 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
+| BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` |
+| BZ-11 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` |
+| BZ-12 | `tests/unit/worker/gates/test_befund_bz12_marker_ttl.py` |
+| BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` |
+| BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` |
+| BZ-15 | `tests/integration/broker/test_befund_bz15_queue_args_change.py` |
+| BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` |
+| BZ-17 | `tests/integration/broker/test_befund_bz17_traceback_header.py` |
+| BZ-18 | `tests/unit/process_manager/test_befund_bz18_shutdown_budget.py`, `tests/unit/worker/test_befund_bz18_cleanup_after_grace.py` |
+| BZ-19 | `tests/unit/broker/test_befund_bz19_dead_letter_strategy.py` |
+| BZ-20 | `tests/integration/broker/test_befund_bz20_prefetch_per_consumer.py` |
+| BZ-21 | `tests/integration/broker/test_befund_bz21_dlq_destructive_read.py` |
+| BZ-22 | `tests/unit/worker/test_befund_bz22_unique_expiry.py` |
+| BZ-23 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` |
+| BZ-24 | `tests/unit/client/test_befund_bz24_registry_less_producer.py` |
+| BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` |
+| BZ-26 | `tests/unit/test_befund_bz26_backoff.py` |
+| BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` |
+| BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
