@@ -2,7 +2,7 @@
 title: Behebung der Befunde „Betrieb über Zeit“ (BZ-01 bis BZ-28) – Plan 0.12.0
 type: fix
 date: 2026-10-09
-revision: 2 (Gegenlesen 1 mit B1–B20, Belastungstest mit drei Prüfern eingearbeitet)
+revision: 3 (Gegenlesen 1 B1–B20, Belastungstest A/R/U, gezielte Prüfung F1–F11 eingearbeitet)
 artifact_readiness: implementation-ready
 execution: code
 ---
@@ -61,9 +61,9 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 - **KTD11:** Die Leader-Versionserkennung warnt künftig auch bei Leadern < 0.12.
 - **BZ-10:** Namensraum nur für neue Apps oder nach dokumentiertem Leeren.
 - **Mindestversionen:** RabbitMQ 4.2/4.3, Valkey 8, Python 3.14.
-- \* **BZ-23:** Das Cancel-Flag wird bei der stornierten Zustellung **nicht gelöscht**, sondern auf 1 h verkürzt. Sonst laufen at-least-once-Duplikate (BZ-19) einer stornierten Nachricht doch.
-- \* **Autoscaling (BZ-01/05/06):** Der Autoscaler zählt die Haupt-Queue, die alte `{q}.DQ` und die Stufen bis 1 min. Längere Stufen erscheinen nur in einer eigenen Gauge `queue_depth{kind="delayed"}`. Sonst skalieren lange Lock- oder Unknown-Rückstellungen stundenlang auf Maximum.
-- \* **Lock-Konfliktzähler (BZ-05):** 0.12 erhöht `x-swarmq-lock-conflict-count` nicht mehr. Sonst schicken 0.11-Pods derselben App wartende 0.12-Kopien ab 10 sofort in die DLQ.
+- \* **BZ-23 (Rev. 3 F11):** Das Cancel-Flag wird bei der stornierten Zustellung **und** beim Abbruch während des Laufs (`worker/results.py:129,275`, `pipeline.py:589`) nicht gelöscht, sondern per `PEXPIRE … LT` auf höchstens 1 h verkürzt. Die Variante `LT` verlängert ein kürzeres Flag nie, die Abhilfe „kurze `ttl_ms`“ bleibt also intakt. Sonst laufen at-least-once-Duplikate (BZ-19) einer stornierten Nachricht doch. Changelog: Wird dieselbe `task_id` innerhalb 1 h neu eingereiht, wird sie storniert, und `cancel()` liefert dann False.
+- \* **Autoscaling (BZ-01/05/06, Rev. 3 F9):** Der Autoscaler zählt nur die **Haupt-Queue**. Lock-, Guard- und Backend-Rückstellungen liegen dauerhaft in Stufen ≤ 1 min, sonst skalierten sie stundenlang auf Maximum. Kurze Retries kehren binnen Sekunden in die Haupt-Queue zurück und werden dort gezählt. Die Metrik `queue_depth{kind="pending"}` behält ihre heutige Bedeutung (Haupt-Queue + alle Delay-Queues). Neu ist `kind="delayed"` (nur Delay-Queues). Der Sampler ruft dafür die neue Broker-Methode `ready_depth(queue)` auf. Fehlt sie (Fake, Fremd-Broker), fällt er nach Q15 auf `queue_depth` zurück. Der Changelog nennt die Änderung.
+- \* **Lock-Konfliktzähler (BZ-05, Rev. 3 F8):** 0.12 erhöht `x-swarmq-lock-conflict-count` nicht mehr, sonst schicken 0.11-Pods derselben App wartende 0.12-Kopien ab 10 sofort in die DLQ. Stattdessen zählt der neue Header `x-swarmq-lock-conflicts`, den 0.11 nicht liest. Aus ihm wird das Signal-kwarg `lock_conflict_count` gespeist, dessen Bedeutung damit unverändert bleibt.
 - \* **Rollout-Reihenfolge:** Erst alle Apps als eigenes Deployment auf 0.11.1, dann auf 0.12. Ein Rollback per K8s oder Docker landet sonst auf 0.11.0.
 
 ---
@@ -109,7 +109,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 - **Q6 Fehlerpfade:**
   - I/O läuft mit Zeitlimit.
   - Jede Wiederhol- oder Rückstellschleife hat eine getestete Obergrenze.
-  - Zustands-Header einer Schleife (`unknown-since`, `lock-wait-since`, `lock-holder*`) stehen in `_NOT_COPIED`. Das eigene Gate setzt sie bei der Rückstellung ausdrücklich neu, und `dlq retry` entfernt sie. Die Obergrenze wird **mit** Kopien getestet.
+  - Zustands-Header einer Schleife (`unknown-since`, `lock-wait-since`, `lock-holder*`, `lock-conflicts`) bleiben in den Kopien der **Gates** erhalten (Rate-Limit-, Guard- und Backend-Defer, Lock), sonst setzte jede fremde Rückstellung die Frist zurück (Rev. 3 F7). Entfernt werden sie nur an drei Stellen: in der fachlichen Retry-Kopie (`retry.py:129`), im DLQ-Stempel (`_publish_to_dead_letter_queue`) und von `dlq retry`. Die Obergrenze wird **mit** Kopien aus jedem Gate getestet, auch bei einem Task mit Lock **und** Rate-Limit.
 - **Q7 Hot-Path:**
   - Im Normalpfad kommt kein zusätzlicher Roundtrip pro Nachricht dazu.
   - Belegt wird das per Loadsuite-Benchmark vor und nach MR 6, 8, 10, 12, 13 und 16.
@@ -314,7 +314,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 - **BZ-02:** neues Feld `ScheduleDefinition.task_id`. Fallback ist das Suffix von `oneshot:<uuid>`, sonst `uuid7()`. Crons bekommen je Fire eine neue ID.
 - **BZ-23:**
   - Das Flag lebt `max(24 h, result_ttl)` plus `fire_ts − now` plus `max_age + 300` (falls bekannt).
-  - Bei der stornierten Zustellung wird es **auf 1 h verkürzt statt gelöscht** (Abschnitt 1).
+  - Bei der stornierten Zustellung und beim Abbruch während des Laufs wird es per `PEXPIRE … LT` **auf höchstens 1 h verkürzt statt gelöscht** (Abschnitt 1).
 - **KTD11:**
   - Die Schwelle `TIMEZONE_FLOOR` (`leader_version.py:22`) wird zu einer allgemeinen Mindestversion 0.12.
   - Der Hinweis (`:135-140`) wird versionsneutral formuliert, ebenso `metrics.py:219`, `signals.py:118-120`, `website/reference/logging.md:699` und `website/reference/configuration.md:139`.
@@ -345,7 +345,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 
 ### MR 7 – Patch 0.11.1 (Branch `release/0.11.1` von `v0.11.0`)
 
-- **Declare:**
+- **Declare** (Obergrenze an Versuchen wie in MR 8):
   - Bei 406 auf `x-dead-letter-strategy`/`x-overflow`: vorhandene Werte übernehmen.
   - Bei 406 auf `x-delivery-limit`: vorhandenen Wert übernehmen, mit WARNING.
   - Alles andere bleibt wie in 0.11.0.
@@ -356,16 +356,17 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 
 - **Eigener Deklarations-Channel:**
   - Deklarationen laufen immer auf einem **eigenen** Wegwerf-Channel, nie auf dem Publish-Channel. Ein 406 würde dort parallele Publishes mit offenen Confirms abreißen.
-  - Das Ergebnis wird je Queue gecacht.
+  - Das Ergebnis wird je Queue gecacht. Bei `UnroutableMessage` und NOT_FOUND wird der Eintrag verworfen; das Neu-Deklarieren aus MR 6 und MR 10 umgeht den Cache ausdrücklich. Test: Queue gelöscht → Unroutable → neu deklariert (Rev. 3 F5).
   - Die Unit-Tests auf `_publish_channel.declare_queue` und der Golden-Generator werden nachgezogen (Abschnitt 6).
 - **Kette je Queue:**
   1. Passives Declare.
      - Existiert die Queue, folgt die Deklaration mit **Legacy-Argumenten plus bisherigem Delivery-Limit**. So entsteht für Bestandsqueues keine 406-Zeile.
      - Existiert sie nicht, wird sie mit den Zielargumenten angelegt. Bei `auto` sind das at-least-once und `reject-publish`, nicht für `.XQ`.
   2. Erkannter „inequivalent arg“:
-     - `x-dead-letter-strategy`/`x-overflow`: den **vorhandenen** Wert übernehmen, ob `none` oder `at-least-once`.
-     - `x-delivery-limit`: den vorhandenen Wert übernehmen (tolerant).
-     - Höchstens 3 Versuche.
+     - `x-dead-letter-strategy`/`x-overflow`: den **vorhandenen** Wert übernehmen, ob `none` oder `at-least-once`. Ist der vorhandene Wert `at-least-once`, wird sofort der vollständige 0.12-Satz versucht (Strategy und `reject-publish` zusammen).
+     - `x-delivery-limit`: den vorhandenen Wert aus dem 406-Text übernehmen (tolerant). Das passive declare-ok liefert keine Argumente; das „bisherige Limit“ in Schritt 1 ist deshalb der Konfigurationswert, der tatsächliche Wert kommt nur aus dem 406-Text (Rev. 3 F4).
+     - Jedes Argument wird höchstens einmal übernommen. Obergrenze: 1 + Zahl der tolerierten Argumente = 4 Versuche, damit endet die Kette garantiert.
+     - Für von 0.12 angelegte Queues kostet das je Start bis zu zwei 406 je Queue. „Keine 406-Zeile“ gilt nur für Legacy-Queues. Die Warnung bleibt auf eine je Prozess gedrosselt.
   3. Andere **erkannte** Konflikte → `QueueArgumentsMismatch`, Exit 78. Ein unerkannter oder anderer 406/403 bleibt `BrokerConnectionError` (S8).
 - **Warnung:**
   - Höchstens **eine** `queue_dead_letter_at_most_once` je Prozess, mit Liste der Queues.
@@ -402,7 +403,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 - **Unroutable im Betrieb:** einmal neu deklarieren, sonst `.DQ`.
 - **Tiefe:**
   - Die Familie wird über einen Channel abgefragt, der nach NOT_FOUND neu geöffnet wird. Fehlende Stufen zählen als 0.
-  - Der Autoscaler zählt die Haupt-Queue, `.DQ` und die Stufen bis 1 min. Der Rest erscheint in `queue_depth{kind="delayed"}` (Abschnitt 1).
+  - Der Autoscaler zählt nur die Haupt-Queue (`ready_depth`, Abschnitt 1). `kind="pending"` bleibt Haupt-Queue + alle Delay-Queues, neu ist `kind="delayed"`.
 - **Grenzen** (Abschnitt 7):
   - Über 1 h bleibt das Head-of-Line-Blocking.
   - Innerhalb einer Stufe bis zum Vierfachen der Wartezeit.
@@ -422,11 +423,12 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
     - Er wird nur zusammen mit der Definition entfernt (Prune bzw. CLI).
     - 0.11 kennt ihn nicht und löscht ihn darum nicht.
     - Die bestehenden Meldungen und ihr Aufräumen bleiben **unverändert**, also kein Wachstum über Fingerabdrücke.
-  - **Ein Cron gilt als verwaist**, wenn alle vier Bedingungen erfüllt sind:
+  - **Ein Cron gilt als verwaist**, wenn alle fünf Bedingungen erfüllt sind:
     - die Meldungen sind **in der aktuellen Amtszeit** geladen (Zeitstempel je Amtszeit);
     - der Name steht in `known`;
     - er ist nicht lebend gemeldet;
-    - er ist kein eigener statischer Cron.
+    - er ist kein eigener statischer Cron;
+    - die Definition hat `source == "static"` (Rev. 3 F10). Sonst würde eine später per CLI angelegte gleichnamige Definition dauerhaft zurückgehalten, wenn ein 0.11-Leader den statischen Vorgänger ohne `known` gelöscht hat.
   - Nach dem Erwerb wartet der Poll höchstens 5 s auf das erste Adopt, danach gilt fail-open.
   - Zurückgehalten wird per Commit auf `now + seen_interval`.
   - Das Log `scheduler_cron_held_unowned` erscheint nur **beim Übergang** (gehalten bzw. wieder frei). Dazu die Gauge `swarmq_scheduler_crons_held` und das Signal `SCHEDULER_CRON_UNOWNED` beim Übergang.
@@ -437,31 +439,31 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). Dort haben die Prüfer Verlust- und Doppelpfade gefunden (A1–A3, U17).
 
 - **Identität:**
-  - Sie besteht aus `task_id`, `x-swarmq-replay-id` (H) und **n**. n ist die Summe der `count`-Werte aller `x-death`-Einträge, deren Queue keine Delay-Queue ist (`is_delay_queue`).
+  - Sie besteht aus `task_id`, `x-swarmq-replay-id` (H) und **n**.
+  - **n = `x-swarmq-xdeath-base` + Summe der `count`-Werte aller `x-death`-Einträge, deren Queue keine Delay-Queue ist (`is_delay_queue`)** (Rev. 3 F1).
+  - **Jede** Kopie, die swarmq selbst publiziert (`republish_headers`, DLQ-Stempel, CLI-Weiterleitung), setzt `x-swarmq-xdeath-base = n` und **entfernt `x-death`**. Damit stimmt n, egal ob der Broker client-gesetztes `x-death` erhält, entfernt oder beim nächsten Dead-Lettern neu aufbaut. Die Gabel nach S5 entfällt. Kein Code liest heute `x-death` (nur ein Kommentar in `admin.py:56`), und 0.11 ignoriert es.
+  - Restlücke: Ein UI-Move setzt keine Base. Die erste Ausführung danach zählt das rohe `x-death`, wie heute.
   - Format: Bei n = 0 wie heute, `task_id` bzw. `task_id|H`, also byte-gleich zu 0.11. Bei n > 0 kommt `#n` dazu.
   - Die Länge ist gedeckelt.
 - **Neue Generation beim Dead-Lettern durch den Worker:**
   - An **einer** Stelle: `_publish_to_dead_letter_queue` in der Broker-Schicht (`delivery.py:176-181`). Damit sind alle Pfade erfasst (Expiry, DLX-Fallback, Retry-DLQ).
-  - Gesetzt werden `x-swarmq-replay-id = "g" + sha1(aktuelle Identität)[:39]` und `x-swarmq-dlq-gen = 1`.
+  - Gesetzt werden `x-swarmq-replay-id = "g" + sha1(aktuelle Identität)[:39]` und `x-swarmq-dlq-gen = <Wert von x-swarmq-dead-lettered-at>`. Beide entstehen im selben Aufruf (Rev. 3 F2).
   - Deterministisch: Zwei DLQ-Kopien derselben Ausführung, etwa nach `PublishIndeterminate`, tragen dieselbe ID. Jede neue Ausführungsgeneration bekommt eine neue ID.
 - **Broker-DLX** (`route_via_dlx`, Delivery-Limit, Ablauf in der Haupt-Queue):
   - Die Header bleiben, `x-death` wächst. Ein Replay hat daher n+1 und eine neue Identität.
   - Eine Neuzustellung des Originals hat n und bleibt geschützt.
   - at-least-once-Duplikate tragen dieselben Header und damit dieselbe Identität.
-  - **Abhängig von S5:**
-    - Entfernt der Broker ein client-gesetztes `x-death` beim Republish, wird n in `x-swarmq-xdeath-base` festgeschrieben: Kopien setzen `base = n`, berechnet wird `n = base + Summe(x-death)`.
-    - Bleibt `x-death` erhalten, gibt es keinen Base-Header.
-    - Beide Varianten sind per InMemory testbar. S5 entscheidet, die andere wird nicht gebaut.
+  - S5 prüft trotzdem: Kopie mit `x-death [q:1]` → `.DQ` mit Ablaufzeit → beim Konsum lesen. Damit ist belegt, dass die Base-Variante auf 4.2.9 und 4.3.6 korrekt rechnet.
 - **CLI `dlq retry`:**
-  - Trägt die Nachricht `x-swarmq-dlq-gen` (0.12-Worker), **bleibt `x-swarmq-replay-id` unverändert**.
+  - Ist `x-swarmq-dlq-gen` **gleich** `x-swarmq-dead-lettered-at` (frisch von einem 0.12-Worker dead-gelettert), **bleibt `x-swarmq-replay-id` unverändert**. Hat ein 0.11-Worker die Nachricht erneut dead-gelettert, stempelt er `dead-lettered-at` neu; die Gleichheit bricht, und die CLI vergibt eine neue `uuid4`. Sonst würde die CLI eine schon `done` gesetzte ID behalten (Rev. 3 F2).
     - Ein wiederholter `dlq retry` derselben XQ-Nachricht ergibt dieselbe Identität; der zweite Lauf wird verworfen. UI-Move verhält sich genauso.
   - Fehlt der Header (Bestand, 0.11-Worker), vergibt die CLI wie heute eine neue `uuid4`. Damit bleibt `test_rabbitmq_dlq.py:258-282` gültig, auch mit `headers={}`.
   - Die CLI entfernt zusätzlich die Zustands-Header (Q6) und setzt `x-swarmq-enqueued-at = now`. Sonst läuft ein Replay mit `max_age` sofort wieder ab (A6). Für UI-Replays wird diese Grenze dokumentiert.
-- **Done-TTL für Replay-Identitäten** (H gesetzt oder n > 0): `max(execution_guard_done_ttl_s, dead_letter_ttl_s)`. Sonst würde ein erneuter Retry am nächsten Tag doppelt laufen (A4). Das Wachstum ist durch die Zahl der Replays begrenzt (Q5).
+- **Done-TTL für Replay-Identitäten** (H gesetzt oder n > 0): `max(execution_guard_done_ttl_s, dead_letter_ttl_s)`, bei `dead_letter_ttl_s = None` stattdessen `max(done_ttl, execution_guard_backlog_ttl_s)` (Rev. 3 F3). Sonst würde ein erneuter Retry am nächsten Tag doppelt laufen (A4). Die TTL reist je Lease mit, denn `_state_ttl_ms` ist heute identitätsunabhängig (`execution_guard.py:241-244`). Das Wachstum ist durch die Zahl der Replays begrenzt (Q5).
 - **Cron-Replay:** Bei einer Replay-Identität nutzt das Schedfire-Gate den Key `K|<Identität ohne task_id>`. Normale Doppel-Fires (n = 0, kein H) behalten K.
 - **BZ-12, Done-Marker:**
   - Wird zurückgestellt, weil die Ausführung fremd läuft, verlängert der **Claim-Pfad** in `guard_claim.lua` (ARGV[6]) den State auf `max(SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S=7 d, max_age+300)`.
-  - `guard_finish.lua` verkürzt nie (ARGV unverändert).
+  - `guard_finish.lua` verkürzt nie: Es vergleicht die PTTL im Skript, denn heute setzt es `PEXPIRE` unbedingt (`guard_finish.lua:23-31`). ARGV bleibt unverändert.
   - Ein gescheiterter Ack und `SettleFailedAfterPublish` beenden mit `extended`.
   - Das InMemory-Doppel bildet das nach.
 - **BZ-12, Fired-Marker:** TTL = `max(base, 2·wait + 300)`, gedeckelt bei `max(base, max_age + 300)` und 7 d, nie unter `scheduler_dedup_ttl`.
@@ -486,7 +488,8 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
 - **BZ-25** (Revision 2, wegen R4 und dem Takt des Nachweises):
   - **Verlängerung:** Der Keeper verlängert **nicht** auf die volle TTL. Bis zur ursprünglichen Frist `t0 + TTL` bleibt alles wie heute. Erst wenn ein Lock in weniger als einem Fenster abläuft und der Handler noch lebt, verlängert er in kurzen Schritten (Fenster = 3 × Takt, Takt `min(max(ttl/3, 50 ms), 20 s)`).
     - Folge: Ein per SIGKILL beendeter Halter hinterlässt den Lock höchstens bis `t0 + TTL` wie heute, bei Überziehung höchstens ein Fenster länger.
-  - **Lua:** `lock_extend.lua` ergänzt `lock_renew.lua`, der Leader bleibt unverändert. Mutex: `PEXPIRE`. Semaphor: Score anheben **und** `PEXPIRE` auf den ZSET. Beides verkürzt nie.
+  - **Lua:** `lock_extend.lua` ergänzt `lock_renew.lua`, der Leader bleibt unverändert. Mutex: `PEXPIRE`. Semaphor: Score anheben **und** `PEXPIRE` auf den ZSET. Beides verkürzt nie. Der Score kommt aus Server-`TIME`, wie in `locks.py:56-57`.
+  - **Gemischte TTLs auf einem Semaphor (Rev. 3 F6):** `lock_acquire.lua` setzt `PEXPIRE` künftig nur noch, wenn der neue Wert größer als die aktuelle PTTL ist (ARGV unverändert, der Inhalt des Skripts ändert sich). Sonst verkürzt ein Erwerber mit kurzer TTL den Key unter einem Langläufer weg. Ein Erwerber mit kurzer TTL räumt Member weiterhin nach seiner eigenen TTL ab. Deshalb gelten gemischte `hard_timeout` unter einem Semaphor-Namen als Grenze (Abschnitt 7), ebenso 0.11-Erwerber, die weiter verkürzen. Test: A (TTL 1 h) und B (TTL 60 s) auf einem Semaphor; nach 70 s ist A noch Halter.
   - **Ende des Keepers:** Eine Lease fällt beim **Freigabeversuch** aus dem Keeper, auch wenn der Versuch scheitert. Der Keeper läuft bis zur letzten Lease oder bis das Backend schließt, nicht über `shutdown_event`.
   - `compute_lock_ttl_ms` wird über `worker.gates.lock` gelesen (Patch-Pfad des Nachweises).
   - **Events:**
@@ -494,10 +497,10 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
     - `task_lock_held_past_hard_timeout`.
 - **BZ-05:**
   - **Fingerprint:** nur die Menge der Owner, ohne Score und PTTL. Sonst sähe jede Erneuerung wie ein Halterwechsel aus.
-  - **Stillstand:** beobachtete PTTL des Keys + 60 s, nicht die eigene TTL.
+  - **Stillstand:** beobachtete PTTL des Keys + 60 s, nicht die eigene TTL. PTTL −2 (Key weg) heißt: kein Halter, also kein Stillstand. PTTL −1 (ohne TTL, Fremdzustand) heißt: die eigene Lock-TTL ist die Basis.
   - **Obergrenze:** `SWARMQ_LOCK_WAIT_MAX_S` (Konfigurationsfeld, Default 21600) ab dem ersten Konflikt.
   - **Rückfall** nach Q15 (Fingerprint nicht messbar): zurückstellen bis zur Obergrenze, **kein** Deckel 10.
-  - **Legacy-Zähler:** wird nicht mehr erhöht (Abschnitt 1).
+  - **Legacy-Zähler:** wird nicht mehr erhöht. Der neue Header `x-swarmq-lock-conflicts` speist `lock_conflict_count` (Abschnitt 1).
   - **Log:** `task_locked` nur beim ersten Konflikt und danach einmal je Minute. Das Signal `TASK_LOCKED` bleibt (API).
   - **Gauges:** wartende Konflikte und ältester Wartender je Worker.
   - **Nachweise:** BZ-05 Tests 2/3 und BZ-13 :143 werden auf `LockWaitExceeded` bzw. Stillstand umgeschrieben (Abschnitt 6).
@@ -620,14 +623,14 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
 | 3 | `tests/unit/worker/gates/test_lock.py:491-660`, `test_lock_dlq_ack_failed.py`, `test_expiry.py:116,153,169`, `test_pipeline.py:254`, `tests/integration/backend/test_expiry_result_store.py:93` | Ergebnis, Workflow-Fail und Freigabe in terminalen Pfaden |
 | 3 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` Test 1 (Grace=0) | sonst ab MR 11 vakuum-grün |
 | 4 | `tests/unit/backend/test_valkey_schedules.py:243-251`, `golden/keys.json` (+handover) | doppelter Handover-Marker |
-| 5 | `tests/unit/test_app.py:729-747`, Fixture `tests/unit/client/test_results.py:213-234`, Cancel-Gate-Tests, die das Löschen des Flags erwarten (grep `clear_cancel_flag` in `tests/`) | Cancel-TTL; Flag auf 1 h statt Löschen |
+| 5 | `tests/unit/test_app.py:729-747`, Fixture `tests/unit/client/test_results.py:213-234`, Cancel-Tests, die das Löschen des Flags erwarten (grep `clear_cancel_flag` in `tests/`, auch zu `worker/results.py:129,275` und `pipeline.py:589`) | Cancel-TTL; Flag per `PEXPIRE LT` 1 h statt Löschen |
 | 5 | `tests/unit/scheduler/test_leader_version.py:38,44,50-51,55,72,75-79,90`, `test_loop.py:348,353-369,375-394`, `tests/integration/test_scheduler_leader_election.py:287-310` (prüfen) | KTD11 ≥ 0.12, Hinweistext |
 | 5,6,9 | `golden/values/schedule_definition.json`, Feldliste `test_golden_fixtures.py:49-56` | neue Felder (Q3-Ausnahme) |
 | 8 | `tests/unit/broker/test_rabbitmq.py:306-395` (Deklaration auf `_publish_channel`, `len==3` :312), `tests/unit/broker/test_befund_bz19_dead_letter_strategy.py:312-319`, Generator `_golden.py:193-206` | eigener Deklarations-Channel, Kette |
-| 10 | `test_rabbitmq.py:323-325,400-440,735-750`, `tests/unit/worker/test_worker.py:815`, `_golden.py:205`, `golden/queue_args.json` (+Stufen, getrennt) | Stufen |
+| 10 | `test_rabbitmq.py:323-325,400-440,735-750`, `tests/unit/worker/test_worker.py:815`, `_golden.py:205`, `golden/queue_args.json` (+Stufen, getrennt); `tests/unit/process_manager/test_sampler.py` bleibt grün über den Q15-Rückfall auf `queue_depth` | Stufen, `ready_depth` |
 | 11 | `test_worker.py:309,2659`, `test_pipeline.py:346,357`, `tests/e2e/test_signal_catalog.py:1110`, `tests/unit/worker/test_lifecycle_events.py:167-171`, `golden/headers.txt` | Gnadenfrist |
 | 12 | `tests/unit/backend/test_valkey_execution_guard.py` (ARGV), Contract-Fälle, `golden/lua_contract.txt` (guard_claim), `golden/headers.txt`, InMemory-Broker `tests/support/inmemory/broker.py:39`, `tests/contracts/publisher_consumer.py` | Identität, Generations-ID |
-| 13 | `test_lock.py:312-420,664-700,817-825`, `test_lock_dlq_ack_failed.py:77-90`, `test_worker.py:2719`, `test_pipeline.py:237-250`, `golden/lua_contract.txt` (+lock_extend), `golden/headers.txt` | Deckel 10 entfällt, neue Header |
+| 13 | `test_lock.py:143,287,304-309,312-420,664-700,817-825`, `test_lock_dlq_ack_failed.py:77-90`, `test_worker.py:2719`, `test_pipeline.py:237-250`, `tests/e2e/test_signal_catalog.py:687` (prüfen: kwarg bleibt ≥ 1 über den neuen Header), `golden/lua_contract.txt` (+lock_extend; Inhalt lock_acquire), `golden/headers.txt` | Deckel 10 entfällt, neuer Zähler-Header, PEXPIRE nur verlängernd |
 | 13 | Nachweise `test_befund_bz05_lock_conflict_cap.py:287-335`, `test_befund_bz13…:140-146` | auf `LockWaitExceeded`/Stillstand umschreiben |
 | 16 | `test_rabbitmq.py:41-52,446-532,637-656,786-919`, `tests/unit/broker/test_dead_letter_ttl_header.py`, `tests/unit/broker/test_shutdown_deadline.py:84`, `tests/unit/worker/test_lifecycle.py:183-218`, `tests/unit/broker/test_consumer_watch.py:431`, `tests/integration/broker/test_rabbitmq_dlq.py` | zweite Verbindung, DLQ-Lesen |
 | 17 | `test_supervisor.py:519-557,1296,1368,1552ff,1607ff`, `test_run.py:466`, `test_setpoint.py:415-423`; e2e mit `shutdown_timeout=5` nur, falls sie brechen (T anheben, wenn nur das Budget geprüft wird; Drain-Semantik ist ein Warnzeichen) | Budget, Abkühlzeit |
@@ -676,6 +679,9 @@ Der BZ-16-Nachweis überspringt sich ohne lokalen Broker-Alarm. Abgenommen ist e
   - Ein Verlust seit dem RDB-Snapshot bleibt unerkannt.
   - Die Policy wird nur stündlich geprüft.
 - **KTD11:** Die Gauge steht dauerhaft, solange eine 0.11-App auf demselben Valkey läuft.
+- **BZ-25/05:** Gemischte `hard_timeout` unter einem Semaphor-Namen: Ein Erwerber mit kurzer TTL räumt Member nach seiner eigenen TTL ab. 0.11-Erwerber verkürzen den Key weiter.
+- **BZ-08:** Nach einem UI-Move zählt die erste Ausführung das rohe `x-death` (keine Base).
+- **BZ-12/08:** Mit `dead_letter_ttl_s = none` sind Replay-Identitäten 7 d geschützt, nicht unbegrenzt.
 - **Delivery-Limit per Policy:** nicht erkennbar und für swarmq-Queues nicht unterstützt.
 
 ## 8. Folgearbeit
@@ -762,3 +768,19 @@ Gegenlesen 1 (B1–B20) ist eingearbeitet, siehe die einzelnen MRs. B4 (Replay-I
 | U22 `pipeline.py` > 800 | 3.1 Punkt 5 |
 | U23 4.2.9-Broker, weitere Spikes | 3.2, S8/S9, erweiterte S1/S2/S4 |
 | U24 Referenzen | in den MRs korrigiert |
+
+**Gezielte Prüfung Revision 2 (F1–F11):**
+
+| Befund | Einarbeitung |
+|---|---|
+| F1 n sinkt, wenn der Broker client-`x-death` neu aufbaut | MR 12: immer Base-Header, Kopien entfernen `x-death`; S5 erweitert |
+| F2 `dlq-gen` klebt nach 0.11-Dead-Letter | MR 12: gen = `dead-lettered-at`, CLI prüft Gleichheit |
+| F3 Done-TTL bei `dead_letter_ttl_s=None`; Lua verkürzt | MR 12: Backlog-TTL als Ersatz, TTL je Lease, PTTL-Vergleich in `guard_finish.lua` |
+| F4 Delivery-Limit nicht beschaffbar, 3 Versuche zu wenig | MR 8/7: Wert aus dem 406-Text, Obergrenze 4, Text korrigiert |
+| F5 Deklarations-Cache ohne Invalidierung | MR 8: verwerfen bei Unroutable/NOT_FOUND, Test |
+| F6 gemischte TTLs auf einem Semaphor | MR 13: `lock_acquire` verlängert nur, Score aus `TIME`, PTTL −1/−2, Abschnitt 7 |
+| F7 Gate-Kopien setzen Fristen zurück | Q6: Entfernen nur bei Retry, DLQ und CLI |
+| F8 Konfliktzähler: Signal und Tests | Abschnitt 1: neuer Header `x-swarmq-lock-conflicts`; Abschnitt 6 |
+| F9 Autoscaling-Ziel verfehlt | Abschnitt 1, MR 10: nur Haupt-Queue über `ready_depth` |
+| F10 `known` hält umgewidmete Namen | MR 11: Bedingung `source == "static"` |
+| F11 Cancel-Flag verlängert; Abbruch während des Laufs | Abschnitt 1, MR 5: `PEXPIRE LT`, alle Löschstellen, Changelog |
