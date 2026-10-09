@@ -1,8 +1,9 @@
 usage: swarmq schedule [-h] SUBCOMMAND ...
 
 Manage the embedded scheduler's schedule definitions in Valkey. Requires
-SWARMQ_BACKEND_URL (broker is not used by these subcommands). The 'prune'
-subcommand is not in v1 — use 'remove --permanent' instead.
+SWARMQ_BACKEND_URL (broker is not used by these subcommands). The leader
+removes static crons no worker has reported for scheduler_prune_after_s;
+'prune --orphans' removes static crons no worker ever reported.
 
 positional arguments:
   SUBCOMMAND
@@ -10,6 +11,7 @@ positional arguments:
     add       Create a new schedule (insert-if-absent).
     remove    Disable or permanently delete a schedule.
     status    Show current leader + next-N due schedules.
+    prune     Remove static crons no worker has ever reported.
 
 options:
   -h, --help  show this help message and exit

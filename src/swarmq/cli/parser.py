@@ -373,15 +373,16 @@ def _add_worker_parser(subparsers: Any) -> None:
 
 
 def _add_schedule_parser(subparsers: Any) -> None:
-    """``swarmq schedule list|add|remove|status``."""
+    """``swarmq schedule list|add|remove|status|prune``."""
     schedule = subparsers.add_parser(
         "schedule",
         help="Inspect or manage schedules without restarting workers.",
         description=(
             "Manage the embedded scheduler's schedule definitions in "
             "Valkey. Requires SWARMQ_BACKEND_URL (broker is not used "
-            "by these subcommands). The 'prune' subcommand is not in "
-            "v1 — use 'remove --permanent' instead."
+            "by these subcommands). The leader removes static crons no "
+            "worker has reported for scheduler_prune_after_s; 'prune "
+            "--orphans' removes static crons no worker ever reported."
         ),
     )
     schedule_sub = schedule.add_subparsers(
@@ -529,6 +530,32 @@ def _add_schedule_parser(subparsers: Any) -> None:
         help="How many upcoming schedules to list (default: 10).",
     )
     sched_status.add_argument(
+        "--format",
+        choices=_FORMAT_CHOICES,
+        default=None,
+        help=(
+            "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
+            "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
+        ),
+    )
+
+    # prune (Plan 2026-10-08-1541, U10, KTD8)
+    sched_prune = schedule_sub.add_parser(
+        "prune",
+        help="Remove static crons no worker has ever reported.",
+    )
+    sched_prune.add_argument(
+        "--orphans",
+        action="store_true",
+        required=True,
+        help=(
+            "Remove static crons without any report from a worker (legacy "
+            "entries, apps before 0.10.0). The leader never removes them on "
+            "its own. A disabled cron comes back disabled when a worker "
+            "reports it again."
+        ),
+    )
+    sched_prune.add_argument(
         "--format",
         choices=_FORMAT_CHOICES,
         default=None,

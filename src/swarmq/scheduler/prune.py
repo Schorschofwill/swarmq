@@ -7,7 +7,7 @@ statische Crons (Altbestand, Apps vor 0.10.0) sind nur Kandidaten.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,6 +60,35 @@ def plan_prune(
     return PrunePlan(stale=tuple(stale), orphans=tuple(orphans))
 
 
+def decode_definitions(raw: Mapping[str, bytes]) -> dict[str, tuple[bytes, ScheduleDefinition]]:
+    """Gespeicherte Definitionen samt Rohbytes (für den atomaren Vergleich
+    beim Entfernen). Nicht dekodierbare fehlen: unklare Quelle, nie anfassen
+    (wie ``apply_static_definition``)."""
+    definitions: dict[str, tuple[bytes, ScheduleDefinition]] = {}
+    for name, payload in raw.items():
+        try:
+            definitions[name] = (payload, msgspec.json.decode(payload, type=ScheduleDefinition))
+        except msgspec.DecodeError:
+            continue
+    return definitions
+
+
+async def prune_orphans(store: Any, snapshot: CronReports) -> list[str]:
+    """``schedule prune --orphans`` (R13): nie gemeldete statische Crons
+    entfernen; deaktivierte kommen beim nächsten Melden deaktiviert zurück.
+    *store* ist der ``ScheduleStore``-Vertrag. Liefert die entfernten Namen."""
+    definitions = decode_definitions(await store.list_all())
+    plan = plan_prune([d for _, d in definitions.values()], snapshot, prune_after_ms=0)
+    removed: list[str] = []
+    for name in plan.orphans:
+        payload, definition = definitions[name]
+        if await store.prune_cron(
+            name, payload, stale_after_ms=None, remember_disabled=definition.disabled,
+        ):
+            removed.append(name)
+    return removed
+
+
 class SchedulerCronPrune:
     # Mixin über dem Loop-Zustand (wie ``SchedulerCronSync``): die Attribute
     # setzt ``SchedulerLoop.__init__``.
@@ -86,13 +115,7 @@ class SchedulerCronPrune:
         except BackendConnectionError as exc:
             logger.warning("scheduler_cron_prune_failed", **_error_fields(exc))
             return
-        definitions: dict[str, tuple[bytes, ScheduleDefinition]] = {}
-        for name, payload in raw.items():
-            try:
-                definitions[name] = (payload, msgspec.json.decode(payload, type=ScheduleDefinition))
-            except msgspec.DecodeError:
-                # Unklare Quelle: nie anfassen (wie ``apply_static_definition``).
-                continue
+        definitions = decode_definitions(raw)
         prune_after_ms = int(self._config.scheduler_prune_after_s * 1000)
         plan = plan_prune(
             [d for _, d in definitions.values()], snapshot, prune_after_ms=prune_after_ms,

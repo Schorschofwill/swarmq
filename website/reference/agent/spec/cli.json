@@ -390,6 +390,39 @@
           "flags": [
             "--format"
           ],
+          "help": "Output format. Default: 'table' on a TTY, 'json' on a pipe. Override the default with SWARMQ_DEFAULT_FORMAT=table|json.",
+          "name": "--format",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "default": false,
+          "flags": [
+            "--orphans"
+          ],
+          "help": "Remove static crons without any report from a worker (legacy entries, apps before 0.10.0). The leader never removes them on its own. A disabled cron comes back disabled when a worker reports it again.",
+          "name": "--orphans",
+          "nargs": 0,
+          "positional": false,
+          "required": true,
+          "type": "bool"
+        }
+      ],
+      "help": null,
+      "path": "schedule prune"
+    },
+    {
+      "arguments": [
+        {
+          "choices": [
+            "table",
+            "json"
+          ],
+          "default": null,
+          "flags": [
+            "--format"
+          ],
           "help": "Output format. Default: 'table' on a TTY, 'json' on a pipe. Override with SWARMQ_DEFAULT_FORMAT=table|json. Use 'json' for agent-parseable output with an explicit 'removed' boolean.",
           "name": "--format",
           "positional": false,
