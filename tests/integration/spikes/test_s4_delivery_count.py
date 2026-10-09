@@ -114,9 +114,23 @@ async def test_dead_letter_queue_drops_message_after_default_limit(
 
     counts = await delivery_counts(amqp, xq, nack_requeue if give_back == "nack" else reject_requeue, cap=30)
 
-    if give_back == "nack" and version == "4.3":
+    # ``nack``/``reject`` sind ohne Bestätigung: Die Rückgabe der letzten
+    # Zustellung ist beim Lesen auf einem anderen Channel womöglich noch nicht
+    # verbucht. Deshalb auf die erwartete Tiefe warten statt sofort zu lesen.
+    stays = give_back == "nack" and version == "4.3"
+    expected_depth = 1 if stays else 0
+    observed_depth = -1
+
+    async def depth_settled() -> bool:
+        nonlocal observed_depth
+        observed_depth = await depth(amqp, xq)
+        return observed_depth == expected_depth
+
+    await wait_until(depth_settled, timeout=5.0)
+
+    if stays:
         assert len(counts) == 30, "nack(requeue) does not count on 4.3: the message stays"
-        assert await depth(amqp, xq) == 1
+        assert observed_depth == 1
     else:
         assert len(counts) == 21, "default delivery limit 20 on the .XQ"
-        assert await depth(amqp, xq) == 0, "the message is gone (no dead-letter target)"
+        assert observed_depth == 0, "the message is gone (no dead-letter target)"
