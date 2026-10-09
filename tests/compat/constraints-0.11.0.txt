@@ -1,0 +1,19 @@
+# Laufzeit-Abhaengigkeiten von swarmq 0.11.0, exakt wie im Lockfile des Tags (Q2).
+# Erzeugt mit:
+#   git show v0.11.0:uv.lock > uv.lock; git show v0.11.0:pyproject.toml > pyproject.toml
+#   uv export --frozen --no-hashes --no-emit-project --no-dev --no-header --no-annotate
+aio-pika==10.0.1
+aiormq==7.0.0
+croniter==6.2.4
+idna==3.19
+msgpack==1.2.2
+msgspec==0.21.1
+multidict==6.8.0
+pamqp==4.0.1
+propcache==0.5.2
+python-dateutil==2.9.0.post0
+six==1.17.0
+structlog==26.1.0
+tzdata==2026.5
+valkey==6.1.1
+yarl==1.24.5
