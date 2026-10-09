@@ -20,7 +20,6 @@ The fixture module lives at ``tests/e2e/_shutdown_fixture_tasks.py``.
 from __future__ import annotations
 
 import asyncio
-import os
 import signal
 import subprocess
 import time
@@ -33,6 +32,14 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
+from tests.support.services import (
+    RABBITMQ_HOST,
+    RABBITMQ_PORT,
+    VALKEY_HOST,
+    VALKEY_PORT,
+    rabbitmq_amqp_url,
+    valkey_db_url,
+)
 from tests.support.worker_subprocess import (
     crash_worker as _crash_worker,
 )
@@ -54,13 +61,14 @@ from tests.support.worker_subprocess import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_RABBITMQ_HOST = os.environ.get("SWARMQ_TEST_RABBITMQ_HOST", "localhost")
-_RABBITMQ_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ_PORT", "5672"))
-_VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
-_VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
+# Gemeinsame Testkonfiguration (Standard: Testcontainer 5699/6399).
+_RABBITMQ_HOST = RABBITMQ_HOST
+_RABBITMQ_PORT = RABBITMQ_PORT
+_VALKEY_HOST = VALKEY_HOST
+_VALKEY_PORT = VALKEY_PORT
 
-_BROKER_URL = f"amqp://guest:guest@{_RABBITMQ_HOST}:{_RABBITMQ_PORT}/"
-_BACKEND_URL = f"valkey://{_VALKEY_HOST}:{_VALKEY_PORT}/0"
+_BROKER_URL = rabbitmq_amqp_url()
+_BACKEND_URL = valkey_db_url()
 
 
 pytestmark = [

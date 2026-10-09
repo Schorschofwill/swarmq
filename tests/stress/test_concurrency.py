@@ -30,7 +30,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.limits import RateLimitConfig
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
-from tests.support.services import port_is_open
+from tests.support.services import flush_valkey_db, port_is_open
 
 # Stress tests are slow by design (10 workers × 1000 tasks can take
 # 30-60s). A 120s budget keeps genuine deadlock detection sharp while
@@ -81,17 +81,9 @@ def valkey_url() -> str:
 async def _flush_valkey(valkey_url):
     """Clear backend state before each test so counters/locks from a
     previous run don't leak."""
-    client = valkey_asyncio.Valkey.from_url(valkey_url)
-    try:
-        await client.flushdb()
-    finally:
-        await client.aclose()
+    await flush_valkey_db(valkey_url)
     yield
-    client = valkey_asyncio.Valkey.from_url(valkey_url)
-    try:
-        await client.flushdb()
-    finally:
-        await client.aclose()
+    await flush_valkey_db(valkey_url)
 
 
 @pytest.fixture

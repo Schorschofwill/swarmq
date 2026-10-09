@@ -7,7 +7,6 @@ Valkey instance. Mirrors ``tests/integration/test_rate_limiter_integration.py``.
 from __future__ import annotations
 
 import asyncio
-import os
 import socket
 import uuid
 
@@ -15,10 +14,10 @@ import pytest
 import valkey.asyncio as valkey_asyncio
 
 from swarmq.backend.valkey.locks import LockManager
+from tests.support.services import VALKEY_HOST, VALKEY_PORT, valkey_db_url
 
-VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
-VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
-VALKEY_URL = f"valkey://{VALKEY_HOST}:{VALKEY_PORT}/0"
+# Host/Port aus der gemeinsamen Testkonfiguration (Standard: Testcontainer 6399).
+VALKEY_URL = valkey_db_url()
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:

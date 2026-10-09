@@ -26,6 +26,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.services import flush_valkey_db
 
 # Liveness safety-net for every "wait for an async event" below. It is NOT a
 # behavioural deadline — wait_for returns the instant the event fires, so a
@@ -116,16 +117,9 @@ async def _flush_valkey(valkey_url):
     flakiness.) Flushing on setup gives every scheduler test a clean
     leader-lock slate regardless of what ran before; the teardown flush keeps
     our own schedules/locks from leaking forward."""
-    async def _flush() -> None:
-        client = valkey_asyncio.Valkey.from_url(valkey_url)
-        try:
-            await client.flushdb()
-        finally:
-            await client.aclose()
-
-    await _flush()
+    await flush_valkey_db(valkey_url)
     yield
-    await _flush()
+    await flush_valkey_db(valkey_url)
 
 
 # ---------------------------------------------------------------------------

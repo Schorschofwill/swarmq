@@ -253,8 +253,10 @@ async def write_all(backend: ValkeyBackend) -> None:
 
 
 async def _main() -> None:
-    from tests.support.services import valkey_db_url
+    from tests.support.services import require_safe_valkey_url, valkey_db_url
 
+    # snapshot_keys flushes the database: refuse a foreign stack on 6379.
+    require_safe_valkey_url(valkey_db_url())
     backend = ValkeyBackend(valkey_db_url())
     await backend.connect()
     try:

@@ -24,7 +24,6 @@ import uuid
 from typing import Any
 
 import pytest
-import valkey.asyncio as valkey_asyncio
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -33,6 +32,7 @@ from swarmq.serialization import encode_json
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain
+from tests.support.services import flush_valkey_db
 
 # Liveness safety-net for "wait for an async signal/event" below — generous so
 # a loaded/cold CI runner never turns a slow signal round-trip into a false
@@ -76,16 +76,9 @@ async def _flush_valkey(valkey_url):
     election (``SCHEDULER_LEADER`` never fires → timeout, green only on a
     later rerun). Flushing on setup gives a clean slate regardless of order;
     teardown keeps our dedup / lock / scheduler keys from leaking forward."""
-    async def _flush() -> None:
-        client = valkey_asyncio.Valkey.from_url(valkey_url)
-        try:
-            await client.flushdb()
-        finally:
-            await client.aclose()
-
-    await _flush()
+    await flush_valkey_db(valkey_url)
     yield
-    await _flush()
+    await flush_valkey_db(valkey_url)
 
 
 @contextlib.asynccontextmanager

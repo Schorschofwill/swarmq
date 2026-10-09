@@ -19,6 +19,7 @@ import uuid
 import pytest
 
 from swarmq.task import Task
+from tests.support.services import flush_valkey_db, require_safe_valkey_url, valkey_db_url
 from tests.support.worker_subprocess import port_open
 
 from ._toxiproxy import (
@@ -141,14 +142,9 @@ async def _combinations_cleanup():
     yield
     Task._clear_registered_tasks()
 
-    import valkey.asyncio as _aiovalkey
-
-    host = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
-    port = os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379")
-    client = _aiovalkey.Valkey.from_url(f"valkey://{host}:{port}/0")
-    try:
-        with contextlib.suppress(Exception):
-            await client.flushdb()
-    finally:
-        with contextlib.suppress(Exception):
-            await client.aclose()
+    # Guard outside the suppress: a refusal (local host on 6379) must fail
+    # the test, while an unreachable Valkey stays a best-effort cleanup.
+    url = valkey_db_url()
+    require_safe_valkey_url(url)
+    with contextlib.suppress(Exception):
+        await flush_valkey_db(url)
