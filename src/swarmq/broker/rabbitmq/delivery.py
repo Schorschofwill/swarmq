@@ -27,6 +27,12 @@ from swarmq.broker.rabbitmq.connection import (
     RabbitMQConnection,
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
+from swarmq.broker.rabbitmq.topology import (
+    dead_letter_queue_arguments,
+    delay_queue_arguments,
+    main_queue_arguments,
+    queue_family,
+)
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
 from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT
@@ -82,11 +88,7 @@ class RabbitMQDelivery(RabbitMQConnection):
     async def declare_queue(self, queue_name: str) -> None:
         pub = await self._ensure_publish_channel()
         # Main queue — DLX points to dead-letter queue
-        main_args: dict[str, Any] = {
-            "x-queue-type": self._queue_type,
-            "x-dead-letter-exchange": "",
-            "x-dead-letter-routing-key": f"{queue_name}.XQ",
-        }
+        main_args = main_queue_arguments(queue_name, self._queue_type, self.delivery_limit)
         try:
             await self._declare_queue_triplet(pub, queue_name, main_args)
         except aio_pika.exceptions.AMQPChannelError as exc:
@@ -107,34 +109,12 @@ class RabbitMQDelivery(RabbitMQConnection):
         queue_name: str,
         main_args: dict[str, Any],
     ) -> None:
-        # Quorum-queue safety net (U2.1 skip): without x-delivery-limit a
-        # deterministically-crashing task (SIGSEGV/OOM) is redelivered
-        # forever by the broker, never reaching max_retries. The budget is
-        # configurable since B5 (``SWARMQ_DELIVERY_LIMIT``), default 20 —
-        # ~3-4 task-level retries per delivery plus broker-hiccup headroom,
-        # while still providing a terminal DLQ path. That headroom is
-        # narrower since the publish deadline: a publish that breaks its
-        # deadline inside the worker redelivers the in-flight message
-        # instead of acking it, and each round costs one delivery.
-        if self._queue_type == "quorum":
-            main_args["x-delivery-limit"] = self.delivery_limit
-        await pub.declare_queue(queue_name, durable=True, arguments=main_args)
+        main, delay, dead_letter = queue_family(queue_name)
+        await pub.declare_queue(main, durable=True, arguments=main_args)
         # Delay queue — DLX points back to main queue
-        await pub.declare_queue(
-            f"{queue_name}.DQ",
-            durable=True,
-            arguments={
-                "x-queue-type": self._queue_type,
-                "x-dead-letter-exchange": "",
-                "x-dead-letter-routing-key": queue_name,
-            },
-        )
+        await pub.declare_queue(delay, durable=True, arguments=delay_queue_arguments(queue_name, self._queue_type))
         # Dead-letter queue
-        await pub.declare_queue(
-            f"{queue_name}.XQ",
-            durable=True,
-            arguments={"x-queue-type": self._queue_type},
-        )
+        await pub.declare_queue(dead_letter, durable=True, arguments=dead_letter_queue_arguments(self._queue_type))
 
     # ------------------------------------------------------------------
     # Publish
