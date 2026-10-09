@@ -244,6 +244,12 @@ class SwarmQConfig:
     # meldet seine statischen Crons beim Start und danach in diesem Abstand;
     # der Leader waehlt im selben Takt. Eine Meldung lebt 3 Takte.
     scheduler_seen_interval_s: float = 60.0
+    # Cron-Aufraeumen ueber Lebenszeichen (Plan 2026-10-08-1541, KTD8): der
+    # Leader entfernt statische Crons, die mindestens einmal gemeldet wurden
+    # und seit ``scheduler_prune_after_s`` von keinem Worker mehr gemeldet
+    # werden. ``log`` loggt nur, ``off`` schaltet das Aufraeumen ab.
+    scheduler_prune: str = "on"
+    scheduler_prune_after_s: float = 86400.0
     # R4.5 Burst-Mode: when True, the worker exits cleanly once all
     # configured queues have been idle for `burst_idle_timeout` seconds
     # without delivering a single message. Used for batch/cron-style
@@ -377,6 +383,8 @@ class SwarmQConfig:
         ("SWARMQ_SCHEDULER_INFLIGHT_TTL", "scheduler_inflight_ttl", "float"),
         ("SWARMQ_SCHEDULER_TIMEZONE", "scheduler_timezone", "str"),
         ("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "scheduler_seen_interval_s", "float"),
+        ("SWARMQ_SCHEDULER_PRUNE", "scheduler_prune", "str"),
+        ("SWARMQ_SCHEDULER_PRUNE_AFTER_S", "scheduler_prune_after_s", "float"),
         ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
         # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
         # Port-Ranges werden beim Parsen validiert, damit eine kaputte
@@ -421,6 +429,7 @@ class SwarmQConfig:
         "scheduler_lock_ttl",
         "scheduler_inflight_ttl",
         "scheduler_seen_interval_s",
+        "scheduler_prune_after_s",
         "burst_idle_timeout",
         "publish_timeout_s",
         "delivery_limit",
@@ -438,6 +447,7 @@ class SwarmQConfig:
         "log_queue_size",
     )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
+    _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]] = ("off", "log", "on")
     # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
     CPU_DEFAULT_RECYCLE_RSS_MB: ClassVar[int] = 250
     CPU_DEFAULT_RECYCLE_MAX_TASKS: ClassVar[int] = 1000
@@ -629,6 +639,24 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
+    def _validate_scheduler_prune(self) -> None:
+        """Cron-Aufraeumen (KTD8)."""
+        if self.scheduler_prune not in self._VALID_PRUNE_MODES:
+            msg = (
+                f"scheduler_prune must be one of {list(self._VALID_PRUNE_MODES)}, "
+                f"got {self.scheduler_prune!r}"
+            )
+            raise ConfigurationError(msg)
+        # Eine Meldung lebt drei Meldetakte; eine kuerzere Frist raeumte
+        # Crons lebender Worker ab.
+        if self.scheduler_prune_after_s < 3 * self.scheduler_seen_interval_s:
+            msg = (
+                "scheduler_prune_after_s must be >= 3x scheduler_seen_interval_s, "
+                f"got prune_after_s={self.scheduler_prune_after_s}, "
+                f"seen_interval_s={self.scheduler_seen_interval_s}"
+            )
+            raise ConfigurationError(msg)
+
     def _validate_execution_guard(self) -> None:
         """Done-/Superseded-Marker muessen den Running-Marker ueberdauern
         (KTD5; Vorbild ``scheduler_dedup_ttl``)."""
@@ -671,6 +699,7 @@ class SwarmQConfig:
 
         self._validate_core()
         self._validate_scheduler_relations()
+        self._validate_scheduler_prune()
         self._validate_execution_guard()
         try:
             self.scheduler_timezone = normalize_timezone(
