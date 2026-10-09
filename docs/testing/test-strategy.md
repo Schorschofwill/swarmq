@@ -16,6 +16,8 @@ unterschiedlichen Ausführungs-Stufen.
 | `tests/chaos/` | `chaos` | – | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
 | `tests/stress/` | `stress` | – | manuell in der Pipeline | hohe Parallelität (10 worker × 1000 tasks) |
 | `tests/soak/` | `soak` | – | manuell in der Pipeline | 1h Last-Test mit Leak-Detection |
+| `tests/compat/` | `compat` | – | örtlich, je MR des Plans 0.12.0 | Mischbetrieb mit swarmq 0.11.0 aus PyPI (Q2), braucht Netz zu PyPI |
+| `tests/integration/spikes/` | `spike` (+ `integration`) | ✓ | pre-merge | Charakterisierung RabbitMQ 4.3.6 und 4.2.9 (Spikes S1–S9) |
 
 `addopts` in `pyproject.toml` schliesst opt-in-Marker per Default aus,
 damit der Dev-Loop schnell bleibt. Für Unit-Tests gilt die Regel aus
@@ -205,6 +207,10 @@ HYPOTHESIS_PROFILE=thorough uv run --extra test pytest tests/property -m propert
 
 # Soak (default 60s; opt-in 1h via env)
 SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
+
+# Mischbetrieb 0.11.0 / Arbeitsstand: legt pro Sitzung ein venv mit
+# swarmq==0.11.0 an (Abhängigkeiten aus tests/compat/constraints-0.11.0.txt)
+uv run --extra test --extra reload pytest tests/compat -m compat -q
 ```
 
 ## RabbitMQ-Versionen
@@ -254,3 +260,4 @@ gescheitert sind. Operator entscheidet über Skip / Fix.
 - ValkeyBackend Retry-Policy → `tests/unit/backend/test_valkey.py` + chaos-recovery
 - Pub/Sub Resubscribe → `tests/unit/test_client.py::TestClientProgress::test_*_resubscribes_*` + `tests/chaos/test_network_chaos.py::test_pubsub_disconnect_resubscribe`
 - aio_pika Channel-Recreate → `tests/integration/broker/test_rabbitmq_reconnect.py`
+- Broker-Verhalten für den Plan 0.12.0 (406-Texte, Delivery-Limit, globales QoS, Delivery-Count, `x-death`, Blocked-Zustand, Stufen-TTL) → `tests/integration/spikes/` (S1–S9, je 4.3.6 und 4.2.9)
