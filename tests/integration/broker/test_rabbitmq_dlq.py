@@ -15,6 +15,7 @@ import uuid
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
 
@@ -45,15 +46,8 @@ async def broker_and_queue(rabbitmq_url: str):
     await b.declare_queue(queue_name)
     yield b, queue_name
     # Teardown — delete queues, close broker.
+    await delete_queue_family(rabbitmq_url, queue_name)
     if b._connection is not None and not b._connection.is_closed:
-        for qname in (queue_name, f"{queue_name}.DQ", f"{queue_name}.XQ"):
-            try:
-                ch = await b._connection.channel()
-                q = await ch.get_queue(qname, ensure=False)
-                await q.delete(if_empty=False, if_unused=False)
-                await ch.close()
-            except Exception:
-                pass
         await b.close()
 
 
@@ -94,15 +88,14 @@ async def test_list_returns_each_message_exactly_once(broker_and_queue):
     ids = [f"t-{i}" for i in range(3)]
     for tid in ids:
         await broker._publish_to_dead_letter_queue(
-            qname, _make_body(tid, "add"),
+            qname,
+            _make_body(tid, "add"),
             headers={"x-swarmq-retry-count": 3},
         )
 
     entries, scanned = await broker.list_dead_letters(qname)
     seen_ids = [e["task_id"] for e in entries]
-    assert sorted(seen_ids) == sorted(ids), (
-        f"list must return every published task exactly once; got {seen_ids}"
-    )
+    assert sorted(seen_ids) == sorted(ids), f"list must return every published task exactly once; got {seen_ids}"
     assert scanned == 3
     # And the DLQ retains all three (non-destructive).
     assert await _dlq_depth(broker, qname) == 3
@@ -112,7 +105,8 @@ async def test_list_respects_limit(broker_and_queue):
     broker, qname = broker_and_queue
     for i in range(5):
         await broker._publish_to_dead_letter_queue(
-            qname, _make_body(f"t-{i}"),
+            qname,
+            _make_body(f"t-{i}"),
         )
     entries, scanned = await broker.list_dead_letters(qname, limit=2)
     assert len(entries) == 2
@@ -125,7 +119,8 @@ async def test_list_includes_headers_and_body_size(broker_and_queue):
     broker, qname = broker_and_queue
     body = _make_body("t-1", "add")
     await broker._publish_to_dead_letter_queue(
-        qname, body,
+        qname,
+        body,
         headers={"x-swarmq-retry-count": 5, "x-swarmq-traceback": "boom"},
     )
     entries, scanned = await broker.list_dead_letters(qname)
@@ -159,10 +154,12 @@ async def test_inspect_returns_full_payload_on_match(broker_and_queue):
     broker, qname = broker_and_queue
     body = _make_body("wanted", "mul", args=[2, 3], kwargs={"x": 1})
     await broker._publish_to_dead_letter_queue(
-        qname, _make_body("other"),
+        qname,
+        _make_body("other"),
     )
     await broker._publish_to_dead_letter_queue(
-        qname, body,
+        qname,
+        body,
         headers={"x-swarmq-retry-count": 2, "x-swarmq-traceback": "trace"},
     )
 
@@ -205,7 +202,8 @@ async def test_retry_moves_matching_message_to_main(broker_and_queue):
     broker, qname = broker_and_queue
     await broker._publish_to_dead_letter_queue(qname, _make_body("keep"))
     await broker._publish_to_dead_letter_queue(
-        qname, _make_body("move"),
+        qname,
+        _make_body("move"),
         headers={"x-swarmq-retry-count": 3, "x-swarmq-traceback": "err"},
     )
 
@@ -233,7 +231,8 @@ async def test_retry_resets_retry_count_header(broker_and_queue):
     gets the full retry budget on the redelivery."""
     broker, qname = broker_and_queue
     await broker._publish_to_dead_letter_queue(
-        qname, _make_body("t-retry"),
+        qname,
+        _make_body("t-retry"),
         headers={"x-swarmq-retry-count": 5, "x-swarmq-traceback": "boom"},
     )
 
@@ -246,9 +245,7 @@ async def test_retry_resets_retry_count_header(broker_and_queue):
         q = await ch.get_queue(qname)
         msg = await q.get(no_ack=True)
         assert msg is not None
-        assert "x-swarmq-retry-count" not in (msg.headers or {}), (
-            "retry-count must be reset on forward to main queue"
-        )
+        assert "x-swarmq-retry-count" not in (msg.headers or {}), "retry-count must be reset on forward to main queue"
         # Traceback header DOES survive (first-fail context visible).
         assert (msg.headers or {}).get("x-swarmq-traceback") == "boom"
     finally:
@@ -261,7 +258,9 @@ async def test_retry_and_retry_all_set_a_fresh_replay_id(broker_and_queue):
     abgeschlossen fallen, solange der Done-Marker des ersten Laufs steht."""
     broker, qname = broker_and_queue
     await broker._publish_to_dead_letter_queue(
-        qname, _make_body("t-replay"), headers={"x-swarmq-replay-id": "old"},
+        qname,
+        _make_body("t-replay"),
+        headers={"x-swarmq-replay-id": "old"},
     )
     await broker._publish_to_dead_letter_queue(qname, _make_body("t-replay-all"), headers={})
 
@@ -291,7 +290,8 @@ async def test_retry_all_moves_everything(broker_and_queue):
     broker, qname = broker_and_queue
     for i in range(4):
         await broker._publish_to_dead_letter_queue(
-            qname, _make_body(f"t-{i}"),
+            qname,
+            _make_body(f"t-{i}"),
             headers={"x-swarmq-retry-count": 3},
         )
 
@@ -364,7 +364,9 @@ async def test_inspect_scan_limit_truncates_without_spurious_miss(
 
     # scan_limit=2 means target (at position 3) is unreachable.
     result, scanned = await broker.inspect_dead_letter(
-        qname, "target", scan_limit=2,
+        qname,
+        "target",
+        scan_limit=2,
     )
     assert result is None
     assert scanned == 2

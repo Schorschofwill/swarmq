@@ -29,12 +29,13 @@ import subprocess
 import time
 import uuid
 
-import aio_pika
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
+from tests.support.queues import delete_queue_family
 from tests.support.services import RABBITMQ_PORT
+from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 
@@ -77,15 +78,13 @@ def _unacked(queue: str) -> int:
 
 
 async def _wait_for_alarm(active: bool, timeout: float = 10.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
+    async def reached() -> bool:
         alarms = await asyncio.to_thread(_eval, "rabbit_alarm:get_alarms().")
-        if (alarms != "[]") == active:
-            return
-        # rabbitmqctl kennt kein Warten auf Alarme.
-        await asyncio.sleep(0.1)
-    raise AssertionError(f"broker alarm state did not become active={active} within {timeout}s")
+        return (alarms != "[]") == active
+
+    # rabbitmqctl kennt kein Warten auf Alarme.
+    if not await wait_until(reached, timeout=timeout, interval=0.1):
+        raise AssertionError(f"broker alarm state did not become active={active} within {timeout}s")
 
 
 @pytest.fixture
@@ -156,13 +155,15 @@ async def test_ack_reaches_broker_while_publish_is_blocked_by_alarm(rabbitmq_url
         # B ist fertig und wird bestätigt.
         await worker.ack(by_body[b"B"])
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _ACK_BUDGET_S
-        unacked = await asyncio.to_thread(_unacked, queue)
-        while unacked > 1 and loop.time() < deadline:
-            # Kein Broker-Ereignis meldet ein angekommenes Ack; Pollen.
-            await asyncio.sleep(0.1)
+        unacked = 2
+
+        async def ack_arrived() -> bool:
+            nonlocal unacked
             unacked = await asyncio.to_thread(_unacked, queue)
+            return unacked <= 1
+
+        # Kein Broker-Ereignis meldet ein angekommenes Ack; Pollen.
+        await wait_until(ack_arrived, timeout=_ACK_BUDGET_S, interval=0.1)
 
         assert unacked == 1, (
             f"{unacked} unacked messages in {queue!r} {_ACK_BUDGET_S}s after acking B — "
@@ -175,22 +176,6 @@ async def test_ack_reaches_broker_while_publish_is_blocked_by_alarm(rabbitmq_url
                 await blocked_publish
         with contextlib.suppress(Exception):
             await asyncio.wait_for(worker.close(), timeout=5)
-        await _delete_queues_after_alarm(rabbitmq_url, queue)
-
-
-async def _delete_queues_after_alarm(url: str, queue: str) -> None:
-    # Das Löschen ist kein Publish und läuft auch im Alarm; die Fixture setzt
-    # den Alarm erst danach zurück.
-    conn = await aio_pika.connect(url)
-    try:
-        for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
-            ch = await conn.channel()
-            try:
-                await ch.queue_delete(name)
-            except Exception:
-                pass
-            finally:
-                if not ch.is_closed:
-                    await ch.close()
-    finally:
-        await conn.close()
+        # Das Löschen ist kein Publish und läuft auch im Alarm; die Fixture setzt
+        # den Alarm erst danach zurück.
+        await delete_queue_family(rabbitmq_url, queue)

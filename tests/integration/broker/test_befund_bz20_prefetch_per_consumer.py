@@ -20,7 +20,6 @@ import contextlib
 import time
 import uuid
 
-import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -29,6 +28,8 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from tests.support.queues import delete_queue_family
+from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 
@@ -40,22 +41,6 @@ _SETTLE_S = 3.0
 
 async def _ready_total(broker: RabbitMQBroker, queues: list[str]) -> int:
     return sum([await broker.queue_depth(q) for q in queues])
-
-
-async def _delete_queues(url: str, names: list[str]) -> None:
-    conn = await aio_pika.connect(url)
-    try:
-        for name in names:
-            ch = await conn.channel()
-            try:
-                await ch.queue_delete(name)
-            except Exception:
-                pass
-            finally:
-                if not ch.is_closed:
-                    await ch.close()
-    finally:
-        await conn.close()
 
 
 @pytest.mark.befund("BZ-20")
@@ -104,12 +89,14 @@ async def test_worker_holds_at_most_concurrency_unacked_messages(rabbitmq_url: s
 
         # Der Broker meldet Prefetch-Auslieferungen nicht aktiv; die Tiefe
         # der Queues ist die einzige beobachtbare Größe, daher kurzes Pollen.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _SETTLE_S
-        ready = await _ready_total(producer, queues)
-        while ready > total - len(queues) and loop.time() < deadline:
-            await asyncio.sleep(0.05)
+        ready = total
+
+        async def settled() -> bool:
+            nonlocal ready
             ready = await _ready_total(producer, queues)
+            return ready <= total - len(queues)
+
+        await wait_until(settled, timeout=_SETTLE_S)
 
         held = total - ready
         assert held <= _CONCURRENCY, (
@@ -124,5 +111,5 @@ async def test_worker_holds_at_most_concurrency_unacked_messages(rabbitmq_url: s
                 await worker_task
         await worker_broker.close()
         await worker_backend.close()
-        await _delete_queues(rabbitmq_url, [f"{q}{s}" for q in queues for s in ("", ".DQ", ".XQ")])
+        await delete_queue_family(rabbitmq_url, *queues)
         await producer.close()

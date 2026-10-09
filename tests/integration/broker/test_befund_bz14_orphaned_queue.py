@@ -24,7 +24,6 @@ import logging
 import time
 import uuid
 
-import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -33,6 +32,8 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from tests.support.queues import delete_queue_family
+from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 
@@ -46,22 +47,6 @@ def _body(task_id: str, task_name: str, queue: str) -> bytes:
 
 def _mentions(record: logging.LogRecord, text: str) -> bool:
     return text in record.getMessage() or text in repr(record.__dict__)
-
-
-async def _delete_queues(url: str, names: list[str]) -> None:
-    conn = await aio_pika.connect(url)
-    try:
-        for name in names:
-            ch = await conn.channel()
-            try:
-                await ch.queue_delete(name)
-            except Exception:
-                pass
-            finally:
-                if not ch.is_closed:
-                    await ch.close()
-    finally:
-        await conn.close()
 
 
 @pytest.mark.befund("BZ-14")
@@ -109,14 +94,12 @@ async def test_backlog_in_abandoned_queue_is_reported(
         await producer.publish(new_queue, _body(f"new-{suffix}", task_name, new_queue), headers=headers)
         await asyncio.wait_for(ran.wait(), timeout=10)
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _WARN_BUDGET_S
-        warned = False
-        while not warned and loop.time() < deadline:
-            warned = any(r.levelno >= logging.WARNING and _mentions(r, old_queue) for r in caplog.records)
-            if not warned:
-                # Eine Warnung kann aus einem periodischen Check kommen; Pollen.
-                await asyncio.sleep(0.1)
+        # Eine Warnung kann aus einem periodischen Check kommen; Pollen.
+        warned = await wait_until(
+            lambda: any(r.levelno >= logging.WARNING and _mentions(r, old_queue) for r in caplog.records),
+            timeout=_WARN_BUDGET_S,
+            interval=0.1,
+        )
 
         assert await producer.queue_depth(old_queue) == 1, "precondition: backlog still in the old queue"
         assert warned, (
@@ -129,5 +112,5 @@ async def test_backlog_in_abandoned_queue_is_reported(
                 await worker_task
         await worker_broker.close()
         await worker_backend.close()
-        await _delete_queues(rabbitmq_url, [f"{q}{s}" for q in (old_queue, new_queue) for s in ("", ".DQ", ".XQ")])
+        await delete_queue_family(rabbitmq_url, old_queue, new_queue)
         await producer.close()

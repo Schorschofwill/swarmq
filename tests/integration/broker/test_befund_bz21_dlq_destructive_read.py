@@ -26,6 +26,7 @@ import aio_pika.queue
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
 
@@ -47,13 +48,7 @@ async def dlq(rabbitmq_url: str):
         body = json.dumps({"task": {"id": f"t-{i}", "queue": queue, "name": "t"}, "args": [], "kwargs": {}})
         await setup.publish(f"{queue}.XQ", body.encode())
     yield setup, queue
-    for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
-        try:
-            ch = await setup._connection.channel()
-            await ch.queue_delete(name)
-            await ch.close()
-        except Exception:
-            pass
+    await delete_queue_family(rabbitmq_url, queue)
     await setup.close()
 
 

@@ -13,7 +13,6 @@ import contextlib
 import socket
 import uuid
 
-import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -21,6 +20,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.worker import Worker
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 
@@ -32,7 +32,8 @@ def _free_port() -> int:
 
 
 async def test_sampler_populates_gauges_from_real_broker(
-    rabbitmq_url, valkey_url,
+    rabbitmq_url,
+    valkey_url,
 ):
     pytest.importorskip("prometheus_client")
 
@@ -58,7 +59,10 @@ async def test_sampler_populates_gauges_from_real_broker(
         app.config.metrics_port = _free_port()
         app.config.metrics_sample_interval = 0.2
         worker = Worker(
-            app.broker, app.backend, app.registry, app.config,
+            app.broker,
+            app.backend,
+            app.registry,
+            app.config,
             signal_dispatcher=app._signal_dispatcher,
         )
         task = asyncio.create_task(worker.start())
@@ -67,16 +71,10 @@ async def test_sampler_populates_gauges_from_real_broker(
             # One full sample completed → gauges carry real values.
             m = worker._metrics
             assert m is not None and m.enabled
-            assert (
-                m.queue_depth.labels(queue=queue, kind="pending")
-                ._value.get() == 0
-            )
+            assert m.queue_depth.labels(queue=queue, kind="pending")._value.get() == 0
             assert m.dlq_messages.labels(queue=queue)._value.get() == 1
             worker_id = heartbeats[0]["worker_id"]
-            assert (
-                m.worker_uptime_seconds.labels(worker_id=worker_id)
-                ._value.get() > 0
-            )
+            assert m.worker_uptime_seconds.labels(worker_id=worker_id)._value.get() > 0
         finally:
             worker._request_shutdown()
             try:
@@ -85,13 +83,5 @@ async def test_sampler_populates_gauges_from_real_broker(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            # Queue hygiene: drop the test queue triplet + DLQ.
-            with contextlib.suppress(Exception):
-                conn = await aio_pika.connect_robust(rabbitmq_url)
-                try:
-                    ch = await conn.channel()
-                    await ch.queue_delete(queue)
-                    await ch.queue_delete(f"{queue}.XQ")
-                    await ch.close()
-                finally:
-                    await conn.close()
+            # Queue hygiene: drop the test queue family.
+            await delete_queue_family(rabbitmq_url, queue)

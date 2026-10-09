@@ -21,6 +21,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.timeout(20)]
 
@@ -47,10 +48,7 @@ async def setup(rabbitmq_url: str):
     await other.publish(queue, b"payload")
     yield consumer, other, queue
     await consumer.close()
-    ch = await other._connection.channel()
-    for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
-        await ch.queue_delete(name)
-    await ch.close()
+    await delete_queue_family(rabbitmq_url, queue)
     await other.close()
 
 

@@ -22,6 +22,7 @@ import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
 
@@ -42,15 +43,7 @@ async def broker_and_queue(rabbitmq_url: str):
         await b.cancel_consume()
     except Exception:
         pass
-    if b._connection is not None and not b._connection.is_closed:
-        for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
-            try:
-                ch = await b._connection.channel()
-                q = await ch.get_queue(name, ensure=False)
-                await q.delete(if_empty=False, if_unused=False)
-                await ch.close()
-            except Exception:
-                pass
+    await delete_queue_family(rabbitmq_url, queue)
     await b.close()
 
 

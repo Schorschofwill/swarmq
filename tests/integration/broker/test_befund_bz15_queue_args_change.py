@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import uuid
 
-import aio_pika
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ConfigurationError
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
 
@@ -29,19 +29,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
 async def queue_name(rabbitmq_url: str):
     name = f"bz15-{uuid.uuid4().hex[:10]}"
     yield name
-    conn = await aio_pika.connect(rabbitmq_url)
-    try:
-        for qname in (name, f"{name}.DQ", f"{name}.XQ"):
-            ch = await conn.channel()
-            try:
-                await ch.queue_delete(qname)
-            except Exception:
-                pass
-            finally:
-                if not ch.is_closed:
-                    await ch.close()
-    finally:
-        await conn.close()
+    await delete_queue_family(rabbitmq_url, name)
 
 
 async def _declare(rabbitmq_url: str, queue: str, *, queue_type: str = "quorum", delivery_limit: int = 20) -> None:

@@ -21,7 +21,6 @@ import contextlib
 import time
 import uuid
 
-import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -30,6 +29,8 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from tests.support.queues import delete_queue_family
+from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 
@@ -40,22 +41,6 @@ _OBSERVE_S = 3.0
 
 def _body(task_id: str, task_name: str, queue: str) -> bytes:
     return encode_json({"task": {"id": task_id, "name": task_name, "queue": queue}, "args": [], "kwargs": {}})
-
-
-async def _delete_queues(url: str, names: list[str]) -> None:
-    conn = await aio_pika.connect(url)
-    try:
-        for name in names:
-            ch = await conn.channel()
-            try:
-                await ch.queue_delete(name)
-            except Exception:
-                pass
-            finally:
-                if not ch.is_closed:
-                    await ch.close()
-    finally:
-        await conn.close()
 
 
 @pytest.mark.befund("BZ-17")
@@ -112,12 +97,14 @@ async def test_huge_error_text_does_not_requeue_neighbour_tasks(rabbitmq_url: st
 
         # Kein Broker-Ereignis meldet "Nachricht zurück in der Queue"; die
         # Tiefe der Haupt-Queue ist die beobachtbare Größe, daher Pollen.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _OBSERVE_S
-        requeued = await producer.queue_depth(queue)
-        while requeued == 0 and loop.time() < deadline:
-            await asyncio.sleep(0.05)
+        requeued = 0
+
+        async def any_requeued() -> bool:
+            nonlocal requeued
             requeued = await producer.queue_depth(queue)
+            return requeued != 0
+
+        await wait_until(any_requeued, timeout=_OBSERVE_S)
 
         assert requeued == 0, (
             f"{requeued} message(s) went back to {queue!r} after a task failed with a "
@@ -132,5 +119,5 @@ async def test_huge_error_text_does_not_requeue_neighbour_tasks(rabbitmq_url: st
                 await worker_task
         await worker_broker.close()
         await worker_backend.close()
-        await _delete_queues(rabbitmq_url, [queue, f"{queue}.DQ", f"{queue}.XQ"])
+        await delete_queue_family(rabbitmq_url, queue)
         await producer.close()

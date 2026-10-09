@@ -33,6 +33,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
 from swarmq.task import Task, TaskInfo
+from tests.support.wait import wait_until
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
@@ -78,9 +79,8 @@ async def _worker(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterat
 
 
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 10.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.05)
+    if not await wait_until(predicate, timeout=timeout):
+        raise TimeoutError(f"condition not met within {timeout} s")
 
 
 async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any]:

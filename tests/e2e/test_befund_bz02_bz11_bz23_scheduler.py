@@ -38,6 +38,7 @@ from swarmq.scheduler import ScheduleDefinition
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.services import flush_valkey_db
+from tests.support.wait import wait_until
 
 _EVENT_TIMEOUT = 20.0
 
@@ -193,10 +194,13 @@ async def test_bz02_unique_completion_flag_released_after_delayed_run(rabbitmq_u
         await asyncio.wait_for(first_done.wait(), timeout=_EVENT_TIMEOUT)
         # Die Freigabe folgt dem Lauf; bis zu 5 s Zeit geben (weit unter unique_for).
         second = first
-        deadline = time.monotonic() + 5.0
-        while second == first and time.monotonic() < deadline:
-            await asyncio.sleep(0.1)
+
+        async def released() -> bool:
+            nonlocal second
             second = await app.client.schedule(task_name, 1, delay=0.2)
+            return second != first
+
+        await wait_until(released, timeout=5.0, interval=0.1)
 
     assert second != first
 
@@ -211,13 +215,17 @@ async def _get_xq_message(rabbitmq_url: str, queue: str) -> aio_pika.abc.Abstrac
     try:
         channel = await connection.channel()
         xq = await channel.declare_queue(f"{queue}.XQ", passive=True)
-        deadline = time.monotonic() + _EVENT_TIMEOUT
-        while time.monotonic() < deadline:
+        message: aio_pika.abc.AbstractIncomingMessage | None = None
+
+        async def arrived() -> bool:
+            nonlocal message
             message = await xq.get(no_ack=True, fail=False)
-            if message is not None:
-                return message
-            await asyncio.sleep(0.05)
-        raise TimeoutError(f"keine Nachricht in {queue}.XQ")
+            return message is not None
+
+        if not await wait_until(arrived, timeout=_EVENT_TIMEOUT):
+            raise TimeoutError(f"keine Nachricht in {queue}.XQ")
+        assert message is not None
+        return message
     finally:
         await connection.close()
 
