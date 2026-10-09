@@ -748,7 +748,9 @@ class Worker(WorkerLifecycle):
             await self._finalize_delivery(message, outcome, ctx, task_info)
             # KTD5: hat kein Verb den Running-Marker abgeschlossen (kein Verb,
             # Ausnahme, Abbruch), nur freigeben -- geshieldet wie der Lock-Release.
-            await self._detached(self._execution_guard.settle(message))
+            # Der Regelfall (Verb hat abgeschlossen, Schutz aus) braucht keinen Task.
+            if self._execution_guard.lease_of(message) is not None:
+                await self._detached(self._execution_guard.settle(message))
 
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
             # __aexit__ with the captured task exception so yield-based
