@@ -28,7 +28,6 @@ from swarmq.dishka import (
 )
 from swarmq.exceptions import (
     BackendConnectionError,
-    TaskNotFoundError,
 )
 from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_UNTIL
 from swarmq.logging import _error_fields, _task_log_context, get_logger
@@ -43,6 +42,7 @@ from swarmq.signals import SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import decode
 from swarmq.worker.execution import TaskExecutor, lifecycle_level, task_logger
+from swarmq.worker.finalize import finalize_schedfire, maybe_release_unique
 from swarmq.worker.gates import (
     GateContext,
     GateDeps,
@@ -51,7 +51,6 @@ from swarmq.worker.gates import (
     redeliver_in_place,
     route_via_dlx,
 )
-from swarmq.worker.gates.backend_defer import bounded_backend_call
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
 from swarmq.worker.gates.execution_guard import ExecutionGuard
@@ -61,9 +60,11 @@ from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten
     LOCK_CONFLICT_BACKOFF_CAP_MS,
     LOCK_CONFLICT_DLQ_CAP,
     LockGate,
+    release_acquired_locks,
 )
 from swarmq.worker.gates.rate_limit import RateLimitGate
 from swarmq.worker.gates.schedfire import SchedfireGate
+from swarmq.worker.gates.unknown_task import lookup_task_or_route
 from swarmq.worker.guarded_broker import GuardedBroker
 from swarmq.worker.lifecycle import WorkerLifecycle, WorkerState  # Re-Export (Fassade/Tests)
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
@@ -216,27 +217,11 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         handler_id: uuid.UUID,
         acquired_locks: list[LockToken],
     ) -> None:
-        """Release every lock acquired by this handler. Called in the
-        ``_handle_message`` finally block. Failures are logged and
-        swallowed — the task already produced its result; release
-        problems must not break the worker pipeline. The TTL-recovery
-        path is the safety net for any lock that ends up not released.
-        """
+        """``gates.lock.release_acquired_locks`` mit dem Logger dieses Moduls (Q17)."""
         assert self._lock_manager is not None  # Locks existieren nur nach start()
-        for token in acquired_locks:
-            try:
-                await self._lock_manager.release(token)
-            except Exception as exc:
-                # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
-                logger.warning(
-                    "lock_release_failed",
-                    lock_name=token.name,
-                    **_error_fields(exc),
-                )
-        # Drop the worker-wide registry entry whether release succeeded
-        # or not — anything still held will time out via TTL, and we
-        # don't want shutdown-cleanup to double-release.
-        self._active_handler_locks.pop(handler_id, None)
+        await release_acquired_locks(
+            self._lock_manager, self._active_handler_locks, handler_id, acquired_locks, log=logger
+        )
 
     async def _on_message(self, message: Any) -> None:
         """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
@@ -249,54 +234,10 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         task.add_done_callback(self._active_tasks.discard)
 
     async def _finalize_schedfire(self, ctx: GateContext, *, terminal: bool) -> bool:
-        """Finalize the in-flight schedfire claim of this delivery.
-
-        Called from the ``_handle_message`` finally block (and the
-        pre-start-cancel terminal path). No-ops when the delivery holds no
-        claim (``ctx.schedfire_claim`` is set only by the schedfire gate);
-        the claim is taken off the context first, so it is finalized once.
-
-        * ``terminal=True`` (success, error→DLQ, pre-start cancel): write
-          the long-TTL ``sq:sched:fired:<key>`` completed marker so any
-          redelivery of this fire is ack+skipped.
-        * ``terminal=False`` (retry republish, rate-limit / lock-conflict
-          / shutdown / result-write requeue): the fire is being
-          re-delivered, so DELETE the short-TTL in-flight key instead of
-          writing the completed marker. Writing
-          the completed marker here would make the redelivered/retry copy
-          fail ``is_schedfire_completed`` and get silently dropped.
-
-        Failures are logged and swallowed — an orphan in-flight marker
-        self-heals via its short TTL. Returns ``False`` only when a held
-        claim could not be finalized (``redeliver_in_place`` then copies
-        instead of nacking)."""
-        claim, ctx.schedfire_claim = ctx.schedfire_claim, None
-        if claim is None:
-            return True
-        schedfire_key, owner = claim.key, claim.owner
-        try:
-            finalize: Awaitable[object]
-            if terminal:
-                assert self._config.scheduler_dedup_ttl is not None  # Config-Default
-                ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
-                finalize = self._backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
-            else:
-                # Owner-geprueft: hat eine Kopie den Claim schon uebernommen
-                # (verspaetete Freigabe), bleibt er ihr.
-                finalize = self._backend.schedules.release_fire_claim(schedfire_key, owner=owner)
-            # Begrenzt: ein Blackhole darf weder Gate noch finally blockieren.
-            await bounded_backend_call(self._gate_deps, finalize, what="schedfire finalize")
-        except Exception as exc:
-            # Auch eine fremde Ausnahme (Dritt-Store): sie darf weder den
-            # ``nack``/die Kopie eines Requeues noch das finally ueberspringen.
-            logger.warning(
-                "schedfire_finalize_failed",
-                schedfire_key=schedfire_key,
-                terminal=terminal,
-                **_error_fields(exc),
-            )
-            return False
-        return True
+        """``finalize.finalize_schedfire`` mit dem Logger dieses Moduls (Q17)."""
+        return await finalize_schedfire(
+            ctx, terminal=terminal, backend=self._backend, config=self._config, gate_deps=self._gate_deps, log=logger
+        )
 
     async def _release_schedfire_claim(self, ctx: GateContext) -> None:
         await self._finalize_schedfire(ctx, terminal=False)
@@ -312,43 +253,10 @@ class Worker(WorkerLifecycle, WorkerShutdown):
     async def _maybe_release_unique(
         self, message: Any, task_id: str, task_info: TaskInfo | None = None,
     ) -> None:
-        """Release the R3.5 dedup flag if this message carries one.
-
-        Contract:
-          * No-op when the message lacks a valid ``x-swarmq-unique-hash``
-            header (missing, wrong type, not a 64-char lowercase hex
-            digest).
-          * No-op in ``start``-mode at terminal paths — Unit 10 already
-            released at pickup (owner-check would fail here anyway).
-          * ``completion``-mode (default): call ``backend.release_unique``;
-            owner-check protects against TTL-expiry-race (first task's
-            flag was reclaimed by a second task before first finished).
-          * When ``task_info`` is None (task not registered) → treat as
-            completion mode. Better to attempt release than leave an
-            orphan flag until TTL.
-
-        Backend errors are swallowed inside ``release_unique`` — an
-        orphan flag self-heals via TTL and a release failure must not
-        break the worker's terminal-path pipeline (same discipline as
-        ``clear_cancel_flag``). ``op_timeout`` bounds the Valkey call
-        so the finally block can't wedge on a slow backend.
-        """
+        """Siehe ``finalize.maybe_release_unique``."""
         unique_hash = self._extract_valid_unique_hash(message)
-        if unique_hash is None:
-            return
-        # Prefer the header over TaskInfo — per-call overrides from
-        # Client.schedule set the header, and we want those overrides
-        # to flow end-to-end. TaskInfo is the fallback when the header
-        # is absent or malformed.
-        header_mode = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
-        mode = header_mode or (
-            task_info.unique_until if task_info is not None else "completion"
-        )
-        if mode == "start":
-            return  # Release already happened at pickup (Unit 10).
-        await self._backend.release_unique(
-            unique_hash, task_id,
-            op_timeout=self._config.backend_op_timeout,
+        await maybe_release_unique(
+            message, task_id, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
         )
 
     async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict[str, Any]) -> PublishReceipt:
@@ -509,20 +417,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
     async def _lookup_task_or_route(
         self, message: Any, task_name: str, task_id: str | None = None,
     ) -> type[Task] | None:
-        """Registry-Lookup; unbekannte Tasks gehen über den DLX-Fallback
-        (``None`` = behandelt). Der Body ist hier dekodiert, also trägt das
-        Signal die Kennung -- ohne sie wäre die Nachricht im ``.XQ`` nicht
-        wiederzufinden (B14 des Loadsuite-Backlogs)."""
-        try:
-            return self._registry.get(task_name)
-        except TaskNotFoundError:
-            logger.error("task_not_found")
-            await route_via_dlx(
-                self._gate_deps, message, reason="unregistered_task",
-                task_id=task_id, task_name=task_name,
-                error=f"task {task_name!r} is not registered",
-            )
-            return None
+        """``gates.unknown_task.lookup_task_or_route`` mit dem Logger dieses Moduls (Q17)."""
+        return await lookup_task_or_route(self._registry, self._gate_deps, message, task_name, task_id, log=logger)
 
     def _log_context(self, message: Any, ctx: GateContext) -> Any:
         """Task-Kontext fuer alle Logaufrufe dieser Zustellung (KTD13)."""

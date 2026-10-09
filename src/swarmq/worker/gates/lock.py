@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.locking import compute_lock_ttl_ms, lock_key
 from swarmq.logging import _error_fields, get_logger
@@ -41,6 +41,9 @@ from swarmq.worker.gates import (
 )
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
+
+if TYPE_CHECKING:
+    from swarmq.contracts.coordination import LockStore, LockToken
 
 logger = get_logger(__name__)
 
@@ -303,3 +306,33 @@ class LockGate:
             assert ctx.handler_id is not None
             self._deps.register_lock(ctx.handler_id, token)
         return token is not None
+
+
+async def release_acquired_locks(
+    lock_manager: LockStore,
+    active_handler_locks: dict[uuid.UUID, list[LockToken]],
+    handler_id: uuid.UUID,
+    acquired_locks: list[LockToken],
+    *,
+    log: Any,
+) -> None:
+    """Release every lock acquired by this handler. Called in the
+    ``_handle_message`` finally block. Failures are logged and
+    swallowed — the task already produced its result; release
+    problems must not break the worker pipeline. The TTL-recovery
+    path is the safety net for any lock that ends up not released.
+    """
+    for token in acquired_locks:
+        try:
+            await lock_manager.release(token)
+        except Exception as exc:
+            # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
+            log.warning(
+                "lock_release_failed",
+                lock_name=token.name,
+                **_error_fields(exc),
+            )
+    # Drop the worker-wide registry entry whether release succeeded
+    # or not — anything still held will time out via TTL, and we
+    # don't want shutdown-cleanup to double-release.
+    active_handler_locks.pop(handler_id, None)
