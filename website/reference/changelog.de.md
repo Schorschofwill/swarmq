@@ -71,10 +71,13 @@ entfernt werden; siehe die
   **Langsamere Erholung nach einem Absturz:** Die Neuzustellungen eines
   per SIGKILL oder OOM-Killer beendeten Workers laufen erst, wenn seine
   Running-Marker abgelaufen sind -- mit den Standardwerten etwa ein bis
-  zwei Minuten nach dem Absturz statt sofort, ebenso nach einer
-  Marker-Freigabe, die scheiterte, weil Valkey nicht erreichbar war
+  zwei Minuten nach dem Absturz statt sofort
   ([Details](../explanation/delivery-semantics.md#ausfuhrungsschutz));
-  `SWARMQ_EXECUTION_GUARD_TTL_S` verkürzt das.
+  `SWARMQ_EXECUTION_GUARD_TTL_S` verkürzt das. Einen Marker, den ein
+  laufender Worker während eines kurzen Valkey-Ausfalls nicht setzen
+  konnte (Done, Superseded, Freigabe), holt er im Hintergrund etwa
+  diese TTL lang nach und beim Shutdown sofort ein letztes Mal -- die
+  Neuzustellung wartet nicht auf die TTL, und es zählt keine Waise.
   Kosten: zwei Lua-Aufrufe je Task plus eine gesammelte Verlängerung;
   in der Loadsuite unter realistischer Last kein messbarer
   Durchsatzverlust, im ungünstigsten Fall (ein Worker, nur Tasks von
@@ -145,7 +148,8 @@ entfernt werden; siehe die
   `lease_lost`. Log-Events `duplicate_delivery_skipped`,
   `execution_guard_deferred`, `execution_guard_defer_failed_redelivered`,
   `execution_guard_orphan_limit`, `execution_guard_lease_lost`,
-  `execution_guard_renew_failed`, `execution_guard_finish_failed`.
+  `execution_guard_renew_failed`, `execution_guard_finish_failed`,
+  `execution_guard_finish_recovered`, `execution_guard_finish_gave_up`.
 - **`SWARMQ_DEAD_LETTER_TTL_S`** (Standard `604800`, `none` =
   unbegrenzt) und **`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`** (Standard
   `true`) mit **`TaskInfo(dead_letter=...)`**, das über die globale

@@ -261,11 +261,25 @@ between two thirds of `SWARMQ_EXECUTION_GUARD_TTL_S` and the full TTL
 after the crash; the deferral that is pending at that moment adds its
 remaining backoff (up to `SWARMQ_BACKEND_DEFER_MAX_DELAY`). With the
 defaults (60 s each) a task of a SIGKILLed or OOM-killed worker runs
-again roughly one to two minutes after the crash. The same holds when
-a worker cannot release its marker because Valkey is unreachable at
-that moment (`execution_guard_finish_failed`): the redelivery waits for
-the marker to expire. A shorter TTL speeds up recovery but makes a
-blocked event loop lose its marker sooner (see below).
+again roughly one to two minutes after the crash. A shorter TTL speeds
+up recovery but makes a blocked event loop lose its marker sooner (see
+below).
+
+**Short Valkey outages.** A running worker that cannot set a marker
+after the broker verb (`execution_guard_finish_failed`: done after the
+ack, superseded after a retry, or the release) retries it in the
+background: only its own marker, with the backoff of
+`SWARMQ_BACKEND_DEFER_BASE_DELAY`/`_MAX_DELAY`, for about
+`SWARMQ_EXECUTION_GUARD_TTL_S`. A retried done marker still marks the
+execution finished, so its redelivery is skipped. Once Valkey is back,
+the redelivery therefore does not wait for the marker to expire, and
+no orphan is counted (`execution_guard_finish_recovered`). On shutdown
+the worker makes one last attempt right away before it closes the
+Valkey connection; the attempt is bounded by
+`SWARMQ_BACKEND_OP_TIMEOUT`. Only if Valkey stays unreachable longer
+does the marker expire by its TTL and count as an orphan
+(`execution_guard_finish_gave_up`); without its done marker the
+redelivery then runs the task again.
 
 **Retention of the markers.** Done and superseded markers live
 `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`; the default is

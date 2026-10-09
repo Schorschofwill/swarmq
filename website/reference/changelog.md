@@ -65,10 +65,13 @@ older app can be removed; see the
   **Slower recovery after a crash:** the redeliveries of a SIGKILLed
   or OOM-killed worker run only once its running markers expired --
   with the defaults roughly one to two minutes after the crash instead
-  of right away, likewise after a marker release that failed while
-  Valkey was unreachable
+  of right away
   ([details](../explanation/delivery-semantics.md#execution-guard));
-  `SWARMQ_EXECUTION_GUARD_TTL_S` shortens it. Cost:
+  `SWARMQ_EXECUTION_GUARD_TTL_S` shortens it. A marker that a running
+  worker could not set during a short Valkey outage (done, superseded,
+  release) is retried in the background for about that TTL, and once
+  more right away on shutdown -- the redelivery does not wait for the
+  TTL and no orphan is counted. Cost:
   two Lua calls per task plus a batched renewal; in the load suite no
   measurable throughput loss under realistic load, −7.4 % in the worst
   case (one worker, only ~0.3 ms tasks, CPU-saturated), +11–12 % CPU
@@ -135,7 +138,8 @@ older app can be removed; see the
   events `duplicate_delivery_skipped`, `execution_guard_deferred`,
   `execution_guard_defer_failed_redelivered`,
   `execution_guard_orphan_limit`, `execution_guard_lease_lost`,
-  `execution_guard_renew_failed`, `execution_guard_finish_failed`.
+  `execution_guard_renew_failed`, `execution_guard_finish_failed`,
+  `execution_guard_finish_recovered`, `execution_guard_finish_gave_up`.
 - **`SWARMQ_DEAD_LETTER_TTL_S`** (default `604800`, `none` =
   unlimited) and **`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`** (default
   `true`) with **`TaskInfo(dead_letter=...)`**, which wins over the

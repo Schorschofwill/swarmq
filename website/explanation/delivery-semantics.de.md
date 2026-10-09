@@ -285,12 +285,26 @@ Absturz ab. Die in diesem Moment laufende Zurückstellung fügt ihre
 restliche Wartezeit hinzu (bis zu `SWARMQ_BACKEND_DEFER_MAX_DELAY`). Mit
 den Standardwerten (je 60 s) läuft ein Task eines per SIGKILL oder
 OOM-Killer beendeten Workers etwa ein bis zwei Minuten nach dem Absturz
-erneut. Dasselbe gilt, wenn ein Worker seinen Marker nicht freigeben
-kann, weil Valkey in diesem Moment nicht erreichbar ist
-(`execution_guard_finish_failed`): die Neuzustellung wartet, bis der
-Marker abläuft. Eine kürzere TTL beschleunigt die Erholung, lässt aber
-einen blockierten Event-Loop seinen Marker früher verlieren (siehe
-unten).
+erneut. Eine kürzere TTL beschleunigt die Erholung, lässt aber einen
+blockierten Event-Loop seinen Marker früher verlieren (siehe unten).
+
+**Kurze Valkey-Ausfälle.** Ein laufender Worker, der nach dem
+Broker-Verb einen Marker nicht setzen kann
+(`execution_guard_finish_failed`: Done nach dem Ack, Superseded nach
+einem Retry oder die Freigabe), holt ihn im Hintergrund nach: nur den
+eigenen Marker, mit dem Backoff von
+`SWARMQ_BACKEND_DEFER_BASE_DELAY`/`_MAX_DELAY`, etwa
+`SWARMQ_EXECUTION_GUARD_TTL_S` lang. Ein nachgeholter Done-Marker
+kennzeichnet die Ausführung weiterhin als abgeschlossen, ihre
+Neuzustellung wird übersprungen. Ist Valkey wieder da, wartet die
+Neuzustellung deshalb nicht auf den Ablauf des Markers, und es zählt
+keine Waise (`execution_guard_finish_recovered`). Beim Shutdown macht
+der Worker sofort einen letzten Versuch, bevor er die
+Valkey-Verbindung schließt; der Versuch ist durch
+`SWARMQ_BACKEND_OP_TIMEOUT` begrenzt. Erst wenn Valkey länger
+unerreichbar bleibt, läuft der Marker nach seiner TTL ab und zählt als
+Waise (`execution_guard_finish_gave_up`); ohne seinen Done-Marker führt
+die Neuzustellung den Task dann erneut aus.
 
 **Aufbewahrung der Marker.** Done- und Superseded-Marker leben
 `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`; Standard ist
