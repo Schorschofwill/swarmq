@@ -85,6 +85,9 @@ class ExecutionGuard:
         self._leases: dict[int, GuardLease] = {}
         # Owner-Tokens verlorener Marker: einmal melden, nicht weiter verlaengern.
         self._lost: set[str] = set()
+        # Freigaben nach gescheitertem Claim (gehalten, damit sie nicht
+        # vorzeitig eingesammelt werden).
+        self._background: set[asyncio.Task[None]] = set()
 
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
         assert ctx.task_info is not None
@@ -113,6 +116,10 @@ class ExecutionGuard:
                 what="execution guard claim",
             )
         except BackendConnectionError as exc:
+            # Lief der Claim im Store und ging nur die Antwort verloren
+            # (Timeout), steht der eigene Marker: im Hintergrund freigeben
+            # (owner-gebunden, begrenzt), sonst zaehlte er spaeter als Waise.
+            self._release_in_background(lease)
             return await defer_backend_unavailable(self._deps, delivery, ctx, exc, gate="execution_guard")
         if claim.status in ("done", "superseded"):
             # Abgeschlossen (das Original hat bestaetigt bzw. seine Kopie
@@ -180,6 +187,11 @@ class ExecutionGuard:
             defer_count=attempt, delay_ms=delay_ms,
         )
         return Redelivered
+
+    def _release_in_background(self, lease: GuardLease) -> None:
+        task = asyncio.create_task(self.release(lease))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     def lease_of(self, delivery: Any) -> GuardLease | None:
         """Der Running-Marker der Zustellung, ohne ihn abzuschliessen."""

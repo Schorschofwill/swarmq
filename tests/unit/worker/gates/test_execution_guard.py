@@ -32,6 +32,13 @@ Test-Liste (Verlängerung, Fake-Uhr):
 21. Ereignisse für die Metrik: übersprungen, zurückgestellt, Waisen-Grenze.
 22. Ein Takt verlängert alle Leases nebenläufig (ein gesammelter Stapel der
     ScriptPipeline), nicht eine nach der anderen.
+
+Review Phase 2 (2026-10-09):
+23. Claim scheitert clientseitig (Timeout), lief aber im Store: ein
+    begrenztes Release im Hintergrund gibt den eigenen Marker frei -- die
+    nächste Zustellung zählt keine Waise.
+24. Dieses Release ist an den Owner gebunden: einen fremden Marker lässt es
+    stehen.
 """
 
 from __future__ import annotations
@@ -478,3 +485,58 @@ async def test_renewal_tick_renews_all_leases_concurrently(guard: ExecutionGuard
     assert sorted(started) == ["t-1", "t-2"]
     await guard.settle(first)
     await guard.settle(second)
+
+
+async def test_claim_that_failed_on_the_client_is_released_in_the_background(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    """Der Claim lief im Store, nur die Antwort ging verloren: ohne Release
+    liefe der Marker ab und zaehlte bei der Neuzustellung als Waise."""
+    store = backend.execution_guard
+    real_claim, real_release = store.claim, store.release
+    released = asyncio.Event()
+
+    async def claim_then_fail(*args: object, **kwargs: object) -> object:
+        await real_claim(*args, **kwargs)  # type: ignore[arg-type]
+        raise BackendConnectionError("reply lost")
+
+    async def release(*args: object, **kwargs: object) -> None:
+        await real_release(*args, **kwargs)  # type: ignore[arg-type]
+        released.set()
+
+    store.claim = claim_then_fail  # type: ignore[method-assign]
+    store.release = release  # type: ignore[method-assign]
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter)
+
+    assert await guard.apply(make_message(headers={}), _ctx()) is Redelivered
+    await asyncio.wait_for(released.wait(), 1)
+
+    store.claim = real_claim  # type: ignore[method-assign]
+    claim = await store.claim("t-1", owner="next", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3)
+    assert (claim.status, claim.orphans) == ("claimed", 0)
+
+
+async def test_background_release_after_a_failed_claim_leaves_a_foreign_marker(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    store = backend.execution_guard
+    await _other_claim(backend)  # fremder Running-Marker
+    real_claim, real_release = store.claim, store.release
+    released = asyncio.Event()
+
+    async def fail(*_args: object, **_kwargs: object) -> object:
+        raise BackendConnectionError("timeout")
+
+    async def release(*args: object, **kwargs: object) -> None:
+        await real_release(*args, **kwargs)  # type: ignore[arg-type]
+        released.set()
+
+    store.claim = fail  # type: ignore[method-assign]
+    store.release = release  # type: ignore[method-assign]
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter)
+
+    assert await guard.apply(make_message(headers={}), _ctx()) is Redelivered
+    await asyncio.wait_for(released.wait(), 1)
+
+    store.claim = real_claim  # type: ignore[method-assign]
+    assert await _other_claim(backend, owner="third") == "running"
