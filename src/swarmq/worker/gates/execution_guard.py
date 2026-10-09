@@ -259,17 +259,27 @@ class ExecutionGuard:
         if store is None:
             return
         ttl_ms = int(self._deps.config.execution_guard_ttl_s * 1000)
-        for lease in [lease for lease in self._leases.values() if lease.owner not in self._lost]:
-            try:
-                renewed = await bounded_backend_call(
+        leases = [lease for lease in self._leases.values() if lease.owner not in self._lost]
+        # Nebenlaeufig: die ScriptPipeline schickt die Verlaengerungen eines
+        # Takts als einen Stapel.
+        results = await asyncio.gather(
+            *(
+                bounded_backend_call(
                     self._deps, store.renew(lease.identity, owner=lease.owner, ttl_ms=ttl_ms),
                     what="execution guard renew",
                 )
-            except Exception as exc:
+                for lease in leases
+            ),
+            return_exceptions=True,
+        )
+        for lease, renewed in zip(leases, results, strict=True):
+            if isinstance(renewed, BaseException):
+                if not isinstance(renewed, Exception):
+                    raise renewed
                 # Der naechste Takt versucht es erneut; die TTL deckt drei Takte.
                 logger.warning(
                     "execution_guard_renew_failed", task_id=lease.task_id, identity=lease.identity,
-                    **_error_fields(exc),
+                    **_error_fields(renewed),
                 )
                 continue
             if not renewed and lease in self._leases.values():

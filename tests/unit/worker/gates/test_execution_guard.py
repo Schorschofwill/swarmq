@@ -30,6 +30,8 @@ Test-Liste (Verlängerung, Fake-Uhr):
 19. Der Takt läuft alle ``ttl/3``, nur solange Leases bestehen.
 20. Eine während des Takts vom Verb abgeschlossene Lease ist kein Verlust.
 21. Ereignisse für die Metrik: übersprungen, zurückgestellt, Waisen-Grenze.
+22. Ein Takt verlängert alle Leases nebenläufig (ein gesammelter Stapel der
+    ScriptPipeline), nicht eine nach der anderen.
 """
 
 from __future__ import annotations
@@ -371,8 +373,12 @@ async def test_renewal_ticks_while_leases_exist_and_stops_without(
     tick = asyncio.Event()
     stopped = asyncio.Event()
 
+    next_wait = asyncio.Event()
+
     async def _sleep(seconds: float) -> None:
         intervals.append(seconds)
+        if len(intervals) > 1:
+            next_wait.set()  # der Takt ist durch und wartet auf den naechsten
         try:
             await tick.wait()
         except asyncio.CancelledError:
@@ -394,6 +400,7 @@ async def test_renewal_ticks_while_leases_exist_and_stops_without(
 
     tick.set()
     await asyncio.wait_for(renewed.wait(), 1)
+    await asyncio.wait_for(next_wait.wait(), 1)
     await guard.settle(delivery)
     await asyncio.wait_for(stopped.wait(), 1)
 
@@ -447,3 +454,27 @@ async def test_lease_concluded_during_renewal_is_not_reported_lost(
     await guard.renew_once()
 
     assert events == []
+
+
+async def test_renewal_tick_renews_all_leases_concurrently(guard: ExecutionGuard, backend: InMemoryBackend) -> None:
+    """Die Verlaengerungen eines Takts sind gleichzeitig unterwegs: erst
+    wenn beide begonnen haben, kehrt der Store zurueck."""
+    first, second = make_message(headers={}), make_message(headers={})
+    await guard.apply(first, _ctx("t-1"))
+    await guard.apply(second, _ctx("t-2"))
+    started: list[str] = []
+    both_started = asyncio.Event()
+
+    async def renew(identity: str, *, owner: str, ttl_ms: int) -> bool:
+        started.append(identity)
+        if len(started) == 2:
+            both_started.set()
+        await both_started.wait()
+        return True
+
+    backend.execution_guard.renew = renew  # type: ignore[method-assign]
+    await asyncio.wait_for(guard.renew_once(), timeout=1)
+
+    assert sorted(started) == ["t-1", "t-2"]
+    await guard.settle(first)
+    await guard.settle(second)
