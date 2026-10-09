@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from swarmq.contracts import Broker, BrokerAdmin, Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError
+from swarmq.headers import HEADER_REPLAY_ID, HEADER_RETRY_COUNT
 from tests.support.inmemory.clock import FakeClock
 
 _ids = itertools.count(1)
@@ -34,8 +35,8 @@ class _Message:
 
 def _replay_headers(headers: dict[str, Any]) -> dict[str, Any]:
     """Wie ``RabbitMQAdmin``: Retry-Zaehler zuruecksetzen, neue Replay-ID (KTD5)."""
-    out = {k: v for k, v in headers.items() if k != "x-swarmq-retry-count"}
-    out["x-swarmq-replay-id"] = uuid.uuid4().hex
+    out = {k: v for k, v in headers.items() if k != HEADER_RETRY_COUNT}
+    out[HEADER_REPLAY_ID] = uuid.uuid4().hex
     return out
 
 

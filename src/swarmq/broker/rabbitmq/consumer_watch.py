@@ -67,8 +67,9 @@ class _Watched:
 class ConsumerWatch:
     """Registrierung der Consumer eines Brokers plus Takt (KTD3).
 
-    Schnittstelle für die Settle-Regeln (U7, KTD4): ``self_cancelled_tags``,
-    ``request_check()`` und ``wait_cancelled(tag, timeout)``.
+    Schnittstelle für die Settle-Regeln (U7, KTD4): ``is_watched(tag)``,
+    ``self_cancelled_tags``, ``request_check()`` und
+    ``wait_cancelled(tag, timeout)``.
     """
 
     def __init__(
@@ -96,6 +97,11 @@ class ConsumerWatch:
         """Die aktuell angemeldeten (Queue, Tag)-Paare — nach einer
         Neuanmeldung nicht mehr die aus ``consume``."""
         return [(entry.queue_name, entry.tag) for entry in self._entries if entry.tag is not None]
+
+    def is_watched(self, tag: str) -> bool:
+        """Ob *tag* der aktuell angemeldete Tag eines geführten Consumers ist
+        (je Settle geprüft, daher ohne Zwischenliste)."""
+        return any(entry.tag == tag for entry in self._entries)
 
     def start(self, interval_s: float) -> None:
         """Startet den Takt alle ``interval_s`` Sekunden; idempotent."""

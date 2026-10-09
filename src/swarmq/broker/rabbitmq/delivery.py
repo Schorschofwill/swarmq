@@ -6,8 +6,9 @@ Publish an ``{queue}.DQ`` mit Per-Message-``expiration`` + ``ack``;
 ``BrokerConnectionError``, wenn der Publish scheitert, und lassen das Original
 unbestätigt. Ab RabbitMQ 4.3 hält ``_may_settle`` ein Settle auf einen vom
 Broker beendeten Consumer zurück, bis der Wächter ihn selbst abgemeldet hat
-(Plan 2026-10-08-1541, U7, KTD4). Die Legacy-Namen (``nack``, ``publish_to_*``) sind seit U15
-entfernt; die Delay-/DLQ-Publishes sind private Helfer der Verben.
+(Plan 2026-10-08-1541, U7, KTD4). Die Legacy-Namen (``nack``,
+``publish_to_*``) sind seit U15 entfernt; die Delay-/DLQ-Publishes sind
+private Helfer der Verben.
 """
 
 from __future__ import annotations
@@ -354,12 +355,12 @@ class RabbitMQDelivery(RabbitMQConnection):
         der Broker mit dem Cancel ohnehin zurückgenommen.
 
         Ohne Wartezeit durch: gültige Tags, von swarmq selbst abgemeldete
-        (``cancel_consume``, Wächter — sie stehen nicht mehr in ``tags()``)
+        (``cancel_consume``, Wächter — sie gelten nicht mehr als ``is_watched``)
         und geschlossene Channels (bis 4.2; ``settle`` übersetzt den Fehler
         in ``BrokerConnectionError``, B22).
         """
         tag = message.consumer_tag
-        if tag not in {watched for _, watched in self._consumer_watch.tags()}:
+        if tag is None or not self._consumer_watch.is_watched(tag):
             return True
         try:
             # ``consumers`` steht nur am konkreten aiormq-Channel, nicht am ABC.

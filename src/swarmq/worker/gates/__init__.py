@@ -148,11 +148,11 @@ class GateDeps:
 BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
 
 # Nicht in Kopien uebernommen: die Broker-Zaehler (s. o.) und die Zaehler der
-# Zurueckstellungen bei Backend-Ausfall und durch den Ausfuehrungsschutz. Wer eine Kopie macht, ohne am Backend
-# gescheitert zu sein (Retry, Rate-Limit-/Lock-Requeue), hat das Backend
-# erreicht -- die Stoerung ist ueberstanden, eine naechste beginnt wieder mit
-# der Basiswartezeit. Die Zurueckstellung selbst liest den bisherigen Stand
-# vom Original und zaehlt weiter.
+# Zurueckstellungen bei Backend-Ausfall und durch den Ausfuehrungsschutz. Wer
+# eine Kopie macht, ohne am Backend gescheitert zu sein (Retry, Rate-Limit-/
+# Lock-Requeue), hat das Backend erreicht -- die Stoerung ist ueberstanden,
+# eine naechste beginnt wieder mit der Basiswartezeit. Die Zurueckstellung
+# selbst liest den bisherigen Stand vom Original und zaehlt weiter.
 _NOT_COPIED = BROKER_DELIVERY_COUNTERS | {HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT}
 
 

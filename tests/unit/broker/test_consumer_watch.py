@@ -24,7 +24,7 @@ Test-Liste:
    erneuten Cancel an.
 10. Lücken: wie lange eine Queue ohne aktiven Consumer ist (injizierte Uhr).
 11. Selbst abgemeldete Tags sind abrufbar; auf den Cancel eines Tags lässt
-    sich warten (Schnittstelle für U7).
+    sich warten; ``is_watched`` folgt dem aktuellen Tag (Schnittstelle für U7).
 12. Laufender Wächter: ``request_check`` stößt sofort einen Takt an; ein
     Fehler im Takt beendet ihn nicht.
 13. Shutdown: nach ``stop`` keine Neuanmeldung, auch nicht aus einem
@@ -283,6 +283,17 @@ class TestSelfCancelledTags:
         assert await waiter is True
         assert await watch.wait_cancelled("tag-1", timeout=1.0) is True
         assert await watch.wait_cancelled("never", timeout=0.01) is False
+
+    async def test_is_watched_follows_the_current_tag(self):
+        watch, queue, _ = _watched()
+        assert watch.is_watched("tag-1") is True
+        await watch.tick()
+        queue.channel.underlay.consumers.pop("tag-1")
+
+        await watch.tick()
+
+        assert watch.is_watched("tag-1") is False
+        assert watch.is_watched("q1-new-1") is True
 
 
 class TestRunningWatch:

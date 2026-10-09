@@ -62,7 +62,6 @@ class ValkeyExecutionGuardStore:
         status, orphans = await self._run("claim", self._pipeline.call(self._claim_script, _keys(identity), args))
         return GuardClaim(cast("GuardStatus", _decode(status)), int(orphans))
 
-
     async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool:
         result = await self._run(
             "renew", self._pipeline.call(self._renew_script, [run_key(identity)], [owner, ttl_ms]),
@@ -74,7 +73,6 @@ class ValkeyExecutionGuardStore:
 
     async def mark_superseded(self, identity: str, *, owner: str, retry_count: int, state_ttl_ms: int) -> None:
         await self._finish(identity, [owner, "superseded", state_ttl_ms, retry_count])
-
 
     async def release(self, identity: str, *, owner: str) -> None:
         await self._finish(identity, [owner, "release", 0])

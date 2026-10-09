@@ -5,6 +5,7 @@ statischer Cron, den mindestens ein Worker gemeldet hat und den seit
 ``scheduler_prune_after_s`` keiner mehr meldet, ist verwaist. Nie gemeldete
 statische Crons (Altbestand, Apps vor 0.10.0) sind nur Kandidaten.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
@@ -14,7 +15,7 @@ from typing import Any
 import msgspec
 
 from swarmq.config import SwarmQConfig
-from swarmq.contracts.coordination import CronReports
+from swarmq.contracts.coordination import CronReports, ScheduleStore
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.scheduler.definition import ScheduleDefinition
@@ -73,10 +74,10 @@ def decode_definitions(raw: Mapping[str, bytes]) -> dict[str, tuple[bytes, Sched
     return definitions
 
 
-async def prune_orphans(store: Any, snapshot: CronReports) -> list[str]:
+async def prune_orphans(store: ScheduleStore, snapshot: CronReports) -> list[str]:
     """``schedule prune --orphans`` (R13): nie gemeldete statische Crons
     entfernen; deaktivierte kommen beim nächsten Melden deaktiviert zurück.
-    *store* ist der ``ScheduleStore``-Vertrag. Liefert die entfernten Namen."""
+    Liefert die entfernten Namen."""
     definitions = decode_definitions(await store.list_all())
     plan = plan_prune([d for _, d in definitions.values()], snapshot, prune_after_ms=0)
     removed: list[str] = []

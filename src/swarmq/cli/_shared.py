@@ -267,7 +267,6 @@ async def _broker_from_env() -> RabbitMQBroker:
     if ttl_raw:
         from swarmq.config import parse_env_value
 
-
         ttl = cast("float | None", parse_env_value("optional_float", ttl_raw, "SWARMQ_DEAD_LETTER_TTL_S"))
         if ttl is not None and ttl <= 0:
             msg = f"dead_letter_ttl_s must be > 0, got {ttl}"
