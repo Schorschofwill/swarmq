@@ -23,6 +23,10 @@ Unit tests for graceful shutdown (Unit 2.5)."""
 #
 # Test list (0.9.1, B23):
 # 7. ``cancel_consume_partial_failure`` traegt ``error_type``/``error``.
+#
+# Test list (0.11.0, Ausfuehrungsschutz):
+# 8. Der Shutdown laesst die Nachholversuche gescheiterter Marker-Abschluesse
+#    (``ExecutionGuard.drain``) VOR ``backend.close`` laufen.
 
 from __future__ import annotations
 
@@ -350,6 +354,25 @@ class TestShutdownLockDrain:
     entries in _active_handler_locks get drained and the registry is
     cleared.
     """
+
+    @pytest.mark.asyncio
+    async def test_execution_guard_retries_drain_before_backend_close(self, worker, backend):
+        order: list[str] = []
+
+        async def _drain() -> None:
+            order.append("guard_drain")
+
+        async def _close() -> None:
+            order.append("backend_close")
+
+        worker._execution_guard.drain = _drain
+        backend.close = _close
+        worker._state = WorkerState.RUNNING
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        assert order == ["guard_drain", "backend_close"]
 
     @pytest.mark.asyncio
     async def test_leftover_handler_locks_released_before_backend_close(

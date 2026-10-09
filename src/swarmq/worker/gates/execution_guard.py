@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,6 +102,9 @@ class ExecutionGuard:
         # Freigaben nach gescheitertem Claim (gehalten, damit sie nicht
         # vorzeitig eingesammelt werden).
         self._background: set[asyncio.Task[None]] = set()
+        # Shutdown (``drain``): Nachholversuche warten nicht mehr, sondern
+        # versuchen es sofort ein letztes Mal.
+        self._closing = asyncio.Event()
 
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
         assert ctx.task_info is not None
@@ -223,8 +226,29 @@ class ExecutionGuard:
         )
         self._event("defer_stalled")
 
+    async def _pause(self, delay: float) -> None:
+        """Wartet ``delay``, beim Shutdown nicht mehr."""
+        if self._closing.is_set():
+            return
+        waits = {asyncio.ensure_future(self._sleep(delay)), asyncio.ensure_future(self._closing.wait())}
+        try:
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for wait in waits:
+                wait.cancel()
+
+    async def drain(self) -> None:
+        """Shutdown, vor dem Schliessen des Backends: laufende Nachholversuche
+        versuchen es sofort ein letztes Mal."""
+        self._closing.set()
+        if self._background:
+            await asyncio.wait(set(self._background))
+
     def _release_in_background(self, lease: GuardLease) -> None:
-        task = asyncio.create_task(self.release(lease))
+        self._in_background(self.release(lease))
+
+    def _in_background(self, call: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(call)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
@@ -247,30 +271,61 @@ class ExecutionGuard:
         assert ttl is not None  # Default in SwarmQConfig.__post_init__
         return int(ttl * 1000)
 
-    async def _mark(self, lease: GuardLease, marker: str, call: Awaitable[None]) -> None:
+    async def _mark(self, lease: GuardLease, marker: str, call: Callable[[], Awaitable[None]]) -> None:
         """Begrenzt und fehlertolerant: ein gescheiterter Marker darf das Verb
-        nicht aufhalten. Der Running-Marker laeuft dann nach seiner TTL ab
-        (die naechste Zustellung zaehlt ihn als Waise)."""
+        nicht aufhalten. Er wird im Hintergrund nachgeholt (owner-gebunden,
+        ``guard_finish.lua``), sonst bliebe der Running-Marker bis zu seiner
+        TTL stehen und zaehlte bei der Neuzustellung als Waise."""
         try:
-            await bounded_backend_call(self._deps, call, what=f"execution guard {marker}")
+            await bounded_backend_call(self._deps, call(), what=f"execution guard {marker}")
         except Exception as exc:
             logger.warning(
                 "execution_guard_finish_failed", identity=lease.identity, marker=marker, **_error_fields(exc),
             )
+            self._in_background(self._retry_mark(lease, marker, call))
+
+    async def _retry_mark(self, lease: GuardLease, marker: str, call: Callable[[], Awaitable[None]]) -> None:
+        config = self._deps.config
+        base, cap = config.backend_defer_base_delay, config.backend_defer_max_delay
+        attempt = 0
+        while True:
+            attempt += 1
+            await self._pause(backend_defer_delay(attempt, base, cap))
+            # Begrenzt auf etwa eine Marker-TTL (nominelle Wartezeiten): danach
+            # ist der Marker ohnehin abgelaufen.
+            last = self._closing.is_set() or _nominal_defer_total(attempt, base, cap) >= config.execution_guard_ttl_s
+            try:
+                await bounded_backend_call(self._deps, call(), what=f"execution guard {marker}")
+            except Exception as exc:
+                if not last:
+                    continue
+                logger.warning(
+                    "execution_guard_finish_gave_up", identity=lease.identity, marker=marker, attempts=attempt,
+                    hint=(
+                        "the running marker expires by its TTL and counts as an orphan; "
+                        "without the done marker a redelivery runs the task again"
+                    ),
+                    **_error_fields(exc),
+                )
+                return
+            logger.info("execution_guard_finish_recovered", identity=lease.identity, marker=marker, attempts=attempt)
+            return
 
     async def finish(self, lease: GuardLease) -> None:
         """Done-Marker setzen (terminales Verb ausgefuehrt)."""
         store = self._store()
         assert store is not None
         await self._mark(
-            lease, "done", store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=self._state_ttl_ms()),
+            lease,
+            "done",
+            lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=self._state_ttl_ms()),
         )
 
     async def release(self, lease: GuardLease) -> None:
         """Nur den eigenen Running-Marker loeschen (nicht-terminaler Ausgang)."""
         store = self._store()
         assert store is not None
-        await self._mark(lease, "release", store.release(lease.identity, owner=lease.owner))
+        await self._mark(lease, "release", lambda: store.release(lease.identity, owner=lease.owner))
 
     async def supersede(self, lease: GuardLease, retry_count: int) -> None:
         """Superseded-Marker mit dem Zaehler der Retry-Kopie setzen."""
@@ -279,7 +334,7 @@ class ExecutionGuard:
         await self._mark(
             lease,
             "superseded",
-            store.mark_superseded(
+            lambda: store.mark_superseded(
                 lease.identity, owner=lease.owner, retry_count=retry_count, state_ttl_ms=self._state_ttl_ms(),
             ),
         )

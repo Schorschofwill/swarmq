@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
     from swarmq.worker.execution import TaskExecutor
     from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
+    from swarmq.worker.gates.execution_guard import ExecutionGuard
 
 logger = get_logger(__name__)
 
@@ -90,6 +91,7 @@ class WorkerLifecycle:
         _rate_limiter: RateLimitStore | None
         _lock_manager: LockStore | None
         _guard_store: ExecutionGuardStore | None
+        _execution_guard: ExecutionGuard
         _metrics: Metrics | None
         _metrics_server: MetricsServer | None
         _health_server: HealthServer | None
@@ -588,6 +590,9 @@ class WorkerLifecycle:
                 self._detached_releases,
                 timeout=max(5.0, float(self._config.shutdown_timeout)),
             )
+        # Nachgeholte Marker-Abschluesse des Ausfuehrungsschutzes: ein letzter,
+        # begrenzter Versuch, solange Valkey noch offen ist.
+        await self._execution_guard.drain()
 
         # 3c. Release any leftover handler locks. Runs AFTER the
         # asyncio.wait above (so cancelled tasks have had a chance to

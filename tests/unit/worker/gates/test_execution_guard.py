@@ -44,6 +44,23 @@ Review Phase 2 (2026-10-09):
     Grenze überschreitet, WARNING ``execution_guard_defer_stalled`` und das
     Metrik-Ereignis ``defer_stalled`` -- und stellt weiter zurück (keine DLQ).
 26. Vor und nach dem Überschreiten: keine Meldung (einmal je Nachricht).
+
+Gescheiterter Abschluss (``execution_guard_finish_failed``), Nachholen im
+Hintergrund (2026-10-09):
+27. Scheitert das Freigeben (kurzer Valkey-Ausfall), holt ein Versuch im
+    Hintergrund es nach: kein Marker bis zur TTL, keine Waise.
+28. Scheitert der Done-Marker (Ack ausgeführt), setzt das Nachholen den
+    Done-Zustand -- die Neuzustellung wird übersprungen (KTD5).
+29. Scheitert der Superseded-Marker, setzt das Nachholen ihn mit dem Zähler
+    der Retry-Kopie.
+30. Begrenzt: scheitert der Store dauerhaft, gibt das Nachholen nach etwa
+    einer Marker-TTL (nominelle Wartezeiten) auf, WARNING
+    ``execution_guard_finish_gave_up``.
+31. ``drain`` (Shutdown): wartende Nachholversuche probieren sofort ein
+    letztes Mal; ``drain`` kehrt zurück.
+32. ``drain`` mit hängendem Store kehrt spätestens nach
+    ``backend_op_timeout`` zurück (der letzte Versuch ist begrenzt), WARNING
+    ``execution_guard_finish_gave_up``.
 """
 
 from __future__ import annotations
@@ -594,3 +611,156 @@ async def test_deferral_before_or_after_the_crossing_does_not_warn(
     assert outcome is Redelivered
     assert [e for e in logs if e["event"] == "execution_guard_defer_stalled"] == []
     assert "defer_stalled" not in events
+
+
+async def _no_wait(_delay: float) -> None:
+    await asyncio.sleep(0)
+
+
+def _fail_first(store: object, name: str, failures: int = 1) -> tuple[list[object], asyncio.Event]:
+    """Lässt ``failures`` Aufrufe von ``store.<name>`` scheitern (Valkey kurz
+    weg); danach ruft es die echte Methode und setzt das Event."""
+    real = getattr(store, name)
+    calls: list[object] = []
+    done = asyncio.Event()
+
+    async def flaky(*args: object, **kwargs: object) -> None:
+        calls.append(args)
+        if len(calls) <= failures:
+            raise BackendConnectionError("valkey down")
+        await real(*args, **kwargs)
+        done.set()
+
+    setattr(store, name, flaky)
+    return calls, done
+
+
+async def test_failed_release_is_retried_in_the_background(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    store = backend.execution_guard
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
+    delivery = make_message(headers={})
+    assert await guard.apply(delivery, _ctx()) is Continue
+    _calls, released = _fail_first(store, "release")
+
+    with capture_swarmq_logs() as logs:
+        await guard.settle(delivery)
+        await asyncio.wait_for(released.wait(), 1)
+
+    claim = await store.claim("t-1", owner="next", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3)
+    assert (claim.status, claim.orphans) == ("claimed", 0)
+    assert [e["event"] for e in logs if e["event"].startswith("execution_guard_finish")] == [
+        "execution_guard_finish_failed", "execution_guard_finish_recovered",
+    ]
+
+
+async def test_failed_done_marker_is_retried_as_done(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    """Das Ack lief: das Nachholen setzt den Done-Zustand, nicht nur die
+    Freigabe -- die Neuzustellung wird übersprungen statt erneut ausgeführt."""
+    store = backend.execution_guard
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
+    delivery = make_message(headers={})
+    assert await guard.apply(delivery, _ctx()) is Continue
+    _calls, marked = _fail_first(store, "mark_done")
+
+    lease = guard.take_lease(delivery)
+    assert lease is not None
+    await guard.finish(lease)
+    await asyncio.wait_for(marked.wait(), 1)
+
+    assert await _other_claim(backend, owner="next") == "done"
+
+
+async def test_failed_superseded_marker_is_retried_with_the_retry_count(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    store = backend.execution_guard
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
+    delivery = make_message(headers={})
+    assert await guard.apply(delivery, _ctx()) is Continue
+    _calls, marked = _fail_first(store, "mark_superseded")
+
+    lease = guard.take_lease(delivery)
+    assert lease is not None
+    await guard.supersede(lease, 1)
+    await asyncio.wait_for(marked.wait(), 1)
+
+    assert await _other_claim(backend, owner="old-attempt", retry_count=0) == "superseded"
+    assert await _other_claim(backend, owner="retry-copy", retry_count=1) == "claimed"
+
+
+async def _until(predicate: object) -> None:
+    while not predicate():  # type: ignore[operator]
+        await asyncio.sleep(0)
+
+
+async def test_retrying_a_failed_marker_gives_up_after_about_one_ttl(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    """Nominell 1, 2, 4, 8 s: nach der vierten Wartezeit (Summe 15 s) ist
+    die TTL von 10 s überschritten -- letzter Versuch, dann Aufgabe."""
+    deps.config = SwarmQConfig(
+        broker_url="amqp://x", backend_url="valkey://x", execution_guard_ttl_s=10.0,
+        backend_defer_base_delay=1.0, backend_defer_max_delay=60.0,
+    )
+    store = backend.execution_guard
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
+    delivery = make_message(headers={})
+    assert await guard.apply(delivery, _ctx()) is Continue
+    calls, _released = _fail_first(store, "release", failures=1000)
+
+    with capture_swarmq_logs() as logs:
+        await guard.settle(delivery)
+        await asyncio.wait_for(_until(lambda: any(e["event"] == "execution_guard_finish_gave_up" for e in logs)), 1)
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    assert len(calls) == 5  # der Versuch im Verb plus vier nachgeholte
+    [gave_up] = [e for e in logs if e["event"] == "execution_guard_finish_gave_up"]
+    assert gave_up["log_level"] == "warning" and gave_up["marker"] == "release" and gave_up["attempts"] == 4
+
+
+async def _sleep_forever(_delay: float) -> None:
+    await asyncio.Event().wait()
+
+
+async def test_drain_makes_a_waiting_retry_try_once_more_right_away(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    """Shutdown: der Nachholversuch wartet nicht seine Backoff-Zeit ab,
+    sondern versucht es sofort ein letztes Mal, bevor das Backend schließt."""
+    store = backend.execution_guard
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_sleep_forever)
+    delivery = make_message(headers={})
+    assert await guard.apply(delivery, _ctx()) is Continue
+    _calls, released = _fail_first(store, "release")
+    await guard.settle(delivery)
+
+    await asyncio.wait_for(guard.drain(), 1)
+
+    assert released.is_set()
+    assert await _other_claim(backend, owner="next") == "claimed"
+
+
+async def test_drain_with_a_hanging_store_returns_after_the_bounded_last_attempt(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", backend_op_timeout=0.02)
+    store = backend.execution_guard
+    guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_sleep_forever)
+    delivery = make_message(headers={})
+    assert await guard.apply(delivery, _ctx()) is Continue
+
+    async def hang(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    store.release = hang  # type: ignore[method-assign]
+    with capture_swarmq_logs() as logs:
+        await guard.settle(delivery)  # erster Versuch: Zeitüberschreitung
+        await asyncio.wait_for(guard.drain(), 1)
+
+    [gave_up] = [e for e in logs if e["event"] == "execution_guard_finish_gave_up"]
+    assert gave_up["attempts"] == 1

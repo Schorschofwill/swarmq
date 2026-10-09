@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -1310,11 +1310,11 @@ class TestBackendDownResultStoreCombo:
     growing backoff), so the rerun happens after the heal.
 
     Execution guard (0.11.0): the release of the first run's running
-    marker fails while Valkey is down, so the rerun is deferred until the
-    marker expires -- ``_GUARD`` shortens that TTL from 60 s to 2 s.
+    marker fails while Valkey is down; the worker retries it in the
+    background, so the rerun runs after the heal with the default
+    ``execution_guard_ttl_s`` of 60 s instead of waiting for the marker
+    to expire.
     """
-
-    _GUARD: ClassVar[dict[str, Any]] = {"execution_guard_ttl_s": 2.0}
 
     async def test_happy_path(
         self,
@@ -1438,7 +1438,7 @@ class TestBackendDownResultStoreCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_proxied_url, queue,
-                mirror_to=app._signal_dispatcher, **self._GUARD,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await self._drop_backend_during_first_store(
                     toxiproxy, app, task_name, 1, gates,
@@ -1494,7 +1494,7 @@ class TestBackendDownResultStoreCombo:
             await broker.declare_queue(queue)
             async with _running_worker(
                 rabbitmq_url, valkey_proxied_url, queue,
-                mirror_to=app._signal_dispatcher, **self._GUARD,
+                mirror_to=app._signal_dispatcher,
             ):
                 tid = await self._drop_backend_during_first_store(
                     toxiproxy, app, task_name, 6, gates,
@@ -1544,7 +1544,7 @@ class TestBackendDownResultStoreCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue, **self._GUARD):
+            async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
                 tid = await self._drop_backend_during_first_store(
                     toxiproxy, app, task_name, 1, gates,
                 )
