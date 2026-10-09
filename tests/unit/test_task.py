@@ -369,6 +369,21 @@ def test_taskinfo_catchup_false_with_cron_accepted():
 
 
 # ---------------------------------------------------------------------------
+# Abschaltbares Dead-Lettering (Plan 2026-10-08-1541, U9, R15, KTD7)
+#
+# Test-Liste:
+# - ohne Angabe ist ``dead_letter`` None (dann gilt die Konfiguration)
+# - ``dead_letter=False``/``True`` bleibt erhalten
+# ---------------------------------------------------------------------------
+
+
+def test_taskinfo_dead_letter_defaults_to_none_and_keeps_explicit_value():
+    assert TaskInfo(name="task", queues=["q"]).dead_letter is None
+    assert TaskInfo(name="task", queues=["q"], dead_letter=False).dead_letter is False
+    assert TaskInfo(name="task", queues=["q"], dead_letter=True).dead_letter is True
+
+
+# ---------------------------------------------------------------------------
 # Cron-Zeitzone (Plan 2026-10-08-1541, U1, R6, KTD1)
 #
 # Test-Liste:

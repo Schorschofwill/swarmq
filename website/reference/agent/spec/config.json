@@ -343,6 +343,18 @@
       "type": "int"
     },
     {
+      "default": 604800.0,
+      "env_var": "SWARMQ_DEAD_LETTER_TTL_S",
+      "name": "dead_letter_ttl_s",
+      "type": "float | None"
+    },
+    {
+      "default": true,
+      "env_var": "SWARMQ_DEAD_LETTER_TERMINAL_FAILURES",
+      "name": "dead_letter_terminal_failures",
+      "type": "bool"
+    },
+    {
       "default": 131072,
       "env_var": "SWARMQ_MALLOC_TRIM_THRESHOLD",
       "name": "malloc_trim_threshold",

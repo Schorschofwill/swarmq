@@ -118,6 +118,9 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
         return _parse_int(raw, env_name)
     if kind == "float":
         return _parse_float(raw, env_name)
+    if kind == "optional_float":
+        # ``none`` schaltet eine Frist ab (Plan 2026-10-08-1541, KTD6).
+        return None if raw.strip().lower() == "none" else _parse_float(raw, env_name)
     if kind == "bool":
         return raw.lower() in ("true", "1", "yes")
     if kind == "csv":
@@ -306,6 +309,14 @@ class SwarmQConfig:
     # Consumer-Timeout ausgecheckt.
     execution_guard_done_ttl_s: float | None = None
     execution_guard_max_orphans: int = 3
+    # Verfallsfrist einer von swarmq in die DLQ gelegten Nachricht, gemessen
+    # ab dem Dead-Lettering (Plan 2026-10-08-1541, KTD6). Lesen per ``dlq
+    # list``/``inspect`` verlaengert sie nicht. None heisst unbegrenzt.
+    dead_letter_ttl_s: float | None = 604800.0
+    # Terminale Task-Fehler (``NoRetry``, nicht wiederholbare Ausnahme,
+    # Retries ausgeschoepft) in die DLQ legen (KTD7). Aus: Fehlerergebnis
+    # speichern und bestaetigen wie vor MR !12. ``TaskInfo.dead_letter`` gewinnt.
+    dead_letter_terminal_failures: bool = True
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -389,6 +400,8 @@ class SwarmQConfig:
         ("SWARMQ_EXECUTION_GUARD_TTL_S", "execution_guard_ttl_s", "float"),
         ("SWARMQ_EXECUTION_GUARD_DONE_TTL_S", "execution_guard_done_ttl_s", "float"),
         ("SWARMQ_EXECUTION_GUARD_MAX_ORPHANS", "execution_guard_max_orphans", "int"),
+        ("SWARMQ_DEAD_LETTER_TTL_S", "dead_letter_ttl_s", "optional_float"),
+        ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -418,6 +431,7 @@ class SwarmQConfig:
         "consumer_ready_grace_s",
         "execution_guard_ttl_s",
         "execution_guard_max_orphans",
+        "dead_letter_ttl_s",
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",
@@ -549,7 +563,8 @@ class SwarmQConfig:
 
         for field_name in self._POSITIVE_FIELDS:
             value = getattr(self, field_name)
-            if value <= 0:
+            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
+            if value is not None and value <= 0:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
 

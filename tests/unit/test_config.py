@@ -1066,3 +1066,41 @@ def test_consumed_queues_expand_priorities():
     assert _cfg(queues=["a", "b"], priorities=True).consumed_queues == [
         "a.high", "a", "a.low", "b.high", "b", "b.low",
     ]
+
+
+# --- Plan 2026-10-08-1541, U9: DLQ-TTL und abschaltbares Dead-Lettering ---
+# Test-Liste:
+# 1. ``dead_letter_ttl_s`` ist standardmaessig 7 Tage (604800 s).
+# 2. ``SWARMQ_DEAD_LETTER_TTL_S`` setzt den Wert; ``none`` heisst unbegrenzt.
+# 3. 0 oder negativ (kwarg und Env) -> ConfigurationError.
+# 4. ``dead_letter_terminal_failures`` ist standardmaessig an und per
+#    ``SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`` abschaltbar.
+
+
+def test_dead_letter_ttl_defaults_to_seven_days():
+    assert _cfg().dead_letter_ttl_s == 604800.0
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("3600", 3600.0), ("none", None), ("None", None)])
+def test_dead_letter_ttl_from_env(monkeypatch, raw, expected):
+    monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", raw)
+    assert _cfg().dead_letter_ttl_s == expected
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+def test_dead_letter_ttl_must_be_positive_or_none(value):
+    with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+        _cfg(dead_letter_ttl_s=value)
+
+
+
+def test_dead_letter_ttl_zero_from_env_is_a_configuration_error(monkeypatch):
+    monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", "0")
+    with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+        _cfg()
+
+
+def test_dead_letter_terminal_failures_defaults_on_and_env_switches_off(monkeypatch):
+    assert _cfg().dead_letter_terminal_failures is True
+    monkeypatch.setenv("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "false")
+    assert _cfg().dead_letter_terminal_failures is False
