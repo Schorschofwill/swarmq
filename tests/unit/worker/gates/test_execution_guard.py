@@ -39,6 +39,11 @@ Review Phase 2 (2026-10-09):
     nächste Zustellung zählt keine Waise.
 24. Dieses Release ist an den Owner gebunden: einen fremden Marker lässt es
     stehen.
+25. Überschreitet die Summe der Zurückstellungen ``consumer_timeout_s``
+    (nominelle Wartezeiten ohne Jitter), meldet die Zurückstellung, die die
+    Grenze überschreitet, WARNING ``execution_guard_defer_stalled`` und das
+    Metrik-Ereignis ``defer_stalled`` -- und stellt weiter zurück (keine DLQ).
+26. Vor und nach dem Überschreiten: keine Meldung (einmal je Nachricht).
 """
 
 from __future__ import annotations
@@ -540,3 +545,52 @@ async def test_background_release_after_a_failed_claim_leaves_a_foreign_marker(
 
     store.claim = real_claim  # type: ignore[method-assign]
     assert await _other_claim(backend, owner="third") == "running"
+
+
+
+def _stalled_guard(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock, events: list[str],
+) -> ExecutionGuard:
+    # Nominell 1 s, 2 s, 4 s ...: die zweite Zurueckstellung erreicht 3 s.
+    deps.config = SwarmQConfig(
+        broker_url="amqp://x", backend_url="valkey://x", consumer_timeout_s=3.0,
+        backend_defer_base_delay=1.0, backend_defer_max_delay=60.0,
+    )
+    return ExecutionGuard(deps, store=lambda: backend.execution_guard, dead_letter=dead_letter, on_event=events.append)
+
+
+async def test_deferral_crossing_the_consumer_timeout_warns_but_keeps_deferring(
+    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    events: list[str] = []
+    guard = _stalled_guard(deps, backend, dead_letter, events)
+    await _other_claim(backend)
+
+    with capture_swarmq_logs() as logs:
+        outcome = await guard.apply(make_message(headers={"x-swarmq-guard-defer-count": 1}), _ctx())
+
+    assert outcome is Redelivered
+    deps.broker.retry_later.assert_awaited_once()
+    dead_letter.assert_not_awaited()
+    [stalled] = [e for e in logs if e["event"] == "execution_guard_defer_stalled"]
+    assert stalled["log_level"] == "warning" and stalled["task_id"] == "t-1"
+    assert stalled["defer_count"] == 2
+    assert "defer_stalled" in events
+
+
+@pytest.mark.parametrize("prior", [0, 2, 5000])
+async def test_deferral_before_or_after_the_crossing_does_not_warn(
+    prior: int, deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+) -> None:
+    """Einmal je Nachricht; auch nach tausenden Zurueckstellungen (Haenger
+    ueber Tage) rechnet die Summe ohne Ueberlauf."""
+    events: list[str] = []
+    guard = _stalled_guard(deps, backend, dead_letter, events)
+    await _other_claim(backend)
+
+    with capture_swarmq_logs() as logs:
+        outcome = await guard.apply(make_message(headers={"x-swarmq-guard-defer-count": prior}), _ctx())
+
+    assert outcome is Redelivered
+    assert [e for e in logs if e["event"] == "execution_guard_defer_stalled"] == []
+    assert "defer_stalled" not in events

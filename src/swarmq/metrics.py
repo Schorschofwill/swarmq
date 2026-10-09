@@ -234,7 +234,7 @@ class Metrics:
                 f"{namespace}_execution_guard_events_total",
                 (
                     "Execution guard events: duplicate_skipped, deferred, "
-                    "orphan_limit, lease_lost"
+                    "orphan_limit, lease_lost, defer_stalled"
                 ),
                 labelnames=("event",),
                 registry=self.registry,

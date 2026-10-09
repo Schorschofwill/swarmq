@@ -296,6 +296,15 @@ nicht exactly-once:
   sobald er es bemerkt. Blockierende Arbeit in den
   [CPU-Modus](../guides/cpu-mode.md) oder einen Thread legen oder
   `SWARMQ_EXECUTION_GUARD_TTL_S` anheben.
+- **Ein hängender Task hält seine Neuzustellung unbegrenzt auf.** Ein
+  Task, der ewig wartet, während der Event-Loop weiterläuft, verlängert
+  seinen Marker; jede Neuzustellung wird darum immer wieder
+  zurückgestellt. Überschreiten die Zurückstellungen zusammen
+  `SWARMQ_CONSUMER_TIMEOUT_S` (nominelles Backoff, ohne Jitter), loggt
+  der Worker einmal je Nachricht `execution_guard_defer_stalled`
+  (WARNING) und zählt `event="defer_stalled"`. Er stellt weiter zurück;
+  die Nachricht geht nicht in die DLQ. Lange Tasks mit einem eigenen
+  Timeout versehen.
 - **Ältere Worker im Mischbetrieb schützen nicht.** Worker vor 0.11.0
   setzen und prüfen keine Marker. Bis jeder Worker einer Queue 0.11.0
   läuft, ist eine Zustellung, die ein älterer Worker bearbeitet, nicht
@@ -315,7 +324,7 @@ Tasks um 0,15–0,2 ms.
 (`SwarmQConfig(execution_guard=False)`) stellt das Verhalten vor
 0.11.0 wieder her. Beobachten mit
 `swarmq_execution_guard_events_total{event}` (`duplicate_skipped`,
-`deferred`, `orphan_limit`, `lease_lost`) und den
+`deferred`, `orphan_limit`, `lease_lost`, `defer_stalled`) und den
 [Log-Events](../reference/logging.md#event-katalog).
 
 ## Consumer-Timeout

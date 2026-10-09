@@ -272,6 +272,14 @@ SwarmQ exactly-once:
   worker logs `execution_guard_lease_lost` once it notices. Keep
   blocking work in [CPU mode](../guides/cpu-mode.md) or in a thread, or
   raise `SWARMQ_EXECUTION_GUARD_TTL_S`.
+- **A hung task blocks its redelivery without limit.** A task that
+  awaits forever while the event loop keeps running renews its marker,
+  so every redelivery of it is deferred again and again. Once the
+  deferrals add up to more than `SWARMQ_CONSUMER_TIMEOUT_S` (nominal
+  backoff, without jitter), the worker logs
+  `execution_guard_defer_stalled` (WARNING) once per message and counts
+  `event="defer_stalled"`. It keeps deferring; the message does not go
+  to the DLQ. Give long tasks a timeout of their own.
 - **Older workers in mixed operation do not protect.** Workers before
   0.11.0 neither set nor check markers. Until every worker consuming a
   queue runs 0.11.0, a delivery handled by an older worker is not
@@ -289,7 +297,8 @@ rose by 11–12 % and the latency of fast tasks by 0.15–0.2 ms.
 **Switching it off.** `SWARMQ_EXECUTION_GUARD=false`
 (`SwarmQConfig(execution_guard=False)`) restores the behaviour before
 0.11.0. Observe it with `swarmq_execution_guard_events_total{event}`
-(`duplicate_skipped`, `deferred`, `orphan_limit`, `lease_lost`) and the
+(`duplicate_skipped`, `deferred`, `orphan_limit`, `lease_lost`,
+`defer_stalled`) and the
 [log events](../reference/logging.md#event-catalog).
 
 ## Consumer timeout

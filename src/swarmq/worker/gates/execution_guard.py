@@ -62,6 +62,20 @@ def execution_identity(delivery: Any, task_id: str) -> str:
     return task_id
 
 
+def _nominal_defer_total(attempts: int, base: float, cap: float) -> float:
+    """Summe der nominellen Wartezeiten (ohne Jitter) der ersten
+    ``attempts`` Zurueckstellungen, wie ``backend_defer_delay``."""
+    total, delay = 0.0, base
+    for done in range(attempts):
+        if delay >= cap:
+            # Ab dem Deckel waechst die Summe linear (kein Ueberlauf bei
+            # tausenden Zurueckstellungen).
+            return total + cap * (attempts - done)
+        total += delay
+        delay *= 2
+    return total
+
+
 class ExecutionGuard:
     def __init__(
         self,
@@ -186,7 +200,28 @@ class ExecutionGuard:
             "execution_guard_deferred", task_id=ctx.task_id, task_name=ctx.task_name,
             defer_count=attempt, delay_ms=delay_ms,
         )
+        self._report_stall(ctx, attempt)
         return Redelivered
+
+    def _report_stall(self, ctx: GateContext, attempt: int) -> None:
+        """Einmal je Nachricht, wenn die Zurueckstellungen zusammen
+        ``consumer_timeout_s`` ueberschreiten: das Original laeuft
+        ungewoehnlich lange oder haengt (verlaengert seinen Marker aber
+        weiter). Weiter zurueckstellen -- keine DLQ."""
+        config = self._deps.config
+        base, cap = config.backend_defer_base_delay, config.backend_defer_max_delay
+        limit = config.consumer_timeout_s
+        if not _nominal_defer_total(attempt - 1, base, cap) < limit <= _nominal_defer_total(attempt, base, cap):
+            return
+        logger.warning(
+            "execution_guard_defer_stalled", task_id=ctx.task_id, task_name=ctx.task_name,
+            defer_count=attempt, consumer_timeout_s=limit,
+            hint=(
+                "the same execution has been running elsewhere for longer than consumer_timeout_s; "
+                "the redelivery keeps being deferred -- check for a hung task"
+            ),
+        )
+        self._event("defer_stalled")
 
     def _release_in_background(self, lease: GuardLease) -> None:
         task = asyncio.create_task(self.release(lease))
