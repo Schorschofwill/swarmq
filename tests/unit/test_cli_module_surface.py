@@ -154,6 +154,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "dlq_cmd",                      # package — dlq subcommand
         "inspect_cmd",                  # package — inspect subcommand
         "parser",                       # package — argparse tree
+        "parser_ops",                   # package — argparse schedule/dlq/inspect (Plan 0.12.0, MR 0)
         "pool",                         # package — --pool / --concurrency Aufloesung (Plan 2026-09-03-001)
         "schedule_cmd",                 # package — schedule subcommand
         "worker_cmd",                   # package — worker command

@@ -144,7 +144,8 @@ def test_contract_bindings_are_pure() -> None:
 # Q4 (Plan 0.12.0): Valkey-Keys entstehen nur in ``swarmq.keyspace``.
 _KEYSPACE_MODULE = "swarmq.keyspace"
 _KEYSPACE_HELP_TEXTS: dict[str, list[str]] = {
-    "swarmq.cli.parser": ["sq:control:setpoint:<group>", "sq:sched:defs"],
+    "swarmq.cli.parser": ["sq:control:setpoint:<group>"],
+    "swarmq.cli.parser_ops": ["sq:sched:defs"],
 }
 
 
