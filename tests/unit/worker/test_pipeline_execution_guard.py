@@ -19,6 +19,8 @@ Test-Liste:
    gibt Running vor dem Publish frei.
 10. Abgeschaltetes Dead-Lettering (U9, KTD7): das Ack des Ergebnis-Tails
     laeuft ueber den Wrapper -> Done-Marker; eine Kopie wird übersprungen.
+11. Review Phase 2: ein Abbruch waehrend des Finalisierens im ``finally``
+    (Schedfire/Unique) laesst die Freigabe des Running-Markers nicht aus.
 """
 
 from __future__ import annotations
@@ -185,6 +187,30 @@ async def test_cancelled_delivery_frees_running_without_done(broker, backend, re
 
     assert await _status(guard_backend) == "claimed"
     assert RUNS == []
+
+
+async def test_cancel_during_finalize_still_frees_running(broker, backend, rec, guard_backend) -> None:
+    chain = MagicMock()
+    chain.run_pre_execute = AsyncMock(side_effect=RuntimeError("hook exploded"))
+    worker = _worker(broker, backend, rec, guard_backend.execution_guard, CountedTask)
+    worker._middleware_chain_factory = lambda: chain
+    entered = asyncio.Event()
+
+    async def _blocking_finalize(*_args: object, **_kwargs: object) -> bool:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    worker._finalize_schedfire = _blocking_finalize  # type: ignore[method-assign]
+    handler = asyncio.create_task(worker._handle_message(make_message(_payload("guard-counted"))))
+    await asyncio.wait_for(entered.wait(), 1)
+
+    handler.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await handler
+    await asyncio.gather(*worker._detached_releases)
+
+    assert await _status(guard_backend) == "claimed"
 
 
 async def test_redelivery_after_completion_is_acked_and_skipped(broker, backend, rec, guard_backend) -> None:

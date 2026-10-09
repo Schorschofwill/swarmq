@@ -746,12 +746,13 @@ class Worker(WorkerLifecycle):
             # than being skipped as "completed".
             # U19: der finally liest die Outcome-Felder. ``Redelivered`` (kein
             # Terminal) → In-Flight-Claim löschen, keine Freigabe.
-            await self._finalize_delivery(message, outcome, ctx, task_info)
             # KTD5: hat kein Verb den Running-Marker abgeschlossen (kein Verb,
-            # Ausnahme, Abbruch), nur freigeben -- geshieldet wie der Lock-Release.
+            # Ausnahme, Abbruch), nur freigeben -- geshieldet wie der Lock-Release
+            # und VOR dem Finalisieren (ein Abbruch dort liesse es sonst aus).
             # Der Regelfall (Verb hat abgeschlossen, Schutz aus) braucht keinen Task.
             if self._execution_guard.lease_of(message) is not None:
                 await self._detached(self._execution_guard.settle(message))
+            await self._finalize_delivery(message, outcome, ctx, task_info)
 
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
             # __aexit__ with the captured task exception so yield-based
