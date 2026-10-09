@@ -50,6 +50,9 @@ def backend():
     be.schedules.set_leader_version = AsyncMock()
     be.schedules.leader_info = AsyncMock(return_value=LeaderInfo(owner=None, version=None))
     be.schedules.report_worker_version = AsyncMock()
+    # Cron-Aufräumen (U10, KTD8): kein deaktiviert entfernter Cron.
+    be.schedules.pruned_disabled = AsyncMock(return_value=False)
+    be.schedules.forget_pruned_disabled = AsyncMock()
     return be
 
 

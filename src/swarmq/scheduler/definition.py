@@ -139,8 +139,10 @@ class ScheduleStore:
 
     async def add_schedule(self, definition: ScheduleDefinition) -> bool:
         """Insert a new schedule. Returns True on insert, False on no-op
-        (insert-if-absent via HSETNX, Unit 8)."""
-        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
+        (insert-if-absent via HSETNX, Unit 8). A disabled definition gets
+        no fire-index entry (Plan 2026-10-08-1541, U10)."""
+        fire_ts_ms = None if definition.disabled else definition.fire_ts_ms
+        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), fire_ts_ms)
 
     async def update_static_schedule(
         self, definition: ScheduleDefinition, *, keep_fire_index: bool = False,
