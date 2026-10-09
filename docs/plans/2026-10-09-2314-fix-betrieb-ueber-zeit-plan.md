@@ -2,7 +2,7 @@
 title: Behebung der Befunde „Betrieb über Zeit“ (BZ-01 bis BZ-28) – Plan 0.12.0
 type: fix
 date: 2026-10-09
-revision: 3 (Gegenlesen 1 B1–B20, Belastungstest A/R/U, gezielte Prüfung F1–F11 eingearbeitet)
+revision: 4 (… F1–F11 sowie Spike-Ergebnisse S1–S9 aus MR 1 eingearbeitet)
 artifact_readiness: implementation-ready
 execution: code
 ---
@@ -136,7 +136,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
   - Jede neue `SwarmQError`-Unterklasse bekommt einen Eintrag in `_ERROR_SEMANTICS` (`agent_spec.py:77`).
   - Jedes MR erzeugt die Spec neu (`python -m swarmq.agent_spec`; `test_agent_spec.py:440-452`), als eigenen TDD-Zyklus.
 - **Q12 Gates je MR:**
-  - Ohne Rerun: Unit, Integration, e2e, `tests/compat`, Chaos, ruff, mypy, Q10.
+  - Ohne Rerun: Unit, Integration, e2e (inklusive `tests/integration/spikes`), `tests/compat` (`-m compat`, opt-in), Chaos, ruff, mypy, Q10. Spikes laufen zusätzlich gegen 4.2.9 (`SWARMQ_TEST_RABBITMQ42_PORT=5742`), solange der Container läuft.
   - Integrationstests nur über den Wrapper mit 5699/6399 (nie 5672/6379) und nie zwei Läufe parallel.
   - Das Ergebnis wird vor dem Commit ausdrücklich geprüft.
 - **Q13 Ein roter Test zur Zeit:**
@@ -235,7 +235,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 | 0 | Refactor | – | – |
 | 1 | Werkzeuge + Spikes | – | 0 |
 | 2 | Kleinkram | BZ-26, BZ-24, BZ-17 | 0 |
-| 3 | Terminale Pfade | BZ-13, BZ-22 (+ Pfad beim Lock-Deckel, Teil BZ-05) | 0 |
+| 3 | Terminale Pfade | BZ-13, BZ-22, BZ-29 (+ Pfad beim Lock-Deckel, Teil BZ-05) | 0, 1 (S4) |
 | 4 | Scheduler-Basis | BZ-28, BZ-07 | 0 |
 | 5 | Stabile Oneshot-ID | BZ-02, BZ-23, KTD11 ≥ 0.12 | 4 |
 | 6 | Unroutable | BZ-03 | 1 (S6), 3, 5 |
@@ -282,7 +282,14 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
   - An der Broker-Grenze greift ein Schutz bei ½ `frame_max`: zuerst kürzen, dann `MessageHeadersTooLarge` (mit `_ERROR_SEMANTICS`, Q11).
   - Der Nachweis wird umgeschrieben: Er prüft die Tiefe der **Haupt-Queue** per passivem Declare, nicht `queue_depth` (das zählt `.DQ` mit).
 
-### MR 3 – BZ-13, BZ-22 (+ Pfad beim Lock-Deckel)
+### MR 3 – BZ-13, BZ-22, BZ-29 (+ Pfad beim Lock-Deckel)
+
+- **BZ-29 (neu aus Spike S4):** Auf RabbitMQ 4.3 erhöht `nack(requeue=True)` den `x-delivery-count` nicht. Es zählt nur `x-acquired-count`, der bei der zweiten Zustellung mit 1 beginnt. Die vier `redeliver`-Pfade (`guarded_broker.py:71`, `gates/__init__.py:233,238,248`) laufen deshalb auf 4.3 ohne Grenze und ohne Pause, auf 4.2 enden sie nach rund 20 schnellen Runden still im Broker-DLX. Fix:
+  - `DeliveryCountGate` zählt `max(x-delivery-count, x-acquired-count)`. Je nach Zähler heißt der `error_type` weiter `WorkerHungError` oder neu `RedeliveryLimitError` (Eintrag in `_ERROR_SEMANTICS`, Q11).
+  - `redeliver` wartet vor dem `nack` `min(0,1·2^k, 5 s)` mit k = max(Zähler), maximal 5 s, und hält dabei den Slot. Damit verteilen sich die rund 20 Versuche auf mehr als eine Minute, und ein kurzer Publish-Ausfall schickt nichts sofort in die DLQ. Abbruch der Wartezeit beim Shutdown.
+  - Das Gate nutzt die Konfiguration bzw. ab MR 8 das effektive Limit.
+  - Nachweis-Test `tests/unit/worker/gates/test_befund_bz29_redeliver_limit.py` zuerst (xfail strict), Register-Eintrag BZ-29.
+  - Folgefehler-Prüfung: Auf 4.2 zählt `x-acquired-count` nicht (None), dort bleibt das Verhalten gleich, nur mit Backoff. Der Hang-Pfad (Channel-Abbruch) zählt auf beiden Versionen wie bisher.
 
 - **`worker/terminal.py`:** `fail_workflow_step()` (aus `retry.py:209-245`) und `GateDeps.fail_workflow`. Nutzer:
   - Expiry.
@@ -311,6 +318,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
 
 ### MR 5 – BZ-02, BZ-23, KTD11
 
+- **Version:** `pyproject.toml` auf `0.12.0.dev0` (S-Befund aus MR 1). Sonst meldet der Arbeitsstand 0.11.0 und gilt für KTD11 selbst als veraltet. Die compat-Suite erkennt die Versionen weiter über die PID.
 - **BZ-02:** neues Feld `ScheduleDefinition.task_id`. Fallback ist das Suffix von `oneshot:<uuid>`, sonst `uuid7()`. Crons bekommen je Fire eine neue ID.
 - **BZ-23:**
   - Das Flag lebt `max(24 h, result_ttl)` plus `fire_ts − now` plus `max_age + 300` (falls bekannt).
@@ -373,8 +381,9 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
   - Text: „Policy `dead-letter-strategy` setzen **oder** `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`“. Eine Policy ist nicht erkennbar; nur der Abschalter bringt die Warnung zum Schweigen.
 - **Effektives Delivery-Limit je Queue:**
   - Bestimmt über `delivery.queue`, nicht `ctx.queue`, damit die Prioritätsbänder stimmen.
-  - Werte ≤ 0 gelten als unbegrenzt, dann gilt die Konfiguration.
-  - „none“ gilt ab RabbitMQ 4 als 20; die Version kommt aus den Server-Properties (S1).
+  - Werte < 0 (−1) gelten als unbegrenzt, dann gilt die Konfiguration. **0 heißt „keine Wiederzustellung“** (S1); das Gate dead-lettert dann bei der ersten Wiederzustellung.
+  - „none“ gilt ab RabbitMQ 4 als 20 (S1 belegt auf 4.2.9 und 4.3.6).
+  - Eine Policy und das Argument wirken als Minimum (S1). Eine `delivery-limit`-Policy bleibt ohne Management-API unsichtbar; die Doku verbietet sie weiterhin.
   - Sonst gilt der Wert der Queue.
   - Das Gate nutzt `min(config, effektiv)`.
   - Eine `delivery-limit`-**Policy** ist ohne Management-API nicht sichtbar. Die Doku verbietet sie für swarmq-Queues.
@@ -453,7 +462,7 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
   - Die Header bleiben, `x-death` wächst. Ein Replay hat daher n+1 und eine neue Identität.
   - Eine Neuzustellung des Originals hat n und bleibt geschützt.
   - at-least-once-Duplikate tragen dieselben Header und damit dieselbe Identität.
-  - S5 prüft trotzdem: Kopie mit `x-death [q:1]` → `.DQ` mit Ablaufzeit → beim Konsum lesen. Damit ist belegt, dass die Base-Variante auf 4.2.9 und 4.3.6 korrekt rechnet.
+  - S5 (MR 1) hat belegt: Ein Broker-DLX baut `x-death` **neu** auf, client-gesetzte Einträge verschwinden. Ein Client-Republish lässt es unverändert. Ein wiederholter reiner Broker-DLX erhöht nur `count` (S7). Die Base-Variante ist damit notwendig und korrekt; ein Integrationstest prüft die Kette Kopie → `.DQ` → Konsum.
 - **CLI `dlq retry`:**
   - Ist `x-swarmq-dlq-gen` **gleich** `x-swarmq-dead-lettered-at` (frisch von einem 0.12-Worker dead-gelettert), **bleibt `x-swarmq-replay-id` unverändert**. Hat ein 0.11-Worker die Nachricht erneut dead-gelettert, stempelt er `dead-lettered-at` neu; die Gleichheit bricht, und die CLI vergibt eine neue `uuid4`. Sonst würde die CLI eine schon `done` gesetzte ID behalten (Rev. 3 F2).
     - Ein wiederholter `dlq retry` derselben XQ-Nachricht ergibt dieselbe Identität; der zweite Lauf wird verworfen. UI-Move verhält sich genauso.
@@ -635,6 +644,8 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
 | 16 | `test_rabbitmq.py:41-52,446-532,637-656,786-919`, `tests/unit/broker/test_dead_letter_ttl_header.py`, `tests/unit/broker/test_shutdown_deadline.py:84`, `tests/unit/worker/test_lifecycle.py:183-218`, `tests/unit/broker/test_consumer_watch.py:431`, `tests/integration/broker/test_rabbitmq_dlq.py` | zweite Verbindung, DLQ-Lesen |
 | 17 | `test_supervisor.py:519-557,1296,1368,1552ff,1607ff`, `test_run.py:466`, `test_setpoint.py:415-423`; e2e mit `shutdown_timeout=5` nur, falls sie brechen (T anheben, wenn nur das Budget geprüft wird; Drain-Semantik ist ein Warnzeichen) | Budget, Abkühlzeit |
 
+| 3 | Tests, die `DeliveryCountGate` nur mit `x-delivery-count` prüfen, bleiben grün; `redeliver`-Tests mit Zeitannahmen (grep `redeliver` in `tests/unit/broker`, `tests/unit/worker`) bekommen eine injizierte Wartefunktion | BZ-29 |
+
 **Nachweise, die vor dem Fix umgeschrieben werden:**
 - BZ-08: Generations-ID
 - BZ-10: Tests 1, 2 und 4
@@ -784,3 +795,5 @@ Gegenlesen 1 (B1–B20) ist eingearbeitet, siehe die einzelnen MRs. B4 (Replay-I
 | F9 Autoscaling-Ziel verfehlt | Abschnitt 1, MR 10: nur Haupt-Queue über `ready_depth` |
 | F10 `known` hält umgewidmete Namen | MR 11: Bedingung `source == "static"` |
 | F11 Cancel-Flag verlängert; Abbruch während des Laufs | Abschnitt 1, MR 5: `PEXPIRE LT`, alle Löschstellen, Changelog |
+
+**Spike-Ergebnisse aus MR 1 (Revision 4):** S1: `x-delivery-limit=0` heißt sofort verwerfen, −1 unbegrenzt, Default 20, Policy und Argument wirken als Minimum → MR 8 korrigiert. S3: globales QoS kostet auf 4.2 die Verbindung und wirkt auf 4.3 nicht → BZ-20 bestätigt. S4: `nack(requeue)` zählt auf 4.3 nicht → neuer Befund BZ-29 in MR 3. S5/S7: Ein Broker-DLX baut `x-death` neu auf → Base-Variante in MR 12 bestätigt. S6: Der Blocked-Zustand ist nur privat lesbar (`_Connection__connection_unblocked`), der Pfad muss je Lesen neu gegangen werden → Adapter mit fail-open (MR 16). S2/S8/S9 bestätigen die Annahmen. Shovel ist auf den Testbrokern nicht prüfbar.

@@ -46,6 +46,12 @@ Alle Befunde stammen aus Code- und Doku-Analyse. Keiner ist durch einen Test bes
 | BZ-27 | Ein Worker-Slot bleibt nach 5 Abstürzen pro Stunde dauerhaft gesperrt. | Z-13 |
 | BZ-28 | Ab 100 verwaisten oder deaktivierten Einträgen im Fire-Index feuert kein Cron mehr (Poll mit `LIMIT 100`). | L-7 |
 
+## Nachtrag (Spike S4, 2026-10-10)
+
+| ID | Befund | Quelle |
+|---|---|---|
+| BZ-29 | Auf RabbitMQ 4.3 erhöht `nack(requeue=True)` den `x-delivery-count` nicht. Die `redeliver`-Pfade laufen dort ohne Grenze und ohne Pause; auf 4.2 enden sie nach rund 20 schnellen Runden still im Broker-DLX (ohne `TASK_DLQ`). | Spike S4 (`tests/integration/spikes/test_s4_delivery_count.py`) |
+
 ## P3 (Auswahl)
 - `result_ttl=0` erzeugt PX 0 (L-9).
 - Bei Tasks über 65 min läuft der Guard-State mitten im Lauf ab (L-10).
