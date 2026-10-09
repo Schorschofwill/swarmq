@@ -112,6 +112,7 @@ markers = [
     "property: hypothesis property-based tests (opt-in, nightly thorough)",
     "fuzz: byte/json fuzzing tests (opt-in, nightly)",
     "mutation: marker for mutmut configuration (not invoked directly)",
+    "befund(id): Nachweis eines offenen Befunds aus docs/befunde/ (immer mit xfail strict=True)",
 ]
 
 [tool.mypy]
