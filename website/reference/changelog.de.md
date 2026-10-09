@@ -6,6 +6,238 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-09
+
+Ein Worker konsumiert nach einem Consumer-Timeout des Brokers weiter,
+und eine erneut zugestellte Nachricht läuft nicht mehr neben ihrem
+Original. Dead-gelettete Nachrichten verfallen nach 7 Tagen, das
+Dead-Lettering von Task-Fehlern lässt sich abschalten, und statische
+Crons, die keine App mehr meldet, werden entfernt. **Bevor Worker mit
+0.11.0 Scheduler-Leader werden, muss jede App auf demselben Valkey
+mindestens 0.10.0 fahren**, sonst können Crons einer älteren App
+entfernt werden; siehe die
+[Upgrade-Hinweise](#upgrade-von-010x).
+
+### Geändert (breaking)
+
+- **`HealthChecker(compute_check=...)` heißt jetzt
+  `HealthChecker(checks={...})`.** Der Readiness-Hook nimmt beliebig
+  viele benannte Prüfungen, jede eine async Funktion, die `(ok, error)`
+  liefert und in `/ready` als eigener Eintrag erscheint.
+  `compute_check=fn` durch `checks={"compute": fn}` ersetzen. Betroffen
+  ist nur Code, der selbst einen `HealthChecker` baut; `swarmq worker`
+  und `start_worker()` verdrahten ihn selbst
+  ([API](api.md#health-und-metriken)).
+- **Statische Crons, die kein Worker mehr meldet, werden entfernt.**
+  Der Leader entfernt einen statischen Cron, der mindestens einmal
+  gemeldet wurde und den seit `SWARMQ_SCHEDULER_PRUNE_AFTER_S`
+  (Standard 24 h) kein Worker mehr gemeldet hat; bisher feuerte ein aus
+  dem Code entfernter Cron weiter. Das setzt voraus, dass jede App auf
+  demselben Valkey mindestens 0.10.0 fährt, denn nur diese melden ihre
+  Crons: Ein Cron, der einmal gemeldet wurde und jetzt nur noch von
+  einer älteren App bedient wird (etwa nach einem Rollback), würde
+  entfernt, obwohl die App noch läuft. Notbehelf:
+  `SWARMQ_SCHEDULER_PRUNE=log` in den 0.11.0-Apps, bis die letzte App
+  umgestellt ist. Nie gemeldete Crons (Altbestand, Apps vor 0.10.0)
+  werden nie automatisch entfernt. Siehe
+  [Crons entfernen](../guides/scheduling-and-retries.md#crons-entfernen-die-keine-app-mehr-meldet).
+- **Dead-gelettete Nachrichten verfallen standardmäßig nach 7 Tagen.**
+  Jede Nachricht, die der Worker dead-lettert, trägt eine `expiration`
+  pro Nachricht von `SWARMQ_DEAD_LETTER_TTL_S` (Standard `604800`) und
+  den Header `x-swarmq-dead-lettered-at`. Mit
+  `SWARMQ_DEAD_LETTER_TTL_S=none` bleiben sie wie bisher unbegrenzt.
+  Siehe
+  [Aufbewahrungsfrist](../guides/dead-letter-queues.md#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen).
+- **Ein eigener `ScheduleStore` braucht neue Methoden** für das
+  Aufräumen von Crons: `prune_cron`, `pruned_disabled` und
+  `forget_pruned_disabled`. Ein eigenes Backend läuft ohne
+  Ausführungsschutz, solange es keinen `ExecutionGuardStore` als
+  `execution_guard` anbietet. Neue Typen in `swarmq.contracts`:
+  `ExecutionGuardStore`, `GuardClaim`
+  ([API-Referenz](api.md#protokolle-der-koordinations-stores)).
+
+### Geändert
+
+- **Doppelte Zustellungen werden übersprungen.** Der neue
+  [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
+  (standardmäßig an, `SWARMQ_EXECUTION_GUARD`) verhindert, dass eine
+  erneut zugestellte Nachricht läuft, solange dieselbe Ausführung
+  anderswo läuft, nachdem sie abgeschlossen ist oder nachdem ein Retry
+  sie überholt hat. Die Neuzustellung eines abgeschlossenen Tasks wird
+  bestätigt und übersprungen (`duplicate_delivery_skipped`); eine,
+  deren Original noch läuft, geht mit Backoff über die Delay-Queue
+  zurück (`execution_guard_deferred`) und zählt nicht als Retry.
+  Kosten: zwei Lua-Aufrufe je Task plus eine gesammelte Verlängerung;
+  in der Loadsuite unter realistischer Last kein messbarer
+  Durchsatzverlust, im ungünstigsten Fall (ein Worker, nur Tasks von
+  etwa 0,3 ms, CPU-gesättigt) −7,4 %, +11–12 % CPU je Task und
+  +0,15–0,2 ms Latenz bei schnellen Tasks. Worker vor 0.11.0 im selben
+  Deployment schützen die Zustellungen nicht, die sie bearbeiten.
+- **`/ready` prüft die Consumer.** Es meldet einen Worker als nicht
+  bereit vor seinem ersten `consume` und sobald eine konsumierte Queue
+  (einschließlich Prioritäts-Queues) `SWARMQ_CONSUMER_READY_GRACE_S`
+  (Standard 30 s) keinen aktiven Consumer hatte. `/ready` nie als
+  Liveness-Probe nutzen; dafür `/health`.
+- **`swarmq dlq retry` setzt eine neue `x-swarmq-replay-id`** auf jede
+  Nachricht, die es bewegt, damit der Ausführungsschutz die
+  Wiederholung laufen lässt, und entfernt `x-swarmq-dead-lettered-at`
+  und die Frist. `dlq list` und `dlq inspect` legen Nachrichten mit
+  ihrer Restfrist zurück und verwerfen abgelaufene; Nachrichten ohne
+  den Header (Altbestand, vom Dead-Letter-Exchange des Brokers
+  geroutete) bekommen beim ersten Lesen die volle Frist. Die CLI liest
+  `SWARMQ_DEAD_LETTER_TTL_S`.
+- **Der Dead-Letter-Pfad speichert das Fehlerergebnis mit dem
+  `result_ttl` des Tasks**, wie jedes andere Ergebnis des Tasks
+  (bisher: immer `SWARMQ_RESULT_TTL`).
+- **`task_deferred_backend_unavailable`** kann `gate="execution_guard"`
+  tragen, wenn Valkey für den Claim des Ausführungsschutzes nicht
+  erreichbar ist.
+- **Neue Valkey-Keys:** `sq:guard:{<identity>}:run` und
+  `sq:guard:{<identity>}:state` (Identität = Task-ID, nach einer
+  DLQ-Wiederholung plus `|Replay-ID`) und das Set
+  `sq:{sched}:disabled`. Cron-Meldungen werden doppelt so lange wie
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` aufbewahrt, wenn das länger als
+  7 Tage ist. Neue Lua-Skripte `guard_claim`, `guard_finish`,
+  `sched_prune`. Die Golden-Fixtures (`keys.json`, `lua_contract.txt`,
+  `headers.txt`) sind neu erzeugt; die Queue-Argumente sind unverändert,
+  bestehende Deployments starten also ohne `PRECONDITION_FAILED`.
+- Das Dashboard swarmv zeigt die neuen Header von DLQ-Nachrichten
+  (`x-swarmq-dead-lettered-at`, `x-swarmq-replay-id`).
+- `swarmq schedule --help` sagt nicht mehr, dass `prune` nicht in v1
+  enthalten ist.
+- **Tests:** Integrations- und e2e-Suiten zielen standardmäßig auf die
+  swarmq-Testcontainer auf 5699/15699 (RabbitMQ) und 6399 (Valkey) und
+  verweigern das Flushen eines lokalen Valkey oder RabbitMQ auf den
+  Standardports 6379/5672, außer `SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1`
+  ist gesetzt.
+
+### Hinzugefügt
+
+- **Consumer-Wächter** (`SWARMQ_CONSUMER_WATCH_INTERVAL_S`, Standard
+  5 s): meldet einen vom Broker beendeten Consumer ab und binnen zwei
+  Takten neu an, ohne Neustart und ohne einen Zombie-Consumer am Broker
+  zu hinterlassen. Log `consumer_reregistered` (Grund `broker_cancel`
+  oder `channel_replaced`), Metrik
+  `swarmq_consumer_reregistrations_total{queue}`; weitere Events
+  `consumer_cancel_failed`, `consumer_reregister_failed`,
+  `consumer_watch_channel_timeout`, `consumer_watch_tick_failed`. Siehe
+  [Consumer-Timeout](../explanation/delivery-semantics.md#consumer-timeout).
+- **`SWARMQ_CONSUMER_READY_GRACE_S`** (Standard `30`): Gnadenfrist der
+  Consumer-Prüfung in `/ready`.
+- **Einstellungen des Ausführungsschutzes:** `SWARMQ_EXECUTION_GUARD`
+  (Standard `true`), `SWARMQ_EXECUTION_GUARD_TTL_S` (`60`),
+  `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` (Standard
+  `max(retry_max_delay, consumer_timeout_s) + 300`, mindestens die
+  TTL), `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` (`3`; läuft dieselbe
+  Ausführung so oft ohne Freigabe ab, geht sie als `WorkerHungError` in
+  die DLQ). Metrik `swarmq_execution_guard_events_total{event}` mit
+  `event` aus `duplicate_skipped`, `deferred`, `orphan_limit`,
+  `lease_lost`. Log-Events `duplicate_delivery_skipped`,
+  `execution_guard_deferred`, `execution_guard_defer_failed_redelivered`,
+  `execution_guard_orphan_limit`, `execution_guard_lease_lost`,
+  `execution_guard_renew_failed`, `execution_guard_finish_failed`.
+- **`SWARMQ_DEAD_LETTER_TTL_S`** (Standard `604800`, `none` =
+  unbegrenzt) und **`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`** (Standard
+  `true`) mit **`TaskInfo(dead_letter=...)`**, das über die globale
+  Einstellung gewinnt. Abgeschaltet speichern `NoRetry`, eine Exception
+  außerhalb von `retry_exceptions` und erschöpfte Retries das
+  Fehlerergebnis und bestätigen die Nachricht, wie vor 0.1.0. Ein Alarm
+  auf `swarmq_tasks_total{outcome="dlq"}` deckt diese Tasks dann nicht
+  mehr ab; `TASK_FAILED` und `outcome="failed"` feuern weiter je
+  Versuch. Zustellzähler-Prüfung, Waisen-Grenze, nicht dekodierbare
+  Nachrichten, `max_age` und Lock-Fehler gehen weiter in die `.XQ`.
+  Siehe
+  [Abschalten](../guides/dead-letter-queues.md#dead-lettering-von-task-fehlern-abschalten).
+- **Einstellungen für das Aufräumen von Crons:** `SWARMQ_SCHEDULER_PRUNE`
+  (`on`, `log`, `off`; Standard `on`) und
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (Standard `86400`, mindestens
+  3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`). Log-Events
+  `scheduler_cron_pruned`, `scheduler_cron_prune_candidate`,
+  `scheduler_cron_prune_skipped`, `scheduler_cron_prune_failed`. Ein
+  Cron, der beim Entfernen deaktiviert war, kommt deaktiviert zurück.
+- **`swarmq schedule prune --orphans [--format]`** entfernt statische
+  Crons, die nie ein Worker gemeldet hat; JSON-Ausgabe
+  `{"removed": [...]}`. **`swarmq schedule list`** zeigt die jüngste
+  Meldung je Cron in der Spalte `LAST_SEEN` (`never` für einen
+  statischen Cron ohne jede Meldung, `-` für CLI-Schedules), JSON
+  `last_seen_ms` ([CLI](cli.md#swarmq-schedule-prune)).
+- **Header** `x-swarmq-replay-id`, `x-swarmq-guard-defer-count` und
+  `x-swarmq-dead-lettered-at`
+  ([Nachrichtenformate](agent/message-formats.md)).
+- **Settle-Regeln für RabbitMQ 4.3:** Ein Ack oder Nack für eine
+  Zustellung, deren Consumer der Broker beendet hat, wartet auf das
+  eigene Cancel des Wächters (`delivery_settle_deferred`) und wird
+  verworfen, wenn dieses Cancel nicht binnen 10 s kommt
+  (`delivery_settle_withheld`), damit ein spätes Settle
+  den Zombie-Consumer nicht weckt.
+- **`swarmq.exceptions.SettleFailedAfterPublish`** (Unterklasse von
+  `BrokerConnectionError`, Worker-intern): Eine Retry- oder
+  Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals
+  scheiterte ([Fehlerkatalog](errors.md#settlefailedafterpublish)).
+- Dokumentation:
+  [Ausführungsschutz und Consumer-Timeout](../explanation/delivery-semantics.md#ausfuhrungsschutz),
+  DLQ-Aufbewahrungsfrist und die Trigger-Matrix mit abgeschaltetem
+  Dead-Lettering
+  ([Dead-Letter-Queues](../guides/dead-letter-queues.md#wann-nachrichten-in-der-dlq-landen)).
+
+### Behoben
+
+- **Ein Worker hört nach einem Consumer-Timeout auf RabbitMQ 4.3 nicht
+  mehr auf zu konsumieren, und ein Task läuft danach auf 4.2 und älter
+  nicht mehr doppelt.** Auf 4.3 beendet die Quorum-Queue den Consumer
+  und lässt den Channel offen; der Consumer blieb als Zombie am Broker,
+  ein spätes Ack weckte ihn, und seine Zustellungen wurden still
+  verworfen. Bis 4.2 schließt der Broker den Channel, und aio-pikas
+  Restore bekam die Nachricht erneut, während das Original noch lief.
+  Jetzt meldet der Consumer-Wächter den Consumer ab und neu an, Settles
+  warten auf dieses Cancel, und der Ausführungsschutz stellt die
+  Neuzustellung zurück oder überspringt sie.
+- **Die Dead-Letter-Queue wächst nicht mehr unbegrenzt:**
+  Dead-gelettete Nachrichten verfallen, Lesen der DLQ verlängert ihre
+  Frist nicht, und das Dead-Lettering terminaler Task-Fehler lässt sich
+  abschalten.
+- **Ein aus dem Code entfernter Cron hört auf zu feuern**, sobald ihn
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` lang kein Worker gemeldet hat.
+- `log_records_dropped` zählt nicht mehr das Stopp-Signal einer
+  Log-Queue, deren Pipe multiprocessing beim Prozessende schon
+  geschlossen hatte (unter CPU-Last meldete es 2 statt 1).
+
+### Upgrade von 0.10.x
+
+1. **Jede App auf dem Valkey muss mindestens 0.10.0 fahren**, bevor
+   Worker mit 0.11.0 Scheduler-Leader werden können. Mit
+   `swarmq schedule status` prüfen, dass `LEADER_VERSION` und alle
+   `WORKERS` 0.10.0 oder neuer zeigen. Lässt sich eine App noch nicht
+   umstellen, in jeder 0.11.0-App `SWARMQ_SCHEDULER_PRUNE=log` setzen
+   und `scheduler_cron_prune_skipped` beobachten; zurück auf `on`,
+   sobald alle Apps melden.
+2. **Crons ohne jede Meldung ansehen:** `swarmq schedule list` zeigt sie
+   mit `LAST_SEEN` `never`, und der Leader loggt
+   `scheduler_cron_prune_candidate`. Nicht mehr benötigte mit
+   `swarmq schedule prune --orphans` entfernen, aber erst, wenn jede App
+   mindestens 0.10.0 fährt.
+3. **Liveness-Probes:** Zeigt eine Probe auf `/ready`, auf `/health`
+   umstellen. `/ready` kann jetzt nach 30 s ohne Consumer rot werden,
+   und ein Neustart hilft nicht.
+4. **Eigener `HealthChecker` oder `ScheduleStore`:** auf
+   `checks={"compute": ...}` umstellen und die drei
+   `ScheduleStore`-Methoden ergänzen.
+5. **Dead-Letter-Queues:** über `SWARMQ_DEAD_LETTER_TTL_S` entscheiden
+   (standardmäßig 7 Tage; `none` behält das alte Verhalten) und
+   denselben Wert für die `swarmq dlq`-CLI nutzen. Alte Nachrichten
+   bekommen die Frist beim ersten Lesen. Nachrichten, die der
+   Dead-Letter-Exchange des Brokers routet, tragen keine Frist; die
+   [Broker-Policy auf `\.XQ$`](../guides/dead-letter-queues.md#die-xq-per-broker-policy-begrenzen)
+   aus 0.10.0 bleibt deshalb der Notbehelf, der jeden Weg und die Länge
+   begrenzt; dabei beachten, dass pro Queue nur eine Policy gilt und
+   Überlauf gelöscht wird.
+6. **Dead-Lettering abschalten** (`dead_letter=False`): Alarme für diese
+   Tasks von `outcome="dlq"` auf `outcome="failed"` umstellen.
+7. **Ausführungsschutz während des Rolling Upgrades:** Er schützt nur
+   Zustellungen, die ein 0.11.0-Worker bearbeitet. Eingeschaltet
+   lassen; nur mit `SWARMQ_EXECUTION_GUARD=false` abschalten, wenn ein
+   Problem gemessen wurde.
+
 ## [0.10.0] — 2026-10-08
 
 Crons bekommen eine Zeitzone mit fester Regel für die Zeitumstellung,
