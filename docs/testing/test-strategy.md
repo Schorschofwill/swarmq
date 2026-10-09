@@ -126,13 +126,66 @@ Die Chaos-Kombinationen in `tests/e2e/combinations` waren von Mai bis
 Oktober 2026 nie in einem Gate und deshalb unbemerkt rot (SIGUSR1 ohne
 Handler, eine nicht existierende CLI-Option, Supervisor- statt Kind-Kill).
 Ohne Toxiproxy überspringt die Suite zwölf Toxiproxy-Tests; die übrigen
-sechzehn müssen grün sein. Die Ports 5699/6399 sind Pflicht: Die Suite leert
-Valkey nach jedem Test, auf 6379 träfe das einen fremden Stack.
+sechzehn müssen grün sein. Die Ports 5699/6399 sind Pflicht (und Standard):
+Die Suite leert Valkey nach jedem Test, auf 6379 träfe das einen fremden
+Stack — dort verweigert die Sperre den Lauf (siehe „Ports und Schutz vor
+fremden Stacks“).
 
 Wer die Suite in einer Umgebung fährt, in der ein fehlender Stack ein
 Fehler sein soll statt eines Skips, setzt `SWARMQ_REQUIRE_CHAOS=1`. Dann
 wird aus jedem übersprungenen Test ein Fehlschlag — gedacht für den Tag, an
 dem das Gate wieder in eine Pipeline zurückkehrt.
+
+## Ports und Schutz vor fremden Stacks
+
+Integration und e2e flushen Valkey vor oder nach jedem Test. Ein Lauf
+ohne Port-Variablen traf früher `localhost:6379` — dort läuft örtlich das
+Valkey eines fremden Projekts, und dessen db0 war danach leer. Deshalb
+gilt seit 2026-10-09:
+
+**Standards** (`tests/support/services.py`) zeigen auf die
+swarmq-Testcontainer, nicht mehr auf die Dienst-Standardports:
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `SWARMQ_TEST_RABBITMQ_HOST` | `localhost` | Host des Hauptbrokers |
+| `SWARMQ_TEST_RABBITMQ_PORT` | `5699` | AMQP-Port des Hauptbrokers (früher `5672`) |
+| `SWARMQ_TEST_RABBITMQ_MGMT_PORT` | `15699` | Management-API des Hauptbrokers (früher `15672`) |
+| `SWARMQ_TEST_VALKEY_HOST` | `localhost` | Valkey-Host |
+| `SWARMQ_TEST_VALKEY_PORT` | `6399` | Valkey-Port (früher `6379`) |
+| `SWARMQ_TEST_ALLOW_DEFAULT_PORTS` | – | `1` gibt einen lokalen Standardport ausdrücklich frei |
+
+Die Testcontainer dazu:
+
+```bash
+docker run -d --name swarmq-test-rabbit -p 5699:5672 -p 15699:15672 rabbitmq:4.3.6-management
+docker run -d --name swarmq-test-valkey -p 6399:6379 valkey/valkey:8
+```
+
+**Harte Sperre.** Zeigt RabbitMQ oder Valkey auf einen lokalen Host
+(`localhost`, `*.localhost`, jede Loopback-Adresse wie `127.0.0.1` oder
+`::1`, dazu `0.0.0.0`) **und** auf den Standardport `5672` bzw. `6379`,
+schlägt jeder Test fehl, bevor etwas geflusht wird:
+
+- `check_docker` (Sitzungsstart von Integration und e2e) ruft
+  `require_safe_services()` auf, noch vor der Erreichbarkeitsprüfung;
+- jedes flushende Fixture geht über `flush_valkey_db()` bzw.
+  `require_safe_valkey_url()` (Integration, e2e-Scheduler und
+  -Signal-Katalog, e2e-Kombinationen, Stress, `_golden --write`).
+
+Die Meldung nennt Ziel, Port-Variable und Freigabe. Freigabe nur, wenn
+auf dem Standardport wirklich ein wegwerfbarer swarmq-Teststack läuft,
+etwa nach `docker compose up -d` aus diesem Repo:
+
+```bash
+SWARMQ_TEST_RABBITMQ_PORT=5672 SWARMQ_TEST_RABBITMQ_MGMT_PORT=15672 \
+SWARMQ_TEST_VALKEY_PORT=6379 SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 \
+  uv run --extra test --extra reload pytest tests/integration -q
+```
+
+Nur der Wert `1` gibt frei. Die CI ist nicht betroffen: Sie erreicht die
+Dienste über die Service-Hosts `rabbitmq` und `valkey` auf den
+Standardports, und diese Hosts sind nicht lokal.
 
 ## Lokale Ausführung
 
@@ -168,12 +221,13 @@ fest):
 | Chaos-Stack (`tests/chaos/compose.yml`) | `rabbitmq:3.13.7-management-alpine` | Stand, gegen den die Chaos-Suite bisher lief; ein Wechsel auf 4.x ist eine eigene Entscheidung |
 
 Die Consumer-Timeout-Tests setzen per Management-API eine Policy und
-brauchen dafür zusätzlich die Management-Ports. Variablen (Defaults
-passen zu `docker-compose.yml`):
+brauchen dafür zusätzlich die Management-Ports. Variablen (der 4.2-Broker
+passt zu `docker-compose.yml`, der Hauptbroker zum Testcontainer, siehe
+„Ports und Schutz vor fremden Stacks“):
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `SWARMQ_TEST_RABBITMQ_MGMT_PORT` | `15672` | Management-API des Hauptbrokers |
+| `SWARMQ_TEST_RABBITMQ_MGMT_PORT` | `15699` | Management-API des Hauptbrokers |
 | `SWARMQ_TEST_RABBITMQ42_HOST` | `localhost` | Host des 4.2-Brokers |
 | `SWARMQ_TEST_RABBITMQ42_PORT` | `5742` | AMQP-Port des 4.2-Brokers |
 | `SWARMQ_TEST_RABBITMQ42_MGMT_PORT` | `15742` | Management-API des 4.2-Brokers |

@@ -73,7 +73,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `TASK_LOCKED` | Wenn der Lock des Tasks bei Pickup von einer anderen Ausführung gehalten wird (Lock-Konflikt); die Nachricht wird verzögert neu eingereiht | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |
 | `TASK_RATE_LIMITED` | Wenn Rate-Limiter eine Nachricht aufschiebt | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | Wenn Unique-Task-SETNX das Race verliert | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
-| `TASK_DLQ` | Einmal, wenn der Worker eine Nachricht terminal dead-lettert (Retries erschöpft, `NoRetry`, Delivery-Limit erreicht) | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_DLQ` | Einmal, wenn der Worker eine Nachricht terminal dead-lettert (Retries erschöpft, `NoRetry`, Delivery-Limit oder Waisen-Grenze des Ausführungsschutzes erreicht) | `task_id`, `task_name`, `queue`, `error` |
 | `TASK_REJECTED` | Wenn der Worker eine Nachricht ohne Diagnose-Header an den Dead-Letter-Exchange des Brokers gibt: zu großer Body, nicht dekodierbarer Body, unregistrierter Task, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
 | `WORKFLOW_STEP_ENQUEUED` | Nach jedem publizierten Workflow-Schritt (durch `app.apply()` oder den Advancer im Worker), zusätzlich zu `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker-Lifecycle | `worker_id` |
@@ -89,6 +89,11 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 scheitert, feuert es viermal, im Wechsel mit drei `TASK_RETRYING`. Um
 nur dann zu reagieren, wenn die Arbeit aufgegeben wird, abonniere
 `TASK_DLQ`; es feuert einmal bei der terminalen Übergabe an die DLQ.
+Mit abgeschaltetem Dead-Lettering von Task-Fehlern
+(`TaskInfo(dead_letter=False)` oder
+`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`) gibt es für diese Tasks
+keine Übergabe und kein `TASK_DLQ`; das letzte `TASK_FAILED` ist dann
+das terminale.
 
 Der `batch_index`-Key im `TASK_DUPLICATE_DETECTED`-Signal ist nur
 vorhanden, wenn die Quelle `client.schedule_many` ist — nutze

@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
 
@@ -21,7 +21,7 @@ from swarmq.config import SwarmQConfig
 #
 # Type alias for lock-tracking entries: (lock_name, owner_token, max_concurrency).
 # Used by the per-handler acquired_locks list and the worker-wide
-from swarmq.contracts import PublishReceipt
+from swarmq.contracts import ExecutionGuardStore, PublishReceipt
 from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
 from swarmq.dishka import (
     request_container,
@@ -30,9 +30,7 @@ from swarmq.exceptions import (
     BackendConnectionError,
     TaskNotFoundError,
 )
-from swarmq.headers import (
-    HEADER_UNIQUE_UNTIL,
-)
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_UNTIL
 from swarmq.logging import _error_fields, _task_log_context, get_logger
 from swarmq.middleware import (
     MessageContext,
@@ -56,6 +54,7 @@ from swarmq.worker.gates import (
 from swarmq.worker.gates.backend_defer import bounded_backend_call
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
+from swarmq.worker.gates.execution_guard import ExecutionGuard
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
     LOCK_CONFLICT_BACKOFF_BASE_MS,
@@ -65,6 +64,7 @@ from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten
 )
 from swarmq.worker.gates.rate_limit import RateLimitGate
 from swarmq.worker.gates.schedfire import SchedfireGate
+from swarmq.worker.guarded_broker import GuardedBroker
 from swarmq.worker.lifecycle import WorkerLifecycle, WorkerState  # Re-Export (Fassade/Tests)
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 from swarmq.worker.results import ResultTail
@@ -158,8 +158,19 @@ class Worker(WorkerLifecycle):
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)
-        self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
+        self._retry_handler = RetryHandler(
+            gate_deps, workflow_advancer=lambda: self._workflow_advancer, finish=self._result_tail.finish)
+        # Ausfuehrungsschutz (KTD5): der Store entsteht in start(); Gates,
+        # Retry und Ergebnis-Tail sprechen den protokollierenden Wrapper, der
+        # die Marker nach dem ausgefuehrten Verb setzt.
+        self._guard_store: ExecutionGuardStore | None = None
+        self._execution_guard = ExecutionGuard(
+            gate_deps, store=lambda: self._guard_store,
+            dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t),
+            on_event=self._count_guard_event,
+        )
+        gate_deps.broker = cast(WorkerBroker, GuardedBroker(broker, self._execution_guard))
         # Phase 3b.3: detached lock-release tasks. The shield pattern
         # around _release_acquired_locks protects against run_task
         # cancellation (inner-cancel). Against graceful-shutdown
@@ -190,6 +201,10 @@ class Worker(WorkerLifecycle):
         self._metrics: Metrics | None = None
         self._metrics_server: MetricsServer | None = None
         self._health_server: HealthServer | None = None
+
+    def _count_guard_event(self, event: str) -> None:
+        if self._metrics is not None:
+            self._metrics.count_execution_guard_event(event)
 
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
@@ -382,16 +397,15 @@ class Worker(WorkerLifecycle):
         _di_exc = asyncio.CancelledError() if is_cancelled else task_exception
         _di_et = type(_di_exc) if _di_exc is not None else None
         _di_tb = _di_exc.__traceback__ if _di_exc is not None else None
-        _di_exit = asyncio.create_task(di_scope.__aexit__(_di_et, _di_exc, _di_tb))
-        self._detached_releases.add(_di_exit)
-        _di_exit.add_done_callback(self._detached_releases.discard)
-        try:
-            await asyncio.shield(_di_exit)
-        except asyncio.CancelledError:
-            # Outer-cancel reached us. ``_di_exit`` is unaffected (shield
-            # protected it) and tracked in _detached_releases, which
-            # _execute_shutdown awaits before backend.close. Re-raise.
-            raise
+        await self._detached(di_scope.__aexit__(_di_et, _di_exc, _di_tb))
+
+    async def _detached(self, call: Awaitable[None]) -> None:
+        """Als eigener getrackter Task + geshieldeter Await (siehe
+        ``_detached_lock_release``): ein Outer-Cancel bricht ihn nicht ab."""
+        inner = asyncio.ensure_future(call)
+        self._detached_releases.add(inner)
+        inner.add_done_callback(self._detached_releases.discard)
+        await asyncio.shield(inner)
 
     async def _detached_lock_release(self, handler_id: uuid.UUID, acquired_locks: list[LockToken]) -> None:
         """Lock-Release als eigener getrackter Task + geshieldeter Await.
@@ -400,19 +414,10 @@ class Worker(WorkerLifecycle):
         bei Outer-Cancel detached und ungetrackt weiterlaufen —
         ``_execute_shutdown`` würde den Backend-Client schließen, während
         der Release noch läuft, und der Lock bliebe bis zur TTL gehalten.
-        Deshalb: inneren Task tracken, nur den Await shielden."""
-        inner = asyncio.create_task(
-            self._release_acquired_locks(handler_id, acquired_locks)
-        )
-        self._detached_releases.add(inner)
-        inner.add_done_callback(self._detached_releases.discard)
-        try:
-            await asyncio.shield(inner)
-        except asyncio.CancelledError:
-            # Outer-cancel reached us. ``inner`` is unaffected (shield
-            # protected it); _execute_shutdown awaits it via
-            # _detached_releases. Re-raise so the cancel is observed.
-            raise
+        Deshalb: inneren Task tracken, nur den Await shielden; ein
+        Outer-Cancel erreicht den Aufrufer, ``_execute_shutdown`` wartet
+        über ``_detached_releases`` auf den inneren Task."""
+        await self._detached(self._release_acquired_locks(handler_id, acquired_locks))
 
     async def _release_unique_on_start(self, message: Any, task_id: str, task_info: TaskInfo) -> None:
         """R3.5 Unit 10: start-mode dedup release — AFTER rate-limit/lock
@@ -443,7 +448,7 @@ class Worker(WorkerLifecycle):
             "args": ctx.args,
             "kwargs": ctx.kwargs,
             "delivery_mode": ctx.task_info.delivery.value,
-            "retry_count": message.headers.get("x-swarmq-retry-count", 0),
+            "retry_count": message.headers.get(HEADER_RETRY_COUNT, 0),
         }
 
     async def _resolve_chain_or_route(
@@ -493,10 +498,7 @@ class Worker(WorkerLifecycle):
                 # getrackt (wie der Lock-Release): ein zweiter Abbruch
                 # (Shutdown) unterbricht die Freigabe nicht, der Shutdown
                 # wartet vor ``backend.close`` auf sie.
-                inner = asyncio.create_task(self._release_schedfire_claim(ctx))
-                self._detached_releases.add(inner)
-                inner.add_done_callback(self._detached_releases.discard)
-                await asyncio.shield(inner)
+                await self._detached(self._release_schedfire_claim(ctx))
                 raise
             if outcome is not Continue:
                 await self._finalize_schedfire(ctx, terminal=False)
@@ -687,7 +689,7 @@ class Worker(WorkerLifecycle):
             # Jedes „behandelt" beendet den Hauptteil mit dem Gate-Outcome;
             # nach jedem Continue fällt das Outcome auf den Terminal-Default
             # zurück (KTD5-Richtung: über- statt unter-freigeben).
-            for gate in (self._expiry_gate, self._rate_limit_gate, self._lock_gate):
+            for gate in (self._execution_guard, self._expiry_gate, self._rate_limit_gate, self._lock_gate):
                 outcome = await gate.apply(message, ctx)
                 if outcome is not Continue:
                     return
@@ -744,6 +746,12 @@ class Worker(WorkerLifecycle):
             # than being skipped as "completed".
             # U19: der finally liest die Outcome-Felder. ``Redelivered`` (kein
             # Terminal) → In-Flight-Claim löschen, keine Freigabe.
+            # KTD5: hat kein Verb den Running-Marker abgeschlossen (kein Verb,
+            # Ausnahme, Abbruch), nur freigeben -- geshieldet wie der Lock-Release
+            # und VOR dem Finalisieren (ein Abbruch dort liesse es sonst aus).
+            # Der Regelfall (Verb hat abgeschlossen, Schutz aus) braucht keinen Task.
+            if self._execution_guard.lease_of(message) is not None:
+                await self._detached(self._execution_guard.settle(message))
             await self._finalize_delivery(message, outcome, ctx, task_info)
 
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
@@ -758,23 +766,8 @@ class Worker(WorkerLifecycle):
             if _di_scope is not None:
                 await self._teardown_di_scope(_di_scope, _di_token, is_cancelled, task_exception)
 
-            # 12a. Release any task-locks acquired by this handler.
-            #
-            # Previous implementation wrapped the release in
-            # ``asyncio.ensure_future(asyncio.shield(...))`` and tracked
-            # the SHIELD-wrapper task in _detached_releases. On outer-
-            # cancel the shield-wrapper got cancelled, but its inner
-            # coroutine kept running DETACHED and was never tracked —
-            # _execute_shutdown would see an already-done wrapper and
-            # close the backend while the real release was still in
-            # flight, leaving the lock held.
-            #
-            # Fix: schedule the inner release as its own Task first and
-            # track THAT task in _detached_releases. Then ``await
-            # asyncio.shield(inner)`` — shield only protects the await,
-            # not the task. Outer-cancel into this finally cancels the
-            # wait, but the inner Task keeps running; _execute_shutdown
-            # awaits it via _detached_releases before backend.close.
+            # 12a. Release any task-locks acquired by this handler
+            # (detached-shield pattern, see ``_detached_lock_release``).
             if acquired_locks and self._lock_manager is not None:
                 await self._detached_lock_release(handler_id, acquired_locks)
             # 12b. Release semaphore

@@ -13,7 +13,7 @@ import contextlib
 import json
 import sys
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
+from swarmq.scheduler.prune import last_seen_by_name, prune_orphans
 from swarmq.serialization import compute_dedup_hash
 from swarmq.task import UniqueUntil
 
@@ -42,16 +43,31 @@ def _get_backend_factory() -> Callable[[], Coroutine[Any, Any, ValkeyBackend]]:
     return _backend_from_env
 
 
-def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
+def _last_seen_text(schedule: ScheduleDefinition, last_seen: Mapping[str, int]) -> str:
+    """Letztes Lebenszeichen (KTD8): CLI-Crons melden nie (``-``), nie
+    gemeldete statische Crons sind Kandidaten für ``prune --orphans``."""
+    if schedule.source != "static":
+        return "-"
+    seen = last_seen.get(schedule.schedule_name)
+    if seen is None:
+        return "never"
+    return datetime.fromtimestamp(seen / 1000, tz=UTC).isoformat()
+
+
+def _format_schedule_table(
+    schedules: list[ScheduleDefinition], last_seen: Mapping[str, int] | None = None,
+) -> str:
     """Plain-text table for terminal output — stable column ordering.
 
     Columns include R3.5 dedup state (DEDUP + UNIQUE_UNTIL) so operators
     can tell client-originated deferred-dedup entries from plain CLI or
-    static-cron ones at a glance.
+    static-cron ones at a glance, and the newest worker report of a static
+    cron (LAST_SEEN, Plan 2026-10-08-1541, KTD8).
     """
+    last_seen = last_seen or {}
     rows = [(
         "NAME", "CRON", "TASK", "QUEUE", "NEXT_FIRE",
-        "DISABLED", "SOURCE", "DEDUP", "UNIQUE_UNTIL",
+        "DISABLED", "SOURCE", "LAST_SEEN", "DEDUP", "UNIQUE_UNTIL",
     )]
     for s in schedules:
         next_fire = (
@@ -69,6 +85,7 @@ def _format_schedule_table(schedules: list[ScheduleDefinition]) -> str:
             next_fire,
             "yes" if s.disabled else "no",
             s.source,
+            _last_seen_text(s, last_seen),
             dedup_state,
             unique_until,
         ))
@@ -81,11 +98,16 @@ async def _run_schedule_list(args: argparse.Namespace) -> None:
         store = ScheduleStore(backend)
         schedules = await store.list_schedules()
         schedules.sort(key=lambda s: s.schedule_name)
+        # Letztes Lebenszeichen je Name (KTD8): jüngste Meldung eines Workers.
+        last_seen = last_seen_by_name(await backend.schedules.cron_reports())
         if args.format == "json":
-            payload = [msgspec.to_builtins(s) for s in schedules]
+            payload = [
+                {**msgspec.to_builtins(s), "last_seen_ms": last_seen.get(s.schedule_name)}
+                for s in schedules
+            ]
             sys.stdout.write(json.dumps(payload, indent=2, default=str) + "\n")
         else:
-            sys.stdout.write(_format_schedule_table(schedules) + "\n")
+            sys.stdout.write(_format_schedule_table(schedules, last_seen) + "\n")
     finally:
         await backend.close()
 
@@ -272,6 +294,24 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
         await backend.close()
 
 
+async def _run_schedule_prune(args: argparse.Namespace) -> None:
+    """``schedule prune --orphans`` (Plan 2026-10-08-1541, KTD8): nie
+    gemeldete statische Crons entfernen (Altbestand, Apps vor 0.10.0)."""
+    backend = await _get_backend_factory()()
+    try:
+        snapshot = await backend.schedules.cron_reports()
+        removed = sorted(await prune_orphans(backend.schedules, snapshot))
+        if args.format == "json":
+            sys.stdout.write(json.dumps({"removed": removed}) + "\n")
+            return
+        if not removed:
+            sys.stdout.write("no orphan schedules (every static schedule has been reported)\n")
+        for name in removed:
+            sys.stdout.write(f"removed orphan schedule {name!r}\n")
+    finally:
+        await backend.close()
+
+
 def _leader_version_text(leader: str | None, version: str | None) -> str:
     if leader is None:
         return "-"
@@ -358,6 +398,8 @@ async def _run_schedule_async(args: argparse.Namespace) -> None:
         await _run_schedule_remove(args)
     elif args.schedule_command == "status":
         await _run_schedule_status(args)
+    elif args.schedule_command == "prune":
+        await _run_schedule_prune(args)
     else:  # pragma: no cover — argparse required=True guards this
         raise ConfigurationError(
             f"unknown schedule subcommand: {args.schedule_command!r}"

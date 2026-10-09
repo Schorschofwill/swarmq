@@ -64,6 +64,18 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 26. ... ändert nichts, wenn inzwischen ein Score existiert.
 # 27. ... ändert nichts, wenn der Eintrag inzwischen entfernt wurde.
 
+# Test list (Plan 2026-10-08-1541, U10, KTD8) -- ScheduleStoreContract:
+# 28. ``prune_cron`` mit Frist entfernt Definition und Fire-Index-Eintrag,
+#     wenn jede Meldung des Namens älter als die Frist ist (Backend-Zeit).
+# 29. ... lässt sie stehen, wenn eine Meldung des Namens frischer ist.
+# 30. ... lässt sie stehen, wenn sich die Definition seit dem Lesen geändert
+#     hat oder es keine Meldung gibt.
+# 31. Ohne Frist (nie gemeldet) entfernt ``prune_cron`` nur, wenn es keine
+#     Meldung des Namens gibt; Meldungen anderer Namen (auch mit ``|``)
+#     zählen nicht.
+# 32. ``remember_disabled`` merkt den Namen (``pruned_disabled``);
+#     ``forget_pruned_disabled`` vergisst ihn.
+
 from __future__ import annotations
 
 import uuid
@@ -295,6 +307,67 @@ class ScheduleStoreContract:
         assert await impl.replan_if_unchanged(name, b"stuck", b"healed", 4_000) is False
         assert await impl.exists(name) is False
         assert await impl.fire_ts(name) is None
+
+    async def test_prune_cron_removes_a_cron_whose_reports_are_all_stale(
+        self, impl: ScheduleStore, clock: Clock,
+    ) -> None:
+        name = _name("cron")
+        await impl.add(name, b"def", fire_ts_ms=1_000)
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await impl.report_cron(name, "fp2", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        assert await impl.prune_cron(name, b"def", stale_after_ms=100, remember_disabled=False) is True
+        assert await impl.exists(name) is False
+        assert await impl.fire_ts(name) is None
+
+    async def test_prune_cron_keeps_a_cron_with_one_fresh_report(self, impl: ScheduleStore, clock: Clock) -> None:
+        """Rolling Deploy: der alte Abdruck ist verstummt, der neue meldet."""
+        name = _name("cron")
+        await impl.add(name, b"def", fire_ts_ms=1_000)
+        await impl.report_cron(name, "old", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        await impl.report_cron(name, "new", b"def", live_window_ms=60_000)
+        assert await impl.prune_cron(name, b"def", stale_after_ms=100, remember_disabled=False) is False
+        assert await impl.get(name) == b"def"
+        assert await impl.fire_ts(name) == 1_000
+
+    async def test_prune_cron_keeps_a_changed_or_unreported_cron(self, impl: ScheduleStore, clock: Clock) -> None:
+        changed, unreported = _name("cron"), _name("cron")
+        await impl.add(changed, b"new", fire_ts_ms=1_000)
+        await impl.add(unreported, b"def", fire_ts_ms=1_000)
+        await impl.report_cron(changed, "fp", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        assert await impl.prune_cron(changed, b"old", stale_after_ms=100, remember_disabled=False) is False
+        assert await impl.prune_cron(unreported, b"def", stale_after_ms=100, remember_disabled=False) is False
+        assert await impl.get(changed) == b"new"
+        assert await impl.get(unreported) == b"def"
+
+    async def test_prune_cron_without_period_removes_only_unreported_crons(self, impl: ScheduleStore) -> None:
+        orphan, reported = _name("cron"), _name("cron")
+        await impl.add(orphan, b"def", fire_ts_ms=1_000)
+        await impl.add(reported, b"def", fire_ts_ms=1_000)
+        await impl.report_cron(reported, "fp", b"def", live_window_ms=60_000)
+        # Ein anderer Name, der mit ``<orphan>|`` beginnt, ist keine Meldung von orphan.
+        await impl.report_cron(f"{orphan}|x", "fp", b"def", live_window_ms=60_000)
+        assert await impl.prune_cron(reported, b"def", stale_after_ms=None, remember_disabled=False) is False
+        assert await impl.prune_cron(orphan, b"def", stale_after_ms=None, remember_disabled=False) is True
+        assert await impl.exists(orphan) is False
+        assert await impl.fire_ts(orphan) is None
+        assert await impl.get(reported) == b"def"
+
+    async def test_prune_cron_remembers_a_disabled_cron(self, impl: ScheduleStore) -> None:
+        disabled, enabled, kept = _name("cron"), _name("cron"), _name("cron")
+        for name in (disabled, enabled, kept):
+            await impl.add(name, b"def", fire_ts_ms=None)
+        await impl.report_cron(kept, "fp", b"def", live_window_ms=60_000)
+        assert await impl.prune_cron(disabled, b"def", stale_after_ms=None, remember_disabled=True) is True
+        assert await impl.prune_cron(enabled, b"def", stale_after_ms=None, remember_disabled=False) is True
+        assert await impl.prune_cron(kept, b"def", stale_after_ms=None, remember_disabled=True) is False
+        assert await impl.pruned_disabled(disabled) is True
+        assert await impl.pruned_disabled(enabled) is False
+        assert await impl.pruned_disabled(kept) is False
+        await impl.forget_pruned_disabled(disabled)
+        assert await impl.pruned_disabled(disabled) is False
 
     async def test_commit_fire_requires_leader(self, impl: ScheduleStore, leader: Leader) -> None:
         name = _name("sched")

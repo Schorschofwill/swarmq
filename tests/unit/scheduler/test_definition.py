@@ -229,6 +229,7 @@ def _make_store(hget_return=None, hsetnx_return=True, hexists_return=1):
     schedules.disable = AsyncMock(return_value=True)
     schedules.poll_due = AsyncMock(return_value=[])
     schedules.commit_fire = AsyncMock(return_value=True)
+    schedules.forget_pruned_disabled = AsyncMock()
     backend.schedules = schedules
     store = ScheduleStore(backend)
     return store, schedules
@@ -271,6 +272,18 @@ class TestScheduleStoreAddSchedule:
         assert name == "newly"
         assert msgspec.json.decode(payload, type=ScheduleDefinition) == d
         assert fire_ts == 1_700_000_000_000
+
+    async def test_add_schedule_disabled_definition_gets_no_fire_entry(self):
+        """Plan 2026-10-08-1541, U10: ein deaktiviert wieder angelegter Cron
+        landet nicht im Fire-Index (wie ``update_static_schedule``, KTD12)."""
+        store, schedules = _make_store(hsetnx_return=True)
+        d = msgspec.structs.replace(_def(schedule_name="revived"), disabled=True)
+
+        assert await store.add_schedule(d) is True
+
+        name, payload, fire_ts = schedules.add.await_args.args
+        assert (name, fire_ts) == ("revived", None)
+        assert msgspec.json.decode(payload, type=ScheduleDefinition) == d
 
     async def test_add_schedule_existing_entry_is_noop(self):
         """CD11 insert-if-absent: der Store meldet False → kein Insert."""

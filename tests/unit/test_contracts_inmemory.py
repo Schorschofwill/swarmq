@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from swarmq.locking import SCHEDULER_LOCK_NAME
-from tests.contracts import coordination, publisher_consumer, result_backend
+from tests.contracts import coordination, execution_guard, publisher_consumer, result_backend
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
 
 
@@ -109,6 +109,12 @@ class TestScheduleStoreInMemory(coordination.ScheduleStoreContract):
             assert token is not None
 
         return _become
+
+
+class TestExecutionGuardStoreInMemory(execution_guard.ExecutionGuardStoreContract):
+    @pytest.fixture
+    def impl(self, backend: InMemoryBackend) -> Any:
+        return backend.execution_guard
 
 
 def test_facade_properties_raise_before_connect(clock: FakeClock) -> None:

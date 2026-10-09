@@ -1,0 +1,12 @@
+usage: swarmq schedule prune [-h] --orphans [--format {table,json}]
+
+options:
+  -h, --help            show this help message and exit
+  --orphans             Remove static crons without any report from a worker
+                        (legacy entries, apps before 0.10.0). The leader never
+                        removes them on its own. A disabled cron comes back
+                        disabled when a worker reports it again.
+  --format {table,json}
+                        Output format. Default: 'table' on a TTY, 'json' on a
+                        pipe. Override the default with
+                        SWARMQ_DEFAULT_FORMAT=table|json.

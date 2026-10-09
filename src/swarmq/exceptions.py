@@ -43,6 +43,18 @@ class PublishIndeterminate(BrokerConnectionError):
     """
 
 
+class SettleFailedAfterPublish(BrokerConnectionError):
+    """``retry_later``/``dead_letter``: die Kopie ist veroeffentlicht
+    (Publisher-Confirm), nur das Bestaetigen des Originals scheiterte.
+
+    Der Broker stellt das Original erneut zu, die Kopie ist trotzdem
+    unterwegs. Der Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5) setzt
+    deshalb seinen Superseded- bzw. Done-Marker wie nach Erfolg, damit die
+    Neuzustellung des Originals uebersprungen wird. Unterklasse von
+    :class:`BrokerConnectionError`: bestehende Handler fangen sie weiter.
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import msgspec
 
 from swarmq.config import SwarmQConfig
+from swarmq.contracts.coordination import CronReports
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.scheduler.cron_time import next_fire_ms
@@ -50,6 +51,7 @@ class SchedulerCronSync:
 
     if TYPE_CHECKING:
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
+        async def prune_static_crons(self, snapshot: CronReports) -> None: ...
 
     async def _replan_if_unscored(
         self, existing: ScheduleDefinition, existing_raw: bytes, fire_ts_ms: int,
@@ -118,9 +120,15 @@ class SchedulerCronSync:
                 )
                 continue
             await self.apply_static_definition(desired, now_ms)
+        await self.prune_static_crons(snapshot)
         try:
+            # Meldungen überdauern die Aufräum-Frist (KTD8): sonst gälte ein
+            # verstummter Cron bei langer Frist als nie gemeldet.
             await self._backend.schedules.prune_cron_reports(
-                max_age_ms=REPORT_MAX_AGE_MS
+                max_age_ms=max(
+                    REPORT_MAX_AGE_MS,
+                    int(2 * self._config.scheduler_prune_after_s * 1000),
+                )
             )
         except BackendConnectionError as exc:
             logger.warning(
@@ -138,7 +146,8 @@ class SchedulerCronSync:
         Branches (in check order):
 
         1. ``get`` raises ``BackendConnectionError`` → log and skip.
-        2. No existing entry → ``add_schedule`` (insert).
+        2. No existing entry → ``add_schedule`` (insert); disabled when
+           the cron was disabled as it was pruned (KTD8).
         3. Existing entry fails msgspec decode → log loudly, leave it
            untouched (Unit 5: the source cannot be determined, so an
            overwrite could clobber a CD11-protected CLI entry).
@@ -173,9 +182,25 @@ class SchedulerCronSync:
         if existing_raw is None:
             # New entry — per-schedule error isolation so one
             # BackendConnectionError does not abort the full sync
-            # (Unit 5).
+            # (Unit 5). A cron removed while disabled comes back disabled
+            # (KTD8); the mark is dropped only after the insert.
             try:
+                revived_disabled = await self._backend.schedules.pruned_disabled(schedule_name)
+                if revived_disabled:
+                    definition = msgspec.structs.replace(definition, disabled=True)
                 await self._store.add_schedule(definition)
+                if revived_disabled:
+                    await self._backend.schedules.forget_pruned_disabled(schedule_name)
+                    logger.warning(
+                        "scheduler_cron_revived_disabled",
+                        schedule_name=schedule_name,
+                        hint=(
+                            "this cron was disabled when it was pruned and comes back disabled; "
+                            "if the name now belongs to a different cron, run "
+                            "'swarmq schedule remove --permanent <name>' -- the next report "
+                            "recreates it enabled"
+                        ),
+                    )
             except BackendConnectionError as exc:
                 logger.warning(
                     "scheduler_sync_add_failed",

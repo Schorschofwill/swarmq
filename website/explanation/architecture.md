@@ -108,7 +108,7 @@ long as RabbitMQ and Valkey are still there.
 
 | State | Lives in | Lifetime |
 |---|---|---|
-| Task messages | RabbitMQ queue | Until ack'd or DLQ'd |
+| Task messages | RabbitMQ queue | Until ack'd or DLQ'd; in `{queue}.XQ` at most `SWARMQ_DEAD_LETTER_TTL_S` (default 7 days) |
 | Results | Valkey key `sq:result:{task_id}` | `result_ttl` seconds (default 24h) |
 | Progress updates | Valkey HASH `sq:progress:{task_id}` | Same TTL as results |
 | Rate-limit counters | Valkey sorted set | Sliding window |
@@ -120,7 +120,9 @@ long as RabbitMQ and Valkey are still there.
 | Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
 | Leader election | Valkey key `sq:lock:{sched}:leader` | Heartbeat-renewed |
 | Leader version | Valkey key `sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
-| Cron reports | Valkey HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report |
+| Cron reports | Valkey HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report (or twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, if longer) |
+| Crons disabled when pruned | Valkey SET `sq:{sched}:disabled` | Until a worker reports the cron again |
+| Execution guard | Valkey keys `sq:guard:{<task_id>[\|<replay_id>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` |
 | Worker versions | Valkey key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-process state — the task registry, the middleware stack, the signal

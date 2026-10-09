@@ -45,7 +45,9 @@ scheduler lock (``SHORT_SCHEDULER_LOCK_ENV``: TTL 3s, heartbeat 1s) and
 observe the orphaned lock expiring by TTL. Task-lock TTLs are
 ``hard_timeout + 30s`` and stay out of reach of these tests; the
 shutdown_sleep fixture has no task lock, so task recovery happens via
-RabbitMQ redelivery.
+RabbitMQ redelivery. Since 0.11.0 the execution guard defers that
+redelivery until the killed worker's running marker expires; the crash
+tests run with ``SHORT_EXECUTION_GUARD_ENV`` (TTL 2s instead of 60s).
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.worker_subprocess import (
+    SHORT_EXECUTION_GUARD_ENV,
     SHORT_SCHEDULER_LOCK_ENV,
     SHORT_SCHEDULER_LOCK_TTL_S,
     crash_worker,
@@ -1220,6 +1223,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=1,
+            env_extra=SHORT_EXECUTION_GUARD_ENV,
         )
         proc_b: subprocess.Popen[str] | None = None
         try:
@@ -1250,6 +1254,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
                     broker_url=rabbitmq_url,
                     backend_url=valkey_url,
                     concurrency=4,
+                    env_extra=SHORT_EXECUTION_GUARD_ENV,
                 )
                 wait_for_worker_started(proc_b, timeout=20.0)
 
@@ -1461,7 +1466,7 @@ class TestSchedulerLeaderFailoverCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=2,
-            env_extra=SHORT_SCHEDULER_LOCK_ENV,
+            env_extra={**SHORT_SCHEDULER_LOCK_ENV, **SHORT_EXECUTION_GUARD_ENV},
         )
         proc_b: subprocess.Popen[str] | None = None
         try:
@@ -1491,7 +1496,7 @@ class TestSchedulerLeaderFailoverCombo:
                     broker_url=rabbitmq_url,
                     backend_url=valkey_url,
                     concurrency=2,
-                    env_extra=SHORT_SCHEDULER_LOCK_ENV,
+                    env_extra={**SHORT_SCHEDULER_LOCK_ENV, **SHORT_EXECUTION_GUARD_ENV},
                 )
                 wait_for_worker_started(proc_b, timeout=20.0)
                 (child_b,) = _worker_children_now(proc_b)
@@ -1648,6 +1653,7 @@ class TestProcessManagerWorkerCrashLockCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=2,
+            env_extra=SHORT_EXECUTION_GUARD_ENV,
         )
         try:
             wait_for_worker_started(proc_a, timeout=20.0)
@@ -1939,6 +1945,7 @@ class TestAutoscaleShrinkRunningCombo:
             broker_url=rabbitmq_url,
             backend_url=valkey_url,
             concurrency=2,
+            env_extra=SHORT_EXECUTION_GUARD_ENV,
         )
         proc_b: subprocess.Popen[str] | None = None
         try:
@@ -1964,6 +1971,7 @@ class TestAutoscaleShrinkRunningCombo:
                     broker_url=rabbitmq_url,
                     backend_url=valkey_url,
                     concurrency=4,
+                    env_extra=SHORT_EXECUTION_GUARD_ENV,
                 )
                 wait_for_worker_started(proc_b, timeout=20.0)
 

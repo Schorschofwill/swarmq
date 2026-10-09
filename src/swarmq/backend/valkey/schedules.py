@@ -39,6 +39,9 @@ LEADER_VERSION_KEY = "sq:{sched}:leader_version"
 # Versionen der meldenden Worker (KTD11): ein String-Key je Worker mit der
 # Lebendigkeits-TTL der Cron-Meldungen; abgelaufene verschwinden von selbst.
 WORKER_VERSION_PREFIX = "sq:{sched}:worker_version:"
+# Beim Aufraeumen deaktivierte Crons (KTD8): ein Set mit den Namen; das
+# Wiederanlegen nach einer neuen Meldung uebernimmt ``disabled``.
+PRUNED_DISABLED_KEY = "sq:{sched}:disabled"
 
 
 def fired_key(schedfire_key: str) -> str:
@@ -72,6 +75,7 @@ class ValkeyScheduleStore:
         self._owner_release_script = client.register_script(load_script("unique_release"))
         self._report_script = client.register_script(load_script("sched_report"))
         self._report_prune_script = client.register_script(load_script("sched_report_prune"))
+        self._prune_script = client.register_script(load_script("sched_prune"))
 
     async def _run(self, what: str, coro: Any) -> Any:
         """Transportfehler -> ``BackendConnectionError``, Fehlerantworten und
@@ -255,6 +259,29 @@ class ValkeyScheduleStore:
             "sched_report_prune", self._report_prune_script(keys=_REPORT_KEYS, args=[max_age_ms]),
         )
         return int(result)
+
+    async def prune_cron(
+        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+    ) -> bool:
+        """``sched_prune.lua``: Prüfen und Entfernen in einem Schritt (KTD8)."""
+        result = await self._run(
+            f"sched_prune for {name!r}",
+            self._prune_script(
+                keys=[DEFS_KEY, ZSET_KEY, REPORT_LAST_SEEN_KEY, PRUNED_DISABLED_KEY],
+                args=[
+                    name, expected, "" if stale_after_ms is None else stale_after_ms,
+                    "1" if remember_disabled else "0",
+                ],
+            ),
+        )
+        return int(result) == 1
+
+    async def pruned_disabled(self, name: str) -> bool:
+        result = await self._run("pruned_disabled", self._client.sismember(PRUNED_DISABLED_KEY, name))
+        return bool(result)
+
+    async def forget_pruned_disabled(self, name: str) -> None:
+        await self._run("forget_pruned_disabled", self._client.srem(PRUNED_DISABLED_KEY, name))
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         await self._run(

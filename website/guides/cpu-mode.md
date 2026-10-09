@@ -103,7 +103,16 @@ worker.
   a POSIX platform with `forkserver`. Memory and thread checks read `/proc`.
 - RabbitMQ's `consumer_timeout` (default 30 min) bounds any single delivery.
   The worker warns at startup when a task's `hard_timeout` exceeds
-  `SWARMQ_CONSUMER_TIMEOUT_S`; raise both together for long jobs.
+  `SWARMQ_CONSUMER_TIMEOUT_S`; raise both together for long jobs. When a
+  task runs longer anyway, the broker closes the channel (up to 4.2) or
+  cancels the consumer (from 4.3, quorum queues). From 0.11.0 the
+  consumer watch registers the consumer again, and the execution guard
+  keeps the redelivered message from running next to the original; its
+  running markers are renewed by the main process, not by the compute
+  child. Details: [consumer timeout](../explanation/delivery-semantics.md#consumer-timeout).
+- `/ready` reports a `consumers` entry: not ready once a consumed queue
+  has had no active consumer for `SWARMQ_CONSUMER_READY_GRACE_S`
+  (default 30 s). Never use `/ready` as a liveness probe.
 - `/ready` reports the forkserver as an additional dependency.
 
 ## Relationship to `--processes`

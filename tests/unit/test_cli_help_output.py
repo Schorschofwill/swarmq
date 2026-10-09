@@ -47,6 +47,7 @@ _HELP_CASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("schedule", "add"), "schedule_add.txt"),
     (("schedule", "remove"), "schedule_remove.txt"),
     (("schedule", "status"), "schedule_status.txt"),
+    (("schedule", "prune"), "schedule_prune.txt"),
     (("inspect",), "inspect.txt"),
 )
 

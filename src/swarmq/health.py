@@ -7,10 +7,14 @@ Two endpoints, both stdlib-only (same asyncio HTTP server pattern as
   the process and event loop are responsive. Used by orchestrators
   (Kubernetes, systemd) to decide whether to restart the worker.
 - ``GET /ready`` — readiness. Returns 200 only when both the broker
-  AND the backend are reachable (lightweight ping). Returns 503 with
-  a JSON body listing which dependency is unhealthy when not. Used
-  by load balancers and rolling-deploy automation to decide when a
-  fresh worker is ready to accept traffic.
+  AND the backend are reachable (lightweight ping) and every named
+  extra check passes — in a worker ``consumers`` (every consumed queue
+  has an active consumer, Plan 2026-10-08-1541 U6) and, in CPU mode,
+  ``compute``. Returns 503 with a JSON body listing which dependency is
+  unhealthy when not. Used by load balancers and rolling-deploy
+  automation to decide when a fresh worker is ready to accept traffic.
+  Never use ``/ready`` as a liveness probe: a broker outage would make
+  the orchestrator restart every worker at once.
 
 ``swarmq worker --check`` is a separate concern — it performs
 offline config validation (module importable, watchfiles available,
@@ -25,9 +29,9 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
 from swarmq.logging import _error_fields, get_logger
 
@@ -35,6 +39,9 @@ if TYPE_CHECKING:
     from swarmq.contracts import Publisher, ResultBackend
 
 logger = get_logger(__name__)
+
+#: Zusatz-Check fuer ``/ready``: (ok, Fehlertext oder ``None``).
+ReadinessCheck = Callable[[], Awaitable[tuple[bool, str | None]]]
 
 
 class _DependencyState(TypedDict):
@@ -53,6 +60,7 @@ class ReadinessSnapshot(TypedDict):
     broker: _DependencyState
     backend: _DependencyState
     compute: NotRequired[_DependencyState]
+    consumers: NotRequired[_DependencyState]
 
 
 class HealthChecker:
@@ -71,14 +79,15 @@ class HealthChecker:
         backend: ResultBackend,
         *,
         timeout_s: float = 2.0,
-        compute_check: Callable[[], Awaitable[tuple[bool, str | None]]] | None = None,
+        checks: Mapping[str, ReadinessCheck] | None = None,
     ) -> None:
         self._broker = broker
         self._backend = backend
         self._timeout = timeout_s
-        # Plan 2026-09-03-001 (U7): im CPU-Modus zaehlt der Forkserver zur
-        # Bereitschaft — tot bedeutet, kein Task kann mehr rechnen.
-        self._compute_check = compute_check
+        # Benannte Zusatz-Checks, jeder mit eigenem Eintrag im Snapshot:
+        # ``compute`` (CPU-Modus, Plan 2026-09-03-001 U7 — tot bedeutet, kein
+        # Task kann mehr rechnen) und ``consumers`` (Plan 2026-10-08-1541 U6).
+        self._checks = dict(checks or {})
 
     @staticmethod
     def _sanitise_error(exc: BaseException) -> str:
@@ -135,16 +144,43 @@ class HealthChecker:
             broker=_DependencyState(ok=broker_ok, error=broker_err),
             backend=_DependencyState(ok=backend_ok, error=backend_err),
         )
-        if self._compute_check is not None:
+        for name, check in self._checks.items():
             try:
-                compute_ok, compute_err = await asyncio.wait_for(
-                    self._compute_check(), timeout=self._timeout
-                )
+                ok, err = await asyncio.wait_for(check(), timeout=self._timeout)
             except Exception as exc:
-                compute_ok, compute_err = False, self._sanitise_error(exc)
-            snapshot["compute"] = _DependencyState(ok=compute_ok, error=compute_err)
-            snapshot["ready"] = snapshot["ready"] and compute_ok
+                ok, err = False, self._sanitise_error(exc)
+            cast("dict[str, object]", snapshot)[name] = _DependencyState(ok=ok, error=err)
+            snapshot["ready"] = snapshot["ready"] and ok
         return snapshot
+
+
+def consumer_check(
+    gaps: Callable[[], Mapping[str, float]],
+    expected: Sequence[str],
+    *,
+    grace_s: float,
+) -> ReadinessCheck:
+    """``/ready``-Check: jede erwartete Queue hat einen aktiven Consumer (U6, R2).
+
+    ``gaps`` liefert je konsumierter Queue die Sekunden ohne aktiven Consumer
+    (``Broker.consumer_gaps``); rot wird es erst nach ``grace_s``. Eine
+    Queue, die noch gar nicht konsumiert wird, macht den Worker sofort nicht
+    bereit — vor dem ersten ``consume`` ist er es nicht.
+    """
+
+    async def _check() -> tuple[bool, str | None]:
+        current = gaps()
+        missing = [queue for queue in expected if queue not in current]
+        if missing:
+            return False, f"not consuming: {', '.join(missing)}"
+        # Kurzes Fehlen ist normal: Der Consumer-Waechter meldet binnen zwei
+        # Takten neu an. Erst danach ist es ein Ausfall.
+        stale = [queue for queue in expected if current[queue] > grace_s]
+        if stale:
+            return False, f"no active consumer for more than {grace_s}s: {', '.join(stale)}"
+        return True, None
+
+    return _check
 
 
 class HealthServer:

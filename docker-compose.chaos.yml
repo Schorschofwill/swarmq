@@ -14,6 +14,11 @@
 # Tests, die Fault-Injection brauchen, verbinden sich gegen 5673/6380 statt
 # 5672/6379. Tests ohne Fault-Injection nutzen weiterhin die raw-Ports.
 #
+# Die Test-Fixtures zeigen standardmäßig auf die Testcontainer 5699/6399 und
+# verweigern lokale 5672/6379 (Valkey-Flush!). Gegen diesen Stack daher
+# SWARMQ_TEST_RABBITMQ_PORT=5672, SWARMQ_TEST_VALKEY_PORT=6379 und
+# SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 setzen — siehe docs/testing/test-strategy.md.
+#
 # Spike-Validierung: `docs/solutions/spikes/2026-04-17-toxiproxy-reconnect-spike.md`.
 
 services:

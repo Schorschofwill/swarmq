@@ -217,6 +217,18 @@
       "type": "float"
     },
     {
+      "default": "on",
+      "env_var": "SWARMQ_SCHEDULER_PRUNE",
+      "name": "scheduler_prune",
+      "type": "str"
+    },
+    {
+      "default": 86400.0,
+      "env_var": "SWARMQ_SCHEDULER_PRUNE_AFTER_S",
+      "name": "scheduler_prune_after_s",
+      "type": "float"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_BURST_MODE",
       "name": "burst_mode",
@@ -305,6 +317,54 @@
       "env_var": "SWARMQ_CONSUMER_TIMEOUT_S",
       "name": "consumer_timeout_s",
       "type": "float"
+    },
+    {
+      "default": 5.0,
+      "env_var": "SWARMQ_CONSUMER_WATCH_INTERVAL_S",
+      "name": "consumer_watch_interval_s",
+      "type": "float"
+    },
+    {
+      "default": 30.0,
+      "env_var": "SWARMQ_CONSUMER_READY_GRACE_S",
+      "name": "consumer_ready_grace_s",
+      "type": "float"
+    },
+    {
+      "default": true,
+      "env_var": "SWARMQ_EXECUTION_GUARD",
+      "name": "execution_guard",
+      "type": "bool"
+    },
+    {
+      "default": 60.0,
+      "env_var": "SWARMQ_EXECUTION_GUARD_TTL_S",
+      "name": "execution_guard_ttl_s",
+      "type": "float"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_EXECUTION_GUARD_DONE_TTL_S",
+      "name": "execution_guard_done_ttl_s",
+      "type": "float | None"
+    },
+    {
+      "default": 3,
+      "env_var": "SWARMQ_EXECUTION_GUARD_MAX_ORPHANS",
+      "name": "execution_guard_max_orphans",
+      "type": "int"
+    },
+    {
+      "default": 604800.0,
+      "env_var": "SWARMQ_DEAD_LETTER_TTL_S",
+      "name": "dead_letter_ttl_s",
+      "type": "float | None"
+    },
+    {
+      "default": true,
+      "env_var": "SWARMQ_DEAD_LETTER_TERMINAL_FAILURES",
+      "name": "dead_letter_terminal_failures",
+      "type": "bool"
     },
     {
       "default": 131072,

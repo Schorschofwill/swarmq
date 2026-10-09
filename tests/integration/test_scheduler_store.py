@@ -17,6 +17,11 @@ and Fork-1 static-update paths.
 # Test list (Plan 2026-10-08-1541, U12) -- TestCronReportsServerTime:
 # 5. Eine Meldung traegt Valkey-Zeit, auch wenn die Uhr des meldenden
 #    Workers weit abweicht (Uhrabweichung aendert die Auswahl nicht).
+#
+# Test list (Plan 2026-10-08-1541, U10, KTD8) -- TestPruneRoundtrip:
+# 6. Der Leader entfernt einen verstummten, deaktivierten Cron samt
+#    Fire-Index-Eintrag; meldet ihn ein Worker wieder, kommt er deaktiviert
+#    und ohne Fire-Index-Eintrag zurueck, die Markierung ist verbraucht.
 
 from __future__ import annotations
 
@@ -357,3 +362,52 @@ class TestCronReportsServerTime:
         [report] = [r for r in snapshot.reports if r.name == sched_name]
         assert before_ms <= report.first_seen_ms <= snapshot.now_ms
         assert snapshot.now_ms - before_ms < 60_000
+
+
+class TestPruneRoundtrip:
+    async def test_pruned_disabled_cron_comes_back_disabled(
+        self, valkey_url, valkey_client, sched_name,
+    ):
+        import asyncio
+
+        from swarmq.scheduler.reports import cron_fingerprint
+
+        backend = ValkeyBackend(valkey_url)
+        await backend.connect()
+        config = SwarmQConfig(
+            broker_url="amqp://unused", backend_url=valkey_url,
+            scheduler_seen_interval_s=0.05, scheduler_prune_after_s=0.2,
+        )
+        leader = SchedulerLoop(
+            backend=backend, broker=AsyncMock(), config=config,
+            lock_manager=backend.locks, store=ScheduleStore(backend),
+            signal_dispatcher=SignalDispatcher(), owner_token="leader",
+        )
+        wanted = _def(sched_name, cron="0 1 * * *", fire_ts_ms=None)
+        try:
+            await backend.schedules.add(
+                sched_name, msgspec.json.encode(_def(sched_name, cron="0 1 * * *", disabled=True)), None,
+            )
+
+            async def _report() -> None:
+                await backend.schedules.report_cron(
+                    sched_name, cron_fingerprint(wanted), msgspec.json.encode(wanted),
+                    live_window_ms=150,
+                )
+
+            await _report()
+            # Echte Wartezeit: die Frist laeuft in Valkey-Zeit ab.
+            await asyncio.sleep(0.35)
+            await leader.adopt_reported_crons()
+            assert await valkey_client.hget("sq:{sched}:defs", sched_name) is None
+            assert await valkey_client.sismember("sq:{sched}:disabled", sched_name)
+
+            await _report()
+            await leader.adopt_reported_crons()
+        finally:
+            await backend.close()
+
+        raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
+        assert msgspec.json.decode(raw, type=ScheduleDefinition).disabled is True
+        assert await valkey_client.zscore("sq:{sched}:zset", sched_name) is None
+        assert not await valkey_client.sismember("sq:{sched}:disabled", sched_name)

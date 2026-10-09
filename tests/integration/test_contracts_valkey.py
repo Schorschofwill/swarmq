@@ -14,7 +14,7 @@ import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.locking import SCHEDULER_LOCK_NAME
-from tests.contracts import coordination, result_backend
+from tests.contracts import coordination, execution_guard, result_backend
 from tests.support.inmemory import RealClock
 
 
@@ -95,3 +95,13 @@ class TestScheduleStoreValkey(coordination.ScheduleStoreContract):
             assert token is not None
 
         return _become
+
+
+class TestExecutionGuardStoreValkey(execution_guard.ExecutionGuardStoreContract):
+    @pytest.fixture
+    def clock(self) -> RealClock:
+        return RealClock()
+
+    @pytest.fixture
+    def impl(self, connected_backend: ValkeyBackend) -> Any:
+        return connected_backend.execution_guard

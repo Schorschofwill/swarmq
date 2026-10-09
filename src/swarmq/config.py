@@ -118,6 +118,9 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
         return _parse_int(raw, env_name)
     if kind == "float":
         return _parse_float(raw, env_name)
+    if kind == "optional_float":
+        # ``none`` schaltet eine Frist ab (Plan 2026-10-08-1541, KTD6).
+        return None if raw.strip().lower() == "none" else _parse_float(raw, env_name)
     if kind == "bool":
         return raw.lower() in ("true", "1", "yes")
     if kind == "csv":
@@ -241,6 +244,12 @@ class SwarmQConfig:
     # meldet seine statischen Crons beim Start und danach in diesem Abstand;
     # der Leader waehlt im selben Takt. Eine Meldung lebt 3 Takte.
     scheduler_seen_interval_s: float = 60.0
+    # Cron-Aufraeumen ueber Lebenszeichen (Plan 2026-10-08-1541, KTD8): der
+    # Leader entfernt statische Crons, die mindestens einmal gemeldet wurden
+    # und seit ``scheduler_prune_after_s`` von keinem Worker mehr gemeldet
+    # werden. ``log`` loggt nur, ``off`` schaltet das Aufraeumen ab.
+    scheduler_prune: str = "on"
+    scheduler_prune_after_s: float = 86400.0
     # R4.5 Burst-Mode: when True, the worker exits cleanly once all
     # configured queues have been idle for `burst_idle_timeout` seconds
     # without delivering a single message. Used for batch/cron-style
@@ -285,6 +294,35 @@ class SwarmQConfig:
     heartbeat_interval_s: float = 5.0
     heartbeat_timeout_s: float = 60.0
     consumer_timeout_s: float = 1800.0
+    # Consumer-Waechter (Plan 2026-10-08-1541, U6, KTD3): Takt, in dem der
+    # Worker seine Consumer gegen den Broker prueft und verlorene neu anmeldet,
+    # und die Frist, ab der ``/ready`` eine Queue ohne aktiven Consumer meldet.
+    consumer_watch_interval_s: float = 5.0
+    consumer_ready_grace_s: float = 30.0
+    # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): eine erneut
+    # zugestellte Nachricht laeuft nicht neben dem Original, nicht nach dessen
+    # Abschluss und nicht neben einem Retry. Running-Marker mit TTL
+    # ``execution_guard_ttl_s`` (laufend verlaengert); Done-/Superseded-Marker
+    # mit ``execution_guard_done_ttl_s``; ab ``execution_guard_max_orphans``
+    # abgelaufenen Markern ohne Freigabe (Absturzschleife) geht die Zustellung
+    # in die DLQ.
+    execution_guard: bool = True
+    execution_guard_ttl_s: float = 60.0
+    # None heisst ``max(retry_max_delay, consumer_timeout_s) + 300``,
+    # mindestens ``execution_guard_ttl_s``:
+    # zurueckgestellte Kopien koennen hinter langen Retry-Verzoegerungen
+    # stecken, und ab RabbitMQ 4.3 bleiben Zustellungen bis zum
+    # Consumer-Timeout ausgecheckt.
+    execution_guard_done_ttl_s: float | None = None
+    execution_guard_max_orphans: int = 3
+    # Verfallsfrist einer von swarmq in die DLQ gelegten Nachricht, gemessen
+    # ab dem Dead-Lettering (Plan 2026-10-08-1541, KTD6). Lesen per ``dlq
+    # list``/``inspect`` verlaengert sie nicht. None heisst unbegrenzt.
+    dead_letter_ttl_s: float | None = 604800.0
+    # Terminale Task-Fehler (``NoRetry``, nicht wiederholbare Ausnahme,
+    # Retries ausgeschoepft) in die DLQ legen (KTD7). Aus: Fehlerergebnis
+    # speichern und bestaetigen wie vor MR !12. ``TaskInfo.dead_letter`` gewinnt.
+    dead_letter_terminal_failures: bool = True
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -345,6 +383,8 @@ class SwarmQConfig:
         ("SWARMQ_SCHEDULER_INFLIGHT_TTL", "scheduler_inflight_ttl", "float"),
         ("SWARMQ_SCHEDULER_TIMEZONE", "scheduler_timezone", "str"),
         ("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "scheduler_seen_interval_s", "float"),
+        ("SWARMQ_SCHEDULER_PRUNE", "scheduler_prune", "str"),
+        ("SWARMQ_SCHEDULER_PRUNE_AFTER_S", "scheduler_prune_after_s", "float"),
         ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
         # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
         # Port-Ranges werden beim Parsen validiert, damit eine kaputte
@@ -362,6 +402,14 @@ class SwarmQConfig:
         ("SWARMQ_HEARTBEAT_INTERVAL_S", "heartbeat_interval_s", "float"),
         ("SWARMQ_HEARTBEAT_TIMEOUT_S", "heartbeat_timeout_s", "float"),
         ("SWARMQ_CONSUMER_TIMEOUT_S", "consumer_timeout_s", "float"),
+        ("SWARMQ_CONSUMER_WATCH_INTERVAL_S", "consumer_watch_interval_s", "float"),
+        ("SWARMQ_CONSUMER_READY_GRACE_S", "consumer_ready_grace_s", "float"),
+        ("SWARMQ_EXECUTION_GUARD", "execution_guard", "bool"),
+        ("SWARMQ_EXECUTION_GUARD_TTL_S", "execution_guard_ttl_s", "float"),
+        ("SWARMQ_EXECUTION_GUARD_DONE_TTL_S", "execution_guard_done_ttl_s", "float"),
+        ("SWARMQ_EXECUTION_GUARD_MAX_ORPHANS", "execution_guard_max_orphans", "int"),
+        ("SWARMQ_DEAD_LETTER_TTL_S", "dead_letter_ttl_s", "optional_float"),
+        ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -381,18 +429,25 @@ class SwarmQConfig:
         "scheduler_lock_ttl",
         "scheduler_inflight_ttl",
         "scheduler_seen_interval_s",
+        "scheduler_prune_after_s",
         "burst_idle_timeout",
         "publish_timeout_s",
         "delivery_limit",
         "heartbeat_interval_s",
         "heartbeat_timeout_s",
         "consumer_timeout_s",
+        "consumer_watch_interval_s",
+        "consumer_ready_grace_s",
+        "execution_guard_ttl_s",
+        "execution_guard_max_orphans",
+        "dead_letter_ttl_s",
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",
         "log_queue_size",
     )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
+    _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]] = ("off", "log", "on")
     # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
     CPU_DEFAULT_RECYCLE_RSS_MB: ClassVar[int] = 250
     CPU_DEFAULT_RECYCLE_MAX_TASKS: ClassVar[int] = 1000
@@ -424,6 +479,25 @@ class SwarmQConfig:
     # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
     # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
     # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+
+    @property
+    def consumed_queues(self) -> list[str]:
+        """Die Queues, die ein Worker konsumiert — Grundlage fuer Deklaration,
+        Consumer-Waechter und ``/ready`` (Plan 2026-10-08-1541, U6).
+
+        R4.3 Task Priorities: with priorities each base queue expands into
+        the high/normal/low triplet. High-priority drains first under LIGHT
+        load simply because RabbitMQ delivers from whichever of the three
+        queues has a message. Under FULL saturation the channel-level
+        prefetch is shared fairly — true weighted prefetch (3:2:1) would
+        require separate channels per priority, which is deferred. Operators
+        still get queue-level visibility of priority splits (DLQ list,
+        queue-depth metrics per priority) and the routing contract
+        (priority="high" → {queue}.high).
+        """
+        if not self.priorities:
+            return list(self.queues)
+        return [name for base in self.queues for name in (f"{base}.high", base, f"{base}.low")]
 
     @property
     def worker_identity(self) -> str:
@@ -499,7 +573,8 @@ class SwarmQConfig:
 
         for field_name in self._POSITIVE_FIELDS:
             value = getattr(self, field_name)
-            if value <= 0:
+            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
+            if value is not None and value <= 0:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
 
@@ -564,6 +639,35 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
+    def _validate_scheduler_prune(self) -> None:
+        """Cron-Aufraeumen (KTD8)."""
+        if self.scheduler_prune not in self._VALID_PRUNE_MODES:
+            msg = (
+                f"scheduler_prune must be one of {list(self._VALID_PRUNE_MODES)}, "
+                f"got {self.scheduler_prune!r}"
+            )
+            raise ConfigurationError(msg)
+        # Eine Meldung lebt drei Meldetakte; eine kuerzere Frist raeumte
+        # Crons lebender Worker ab. Gerundet, damit 3 x 0.1 == 0.3 gilt.
+        if self.scheduler_prune_after_s < round(3 * self.scheduler_seen_interval_s, 9):
+            msg = (
+                "scheduler_prune_after_s must be >= 3x scheduler_seen_interval_s, "
+                f"got prune_after_s={self.scheduler_prune_after_s}, "
+                f"seen_interval_s={self.scheduler_seen_interval_s}"
+            )
+            raise ConfigurationError(msg)
+
+    def _validate_execution_guard(self) -> None:
+        """Done-/Superseded-Marker muessen den Running-Marker ueberdauern
+        (KTD5; Vorbild ``scheduler_dedup_ttl``)."""
+        assert self.execution_guard_done_ttl_s is not None  # Default in __post_init__
+        if self.execution_guard_done_ttl_s < self.execution_guard_ttl_s:
+            msg = (
+                "execution_guard_done_ttl_s must be >= execution_guard_ttl_s, "
+                f"got {self.execution_guard_done_ttl_s} < {self.execution_guard_ttl_s}"
+            )
+            raise ConfigurationError(msg)
+
     def _apply_logging_settings(self) -> None:
         settings = self.logging_settings
         if settings is None:
@@ -588,8 +692,15 @@ class SwarmQConfig:
         if self.scheduler_dedup_ttl is None:
             self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
 
+        if self.execution_guard_done_ttl_s is None:
+            self.execution_guard_done_ttl_s = max(
+                max(self.retry_max_delay, self.consumer_timeout_s) + 300.0, self.execution_guard_ttl_s,
+            )
+
         self._validate_core()
         self._validate_scheduler_relations()
+        self._validate_scheduler_prune()
+        self._validate_execution_guard()
         try:
             self.scheduler_timezone = normalize_timezone(
                 self.scheduler_timezone, "scheduler_timezone"

@@ -977,6 +977,26 @@ class TestDlqHandlerValidation:
             await cli._broker_from_env()
 
     @pytest.mark.timeout(5)
+    @pytest.mark.parametrize(("raw", "expected"), [("3600", 3600.0), ("none", None)])
+    async def test_broker_from_env_applies_dead_letter_ttl(self, monkeypatch, raw, expected):
+        """U9 (KTD6): ``dlq list``/``inspect`` legen mit der Rest-TTL zurueck
+        und brauchen dafuer die konfigurierte Frist, nicht den Broker-Default."""
+        from swarmq.broker.rabbitmq import RabbitMQBroker
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5699/")
+        monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", raw)
+        monkeypatch.setattr(RabbitMQBroker, "connect", AsyncMock())
+        broker = await cli._broker_from_env()
+        assert broker.dead_letter_ttl_s == expected
+
+    @pytest.mark.timeout(5)
+    async def test_broker_from_env_rejects_non_positive_dead_letter_ttl(self, monkeypatch):
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5699/")
+        monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", "0")
+        with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+            await cli._broker_from_env()
+
+    @pytest.mark.timeout(5)
     async def test_retry_without_task_or_all_exits_2(self, monkeypatch):
         """Review P3 #12: bad argument shape exits 2 (argparse convention),
         not 1 (runtime error)."""

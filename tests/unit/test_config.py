@@ -540,6 +540,7 @@ _NUMERIC_ENV_VARS = [
     "SWARMQ_SCHEDULER_DEDUP_TTL",
     "SWARMQ_SCHEDULER_INFLIGHT_TTL",
     "SWARMQ_SCHEDULER_SEEN_INTERVAL_S",
+    "SWARMQ_SCHEDULER_PRUNE_AFTER_S",
     "SWARMQ_BURST_IDLE_TIMEOUT",
     "SWARMQ_MAX_MESSAGE_BODY_BYTES",
 ]
@@ -1030,3 +1031,77 @@ def test_scheduler_seen_interval_from_env(monkeypatch):
 def test_scheduler_seen_interval_must_be_positive(value):
     with pytest.raises(ConfigurationError, match="scheduler_seen_interval_s"):
         _cfg(scheduler_seen_interval_s=value)
+
+
+# --- Plan 2026-10-08-1541, U6: Consumer-Wächter und Readiness ---
+# Test-Liste:
+# 1. Standards: consumer_watch_interval_s 5 s, consumer_ready_grace_s 30 s.
+# 2. Beide über SWARMQ_CONSUMER_WATCH_INTERVAL_S / SWARMQ_CONSUMER_READY_GRACE_S.
+# 3. Beide müssen > 0 sein.
+# 4. ``consumed_queues``: die Queues, die ein Worker konsumiert (mit
+#    Prioritäten das Tripel je Basis-Queue).
+
+
+def test_consumer_watch_defaults():
+    cfg = _cfg()
+    assert cfg.consumer_watch_interval_s == 5.0
+    assert cfg.consumer_ready_grace_s == 30.0
+
+
+def test_consumer_watch_env_overrides(monkeypatch):
+    monkeypatch.setenv("SWARMQ_CONSUMER_WATCH_INTERVAL_S", "2.5")
+    monkeypatch.setenv("SWARMQ_CONSUMER_READY_GRACE_S", "45")
+    cfg = _cfg()
+    assert cfg.consumer_watch_interval_s == 2.5
+    assert cfg.consumer_ready_grace_s == 45.0
+
+
+@pytest.mark.parametrize("field", ["consumer_watch_interval_s", "consumer_ready_grace_s"])
+def test_consumer_watch_fields_must_be_positive(field):
+    with pytest.raises(ConfigurationError, match=f"{field} must be > 0"):
+        _cfg(**{field: 0})
+
+
+def test_consumed_queues_expand_priorities():
+    assert _cfg(queues=["a", "b"]).consumed_queues == ["a", "b"]
+    assert _cfg(queues=["a", "b"], priorities=True).consumed_queues == [
+        "a.high", "a", "a.low", "b.high", "b", "b.low",
+    ]
+
+
+# --- Plan 2026-10-08-1541, U9: DLQ-TTL und abschaltbares Dead-Lettering ---
+# Test-Liste:
+# 1. ``dead_letter_ttl_s`` ist standardmaessig 7 Tage (604800 s).
+# 2. ``SWARMQ_DEAD_LETTER_TTL_S`` setzt den Wert; ``none`` heisst unbegrenzt.
+# 3. 0 oder negativ (kwarg und Env) -> ConfigurationError.
+# 4. ``dead_letter_terminal_failures`` ist standardmaessig an und per
+#    ``SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`` abschaltbar.
+
+
+def test_dead_letter_ttl_defaults_to_seven_days():
+    assert _cfg().dead_letter_ttl_s == 604800.0
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("3600", 3600.0), ("none", None), ("None", None)])
+def test_dead_letter_ttl_from_env(monkeypatch, raw, expected):
+    monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", raw)
+    assert _cfg().dead_letter_ttl_s == expected
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+def test_dead_letter_ttl_must_be_positive_or_none(value):
+    with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+        _cfg(dead_letter_ttl_s=value)
+
+
+
+def test_dead_letter_ttl_zero_from_env_is_a_configuration_error(monkeypatch):
+    monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", "0")
+    with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+        _cfg()
+
+
+def test_dead_letter_terminal_failures_defaults_on_and_env_switches_off(monkeypatch):
+    assert _cfg().dead_letter_terminal_failures is True
+    monkeypatch.setenv("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "false")
+    assert _cfg().dead_letter_terminal_failures is False

@@ -2,7 +2,7 @@
 
 Async-first Python task queue on RabbitMQ + Valkey.
 
-> **Status:** 0.10.x on PyPI. Core, workflow primitives, optional
+> **Status:** 0.11.x on PyPI. Core, workflow primitives, optional
 > dependency injection (Dishka), operator features (priorities, expiry,
 > burst, supervisor, autoscaling, control channel), CPU worker mode,
 > structured non-blocking logging, metrics, health, hot reload and the
@@ -417,7 +417,14 @@ docs/
 # Fast dev loop — unit only
 uv run --extra test pytest tests/unit -q
 
-# E2E suite (needs docker compose up -d)
+# Integration + e2e: defaults target the swarmq test containers on
+# localhost 5699 (AMQP) / 15699 (management) / 6399 (Valkey). The suites
+# flush Valkey, so a local host on the default ports 5672/6379 is refused
+# unless SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 is set
+# (see docs/testing/test-strategy.md, "Ports und Schutz vor fremden Stacks").
+uv run --extra test pytest tests/integration tests/e2e -q
+
+# E2E against the dev stack (docker-compose.swarmq-dev.yml)
 SWARMQ_TEST_RABBITMQ_PORT=5673 SWARMQ_TEST_VALKEY_PORT=6380 \
   uv run --extra test pytest tests/e2e -q
 
@@ -427,8 +434,12 @@ uv run --extra test pytest tests/chaos -q -m chaos
 # E2E feature-combinations suite (31 combos × 3 failure tiers)
 # Tier-1 only — no Toxiproxy needed, runs as part of the regular e2e
 # suite above. Tier-2/3 (chaos-marked) needs the Toxiproxy stack:
+# This compose stack publishes RabbitMQ/Valkey on 5672/6379; point the
+# tests there explicitly (only if nothing else runs on those ports):
 docker compose -f docker-compose.yml -f docker-compose.chaos.yml up -d
-uv run --extra test pytest tests/e2e/combinations -v -m chaos
+SWARMQ_TEST_RABBITMQ_PORT=5672 SWARMQ_TEST_RABBITMQ_MGMT_PORT=15672 \
+SWARMQ_TEST_VALKEY_PORT=6379 SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 \
+  uv run --extra test pytest tests/e2e/combinations -v -m chaos
 
 # Property + fuzz
 uv run --extra test pytest tests/property tests/fuzz -q -m "property or fuzz"

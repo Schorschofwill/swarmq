@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import socket
 import uuid
 
@@ -11,10 +10,10 @@ import valkey.asyncio as valkey_asyncio
 
 from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.limits import parse_rate_limit
+from tests.support.services import VALKEY_HOST, VALKEY_PORT, valkey_db_url
 
-VALKEY_HOST = "localhost"
-VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6379"))
-VALKEY_URL = f"valkey://{VALKEY_HOST}:{VALKEY_PORT}/0"
+# Host/Port aus der gemeinsamen Testkonfiguration (Standard: Testcontainer 6399).
+VALKEY_URL = valkey_db_url()
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:

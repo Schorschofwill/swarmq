@@ -1,6 +1,7 @@
 """Unit tests for RabbitMQBroker."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import aio_pika
@@ -780,6 +781,129 @@ class TestRabbitMQBrokerPublishToDeadLetterQueue:
         publish_call = mock_exchange.publish.call_args
         publish_call.args[0]
         assert publish_call.kwargs["routing_key"] == "tasks.XQ"
+
+
+class TestDeadLetterTtl:
+    """Plan 2026-10-08-1541, U9 (KTD6): Rest-TTL pro Nachricht in der DLQ.
+
+    Test-Liste:
+    1. DLQ-Publish traegt standardmaessig die kodierte Property
+       ``expiration == "604800000"`` (7 Tage).
+    2. DLQ-Publish traegt ``x-swarmq-dead-lettered-at`` (Epoch-Millisekunden).
+    3. ``dead_letter_ttl_s=None`` -> keine ``expiration``.
+    4. ``dlq list``/``inspect`` legen mit der Rest-TTL zurueck (Frist aus
+       ``x-swarmq-dead-letter-ttl-ms``, siehe ``test_dead_letter_ttl_header.py``).
+    5. Abgelaufene Nachricht beim Lesen -> verworfen.
+    6. Altbestand ohne Header -> volle TTL ab jetzt, Header wird gesetzt.
+    7. ``dlq retry`` -> Hauptqueue ohne ``expiration``.
+    8. ``SwarmQ`` reicht ``dead_letter_ttl_s`` an den Broker durch.
+    """
+
+    @staticmethod
+    def _broker():
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._publish_channel = AsyncMock(is_closed=False)
+        broker._connection = AsyncMock()
+        return broker
+
+    async def test_dead_letter_publish_carries_seven_day_expiration(self):
+        broker = self._broker()
+        await broker._publish_to_dead_letter_queue("tasks", b"body")
+        message = broker._publish_channel.default_exchange.publish.call_args.args[0]
+        assert message.properties.expiration == "604800000"
+
+    async def test_dead_letter_publish_stamps_dead_lettered_at_in_epoch_ms(self):
+        broker = self._broker()
+        broker.clock = lambda: 1_760_000_000.123
+        await broker._publish_to_dead_letter_queue("tasks", b"body", headers={"x-swarmq-traceback": "boom"})
+        message = broker._publish_channel.default_exchange.publish.call_args.args[0]
+        assert message.headers["x-swarmq-dead-lettered-at"] == 1_760_000_000_123
+        assert message.headers["x-swarmq-traceback"] == "boom"
+
+    async def test_dead_letter_publish_without_ttl_has_no_expiration(self):
+        broker = self._broker()
+        broker.dead_letter_ttl_s = None
+        await broker._publish_to_dead_letter_queue("tasks", b"body")
+        message = broker._publish_channel.default_exchange.publish.call_args.args[0]
+        assert message.properties.expiration is None
+        assert "x-swarmq-dead-lettered-at" in message.headers
+
+    _NOW = 1_760_000_000.0
+
+    def _dlq_broker(self, *messages, ttl=7200.0):
+        """Broker mit einer DLQ aus ``messages`` (Kopf zuerst); die
+        Republishes landen in ``broker.published`` als (routing_key, msg)."""
+        broker = self._broker()
+        broker.dead_letter_ttl_s = ttl
+        broker.clock = lambda: self._NOW
+        queue = Mock()
+        queue.get = AsyncMock(side_effect=[*messages, None])
+        broker._dlq_queue = AsyncMock(return_value=queue)
+        broker.published = []
+
+        async def publish(routing_key, msg):
+            broker.published.append((routing_key, msg))
+
+        broker._publish_with_retry = publish
+        return broker
+
+    @staticmethod
+    def _incoming(task_id="t-1", headers=None):
+        body = json.dumps({"task": {"id": task_id, "name": "n"}}).encode()
+        return Mock(body=body, headers=dict(headers or {}))
+
+    async def test_list_puts_message_back_with_remaining_ttl(self):
+        dead_lettered_at = int((self._NOW - 3600) * 1000)
+        broker = self._dlq_broker(self._incoming(headers={
+            "x-swarmq-dead-lettered-at": dead_lettered_at, "x-swarmq-dead-letter-ttl-ms": 7_200_000,
+        }))
+        await broker.list_dead_letters("tasks")
+        [(routing_key, msg)] = broker.published
+        assert routing_key == "tasks.XQ"
+        assert msg.properties.expiration == "3600000"
+        assert msg.headers["x-swarmq-dead-lettered-at"] == dead_lettered_at
+
+    async def test_legacy_message_without_header_gets_full_ttl_from_now(self):
+        """Altbestand und DLX-Wege tragen keinen Zeitstempel: volle Frist ab
+        jetzt, und der gesetzte Header haelt sie beim naechsten Lesen fest."""
+        broker = self._dlq_broker(self._incoming(headers={"x-death": []}))
+        await broker.inspect_dead_letter("tasks", "t-1")
+        [(_, msg)] = broker.published
+        assert msg.properties.expiration == "7200000"
+        assert msg.headers["x-swarmq-dead-lettered-at"] == int(self._NOW * 1000)
+        assert msg.headers["x-death"] == []
+
+    async def test_expired_message_is_dropped_when_read(self):
+        """Eine abgelaufene Nachricht mitten in der Queue verwirft RabbitMQ
+        erst am Kopf; beim Lesen faellt sie weg, statt neu zu leben."""
+        ttl = {"x-swarmq-dead-letter-ttl-ms": 7_200_000}
+        expired = self._incoming("t-old", {"x-swarmq-dead-lettered-at": int((self._NOW - 7201) * 1000), **ttl})
+        fresh = self._incoming("t-new", {"x-swarmq-dead-lettered-at": int((self._NOW - 1) * 1000), **ttl})
+        broker = self._dlq_broker(expired, fresh)
+        entries, _scanned = await broker.list_dead_letters("tasks")
+        assert [e["task_id"] for e in entries] == ["t-new"]
+        assert [json.loads(msg.body)["task"]["id"] for _, msg in broker.published] == ["t-new"]
+
+    async def test_retry_forwards_to_main_queue_without_expiration(self):
+        """Die wiederholte Nachricht ist keine DLQ-Nachricht mehr: keine Frist,
+        kein Zeitstempel (ein erneutes Dead-Lettering stempelt neu)."""
+        stamped = self._incoming(headers={"x-swarmq-dead-lettered-at": int((self._NOW - 60) * 1000)})
+        broker = self._dlq_broker(stamped)
+        found, _ = await broker.retry_dead_letter("tasks", "t-1")
+        [(routing_key, msg)] = broker.published
+        assert found is True and routing_key == "tasks"
+        assert msg.properties.expiration is None
+        assert "x-swarmq-dead-lettered-at" not in msg.headers
+
+    @pytest.mark.parametrize("bad", ["garbage", b"1760000000000", None, True])
+    async def test_invalid_timestamp_counts_as_missing(self, bad):
+        """Ein unlesbarer Zeitstempel darf die Nachricht nicht verlieren: sie
+        ist per ``no_ack`` schon aus der Queue und muss zurueck."""
+        broker = self._dlq_broker(self._incoming(headers={"x-swarmq-dead-lettered-at": bad}))
+        await broker.list_dead_letters("tasks")
+        [(_, msg)] = broker.published
+        assert msg.properties.expiration == "7200000"
+        assert msg.headers["x-swarmq-dead-lettered-at"] == int(self._NOW * 1000)
 
 
 # ---------------------------------------------------------------------------

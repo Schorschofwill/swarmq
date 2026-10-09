@@ -32,6 +32,7 @@ from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
 from swarmq.scheduler.fire_plan import SchedulerFirePlan
 from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
+from swarmq.scheduler.prune import SchedulerCronPrune
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
 
@@ -73,7 +74,7 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion, SchedulerFirePlan):
+class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersion, SchedulerFirePlan):
     """Embedded scheduler — one instance per worker.
 
     Runs four cooperating coroutines:
@@ -94,7 +95,8 @@ class SchedulerLoop(SchedulerCronSync, SchedulerLeaderVersion, SchedulerFirePlan
       :meth:`start`) reports this worker's static crons, in any role.
     - ``_adopt_loop``: the leader adopts the youngest live report per
       cron right after acquiring the lock and then every
-      ``scheduler_seen_interval_s`` (Plan 2026-10-08-1541, KTD10).
+      ``scheduler_seen_interval_s`` (Plan 2026-10-08-1541, KTD10), and
+      removes static crons no worker reports any more (KTD8, ``prune.py``).
 
     :meth:`stop` is the graceful path: emits HANDOVER, writes a
     short-TTL marker under the outgoing token, releases the lock, and

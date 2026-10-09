@@ -23,6 +23,10 @@ Unit tests for graceful shutdown (Unit 2.5)."""
 #
 # Test list (0.9.1, B23):
 # 7. ``cancel_consume_partial_failure`` traegt ``error_type``/``error``.
+#
+# Test list (0.11.0, Ausfuehrungsschutz):
+# 8. Der Shutdown laesst die Nachholversuche gescheiterter Marker-Abschluesse
+#    (``ExecutionGuard.drain``) VOR ``backend.close`` laufen.
 
 from __future__ import annotations
 
@@ -197,7 +201,7 @@ class TestBrokerCancelConsume:
 
     async def test_cancel_consume_isolates_per_consumer_failure(self):
         """A consumer whose cancel() raises must not prevent the remaining
-        consumers from being cancelled, and _consumer_tags must be cleared
+        consumers from being cancelled, and the registry must be cleared
         regardless (2026-06-02 audit, P1-2). The error is surfaced only
         after every consumer has been attempted."""
         from swarmq.exceptions import BrokerConnectionError
@@ -223,7 +227,7 @@ class TestBrokerCancelConsume:
         # The second consumer was still cancelled despite the first raising.
         mock_queue_2.cancel.assert_awaited_once_with("tag-2")
         # Registry cleared so a redelivery window cannot reuse stale tags.
-        assert broker._consumer_tags == []
+        assert broker.consumer_gaps() == {}
 
 
 class TestRequestShutdown:
@@ -350,6 +354,25 @@ class TestShutdownLockDrain:
     entries in _active_handler_locks get drained and the registry is
     cleared.
     """
+
+    @pytest.mark.asyncio
+    async def test_execution_guard_retries_drain_before_backend_close(self, worker, backend):
+        order: list[str] = []
+
+        async def _drain() -> None:
+            order.append("guard_drain")
+
+        async def _close() -> None:
+            order.append("backend_close")
+
+        worker._execution_guard.drain = _drain
+        backend.close = _close
+        worker._state = WorkerState.RUNNING
+
+        worker._request_shutdown()
+        await worker._execute_shutdown()
+
+        assert order == ["guard_drain", "backend_close"]
 
     @pytest.mark.asyncio
     async def test_leftover_handler_locks_released_before_backend_close(
@@ -1102,3 +1125,17 @@ class TestStartupFailureLeavesNothingBehind:
         assert w._scheduler is None
         assert _pending_scheduler_tasks() == []
         broker.close.assert_not_awaited()
+
+
+async def test_start_wires_the_execution_guard_store_of_the_backend(broker, backend, registry, config):
+    """Plan 2026-10-08-1541, U8 (KTD5): der Store des Ausführungsschutzes
+    kommt nach ``connect()`` von der Backend-Fassade."""
+    store = MagicMock()
+    backend.execution_guard = store
+    broker.declare_queue = AsyncMock(side_effect=RuntimeError("stop after wiring"))
+    w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+    with pytest.raises(RuntimeError, match="stop after wiring"):
+        await w.start()
+
+    assert w._guard_store is store

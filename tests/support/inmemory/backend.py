@@ -18,6 +18,8 @@ from swarmq.contracts import (
     ChordStore,
     CronReport,
     CronReports,
+    ExecutionGuardStore,
+    GuardClaim,
     LeaderInfo,
     LockStore,
     LockToken,
@@ -66,6 +68,12 @@ class _TTLDict[V]:
         self.set(key, value, ttl_ms)
         return True
 
+    def expire_keep(self, key: str, value: V) -> None:
+        """Wert ersetzen, Ablaufzeit behalten (wie HSET/HDEL auf einem Hash)."""
+        self._purge()
+        if key in self._data:
+            self._data[key] = (value, self._data[key][1])
+
     def pop(self, key: str) -> V | None:
         self._purge()
         entry = self._data.pop(key, None)
@@ -98,6 +106,7 @@ class InMemoryBackend:
         self._rate_limit = InMemoryRateLimitStore(clock)
         self._chords = InMemoryChordStore(clock)
         self._schedules = InMemoryScheduleStore(clock, self._locks)
+        self._execution_guard = InMemoryExecutionGuardStore(clock)
 
     # --- Fassaden-Properties (KTD4) -------------------------------------------
 
@@ -120,6 +129,11 @@ class InMemoryBackend:
     def schedules(self) -> InMemoryScheduleStore:
         self._require_connected()
         return self._schedules
+
+    @property
+    def execution_guard(self) -> InMemoryExecutionGuardStore:
+        self._require_connected()
+        return self._execution_guard
 
     # --- Lebenszyklus ---------------------------------------------------------
 
@@ -369,6 +383,8 @@ class InMemoryScheduleStore:
         # Leader-Version (KTD11): "leader" -> (owner, version)
         self._leader_version: _TTLDict[tuple[str, str]] = _TTLDict(clock)
         self._worker_versions: _TTLDict[str] = _TTLDict(clock)
+        # Beim Aufräumen deaktivierte Namen (KTD8)
+        self._pruned_disabled: set[str] = set()
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -496,6 +512,29 @@ class InMemoryScheduleStore:
         )
         return CronReports(now_ms=self._clock.now_ms(), reports=reports)
 
+    async def prune_cron(
+        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+    ) -> bool:
+        if self._defs.get(name) != expected:
+            return False
+        seen = [last for (n, _), (_, last, _) in self._reports.items() if n == name]
+        if stale_after_ms is None:
+            prunable = not seen
+        else:
+            prunable = bool(seen) and max(seen) < self._clock.now_ms() - stale_after_ms
+        if not prunable:
+            return False
+        await self.remove(name)
+        if remember_disabled:
+            self._pruned_disabled.add(name)
+        return True
+
+    async def pruned_disabled(self, name: str) -> bool:
+        return name in self._pruned_disabled
+
+    async def forget_pruned_disabled(self, name: str) -> None:
+        self._pruned_disabled.discard(name)
+
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         self._worker_versions.set(worker_id, version, ttl_ms)
 
@@ -513,9 +552,83 @@ class InMemoryScheduleStore:
         return LeaderInfo(owner=owner, version=version)
 
 
+class InMemoryExecutionGuardStore:
+    """Ausfuehrungsschutz (Plan 2026-10-08-1541, U8, KTD5) -- dieselbe
+    Semantik wie ``guard_claim.lua``/``guard_finish.lua``: ein Running-Marker
+    mit eigener TTL und ein Zustand (``done``, ``sup``, ``orphans``,
+    ``lease``) mit gemeinsamer TTL wie der Valkey-Hash."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self._clock = clock
+        self._running: _TTLDict[str] = _TTLDict(clock)
+        self._state: _TTLDict[dict[str, object]] = _TTLDict(clock)
+
+    def _update(self, identity: str, state_ttl_ms: int, **fields: object) -> None:
+        state = dict(self._state.get(identity) or {})
+        state.update(fields)
+        self._state.set(identity, {k: v for k, v in state.items() if v is not None}, state_ttl_ms)
+
+    async def claim(
+        self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+    ) -> GuardClaim:
+        state = self._state.get(identity) or {}
+        if state.get("done"):
+            return GuardClaim("done")
+        superseded = state.get("sup")
+        if isinstance(superseded, int) and retry_count < superseded:
+            return GuardClaim("superseded")
+        orphans = int(state.get("orphans", 0))  # type: ignore[call-overload]
+        if self._running.get(identity) == owner:
+            # Wiederholung desselben Claims (Transport-Retry): idempotent.
+            return GuardClaim("orphan_limit" if orphans >= max_orphans else "claimed", orphans=orphans)
+        if identity in self._running:
+            return GuardClaim("running")
+        if "lease" in state:
+            orphans += 1
+        self._running.set(identity, owner, ttl_ms)
+        self._update(identity, state_ttl_ms, lease=owner, orphans=orphans or None)
+        return GuardClaim("orphan_limit" if orphans >= max_orphans else "claimed", orphans=orphans)
+
+    async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool:
+        if self._running.get(identity) != owner:
+            return False
+        return self._running.expire(identity, ttl_ms)
+
+    def _finish(self, identity: str, owner: str) -> dict[str, object]:
+        if self._running.get(identity) == owner:
+            self._running.pop(identity)
+        state = dict(self._state.get(identity) or {})
+        if state.get("lease") == owner:
+            del state["lease"]
+        return state
+
+    def _store(self, identity: str, state: dict[str, object], state_ttl_ms: int | None) -> None:
+        if not state:
+            self._state.pop(identity)
+        elif state_ttl_ms is None:
+            self._state.expire_keep(identity, state)
+        else:
+            self._state.set(identity, state, state_ttl_ms)
+
+    async def mark_done(self, identity: str, *, owner: str, state_ttl_ms: int) -> None:
+        state = self._finish(identity, owner)
+        state["done"] = True
+        self._store(identity, state, state_ttl_ms)
+
+    async def mark_superseded(self, identity: str, *, owner: str, retry_count: int, state_ttl_ms: int) -> None:
+        state = self._finish(identity, owner)
+        current = state.get("sup")
+        state["sup"] = max(retry_count, current if isinstance(current, int) else 0)
+        self._store(identity, state, state_ttl_ms)
+
+    async def release(self, identity: str, *, owner: str) -> None:
+        self._store(identity, self._finish(identity, owner), None)
+
+
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)
     _conforms_backend: type[ResultBackend] = InMemoryBackend
     _conforms_locks: type[LockStore] = InMemoryLockStore
     _conforms_rate_limit: type[RateLimitStore] = InMemoryRateLimitStore
     _conforms_chords: type[ChordStore] = InMemoryChordStore
     _conforms_schedules: type[ScheduleStore] = InMemoryScheduleStore
+    _conforms_guard: type[ExecutionGuardStore] = InMemoryExecutionGuardStore

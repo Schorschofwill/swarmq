@@ -427,6 +427,7 @@ TaskInfo(
     max_age: int | None = None,
     priority: Literal["high", "normal", "low"] = "normal",
     timezone: str | None = None,
+    dead_letter: bool | None = None,
 )
 ```
 
@@ -788,8 +789,8 @@ nur für den Producer-Pfad (`start_worker()` weist sie ab).
 Asynchroner Valkey-Client für Ergebnisse, Locks, Rate-Limits,
 Cancel-Flags, Scheduler-Zustand und Leader-Election. Implementiert das
 `ResultBackend`-Protokoll aus `swarmq.contracts` und reicht die
-Koordinations-Stores als `backend.locks`, `.rate_limit`, `.chords` und
-`.schedules` heraus (verfügbar nach `connect()`). Wird als zweites
+Koordinations-Stores als `backend.locks`, `.rate_limit`, `.chords`,
+`.schedules` und `.execution_guard` heraus (verfügbar nach `connect()`). Wird als zweites
 Positionsargument durch `SwarmQ` gereicht. Seit 0.2.0 nennen die
 Konstruktor-Signaturen von `Worker` und `Client` diese Verträge statt
 der konkreten Klassen — bestehender Code läuft unverändert.
@@ -894,6 +895,51 @@ class ScheduleStore(Protocol):
   `leader_info()` liefert den Owner des Locks und diese Version
   (`LeaderInfo.version` ist `None` bei einem Leader vor 0.10.0).
 
+Vertragsänderungen in 0.11.0. Ein eigener `ScheduleStore` braucht drei
+weitere Methoden für das [Aufräumen von Crons](../guides/scheduling-and-retries.md#crons-entfernen-die-keine-app-mehr-meldet);
+ein Backend, das den [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
+anbietet, reicht einen `ExecutionGuardStore` als `backend.execution_guard`
+heraus:
+
+```python
+from swarmq.contracts import ExecutionGuardStore, GuardClaim, ScheduleStore
+
+class ScheduleStore(Protocol):
+    async def prune_cron(self, name: str, expected: bytes, *,
+                         stale_after_ms: int | None,
+                         remember_disabled: bool) -> bool: ...
+    async def pruned_disabled(self, name: str) -> bool: ...
+    async def forget_pruned_disabled(self, name: str) -> None: ...
+
+class ExecutionGuardStore(Protocol):
+    async def claim(self, identity: str, *, owner: str, retry_count: int,
+                    ttl_ms: int, state_ttl_ms: int,
+                    max_orphans: int) -> GuardClaim: ...
+    async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool: ...
+    async def mark_done(self, identity: str, *, owner: str,
+                        state_ttl_ms: int) -> None: ...
+    async def mark_superseded(self, identity: str, *, owner: str,
+                              retry_count: int, state_ttl_ms: int) -> None: ...
+    async def release(self, identity: str, *, owner: str) -> None: ...
+```
+
+- `prune_cron` entfernt einen statischen Cron samt Termin atomar,
+  solange die gespeicherte Definition noch genau `expected` ist und, mit
+  `stale_after_ms`, jede Meldung des Namens älter als diese Frist ist
+  (Backend-Zeit, mindestens eine Meldung); ohne Frist, solange keine
+  Meldung des Namens existiert. Mit `remember_disabled` merkt sich der
+  Store den Namen, sodass `pruned_disabled` bis
+  `forget_pruned_disabled` `True` liefert. Liefert, ob entfernt wurde.
+- `claim` liefert einen `GuardClaim(status, orphans)` mit `status` aus
+  `claimed`, `done`, `superseded`, `running`, `orphan_limit`. Ein ohne
+  Freigabe abgelaufener Running-Marker zählt als Waise; bei
+  `max_orphans` gehört der Claim trotzdem dem Aufrufer, damit das
+  folgende Dead-Lettering ihn abschließt. `renew` ist ein
+  Compare-and-PEXPIRE auf den eigenen Marker; `mark_done`,
+  `mark_superseded` (nur steigende Zähler) und `release` löschen den
+  Running-Marker nur, solange er `owner` gehört.
+- Ein Backend ohne Attribut `execution_guard` läuft ohne den Schutz.
+
 ## Dependency Injection (Dishka)
 
 Optional; Installation mit `pip install 'swarmq[dishka]'`.
@@ -948,7 +994,7 @@ from swarmq import (
     Metrics, MetricsServer, serve_metrics, install_signal_collectors,
 )
 
-HealthChecker(broker, backend, *, timeout_s: float = 2.0, compute_check=None)
+HealthChecker(broker, backend, *, timeout_s: float = 2.0, checks=None)
 HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started=None)
 serve_health(checker, *, host="127.0.0.1", port=8080)       # async Context-Manager
 
@@ -959,8 +1005,16 @@ install_signal_collectors(dispatcher: SignalDispatcher, metrics: Metrics) -> Non
 ```
 
 - `HealthChecker.check_all()` pingt Broker und Backend (je begrenzt
-  durch `timeout_s`) und liefert `{"ready", "broker", "backend"}` (im
-  CPU-Modus zusätzlich `"compute"`).
+  durch `timeout_s`) und liefert `{"ready", "broker", "backend"}` plus
+  einen Eintrag je benannter Prüfung. `checks` bildet einen Namen auf
+  eine async Funktion ab, die `(ok, error)` liefert; jede läuft begrenzt
+  durch `timeout_s`, und eine fehlschlagende macht `ready` falsch. Der
+  Worker übergibt `"consumers"` (jede konsumierte Queue hat einen
+  aktiven Consumer, siehe
+  [Consumer-Timeout](../explanation/delivery-semantics.md#consumer-timeout))
+  und im CPU-Modus `"compute"`. Bis 0.10.x war `compute_check=` die
+  einzige Zusatzprüfung; stattdessen `checks={"compute": ...}`
+  übergeben.
 - `HealthServer` bedient `/health` (immer `200` mit `uptime_s`) und
   `/ready` (`200` oder `503` mit dem `check_all()`-Snapshot).
 - `Metrics` hält den [Metrik-Katalog](configuration.md#metrik-katalog)

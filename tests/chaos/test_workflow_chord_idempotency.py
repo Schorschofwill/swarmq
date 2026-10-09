@@ -43,7 +43,7 @@ from tests.chaos.test_worker_crash import (
     _spawn_worker,
     _wait_for_worker_started,
 )
-from tests.support.worker_subprocess import crash_worker
+from tests.support.worker_subprocess import SHORT_EXECUTION_GUARD_ENV, crash_worker
 
 pytestmark = [pytest.mark.timeout(180)]
 
@@ -105,7 +105,9 @@ class TestChordIdempotency:
         _ensure_fixture_registered(queue)
         run_key = uuid.uuid4().hex
 
-        proc_a = _spawn_worker(chaos_stack, queue, concurrency=4)
+        # Short execution-guard TTL: B runs the redelivered members only once
+        # A's running markers expired (default 60 s > the 60 s wait below).
+        proc_a = _spawn_worker(chaos_stack, queue, concurrency=4, env_extra=SHORT_EXECUTION_GUARD_ENV)
         proc_b: object | None = None
         try:
             _wait_for_worker_started(proc_a)
@@ -126,7 +128,7 @@ class TestChordIdempotency:
                 assert proc_a.returncode == -signal.SIGKILL
 
                 # Successor takes over the redelivered (unacked) members.
-                proc_b = _spawn_worker(chaos_stack, queue, concurrency=4)
+                proc_b = _spawn_worker(chaos_stack, queue, concurrency=4, env_extra=SHORT_EXECUTION_GUARD_ENV)
                 _wait_for_worker_started(proc_b)
 
                 # Body fires exactly once → correct sum, bounded liveness.

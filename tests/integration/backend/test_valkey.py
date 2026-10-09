@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
+from tests.support.services import require_safe_valkey_url
 
 
 def _task_id() -> str:
@@ -16,6 +17,7 @@ def _task_id() -> str:
 @pytest.fixture
 async def backend(valkey_url: str):
     """Yield a connected ValkeyBackend; flush the test DB on teardown."""
+    require_safe_valkey_url(valkey_url)
     b = ValkeyBackend(valkey_url)
     await b.connect()
     yield b

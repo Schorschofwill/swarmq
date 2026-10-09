@@ -3,8 +3,11 @@
 Ein Task hat seine Retries erschöpft, `NoRetry` geraist oder ist
 vor Pickup abgelaufen. Die Nachricht liegt nun in der Per-Queue-
 Dead-Letter-Queue — `{queue}.XQ` — wo sie bleibt, bis ein Operator
-eingreift. Dieser Guide behandelt, wie du DLQ-Nachrichten
-inspizierst, retry'st und purgest.
+eingreift oder ihre Aufbewahrungsfrist abläuft (standardmäßig 7 Tage,
+siehe [Aufbewahrungsfrist](#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen)).
+Dieser Guide behandelt, wie du DLQ-Nachrichten inspizierst, retry'st
+und purgest, wie lange sie bleiben und wie du das Dead-Lettering von
+Task-Fehlern abschaltest.
 
 ## Voraussetzungen
 
@@ -14,15 +17,24 @@ inspizierst, retry'st und purgest.
 
 ## Wann Nachrichten in der DLQ landen
 
-| Trigger | Header auf der DLQ-Nachricht |
-|---|---|
-| Retry-Erschöpfung (`max_retries` erreicht — inkl. `max_retries=0`, wo bereits der ERSTE Fehlschlag terminal ist) | `x-swarmq-retry-count` am Limit, `x-swarmq-traceback` mit der Fehlermeldung |
-| `raise NoRetry("reason")` aus Task-Body | `x-swarmq-traceback` mit der Fehlermeldung |
-| `x-delivery-limit=20` von RabbitMQ ausgelöst | `x-death` vom Broker |
-| `TaskInfo.max_age` bei Pickup überschritten | kein eigener — die Nachricht behält ihre ursprünglichen Header; das gespeicherte Fehlerergebnis lautet `task expired: age …s exceeds max_age …s` |
-| Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung |
-| Lock-Konflikt-Budget erschöpft (10. Konflikt) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` |
-| Body über der Größengrenze, nicht dekodierbarer Body, unregistrierter Task-Name, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | keiner von SwarmQ — nur das `x-death` des Brokers |
+| Trigger | Header auf der DLQ-Nachricht | Mit abgeschaltetem Dead-Lettering von Task-Fehlern |
+|---|---|---|
+| Retry-Erschöpfung (`max_retries` erreicht — inkl. `max_retries=0`, wo bereits der ERSTE Fehlschlag terminal ist) | `x-swarmq-retry-count` am Limit, `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
+| `raise NoRetry("reason")` aus Task-Body | `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
+| Exception außerhalb von `retry_exceptions` | `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
+| `x-delivery-limit=20` von RabbitMQ ausgelöst, oder die eigene Zustellzähler-Prüfung des Workers eine Zustellung vorher | `x-death` vom Broker; vom Worker `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
+| Dieselbe Ausführung ist `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)) | `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
+| `TaskInfo.max_age` bei Pickup überschritten | kein eigener — die Nachricht behält ihre ursprünglichen Header; das gespeicherte Fehlerergebnis lautet `task expired: age …s exceeds max_age …s` | weiter dead-gelettert |
+| Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung | weiter dead-gelettert |
+| Lock-Konflikt-Budget erschöpft (10. Konflikt) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` | weiter dead-gelettert |
+| Body über der Größengrenze, nicht dekodierbarer Body, unregistrierter Task-Name, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | keiner von SwarmQ — nur das `x-death` des Brokers | weiter dead-gelettert |
+
+Jede Nachricht, die der Worker selbst dead-lettert, trägt außerdem
+`x-swarmq-dead-lettered-at` (Unix-Millisekunden) und eine
+`expiration` pro Nachricht, siehe
+[Aufbewahrungsfrist](#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen).
+Die dritte Spalte erklärt
+[Dead-Lettering abschalten](#dead-lettering-von-task-fehlern-abschalten).
 
 Die DLQ ist eine reguläre RabbitMQ-Queue — du kannst sie mit
 `rabbitmqadmin` oder der Management-UI inspizieren, aber die
@@ -37,7 +49,7 @@ reparieren ist.
 
 | Weg | Wer bewegt die Nachricht | Signal | Metrik | Header |
 |---|---|---|---|---|
-| **Dead-Lettering durch den Worker** — Retries erschöpft, `NoRetry`, `max_age`, Lock-Fehler, Delivery-Limit kurz vor dem Auslösen | Worker publiziert nach `.XQ` und bestätigt das Original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) bei erschöpften Retries, `NoRetry` und Delivery-Limit; `TASK_EXPIRED` bei `max_age`; keines bei Lock-Fehlern | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ-Diagnose (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, siehe Tabelle oben); ein Fehlerergebnis wird gespeichert, außer bei Lock-Fehlern |
+| **Dead-Lettering durch den Worker** — Retries erschöpft, `NoRetry`, `max_age`, Lock-Fehler, Delivery-Limit kurz vor dem Auslösen, Waisen-Grenze des Ausführungsschutzes | Worker publiziert nach `.XQ` und bestätigt das Original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) bei erschöpften Retries, `NoRetry`, Delivery-Limit und Waisen-Grenze; `TASK_EXPIRED` bei `max_age`; keines bei Lock-Fehlern | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ-Diagnose (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, siehe Tabelle oben); ein Fehlerergebnis wird gespeichert, außer bei Lock-Fehlern |
 | **Abweisung durch den Worker** — die Nachricht ließ sich nicht in einen Task verwandeln | Worker weist ohne Requeue ab; der Dead-Letter-Exchange des Brokers routet sie | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | nur das `x-death` des Brokers; `task_id`/`task_name` sind `None`, wenn der Body nie dekodiert wurde |
 | **Dead-Lettering durch den Broker** — `x-delivery-limit` nach wiederholten Worker-Abstürzen, Nachrichten-TTL, Längenlimit der Queue | RabbitMQ selbst | keines — kein Worker hat die letzte Zustellung gesehen | `swarmq_dlq_messages{queue}` (Tiefen-Gauge, vom Worker abgetastet) | nur `x-death` |
 
@@ -122,7 +134,13 @@ Publisht die Nachricht zurück in die Haupt-Queue. Der
 `x-swarmq-retry-count`-Header wird **zurückgesetzt** — der Task
 bekommt sein volles Retry-Budget bei Redelivery. Andere Header
 (Traceback, Dedup-Hash, Enqueued-at) bleiben erhalten, damit der
-Operator-Kontext bleibt.
+Operator-Kontext bleibt. Die zurückgelegte Nachricht trägt weder
+`expiration` noch `x-swarmq-dead-lettered-at`; scheitert sie erneut,
+wird sie mit frischer Frist dead-gelettert. Außerdem bekommt sie eine
+neue `x-swarmq-replay-id`: Der
+[Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
+würde sie sonst als bereits abgeschlossen überspringen, solange der
+Marker des ersten Laufs noch steht.
 
 ### Alle Nachrichten
 
@@ -152,13 +170,54 @@ Nachrichten sind verloren. Nutze, wenn:
 `--format json` gibt `{"purged": N, "queue": "..."}` zurück, damit
 Skripte Zählungen aufzeichnen können.
 
+## Aufbewahrungsfrist: dead-gelettete Nachrichten verfallen
+
+Ab 0.11.0 verfällt jede Nachricht, die der Worker selbst dead-lettert,
+`SWARMQ_DEAD_LETTER_TTL_S` Sekunden nach dem Dead-Lettering (Standard
+`604800`, 7 Tage). Der Worker setzt die Nachrichten-Property
+`expiration` und die Header `x-swarmq-dead-lettered-at`
+(Unix-Millisekunden) und `x-swarmq-dead-letter-ttl-ms` (die Frist in
+Millisekunden oder `"none"`). Die Queue-Argumente von `{queue}.XQ` bleiben
+unverändert, bestehende Deployments starten also ohne
+`PRECONDITION_FAILED`.
+
+- **Lesen verlängert die Frist nicht.** `dlq list` und `dlq inspect`
+  nehmen Nachrichten heraus und legen sie zurück, jede mit ihrer
+  Restzeit, berechnet aus `x-swarmq-dead-lettered-at` und der eigenen
+  Frist der Nachricht in `x-swarmq-dead-letter-ttl-ms`. Eine Nachricht,
+  die nach der Hälfte ihrer Frist gelesen wird, verfällt trotzdem zum
+  ursprünglichen Zeitpunkt. Eine CLI mit kürzerer oder
+  Standard-`SWARMQ_DEAD_LETTER_TTL_S` kürzt die Frist des Workers nicht,
+  und eine mit `none` dead-gelettete Nachricht fällt beim Lesen nie weg.
+- **Abgelaufene Nachrichten fallen beim Lesen weg.** Eine Nachricht,
+  deren Zeit abgelaufen ist, während ein Lesevorgang sie hielt, wird
+  nicht zurückgelegt, auch bei `dlq retry` und `dlq retry --all`. Kein
+  Log-Event meldet das, und der Zähler `scanned` von `--format json`
+  enthält sie nicht.
+- **Altbestand bekommt beim ersten Lesen die volle Frist.** Nachrichten
+  ohne `x-swarmq-dead-lettered-at` oder ohne
+  `x-swarmq-dead-letter-ttl-ms` (vor 0.11.0 dead-gelettert oder vom
+  Dead-Letter-Exchange des Brokers geroutet) bekommen ab diesem
+  Zeitpunkt beide Header und die volle `SWARMQ_DEAD_LETTER_TTL_S` der
+  lesenden CLI.
+- **`SWARMQ_DEAD_LETTER_TTL_S=none`** hält dead-gelettete Nachrichten
+  unbegrenzt, wie vor 0.11.0. Die `swarmq dlq`-CLI liest die Variable
+  nur für Altbestand ohne Frist-Header.
+
+RabbitMQ verwirft abgelaufene Nachrichten nur am Kopf einer Queue. Eine
+Nachricht ohne `expiration` davor — Altbestand oder eine Nachricht, die
+der Dead-Letter-Exchange des Brokers geroutet hat (`x-delivery-limit`,
+nicht dekodierbare oder unregistrierte Nachrichten) — hält den Verfall
+aller dahinter auf, bis ein `dlq list` ihr eine Frist gibt. Vollständig
+begrenzt diese Wege nur eine Broker-Policy.
+
 ## Die `.XQ` per Broker-Policy begrenzen
 
-`{queue}.XQ` hat weder TTL noch Längengrenze: Nachrichten bleiben, bis
-jemand sie retryt oder purgt, und jeder terminale Fehlschlag landet
-dort, auch mit `max_retries=0`. SwarmQ ändert die Argumente bestehender
-Queues nicht. Eine RabbitMQ-Policy begrenzt die Dead-Letter-Queues
-sofort:
+Die Frist pro Nachricht deckt Nachrichten nicht ab, die der Broker
+selbst nach `{queue}.XQ` routet, und sie setzt keine Längengrenze.
+SwarmQ ändert die Argumente bestehender Queues nicht. Eine
+RabbitMQ-Policy begrenzt die Dead-Letter-Queues vollständig und sofort;
+vor 0.11.0 ist sie die einzige Grenze:
 
 ```bash
 rabbitmqctl set_policy swarmq-xq '\.XQ$' \
@@ -182,6 +241,42 @@ Werte an das eigene Volumen anpassen. Für einen anderen vhost als `/`
       Default die ältesten) und abgelaufene Nachrichten werden
       gelöscht, nicht weiter dead-gelettert, und kein SwarmQ-Signal
       meldet das. Was du vielleicht noch retryen wolltest, ist weg.
+
+## Dead-Lettering von Task-Fehlern abschalten
+
+Jeder terminale Task-Fehler landet in `{queue}.XQ`, auch mit
+`max_retries=0`. Vor 0.1.2 hat ein Task mit `max_retries=0`
+stattdessen das Fehlerergebnis gespeichert und die Nachricht bestätigt.
+So bekommst du dieses Verhalten für jeden terminalen Task-Fehler:
+
+```python
+class SyncInventory(Task):
+    task_info = TaskInfo(
+        name="sync_inventory", queues=["default"], dead_letter=False,
+    )
+```
+
+oder global mit `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`
+(`SwarmQConfig(dead_letter_terminal_failures=False)`). Ein am Task
+gesetzter Wert gewinnt über den globalen, in beide Richtungen.
+
+Abgeschaltet speichern die drei terminalen Zweige — `NoRetry`, eine
+Exception außerhalb von `retry_exceptions`, erschöpfte Retries — das
+Fehlerergebnis mit dem `result_ttl` des Tasks, markieren einen
+Workflow als fehlgeschlagen, geben das Unique-Flag frei und bestätigen
+die Nachricht. `get_result()` wirft wie gewohnt `TaskError`.
+
+Was sich fürs Monitoring ändert:
+
+- `TASK_DLQ` und `swarmq_tasks_total{outcome="dlq"}` feuern für diese
+  Tasks nicht mehr; ein Alarm auf `outcome="dlq"` deckt sie also nicht
+  mehr ab.
+- `TASK_FAILED` und `swarmq_tasks_total{outcome="failed"}` feuern
+  weiter bei jedem gescheiterten Versuch; alarmiere stattdessen darauf.
+- Die Zustellzähler-Prüfung (`WorkerHungError`), die Waisen-Grenze des
+  Ausführungsschutzes, nicht dekodierbare Nachrichten, `max_age` und
+  Lock-Fehler gehen weiter in die `.XQ` (dritte Spalte der
+  [Tabelle oben](#wann-nachrichten-in-der-dlq-landen)).
 
 ## Exit-Codes fürs Scripting
 
@@ -231,7 +326,8 @@ Dieses Gauge fängt alle [drei Wege](#drei-wege-in-die-xq), auch das
 broker-seitige Dead-Lettering, das kein Signal meldet.
 
 Alarmiere getrennt auf die beiden Zähler, weil sie Verschiedenes
-bedeuten:
+bedeuten (mit abgeschaltetem Dead-Lettering von Task-Fehlern deckt der
+erste diese Tasks nicht mehr ab; dann `outcome="failed"` nutzen):
 
 - `increase(swarmq_tasks_total{outcome="dlq"}[10m]) > 0` — Tasks sind
   gelaufen und terminal gescheitert; Fehlerergebnis und

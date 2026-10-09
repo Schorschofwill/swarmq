@@ -7,7 +7,9 @@ concurrent test runs don't collide.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
 
 import pytest
@@ -253,6 +255,33 @@ async def test_retry_resets_retry_count_header(broker_and_queue):
         await ch.close()
 
 
+async def test_retry_and_retry_all_set_a_fresh_replay_id(broker_and_queue):
+    """Plan 2026-10-08-1541, U8 (KTD5): jede Wiederholung aus der DLQ ist eine
+    neue Ausführungs-Identität -- der Ausführungsschutz ließe sie sonst als
+    abgeschlossen fallen, solange der Done-Marker des ersten Laufs steht."""
+    broker, qname = broker_and_queue
+    await broker._publish_to_dead_letter_queue(
+        qname, _make_body("t-replay"), headers={"x-swarmq-replay-id": "old"},
+    )
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-replay-all"), headers={})
+
+    assert (await broker.retry_dead_letter(qname, "t-replay"))[0] is True
+    assert (await broker.retry_all_dead_letters(qname))[0] == 1
+
+    ch = await broker._connection.channel()
+    try:
+        q = await ch.get_queue(qname)
+        replay_ids = []
+        for _ in range(2):
+            msg = await q.get(no_ack=True)
+            assert msg is not None
+            replay_ids.append((msg.headers or {}).get("x-swarmq-replay-id"))
+    finally:
+        await ch.close()
+    assert all(isinstance(r, str) and len(r) == 32 for r in replay_ids)
+    assert "old" not in replay_ids and len(set(replay_ids)) == 2
+
+
 # ---------------------------------------------------------------------------
 # retry_all_dead_letters
 # ---------------------------------------------------------------------------
@@ -358,3 +387,49 @@ async def test_purge_removes_all_messages(broker_and_queue):
 async def test_purge_empty_returns_zero(broker_and_queue):
     broker, qname = broker_and_queue
     assert await broker.purge_dead_letters(qname) == 0
+
+
+# ---------------------------------------------------------------------------
+# Plan 2026-10-08-1541, U9 (KTD6): Rest-TTL pro Nachricht
+# ---------------------------------------------------------------------------
+
+
+async def test_inspect_at_half_ttl_keeps_the_original_expiry(broker_and_queue):
+    """Covers AE10: ``dlq inspect`` nach der halben Frist legt die Nachricht
+    mit der Rest-TTL zurueck; sie verfaellt zum urspruenglichen Zeitpunkt.
+
+    Die Uhr des Lesers wird um die halbe Frist vorgestellt, statt real zu
+    warten: Mit Verlaengerung lebte die Kopie wieder volle 4 s, ohne sie
+    noch 2 s."""
+    broker, qname = broker_and_queue
+    broker.dead_letter_ttl_s = 4.0
+    published_at = time.time()
+    broker.clock = lambda: published_at
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-ae10"))
+
+    broker.clock = lambda: published_at + 2.0
+    match, _ = await broker.inspect_dead_letter(qname, "t-ae10")
+    assert match is not None
+    inspected = time.monotonic()
+
+    while await _dlq_depth(broker, qname) > 0:
+        assert time.monotonic() - inspected < 3.5, "Lesen hat die Frist verlaengert"
+        await asyncio.sleep(0.05)
+    assert time.monotonic() - inspected >= 1.5
+
+
+async def test_reader_with_short_ttl_keeps_an_unlimited_dead_letter(broker_and_queue):
+    """Review Phase 2: ein Worker mit ``dead_letter_ttl_s=None`` legt ab,
+    ein Leser mit 1 s Frist liest zehn Tage spaeter -- die Nachricht bleibt,
+    ohne ``expiration``. Prueft den Header-Rundweg ``"none"`` ueber AMQP."""
+    broker, qname = broker_and_queue
+    broker.dead_letter_ttl_s = None
+    published_at = time.time()
+    broker.clock = lambda: published_at
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-none"))
+
+    broker.dead_letter_ttl_s = 1.0
+    broker.clock = lambda: published_at + 10 * 86_400
+    entries, _ = await broker.list_dead_letters(qname)
+    assert [e["task_id"] for e in entries] == ["t-none"]
+    assert await _dlq_depth(broker, qname) == 1

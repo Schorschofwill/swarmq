@@ -195,9 +195,11 @@ What this means in practice:
 - A static cron that a live worker reports comes back within one
   interval after `swarmq schedule remove --permanent`. It only stays
   gone once no code reports it anymore.
-- A cron removed from code stays in Valkey and keeps firing; remove it
-  with `swarmq schedule remove --permanent NAME` once no worker reports
-  it anymore.
+- A cron removed from code stops firing once no worker has reported
+  it for `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (default 24 h; from 0.11.0,
+  see [removing crons](#removing-crons-no-app-reports-anymore)). To get
+  rid of it at once, use `swarmq schedule remove --permanent NAME` once
+  no worker reports it anymore.
 - A CLI schedule of the same name still beats the static cron, with
   the warning `scheduler_static_cron_shadowed_by_cli`.
 - Crons of other apps on the same Valkey fire without the warning
@@ -205,10 +207,66 @@ What this means in practice:
   reports them. The leader still does not know their `TaskInfo`, so
   `unique_for` of such a task has no effect on its cron fires.
 
-The leader deletes reports that were not refreshed for 7 days.
+The leader deletes reports that were not refreshed for 7 days, or for
+twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S` if that is longer.
 
 Use the same `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` in every app on one
 Valkey: the leader judges liveness with its own interval.
+
+### Removing crons no app reports anymore
+
+From 0.11.0 the leader removes a static cron that was reported at
+least once and that no worker has reported for
+`SWARMQ_SCHEDULER_PRUNE_AFTER_S` seconds (default `86400`, 24 h). It
+checks on every adoption tick and logs `scheduler_cron_pruned`. The
+definition and its fire are removed in one atomic step, and only while
+the definition is unchanged and every report of the name is still too
+old.
+
+- **Crons that were never reported stay.** Old entries from before
+  0.10.0 and crons of apps that still run a swarmq before 0.10.0 have
+  no report. The leader never removes them on its own; it logs
+  `scheduler_cron_prune_candidate` once per name and leader run.
+  `swarmq schedule prune --orphans` removes them on purpose (see
+  [CLI reference](../reference/cli.md#swarmq-schedule-prune)).
+  `swarmq schedule list` shows the newest report per cron in the
+  column `LAST_SEEN`: a date, `never` for a static cron without any
+  report, `-` for CLI schedules.
+- **Apps that pause stay safe within the period.** A cron comes back
+  with its next report; App B's crons stay as long as one of B's
+  workers reports within `SWARMQ_SCHEDULER_PRUNE_AFTER_S`. Raise the
+  period if an app may be down longer.
+- **The leader's settings apply.** `SWARMQ_SCHEDULER_PRUNE` and
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` are read by whichever worker is
+  scheduler leader, from any app on the Valkey. Set the same values in
+  every app; raising the period in one app alone has no effect while
+  another app leads.
+- **Disabled crons come back disabled.** The leader remembers a cron
+  that was disabled when it was removed (`sq:{sched}:disabled`); when a
+  worker reports it again, it is created disabled and the leader logs
+  `scheduler_cron_revived_disabled` (WARNING). This also applies after
+  `schedule prune --orphans`. If the name now belongs to a different
+  cron, `swarmq schedule remove --permanent <name>` clears the mark;
+  the next report creates it enabled.
+- **CLI schedules are never touched.**
+- To get rid of a cron at once, `swarmq schedule remove --permanent`
+  still works.
+
+`SWARMQ_SCHEDULER_PRUNE` switches it: `on` (default) removes, `log`
+only logs `scheduler_cron_prune_skipped` once per name, `off` does
+nothing. The period must be at least three times
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
+
+!!! warning "Every app on the Valkey must run 0.10.0 or later"
+    Only workers from 0.10.0 on report their crons. A cron that was
+    reported once and is now served only by a worker before 0.10.0 —
+    for example after an app rolled back — counts as silent and is
+    removed after the period, although the app still runs. Upgrade
+    every app on the same Valkey to at least 0.10.0 before workers on
+    0.11.0 become leader, or set `SWARMQ_SCHEDULER_PRUNE=log` in the
+    0.11.0 apps until the last app is upgraded; then watch
+    `scheduler_cron_prune_skipped` for crons that would have been
+    removed.
 
 ### Conflicts
 

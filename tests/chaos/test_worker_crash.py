@@ -27,6 +27,9 @@ Notes on semantics:
   * SIGKILL redelivery means ``exec_count`` tends to be >= 1, not
     == 1 (the same task may run on the killed worker and on the
     successor).
+  * Execution guard (0.11.0): the killed worker's running marker blocks
+    the redelivery until it expires, so the crash tests run their
+    workers with ``SHORT_EXECUTION_GUARD_ENV`` (TTL 2 s instead of 60 s).
   * Both workers talk to RabbitMQ + Valkey **through toxiproxy**
     (``chaos_stack.rabbitmq_url`` / ``chaos_stack.valkey_url``) —
     never to ``localhost:5673/6380``. The chaos_stack fixture
@@ -53,6 +56,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task
 from tests.chaos.conftest import ChaosStack
 from tests.support.worker_subprocess import (
+    SHORT_EXECUTION_GUARD_ENV,
     crash_worker,
     kill_subprocess,
     spawn_worker,
@@ -217,7 +221,7 @@ class TestWorkerCrash:
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
 
-        proc_a = _spawn_worker(chaos_stack, queue, concurrency=2)
+        proc_a = _spawn_worker(chaos_stack, queue, concurrency=2, env_extra=SHORT_EXECUTION_GUARD_ENV)
         proc_b: subprocess.Popen[str] | None = None
         try:
             _wait_for_worker_started(proc_a)
@@ -238,7 +242,7 @@ class TestWorkerCrash:
                 crash_worker(proc_a)
                 assert proc_a.returncode == -signal.SIGKILL
 
-                proc_b = _spawn_worker(chaos_stack, queue, concurrency=2)
+                proc_b = _spawn_worker(chaos_stack, queue, concurrency=2, env_extra=SHORT_EXECUTION_GUARD_ENV)
                 _wait_for_worker_started(proc_b)
 
                 result = await app.get_result(tid, timeout=30)
@@ -267,7 +271,7 @@ class TestWorkerCrash:
         N = 50
         _ensure_fixture_registered(queue)
 
-        proc_a = _spawn_worker(chaos_stack, queue, concurrency=N)
+        proc_a = _spawn_worker(chaos_stack, queue, concurrency=N, env_extra=SHORT_EXECUTION_GUARD_ENV)
         proc_b: subprocess.Popen[str] | None = None
         try:
             _wait_for_worker_started(proc_a)
@@ -291,7 +295,7 @@ class TestWorkerCrash:
                 crash_worker(proc_a)
                 assert proc_a.returncode == -signal.SIGKILL
 
-                proc_b = _spawn_worker(chaos_stack, queue, concurrency=N)
+                proc_b = _spawn_worker(chaos_stack, queue, concurrency=N, env_extra=SHORT_EXECUTION_GUARD_ENV)
                 _wait_for_worker_started(proc_b)
 
                 results = await app.get_results(task_ids, timeout=60)
@@ -331,7 +335,7 @@ class TestWorkerCrash:
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
         _ensure_fixture_registered(queue)
 
-        proc = _spawn_worker(chaos_stack, queue, concurrency=1)
+        proc = _spawn_worker(chaos_stack, queue, concurrency=1, env_extra=SHORT_EXECUTION_GUARD_ENV)
         try:
             _wait_for_worker_started(proc)
             (child,) = wait_for_worker_children(proc)
@@ -396,6 +400,14 @@ class TestWorkerCrash:
           (P0-1 contract — asserted here end-to-end);
         * the test plays the orchestrator (systemd/k8s) and restarts
           the exhausted supervisor until the broker dead-letters.
+
+        Execution guard (0.11.0): each crash leaves a running marker that
+        defers the redeliveries until it expires; after
+        ``execution_guard_max_orphans`` (3) expiries the guard itself
+        dead-letters the message (``WorkerHungError``), usually before the
+        delivery limit. With the default TTL of 60 s that takes about
+        3-4 minutes, at the edge of the 240 s window -- hence
+        ``SHORT_EXECUTION_GUARD_ENV``. Either path lands in ``{queue}.XQ``.
         """
         import threading
 
@@ -405,6 +417,7 @@ class TestWorkerCrash:
         def _spawn_supervised() -> subprocess.Popen[str]:
             return _spawn_worker(
                 chaos_stack, queue, concurrency=1,
+                env_extra=SHORT_EXECUTION_GUARD_ENV,
                 extra_args=["--processes", "2"],
             )
 

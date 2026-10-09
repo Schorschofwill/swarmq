@@ -69,7 +69,7 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | `TASK_LOCKED` | When the task's lock is held by another execution at pickup (lock conflict); the message is requeued with a delay | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |
 | `TASK_RATE_LIMITED` | When the rate limiter defers a message | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | When a unique-task SETNX loses the race | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
-| `TASK_DLQ` | Once, when a message is terminally dead-lettered by the worker (retry exhaustion, `NoRetry`, delivery limit reached) | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_DLQ` | Once, when a message is terminally dead-lettered by the worker (retry exhaustion, `NoRetry`, delivery limit or execution guard orphan limit reached) | `task_id`, `task_name`, `queue`, `error` |
 | `TASK_REJECTED` | When the worker hands a message to the broker's dead-letter exchange without diagnostic headers: oversized body, undecodable body, unregistered task, broken middleware-chain factory, failed dead-letter publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
 | `WORKFLOW_STEP_ENQUEUED` | After each workflow step is published (by `app.apply()` or the advancer in the worker), in addition to `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker lifecycle | `worker_id` |
@@ -84,7 +84,11 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 `TASK_FAILED` is per attempt: a task with `max_retries=3` that always
 fails fires it four times, interleaved with three `TASK_RETRYING`. To
 react only when the work is given up, subscribe to `TASK_DLQ`, which
-fires once at the terminal hand-off to the DLQ.
+fires once at the terminal hand-off to the DLQ. With dead-lettering of
+task failures switched off (`TaskInfo(dead_letter=False)` or
+`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`) there is no hand-off and
+no `TASK_DLQ` for these tasks; the last `TASK_FAILED` is then the
+terminal one.
 
 The `TASK_DUPLICATE_DETECTED` signal's `batch_index` key is present only
 when the source is `client.schedule_many` — use

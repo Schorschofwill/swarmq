@@ -9,15 +9,41 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any
 
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity
 
 from swarmq.broker.rabbitmq.connection import RabbitMQConnection
-from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, message_of, settle
+from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
+from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+
+
+def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
+    """``x-swarmq-dead-lettered-at`` als Epoch-Millisekunden; None, wenn er
+    fehlt oder unlesbar ist (dann zaehlt er wie fehlend)."""
+    value = headers.get(HEADER_DEAD_LETTERED_AT)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+_UNLIMITED = ("none", b"none")
+
+
+def _message_ttl_s(headers: dict[str, Any]) -> tuple[bool, float | None]:
+    """Frist aus ``x-swarmq-dead-letter-ttl-ms``: ``(True, Sekunden)``,
+    ``(True, None)`` fuer ``"none"`` (unbegrenzt), ``(False, None)``, wenn
+    der Header fehlt oder unlesbar ist."""
+    value = headers.get(HEADER_DEAD_LETTER_TTL_MS)
+    if value in _UNLIMITED:
+        return True, None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return False, None
+    return True, value / 1000
 
 
 class RabbitMQAdmin(RabbitMQDelivery):
@@ -29,7 +55,16 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """``nack(requeue=False)``: RabbitMQ leitet über die Queue-Argumente
         nach ``{queue}.XQ`` und ergänzt ``x-death`` — ohne ``x-swarmq-*``-
         Diagnose-Header (Entwurf §7)."""
-        await settle(message_of(delivery).nack(requeue=False), "route_via_dlx")
+        message = message_of(delivery)
+        if not await self._may_settle(message, "route_via_dlx"):
+            # Anders als ein Ack ist das ein terminales Verb ohne Kopie: die
+            # Nachricht ist NICHT im DLX. Der Aufrufer (Ausfuehrungsschutz)
+            # darf sie nicht als abgeschlossen fuehren -- die Neuzustellung
+            # des Brokers muss laufen.
+            raise BrokerConnectionError(
+                "route_via_dlx withheld: consumer was cancelled by the broker; the broker redelivers the message"
+            )
+        await settle(message.nack(requeue=False), "route_via_dlx")
 
     # ------------------------------------------------------------------
     # R3.10 DLQ inspection / recovery primitives
@@ -153,6 +188,8 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     break
                 body = msg.body
                 headers = self._normalise_header_keys(dict(msg.headers or {}))
+                if self._stamp_or_expire(headers):
+                    continue
                 task_id, task_name, payload = self._parse_task_fields(body)
                 entry: dict[str, Any] = {
                     "task_id": task_id,
@@ -199,7 +236,15 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         forward_headers = dict(headers)
                         # Reset retry-count so the operator's "try this
                         # again" intent isn't blocked by a stale counter.
-                        forward_headers.pop("x-swarmq-retry-count", None)
+                        forward_headers.pop(HEADER_RETRY_COUNT, None)
+                        # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und
+                        # Zeitstempel; ein erneutes Dead-Lettering stempelt neu.
+                        forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
+                        forward_headers.pop(HEADER_DEAD_LETTER_TTL_MS, None)
+                        # Neue Ausfuehrungs-Identitaet (KTD5): der Ausfuehrungs-
+                        # schutz liesse die Wiederholung sonst als abgeschlossen
+                        # fallen, solange der Done-Marker des ersten Laufs steht.
+                        forward_headers[HEADER_REPLAY_ID] = uuid.uuid4().hex
                         msg_out = aio_pika.Message(
                             body=body,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
@@ -207,10 +252,12 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         )
                         await self._publish_with_retry(queue_name, msg_out)
                     else:
-                        # Back into the DLQ. Headers preserved verbatim.
+                        # Back into the DLQ. Headers preserved verbatim,
+                        # mit der Rest-TTL (KTD6): Lesen verlaengert nichts.
                         msg_out = aio_pika.Message(
                             body=body,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                            expiration=self._remaining_dead_letter_ttl(headers),
                             headers=dict(headers),
                         )
                         await self._publish_with_retry(f"{queue_name}.XQ", msg_out)
@@ -232,6 +279,35 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     f"dlq republish failed on {len(errors)} of {len(drained)} message(s); first error: {errors[0]}"
                 ) from errors[0]
         return entries, matched
+
+    def _remaining_dead_letter_ttl(self, headers: dict[str, Any]) -> float | None:
+        """Rest der Verfallsfrist in Sekunden ab dem Dead-Lettering (KTD6);
+        None ohne Frist. Es gilt die Frist der Nachricht
+        (``x-swarmq-dead-letter-ttl-ms``), sonst die eigene."""
+        known, ttl_s = _message_ttl_s(headers)
+        if not known:
+            ttl_s = self.dead_letter_ttl_s
+        if ttl_s is None:
+            return None
+        dead_lettered_at_ms: int = headers[HEADER_DEAD_LETTERED_AT]
+        return ttl_s - (self.clock() * 1000 - dead_lettered_at_ms) / 1000
+
+    def _stamp_or_expire(self, headers: dict[str, Any]) -> bool:
+        """True, wenn die gelesene DLQ-Nachricht abgelaufen ist (KTD6):
+        RabbitMQ verwirft sie erst am Kopf der Queue -- beim Lesen faellt sie
+        weg, statt mit neuer Frist zurueckzukehren.
+
+        Ohne lesbaren Zeitstempel oder ohne lesbare Frist (Altbestand,
+        DLX-Wege) ist unbekannt, wie lange die Nachricht bleiben sollte: die
+        eigene Frist zaehlt ab jetzt, beide Header werden in ``headers``
+        festgehalten."""
+        known, _ttl_s = _message_ttl_s(headers)
+        if _dead_lettered_at_ms(headers) is None or not known:
+            headers[HEADER_DEAD_LETTERED_AT] = int(self.clock() * 1000)
+            headers[HEADER_DEAD_LETTER_TTL_MS] = dead_letter_ttl_header(self.dead_letter_ttl_s)
+            return False
+        remaining = self._remaining_dead_letter_ttl(headers)
+        return remaining is not None and remaining <= 0
 
     async def list_dead_letters(self, queue: str, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
         """Return up to *limit* messages from ``{queue}.XQ``.

@@ -44,6 +44,14 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_HEARTBEAT_INTERVAL_S` | `5` | How often the worker writes its liveness timestamp for the supervisor. |
 | `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | After this long without a heartbeat the supervisor replaces the worker (SIGTERM, then SIGKILL). Must exceed the interval and every legitimate loop stall; keep it below RabbitMQ's heartbeat detection. |
 | `SWARMQ_CONSUMER_TIMEOUT_S` | `1800` | The broker's `consumer_timeout`; the worker warns when a task's `hard_timeout` exceeds it. |
+| `SWARMQ_CONSUMER_WATCH_INTERVAL_S` | `5.0` | Seconds between two checks of the [consumer watch](../explanation/delivery-semantics.md#consumer-timeout): a consumer the broker ended (`basic.cancel` from RabbitMQ 4.3, channel close up to 4.2) is cancelled and registered again within two intervals. Must be `> 0`. |
+| `SWARMQ_CONSUMER_READY_GRACE_S` | `30.0` | `/ready` reports the worker not ready once a consumed queue has had no active consumer for longer than this. Must be `> 0`. Never use `/ready` as a liveness probe. |
+| `SWARMQ_EXECUTION_GUARD` | `true` | [Execution guard](../explanation/delivery-semantics.md#execution-guard): a redelivered message does not run while the same execution runs elsewhere, after it finished, or after a retry superseded it. `false` switches it off. |
+| `SWARMQ_EXECUTION_GUARD_TTL_S` | `60.0` | TTL of the running marker; the worker renews it every third of the TTL while the task runs. After a crash the redelivery runs once the marker expired. Must be `> 0`; raise it if task code may block the event loop for longer. |
+| `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` | `max(retry_max_delay, consumer_timeout_s) + 300` | How long done and superseded markers live. Must be at least `SWARMQ_EXECUTION_GUARD_TTL_S`. |
+| `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` | `3` | After this many expirations of the same execution without release, the delivery goes into `{queue}.XQ` as `WorkerHungError`. Must be `> 0`. |
+| `SWARMQ_DEAD_LETTER_TTL_S` | `604800` | Seconds a message the worker dead-letters stays in `{queue}.XQ` ([retention](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire)); reading does not extend it. `none` keeps messages without limit. Must be `> 0`. The `swarmq dlq` CLI keeps each message's own retention (`x-swarmq-dead-letter-ttl-ms`) and uses this variable only for old stock without it. |
+| `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` stores the error result of a terminal task failure (`NoRetry`, exception outside `retry_exceptions`, retries exhausted) and acknowledges the message instead of dead-lettering it ([details](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures)). `TaskInfo.dead_letter` wins. |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` for compute children (glibc growth). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads per compute child (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
@@ -97,6 +105,8 @@ with exit `78`.
 | `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL of the schedule-fire claim a worker holds while a scheduled task runs. A claim that could not be released blocks a redelivery of the same fire as a duplicate for at most this long. |
 | `SWARMQ_SCHEDULER_TIMEZONE` | *unset* (UTC) | IANA zone for cron expressions of tasks without their own `TaskInfo.timezone`, e.g. `Europe/Berlin`. `UTC` and `Etc/UTC` mean UTC. An unknown zone is a configuration error. Change it in the same deploy as the expressions it affects; prefer the zone per task ([time zones](../guides/scheduling-and-retries.md#time-zones)). |
 | `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` | `60.0` | Seconds between [cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader): every worker reports its static crons at start and then at this interval; the leader adopts reported crons at the same interval. A report stays live for three intervals. Must be `> 0`; use the same value in every app on one Valkey. |
+| `SWARMQ_SCHEDULER_PRUNE` | `on` | What the leader does with a static cron that was reported once and that no worker has reported for `SWARMQ_SCHEDULER_PRUNE_AFTER_S`: `on` removes it, `log` only logs `scheduler_cron_prune_skipped`, `off` does nothing. The scheduler leader's value applies, whichever app it belongs to: set the same value in every app on the Valkey. Requires every app on the Valkey to run 0.10.0 or later ([removing crons](../guides/scheduling-and-retries.md#removing-crons-no-app-reports-anymore)). |
+| `SWARMQ_SCHEDULER_PRUNE_AFTER_S` | `86400.0` | Period in seconds after which a silent static cron is removed. Must be at least `3 × SWARMQ_SCHEDULER_SEEN_INTERVAL_S`. Cron reports are kept for twice this period, at least 7 days. The scheduler leader's value applies: set the same value in every app on the Valkey. |
 
 ### Observability
 
@@ -128,6 +138,8 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_scheduler_leader` | gauge | `worker_id` | `1` while this worker holds the scheduler leader lock, else `0`. |
 | `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq before 0.10.0 without time zone support, else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
 | `swarmq_scheduler_cron_conflicts_total` | counter | `schedule_name` | Leader selection ticks that saw several live definitions of one static cron for more than 10 minutes ([conflicts](../guides/scheduling-and-retries.md#conflicts)). |
+| `swarmq_consumer_reregistrations_total` | counter | `queue` | Consumers the [consumer watch](../explanation/delivery-semantics.md#consumer-timeout) registered again after the broker ended them; the reason is in the log event `consumer_reregistered`. |
+| `swarmq_execution_guard_events_total` | counter | `event` | Events of the [execution guard](../explanation/delivery-semantics.md#execution-guard): `duplicate_skipped` (redelivery acknowledged and skipped), `deferred` (same execution runs elsewhere), `orphan_limit` (dead-lettered as `WorkerHungError`), `lease_lost` (running marker expired or taken over while the task ran), `defer_stalled` (the deferrals of one redelivery exceeded `SWARMQ_CONSUMER_TIMEOUT_S`; the original runs unusually long or hangs). |
 | `swarmq_log_records_dropped_total` | counter | none | Log records dropped because the log queue was full (see [Logging](logging.md#non-blocking-output-and-dropped-records)). |
 
 `task_name` and `queue` are taken verbatim from the message; keep task
@@ -274,6 +286,7 @@ definition time and cannot be mutated afterwards.
 | `retry_backoff` | `str` | `"exponential"` | One of `"exponential"`, `"linear"`, `"fixed"`. |
 | `retry_base_delay` | `float` | `1.0` | Base delay (seconds) for the backoff formula. Must be `≥ 0`. |
 | `retry_exceptions` | `tuple[type[BaseException], ...] \| None` | `None` | Whitelist — only these exceptions trigger a retry. `None` retries any exception. |
+| `dead_letter` | `bool \| None` | `None` | Dead-letter terminal failures of this task (`NoRetry`, exception outside `retry_exceptions`, retries exhausted). `False` stores the error result and acknowledges instead; `None` follows `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`. See [Dead letter queues](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures). |
 
 ### Rate limiting
 

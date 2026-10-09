@@ -275,3 +275,55 @@ class TestAddRemoveJsonOutput:
         import json
         data = json.loads(buf.getvalue())
         assert data == {"removed": True, "permanent": False, "name": name}
+
+
+class TestPruneOrphans:
+    """U10 (KTD8, R13): ``schedule prune --orphans`` und LAST_SEEN in
+    ``schedule list`` gegen echtes Valkey."""
+
+    @staticmethod
+    def _static(name: str) -> bytes:
+        import msgspec
+
+        from swarmq.scheduler import ScheduleDefinition
+
+        return msgspec.json.encode(ScheduleDefinition(
+            schedule_name=name, task_name=name, args=(), kwargs={},
+            queue="default", cron="0 1 * * *", fire_ts_ms=4_000_000_000_000,
+            source="static",
+        ))
+
+    async def test_prune_orphans_removes_only_unreported_static_crons(self, _env, valkey_url):
+        import json
+
+        from swarmq.backend.valkey.schedules import ValkeyScheduleStore
+
+        legacy, reported = f"legacy-{uuid.uuid4().hex[:8]}", f"rep-{uuid.uuid4().hex[:8]}"
+        by_cli = f"cli-{uuid.uuid4().hex[:8]}"
+        client = valkey_asyncio.Valkey.from_url(valkey_url)
+        schedules = ValkeyScheduleStore(client)
+        try:
+            await schedules.add(legacy, self._static(legacy), 4_000_000_000_000)
+            await schedules.add(reported, self._static(reported), 4_000_000_000_000)
+            await schedules.report_cron(reported, "fp", self._static(reported), live_window_ms=60_000)
+            await cli._run_schedule_add(_ns_add(name=by_cli))
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                await cli._run_schedule_list(_ns_list(format="json"))
+            seen = {e["schedule_name"]: e["last_seen_ms"] for e in json.loads(buf.getvalue())}
+            assert seen[legacy] is None and seen[by_cli] is None
+            assert isinstance(seen[reported], int)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                await cli._run_schedule_async(argparse.Namespace(
+                    schedule_command="prune", orphans=True, format="json",
+                ))
+            assert json.loads(buf.getvalue()) == {"removed": [legacy]}
+            assert await client.hget("sq:{sched}:defs", legacy) is None
+            assert await client.zscore("sq:{sched}:zset", legacy) is None
+            assert await client.hget("sq:{sched}:defs", reported) is not None
+            assert await client.hget("sq:{sched}:defs", by_cli) is not None
+        finally:
+            await client.aclose()

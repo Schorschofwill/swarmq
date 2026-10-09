@@ -139,8 +139,10 @@ class ScheduleStore:
 
     async def add_schedule(self, definition: ScheduleDefinition) -> bool:
         """Insert a new schedule. Returns True on insert, False on no-op
-        (insert-if-absent via HSETNX, Unit 8)."""
-        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), definition.fire_ts_ms)
+        (insert-if-absent via HSETNX, Unit 8). A disabled definition gets
+        no fire-index entry (Plan 2026-10-08-1541, U10)."""
+        fire_ts_ms = None if definition.disabled else definition.fire_ts_ms
+        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), fire_ts_ms)
 
     async def update_static_schedule(
         self, definition: ScheduleDefinition, *, keep_fire_index: bool = False,
@@ -159,8 +161,11 @@ class ScheduleStore:
 
     async def remove_schedule(self, schedule_name: str) -> bool:
         """Permanently remove a schedule (ZREM + HDEL). True only when an
-        entry existed (Unit 4)."""
-        return await self._store.remove(schedule_name)
+        entry existed (Unit 4). Also forgets a "disabled when pruned" mark
+        (KTD8), so the next report recreates the cron enabled."""
+        removed = await self._store.remove(schedule_name)
+        await self._store.forget_pruned_disabled(schedule_name)
+        return removed
 
     async def disable_schedule(self, schedule_name: str) -> bool:
         """Mark an existing schedule disabled AND remove it from the

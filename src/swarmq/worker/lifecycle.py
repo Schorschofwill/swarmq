@@ -39,7 +39,7 @@ from swarmq.workflow_orchestration import (
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
-    from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
+    from swarmq.contracts.coordination import ExecutionGuardStore, LockStore, LockToken, RateLimitStore
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
     from swarmq.middleware import MiddlewareChain
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
     from swarmq.worker.execution import TaskExecutor
     from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
+    from swarmq.worker.gates.execution_guard import ExecutionGuard
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,8 @@ class WorkerLifecycle:
         _scheduler: SchedulerLoop | None
         _rate_limiter: RateLimitStore | None
         _lock_manager: LockStore | None
+        _guard_store: ExecutionGuardStore | None
+        _execution_guard: ExecutionGuard
         _metrics: Metrics | None
         _metrics_server: MetricsServer | None
         _health_server: HealthServer | None
@@ -118,6 +121,8 @@ class WorkerLifecycle:
         # Lua-Skripte brauchen den lebenden Client).
         self._rate_limiter = self._backend.rate_limit
         self._lock_manager = self._backend.locks
+        # KTD5: ein Backend ohne Ausfuehrungsschutz (Dritt-Store) laesst ihn aus.
+        self._guard_store = getattr(self._backend, "execution_guard", None)
 
         # R4.1 workflow advancer (U5) — der ChordStore-Vertrag kommt
         # ebenfalls von der Fassade (chord_complete.lua, lebender Client).
@@ -201,7 +206,7 @@ class WorkerLifecycle:
             if self._config.health_port is not None:
                 from swarmq.health import HealthChecker, HealthServer
                 checker = HealthChecker(
-                    self._broker, self._backend, compute_check=self._compute_readiness_check(),
+                    self._broker, self._backend, checks=self._readiness_checks(),
                 )
                 self._health_server = HealthServer(
                     checker,
@@ -249,12 +254,22 @@ class WorkerLifecycle:
 
         warn_hard_timeout_over_consumer_timeout(self._registry, self._config.consumer_timeout_s)
 
-    def _compute_readiness_check(self) -> Any:
-        if self._config.pool != "cpu":
-            return None
-        from swarmq.worker.compute.wiring import forkserver_ready
+    def _readiness_checks(self) -> dict[str, Any]:
+        from swarmq.health import consumer_check
 
-        return lambda: forkserver_ready(self)
+        checks: dict[str, Any] = {}
+        if self._config.pool == "cpu":
+            from swarmq.worker.compute.wiring import forkserver_ready
+
+            checks["compute"] = lambda: forkserver_ready(self)
+        # U6 (R2): jede konsumierte Queue braucht einen aktiven Consumer. Ein
+        # Fremdbroker ohne ``consumer_gaps`` bekommt den Check nicht.
+        gaps = getattr(self._broker, "consumer_gaps", None)
+        if gaps is not None:
+            checks["consumers"] = consumer_check(
+                gaps, self._config.consumed_queues, grace_s=self._config.consumer_ready_grace_s
+            )
+        return checks
 
     # ---- Selbst-Recycling des IO-Workers (Plan 2026-09-03-001, R22/R31, KTD11):
     # Logik in worker/recycling.py, damit dieses Modul unter dem 800-Zeilen-Guard bleibt.
@@ -320,36 +335,22 @@ class WorkerLifecycle:
                 )
 
     async def _declare_and_consume_queues(self) -> None:
-        # R4.3 Task Priorities: expand each base queue into the
-        # high/normal/low triplet when priorities are enabled.
-        #
-        # Semantics: high-priority drain first under LIGHT load simply
-        # because RabbitMQ delivers from whichever of the three queues
-        # has a message. Under FULL saturation the channel-level
-        # prefetch is shared fairly — true weighted prefetch (3:2:1)
-        # would require separate channels per priority, which is
-        # deferred to a follow-up. For v1 operators still get:
-        #   * queue-level visibility of priority splits (DLQ list,
-        #     queue-depth metrics per priority)
-        #   * the routing contract (priority="high" → {queue}.high)
-        #   * independent TTL / retry config per priority via
-        #     separate TaskInfo instances if needed
-        for base_queue in self._config.queues:
-            if self._config.priorities:
-                queue_names = [
-                    f"{base_queue}.high",
-                    base_queue,
-                    f"{base_queue}.low",
-                ]
-            else:
-                queue_names = [base_queue]
-            for queue_name in queue_names:
-                await self._broker.declare_queue(queue_name)
-                await self._broker.consume(
-                    queue_name,
-                    self._on_message,
-                    concurrency=self._config.concurrency,
-                )
+        # R4.3: mit Prioritaeten das Tripel je Basis-Queue (SwarmQConfig.consumed_queues).
+        for queue_name in self._config.consumed_queues:
+            await self._broker.declare_queue(queue_name)
+            await self._broker.consume(
+                queue_name,
+                self._on_message,
+                concurrency=self._config.concurrency,
+            )
+
+    def _start_consumer_watch(self) -> None:
+        # U6 (R1, KTD3): verlorene Consumer selbst neu anmelden. Optional am
+        # Broker wie ``set_publish_deadline``; ``cancel_consume`` stoppt ihn.
+        start = getattr(self._broker, "start_consumer_watch", None)
+        if start is not None:
+            count = self._metrics.count_consumer_reregistration if self._metrics is not None else None
+            start(self._config.consumer_watch_interval_s, count)
 
     def _start_background_monitors(self) -> None:
         self._start_recycle_monitor()
@@ -392,6 +393,7 @@ class WorkerLifecycle:
             self._warn_without_delivery_limit()
             await self._start_executor()
             await self._declare_and_consume_queues()
+            self._start_consumer_watch()
             self._state = WorkerState.RUNNING
 
             # Register signal handlers for graceful shutdown
@@ -588,6 +590,9 @@ class WorkerLifecycle:
                 self._detached_releases,
                 timeout=max(5.0, float(self._config.shutdown_timeout)),
             )
+        # Nachgeholte Marker-Abschluesse des Ausfuehrungsschutzes: ein letzter,
+        # begrenzter Versuch, solange Valkey noch offen ist.
+        await self._execution_guard.drain()
 
         # 3c. Release any leftover handler locks. Runs AFTER the
         # asyncio.wait above (so cancelled tasks have had a chance to

@@ -416,6 +416,7 @@ TaskInfo(
     max_age: int | None = None,
     priority: Literal["high", "normal", "low"] = "normal",
     timezone: str | None = None,
+    dead_letter: bool | None = None,
 )
 ```
 
@@ -769,8 +770,8 @@ path only (`start_worker()` rejects them).
 Async Valkey client backing results, locks, rate limits, cancel
 flags, scheduler state, and leader election. Implements the
 `ResultBackend` protocol from `swarmq.contracts` and exposes the
-coordination stores as `backend.locks`, `.rate_limit`, `.chords`, and
-`.schedules` (available after `connect()`). Wire through `SwarmQ`
+coordination stores as `backend.locks`, `.rate_limit`, `.chords`,
+`.schedules` and `.execution_guard` (available after `connect()`). Wire through `SwarmQ`
 as the second positional argument. Since 0.2.0 the constructor
 signatures of `Worker` and `Client` name these contracts instead of
 the concrete classes — existing code keeps working unchanged.
@@ -873,6 +874,51 @@ class ScheduleStore(Protocol):
   returns the lock owner and that version (`LeaderInfo.version` is
   `None` for a leader before 0.10.0).
 
+Contract changes in 0.11.0. A `ScheduleStore` of your own needs three
+more methods for [cron pruning](../guides/scheduling-and-retries.md#removing-crons-no-app-reports-anymore);
+a backend that offers the [execution guard](../explanation/delivery-semantics.md#execution-guard)
+exposes an `ExecutionGuardStore` as `backend.execution_guard`:
+
+```python
+from swarmq.contracts import ExecutionGuardStore, GuardClaim, ScheduleStore
+
+class ScheduleStore(Protocol):
+    async def prune_cron(self, name: str, expected: bytes, *,
+                         stale_after_ms: int | None,
+                         remember_disabled: bool) -> bool: ...
+    async def pruned_disabled(self, name: str) -> bool: ...
+    async def forget_pruned_disabled(self, name: str) -> None: ...
+
+class ExecutionGuardStore(Protocol):
+    async def claim(self, identity: str, *, owner: str, retry_count: int,
+                    ttl_ms: int, state_ttl_ms: int,
+                    max_orphans: int) -> GuardClaim: ...
+    async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool: ...
+    async def mark_done(self, identity: str, *, owner: str,
+                        state_ttl_ms: int) -> None: ...
+    async def mark_superseded(self, identity: str, *, owner: str,
+                              retry_count: int, state_ttl_ms: int) -> None: ...
+    async def release(self, identity: str, *, owner: str) -> None: ...
+```
+
+- `prune_cron` removes a static cron and its fire atomically while the
+  stored definition is still exactly `expected` and, with
+  `stale_after_ms`, every report of the name is older than that (backend
+  time, at least one report); without it, while no report of the name
+  exists. With `remember_disabled` the store remembers the name, so
+  `pruned_disabled` returns `True` until `forget_pruned_disabled`.
+  Returns whether it removed.
+- `claim` returns a `GuardClaim(status, orphans)` with `status` one of
+  `claimed`, `done`, `superseded`, `running`, `orphan_limit`. A running
+  marker that expired without release counts as an orphan; at
+  `max_orphans` the claim still belongs to the caller, so the following
+  dead-lettering finishes it. `renew` is a compare-and-PEXPIRE on the
+  caller's own marker; `mark_done`, `mark_superseded` (only rising
+  counts) and `release` delete the running marker only while it belongs
+  to `owner`.
+- A backend without an `execution_guard` attribute runs without the
+  guard.
+
 ## Dependency injection (Dishka)
 
 Optional; install with `pip install 'swarmq[dishka]'`.
@@ -927,7 +973,7 @@ from swarmq import (
     Metrics, MetricsServer, serve_metrics, install_signal_collectors,
 )
 
-HealthChecker(broker, backend, *, timeout_s: float = 2.0, compute_check=None)
+HealthChecker(broker, backend, *, timeout_s: float = 2.0, checks=None)
 HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started=None)
 serve_health(checker, *, host="127.0.0.1", port=8080)       # async context manager
 
@@ -938,8 +984,14 @@ install_signal_collectors(dispatcher: SignalDispatcher, metrics: Metrics) -> Non
 ```
 
 - `HealthChecker.check_all()` pings broker and backend (each bounded
-  by `timeout_s`) and returns `{"ready", "broker", "backend"}` (plus
-  `"compute"` in CPU mode).
+  by `timeout_s`) and returns `{"ready", "broker", "backend"}` plus one
+  entry per named check. `checks` maps a name to an async callable
+  returning `(ok, error)`; each runs bounded by `timeout_s`, and a
+  failing one makes `ready` false. The worker passes `"consumers"`
+  (every consumed queue has an active consumer, see
+  [consumer timeout](../explanation/delivery-semantics.md#consumer-timeout))
+  and, in CPU mode, `"compute"`. Until 0.10.x the only extra check was
+  `compute_check=`; pass `checks={"compute": ...}` instead.
 - `HealthServer` serves `/health` (always `200` with `uptime_s`) and
   `/ready` (`200` or `503` with the `check_all()` snapshot).
 - `Metrics` holds the [metric catalog](configuration.md#metric-catalog)

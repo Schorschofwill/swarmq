@@ -23,6 +23,7 @@ except SwarmQError as exc:
 | `LoggingConfigError` | `ConfigurationError` | Logging config file (`--log-config`) not loadable or invalid |
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
 | `PublishIndeterminate` | `BrokerConnectionError` | A publish broke its deadline; whether it arrived is unknown |
+| `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
@@ -39,7 +40,7 @@ except SwarmQError as exc:
 | `WorkflowResultExpired` | `SwarmQError` | A step or final workflow result expired before it was used |
 | `WorkflowStateConflict` | `SwarmQError` | Worker-internal: workflow state update lost every compare-and-set round |
 
-Every class except `WorkflowStateConflict` can be imported from
+Every class except `WorkflowStateConflict` and `SettleFailedAfterPublish` can be imported from
 `swarmq` directly (`from swarmq import PublishIndeterminate`); all of
 them also live in `swarmq.exceptions`.
 
@@ -413,6 +414,25 @@ except BrokerConnectionError:
     # Nothing was sent; safe to retry.
     ...
 ```
+
+## `SettleFailedAfterPublish`
+
+**When raised.** Only inside the worker, by `retry_later` and
+`dead_letter`: the broker confirmed the retry or dead-letter copy, but
+acknowledging the original failed (usually because the channel is
+gone). Subclass of `BrokerConnectionError`, so existing handlers keep
+catching it. It never reaches `schedule()` or `get_result()`.
+
+**Cause.** The channel or connection was lost between publishing the
+copy and the ack, for example after a consumer timeout on RabbitMQ up
+to 4.2.
+
+**Recovery.** None needed in application code. The broker redelivers
+the original while the copy is already on its way; the
+[execution guard](../explanation/delivery-semantics.md#execution-guard)
+sets its superseded or done marker as after success, so the
+redelivered original is skipped. Import it from `swarmq.exceptions` if
+you need it in tests.
 
 ## `WorkflowValidationError`
 

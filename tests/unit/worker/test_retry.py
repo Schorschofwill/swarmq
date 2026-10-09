@@ -30,6 +30,26 @@ Test-Liste 0.9.0 (Retry-Kopie und Broker-Zaehler):
 13. Die Retry-Kopie traegt keinen ``x-swarmq-backend-defer-count``: der Task
     lief, die Backend-Stoerung ist ueberstanden; eine naechste Stoerung
     beginnt wieder mit der Basiswartezeit.
+
+Test-Liste U9 (Plan 2026-10-08-1541, R15/KTD7) — abschaltbares Dead-Lettering:
+
+14. ``dead_letter=False``, ``max_retries=0``, Fehler -> Ergebnis mit
+    ``task_info.result_ttl``, Ack, kein XQ-Publish, kein ``TASK_DLQ``.
+15. Dasselbe fuer ``NoRetry`` und eine nicht wiederholbare Ausnahme.
+16. Workflow-Schritt: der Fehler propagiert (Fail-Mark ``TaskError``).
+17. Global aus (``dead_letter_terminal_failures=False``), Task ohne Angabe
+    -> kein XQ; Task-Feld ``True`` gewinnt -> XQ.
+18. Das Ack laeuft ueber den ``GuardedBroker``: der Done-Marker wird gesetzt.
+19. Der Dead-Letter-Pfad speichert das Fehlerergebnis mit
+    ``task_info.result_ttl`` statt ``config.result_ttl``.
+20. Delivery-Count-Gate und undecodierbare Nachricht bei ausgeschaltetem
+    Dead-Lettering -> weiterhin XQ.
+
+Review Phase 2 (2026-10-09):
+
+21. ``dead_letter`` wirft ``SettleFailedAfterPublish`` (Kopie liegt in der
+    XQ, nur das Ack scheiterte): terminal wie ein Erfolg -- ``TASK_DLQ``,
+    Unique-Freigabe, kein ``dlq_publish_failed``, kein Requeue.
 """
 
 from __future__ import annotations
@@ -38,7 +58,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from swarmq.exceptions import BackendConnectionError, NoRetry, WorkflowStateConflict
+from swarmq.exceptions import BackendConnectionError, NoRetry, SettleFailedAfterPublish, WorkflowStateConflict
 from swarmq.headers import HEADER_WORKFLOW_ID
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
@@ -311,3 +331,151 @@ async def test_retry_copy_drops_backend_defer_count(broker, backend, config):
     )
 
     assert "x-swarmq-backend-defer-count" not in broker.retry_later.await_args.kwargs["headers"]
+
+
+class _NoDlqTask(Task):
+    task_info = TaskInfo(
+        name="no-dlq-task", queues=["default"], max_retries=0, result_ttl=120, dead_letter=False
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_disabled_dead_lettering_stores_error_result_and_acks(broker, backend, config):
+    """Liste 14 (R15): Verhalten vor MR !12 -- Fehlerergebnis speichern und
+    bestaetigen, nichts in die DLQ."""
+    from swarmq.middleware import MiddlewareChain
+    from swarmq.worker.outcome import Terminal
+
+    handler, worker = _handler(broker, backend, config, _NoDlqTask)
+    msg = make_message(_default_payload(name="no-dlq-task"))
+    outcome = await handler.evaluate(
+        msg, _ctx(_NoDlqTask), RuntimeError("boom"), "Traceback: boom", {"retry_count": 0}, MiddlewareChain([])
+    )
+
+    broker.dead_letter.assert_not_awaited()
+    broker.ack.assert_awaited_once_with(msg)
+    assert outcome == Terminal.release_in_finally()
+    task_id, result_bytes, ttl_ms = backend.store_result.await_args.args
+    assert task_id == "abc-123" and ttl_ms == 120_000
+    assert b"Traceback: boom" in result_bytes
+    dispatched = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
+    assert Signal.TASK_DLQ not in dispatched
+
+
+class _NoDlqFilteredTask(Task):
+    task_info = TaskInfo(
+        name="no-dlq-filtered", queues=["default"], max_retries=3,
+        retry_exceptions=[KeyError], dead_letter=False,
+    )
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    ("task", "exc"),
+    [(_NoDlqTask, NoRetry("give up")), (_NoDlqFilteredTask, ValueError("not listed"))],
+)
+async def test_disabled_dead_lettering_covers_every_terminal_branch(broker, backend, config, task, exc):
+    """Liste 15: die Weiche gilt fuer ``NoRetry`` und den Retry-Filter wie
+    fuer erschoepfte Retries."""
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, task)
+    msg = make_message(_default_payload(name=task.task_info.name))
+    await handler.evaluate(msg, _ctx(task), exc, "boom", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    broker.ack.assert_awaited_once_with(msg)
+
+
+@pytest.mark.timeout(5)
+async def test_disabled_dead_lettering_propagates_workflow_failure(broker, backend, config):
+    """Liste 16: ein Workflow-Schritt markiert den Workflow als gescheitert,
+    damit ``handle.get()`` wirft statt in den Timeout zu laufen."""
+    from swarmq.middleware import MiddlewareChain
+
+    handler, worker = _handler(broker, backend, config, _NoDlqTask)
+    msg = make_message(_default_payload(name="no-dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
+    await handler.evaluate(msg, _ctx(_NoDlqTask), RuntimeError("boom"), "boom", {"retry_count": 0}, MiddlewareChain([]))
+
+    worker._workflow_advancer.fail.assert_awaited_once_with(_WF_ID, "TaskError", "boom")
+    broker.dead_letter.assert_not_awaited()
+
+
+class _DefaultDlqTask(Task):
+    task_info = TaskInfo(name="default-dlq-task", queues=["default"], max_retries=0)
+
+
+class _ForcedDlqTask(Task):
+    task_info = TaskInfo(name="forced-dlq-task", queues=["default"], max_retries=0, dead_letter=True)
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(("task", "dead_lettered"), [(_DefaultDlqTask, False), (_ForcedDlqTask, True)])
+async def test_global_switch_applies_unless_the_task_field_is_set(broker, backend, task, dead_lettered):
+    """Liste 17: global aus, ``TaskInfo.dead_letter`` unset -> kein XQ; das
+    gesetzte Task-Feld gewinnt."""
+    from swarmq.config import SwarmQConfig
+    from swarmq.middleware import MiddlewareChain
+
+    config = SwarmQConfig(
+        broker_url="amqp://localhost", backend_url="valkey://localhost",
+        queues=["default"], dead_letter_terminal_failures=False,
+    )
+    handler, _ = _handler(broker, backend, config, task)
+    msg = make_message(_default_payload(name=task.task_info.name))
+    await handler.evaluate(msg, _ctx(task), RuntimeError("boom"), "boom", {"retry_count": 0}, MiddlewareChain([]))
+
+    assert broker.dead_letter.await_count == (1 if dead_lettered else 0)
+
+
+@pytest.mark.timeout(5)
+async def test_dead_letter_stores_error_result_with_task_result_ttl(broker, backend, config):
+    """Liste 19: das Fehlerergebnis im Dead-Letter-Pfad lebt so lange wie
+    jedes andere Ergebnis des Tasks (``task_info.result_ttl``)."""
+    class ShortLivedTask(Task):
+        task_info = TaskInfo(name="short-lived", queues=["default"], result_ttl=120)
+
+    handler, _ = _handler(broker, backend, config, ShortLivedTask)
+    await handler.dead_letter(
+        make_message(_default_payload(name="short-lived")), _ctx(ShortLivedTask), "boom", "RuntimeError"
+    )
+
+    assert backend.store_result.await_args.args[2] == 120_000
+    broker.dead_letter.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_delivery_count_gate_and_undecodable_messages_still_reach_the_dlq(broker, backend):
+    """Liste 20: die Weiche gilt nur fuer terminale Task-Fehler. Haengende
+    Worker und undecodierbare Nachrichten landen weiter in der XQ."""
+    from swarmq.config import SwarmQConfig
+
+    config = SwarmQConfig(
+        broker_url="amqp://localhost", backend_url="valkey://localhost",
+        queues=["default"], dead_letter_terminal_failures=False,
+    )
+    _, worker = _handler(broker, backend, config, _NoDlqTask)
+
+    await worker._handle_message(make_message(_default_payload(name="no-dlq-task"), headers={"x-delivery-count": 19}))
+    broker.dead_letter.assert_awaited_once()
+
+    await worker._handle_message(make_message(body=b"not json"))
+    broker.route_via_dlx.assert_awaited_once()
+
+
+async def test_dead_letter_with_failed_ack_after_publish_is_terminal(broker, backend, config, swarmq_logs):
+    """Die Kopie liegt in der XQ; die Neuzustellung des Originals ueberspringt
+    der Ausfuehrungsschutz als ``done`` -- also gibt dieser Pfad frei."""
+    handler, worker = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
+    broker.redeliver = AsyncMock()
+    worker._gate_deps.maybe_release_unique = AsyncMock()
+    msg = make_message(_default_payload(name="dlq-task"))
+
+    await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
+
+    assert _events(swarmq_logs, "dlq_publish_failed") == []
+    broker.redeliver.assert_not_awaited()
+    worker._gate_deps.maybe_release_unique.assert_awaited_once()
+    signals = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
+    assert Signal.TASK_DLQ in signals

@@ -149,7 +149,16 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
         SCHEDULE, "0" * 16, value_fixtures()["schedule_definition.json"], live_window_ms=TTL_MS
     )
     await backend.schedules.report_worker_version("golden-worker", "0.10.0", ttl_ms=TTL_MS)
+    # Cron-Aufraeumen (KTD8): ein deaktiviert entfernter Cron landet im Set.
+    await backend.schedules.put("golden-pruned", value_fixtures()["schedule_definition.json"], None)
+    await backend.schedules.prune_cron(
+        "golden-pruned", value_fixtures()["schedule_definition.json"], stale_after_ms=None, remember_disabled=True,
+    )
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
+    # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
+    await backend.execution_guard.claim(
+        TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
+    )
     locks = LockManager(client)
     await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
     await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)
@@ -216,11 +225,14 @@ def lua_contract() -> str:
         argv = max((int(n) for n in re.findall(r"ARGV\[(\d+)\]", text)), default=0)
         lines.append(f"{path.stem}\tKEYS={keys}\tARGV={argv}")
     multi = {
+        "guard_claim": ["sq:guard:{golden-task-0001}:run", "sq:guard:{golden-task-0001}:state"],
+        "guard_finish": ["sq:guard:{golden-task-0001}:run", "sq:guard:{golden-task-0001}:state"],
         "sched_commit": ["sq:{sched}:zset", "sq:{sched}:defs", "sq:lock:{sched}:leader"],
         "sched_disable": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_poll": ["sq:{sched}:zset", "sq:{sched}:defs"],
         "sched_replan": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_report": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
+        "sched_prune": ["sq:{sched}:defs", "sq:{sched}:zset", "sq:{sched}:report:last_seen", "sq:{sched}:disabled"],
         "sched_report_prune": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
         "sliding_window_counter": ["sq:rl:{golden-task}:1700000000000", "sq:rl:{golden-task}:1699999940000"],
     }
@@ -247,8 +259,10 @@ async def write_all(backend: ValkeyBackend) -> None:
 
 
 async def _main() -> None:
-    from tests.support.services import valkey_db_url
+    from tests.support.services import require_safe_valkey_url, valkey_db_url
 
+    # snapshot_keys flushes the database: refuse a foreign stack on 6379.
+    require_safe_valkey_url(valkey_db_url())
     backend = ValkeyBackend(valkey_db_url())
     await backend.connect()
     try:

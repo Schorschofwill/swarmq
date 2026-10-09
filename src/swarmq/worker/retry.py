@@ -4,7 +4,9 @@
 ``RetryHandler.evaluate`` entscheidet ``NoRetry`` / Retry-Filter / Erschöpfung
 → ``dead_letter``, sonst ``retry_later``; Middleware- und Signal-Hooks feuern in
 derselben Reihenfolge wie bisher. Publish-Fehler fallen auf ``redeliver``
-zurück (KTD3, unverändert).
+zurück (KTD3, unverändert). Ist Dead-Lettering für den Task abgeschaltet
+(``TaskInfo.dead_letter``, sonst ``dead_letter_terminal_failures``), laufen
+die terminalen Zweige über den Ergebnis-Tail (Plan 2026-10-08-1541, KTD7).
 
 Benannte Verhaltenskorrektur (KTD2): ``retry_later(delivery, …)`` und
 ``dead_letter(delivery, …)`` veröffentlichen an das Verzögerungs- bzw.
@@ -15,6 +17,7 @@ Queue zu laufen. Abgesichert durch ``tests/e2e/test_retry_band.py``.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from swarmq.backoff import calculate_backoff
@@ -26,13 +29,14 @@ from swarmq.exceptions import (
     TaskNotFoundError,
     WorkflowStateConflict,
 )
-from swarmq.headers import HEADER_WORKFLOW_ID
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
-from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers
+from swarmq.worker.execution import ExecutionResult
+from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
@@ -40,12 +44,16 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+#: Ergebnis-Tail (``ResultTail.finish``): Speichern, Workflow-Fehler, Ack.
+FinishFn = Callable[[Any, GateContext, ExecutionResult], Awaitable[DeliveryOutcome]]
+
 
 class RetryHandler:
-    def __init__(self, deps: GateDeps, *, workflow_advancer: Any) -> None:
+    def __init__(self, deps: GateDeps, *, workflow_advancer: Any, finish: FinishFn) -> None:
         self._deps = deps
         # Getter, weil der Advancer erst in start() entsteht.
         self._workflow_advancer = workflow_advancer
+        self._finish = finish
 
     async def evaluate(
         self,
@@ -79,21 +87,18 @@ class RetryHandler:
 
         # 1. NoRetry -> direct DLQ
         if isinstance(exc, NoRetry):
-            await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
-            return Redelivered
+            return await self._terminal_failure(delivery, ctx, exc, error_message)
 
         # 2. Check retry_exceptions filter
         if task_info.retry_exceptions is not None and not isinstance(exc, task_info.retry_exceptions):
-            await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
-            return Redelivered
+            return await self._terminal_failure(delivery, ctx, exc, error_message)
 
         # 3. Read retry count from message headers
-        retry_count = delivery.headers.get("x-swarmq-retry-count", 0)
+        retry_count = delivery.headers.get(HEADER_RETRY_COUNT, 0)
 
         # 4. Check if retries exhausted
         if retry_count >= task_info.max_retries:
-            await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
-            return Redelivered
+            return await self._terminal_failure(delivery, ctx, exc, error_message)
 
         # 5. Calculate delay
         if isinstance(exc, Retry) and exc.delay is not None:
@@ -123,7 +128,7 @@ class RetryHandler:
         # header) survives redelivery -- ohne die Zustellzaehler des Brokers
         # (neue Nachricht, eigenes Zustellbudget).
         headers = republish_headers(delivery, ctx)
-        headers["x-swarmq-retry-count"] = retry_count + 1
+        headers[HEADER_RETRY_COUNT] = retry_count + 1
         headers["x-swarmq-traceback"] = error_message
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
@@ -137,6 +142,28 @@ class RetryHandler:
         logger.info("task_retrying", retry_count=retry_count + 1, max_retries=task_info.max_retries, delay_ms=delay_ms)
         return Redelivered
 
+    async def _terminal_failure(
+        self, delivery: Any, ctx: GateContext, exc: BaseException, error_message: str
+    ) -> DeliveryOutcome:
+        """Weiche nach KTD7 (Plan 2026-10-08-1541): terminaler Task-Fehler in
+        die DLQ oder -- abgeschaltet -- ueber den Ergebnis-Tail wie vor MR !12
+        (Fehlerergebnis mit ``task_info.result_ttl``, Workflow-Fehler,
+        Unique-Freigabe im ``finally``, Ack). Kein zusaetzliches Signal:
+        ``TASK_FAILED`` feuerte schon in der Ausfuehrung."""
+        task_info = ctx.task_info
+        assert task_info is not None
+        enabled = task_info.dead_letter
+        if enabled is None:
+            enabled = self._deps.config.dead_letter_terminal_failures
+        if not enabled:
+            execution = ExecutionResult(
+                result_value=None, is_error=True, is_cancelled=False,
+                error_message=error_message, task_exception=exc,
+            )
+            return await self._finish(delivery, ctx, execution)
+        await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
+        return Redelivered
+
     async def dead_letter(self, delivery: Any, ctx: GateContext, error_message: str, error_type: str) -> None:
         """Store error result in backend, dead-letter, and ack the original.
 
@@ -146,13 +173,24 @@ class RetryHandler:
         """
         deps = self._deps
         task_id, task_name, queue = ctx.task_id, ctx.task_name, ctx.queue
+        # Fetch task_info for result_ttl, release-mode and the delivery mode;
+        # unregistered tasks default to completion (see _maybe_release_unique
+        # contract) and to AT_LEAST_ONCE (the TaskInfo default).
+        try:
+            task_info_for_release = deps.registry.get(task_name).task_info
+        except TaskNotFoundError:
+            task_info_for_release = None
+
         # Store error result so callers of get_result() get a response
         result_data = build_error_result_dict(
             task_id=task_id, queue=queue, task_name=task_name, error_message=error_message
         )
         try:
             result_bytes = encode_result(result_data)
-            result_ttl = deps.config.result_ttl or 86400
+            # Wie jedes Ergebnis des Tasks: ``task_info.result_ttl`` vor der
+            # Konfiguration (Plan 2026-10-08-1541, U9).
+            task_ttl = task_info_for_release.result_ttl if task_info_for_release is not None else None
+            result_ttl = (task_ttl if task_ttl is not None else deps.config.result_ttl) or 86400
             await deps.backend.store_result(
                 task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
             )
@@ -171,14 +209,6 @@ class RetryHandler:
         wf_id = deps.extract_valid_workflow_id(delivery)
         if wf_id is None and (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
             logger.warning("workflow_id_header_invalid", task_id=task_id, task_name=task_name)
-        # Fetch task_info for release-mode and for the delivery mode below;
-        # unregistered tasks default to completion (see _maybe_release_unique
-        # contract) and to AT_LEAST_ONCE (the TaskInfo default).
-        try:
-            task_info_for_release = deps.registry.get(task_name).task_info
-        except TaskNotFoundError:
-            task_info_for_release = None
-
         advancer = self._workflow_advancer()
         if wf_id is not None and advancer is not None:
             try:
@@ -221,7 +251,7 @@ class RetryHandler:
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
         headers["x-swarmq-traceback"] = error_message
         try:
-            await deps.broker.dead_letter(delivery, headers=headers)
+            await dead_letter_copy(deps, delivery, headers)
             # Release AFTER successful ack (dead_letter bestätigt das
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to

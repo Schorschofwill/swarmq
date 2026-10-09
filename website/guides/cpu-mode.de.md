@@ -108,6 +108,15 @@ Orchestrierung den Worker ersetzen können.
 - RabbitMQs `consumer_timeout` (Standard 30 min) begrenzt jede einzelne
   Zustellung. Der Worker warnt beim Start, wenn ein `hard_timeout`
   `SWARMQ_CONSUMER_TIMEOUT_S` übersteigt; für lange Jobs beide zusammen anheben.
+  Läuft ein Task trotzdem länger, schließt der Broker den Channel (bis 4.2)
+  oder beendet den Consumer (ab 4.3, Quorum-Queues). Ab 0.11.0 meldet der
+  Consumer-Wächter den Consumer neu an, und der Ausführungsschutz verhindert,
+  dass die neu zugestellte Nachricht neben dem Original läuft; seine
+  Running-Marker verlängert der Hauptprozess, nicht das Rechenkind. Details:
+  [Consumer-Timeout](../explanation/delivery-semantics.md#consumer-timeout).
+- `/ready` meldet einen Eintrag `consumers`: nicht bereit, sobald eine
+  konsumierte Queue `SWARMQ_CONSUMER_READY_GRACE_S` (Standard 30 s) ohne
+  aktiven Consumer war. `/ready` nie als Liveness-Probe nutzen.
 - `/ready` meldet den Forkserver als zusätzliche Abhängigkeit.
 
 ## Verhältnis zu `--processes`

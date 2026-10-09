@@ -112,6 +112,10 @@ class TaskInfo:
     # Cron-Zeitzone (Plan 2026-10-08-1541, KTD1): IANA-Name, in dem der
     # Cron-Ausdruck gilt. None heißt UTC.
     timezone: str | None = None
+    # Abschaltbares Dead-Lettering (Plan 2026-10-08-1541, KTD7): terminale
+    # Fehler dieses Tasks in die DLQ legen. None heisst: es gilt
+    # ``SwarmQConfig.dead_letter_terminal_failures``; ein gesetzter Wert gewinnt.
+    dead_letter: bool | None = None
 
     def __init__(
         self,
@@ -135,6 +139,7 @@ class TaskInfo:
         max_age: int | None = None,
         priority: PriorityLevel = "normal",
         timezone: str | None = None,
+        dead_letter: bool | None = None,
     ) -> None:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "queues", tuple(queues))
@@ -160,6 +165,7 @@ class TaskInfo:
         object.__setattr__(self, "max_age", max_age)
         object.__setattr__(self, "priority", priority)
         object.__setattr__(self, "timezone", timezone)
+        object.__setattr__(self, "dead_letter", dead_letter)
         self.__post_init__()
 
     def __post_init__(self) -> None:

@@ -522,6 +522,12 @@ class FileDraining:
             self.sentinel_pending = not _offer_sentinel(self.listener, 0)
         self.thread.join(deadline.remaining())
         if not self.thread.is_alive():
+            state = _state(self.listener)
+            if state.closed and not self.sentinel_pending:
+                # Der Thread endete an der geschlossenen Pipe, bevor er den
+                # Sentinel las: Der liegt noch in ``qsize``, ist aber kein
+                # verworfener Record (``_count_closed``).
+                state.counted += 1
             with _CONFIG_LISTENER_LOCK:
                 if _thread_of(self.listener) is self.thread:
                     _forget_thread(self.listener)

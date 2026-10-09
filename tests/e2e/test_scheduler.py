@@ -26,6 +26,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.services import flush_valkey_db
 
 # Liveness safety-net for every "wait for an async event" below. It is NOT a
 # behavioural deadline — wait_for returns the instant the event fires, so a
@@ -116,16 +117,9 @@ async def _flush_valkey(valkey_url):
     flakiness.) Flushing on setup gives every scheduler test a clean
     leader-lock slate regardless of what ran before; the teardown flush keeps
     our own schedules/locks from leaking forward."""
-    async def _flush() -> None:
-        client = valkey_asyncio.Valkey.from_url(valkey_url)
-        try:
-            await client.flushdb()
-        finally:
-            await client.aclose()
-
-    await _flush()
+    await flush_valkey_db(valkey_url)
     yield
-    await _flush()
+    await flush_valkey_db(valkey_url)
 
 
 # ---------------------------------------------------------------------------
@@ -943,6 +937,113 @@ class TestCronReportsAcrossApps:
                 await _wait_definition(
                     client, name, "0 3 * * *", "Europe/Berlin", timeout=0.1,
                 )
+            finally:
+                await client.aclose()
+                for task in tasks:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+
+# ---------------------------------------------------------------------------
+# Cron-Aufräumen über Lebenszeichen (Plan 2026-10-08-1541, U10, AE6, R11/R13)
+# ---------------------------------------------------------------------------
+
+
+async def _wait_definition_gone(
+    client: object, name: str, timeout: float = _EVENT_TIMEOUT,
+) -> None:
+    """Block until ``sq:{sched}:defs`` no longer holds *name*."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not await client.hexists("sq:{sched}:defs", name):  # type: ignore[attr-defined]
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"defs still hold {name!r}")
+
+
+class TestCronPruneAcrossApps:
+    async def test_silent_cron_of_another_app_is_pruned_legacy_stays(
+        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+    ):
+        """AE6: App A und App B teilen ein Valkey, A stellt den Leader. Bs
+        Cron bleibt, solange B meldet — auch über die Frist hinaus. Nach Bs
+        Ende verschwindet er samt Fire-Index-Eintrag; ein nie gemeldeter
+        Altbestand-Cron bleibt."""
+        import json
+
+        seen_interval, prune_after = 0.3, 1.2
+        name, legacy = _task_name("nightly"), _task_name("legacy")
+        queue_a, queue_b = _unique_queue(), _unique_queue()
+        cfg = dict(
+            concurrency=1,
+            scheduler_poll_interval=0.1,
+            scheduler_heartbeat_interval=0.2,
+            scheduler_lock_ttl=1.0,
+            scheduler_seen_interval_s=seen_interval,
+            scheduler_prune_after_s=prune_after,
+        )
+
+        def _app(queue: str) -> SwarmQ:
+            app = SwarmQ(
+                RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
+                queues=[queue], **cfg,
+            )
+            Task._clear_registered_tasks()
+            return app
+
+        app_a = _app(queue_a)
+
+        class Nightly(Task):
+            task_info = TaskInfo(name=name, queues=[queue_b], cron="0 1 * * *")
+
+            async def run(self) -> None:
+                return None
+
+        app_b = _app(queue_b)
+        client = valkey_asyncio.Valkey.from_url(valkey_url)
+        tasks: list[asyncio.Task[None]] = []
+        async with contextlib.AsyncExitStack() as stack:
+            for app in (app_a, app_b):
+                await stack.enter_async_context(app)
+            await app_a.broker.declare_queue(queue_a)
+            await app_a.broker.declare_queue(queue_b)
+            await client.hset("sq:{sched}:defs", legacy, json.dumps({
+                "schedule_name": legacy, "task_name": legacy, "args": [],
+                "kwargs": {}, "queue": queue_a, "cron": "0 2 * * *",
+                "fire_ts_ms": 4_000_000_000_000, "source": "static",
+            }))
+            await client.zadd("sq:{sched}:zset", {legacy: 4_000_000_000_000})
+            a_leader = _leader_event(app_a)
+            b_online = asyncio.Event()
+
+            @app_b.on_signal(Signal.WORKER_ONLINE)
+            async def _on(**kw) -> None:
+                b_online.set()
+
+            try:
+                tasks.append(asyncio.create_task(app_a.start_worker()))
+                await asyncio.wait_for(a_leader.wait(), timeout=_EVENT_TIMEOUT)
+                b_task = asyncio.create_task(app_b.start_worker())
+                tasks.append(b_task)
+                await asyncio.wait_for(b_online.wait(), timeout=_EVENT_TIMEOUT)
+                await _wait_definition(client, name, "0 1 * * *", None)
+
+                # B meldet weiter: über die Frist hinaus bleibt der Cron.
+                await asyncio.sleep(prune_after + seen_interval)
+                await _wait_adopt_ticks(client)
+                assert await client.hexists("sq:{sched}:defs", name)
+
+                b_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await b_task
+                await _wait_definition_gone(client, name)
+                assert await client.zscore("sq:{sched}:zset", name) is None
+
+                await _wait_adopt_ticks(client)
+                assert await client.hexists("sq:{sched}:defs", legacy)
+                assert await client.zscore("sq:{sched}:zset", legacy) == 4_000_000_000_000
             finally:
                 await client.aclose()
                 for task in tasks:

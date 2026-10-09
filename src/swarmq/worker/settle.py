@@ -7,7 +7,11 @@ Grenze loggt stattdessen genau eine Zeile im gebundenen Kontext:
 
 - ``BrokerConnectionError`` (Kanal oder Verbindung weg, meist beim Ack):
   WARNING ``delivery_settle_failed``. Selbstheilend (KTD11), denn der Broker
-  stellt die unbestaetigte Nachricht neu zu.
+  stellt die unbestaetigte Nachricht neu zu. Das deckt bis RabbitMQ 4.2 auch
+  das spaete Ack nach einem Consumer-Timeout ab (Channel zu, U7). Ab 4.3
+  haelt der Broker-Adapter ein solches Settle zurueck und loggt selbst
+  (``delivery_settle_deferred``/``delivery_settle_withheld``); es kommt nicht
+  als Fehler hier an.
 - jede andere ``Exception``: ERROR ``delivery_handler_failed`` mit Traceback.
 
 ``CancelledError`` (Shutdown, ``_abort_teardown``) ist keine ``Exception``

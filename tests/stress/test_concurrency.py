@@ -30,7 +30,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.limits import RateLimitConfig
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
-from tests.support.services import port_is_open
+from tests.support.services import flush_valkey_db, port_is_open
 
 # Stress tests are slow by design (10 workers × 1000 tasks can take
 # 30-60s). A 120s budget keeps genuine deadlock detection sharp while
@@ -81,17 +81,9 @@ def valkey_url() -> str:
 async def _flush_valkey(valkey_url):
     """Clear backend state before each test so counters/locks from a
     previous run don't leak."""
-    client = valkey_asyncio.Valkey.from_url(valkey_url)
-    try:
-        await client.flushdb()
-    finally:
-        await client.aclose()
+    await flush_valkey_db(valkey_url)
     yield
-    client = valkey_asyncio.Valkey.from_url(valkey_url)
-    try:
-        await client.flushdb()
-    finally:
-        await client.aclose()
+    await flush_valkey_db(valkey_url)
 
 
 @pytest.fixture
@@ -374,6 +366,16 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
                 p.cancel()
 
         await asyncio.wait_for(_any_leader(), timeout=10)
+
+        # The new leader inserts the cron (HSETNX, then ZADD of its next
+        # slot) right after taking over. An injection racing that insert is
+        # overwritten by the ZADD, reads as "committed" below and is lost
+        # as a pure test artefact (Valkey MONITOR, 2026-10-09: 99/100).
+        # Inject only once the cron is in the fire index.
+        insert_deadline = time.monotonic() + 10.0
+        while await valkey_client.zscore("sq:{sched}:zset", task_name) is None:
+            assert time.monotonic() < insert_deadline, "leader never inserted the cron"
+            await asyncio.sleep(0.02)
 
         # Force 100 fires by re-scoring the zset, one at a time. Each
         # injection waits until the leader has COMMITTED the fire

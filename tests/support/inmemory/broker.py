@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import itertools
 import json
+import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from swarmq.contracts import Broker, BrokerAdmin, Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError
+from swarmq.headers import HEADER_REPLAY_ID, HEADER_RETRY_COUNT
 from tests.support.inmemory.clock import FakeClock
 
 _ids = itertools.count(1)
@@ -29,6 +31,13 @@ class _Message:
     body: bytes
     headers: dict[str, Any]
     message_id: str = field(default_factory=lambda: f"im-{next(_ids)}")
+
+
+def _replay_headers(headers: dict[str, Any]) -> dict[str, Any]:
+    """Wie ``RabbitMQAdmin``: Retry-Zaehler zuruecksetzen, neue Replay-ID (KTD5)."""
+    out = {k: v for k, v in headers.items() if k != HEADER_RETRY_COUNT}
+    out[HEADER_REPLAY_ID] = uuid.uuid4().hex
+    return out
 
 
 @dataclass
@@ -174,8 +183,7 @@ class InMemoryBroker:
         for index, d in enumerate(letters[:scan_limit]):
             if _task_id(d.body) == task_id:
                 letters.pop(index)
-                headers = {k: v for k, v in d.headers.items() if k != "x-swarmq-retry-count"}
-                await self.publish(queue, d.body, headers)
+                await self.publish(queue, d.body, _replay_headers(d.headers))
                 return True, len(letters) + 1
         return False, len(letters)
 
@@ -184,7 +192,7 @@ class InMemoryBroker:
         movable = [d for d in letters[:limit] if _task_id(d.body) is not None]
         for d in movable:
             letters.remove(d)
-            await self.publish(queue, d.body, {k: v for k, v in d.headers.items() if k != "x-swarmq-retry-count"})
+            await self.publish(queue, d.body, _replay_headers(d.headers))
         return len(movable), len(letters) + len(movable)
 
     async def purge_dead_letters(self, queue: str) -> int:

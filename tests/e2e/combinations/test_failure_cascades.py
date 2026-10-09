@@ -1308,6 +1308,12 @@ class TestBackendDownResultStoreCombo:
     (5 s by default) to surface; while Valkey is down the redelivered
     message is deferred by the pre-start cancel check (delay queue,
     growing backoff), so the rerun happens after the heal.
+
+    Execution guard (0.11.0): the release of the first run's running
+    marker fails while Valkey is down; the worker retries it in the
+    background, so the rerun runs after the heal with the default
+    ``execution_guard_ttl_s`` of 60 s instead of waiting for the marker
+    to expire.
     """
 
     async def test_happy_path(

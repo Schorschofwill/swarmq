@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from swarmq.backend.valkey.chords import ChordManager
+from swarmq.backend.valkey.execution_guard import ValkeyExecutionGuardStore
 from swarmq.backend.valkey.locks import ValkeyLockStore
 from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
 from swarmq.backend.valkey.results import ValkeyResults
@@ -33,6 +34,7 @@ class ValkeyBackend(ValkeyResults):
     _rate_limit: ValkeyRateLimitStore | None = None
     _chords: ChordManager | None = None
     _schedules: ValkeyScheduleStore | None = None
+    _execution_guard: ValkeyExecutionGuardStore | None = None
 
     # ------------------------------------------------------------------
     # Koordinationsobjekte (KTD4)
@@ -62,10 +64,17 @@ class ValkeyBackend(ValkeyResults):
             self._schedules = ValkeyScheduleStore(self.client)
         return self._schedules
 
+    @property
+    def execution_guard(self) -> ValkeyExecutionGuardStore:
+        if self._execution_guard is None:
+            self._execution_guard = ValkeyExecutionGuardStore(self.client)
+        return self._execution_guard
+
     async def close(self) -> None:
         await super().close()
         # Die Stores halten den alten Client; nach close() neu aufbauen.
         self._locks = self._rate_limit = self._chords = self._schedules = None
+        self._execution_guard = None
 
     # ------------------------------------------------------------------
     # Aliase der heutigen Namen (KTD10; entfallen in U15)

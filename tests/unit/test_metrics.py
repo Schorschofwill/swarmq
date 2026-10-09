@@ -395,3 +395,32 @@ async def test_leader_outdated_signal_sets_and_clears_gauge():
         leader="new:1:bb", leader_version="0.10.0", outdated=False,
     )
     assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
+
+
+def test_consumer_reregistrations_are_counted_per_queue():
+    """Plan 2026-10-08-1541 (U6, R2): jede Neuanmeldung des Consumer-Wächters."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+
+    m.count_consumer_reregistration("q1", "broker_cancel")
+    m.count_consumer_reregistration("q1", "channel_replaced")
+
+    sample = "swarmq_consumer_reregistrations_total"
+    assert m.registry.get_sample_value(sample, {"queue": "q1"}) == 2.0
+
+
+def test_execution_guard_events_are_counted_per_event():
+    """Plan 2026-10-08-1541 (U8, KTD5): übersprungene Duplikate,
+    Zurückstellungen, Waisen-Grenze und verlorene Marker."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+
+    m.count_execution_guard_event("duplicate_skipped")
+    m.count_execution_guard_event("duplicate_skipped")
+    m.count_execution_guard_event("lease_lost")
+
+    sample = "swarmq_execution_guard_events_total"
+    assert m.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
+    assert m.registry.get_sample_value(sample, {"event": "lease_lost"}) == 1.0

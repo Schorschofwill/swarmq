@@ -4,26 +4,32 @@ Abbildung auf AMQP: ``redeliver`` → ``nack(requeue=True)``; ``retry_later`` �
 Publish an ``{queue}.DQ`` mit Per-Message-``expiration`` + ``ack``;
 ``dead_letter`` → Publish an ``{queue}.XQ`` + ``ack``. Beide werfen
 ``BrokerConnectionError``, wenn der Publish scheitert, und lassen das Original
-unbestätigt. Die Legacy-Namen (``nack``, ``publish_to_*``) sind seit U15
-entfernt; die Delay-/DLQ-Publishes sind private Helfer der Verben.
+unbestätigt. Ab RabbitMQ 4.3 hält ``_may_settle`` ein Settle auf einen vom
+Broker beendeten Consumer zurück, bis der Wächter ihn selbst abgemeldet hat
+(Plan 2026-10-08-1541, U7, KTD4). Die Legacy-Namen (``nack``,
+``publish_to_*``) sind seit U15 entfernt; die Delay-/DLQ-Publishes sind
+private Helfer der Verben.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Mapping
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import aio_pika
-from aio_pika.exceptions import DeliveryError
+from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError
 
 from swarmq.broker.rabbitmq.connection import (
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
     RabbitMQConnection,
 )
+from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
-from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
+from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
@@ -35,6 +41,12 @@ def message_of(delivery: object) -> aio_pika.abc.AbstractIncomingMessage:
     umgestellt sind)."""
     handle = delivery.handle if isinstance(delivery, Delivery) else delivery
     return cast("aio_pika.abc.AbstractIncomingMessage", handle)
+
+
+def dead_letter_ttl_header(ttl_s: float | None) -> int | str:
+    """Wert von ``x-swarmq-dead-letter-ttl-ms``: Millisekunden oder
+    ``"none"`` (unbegrenzt)."""
+    return "none" if ttl_s is None else int(ttl_s * 1000)
 
 
 async def settle(action: Awaitable[None], verb: str) -> None:
@@ -56,6 +68,13 @@ async def settle(action: Awaitable[None], verb: str) -> None:
 
 
 class RabbitMQDelivery(RabbitMQConnection):
+    #: Höchstens so lange wartet ein Settle auf einen vom Broker beendeten
+    #: Consumer auf den eigenen Cancel des Wächters (U7, KTD4). Deckt einen
+    #: Takt mit Channel-, Cancel- und Consume-RPC (je 2 s) mit Luft ab.
+    settle_cancel_wait_s: float = 10.0
+    #: Wanduhr fuer ``x-swarmq-dead-lettered-at`` und die Rest-TTL (KTD6).
+    clock: Callable[[], float] = staticmethod(time.time)
+
     # ------------------------------------------------------------------
     # Deklaration
     # ------------------------------------------------------------------
@@ -154,7 +173,12 @@ class RabbitMQDelivery(RabbitMQConnection):
         msg = aio_pika.Message(
             body=message_body,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-            headers=dict(headers or {}),
+            expiration=self.dead_letter_ttl_s,
+            headers={
+                **(headers or {}),
+                HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000),
+                HEADER_DEAD_LETTER_TTL_MS: dead_letter_ttl_header(self.dead_letter_ttl_s),
+            },
         )
         await self._publish_with_retry(f"{queue_name}.XQ", msg)
 
@@ -279,48 +303,125 @@ class RabbitMQDelivery(RabbitMQConnection):
             await on_delivery(delivery)
 
         consumer_tag = await amqp_queue.consume(_on_raw)
-        self._consumer_tags.append((amqp_queue, consumer_tag))
+        self._consumer_watch.add(queue, amqp_queue, _on_raw, consumer_tag)
+
+    @property
+    def consumer_watch(self) -> ConsumerWatch:
+        """Der Consumer-Wächter (U6); Settle-Regeln (U7) stoßen ihn an und
+        fragen die selbst abgemeldeten Tags ab."""
+        return self._consumer_watch
+
+    def start_consumer_watch(self, interval_s: float, on_reregistered: ReregisteredHook | None = None) -> None:
+        """Startet den Consumer-Wächter (U6, KTD3) nach den ``consume``-Aufrufen.
+
+        ``on_reregistered(queue, reason)`` zählt jede Neuanmeldung für die
+        Metrik. ``cancel_consume`` und ``close`` stoppen den Wächter."""
+        self._consumer_watch.on_reregistered = on_reregistered
+        self._consumer_watch.start(interval_s)
+
+    def consumer_gaps(self) -> dict[str, float]:
+        """Je konsumierter Queue: Sekunden ohne aktiven Consumer (0.0 = aktiv).
+
+        Leer vor dem ersten ``consume`` und nach ``cancel_consume``; Grundlage
+        des Consumer-Checks von ``/ready`` (U6, R2)."""
+        return self._consumer_watch.gaps()
 
     async def cancel_consume(self) -> None:
         """Cancel all active consumers to stop receiving new messages.
 
+        Stoppt zuerst den Consumer-Wächter, damit er nichts mehr neu anmeldet,
+        und meldet dann die aktuellen Tags ab — nach einer Neuanmeldung (U6)
+        sind das nicht mehr die aus ``consume``.
+
         Per-consumer error isolation: with multiple
         queues/priority-bands a single ``queue.cancel`` that raises (e.g.
         channel transition, AMQP error) must not abort cancellation of the
-        remaining consumers, nor leave ``_consumer_tags`` populated. A leak
+        remaining consumers, nor leave the registry populated. A leak
         here would let the worker keep pulling messages during the DRAINING
         window and could abort the graceful-shutdown sequence
         (in-flight drain, lock release, scheduler stop) in _execute_shutdown.
         """
-        errors: list[Exception] = []
-        for amqp_queue, consumer_tag in self._consumer_tags:
-            try:
-                await amqp_queue.cancel(consumer_tag)
-            except Exception as exc:
-                errors.append(exc)
-                logger.warning("consumer_cancel_failed", consumer_tag=consumer_tag, **_error_fields(exc))
-        self._consumer_tags.clear()
+        errors = await self._consumer_watch.cancel_all()
+        for consumer_tag, exc in errors:
+            logger.warning("consumer_cancel_failed", consumer_tag=consumer_tag, **_error_fields(exc))
         if errors:
             # Surface that cancellation was imperfect, but only after every
             # consumer has been attempted and the registry cleared.
+            first = errors[0][1]
             raise BrokerConnectionError(
-                f"cancel_consume: {len(errors)} consumer(s) failed to cancel; first error: {errors[0]}"
-            ) from errors[0]
+                f"cancel_consume: {len(errors)} consumer(s) failed to cancel; first error: {first}"
+            ) from first
+
+    async def _may_settle(self, message: aio_pika.abc.AbstractIncomingMessage, verb: str) -> bool:
+        """Settle-Regel ab RabbitMQ 4.3 (U7, KTD4): ``False`` heißt, das Verb
+        wird nicht gesendet.
+
+        Fehlt der Tag eines vom Wächter geführten Consumers auf dem noch
+        offenen Channel, hat der Broker ihn per ``basic.cancel`` beendet. Ein
+        Settle darauf weckte den Zombie-Consumer; es geht erst raus, nachdem
+        der Wächter den Tag selbst abgemeldet hat (danach unschädlich, auf
+        4.3.6 belegt). Kommt dieser Cancel nicht binnen
+        ``settle_cancel_wait_s``, unterbleibt das Settle: Die Nachricht hat
+        der Broker mit dem Cancel ohnehin zurückgenommen.
+
+        Ohne Wartezeit durch: gültige Tags, von swarmq selbst abgemeldete
+        (``cancel_consume``, Wächter — sie gelten nicht mehr als ``is_watched``)
+        und geschlossene Channels (bis 4.2; ``settle`` übersetzt den Fehler
+        in ``BrokerConnectionError``, B22).
+        """
+        tag = message.consumer_tag
+        if tag is None or not self._consumer_watch.is_watched(tag):
+            return True
+        try:
+            # ``consumers`` steht nur am konkreten aiormq-Channel, nicht am ABC.
+            channel: Any = message.channel
+        except ChannelInvalidStateError:
+            return True
+        if tag in channel.consumers:
+            return True
+        self._consumer_watch.request_check()
+        if await self._consumer_watch.wait_cancelled(tag, self.settle_cancel_wait_s):
+            logger.info("delivery_settle_deferred", verb=verb, consumer_tag=tag)
+            return True
+        logger.warning(
+            "delivery_settle_withheld",
+            verb=verb,
+            consumer_tag=tag,
+            wait_s=self.settle_cancel_wait_s,
+            hint=(
+                "consumer was cancelled by the broker and the own cancel did not "
+                "complete in time; settle not sent to avoid reviving it — the broker "
+                "redelivers the message"
+            ),
+        )
+        return False
 
     # ------------------------------------------------------------------
     # Die vier Verben (KTD2)
     # ------------------------------------------------------------------
 
+    async def _ack_after_publish(self, delivery: Delivery) -> None:
+        """Ack des Originals nach dem Publish seiner Kopie: ein Kanalverlust
+        wird ``SettleFailedAfterPublish`` -- die Kopie ist unterwegs (KTD5)."""
+        try:
+            await self.ack(delivery)
+        except BrokerConnectionError as exc:
+            raise SettleFailedAfterPublish(str(exc)) from exc
+
     async def ack(self, delivery: Delivery) -> None:
-        await settle(message_of(delivery).ack(), "ack")
+        message = message_of(delivery)
+        if await self._may_settle(message, "ack"):
+            await settle(message.ack(), "ack")
 
     async def redeliver(self, delivery: Delivery) -> None:
-        await settle(message_of(delivery).nack(requeue=True), "redeliver")
+        message = message_of(delivery)
+        if await self._may_settle(message, "redeliver"):
+            await settle(message.nack(requeue=True), "redeliver")
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)
-        await self.ack(delivery)
+        await self._ack_after_publish(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
         await self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers)
-        await self.ack(delivery)
+        await self._ack_after_publish(delivery)

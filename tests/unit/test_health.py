@@ -3,6 +3,13 @@
 # Test list (Plan 2026-10-06-0831, U9, KTD11):
 # 1. ``check_backend_failed`` kommt auf WARNING mit ``error_type``/``error`` an.
 # 2. ``check_broker_failed`` ebenso.
+#
+# Test list (Plan 2026-10-08-1541, U6, R2):
+# 3. Mehrere benannte Zusatz-Checks; jeder steht im Snapshot, einer rot
+#    macht den Worker nicht bereit.
+# 4. Consumer-Check: vor dem ersten ``consume`` nicht bereit.
+# 5. Consumer-Check: kurzes Fehlen bleibt grün, nach ``consumer_ready_grace_s``
+#    rot, danach wieder grün.
 
 from __future__ import annotations
 
@@ -10,7 +17,7 @@ import asyncio
 import json
 import socket
 
-from swarmq.health import HealthChecker, serve_health
+from swarmq.health import HealthChecker, consumer_check, serve_health
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
 
 
@@ -239,7 +246,7 @@ class TestComputeReadiness:
         async def dead():
             return False, "forkserver not running"
 
-        snapshot = await HealthChecker(broker, backend, compute_check=dead).check_all()
+        snapshot = await HealthChecker(broker, backend, checks={"compute": dead}).check_all()
         assert snapshot["ready"] is False
         assert snapshot["compute"] == {"ok": False, "error": "forkserver not running"}
         assert snapshot["broker"]["ok"] and snapshot["backend"]["ok"]
@@ -250,7 +257,51 @@ class TestComputeReadiness:
         async def alive():
             return True, None
 
-        ok = await HealthChecker(broker, backend, compute_check=alive).check_all()
+        ok = await HealthChecker(broker, backend, checks={"compute": alive}).check_all()
         assert ok["ready"] is True and ok["compute"] == {"ok": True, "error": None}
         plain = await HealthChecker(broker, backend).check_all()
         assert "compute" not in plain
+
+
+class TestAdditionalChecks:
+    """Plan 2026-10-08-1541 (U6): der Readiness-Hook nimmt mehrere Checks."""
+
+    async def test_every_named_check_is_reported_and_one_failure_is_not_ready(self):
+        broker, backend = await TestComputeReadiness()._stubs()
+
+        async def alive():
+            return True, None
+
+        async def no_consumer():
+            return False, "no active consumer: q1"
+
+        checker = HealthChecker(broker, backend, checks={"compute": alive, "consumers": no_consumer})
+        snapshot = await checker.check_all()
+
+        assert snapshot["ready"] is False
+        assert snapshot["compute"] == {"ok": True, "error": None}
+        assert snapshot["consumers"] == {"ok": False, "error": "no active consumer: q1"}
+
+
+class TestConsumerCheck:
+    """Plan 2026-10-08-1541 (U6, R2): jede erwartete Queue braucht einen
+    aktiven Consumer, mit Gnadenfrist ``consumer_ready_grace_s``."""
+
+    async def test_not_ready_before_the_first_consume(self):
+        check = consumer_check(lambda: {}, ["q1", "q1.high"], grace_s=30.0)
+
+        assert await check() == (False, "not consuming: q1, q1.high")
+
+    async def test_short_gap_stays_ready_long_gap_is_not_ready_and_recovers(self):
+        gaps = {"q1": 0.0, "q1.high": 0.0}
+        check = consumer_check(lambda: gaps, ["q1", "q1.high"], grace_s=30.0)
+        assert await check() == (True, None)
+
+        gaps["q1.high"] = 30.0
+        assert await check() == (True, None)
+
+        gaps["q1.high"] = 31.5
+        assert await check() == (False, "no active consumer for more than 30.0s: q1.high")
+
+        gaps["q1.high"] = 0.0
+        assert await check() == (True, None)

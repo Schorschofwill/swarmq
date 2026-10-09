@@ -125,6 +125,15 @@ Additional DLQ paths:
 - Delivery limit reached (`delivery_limit`, default 20) → DLQ via the
   worker's delivery-count gate (`task_sent_to_dlq` with
   `error_type=WorkerHungError`), broker-native DLQ as the last resort.
+- Execution guard orphan limit (`execution_guard_max_orphans`, default
+  3, expirations of the same execution without release) → DLQ as
+  `WorkerHungError` (`execution_guard_orphan_limit`).
+
+With `TaskInfo(dead_letter=False)` or
+`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`, the three `DLQ` arrows of
+the chart above store the error result and ack instead; the additional
+paths stay. Dead-lettered messages expire after
+`SWARMQ_DEAD_LETTER_TTL_S` (default 7 days).
 
 Not a DLQ path: a check before execution (schedule-fire dedup, cancel
 check, rate limit, lock) that cannot reach Valkey defers the message

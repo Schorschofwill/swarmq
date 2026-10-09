@@ -20,6 +20,7 @@ from aio_pika.exceptions import (
     ConnectionClosed,
 )
 
+from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 from swarmq.logging import _error_fields, get_logger, sanitize_url
@@ -54,6 +55,9 @@ _PUBLISH_MAX_ATTEMPTS = 5
 # ist ``SwarmQConfig.publish_timeout_s`` (Plan 2026-08-28-001, R3).
 _DEFAULT_PUBLISH_TIMEOUT_S = 120.0
 _DEFAULT_DELIVERY_LIMIT = 20
+# Fallback fuer einen ohne App konstruierten Broker; kanonisch ist
+# ``SwarmQConfig.dead_letter_ttl_s`` (Plan 2026-10-08-1541, KTD6).
+_DEFAULT_DEAD_LETTER_TTL_S = 604800.0
 # Frist fuer das nebenlaeufige Schliessen eines verworfenen Kanals. Kurz:
 # gelingt es nicht, ist der Transport ohnehin tot und der Kanal verwaist.
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
@@ -122,10 +126,14 @@ class RabbitMQConnection:
         # ueberschreibt aus der Konfiguration, ein direkt konstruierter
         # Broker behaelt den Default.
         self.delivery_limit: int = _DEFAULT_DELIVERY_LIMIT
+        # Verfallsfrist der von swarmq in die DLQ gelegten Nachrichten (KTD6);
+        # None heisst unbegrenzt. Wie oben aus der Konfiguration ueberschrieben.
+        self.dead_letter_ttl_s: float | None = _DEFAULT_DEAD_LETTER_TTL_S
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
-        # list of (queue, consumer_tag)
-        self._consumer_tags: list[tuple[aio_pika.abc.AbstractQueue, str]] = []
+        # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden
+        # angemeldeten Consumer und meldet verlorene selbst neu an.
+        self._consumer_watch = ConsumerWatch()
         # U1.1: QoS state re-applied after channel recreate. Without
         # this, a reconnected consumer silently loses its prefetch.
         self._consume_prefetch: int | None = None
@@ -309,6 +317,8 @@ class RabbitMQConnection:
                 task.cancel()
 
     async def close(self) -> None:
+        # Der Wächter darf nicht gegen eine abgebaute Verbindung weitertakten.
+        await self._consumer_watch.stop()
         await self._drain_pending_channel_closes()
         if self._owns_connection:
             # Owned (URL) path unchanged: closing the connection closes its

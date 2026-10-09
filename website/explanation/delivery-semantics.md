@@ -85,6 +85,8 @@ it to the DLQ:
 | Backend unreachable for a check before execution (schedule-fire dedup, cancel check, rate limit, lock) | New message to the delay queue with growing backoff, original acked (`task_deferred_backend_unavailable`); not a retry |
 | Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
 | Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (conflict cap) header |
+| Same execution already finished, superseded by a retry, or running elsewhere ([execution guard](#execution-guard)) | Acked and skipped (`duplicate_delivery_skipped`), or new message to the delay queue with growing backoff (`execution_guard_deferred`); not a retry |
+| `Task.run()` fails terminally with dead-lettering switched off (`TaskInfo(dead_letter=False)`) | Error result stored, original acked; no DLQ |
 
 The worker never calls `basic.nack(requeue=True)` with the primary
 retry path. Requeue-in-place would bypass the retry backoff and hot-
@@ -156,29 +158,31 @@ frequency.
 ### 1. Worker crash between Store and Ack
 
 The task ran, the result is in Valkey, but RabbitMQ never got the ack.
-When the worker is replaced, the message redelivers. The new worker
-runs the task **again** — there is no per-message "already ran" marker
-on the consumer side for this case in v1.
+When the worker is replaced, the message redelivers. From 0.11.0 the
+[execution guard](#execution-guard) catches most of these cases: an
+ack that failed on a lost channel still sets the done marker, so the
+redelivery is skipped. A worker killed after the side effect but
+before the ack leaves only a running marker; once it expires
+(`SWARMQ_EXECUTION_GUARD_TTL_S`, default 60 s) the redelivery runs the
+task **again**.
 
-**What your task sees.** A second call to `run()` with the same args.
-
-**Why it is accepted.** Adding a claim-check key to gate every
-execution would be a Valkey round-trip on the hot path for a rare
-event. In practice, worker crashes during the Store-to-Ack window are
-rare and usually benign — the second execution writes the same result
-to the same key.
+**What your task sees.** A second call to `run()` with the same args,
+at least `SWARMQ_EXECUTION_GUARD_TTL_S` after the first one started.
 
 **Mitigation.** Write idempotent task bodies (see below).
 
 ### 2. Redelivery after network partition
 
 A worker running in a broken-network pod finishes the task but cannot
-reach the broker to ack. RabbitMQ's delivery timeout fires, it nacks
-on the dead consumer's behalf, and the message goes to another
-worker. Both workers run the task.
+reach the broker to ack. RabbitMQ closes the connection or the
+[consumer timeout](#consumer-timeout) fires, and the message goes to
+another worker. While the first worker still renews its running
+marker in Valkey, the [execution guard](#execution-guard) defers the
+second delivery instead of running it. If the first worker cannot
+reach Valkey either, its marker expires and both workers run the task.
 
-**What your task sees.** Two concurrent `run()` calls, possibly on
-different worker hosts.
+**What your task sees.** Usually one `run()` call; in the worst case
+two concurrent calls, possibly on different worker hosts.
 
 **Mitigation.** Idempotent task body + `TaskInfo(lock="name")` for
 serialization when the business logic cannot tolerate concurrent
@@ -196,6 +200,194 @@ roll a deploy without losing work.
 with the same message body.
 
 **Mitigation.** Nothing required. This is the design.
+
+## Execution guard
+
+From 0.11.0 the worker checks every delivery against a marker in
+Valkey before it runs the task (`SWARMQ_EXECUTION_GUARD`, on by
+default). A redelivered message does not run while the same execution
+runs elsewhere, after it finished, or after a retry superseded it.
+
+**Identity.** An execution is the task id plus the header
+`x-swarmq-replay-id`, if present. `swarmq dlq retry` and
+`dlq retry --all` set a new replay id, so a deliberate replay runs
+again even while the marker of the first run exists.
+
+**How it works.** After the task lookup and before the expiry check,
+the worker claims a running marker with its own owner token and a TTL
+of `SWARMQ_EXECUTION_GUARD_TTL_S` (default 60 s). While the task runs,
+the worker renews all its markers in one batch every third of the TTL;
+in [CPU mode](../guides/cpu-mode.md) the main process renews them, so a
+busy compute child does not stop the renewal. The broker verb that the
+worker actually executes decides what comes next:
+
+| Executed verb | Marker |
+|---|---|
+| `ack` after the task, dead-lettering, routing to the dead-letter exchange | done marker, running marker deleted |
+| retry with a higher `x-swarmq-retry-count` (publish confirmed, even if the ack afterwards fails) | superseded marker with the new retry count, running marker deleted |
+| requeue, `nack`, deferral, no verb, exception | only the running marker is deleted |
+
+An `ack` that fails because the channel is gone (RabbitMQ up to 4.2
+after a consumer timeout) still sets the done marker. A retry or
+dead-letter publish that the broker confirmed but whose ack failed
+raises `SettleFailedAfterPublish` and sets its marker as after
+success; the redelivered original is then skipped.
+
+**On redelivery** the claim decides:
+
+- **Done, or superseded by a retry with a higher count:** the delivery
+  is acknowledged and skipped (`duplicate_delivery_skipped`).
+- **Running elsewhere:** the delivery goes back through the delay queue
+  as a new message (`execution_guard_deferred`), with the backoff of
+  `SWARMQ_BACKEND_DEFER_BASE_DELAY`/`_MAX_DELAY` counted in the header
+  `x-swarmq-guard-defer-count`. This uses neither `max_retries` nor the
+  delivery limit.
+- **Valkey unreachable:** deferred like the other checks before
+  execution (`task_deferred_backend_unavailable`, `gate=execution_guard`).
+
+**Crashed workers.** If a worker dies mid-task, its running marker
+expires after `SWARMQ_EXECUTION_GUARD_TTL_S`; the next delivery then
+runs normally. A marker that expired without release counts as an
+orphan. When the same execution has expired
+`SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` times (default 3), the delivery
+goes into `{queue}.XQ` as `WorkerHungError`
+(`execution_guard_orphan_limit`). Without this limit every deferral
+would be a new message and bypass the delivery limit.
+
+**Recovery takes up to a TTL or more.** Until the marker of a crashed
+worker expires, its redeliveries are deferred, not run. The marker was
+last renewed at most a third of the TTL before the crash, so it expires
+between two thirds of `SWARMQ_EXECUTION_GUARD_TTL_S` and the full TTL
+after the crash; the deferral that is pending at that moment adds its
+remaining backoff (up to `SWARMQ_BACKEND_DEFER_MAX_DELAY`). With the
+defaults (60 s each) a task of a SIGKILLed or OOM-killed worker runs
+again roughly one to two minutes after the crash. A shorter TTL speeds
+up recovery but makes a blocked event loop lose its marker sooner (see
+below).
+
+**Short Valkey outages.** A running worker that cannot set a marker
+after the broker verb (`execution_guard_finish_failed`: done after the
+ack, superseded after a retry, or the release) retries it in the
+background: only its own marker, with the backoff of
+`SWARMQ_BACKEND_DEFER_BASE_DELAY`/`_MAX_DELAY`, for about
+`SWARMQ_EXECUTION_GUARD_TTL_S`. A retried done marker still marks the
+execution finished, so its redelivery is skipped. Once Valkey is back,
+the redelivery therefore does not wait for the marker to expire, and
+no orphan is counted (`execution_guard_finish_recovered`). On shutdown
+the worker makes one last attempt right away before it closes the
+Valkey connection; the attempt is bounded by
+`SWARMQ_BACKEND_OP_TIMEOUT`. Only if Valkey stays unreachable longer
+does the marker expire by its TTL and count as an orphan
+(`execution_guard_finish_gave_up`); without its done marker the
+redelivery then runs the task again.
+
+**Retention of the markers.** Done and superseded markers live
+`SWARMQ_EXECUTION_GUARD_DONE_TTL_S`; the default is
+`max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` seconds
+and at least `SWARMQ_EXECUTION_GUARD_TTL_S`. Deferred copies can sit
+behind long retry delays, and from RabbitMQ 4.3 deliveries stay checked
+out until the consumer timeout. Keys: `sq:guard:{<identity>}:run` (the
+running marker) and `sq:guard:{<identity>}:state` (done, superseded,
+orphans), both under the same hash tag.
+
+**Remaining risks.** The guard narrows duplicates, it does not make
+SwarmQ exactly-once:
+
+- **A blocked event loop stops the renewal.** Synchronous code that
+  blocks the loop of an IO worker for longer than the TTL lets the
+  running marker expire; a redelivery can then run in parallel. The
+  worker logs `execution_guard_lease_lost` once it notices. Keep
+  blocking work in [CPU mode](../guides/cpu-mode.md) or in a thread, or
+  raise `SWARMQ_EXECUTION_GUARD_TTL_S`.
+- **A hung task blocks its redelivery without limit.** A task that
+  awaits forever while the event loop keeps running renews its marker,
+  so every redelivery of it is deferred again and again. Once the
+  deferrals add up to more than `SWARMQ_CONSUMER_TIMEOUT_S` (nominal
+  backoff, without jitter), the worker logs
+  `execution_guard_defer_stalled` (WARNING) once per message and counts
+  `event="defer_stalled"`. It keeps deferring; the message does not go
+  to the DLQ. Give long tasks a timeout of their own.
+- **Older workers in mixed operation do not protect.** Workers before
+  0.11.0 neither set nor check markers. Until every worker consuming a
+  queue runs 0.11.0, a delivery handled by an older worker is not
+  guarded.
+- `FIRE_AND_FORGET` tasks are acknowledged before they run and are not
+  guarded. A backend of your own without an `execution_guard` store
+  switches the guard off.
+
+**Cost.** Each guarded task costs two Lua calls to Valkey plus the
+batched renewal. In the load suite, realistic load showed no
+measurable throughput loss. The worst case — one worker, only tasks
+of about 0.3 ms, CPU-saturated — lost 7.4 % throughput; CPU per task
+rose by 11–12 % and the latency of fast tasks by 0.15–0.2 ms.
+
+**Switching it off.** `SWARMQ_EXECUTION_GUARD=false`
+(`SwarmQConfig(execution_guard=False)`) restores the behaviour before
+0.11.0. Observe it with `swarmq_execution_guard_events_total{event}`
+(`duplicate_skipped`, `deferred`, `orphan_limit`, `lease_lost`,
+`defer_stalled`) and the
+[log events](../reference/logging.md#event-catalog).
+
+## Consumer timeout
+
+RabbitMQ's `consumer_timeout` (default 30 minutes;
+`SWARMQ_CONSUMER_TIMEOUT_S` tells the worker the value) bounds how long
+a delivery may stay unacknowledged. What happens when a task runs
+longer depends on the RabbitMQ version:
+
+- **Up to 4.2 (and 3.13):** the broker closes the channel. aio-pika
+  restores the consumer, and the broker redelivers the message while
+  the original still runs. Before 0.11.0 the task ran twice; now the
+  [execution guard](#execution-guard) defers the redelivery until the
+  original finished and then skips it. The late ack of the original
+  fails on the closed channel (`delivery_settle_failed`) and is
+  harmless.
+- **From 4.3 (quorum queues):** the broker sends `basic.cancel`, the
+  channel stays open, and the message goes back to the queue. The
+  consumer remains at the broker as a zombie: a late ack wakes it, and
+  the broker delivers to a tag the client no longer knows, so those
+  messages were silently dropped. Before 0.11.0 the worker stopped
+  consuming without notice. On 4.3.6 classic queues have no consumer
+  timeout.
+
+From 0.11.0 a **consumer watch** checks every
+`SWARMQ_CONSUMER_WATCH_INTERVAL_S` (default 5 s) that each consumed
+queue, including priority queues, still has its consumer on the
+current channel:
+
+- A consumer missing on an open, unchanged channel (4.3) is cancelled
+  by the worker itself and then registered again with a new tag.
+- A consumer missing because the channel was closed or replaced (up to
+  4.2) gets two ticks for aio-pika's restore; only then the watch
+  registers it again.
+- Each re-registration logs `consumer_reregistered` (field `reason`:
+  `broker_cancel` or `channel_replaced`) and counts
+  `swarmq_consumer_reregistrations_total{queue}`. The worker consumes
+  again within two intervals, without a restart, and no zombie stays
+  at the broker.
+
+On 4.3 an ack or nack for a delivery whose consumer the broker
+cancelled waits until the watch has sent its own cancel
+(`delivery_settle_deferred`), because only then is it harmless. If
+that takes longer than 10 s, the settle is dropped
+(`delivery_settle_withheld`) and the call returns normally; the broker
+had already taken the message back with its cancel. If the watch has
+never seen the tag (first tick after `consume`), the cancel can take
+two ticks, so a late settle may be dropped after 10 s — safely. The
+same applies during shutdown for settles on tags the broker cancelled.
+
+**Readiness.** `/ready` gets a `consumers` entry. It is not ready
+before the first `consume` (`not consuming: <queues>`) and once a
+queue has had no active consumer for more than
+`SWARMQ_CONSUMER_READY_GRACE_S` (default 30 s): `no active consumer for
+more than 30.0s: <queues>`. **Never use `/ready` as a liveness probe**:
+a broker outage would then restart every worker at once, and a restart
+does not help — the watch registers the consumer again by itself. Use
+`/health` for liveness.
+
+Raise `SWARMQ_CONSUMER_TIMEOUT_S` together with the broker's
+`consumer_timeout` for jobs that run longer than 30 minutes; the
+worker warns at start when a `hard_timeout` exceeds it.
 
 ## Idempotency expectations
 
@@ -225,7 +417,7 @@ that, write idempotent task bodies.
 ## How DLQ routing interacts with retries
 
 Retries are a first-class path. The DLQ is the terminal path. A task
-reaches the DLQ by one of four routes:
+reaches the DLQ by one of five routes:
 
 1. **Retry exhaustion.** The last retry raised. The worker publishes
    the message to `{queue}.XQ` (with `x-swarmq-traceback`) and acks
@@ -241,10 +433,21 @@ reaches the DLQ by one of four routes:
    lock key cannot be rendered (e.g. missing kwarg), or lock
    conflict budget hit. DLQ carries the message with diagnostic
    headers.
+5. **Orphan limit of the execution guard.** The same execution expired
+   `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` times without release; the
+   delivery goes to the DLQ as `WorkerHungError`.
+
+Routes 1 and 2 (and an exception outside `retry_exceptions`) can be
+switched off per task (`TaskInfo(dead_letter=False)`) or globally
+(`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`); the error result is
+then stored and the message acknowledged. Dead-lettered messages
+expire after `SWARMQ_DEAD_LETTER_TTL_S` (default 7 days); see
+[Dead letter queues](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire).
 
 DLQ'd messages are recoverable via `swarmq dlq list | inspect |
 retry`. The retry count header is reset on `dlq retry`, so the task
-gets its full retry budget back. The original traceback stays in the
+gets its full retry budget back, and a new replay id lets it pass the
+execution guard. The original traceback stays in the
 headers for post-mortem.
 
 ## What SwarmQ will not do
@@ -253,7 +456,8 @@ headers for post-mortem.
   `schedule()` + `get_result()` explicitly.
 - **Guarantee ordering.** RabbitMQ guarantees FIFO per queue per
   consumer, but with `--concurrency > 1` that becomes partial order.
-- **Run exactly-once.** Write your task body as if it can run twice.
+- **Run exactly-once.** The execution guard narrows duplicates, but
+  write your task body as if it can run twice.
 - **Move results through the broker.** Results go to Valkey; the
   broker only carries the task message.
 
