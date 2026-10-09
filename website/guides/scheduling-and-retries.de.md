@@ -201,9 +201,12 @@ Was das praktisch heißt:
 - Ein statischer Cron, den ein lebender Worker meldet, ist nach
   `swarmq schedule remove --permanent` binnen eines Takts wieder da.
   Dauerhaft weg ist er erst, wenn ihn kein Code mehr meldet.
-- Ein aus dem Code entfernter Cron bleibt in Valkey und feuert weiter;
-  mit `swarmq schedule remove --permanent NAME` entfernen, sobald ihn
-  kein Worker mehr meldet.
+- Ein aus dem Code entfernter Cron hört auf zu feuern, sobald ihn
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` lang (Standard 24 h; ab 0.11.0, siehe
+  [Crons entfernen](#crons-entfernen-die-keine-app-mehr-meldet)) kein
+  Worker gemeldet hat. Sofort loswerden lässt er sich mit
+  `swarmq schedule remove --permanent NAME`, sobald ihn kein Worker mehr
+  meldet.
 - Ein gleichnamiger CLI-Schedule schlägt den statischen Cron weiterhin,
   mit der Warnung `scheduler_static_cron_shadowed_by_cli`.
 - Crons anderer Apps auf demselben Valkey feuern ohne die Warnung
@@ -212,11 +215,61 @@ Was das praktisch heißt:
   `unique_for` eines solchen Tasks wirkt also nicht auf seine
   Cron-Fires.
 
-Meldungen, die 7 Tage lang nicht erneuert wurden, löscht der Leader.
+Meldungen, die 7 Tage lang nicht erneuert wurden, löscht der Leader,
+oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls das
+länger ist.
 
 Alle Apps auf einem Valkey sollten dasselbe
 `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` nutzen: Der Leader beurteilt die
 Lebendigkeit mit seinem eigenen Takt.
+
+### Crons entfernen, die keine App mehr meldet
+
+Ab 0.11.0 entfernt der Leader einen statischen Cron, der mindestens
+einmal gemeldet wurde und den seit `SWARMQ_SCHEDULER_PRUNE_AFTER_S`
+Sekunden (Standard `86400`, 24 h) kein Worker mehr gemeldet hat. Er
+prüft das in jedem Übernahme-Takt und loggt `scheduler_cron_pruned`.
+Definition und Termin verschwinden in einem atomaren Schritt, und nur,
+solange die Definition unverändert und jede Meldung des Namens noch zu
+alt ist.
+
+- **Nie gemeldete Crons bleiben.** Altbestand aus der Zeit vor 0.10.0
+  und Crons von Apps, die noch ein swarmq vor 0.10.0 fahren, haben keine
+  Meldung. Der Leader entfernt sie nie von selbst; er loggt
+  `scheduler_cron_prune_candidate` einmal je Name und Leader-Lauf.
+  `swarmq schedule prune --orphans` entfernt sie bewusst (siehe
+  [CLI-Referenz](../reference/cli.md#swarmq-schedule-prune)).
+  `swarmq schedule list` zeigt die jüngste Meldung je Cron in der
+  Spalte `LAST_SEEN`: ein Datum, `never` für einen statischen Cron ohne
+  jede Meldung, `-` für CLI-Schedules.
+- **Pausierende Apps sind innerhalb der Frist sicher.** Ein Cron kommt
+  mit seiner nächsten Meldung zurück; die Crons von App B bleiben,
+  solange einer ihrer Worker innerhalb von
+  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` meldet. Die Frist anheben, wenn eine
+  App länger stehen darf.
+- **Deaktivierte Crons kommen deaktiviert zurück.** Der Leader merkt
+  sich einen Cron, der beim Entfernen deaktiviert war
+  (`sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er
+  deaktiviert angelegt. Das gilt auch nach `schedule prune --orphans`.
+- **CLI-Schedules bleiben immer unberührt.**
+- Wer einen Cron sofort loswerden will, nutzt weiterhin
+  `swarmq schedule remove --permanent`.
+
+`SWARMQ_SCHEDULER_PRUNE` schaltet es: `on` (Standard) entfernt, `log`
+loggt nur `scheduler_cron_prune_skipped` einmal je Name, `off` tut
+nichts. Die Frist muss mindestens das Dreifache von
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S` betragen.
+
+!!! warning "Jede App auf dem Valkey muss mindestens 0.10.0 fahren"
+    Nur Worker ab 0.10.0 melden ihre Crons. Ein Cron, der einmal
+    gemeldet wurde und jetzt nur noch von einem Worker vor 0.10.0
+    bedient wird — etwa nachdem eine App zurückgerollt wurde —, gilt
+    als verstummt und wird nach der Frist entfernt, obwohl die App noch
+    läuft. Alle Apps auf demselben Valkey auf mindestens 0.10.0
+    bringen, bevor Worker mit 0.11.0 Leader werden, oder in den
+    0.11.0-Apps `SWARMQ_SCHEDULER_PRUNE=log` setzen, bis die letzte App
+    umgestellt ist; dann `scheduler_cron_prune_skipped` auf Crons
+    beobachten, die entfernt worden wären.
 
 ### Konflikte
 

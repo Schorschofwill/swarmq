@@ -90,6 +90,8 @@ Nachricht entweder oder routet sie in die DLQ:
 | Backend nicht erreichbar bei einer Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) | Neue Nachricht in die Delay-Queue mit wachsendem Backoff, Original bestätigt (`task_deferred_backend_unavailable`); kein Retry |
 | Task-Alter übersteigt `max_age` bei Pickup | `TASK_EXPIRED`-Signal + DLQ |
 | Lock-Render-Fehler oder Conflict-Cap erreicht | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (Conflict-Cap) |
+| Dieselbe Ausführung ist bereits abgeschlossen, von einem Retry überholt oder läuft anderswo ([Ausführungsschutz](#ausfuhrungsschutz)) | Bestätigt und übersprungen (`duplicate_delivery_skipped`) oder neue Nachricht in die Delay-Queue mit wachsendem Backoff (`execution_guard_deferred`); kein Retry |
+| `Task.run()` scheitert terminal bei abgeschaltetem Dead-Lettering (`TaskInfo(dead_letter=False)`) | Fehlerergebnis gespeichert, Original bestätigt; keine DLQ |
 
 Der Worker ruft auf dem Primär-Retry-Pfad nie `basic.nack(requeue=True)`
 auf. Ein Requeue-an-Ort-und-Stelle würde das Retry-Backoff umgehen
@@ -169,31 +171,33 @@ Duplikate entstehen in drei Situationen, absteigend nach Häufigkeit.
 
 Der Task lief, das Ergebnis ist in Valkey, aber RabbitMQ hat den
 Ack nie bekommen. Wenn der Worker ersetzt wird, redelivert die
-Nachricht. Der neue Worker führt den Task **erneut** aus — in v1
-gibt es für diesen Fall keinen Per-Message-Marker „bereits gelaufen"
-auf Consumer-Seite.
+Nachricht. Ab 0.11.0 fängt der [Ausführungsschutz](#ausfuhrungsschutz)
+die meisten dieser Fälle ab: Ein Ack, das an einem verlorenen Kanal
+scheitert, setzt trotzdem den Done-Marker, die Neuzustellung wird
+übersprungen. Ein Worker, der nach dem Seiteneffekt, aber vor dem Ack
+getötet wird, hinterlässt nur einen Running-Marker; sobald der abläuft
+(`SWARMQ_EXECUTION_GUARD_TTL_S`, Standard 60 s), führt die
+Neuzustellung den Task **erneut** aus.
 
 **Was dein Task sieht.** Einen zweiten Aufruf von `run()` mit
-denselben Args.
-
-**Warum akzeptiert.** Einen Claim-Check-Key zu jeder Ausführung auf
-den Hot Path zu setzen, wäre ein Valkey-Roundtrip für ein seltenes
-Ereignis. In der Praxis sind Worker-Crashes im Store-zu-Ack-Fenster
-selten und meist harmlos — die zweite Ausführung schreibt dasselbe
-Ergebnis in denselben Key.
+denselben Args, frühestens `SWARMQ_EXECUTION_GUARD_TTL_S` nach dem
+Start des ersten.
 
 **Mitigation.** Schreibe idempotente Task-Bodies (siehe unten).
 
 ### 2. Redelivery nach Netzwerk-Partition
 
 Ein Worker in einem Broken-Network-Pod beendet den Task, kann aber
-den Broker zum Ack'n nicht mehr erreichen. RabbitMQs
-Delivery-Timeout feuert, es nackt stellvertretend für den toten
-Consumer, und die Nachricht geht an einen anderen Worker. Beide
-Worker führen den Task aus.
+den Broker zum Ack'n nicht mehr erreichen. RabbitMQ schließt die
+Verbindung oder der [Consumer-Timeout](#consumer-timeout) feuert, und
+die Nachricht geht an einen anderen Worker. Solange der erste Worker
+seinen Running-Marker in Valkey noch verlängert, stellt der
+[Ausführungsschutz](#ausfuhrungsschutz) die zweite Zustellung zurück,
+statt sie auszuführen. Erreicht der erste Worker auch Valkey nicht,
+läuft sein Marker ab, und beide Worker führen den Task aus.
 
-**Was dein Task sieht.** Zwei nebenläufige `run()`-Aufrufe,
-möglicherweise auf verschiedenen Worker-Hosts.
+**Was dein Task sieht.** Meist einen `run()`-Aufruf; im schlimmsten
+Fall zwei nebenläufige, möglicherweise auf verschiedenen Worker-Hosts.
 
 **Mitigation.** Idempotenter Task-Body + `TaskInfo(lock="name")`
 für Serialisierung, wenn die Business-Logik nebenläufige Ausführung
@@ -212,6 +216,170 @@ ohne Arbeit zu verlieren.
 anderen Worker mit demselben Nachrichten-Body.
 
 **Mitigation.** Keine nötig. So ist das Design.
+
+## Ausführungsschutz
+
+Ab 0.11.0 prüft der Worker jede Zustellung gegen einen Marker in
+Valkey, bevor er den Task ausführt (`SWARMQ_EXECUTION_GUARD`,
+standardmäßig an). Eine erneut zugestellte Nachricht läuft nicht,
+solange dieselbe Ausführung anderswo läuft, nachdem sie abgeschlossen
+ist oder nachdem ein Retry sie überholt hat.
+
+**Identität.** Eine Ausführung ist die Task-ID plus der Header
+`x-swarmq-replay-id`, falls vorhanden. `swarmq dlq retry` und
+`dlq retry --all` setzen eine neue Replay-ID, damit eine bewusste
+Wiederholung erneut läuft, auch solange der Marker des ersten Laufs
+steht.
+
+**Ablauf.** Nach dem Task-Lookup und vor der Expiry-Prüfung setzt der
+Worker einen Running-Marker mit eigenem Owner-Token und einer TTL von
+`SWARMQ_EXECUTION_GUARD_TTL_S` (Standard 60 s). Während der Task läuft,
+verlängert der Worker alle seine Marker gesammelt in jedem Drittel der
+TTL; im [CPU-Modus](../guides/cpu-mode.md) verlängert sie der
+Hauptprozess, ein ausgelastetes Rechenkind hält die Verlängerung also
+nicht auf. Was danach kommt, entscheidet das Broker-Verb, das der
+Worker tatsächlich ausführt:
+
+| Ausgeführtes Verb | Marker |
+|---|---|
+| `ack` nach dem Task, Dead-Lettering, Routing zum Dead-Letter-Exchange | Done-Marker, Running-Marker gelöscht |
+| Retry mit höherem `x-swarmq-retry-count` (Publish bestätigt, auch wenn das Ack danach scheitert) | Superseded-Marker mit dem neuen Retry-Zähler, Running-Marker gelöscht |
+| Requeue, `nack`, Zurückstellung, kein Verb, Exception | nur der Running-Marker wird gelöscht |
+
+Ein `ack`, das scheitert, weil der Kanal weg ist (RabbitMQ bis 4.2
+nach einem Consumer-Timeout), setzt trotzdem den Done-Marker. Ein
+Retry- oder Dead-Letter-Publish, den der Broker bestätigt hat, dessen
+Ack aber scheitert, wirft `SettleFailedAfterPublish` und setzt seinen
+Marker wie nach Erfolg; das neu zugestellte Original wird dann
+übersprungen.
+
+**Bei einer Neuzustellung** entscheidet der Claim:
+
+- **Abgeschlossen oder von einem Retry mit höherem Zähler überholt:**
+  Die Zustellung wird bestätigt und übersprungen
+  (`duplicate_delivery_skipped`).
+- **Läuft anderswo:** Die Zustellung geht als neue Nachricht über die
+  Delay-Queue zurück (`execution_guard_deferred`), mit dem Backoff aus
+  `SWARMQ_BACKEND_DEFER_BASE_DELAY`/`_MAX_DELAY`, gezählt im Header
+  `x-swarmq-guard-defer-count`. Das verbraucht weder `max_retries` noch
+  das Delivery-Limit.
+- **Valkey nicht erreichbar:** zurückgestellt wie bei den anderen
+  Prüfungen vor der Ausführung (`task_deferred_backend_unavailable`,
+  `gate=execution_guard`).
+
+**Abgestürzte Worker.** Stirbt ein Worker mitten im Task, läuft sein
+Running-Marker nach `SWARMQ_EXECUTION_GUARD_TTL_S` ab; die nächste
+Zustellung läuft dann normal. Ein ohne Freigabe abgelaufener Marker
+zählt als Waise. Ist dieselbe Ausführung
+`SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal (Standard 3) abgelaufen, geht
+die Zustellung als `WorkerHungError` nach `{queue}.XQ`
+(`execution_guard_orphan_limit`). Ohne diese Grenze wäre jede
+Zurückstellung eine neue Nachricht und hebelte das Delivery-Limit aus.
+
+**Aufbewahrung der Marker.** Done- und Superseded-Marker leben
+`SWARMQ_EXECUTION_GUARD_DONE_TTL_S`; Standard ist
+`max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` Sekunden,
+mindestens `SWARMQ_EXECUTION_GUARD_TTL_S`. Zurückgestellte Kopien
+können hinter langen Retry-Verzögerungen stecken, und ab RabbitMQ 4.3
+bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Keys:
+`sq:guard:{<identity>}:run` (Running-Marker) und
+`sq:guard:{<identity>}:state` (Done, Superseded, Waisen), beide unter
+demselben Hash-Tag.
+
+**Restrisiken.** Der Schutz verringert Duplikate, er macht SwarmQ
+nicht exactly-once:
+
+- **Ein blockierter Event-Loop stoppt die Verlängerung.** Synchroner
+  Code, der den Loop eines IO-Workers länger als die TTL blockiert,
+  lässt den Running-Marker ablaufen; eine Neuzustellung kann dann
+  parallel laufen. Der Worker loggt `execution_guard_lease_lost`,
+  sobald er es bemerkt. Blockierende Arbeit in den
+  [CPU-Modus](../guides/cpu-mode.md) oder einen Thread legen oder
+  `SWARMQ_EXECUTION_GUARD_TTL_S` anheben.
+- **Ältere Worker im Mischbetrieb schützen nicht.** Worker vor 0.11.0
+  setzen und prüfen keine Marker. Bis jeder Worker einer Queue 0.11.0
+  läuft, ist eine Zustellung, die ein älterer Worker bearbeitet, nicht
+  geschützt.
+- `FIRE_AND_FORGET`-Tasks werden vor der Ausführung bestätigt und
+  nicht geschützt. Ein eigenes Backend ohne `execution_guard`-Store
+  schaltet den Schutz ab.
+
+**Kosten.** Jeder geschützte Task kostet zwei Lua-Aufrufe an Valkey
+plus die gesammelte Verlängerung. In der Loadsuite zeigte realistische
+Last keinen messbaren Durchsatzverlust. Der ungünstigste Fall — ein
+Worker, nur Tasks von etwa 0,3 ms, CPU-gesättigt — verlor 7,4 %
+Durchsatz; die CPU je Task stieg um 11–12 %, die Latenz schneller
+Tasks um 0,15–0,2 ms.
+
+**Abschalten.** `SWARMQ_EXECUTION_GUARD=false`
+(`SwarmQConfig(execution_guard=False)`) stellt das Verhalten vor
+0.11.0 wieder her. Beobachten mit
+`swarmq_execution_guard_events_total{event}` (`duplicate_skipped`,
+`deferred`, `orphan_limit`, `lease_lost`) und den
+[Log-Events](../reference/logging.md#event-katalog).
+
+## Consumer-Timeout
+
+RabbitMQs `consumer_timeout` (Standard 30 Minuten;
+`SWARMQ_CONSUMER_TIMEOUT_S` teilt dem Worker den Wert mit) begrenzt,
+wie lange eine Zustellung unbestätigt bleiben darf. Was passiert, wenn
+ein Task länger läuft, hängt von der RabbitMQ-Version ab:
+
+- **Bis 4.2 (und 3.13):** Der Broker schließt den Channel. aio-pika
+  stellt den Consumer wieder her, und der Broker stellt die Nachricht
+  erneut zu, während das Original noch läuft. Vor 0.11.0 lief der Task
+  doppelt; jetzt stellt der [Ausführungsschutz](#ausfuhrungsschutz) die
+  Neuzustellung zurück, bis das Original fertig ist, und überspringt
+  sie dann. Das späte Ack des Originals scheitert am geschlossenen
+  Channel (`delivery_settle_failed`) und ist harmlos.
+- **Ab 4.3 (Quorum-Queues):** Der Broker sendet `basic.cancel`, der
+  Channel bleibt offen, und die Nachricht geht zurück in die Queue. Der
+  Consumer bleibt am Broker als Zombie bestehen: Ein spätes Ack weckt
+  ihn, und der Broker stellt an einen Tag zu, den der Client nicht mehr
+  kennt, sodass diese Nachrichten still verworfen wurden. Vor 0.11.0
+  hörte der Worker unbemerkt auf zu konsumieren. Auf 4.3.6 haben
+  Classic-Queues keinen Consumer-Timeout.
+
+Ab 0.11.0 prüft ein **Consumer-Wächter** alle
+`SWARMQ_CONSUMER_WATCH_INTERVAL_S` (Standard 5 s), ob jede konsumierte
+Queue, einschließlich der Prioritäts-Queues, noch ihren Consumer auf
+dem aktuellen Channel hat:
+
+- Einen Consumer, der auf einem offenen, unveränderten Channel fehlt
+  (4.3), meldet der Worker selbst ab und danach mit neuem Tag wieder
+  an.
+- Fehlt ein Consumer, weil der Channel geschlossen oder ersetzt wurde
+  (bis 4.2), bekommt aio-pikas Restore zwei Takte; erst danach meldet
+  der Wächter ihn neu an.
+- Jede Neuanmeldung loggt `consumer_reregistered` (Feld `reason`:
+  `broker_cancel` oder `channel_replaced`) und zählt
+  `swarmq_consumer_reregistrations_total{queue}`. Der Worker konsumiert
+  binnen zwei Takten wieder, ohne Neustart, und am Broker bleibt kein
+  Zombie zurück.
+
+Auf 4.3 wartet ein Ack oder Nack für eine Zustellung, deren Consumer
+der Broker beendet hat, bis der Wächter sein eigenes Cancel gesendet
+hat (`delivery_settle_deferred`), denn erst dann ist es harmlos.
+Dauert das länger als 10 s, wird das Settle verworfen
+(`delivery_settle_withheld`), und der Aufruf kehrt normal zurück; der
+Broker hatte die Nachricht mit seinem Cancel bereits zurückgenommen.
+Hat der Wächter den Tag noch nie gesehen (erster Takt nach `consume`),
+kann das Cancel zwei Takte brauchen, ein spätes Settle wird dann
+eventuell nach 10 s verworfen — sicher. Dasselbe gilt beim
+Herunterfahren für Settles auf Tags, die der Broker beendet hat.
+
+**Readiness.** `/ready` bekommt einen Eintrag `consumers`. Er ist vor
+dem ersten `consume` nicht bereit (`not consuming: <queues>`) und
+sobald eine Queue länger als `SWARMQ_CONSUMER_READY_GRACE_S` (Standard
+30 s) keinen aktiven Consumer hatte: `no active consumer for more than
+30.0s: <queues>`. **`/ready` nie als Liveness-Probe nutzen**: Ein
+Broker-Ausfall würde dann alle Worker gleichzeitig neu starten, und ein
+Neustart hilft nicht — der Wächter meldet den Consumer von selbst neu
+an. Für Liveness `/health` nutzen.
+
+`SWARMQ_CONSUMER_TIMEOUT_S` zusammen mit dem `consumer_timeout` des
+Brokers anheben, wenn Jobs länger als 30 Minuten laufen; der Worker
+warnt beim Start, wenn ein `hard_timeout` ihn übersteigt.
 
 ## Idempotenz-Erwartungen
 
@@ -243,7 +411,7 @@ idempotente Task-Bodies.
 ## Wie DLQ-Routing mit Retries interagiert
 
 Retries sind ein Primärpfad. Die DLQ ist der Terminalpfad. Ein Task
-erreicht die DLQ über einen von vier Wegen:
+erreicht die DLQ über einen von fünf Wegen:
 
 1. **Retry-Erschöpfung.** Der letzte Retry raiste. Der Worker
    publiziert die Nachricht nach `{queue}.XQ` (mit
@@ -261,10 +429,22 @@ erreicht die DLQ über einen von vier Wegen:
    Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg),
    Lock-Conflict-Budget getroffen. Die DLQ trägt die Nachricht mit
    Diagnostik-Headern.
+5. **Waisen-Grenze des Ausführungsschutzes.** Dieselbe Ausführung ist
+   `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen;
+   die Zustellung geht als `WorkerHungError` in die DLQ.
+
+Die Wege 1 und 2 (und eine Exception außerhalb von `retry_exceptions`)
+lassen sich pro Task (`TaskInfo(dead_letter=False)`) oder global
+(`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`) abschalten; dann wird
+das Fehlerergebnis gespeichert und die Nachricht bestätigt.
+Dead-gelettete Nachrichten verfallen nach `SWARMQ_DEAD_LETTER_TTL_S`
+(Standard 7 Tage); siehe
+[Dead-Letter-Queues](../guides/dead-letter-queues.md#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen).
 
 DLQ'te Nachrichten sind per `swarmq dlq list | inspect | retry`
 wiederherstellbar. Der Retry-Count-Header wird beim `dlq retry`
-zurückgesetzt, sodass der Task sein volles Retry-Budget zurückbekommt.
+zurückgesetzt, sodass der Task sein volles Retry-Budget zurückbekommt,
+und eine neue Replay-ID lässt ihn am Ausführungsschutz vorbei.
 Der Original-Traceback bleibt in den Headern für die Post-Mortem.
 
 ## Was SwarmQ nicht tut
@@ -274,8 +454,8 @@ Der Original-Traceback bleibt in den Headern für die Post-Mortem.
 - **Ordering garantiert.** RabbitMQ garantiert FIFO pro Queue pro
   Consumer, aber mit `--concurrency > 1` wird daraus eine
   partielle Ordnung.
-- **Exactly-once laufen.** Schreibe deinen Task-Body so, als könnte
-  er zweimal laufen.
+- **Exactly-once laufen.** Der Ausführungsschutz verringert Duplikate,
+  aber schreibe deinen Task-Body so, als könnte er zweimal laufen.
 - **Ergebnisse durch den Broker routen.** Ergebnisse gehen zu
   Valkey; der Broker trägt nur die Task-Nachricht.
 

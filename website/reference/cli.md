@@ -255,7 +255,12 @@ swarmq schedule list [--format (table|json)]
 ```
 
 Lists every schedule in `sq:sched:defs` with its cron, next fire
-time, queue, and dedup state.
+time, queue, and dedup state. The column `LAST_SEEN` shows the newest
+[cron report](../guides/scheduling-and-retries.md#cron-reports-and-the-leader)
+of a static cron (UTC), `never` for a static cron no worker has ever
+reported (a candidate for [`schedule prune --orphans`](#swarmq-schedule-prune))
+and `-` for CLI schedules, which are never reported. `--format json`
+adds `last_seen_ms` (Unix milliseconds or `null`) to every entry.
 
 ### `swarmq schedule add`
 
@@ -344,6 +349,29 @@ Fire times are shown in UTC.
 and `workers` (a list of `{"worker_id": ..., "version": ...}`) to
 `leader`, `now_ms` and `upcoming`.
 
+### `swarmq schedule prune`
+
+```text
+swarmq schedule prune --orphans [--format (table|json)]
+```
+
+Removes every static cron that no worker has ever reported: old
+entries from before 0.10.0 and crons of apps that run a swarmq before
+0.10.0. The leader never removes these on its own (it logs
+`scheduler_cron_prune_candidate`); crons that were reported and then
+fell silent it removes after `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (see
+[removing crons](../guides/scheduling-and-retries.md#removing-crons-no-app-reports-anymore)).
+CLI schedules are never touched. Each cron is removed atomically
+together with its fire, only while it still has no report. A cron that
+was disabled comes back disabled when a worker reports it again.
+`--orphans` is required. Prints `removed orphan schedule 'NAME'` per
+cron, or `no orphan schedules (every static schedule has been
+reported)`; `--format json` prints `{"removed": [...]}`.
+
+Run it only when every app on the Valkey runs 0.10.0 or later;
+otherwise the crons of an older app are removed and only come back
+when that app reports them after its upgrade.
+
 ## `swarmq dlq`
 
 Operate on `{queue}.XQ`, the broker-level dead-letter queue. Needs
@@ -358,9 +386,17 @@ swarmq dlq list [--queue QUEUE] [--limit N] [--format (table|json)]
 Drain-and-republish scan — shows `task_id`, `task_name`, retry-count
 header, error preview, body size. `--queue` defaults to `default` (DLQ
 `default.XQ`), `--limit` to `100`. Repeated calls are safe: messages
-stay in the DLQ. The table output shows `(truncated)` when
-`--limit` is hit; `--format json` includes a `truncated: bool`
-envelope.
+stay in the DLQ with their remaining retention; reading does not
+extend it, and messages whose retention ran out are dropped (see
+[retention](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire)).
+The table output shows `(truncated)` when `--limit` is hit;
+`--format json` includes a `truncated: bool` envelope.
+
+All `dlq` subcommands that put messages back read
+`SWARMQ_DEAD_LETTER_TTL_S` (default `604800`, `none` = unlimited) to
+compute the remaining retention; use the same value as your workers.
+A message without `x-swarmq-dead-lettered-at` gets the header and the
+full retention on its first read.
 
 ### `swarmq dlq inspect`
 
@@ -386,8 +422,12 @@ Republishes into the main queue. `--all` moves every message (up to
 `--limit`, default `10000`); a single `TASK_ID` is looked up among the
 first `--scan-limit` messages (default `1000`). Pass exactly one of
 `TASK_ID` and `--all`, otherwise the command exits `2`. The `x-swarmq-retry-count` header is
-reset so the task gets its full retry budget; all other headers
-survive. Exits `3` when a single-task retry finds nothing.
+reset so the task gets its full retry budget; `x-swarmq-dead-lettered-at`
+and the retention are removed, and a new `x-swarmq-replay-id` lets the
+message pass the
+[execution guard](../explanation/delivery-semantics.md#execution-guard);
+all other headers survive. Exits `3` when a single-task retry finds
+nothing.
 
 ### `swarmq dlq purge`
 

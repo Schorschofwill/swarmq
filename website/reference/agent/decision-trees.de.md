@@ -131,6 +131,15 @@ Zusätzliche DLQ-Pfade:
 - Zustell-Limit erreicht (`delivery_limit`, Default 20) → DLQ über das
   Delivery-Count-Gate des Workers (`task_sent_to_dlq` mit
   `error_type=WorkerHungError`), broker-native DLQ als letzte Stufe.
+- Waisen-Grenze des Ausführungsschutzes (`execution_guard_max_orphans`,
+  Default 3 Abläufe derselben Ausführung ohne Freigabe) → DLQ als
+  `WorkerHungError` (`execution_guard_orphan_limit`).
+
+Mit `TaskInfo(dead_letter=False)` oder
+`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false` speichern die drei
+`DLQ`-Pfeile des Diagramms oben stattdessen das Fehlerergebnis und
+bestätigen; die zusätzlichen Pfade bleiben. Dead-gelettete Nachrichten
+verfallen nach `SWARMQ_DEAD_LETTER_TTL_S` (Default 7 Tage).
 
 Kein DLQ-Pfad: Eine Prüfung vor der Ausführung (Schedule-Fire-Dedup,
 Cancel-Check, Rate-Limit, Lock), die Valkey nicht erreicht, stellt die

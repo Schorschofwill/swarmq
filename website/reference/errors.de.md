@@ -24,6 +24,7 @@ except SwarmQError as exc:
 | `LoggingConfigError` | `ConfigurationError` | Logging-Konfigurationsdatei (`--log-config`) nicht ladbar oder ungültig |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
+| `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
@@ -40,7 +41,7 @@ except SwarmQError as exc:
 | `WorkflowResultExpired` | `SwarmQError` | Ein Schritt- oder End-Ergebnis des Workflows lief ab, bevor es gebraucht wurde |
 | `WorkflowStateConflict` | `SwarmQError` | Worker-intern: Aktualisierung des Workflow-Zustands verlor jede Compare-and-Set-Runde |
 
-Jede Klasse außer `WorkflowStateConflict` lässt sich direkt aus
+Jede Klasse außer `WorkflowStateConflict` und `SettleFailedAfterPublish` lässt sich direkt aus
 `swarmq` importieren (`from swarmq import PublishIndeterminate`); alle
 liegen außerdem in `swarmq.exceptions`.
 
@@ -432,6 +433,25 @@ except BrokerConnectionError:
     # Nichts gesendet; Wiederholen ist sicher.
     ...
 ```
+
+## `SettleFailedAfterPublish`
+
+**Wann geworfen.** Nur im Worker, von `retry_later` und `dead_letter`:
+Der Broker hat die Retry- oder Dead-Letter-Kopie bestätigt, aber das
+Bestätigen des Originals scheiterte (meist, weil der Channel weg ist).
+Unterklasse von `BrokerConnectionError`, bestehende Handler fangen sie
+also weiter. Sie erreicht nie `schedule()` oder `get_result()`.
+
+**Ursache.** Channel oder Verbindung gingen zwischen dem Publish der
+Kopie und dem Ack verloren, etwa nach einem Consumer-Timeout auf
+RabbitMQ bis 4.2.
+
+**Recovery.** Im Anwendungscode nichts nötig. Der Broker stellt das
+Original erneut zu, während die Kopie schon unterwegs ist; der
+[Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
+setzt seinen Superseded- bzw. Done-Marker wie nach Erfolg, sodass das
+neu zugestellte Original übersprungen wird. Für Tests aus
+`swarmq.exceptions` importieren.
 
 ## `WorkflowValidationError`
 

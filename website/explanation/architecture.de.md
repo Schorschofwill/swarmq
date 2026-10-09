@@ -114,7 +114,7 @@ nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
 
 | State | Lebt in | Lebensdauer |
 |---|---|---|
-| Task-Nachrichten | RabbitMQ-Queue | Bis zum Ack oder DLQ-Route |
+| Task-Nachrichten | RabbitMQ-Queue | Bis zum Ack oder DLQ-Route; in `{queue}.XQ` höchstens `SWARMQ_DEAD_LETTER_TTL_S` (Standard 7 Tage) |
 | Ergebnisse | Valkey-Key `sq:result:{task_id}` | `result_ttl` Sekunden (Default 24h) |
 | Progress-Updates | Valkey HASH `sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
 | Rate-Limit-Counter | Valkey Sorted Set | Sliding Window |
@@ -126,7 +126,9 @@ nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
 | Erledigte Schedule-Fires | Valkey-Key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
 | Leader-Election | Valkey-Key `sq:lock:{sched}:leader` | Per Heartbeat erneuert |
 | Leader-Version | Valkey-Key `sq:{sched}:leader_version` (Owner-Token und Version) | Lock-TTL, mit dem Lock erneuert |
-| Cron-Meldungen | Valkey-HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung |
+| Cron-Meldungen | Valkey-HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung (oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls länger) |
+| Beim Aufräumen deaktivierte Crons | Valkey-SET `sq:{sched}:disabled` | Bis ein Worker den Cron wieder meldet |
+| Ausführungsschutz | Valkey-Keys `sq:guard:{<task_id>[\|<replay_id>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` |
 | Worker-Versionen | Valkey-Key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-Process-State — die Task-Registry, der Middleware-Stack, der
