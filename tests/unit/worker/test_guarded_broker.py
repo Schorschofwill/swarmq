@@ -253,6 +253,22 @@ async def test_route_via_dlx_marks_done(
     assert await _status(backend) == "done"
 
 
+async def test_withheld_route_via_dlx_releases_without_done(
+    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+) -> None:
+    """Review Phase 2: ein zurückgehaltener ``nack`` (4.3, ``BrokerConnectionError``)
+    setzt keinen Done-Marker; der ``finally`` gibt nur frei, die
+    Neuzustellung läuft."""
+    delivery = await _claimed(guard)
+    inner.route_via_dlx.side_effect = BrokerConnectionError("route_via_dlx withheld")
+
+    with pytest.raises(BrokerConnectionError):
+        await broker.route_via_dlx(delivery)
+    await guard.settle(delivery)
+
+    assert await _status(backend) == "claimed"
+
+
 def test_other_attributes_go_to_the_inner_broker(inner: MagicMock, guard: ExecutionGuard) -> None:
     broker = GuardedBroker(inner, guard)
     assert broker.publish is inner.publish

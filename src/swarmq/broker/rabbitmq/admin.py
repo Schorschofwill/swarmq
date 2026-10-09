@@ -56,8 +56,15 @@ class RabbitMQAdmin(RabbitMQDelivery):
         nach ``{queue}.XQ`` und ergänzt ``x-death`` — ohne ``x-swarmq-*``-
         Diagnose-Header (Entwurf §7)."""
         message = message_of(delivery)
-        if await self._may_settle(message, "route_via_dlx"):
-            await settle(message.nack(requeue=False), "route_via_dlx")
+        if not await self._may_settle(message, "route_via_dlx"):
+            # Anders als ein Ack ist das ein terminales Verb ohne Kopie: die
+            # Nachricht ist NICHT im DLX. Der Aufrufer (Ausfuehrungsschutz)
+            # darf sie nicht als abgeschlossen fuehren -- die Neuzustellung
+            # des Brokers muss laufen.
+            raise BrokerConnectionError(
+                "route_via_dlx withheld: consumer was cancelled by the broker; the broker redelivers the message"
+            )
+        await settle(message.nack(requeue=False), "route_via_dlx")
 
     # ------------------------------------------------------------------
     # R3.10 DLQ inspection / recovery primitives

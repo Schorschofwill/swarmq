@@ -27,6 +27,11 @@ gescheiterten Publish unterscheiden können.
 10. ``retry_later``: Publish gelingt, Ack auf geschlossenem Channel →
     ``SettleFailedAfterPublish`` (ein ``BrokerConnectionError``).
 11. ``dead_letter``: ebenso.
+
+Review Phase 2 (2026-10-09):
+12. Ein zurückgehaltenes ``route_via_dlx`` meldet ``BrokerConnectionError``:
+    die Nachricht ist nicht im DLX, der Ausführungsschutz darf sie nicht als
+    abgeschlossen markieren (die Neuzustellung muss laufen).
 """
 
 from __future__ import annotations
@@ -146,6 +151,15 @@ class TestBrokerCancelledTag:
         await setup.broker.route_via_dlx(setup.delivery)
 
         assert setup.message.settled == [("nack(requeue=False)", ["tag-1"])]
+
+    async def test_withheld_route_via_dlx_raises(self, setup: Setup) -> None:
+        await setup.broker_cancels()  # Wächter läuft nicht: niemand meldet ab
+        setup.broker.settle_cancel_wait_s = 0.05
+
+        with pytest.raises(BrokerConnectionError):
+            await setup.broker.route_via_dlx(setup.delivery)
+
+        assert setup.message.settled == []
 
     async def test_retry_later_with_withheld_ack_returns_normally(self, setup: Setup) -> None:
         await setup.broker_cancels()
