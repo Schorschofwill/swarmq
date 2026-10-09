@@ -284,7 +284,7 @@ entfernt werden; siehe die
    lassen; nur mit `SWARMQ_EXECUTION_GUARD=false` abschalten, wenn ein
    Problem gemessen wurde.
 
-## [0.10.0] — 2026-10-08
+## [0.10.0] — 2026-10-09
 
 Crons bekommen eine Zeitzone mit fester Regel für die Zeitumstellung,
 und jeder Worker meldet seine Crons, sodass auch Crons von Apps

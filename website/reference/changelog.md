@@ -264,7 +264,7 @@ older app can be removed; see the
    with `SWARMQ_EXECUTION_GUARD=false` only if you have measured a
    problem.
 
-## [0.10.0] — 2026-10-08
+## [0.10.0] — 2026-10-09
 
 Crons get a time zone with a fixed rule for clock changes, and every
 worker reports its crons, so crons of apps whose workers never become
