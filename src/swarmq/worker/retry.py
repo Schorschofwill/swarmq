@@ -252,13 +252,7 @@ class RetryHandler:
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
         headers["x-swarmq-traceback"] = error_message
         try:
-            try:
-                await deps.broker.dead_letter(delivery, headers=headers)
-            except SettleFailedAfterPublish as exc:
-                # Die Kopie liegt in der XQ, nur das Ack scheiterte: terminal.
-                # Die Neuzustellung des Originals ueberspringt der
-                # Ausfuehrungsschutz als ``done`` und gibt nichts frei.
-                logger.warning("dlq_ack_failed_after_publish", **_error_fields(exc))
+            await _dead_letter_copy(deps, delivery, headers)
             # Release AFTER successful ack (dead_letter bestätigt das
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to
@@ -282,3 +276,14 @@ class RetryHandler:
             # path releases it. No release here.
         # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
         logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
+
+
+async def _dead_letter_copy(deps: GateDeps, delivery: Any, headers: dict[str, Any]) -> None:
+    """Kopie in die XQ, Original bestaetigen. Liegt die Kopie dort und
+    scheitert nur das Ack (``SettleFailedAfterPublish``), ist das terminal:
+    die Neuzustellung des Originals ueberspringt der Ausfuehrungsschutz als
+    ``done`` und gibt nichts frei."""
+    try:
+        await deps.broker.dead_letter(delivery, headers=headers)
+    except SettleFailedAfterPublish as exc:
+        logger.warning("dlq_ack_failed_after_publish", **_error_fields(exc))
