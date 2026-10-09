@@ -367,6 +367,16 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
 
         await asyncio.wait_for(_any_leader(), timeout=10)
 
+        # The new leader inserts the cron (HSETNX, then ZADD of its next
+        # slot) right after taking over. An injection racing that insert is
+        # overwritten by the ZADD, reads as "committed" below and is lost
+        # as a pure test artefact (Valkey MONITOR, 2026-10-09: 99/100).
+        # Inject only once the cron is in the fire index.
+        insert_deadline = time.monotonic() + 10.0
+        while await valkey_client.zscore("sq:{sched}:zset", task_name) is None:
+            assert time.monotonic() < insert_deadline, "leader never inserted the cron"
+            await asyncio.sleep(0.02)
+
         # Force 100 fires by re-scoring the zset, one at a time. Each
         # injection waits until the leader has COMMITTED the fire
         # (commit_fire advances the score to the next cron slot, i.e.
