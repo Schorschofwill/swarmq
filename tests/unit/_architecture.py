@@ -259,6 +259,50 @@ def unmatched_override_entries(entries: Iterable[str], modules: Iterable[str], p
 
 
 # ---------------------------------------------------------------------------
+# Keyspace-Literale (Plan 0.12.0, Q4)
+# ---------------------------------------------------------------------------
+
+_SQ_LITERAL_RE = re.compile(r"(?<![\w])sq:")
+
+
+def keyspace_literals(
+    src_root: Path,
+    package: str,
+    *,
+    exempt_modules: Iterable[str] = (),
+    exempt_substrings: Mapping[str, Iterable[str]] | None = None,
+) -> list[tuple[str, int, str]]:
+    """String-Literale mit ``sq:`` im Code, als ``(modul, zeile, wert)``.
+
+    Docstrings und andere alleinstehende String-Ausdruecke (Attribut-Doku)
+    zaehlen nicht, Kommentare stehen nicht im AST. Teile von f-Strings sind
+    eigene Konstanten und werden mitgeprueft. ``exempt_substrings`` nimmt je
+    Modul Literale aus, die einen der Teiltexte enthalten (Hilfetexte).
+    """
+    skip_modules = set(exempt_modules)
+    exempt = {mod: tuple(subs) for mod, subs in (exempt_substrings or {}).items()}
+    hits: list[tuple[str, int, str]] = []
+    for name, path in iter_modules(src_root, package).items():
+        if name in skip_modules:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        standalone = {
+            id(node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if id(node) in standalone or not _SQ_LITERAL_RE.search(node.value):
+                continue
+            if any(sub in node.value for sub in exempt.get(name, ())):
+                continue
+            hits.append((name, node.lineno, node.value))
+    return sorted(hits)
+
+
+# ---------------------------------------------------------------------------
 # Patch-Pfade in Tests
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,7 @@
 {
   "sq:cancel:golden-task-0001": "string",
+  "sq:control:setpoint:golden-group": "string",
+  "sq:control:status:golden-group:golden-sup": "string",
   "sq:guard:{golden-task-0001}:run": "string",
   "sq:guard:{golden-task-0001}:state": "hash",
   "sq:lock:golden-lock": "string",

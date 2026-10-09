@@ -26,6 +26,7 @@ from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
+from swarmq.keyspace import KeySpace
 
 # Transient transport errors that should be retried transparently by the
 # valkey-py client. Application-level errors (ResponseError, DataError,
@@ -96,6 +97,7 @@ class ValkeyConnection:
         *,
         client: valkey.asyncio.Valkey | None = None,
         pool: valkey.asyncio.ConnectionPool | None = None,
+        keys: KeySpace | None = None,
     ) -> None:
         """Construct a backend from a URL, an existing client, or a pool.
 
@@ -125,6 +127,8 @@ class ValkeyConnection:
             ("pool", pool is not None),
         ]
         given = [name for name, present in sources if present]
+        # Alle Keys und Kanaele dieses Backends (Plan 0.12.0, Q4).
+        self._keys = keys if keys is not None else KeySpace()
         if not given:
             raise ConfigurationError("ValkeyBackend requires exactly one of: url, client, or pool")
         if len(given) > 1:

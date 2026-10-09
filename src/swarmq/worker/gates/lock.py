@@ -28,7 +28,7 @@ import inspect
 import uuid
 from typing import Any, Literal
 
-from swarmq.locking import compute_lock_ttl_ms
+from swarmq.locking import compute_lock_ttl_ms, lock_key
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import (
@@ -216,7 +216,7 @@ class LockGate:
                     **_error_fields(exc),
                     note=f"message routed via broker DLX to {ctx.queue}.XQ "
                     "without diagnostic headers; recover wedged lock "
-                    f"via valkey-cli DEL sq:lock:{lock_name}",
+                    f"via valkey-cli DEL {lock_key(lock_name)}",
                 )
                 # Terminal DLX fallback — route first, then release.
                 await route_via_dlx(

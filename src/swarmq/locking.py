@@ -14,6 +14,8 @@ Modul hält die reinen Ableitungen (``lock_key``, ``compute_lock_ttl_ms``,
 
 from __future__ import annotations
 
+from swarmq.keyspace import KeySpace
+
 # Buffer added on top of ``hard_timeout`` to derive the lock TTL.
 # The lock TTL is purely a
 # crash-recovery deadline: under normal operation the holder releases the
@@ -29,7 +31,7 @@ from __future__ import annotations
 # to budget for; the buffer only covers single-worker timing slack.
 _LOCK_TTL_BUFFER_SECONDS = 30
 
-_LOCK_KEY_PREFIX = "sq:lock:"
+_LOCK_KEY_PREFIX = KeySpace().lock_prefix
 
 
 def lock_key(lock_name: str) -> str:

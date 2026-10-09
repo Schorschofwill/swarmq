@@ -11,12 +11,15 @@ from typing import TYPE_CHECKING
 
 import valkey.asyncio
 
+from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
+
+_DEFAULT_KEYS = KeySpace()
 
 
 def chord_set_key(wf_id: str, chord_id: str) -> str:
     """Key for the per-chord completed-member set (SADD of task ids)."""
-    return f"sq:wf:chord:{wf_id}:{chord_id}"
+    return _DEFAULT_KEYS.chord(wf_id, chord_id)
 
 
 class ChordManager:
@@ -27,8 +30,9 @@ class ChordManager:
     Follows the collaborator-owned-script pattern of ``RateLimiter``.
     """
 
-    def __init__(self, client: valkey.asyncio.Valkey) -> None:
+    def __init__(self, client: valkey.asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
         self._client = client
+        self._keys = keys if keys is not None else _DEFAULT_KEYS
         self._script = client.register_script(load_script("chord_complete"))
 
     async def record_and_check_complete(
@@ -51,7 +55,7 @@ class ChordManager:
         in the completion→publish window (at worst a rare idempotent
         double-enqueue, absorbed by step idempotency).
         """
-        result = await self._script(keys=[chord_set_key(wf_id, chord_id)], args=[member_id, expected_n, ttl_ms])
+        result = await self._script(keys=[self._keys.chord(wf_id, chord_id)], args=[member_id, expected_n, ttl_ms])
         return bool(result == 1)
 
     async def record_member(self, wf_id: str, chord_id: str, member_id: str, *, expected: int, ttl_ms: int) -> bool:

@@ -34,10 +34,12 @@ from valkey.crc import key_slot
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backend.valkey.chords import ChordManager
+from swarmq.backend.valkey.control import ValkeySetpointStore
 from swarmq.backend.valkey.locks import LockManager
 from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.cancellation import build_result_dict
+from swarmq.contracts.control import Setpoint
 from swarmq.limits import RateLimitConfig
 from swarmq.scheduler import ScheduleDefinition
 from swarmq.serialization import encode_json, encode_result
@@ -165,6 +167,10 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await locks.acquire("golden-sem", "golden-owner", TTL_MS, 2)
     await RateLimiter(client).check("golden-task", RateLimitConfig(max_requests=10, window_size_ms=60_000))
     await ChordManager(client).record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
+    # Kontrollkanal (Plan 0.12.0, MR 0): Sollwert und Rueckmeldung.
+    control = ValkeySetpointStore(client=client)
+    await control.write_setpoint("golden-group", Setpoint(low=1, high=2))
+    await control.write_status("golden-group", "golden-sup", {"workers": 1}, ttl_s=TTL_MS / 1000)
 
     keys: dict[str, str] = {}
     for raw in await client.keys("*"):

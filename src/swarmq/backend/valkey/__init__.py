@@ -43,31 +43,31 @@ class ValkeyBackend(ValkeyResults):
     @property
     def locks(self) -> ValkeyLockStore:
         if self._locks is None:
-            self._locks = ValkeyLockStore(self.client)
+            self._locks = ValkeyLockStore(self.client, keys=self._keys)
         return self._locks
 
     @property
     def rate_limit(self) -> ValkeyRateLimitStore:
         if self._rate_limit is None:
-            self._rate_limit = ValkeyRateLimitStore(self.client)
+            self._rate_limit = ValkeyRateLimitStore(self.client, keys=self._keys)
         return self._rate_limit
 
     @property
     def chords(self) -> ChordManager:
         if self._chords is None:
-            self._chords = ChordManager(self.client)
+            self._chords = ChordManager(self.client, keys=self._keys)
         return self._chords
 
     @property
     def schedules(self) -> ValkeyScheduleStore:
         if self._schedules is None:
-            self._schedules = ValkeyScheduleStore(self.client)
+            self._schedules = ValkeyScheduleStore(self.client, keys=self._keys)
         return self._schedules
 
     @property
     def execution_guard(self) -> ValkeyExecutionGuardStore:
         if self._execution_guard is None:
-            self._execution_guard = ValkeyExecutionGuardStore(self.client)
+            self._execution_guard = ValkeyExecutionGuardStore(self.client, keys=self._keys)
         return self._execution_guard
 
     async def close(self) -> None:

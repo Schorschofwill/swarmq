@@ -14,7 +14,7 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.backend.valkey.connection import as_backend_error
 from swarmq.contracts import LockToken
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import lock_key
+from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
 
 _FORCE_OWNER = "__force__"
@@ -37,8 +37,9 @@ class LockManager:
     :class:`BackendResponseError` (no outage -- the lock gate requeues).
     """
 
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
+    def __init__(self, client: valkey_asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
         self._client = client
+        self._keys = keys if keys is not None else KeySpace()
         self._acquire_script = client.register_script(load_script("lock_acquire"))
         self._release_script = client.register_script(load_script("lock_release"))
         self._renew_script = client.register_script(load_script("lock_renew"))
@@ -55,7 +56,7 @@ class LockManager:
             seconds, microseconds = await self._client.time()
             now_ms = int(seconds) * 1000 + int(microseconds) // 1000
             result = await self._acquire_script(
-                keys=[lock_key(lock_name)],
+                keys=[self._keys.lock(lock_name)],
                 args=[owner_token, ttl_ms, max_concurrency, now_ms],
             )
         except BackendConnectionError:
@@ -74,7 +75,7 @@ class LockManager:
         reserved for cancellation / admin paths.
         """
         try:
-            result = await self._release_script(keys=[lock_key(lock_name)], args=[owner_token, max_concurrency])
+            result = await self._release_script(keys=[self._keys.lock(lock_name)], args=[owner_token, max_concurrency])
         except BackendConnectionError:
             raise
         except Exception as exc:
@@ -96,7 +97,7 @@ class LockManager:
                 f"LockManager.renew is mutex-only in this release; got max_concurrency={max_concurrency}"
             )
         try:
-            result = await self._renew_script(keys=[lock_key(lock_name)], args=[owner_token, ttl_ms])
+            result = await self._renew_script(keys=[self._keys.lock(lock_name)], args=[owner_token, ttl_ms])
         except BackendConnectionError:
             raise
         except Exception as exc:
@@ -108,9 +109,10 @@ class ValkeyLockStore:
     """``LockStore``-Vertrag über ``LockManager``: nur ``acquire`` gibt
     ``LockToken`` aus; ``release``/``renew`` nehmen ausschließlich Tokens."""
 
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
+    def __init__(self, client: valkey_asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
         self._client = client
-        self._manager = LockManager(client)
+        self._keys = keys if keys is not None else KeySpace()
+        self._manager = LockManager(client, keys=self._keys)
 
     @property
     def manager(self) -> LockManager:
@@ -135,7 +137,7 @@ class ValkeyLockStore:
         ``__force__`` immer „released" (2), auch ohne Halter — der Vertrag
         verlangt ``False`` ohne Halter, daher der EXISTS davor."""
         try:
-            existed = bool(await self._client.exists(lock_key(name)))
+            existed = bool(await self._client.exists(self._keys.lock(name)))
         except Exception as exc:
             raise BackendConnectionError(f"lock exists failed for {name!r}: {exc}") from exc
         await self._manager.release(name, _FORCE_OWNER, max_concurrency)
@@ -145,7 +147,7 @@ class ValkeyLockStore:
         """Halter eines Mutex-Locks (``None`` ohne Halter). Treiberfehler
         propagieren (Decision E4: „kein Leader" vs. „Backend unerreichbar"
         bleibt unterscheidbar). Für Semaphoren nicht definiert → ``None``."""
-        raw = await self._client.get(lock_key(name))
+        raw = await self._client.get(self._keys.lock(name))
         if raw is None:
             return None
         # ``errors='replace'`` keeps ``schedule status`` working even if a

@@ -23,10 +23,10 @@ class ValkeySetpointStore(ValkeyConnection):
     Grenze in ``BackendConnectionError`` gewandelt (Zuschnitt wie ``locks.py``)."""
 
     def _setpoint_key(self, group: str) -> str:
-        return f"sq:control:setpoint:{group}"
+        return self._keys.control_setpoint(group)
 
     def _status_key(self, group: str, supervisor_id: str) -> str:
-        return f"sq:control:status:{group}:{supervisor_id}"
+        return self._keys.control_status(group, supervisor_id)
 
     async def _guarded(self, what: str, coro: Any) -> Any:
         """Wie ``_run``, aber jede fremde Ausnahme wird gewandelt (Muster

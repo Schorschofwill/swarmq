@@ -140,6 +140,18 @@ def test_contract_bindings_are_pure() -> None:
     assert not mismatches, f"Bindings derselben Basisklasse mit abweichender Fallzahl: {mismatches}"
 
 
+# Q4 (Plan 0.12.0): Valkey-Keys entstehen nur in ``swarmq.keyspace``.
+_KEYSPACE_MODULE = "swarmq.keyspace"
+_KEYSPACE_HELP_TEXTS: dict[str, list[str]] = {
+    "swarmq.cli.parser": ["sq:control:setpoint:<group>", "sq:sched:defs"],
+}
+
+
+def test_no_keyspace_literals_outside_keyspace_module() -> None:
+    hits = arch.keyspace_literals(_SRC, _PKG, exempt_modules=[_KEYSPACE_MODULE], exempt_substrings=_KEYSPACE_HELP_TEXTS)
+    assert not hits, f"sq:-Literale ausserhalb von {_KEYSPACE_MODULE}: {hits}"
+
+
 # ---------------------------------------------------------------------------
 # Selbsttests der Analysefunktionen an synthetischen Bäumen
 # ---------------------------------------------------------------------------
@@ -289,6 +301,42 @@ class TestOverrideGuard:
 
     def test_wildcard_without_submodules_is_reported(self) -> None:
         assert arch.unmatched_override_entries(["pkg.sub.*"], ["pkg", "pkg.sub"], "pkg") == ["pkg.sub.*"]
+
+
+class TestKeyspaceLiteralGuard:
+    def test_code_literal_and_fstring_part_are_reported(self, tmp_path: Path) -> None:
+        _write_tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/store.py": (
+                    '"""Docstring mit sq:result:<id>."""\n'
+                    "# Kommentar mit sq:lock:\n"
+                    'KEY = "sq:{sched}:zset"\n'
+                    "def k(x):\n"
+                    '    """sq:doc"""\n'
+                    '    return f"sq:result:{x}"\n'
+                    'ATTR = "frei"\n'
+                    '"""Attribut-Doku: sq:frei."""\n'
+                ),
+            },
+        )
+        hits = arch.keyspace_literals(tmp_path, "pkg")
+        assert hits == [("pkg.store", 3, "sq:{sched}:zset"), ("pkg.store", 6, "sq:result:")]
+
+    def test_exempt_module_and_help_text_are_not_reported(self, tmp_path: Path) -> None:
+        _write_tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/keyspace.py": 'ROOT = "sq:"\n',
+                "pkg/parser.py": 'add(help="List all in sq:sched:defs.")\nOTHER = "sq:x"\n',
+            },
+        )
+        hits = arch.keyspace_literals(
+            tmp_path, "pkg", exempt_modules=["pkg.keyspace"], exempt_substrings={"pkg.parser": ["sq:sched:defs"]}
+        )
+        assert hits == [("pkg.parser", 2, "sq:x")]
 
 
 class TestPatchPathGuard:

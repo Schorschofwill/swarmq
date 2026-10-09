@@ -19,6 +19,7 @@ from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import ValkeyConnection
 from swarmq.exceptions import BackendConnectionError
+from swarmq.keyspace import KeySpace
 from swarmq.logging import _error_fields, get_logger
 from swarmq.lua import load_script
 
@@ -38,8 +39,9 @@ class ValkeyResults(ValkeyConnection):
         *,
         client: valkey.asyncio.Valkey | None = None,
         pool: valkey.asyncio.ConnectionPool | None = None,
+        keys: KeySpace | None = None,
     ) -> None:
-        super().__init__(url, client=client, pool=pool)
+        super().__init__(url, client=client, pool=pool, keys=keys)
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
         self._unique_release_script: Any = None
@@ -51,26 +53,25 @@ class ValkeyResults(ValkeyConnection):
     # ------------------------------------------------------------------
 
     def _key(self, task_id: str) -> str:
-        return f"sq:result:{task_id}"
+        return self._keys.result(task_id)
 
     def _cancel_key(self, task_id: str) -> str:
-        return f"sq:cancel:{task_id}"
+        return self._keys.cancel(task_id)
 
     def _unique_key(self, dedup_hash: str) -> str:
-        return f"sq:unique:{dedup_hash}"
+        return self._keys.unique(dedup_hash)
 
     def _progress_key(self, task_id: str) -> str:
-        return f"sq:progress:{task_id}"
+        return self._keys.progress(task_id)
 
     def _workflow_key(self, wf_id: str) -> str:
-        return f"sq:wf:{wf_id}"
+        return self._keys.workflow(wf_id)
 
     def _workflow_cancel_key(self, wf_id: str) -> str:
-        return f"sq:wf:cancel:{wf_id}"
+        return self._keys.workflow_cancel(wf_id)
 
-    @staticmethod
-    def notify_channel_name(task_id: str) -> str:
-        return f"sq:notify:{task_id}"
+    def notify_channel_name(self, task_id: str) -> str:
+        return self._keys.notify_channel(task_id)
 
     def progress_channel_name(self, task_id: str) -> str:
         """Return the Pub/Sub channel name for *task_id*'s progress stream.
@@ -78,14 +79,14 @@ class ValkeyResults(ValkeyConnection):
         Public API: consumers (e.g. :class:`Client.watch_progress`)
         subscribe to this channel. Stable across releases.
         """
-        return f"sq:progress:channel:{task_id}"
+        return self._keys.progress_channel(task_id)
 
     def workflow_notify_channel(self, wf_id: str) -> str:
         """Pub/Sub channel a workflow's ``get()`` waiter subscribes to and
         the worker advancement/failure path publishes to (U4/U6). Distinct
         from the per-task ``sq:notify:{task_id}`` channel — workflow liveness
         is keyed by workflow id, which is stable from ``apply()`` time."""
-        return f"sq:wf:notify:{wf_id}"
+        return self._keys.workflow_notify_channel(wf_id)
 
     # ------------------------------------------------------------------
     # Ergebnisse
