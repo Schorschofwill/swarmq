@@ -246,6 +246,18 @@ SHORT_SCHEDULER_LOCK_ENV = {
 }
 
 
+# Short execution-guard TTL for crash tests (Plan 2026-10-08-1541, U8, KTD5):
+# a SIGKILLed worker cannot release its running markers, so a successor defers
+# the redeliveries until those markers expire -- with the default
+# ``execution_guard_ttl_s`` (60 s) longer than these tests wait. 2 s keeps the
+# expiry path inside the test window; the assertions stay unchanged. Set it on
+# the worker that crashes (its claim sets the marker TTL) and on its successor.
+SHORT_EXECUTION_GUARD_TTL_S = 2.0
+SHORT_EXECUTION_GUARD_ENV = {
+    "SWARMQ_EXECUTION_GUARD_TTL_S": str(SHORT_EXECUTION_GUARD_TTL_S),
+}
+
+
 def lock_owner_pid(owner: str | None) -> int | None:
     """PID part of a scheduler owner token ``{host}:{pid}:{uuid}``."""
     if not owner:
