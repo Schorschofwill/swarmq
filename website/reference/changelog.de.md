@@ -6,6 +6,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Behoben
+
+- **Retries am Delay-Cap kommen nicht mehr alle gleichzeitig zurück.**
+  Oberhalb von `retry_max_delay` wartet ein `exponential`- oder
+  `linear`-Retry jetzt zwischen 0,6 und 0,8 × `retry_max_delay` statt
+  genau den Cap, und eine sehr hohe Versuchszahl (ab etwa 1024) wirft
+  kein `OverflowError` mehr. `fixed` bleibt ohne Jitter
+  ([Backoff-Formeln](../guides/scheduling-and-retries.md#backoff-formeln)).
+
 ## [0.11.0] — 2026-10-09
 
 Ein Worker konsumiert nach einem Consumer-Timeout des Brokers weiter,

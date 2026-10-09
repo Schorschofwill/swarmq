@@ -30,7 +30,6 @@ def _backoff_with_uniform(monkeypatch: pytest.MonkeyPatch, value: float, **kwarg
 
 
 @pytest.mark.befund("BZ-26")
-@pytest.mark.xfail(strict=True, reason=_REASON_CAP)
 def test_exponential_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     args = {"attempt": 20, "strategy": "exponential", "base_delay": 1.0, "max_delay": 3600.0}
 
@@ -41,7 +40,6 @@ def test_exponential_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.befund("BZ-26")
-@pytest.mark.xfail(strict=True, reason=_REASON_CAP)
 def test_linear_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     args = {"attempt": 5000, "strategy": "linear", "base_delay": 1.0, "max_delay": 3600.0}
 
@@ -52,10 +50,6 @@ def test_linear_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.befund("BZ-26")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-26: base*2**attempt ohne Exponent-Deckel wirft ab ~1024 Versuchen OverflowError",
-)
 def test_exponential_backoff_with_huge_attempt_stays_at_cap() -> None:
     delay = calculate_backoff(attempt=2000, strategy="exponential", base_delay=1.0, max_delay=3600.0)
 

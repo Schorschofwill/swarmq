@@ -3,6 +3,10 @@
 import random
 from collections.abc import Callable
 
+# Ab hier liegt ``base * 2**n`` fuer jede sinnvolle Basis ueber jedem Deckel;
+# die Grenze haelt ``2**n`` aus dem Float-Ueberlauf.
+_MAX_DEFER_EXPONENT = 64
+
 
 def calculate_backoff(
     attempt: int,
@@ -26,18 +30,22 @@ def calculate_backoff(
 
     if strategy == "exponential":
         jitter = random.uniform(1.0, 2.0)
-        return float(min(base_delay * (2 ** attempt) * jitter, max_delay))
+        return _jittered_cap(base_delay * (2 ** min(attempt, _MAX_DEFER_EXPONENT)) * jitter, jitter, max_delay)
 
     if strategy == "linear":
         jitter = random.uniform(1.0, 2.0)
-        return float(min(base_delay * (attempt + 1) * jitter, max_delay))
+        return _jittered_cap(base_delay * (attempt + 1) * jitter, jitter, max_delay)
 
     raise ValueError(f"Unknown backoff strategy: {strategy!r}")
 
 
-# Ab hier liegt ``base * 2**n`` fuer jede sinnvolle Basis ueber jedem Deckel;
-# die Grenze haelt ``2**n`` aus dem Float-Ueberlauf.
-_MAX_DEFER_EXPONENT = 64
+def _jittered_cap(delay: float, jitter: float, max_delay: float) -> float:
+    """Deckel mit Jitter: oberhalb von ``max_delay`` gilt
+    ``max_delay * (0.6 + 0.2 u)`` mit ``u = jitter - 1`` aus derselben
+    Ziehung -- sonst kaemen alle gedeckelten Retries gleichzeitig wieder."""
+    if delay <= max_delay:
+        return float(delay)
+    return float(max_delay * (0.6 + 0.2 * (jitter - 1.0)))
 
 
 # Multiplikativer Jitter der Zurueckstellung: +-20 %.

@@ -14,6 +14,10 @@ from swarmq.backoff import calculate_backoff
 #     Deckel -- sonst kaemen gleichzeitig zurueckgestellte Nachrichten
 #     gleichzeitig wieder (Wellen nach der Erholung des Backends)
 # [x] ohne injizierte Quelle streut die Wartezeit im Bereich
+#
+# Testliste calculate_backoff am Deckel (BZ-26):
+# [x] oberhalb des Deckels liegt die Wartezeit im Band 0.6..0.8 * max_delay,
+#     gespeist aus der einen bestehenden Ziehung U(1, 2) (kein zweiter Zufall)
 
 
 def _no_jitter(_lo: float, _hi: float) -> float:
@@ -84,6 +88,27 @@ def test_max_delay_cap_is_respected():
     # Fixed is always base_delay, even if base > max_delay the formula is just base
     result = calculate_backoff(attempt=0, strategy="fixed", base_delay=5.0, max_delay=max_d)
     assert result == 5.0
+
+
+@pytest.mark.parametrize("strategy", ["exponential", "linear"])
+def test_backoff_above_the_cap_uses_the_jitter_band_from_a_single_draw(
+    monkeypatch: pytest.MonkeyPatch, strategy: str
+) -> None:
+    from swarmq import backoff
+
+    drawn: list[tuple[float, float]] = []
+
+    def _uniform(lo: float, hi: float) -> float:
+        drawn.append((lo, hi))
+        return values.pop(0)
+
+    values = [1.0, 1.5, 2.0]
+    monkeypatch.setattr(backoff.random, "uniform", _uniform)
+
+    delays = [calculate_backoff(attempt=500, strategy=strategy, base_delay=1.0, max_delay=100.0) for _ in range(3)]
+
+    assert delays == [pytest.approx(60.0), pytest.approx(70.0), pytest.approx(80.0)]
+    assert drawn == [(1.0, 2.0)] * 3
 
 
 def test_backend_defer_delay_first_attempt_is_base_delay():

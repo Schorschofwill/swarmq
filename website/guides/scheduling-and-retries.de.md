@@ -436,9 +436,16 @@ class ChargeCard(Task):
 | `linear` | `retry_base_delay × n` |
 | `fixed` | `retry_base_delay` |
 
-Globales Cap: `retry_max_delay` (Default 3600 s) kürzt jeden
-berechneten Delay. Setze `SWARMQ_RETRY_MAX_DELAY=...` oder
-übergib `retry_max_delay=...` als `SwarmQ`-kwarg.
+`exponential` und `linear` multiplizieren den Delay mit einem
+Zufallsfaktor zwischen 1 und 2 (Jitter), damit sich die Retries vieler
+gleichzeitig gescheiterter Nachrichten verteilen. `fixed` hat keinen
+Jitter.
+
+Globales Cap: `retry_max_delay` (Default 3600 s) begrenzt jeden
+berechneten Delay. Ein Delay über dem Cap wird zu 0,6 bis
+0,8 × `retry_max_delay`, aus demselben Jitter gezogen, damit auch
+Retries am Cap verteilt bleiben. Setze `SWARMQ_RETRY_MAX_DELAY=...`
+oder übergib `retry_max_delay=...` als `SwarmQ`-kwarg.
 
 ### Selektive Retries
 
