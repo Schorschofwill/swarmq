@@ -276,6 +276,22 @@ die Zustellung als `WorkerHungError` nach `{queue}.XQ`
 (`execution_guard_orphan_limit`). Ohne diese Grenze wäre jede
 Zurückstellung eine neue Nachricht und hebelte das Delivery-Limit aus.
 
+**Die Erholung dauert bis zu einer TTL oder länger.** Bis der Marker
+eines abgestürzten Workers abläuft, werden seine Neuzustellungen
+zurückgestellt, nicht ausgeführt. Der Marker wurde höchstens ein Drittel
+der TTL vor dem Absturz zuletzt verlängert; er läuft also zwischen zwei
+Dritteln von `SWARMQ_EXECUTION_GUARD_TTL_S` und der vollen TTL nach dem
+Absturz ab. Die in diesem Moment laufende Zurückstellung fügt ihre
+restliche Wartezeit hinzu (bis zu `SWARMQ_BACKEND_DEFER_MAX_DELAY`). Mit
+den Standardwerten (je 60 s) läuft ein Task eines per SIGKILL oder
+OOM-Killer beendeten Workers etwa ein bis zwei Minuten nach dem Absturz
+erneut. Dasselbe gilt, wenn ein Worker seinen Marker nicht freigeben
+kann, weil Valkey in diesem Moment nicht erreichbar ist
+(`execution_guard_finish_failed`): die Neuzustellung wartet, bis der
+Marker abläuft. Eine kürzere TTL beschleunigt die Erholung, lässt aber
+einen blockierten Event-Loop seinen Marker früher verlieren (siehe
+unten).
+
 **Aufbewahrung der Marker.** Done- und Superseded-Marker leben
 `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`; Standard ist
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` Sekunden,

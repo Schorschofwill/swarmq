@@ -254,6 +254,19 @@ goes into `{queue}.XQ` as `WorkerHungError`
 (`execution_guard_orphan_limit`). Without this limit every deferral
 would be a new message and bypass the delivery limit.
 
+**Recovery takes up to a TTL or more.** Until the marker of a crashed
+worker expires, its redeliveries are deferred, not run. The marker was
+last renewed at most a third of the TTL before the crash, so it expires
+between two thirds of `SWARMQ_EXECUTION_GUARD_TTL_S` and the full TTL
+after the crash; the deferral that is pending at that moment adds its
+remaining backoff (up to `SWARMQ_BACKEND_DEFER_MAX_DELAY`). With the
+defaults (60 s each) a task of a SIGKILLed or OOM-killed worker runs
+again roughly one to two minutes after the crash. The same holds when
+a worker cannot release its marker because Valkey is unreachable at
+that moment (`execution_guard_finish_failed`): the redelivery waits for
+the marker to expire. A shorter TTL speeds up recovery but makes a
+blocked event loop lose its marker sooner (see below).
+
 **Retention of the markers.** Done and superseded markers live
 `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`; the default is
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` seconds

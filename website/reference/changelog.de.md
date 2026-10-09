@@ -68,6 +68,13 @@ entfernt werden; siehe die
   bestätigt und übersprungen (`duplicate_delivery_skipped`); eine,
   deren Original noch läuft, geht mit Backoff über die Delay-Queue
   zurück (`execution_guard_deferred`) und zählt nicht als Retry.
+  **Langsamere Erholung nach einem Absturz:** Die Neuzustellungen eines
+  per SIGKILL oder OOM-Killer beendeten Workers laufen erst, wenn seine
+  Running-Marker abgelaufen sind -- mit den Standardwerten etwa ein bis
+  zwei Minuten nach dem Absturz statt sofort, ebenso nach einer
+  Marker-Freigabe, die scheiterte, weil Valkey nicht erreichbar war
+  ([Details](../explanation/delivery-semantics.md#ausfuhrungsschutz));
+  `SWARMQ_EXECUTION_GUARD_TTL_S` verkürzt das.
   Kosten: zwei Lua-Aufrufe je Task plus eine gesammelte Verlängerung;
   in der Loadsuite unter realistischer Last kein messbarer
   Durchsatzverlust, im ungünstigsten Fall (ein Worker, nur Tasks von

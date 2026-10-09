@@ -61,7 +61,14 @@ older app can be removed; see the
   finished, or after a retry superseded it. A redelivery of a finished
   task is acknowledged and skipped (`duplicate_delivery_skipped`); one
   whose original still runs goes back through the delay queue with
-  backoff (`execution_guard_deferred`), not counted as a retry. Cost:
+  backoff (`execution_guard_deferred`), not counted as a retry.
+  **Slower recovery after a crash:** the redeliveries of a SIGKILLed
+  or OOM-killed worker run only once its running markers expired --
+  with the defaults roughly one to two minutes after the crash instead
+  of right away, likewise after a marker release that failed while
+  Valkey was unreachable
+  ([details](../explanation/delivery-semantics.md#execution-guard));
+  `SWARMQ_EXECUTION_GUARD_TTL_S` shortens it. Cost:
   two Lua calls per task plus a batched renewal; in the load suite no
   measurable throughput loss under realistic load, −7.4 % in the worst
   case (one worker, only ~0.3 ms tasks, CPU-saturated), +11–12 % CPU
