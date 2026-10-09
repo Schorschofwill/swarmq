@@ -158,8 +158,9 @@ class Worker(WorkerLifecycle):
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)
-        self._retry_handler = RetryHandler(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
+        self._retry_handler = RetryHandler(
+            gate_deps, workflow_advancer=lambda: self._workflow_advancer, finish=self._result_tail.finish)
         # Ausfuehrungsschutz (KTD5): der Store entsteht in start(); Gates,
         # Retry und Ergebnis-Tail sprechen den protokollierenden Wrapper, der
         # die Marker nach dem ausgefuehrten Verb setzt.

@@ -17,6 +17,8 @@ Test-Liste:
 8. Shutdown vor dem Gate → ``nack`` ohne Claim.
 9. Die Gates sprechen den protokollierenden Wrapper: ein Rate-Limit-Requeue
    gibt Running vor dem Publish frei.
+10. Abgeschaltetes Dead-Lettering (U9, KTD7): das Ack des Ergebnis-Tails
+    laeuft ueber den Wrapper -> Done-Marker; eine Kopie wird übersprungen.
 """
 
 from __future__ import annotations
@@ -265,6 +267,24 @@ async def test_dead_lettered_execution_skips_a_leftover_copy(broker, backend, re
 
     assert RUNS == ["run"]
     assert rec.calls.count("broker.dead_letter") == 1
+
+
+async def test_failure_without_dead_lettering_marks_done_via_the_ack(broker, backend, rec, guard_backend) -> None:
+    class NoDlqTask(Task):
+        task_info = TaskInfo(name="guard-no-dlq", queues=["default"], max_retries=0, dead_letter=False)
+
+        async def run(self) -> str:
+            RUNS.append("run")
+            raise RuntimeError("boom")
+
+    worker = _worker(broker, backend, rec, guard_backend.execution_guard, NoDlqTask)
+
+    await worker._handle_message(make_message(_payload("guard-no-dlq")))
+    await worker._handle_message(make_message(_payload("guard-no-dlq"), headers={"x-swarmq-guard-defer-count": 1}))
+
+    assert RUNS == ["run"]
+    assert "broker.dead_letter" not in rec.calls
+    assert rec.calls.count("broker.ack") == 2  # Fehlerergebnis, dann die übersprungene Kopie
 
 
 async def test_shutdown_nack_comes_before_any_claim(broker, backend, rec, guard_backend) -> None:

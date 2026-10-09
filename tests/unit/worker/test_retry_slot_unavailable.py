@@ -26,7 +26,7 @@ def _handler() -> tuple[RetryHandler, GateDeps]:
         maybe_release_unique=AsyncMock(), extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
-    return RetryHandler(deps, workflow_advancer=lambda: None), deps
+    return RetryHandler(deps, workflow_advancer=lambda: None, finish=AsyncMock()), deps
 
 
 def _ctx() -> GateContext:
