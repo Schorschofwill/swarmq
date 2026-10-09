@@ -72,6 +72,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
         "setpoint_store", "setpoint",  # Kontrollkanal U2/U5
         "reload",  # Plan 2026-10-06-1811, U8
         "worker_target",  # Restpunkte 0.9.0: Kindziel aus ``supervisor``
+        "restart_budget",  # Plan 0.12.0, MR 0: Lebenszeichen und Neustart-Budget
     ],  # U21
 }
 

@@ -22,13 +22,12 @@ from swarmq.logging import _error_fields, get_logger
 from swarmq.process_manager import autoscale, setpoint
 from swarmq.process_manager.entry import CONFIG_ERROR_EXIT_CODE
 from swarmq.process_manager.reload import ReloadController, reexec
+from swarmq.process_manager.restart_budget import RestartBudget
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
 from swarmq.process_manager.worker_target import block_signals, run_worker_entry, unblock_signals
 from swarmq.supervision import (
     FORK_SOURCE_REJECTED_EXIT_CODE,
-    INTENT_DRAINING,
-    INTENT_RECYCLE,
     RECYCLE_NOACK_EXIT_CODE,
     SupervisorChannel,
 )
@@ -42,7 +41,7 @@ logger = get_logger(__name__)
 QueueDepthFn = Callable[[], int]
 
 
-class ProcessManager:
+class ProcessManager(RestartBudget):
     """Supervises multi-process workers with auto-restart + autoscaling.
 
     Parameters
@@ -581,134 +580,16 @@ class ProcessManager:
             logger.warning("worker_fork_source_rejected", worker_id=info.worker_id, pid=pid, exitcode=exitcode)
         return False
 
-    # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)
+    # ---- Uhr und Logger fuer ``restart_budget.py`` (Plan 0.12.0, MR 0, Q17)
 
-    def _heartbeat_deadline(self, info: WorkerInfo) -> float:
-        """Frist: normal ``heartbeat_timeout_s``; im Drain die Shutdown-Gnade plus SIGTERM-Frist."""
-        if info.channel is not None and info.channel.intent_value() in (INTENT_DRAINING, INTENT_RECYCLE):
-            return self.shutdown_grace_s + self.SHUTDOWN_TERM_S
-        return self.heartbeat_timeout_s
+    def _monotonic(self) -> float:
+        """Liest ``time`` dieses Moduls, damit ``patch("…supervisor.time")`` greift."""
+        return time.monotonic()
 
-    def _check_heartbeats(self) -> None:
-        """Worker ohne frisches Lebenszeichen ersetzen (SIGTERM, spaeter SIGKILL)."""
-        if self._shutting_down:
-            return
-        now = time.monotonic()
-        terminating = {id(info) for info, _ in self._terminating}
-        for info in list(self.workers.values()):
-            channel = info.channel
-            if channel is None or not info.process.is_alive() or id(info) in terminating:
-                continue
-            if not info.expected_shutdown and channel.intent_value() == INTENT_RECYCLE:
-                # KTD11: Absicht → expected_shutdown zuerst, dann Ersatz, dann ack.
-                # Zaehlt weder gegen MAX_RESTARTS noch als sauberes Ende.
-                info.expected_shutdown = True
-                replacement = self._start_worker(info.worker_id)
-                channel.acknowledge_replacement()
-                logger.info(
-                    "worker_recycling_replacement",
-                    worker_id=info.worker_id, pid=info.process.pid, replacement_pid=replacement.process.pid,
-                )
-                continue
-            last = channel.last_beat() or info.spawned_at
-            stale = now - last
-            if stale <= self._heartbeat_deadline(info):
-                continue
-            if info.expected_shutdown:  # Recycler/Scale-down im Drain eingefroren: toeten, kein Ersatz
-                logger.warning(
-                    "worker_hung_during_drain", worker_id=info.worker_id, pid=info.process.pid,
-                    stale_s=round(stale, 1), deadline_s=self._heartbeat_deadline(info),
-                )
-                self._terminate_worker(info)
-            else:
-                self._replace_hung_worker(info, stale)
-
-    def _terminate_worker(self, info: WorkerInfo) -> None:
-        """SIGTERM jetzt, SIGKILL nach ``SHUTDOWN_TERM_S`` (``_escalate_terminating``)."""
-        try:
-            info.process.terminate()
-        except ProcessLookupError:
-            pass
-        self._terminating.append((info, time.monotonic() + self.SHUTDOWN_TERM_S))
-
-    def _replace_hung_worker(self, info: WorkerInfo, stale_s: float) -> None:
-        now = time.monotonic()
-        info.expected_shutdown = True  # der SIGKILL-Exit darf keinen zweiten Ersatz ausloesen
-        self._hang_timestamps = [t for t in self._hang_timestamps if now - t <= self.RESTART_WINDOW]
-        logger.warning(
-            "worker_hung",
-            worker_id=info.worker_id, pid=info.process.pid, stale_s=round(stale_s, 1),
-            deadline_s=self._heartbeat_deadline(info),
-        )
-        if len(self._hang_timestamps) >= self.hang_replacement_limit:
-            self._slots.lock(info.worker_id)  # auch mit lebendem Vorgaenger (R4)
-            logger.error(
-                "hang_replacement_budget_exhausted",
-                limit=self.hang_replacement_limit, window_s=self.RESTART_WINDOW,
-                hint="a poison message keeps hanging workers; check the DLQ and the delivery limit",
-            )
-        else:
-            self._hang_timestamps.append(now)
-            self._start_worker(info.worker_id)
-        self._terminate_worker(info)
-
-    def _escalate_terminating(self) -> None:
-        """SIGKILL fuer ersetzte Worker, die SIGTERM ueberlebt haben."""
-        now = time.monotonic()
-        remaining: list[tuple[WorkerInfo, float]] = []
-        for info, deadline in self._terminating:
-            if not info.process.is_alive():
-                continue
-            if now >= deadline:
-                logger.error("worker_hung_killed", worker_id=info.worker_id, pid=info.process.pid)
-                try:
-                    info.process.kill()
-                except ProcessLookupError:
-                    pass
-                continue
-            remaining.append((info, deadline))
-        self._terminating = remaining
-
-    def _maybe_restart(self, old: WorkerInfo) -> None:
-        """Restart ``old`` respecting the rolling-window rate limit.
-
-        True sliding window: prunes
-        ``restart_timestamps`` to entries inside
-        ``[now - RESTART_WINDOW, now]`` and blocks when the count
-        hits ``MAX_RESTARTS`` — regardless of how the events are
-        distributed within the window. The previous single-gap
-        check allowed a full new series of 5 restarts after any
-        quiet period of ``RESTART_WINDOW`` seconds.
-        """
-        now = time.monotonic()
-        cutoff = now - self.RESTART_WINDOW
-        timestamps = [t for t in old.restart_timestamps if t >= cutoff]
-
-        if len(timestamps) >= self.MAX_RESTARTS:
-            # Lock the slot permanently so _current_target shrinks and the
-            # backfill loop cannot respawn it with a fresh (empty) restart
-            # history.
-            self._slots.lock(old.worker_id)
-            logger.error(
-                "worker_restart_limit_exceeded",
-                worker_id=old.worker_id,
-                limit=self.MAX_RESTARTS,
-                window_s=self.RESTART_WINDOW,
-                recent_restarts=len(timestamps),
-                exhausted_slots=self._exhausted_slots,
-                initial_workers=self.initial_workers,
-            )
-            return
-
-        timestamps.append(now)
-        logger.info(
-            "worker_restarting",
-            worker_id=old.worker_id,
-            attempt=len(timestamps),
-            limit=self.MAX_RESTARTS,
-        )
-        new = self._start_worker(old.worker_id)
-        new.restart_timestamps = timestamps
+    @property
+    def _log(self) -> Any:
+        """Logger ``swarmq.process_manager.supervisor`` (Name und Patch-Pfad bleiben)."""
+        return logger
 
     # ------------------------------------------------------------------
     # R4.7 Autoscaling — Entscheidungen in ``process_manager/autoscale.py``
