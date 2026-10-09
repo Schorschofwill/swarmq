@@ -41,8 +41,8 @@ older app can be removed; see the
   [removing crons](../guides/scheduling-and-retries.md#removing-crons-no-app-reports-anymore).
 - **Dead-lettered messages expire after 7 days by default.** Every
   message the worker dead-letters carries a per-message `expiration`
-  of `SWARMQ_DEAD_LETTER_TTL_S` (default `604800`) and the header
-  `x-swarmq-dead-lettered-at`. Set `SWARMQ_DEAD_LETTER_TTL_S=none` to
+  of `SWARMQ_DEAD_LETTER_TTL_S` (default `604800`) and the headers
+  `x-swarmq-dead-lettered-at` and `x-swarmq-dead-letter-ttl-ms`. Set `SWARMQ_DEAD_LETTER_TTL_S=none` to
   keep them without limit, as before. See
   [retention](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire).
 - **A `ScheduleStore` of your own needs new methods** for cron pruning:
@@ -79,7 +79,9 @@ older app can be removed; see the
   `dlq inspect` put messages back with their remaining retention and
   drop expired ones; messages without the header (old stock, messages
   the broker's dead-letter exchange routed) get the full retention on
-  their first read. The CLI reads `SWARMQ_DEAD_LETTER_TTL_S`.
+  their first read. The retention comes from the message's
+  `x-swarmq-dead-letter-ttl-ms`; the CLI uses its own
+  `SWARMQ_DEAD_LETTER_TTL_S` only for messages without that header.
 - **The dead-letter path stores the error result with the task's
   `result_ttl`**, like every other result of the task (before:
   always `SWARMQ_RESULT_TTL`).
@@ -212,8 +214,8 @@ older app can be removed; see the
 4. **Own `HealthChecker` or `ScheduleStore`:** switch to
    `checks={"compute": ...}` and add the three `ScheduleStore` methods.
 5. **Dead-letter queues:** decide on `SWARMQ_DEAD_LETTER_TTL_S` (7 days
-   by default; `none` keeps the old behaviour) and use the same value
-   for the `swarmq dlq` CLI. Old messages get the retention when they
+   by default; `none` keeps the old behaviour). The `swarmq dlq` CLI
+   keeps the retention each message was dead-lettered with. Old messages get the retention when they
    are first read. Messages the broker's dead-letter exchange routes
    carry no retention, so the
    [broker policy on `\.XQ$`](../guides/dead-letter-queues.md#bounding-the-xq-with-a-broker-policy)

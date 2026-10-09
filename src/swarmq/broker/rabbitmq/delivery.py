@@ -29,7 +29,7 @@ from swarmq.broker.rabbitmq.connection import (
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
-from swarmq.headers import HEADER_DEAD_LETTERED_AT
+from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
@@ -41,6 +41,12 @@ def message_of(delivery: object) -> aio_pika.abc.AbstractIncomingMessage:
     umgestellt sind)."""
     handle = delivery.handle if isinstance(delivery, Delivery) else delivery
     return cast("aio_pika.abc.AbstractIncomingMessage", handle)
+
+
+def dead_letter_ttl_header(ttl_s: float | None) -> int | str:
+    """Wert von ``x-swarmq-dead-letter-ttl-ms``: Millisekunden oder
+    ``"none"`` (unbegrenzt)."""
+    return "none" if ttl_s is None else int(ttl_s * 1000)
 
 
 async def settle(action: Awaitable[None], verb: str) -> None:
@@ -168,7 +174,11 @@ class RabbitMQDelivery(RabbitMQConnection):
             body=message_body,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             expiration=self.dead_letter_ttl_s,
-            headers={**(headers or {}), HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000)},
+            headers={
+                **(headers or {}),
+                HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000),
+                HEADER_DEAD_LETTER_TTL_MS: dead_letter_ttl_header(self.dead_letter_ttl_s),
+            },
         )
         await self._publish_with_retry(f"{queue_name}.XQ", msg)
 

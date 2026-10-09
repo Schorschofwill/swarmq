@@ -65,3 +65,9 @@ HEADER_RETRY_COUNT = "x-swarmq-retry-count"
 # Millisekunden statt Sekunden: AMQP kodiert Gleitkommazahlen in Header-
 # Tabellen nur einfach genau.
 HEADER_DEAD_LETTERED_AT = "x-swarmq-dead-lettered-at"
+
+# Frist, mit der eine Nachricht in die DLQ gelegt wurde: Millisekunden oder
+# ``"none"`` (unbegrenzt). ``dlq list``/``inspect`` rechnen mit ihr statt mit
+# der eigenen Konfiguration -- ein Leser mit kuerzerer Frist loescht sonst
+# Nachrichten, die der Worker laenger halten wollte (Review Phase 2).
+HEADER_DEAD_LETTER_TTL_MS = "x-swarmq-dead-letter-ttl-ms"

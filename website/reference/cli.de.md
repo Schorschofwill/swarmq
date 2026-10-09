@@ -404,11 +404,12 @@ sie nicht, und Nachrichten mit abgelaufener Frist fallen weg (siehe
 Die Tabellenausgabe zeigt `(truncated)`, wenn `--limit` erreicht ist;
 `--format json` enthält einen `truncated: bool`-Envelope.
 
-Alle `dlq`-Subcommands, die Nachrichten zurücklegen, lesen
-`SWARMQ_DEAD_LETTER_TTL_S` (Standard `604800`, `none` = unbegrenzt),
-um die Restfrist zu berechnen; denselben Wert wie bei den Workern
-nutzen. Eine Nachricht ohne `x-swarmq-dead-lettered-at` bekommt beim
-ersten Lesen den Header und die volle Frist.
+Alle `dlq`-Subcommands, die Nachrichten zurücklegen, berechnen die
+Restfrist aus den Headern der Nachricht, `x-swarmq-dead-lettered-at`
+und `x-swarmq-dead-letter-ttl-ms`. Nur eine Nachricht ohne sie
+(Altbestand, Dead-Letter-Exchange des Brokers) bekommt beim ersten
+Lesen beide Header und die volle `SWARMQ_DEAD_LETTER_TTL_S` der CLI
+(Standard `604800`, `none` = unbegrenzt).
 
 ### `swarmq dlq inspect`
 

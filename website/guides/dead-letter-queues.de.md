@@ -175,28 +175,34 @@ Skripte Zählungen aufzeichnen können.
 Ab 0.11.0 verfällt jede Nachricht, die der Worker selbst dead-lettert,
 `SWARMQ_DEAD_LETTER_TTL_S` Sekunden nach dem Dead-Lettering (Standard
 `604800`, 7 Tage). Der Worker setzt die Nachrichten-Property
-`expiration` und den Header `x-swarmq-dead-lettered-at`
-(Unix-Millisekunden). Die Queue-Argumente von `{queue}.XQ` bleiben
+`expiration` und die Header `x-swarmq-dead-lettered-at`
+(Unix-Millisekunden) und `x-swarmq-dead-letter-ttl-ms` (die Frist in
+Millisekunden oder `"none"`). Die Queue-Argumente von `{queue}.XQ` bleiben
 unverändert, bestehende Deployments starten also ohne
 `PRECONDITION_FAILED`.
 
 - **Lesen verlängert die Frist nicht.** `dlq list` und `dlq inspect`
   nehmen Nachrichten heraus und legen sie zurück, jede mit ihrer
-  Restzeit, berechnet aus `x-swarmq-dead-lettered-at`. Eine Nachricht,
+  Restzeit, berechnet aus `x-swarmq-dead-lettered-at` und der eigenen
+  Frist der Nachricht in `x-swarmq-dead-letter-ttl-ms`. Eine Nachricht,
   die nach der Hälfte ihrer Frist gelesen wird, verfällt trotzdem zum
-  ursprünglichen Zeitpunkt.
+  ursprünglichen Zeitpunkt. Eine CLI mit kürzerer oder
+  Standard-`SWARMQ_DEAD_LETTER_TTL_S` kürzt die Frist des Workers nicht,
+  und eine mit `none` dead-gelettete Nachricht fällt beim Lesen nie weg.
 - **Abgelaufene Nachrichten fallen beim Lesen weg.** Eine Nachricht,
   deren Zeit abgelaufen ist, während ein Lesevorgang sie hielt, wird
   nicht zurückgelegt, auch bei `dlq retry` und `dlq retry --all`. Kein
   Log-Event meldet das, und der Zähler `scanned` von `--format json`
   enthält sie nicht.
 - **Altbestand bekommt beim ersten Lesen die volle Frist.** Nachrichten
-  ohne `x-swarmq-dead-lettered-at` (vor 0.11.0 dead-gelettert oder vom
+  ohne `x-swarmq-dead-lettered-at` oder ohne
+  `x-swarmq-dead-letter-ttl-ms` (vor 0.11.0 dead-gelettert oder vom
   Dead-Letter-Exchange des Brokers geroutet) bekommen ab diesem
-  Zeitpunkt den Header und die volle `SWARMQ_DEAD_LETTER_TTL_S`.
+  Zeitpunkt beide Header und die volle `SWARMQ_DEAD_LETTER_TTL_S` der
+  lesenden CLI.
 - **`SWARMQ_DEAD_LETTER_TTL_S=none`** hält dead-gelettete Nachrichten
-  unbegrenzt, wie vor 0.11.0. Die `swarmq dlq`-CLI liest dieselbe
-  Variable, wenn sie Nachrichten zurücklegt.
+  unbegrenzt, wie vor 0.11.0. Die `swarmq dlq`-CLI liest die Variable
+  nur für Altbestand ohne Frist-Header.
 
 RabbitMQ verwirft abgelaufene Nachrichten nur am Kopf einer Queue. Eine
 Nachricht ohne `expiration` davor — Altbestand oder eine Nachricht, die

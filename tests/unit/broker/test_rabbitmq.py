@@ -791,7 +791,8 @@ class TestDeadLetterTtl:
        ``expiration == "604800000"`` (7 Tage).
     2. DLQ-Publish traegt ``x-swarmq-dead-lettered-at`` (Epoch-Millisekunden).
     3. ``dead_letter_ttl_s=None`` -> keine ``expiration``.
-    4. ``dlq list``/``inspect`` legen mit der Rest-TTL zurueck.
+    4. ``dlq list``/``inspect`` legen mit der Rest-TTL zurueck (Frist aus
+       ``x-swarmq-dead-letter-ttl-ms``, siehe ``test_dead_letter_ttl_header.py``).
     5. Abgelaufene Nachricht beim Lesen -> verworfen.
     6. Altbestand ohne Header -> volle TTL ab jetzt, Header wird gesetzt.
     7. ``dlq retry`` -> Hauptqueue ohne ``expiration``.
@@ -853,7 +854,9 @@ class TestDeadLetterTtl:
 
     async def test_list_puts_message_back_with_remaining_ttl(self):
         dead_lettered_at = int((self._NOW - 3600) * 1000)
-        broker = self._dlq_broker(self._incoming(headers={"x-swarmq-dead-lettered-at": dead_lettered_at}))
+        broker = self._dlq_broker(self._incoming(headers={
+            "x-swarmq-dead-lettered-at": dead_lettered_at, "x-swarmq-dead-letter-ttl-ms": 7_200_000,
+        }))
         await broker.list_dead_letters("tasks")
         [(routing_key, msg)] = broker.published
         assert routing_key == "tasks.XQ"
@@ -873,8 +876,9 @@ class TestDeadLetterTtl:
     async def test_expired_message_is_dropped_when_read(self):
         """Eine abgelaufene Nachricht mitten in der Queue verwirft RabbitMQ
         erst am Kopf; beim Lesen faellt sie weg, statt neu zu leben."""
-        expired = self._incoming("t-old", {"x-swarmq-dead-lettered-at": int((self._NOW - 7201) * 1000)})
-        fresh = self._incoming("t-new", {"x-swarmq-dead-lettered-at": int((self._NOW - 1) * 1000)})
+        ttl = {"x-swarmq-dead-letter-ttl-ms": 7_200_000}
+        expired = self._incoming("t-old", {"x-swarmq-dead-lettered-at": int((self._NOW - 7201) * 1000), **ttl})
+        fresh = self._incoming("t-new", {"x-swarmq-dead-lettered-at": int((self._NOW - 1) * 1000), **ttl})
         broker = self._dlq_broker(expired, fresh)
         entries, _scanned = await broker.list_dead_letters("tasks")
         assert [e["task_id"] for e in entries] == ["t-new"]

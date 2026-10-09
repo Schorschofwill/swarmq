@@ -262,7 +262,8 @@ async def _broker_from_env() -> RabbitMQBroker:
         )
     broker = RabbitMQBroker(broker_url)
     # Die DLQ-Befehle legen gelesene Nachrichten mit der Rest-TTL zurueck
-    # (Plan 2026-10-08-1541, KTD6) und brauchen dafuer die konfigurierte Frist.
+    # (Plan 2026-10-08-1541, KTD6); die konfigurierte Frist gilt nur fuer
+    # Altbestand ohne x-swarmq-dead-letter-ttl-ms.
     ttl_raw = os.environ.get("SWARMQ_DEAD_LETTER_TTL_S", "")
     if ttl_raw:
         from swarmq.config import parse_env_value

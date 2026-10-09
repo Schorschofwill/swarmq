@@ -168,26 +168,32 @@ can record counts.
 From 0.11.0 every message the worker dead-letters itself expires
 `SWARMQ_DEAD_LETTER_TTL_S` seconds after dead-lettering (default
 `604800`, 7 days). The worker sets the message property `expiration`
-and the header `x-swarmq-dead-lettered-at` (Unix milliseconds). The
-queue arguments of `{queue}.XQ` stay unchanged, so existing deployments
+and the headers `x-swarmq-dead-lettered-at` (Unix milliseconds) and
+`x-swarmq-dead-letter-ttl-ms` (the retention in milliseconds, or
+`"none"`). The queue arguments of `{queue}.XQ` stay unchanged, so existing deployments
 start without `PRECONDITION_FAILED`.
 
 - **Reading does not extend the retention.** `dlq list` and
   `dlq inspect` take messages out and put them back; they put each one
   back with its remaining time, computed from
-  `x-swarmq-dead-lettered-at`. A message read halfway through its
-  retention still expires at the original moment.
+  `x-swarmq-dead-lettered-at` and the message's own
+  `x-swarmq-dead-letter-ttl-ms`. A message read halfway through its
+  retention still expires at the original moment. A CLI with a shorter
+  or default `SWARMQ_DEAD_LETTER_TTL_S` does not shorten the retention
+  the worker chose, and a message dead-lettered with `none` is never
+  dropped on read.
 - **Expired messages are dropped on read.** A message whose time ran
   out while a read held it is not put back, also with `dlq retry` and
   `dlq retry --all`. No log event reports it, and the `scanned` count of
   `--format json` does not include it.
 - **Old stock gets the full retention on its first read.** Messages
-  without `x-swarmq-dead-lettered-at` (dead-lettered before 0.11.0, or
-  routed by the broker's dead-letter exchange) get the header and the
-  full `SWARMQ_DEAD_LETTER_TTL_S` from that moment.
+  without `x-swarmq-dead-lettered-at` or without
+  `x-swarmq-dead-letter-ttl-ms` (dead-lettered before 0.11.0, or routed
+  by the broker's dead-letter exchange) get both headers and the full
+  `SWARMQ_DEAD_LETTER_TTL_S` of the reading CLI from that moment.
 - **`SWARMQ_DEAD_LETTER_TTL_S=none`** keeps dead-lettered messages
-  without limit, as before 0.11.0. The `swarmq dlq` CLI reads the same
-  variable when it puts messages back.
+  without limit, as before 0.11.0. The `swarmq dlq` CLI reads the
+  variable only for old stock without the retention header.
 
 RabbitMQ only drops expired messages at the head of a queue. A message
 without `expiration` in front — old stock, or a message the broker's

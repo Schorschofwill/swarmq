@@ -44,7 +44,8 @@ entfernt werden; siehe die
 - **Dead-gelettete Nachrichten verfallen standardmäßig nach 7 Tagen.**
   Jede Nachricht, die der Worker dead-lettert, trägt eine `expiration`
   pro Nachricht von `SWARMQ_DEAD_LETTER_TTL_S` (Standard `604800`) und
-  den Header `x-swarmq-dead-lettered-at`. Mit
+  die Header `x-swarmq-dead-lettered-at` und
+  `x-swarmq-dead-letter-ttl-ms`. Mit
   `SWARMQ_DEAD_LETTER_TTL_S=none` bleiben sie wie bisher unbegrenzt.
   Siehe
   [Aufbewahrungsfrist](../guides/dead-letter-queues.md#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen).
@@ -84,8 +85,10 @@ entfernt werden; siehe die
   und die Frist. `dlq list` und `dlq inspect` legen Nachrichten mit
   ihrer Restfrist zurück und verwerfen abgelaufene; Nachrichten ohne
   den Header (Altbestand, vom Dead-Letter-Exchange des Brokers
-  geroutete) bekommen beim ersten Lesen die volle Frist. Die CLI liest
-  `SWARMQ_DEAD_LETTER_TTL_S`.
+  geroutete) bekommen beim ersten Lesen die volle Frist. Die Frist kommt
+  aus `x-swarmq-dead-letter-ttl-ms` der Nachricht; ihre eigene
+  `SWARMQ_DEAD_LETTER_TTL_S` nutzt die CLI nur für Nachrichten ohne
+  diesen Header.
 - **Der Dead-Letter-Pfad speichert das Fehlerergebnis mit dem
   `result_ttl` des Tasks**, wie jedes andere Ergebnis des Tasks
   (bisher: immer `SWARMQ_RESULT_TTL`).
@@ -229,8 +232,9 @@ entfernt werden; siehe die
    `checks={"compute": ...}` umstellen und die drei
    `ScheduleStore`-Methoden ergänzen.
 5. **Dead-Letter-Queues:** über `SWARMQ_DEAD_LETTER_TTL_S` entscheiden
-   (standardmäßig 7 Tage; `none` behält das alte Verhalten) und
-   denselben Wert für die `swarmq dlq`-CLI nutzen. Alte Nachrichten
+   (standardmäßig 7 Tage; `none` behält das alte Verhalten). Die
+   `swarmq dlq`-CLI behält die Frist, mit der jede Nachricht
+   dead-gelettert wurde. Alte Nachrichten
    bekommen die Frist beim ersten Lesen. Nachrichten, die der
    Dead-Letter-Exchange des Brokers routet, tragen keine Frist; die
    [Broker-Policy auf `\.XQ$`](../guides/dead-letter-queues.md#die-xq-per-broker-policy-begrenzen)

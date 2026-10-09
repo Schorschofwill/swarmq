@@ -416,3 +416,20 @@ async def test_inspect_at_half_ttl_keeps_the_original_expiry(broker_and_queue):
         assert time.monotonic() - inspected < 3.5, "Lesen hat die Frist verlaengert"
         await asyncio.sleep(0.05)
     assert time.monotonic() - inspected >= 1.5
+
+
+async def test_reader_with_short_ttl_keeps_an_unlimited_dead_letter(broker_and_queue):
+    """Review Phase 2: ein Worker mit ``dead_letter_ttl_s=None`` legt ab,
+    ein Leser mit 1 s Frist liest zehn Tage spaeter -- die Nachricht bleibt,
+    ohne ``expiration``. Prueft den Header-Rundweg ``"none"`` ueber AMQP."""
+    broker, qname = broker_and_queue
+    broker.dead_letter_ttl_s = None
+    published_at = time.time()
+    broker.clock = lambda: published_at
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-none"))
+
+    broker.dead_letter_ttl_s = 1.0
+    broker.clock = lambda: published_at + 10 * 86_400
+    entries, _ = await broker.list_dead_letters(qname)
+    assert [e["task_id"] for e in entries] == ["t-none"]
+    assert await _dlq_depth(broker, qname) == 1

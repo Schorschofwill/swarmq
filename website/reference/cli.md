@@ -392,11 +392,12 @@ extend it, and messages whose retention ran out are dropped (see
 The table output shows `(truncated)` when `--limit` is hit;
 `--format json` includes a `truncated: bool` envelope.
 
-All `dlq` subcommands that put messages back read
-`SWARMQ_DEAD_LETTER_TTL_S` (default `604800`, `none` = unlimited) to
-compute the remaining retention; use the same value as your workers.
-A message without `x-swarmq-dead-lettered-at` gets the header and the
-full retention on its first read.
+All `dlq` subcommands that put messages back compute the remaining
+retention from the message's own headers `x-swarmq-dead-lettered-at`
+and `x-swarmq-dead-letter-ttl-ms`. Only a message without them (old
+stock, broker dead-letter exchange) gets both headers and the full
+`SWARMQ_DEAD_LETTER_TTL_S` of the CLI (default `604800`, `none` =
+unlimited) on its first read.
 
 ### `swarmq dlq inspect`
 

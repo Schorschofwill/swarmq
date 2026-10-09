@@ -1,4 +1,5 @@
 x-swarmq-backend-defer-count
+x-swarmq-dead-letter-ttl-ms
 x-swarmq-dead-lettered-at
 x-swarmq-enqueued-at
 x-swarmq-guard-defer-count
