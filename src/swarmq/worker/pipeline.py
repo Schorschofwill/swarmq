@@ -70,6 +70,7 @@ from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Termin
 from swarmq.worker.results import ResultTail
 from swarmq.worker.retry import RetryHandler
 from swarmq.worker.settle import contain_delivery_errors
+from swarmq.worker.shutdown import WorkerShutdown
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
 )
@@ -79,7 +80,7 @@ logger = get_logger(__name__)
 
 
 
-class Worker(WorkerLifecycle):
+class Worker(WorkerLifecycle, WorkerShutdown):
     def __init__(
         self,
         broker: WorkerBroker,
