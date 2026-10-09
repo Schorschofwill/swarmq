@@ -192,7 +192,31 @@ older app can be removed; see the
   original fails (channel lost), the failure now counts as
   dead-lettered: the unique flag is released, `TASK_DLQ` fires, and
   the worker logs `dlq_ack_failed_after_publish` (WARNING) instead of
-  `dlq_publish_failed`. The execution guard skips the redelivery.
+  `dlq_publish_failed`. The execution guard skips the redelivery. The
+  lock gate (conflict cap, render error) no longer tries the DLX route
+  on top in that case.
+- **`dlq list`/`inspect`/`retry` keep the retention a message was
+  dead-lettered with.** The worker writes it to
+  `x-swarmq-dead-letter-ttl-ms` (milliseconds or `"none"`); a CLI with a
+  shorter or default `SWARMQ_DEAD_LETTER_TTL_S` no longer drops messages
+  the worker kept longer or without limit.
+- On RabbitMQ 4.3, a dead-letter `nack` that waits in vain for the
+  consumer watch's own cancel now fails instead of returning quietly; the
+  execution guard frees the message so the broker's redelivery runs,
+  instead of skipping it as done.
+- A claim of the execution guard that timed out on the client but ran
+  in Valkey is released in the background (only the own marker), so it
+  no longer counts as an orphan later.
+- The execution guard frees its running marker before the schedfire and
+  unique finalisation, so a shutdown cancel there no longer keeps it
+  alive until the process ends.
+- A cron that was disabled when it was pruned and is reported again is
+  created disabled with the WARNING `scheduler_cron_revived_disabled`;
+  `schedule remove --permanent` now also clears that mark.
+- When the deferrals of a redelivery add up to more than
+  `consumer_timeout_s` because the original still runs, the worker logs
+  `execution_guard_defer_stalled` (WARNING) and counts
+  `event="defer_stalled"` once per message; it keeps deferring.
 
 ### Upgrading from 0.10.x
 

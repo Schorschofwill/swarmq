@@ -209,7 +209,32 @@ entfernt werden; siehe die
   dead-gelettert: Das Unique-Flag wird freigegeben, `TASK_DLQ` feuert,
   und der Worker loggt `dlq_ack_failed_after_publish` (WARNING) statt
   `dlq_publish_failed`. Der Ausführungsschutz überspringt die
-  Neuzustellung.
+  Neuzustellung. Das Lock-Gate (Konfliktgrenze, Render-Fehler) versucht
+  in diesem Fall nicht mehr zusätzlich den DLX-Weg.
+- **`dlq list`/`inspect`/`retry` behalten die Frist, mit der eine
+  Nachricht dead-gelettert wurde.** Der Worker schreibt sie in
+  `x-swarmq-dead-letter-ttl-ms` (Millisekunden oder `"none"`); eine CLI
+  mit kürzerer oder Standard-`SWARMQ_DEAD_LETTER_TTL_S` verwirft keine
+  Nachrichten mehr, die der Worker länger oder unbegrenzt halten wollte.
+- Auf RabbitMQ 4.3 scheitert ein Dead-Letter-`nack`, der vergeblich auf
+  das eigene Cancel des Consumer-Wächters wartet, jetzt, statt still
+  zurückzukehren; der Ausführungsschutz gibt die Nachricht frei, damit
+  die Neuzustellung des Brokers läuft, statt sie als erledigt zu
+  überspringen.
+- Ein Claim des Ausführungsschutzes, der beim Client in den Timeout lief,
+  in Valkey aber ausgeführt wurde, wird im Hintergrund freigegeben (nur
+  der eigene Marker) und zählt später nicht mehr als Waise.
+- Der Ausführungsschutz gibt seinen Running-Marker vor der Schedfire- und
+  Unique-Finalisierung frei; ein Shutdown-Abbruch dort hält ihn nicht
+  mehr bis zum Prozessende am Leben.
+- Ein Cron, der beim Entfernen deaktiviert war und wieder gemeldet wird,
+  wird deaktiviert angelegt, mit WARNING
+  `scheduler_cron_revived_disabled`; `schedule remove --permanent`
+  löscht jetzt auch diese Markierung.
+- Summieren sich die Zurückstellungen einer Neuzustellung auf mehr als
+  `consumer_timeout_s`, weil das Original noch läuft, loggt der Worker
+  einmal je Nachricht `execution_guard_defer_stalled` (WARNING) und
+  zählt `event="defer_stalled"`; er stellt weiter zurück.
 
 ### Upgrade von 0.10.x
 
