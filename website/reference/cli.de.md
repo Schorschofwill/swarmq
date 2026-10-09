@@ -319,7 +319,10 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 
 Ohne `--permanent` wird der Schedule nur deaktiviert, bleibt aber
 erhalten; er bleibt deaktiviert, wenn sich sein Code ändert. Mit
-`--permanent` wird er hart gelöscht. Einen statischen Cron, den ein
+`--permanent` wird er hart gelöscht, und eine Markierung aus dem
+Entfernen eines deaktivierten Crons (`sq:{sched}:disabled`) wird
+gelöscht, auch wenn der Cron selbst schon weg ist; die nächste Meldung
+legt ihn dann aktiv an. Einen statischen Cron, den ein
 lebender Worker noch meldet, übernimmt der Leader binnen eines
 `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` wieder; dauerhaft weg ist er erst,
 wenn ihn kein Code mehr meldet (siehe

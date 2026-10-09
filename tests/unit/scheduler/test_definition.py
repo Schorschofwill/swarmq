@@ -229,6 +229,7 @@ def _make_store(hget_return=None, hsetnx_return=True, hexists_return=1):
     schedules.disable = AsyncMock(return_value=True)
     schedules.poll_due = AsyncMock(return_value=[])
     schedules.commit_fire = AsyncMock(return_value=True)
+    schedules.forget_pruned_disabled = AsyncMock()
     backend.schedules = schedules
     store = ScheduleStore(backend)
     return store, schedules

@@ -243,8 +243,11 @@ old.
   another app leads.
 - **Disabled crons come back disabled.** The leader remembers a cron
   that was disabled when it was removed (`sq:{sched}:disabled`); when a
-  worker reports it again, it is created disabled. This also applies
-  after `schedule prune --orphans`.
+  worker reports it again, it is created disabled and the leader logs
+  `scheduler_cron_revived_disabled` (WARNING). This also applies after
+  `schedule prune --orphans`. If the name now belongs to a different
+  cron, `swarmq schedule remove --permanent <name>` clears the mark;
+  the next report creates it enabled.
 - **CLI schedules are never touched.**
 - To get rid of a cron at once, `swarmq schedule remove --permanent`
   still works.

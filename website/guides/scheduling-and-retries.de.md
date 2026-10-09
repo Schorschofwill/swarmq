@@ -255,7 +255,11 @@ alt ist.
 - **Deaktivierte Crons kommen deaktiviert zurück.** Der Leader merkt
   sich einen Cron, der beim Entfernen deaktiviert war
   (`sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er
-  deaktiviert angelegt. Das gilt auch nach `schedule prune --orphans`.
+  deaktiviert angelegt, und der Leader loggt
+  `scheduler_cron_revived_disabled` (WARNING). Das gilt auch nach
+  `schedule prune --orphans`. Gehört der Name inzwischen zu einem
+  anderen Cron, löscht `swarmq schedule remove --permanent <name>` die
+  Markierung; die nächste Meldung legt ihn aktiv an.
 - **CLI-Schedules bleiben immer unberührt.**
 - Wer einen Cron sofort loswerden will, nutzt weiterhin
   `swarmq schedule remove --permanent`.

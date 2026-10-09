@@ -19,6 +19,10 @@
 # 11. Meldungen bleiben mindestens 2 x Frist erhalten (sonst würde eine lange
 #     Frist nie greifen, weil die Meldung vorher gelöscht wäre).
 # 12. Fehler beim Entfernen → geloggt, Takt läuft weiter.
+# Review Phase 2 (2026-10-09):
+# 13. Wird ein deaktiviert entfernter Cron (z. B. ein wiederverwendeter Name)
+#     deaktiviert wieder angelegt → WARNING ``scheduler_cron_revived_disabled``
+#     mit Hinweis auf ``schedule remove --permanent``.
 
 from __future__ import annotations
 
@@ -254,6 +258,19 @@ class TestLeaderPrunes:
         assert msgspec.json.decode(raw, type=ScheduleDefinition).disabled is True
         assert await memory.schedules.fire_ts("nightly") is None
         assert await memory.schedules.pruned_disabled("nightly") is False
+
+    async def test_revived_disabled_cron_is_logged_as_warning(self, memory, leader, clock, swarmq_logs):
+        await self._seed(memory, _static(disabled=True))
+        await self._report(memory, _static())
+        await clock.advance(_DAY_MS / 1000 + 1)
+        await leader.adopt_reported_crons()
+
+        await self._report(memory, _static())
+        await leader.adopt_reported_crons()
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_revived_disabled"]
+        assert entry["log_level"] == "warning" and entry["schedule_name"] == "nightly"
+        assert "schedule remove --permanent" in entry["hint"]
 
     async def test_reports_outlive_a_period_longer_than_seven_days(
         self, memory, broker, config, lock_manager, signal_dispatcher, clock,

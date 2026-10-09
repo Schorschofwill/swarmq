@@ -191,6 +191,16 @@ class SchedulerCronSync:
                 await self._store.add_schedule(definition)
                 if revived_disabled:
                     await self._backend.schedules.forget_pruned_disabled(schedule_name)
+                    logger.warning(
+                        "scheduler_cron_revived_disabled",
+                        schedule_name=schedule_name,
+                        hint=(
+                            "this cron was disabled when it was pruned and comes back disabled; "
+                            "if the name now belongs to a different cron, run "
+                            "'swarmq schedule remove --permanent <name>' -- the next report "
+                            "recreates it enabled"
+                        ),
+                    )
             except BackendConnectionError as exc:
                 logger.warning(
                     "scheduler_sync_add_failed",

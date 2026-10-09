@@ -14,6 +14,10 @@
 #    ``never`` für nie gemeldete statische, ``-`` für CLI-Crons.
 # 8. ``schedule list`` (JSON): ``last_seen_ms`` je Eintrag (``None`` ohne
 #    Meldung).
+# Review Phase 2 (2026-10-09):
+# 9. ``schedule remove --permanent`` loescht die Markierung eines deaktiviert
+#    entfernten Crons, auch wenn der Cron selbst schon weg ist: die naechste
+#    Meldung legt ihn aktiv an.
 
 from __future__ import annotations
 
@@ -106,6 +110,18 @@ class TestPruneOrphans:
 
         assert await memory.schedules.pruned_disabled("off") is True
         assert await memory.schedules.pruned_disabled("on") is False
+
+    async def test_permanent_remove_forgets_the_disabled_mark(self, memory, use_backend):
+        await _seed(memory, _def("off", disabled=True))
+        await _prune()
+        assert await memory.schedules.pruned_disabled("off") is True
+
+        with redirect_stdout(io.StringIO()):
+            await schedule_cmd._run_schedule_async(argparse.Namespace(
+                schedule_command="remove", name="off", permanent=True, format="table",
+            ))
+
+        assert await memory.schedules.pruned_disabled("off") is False
 
     async def test_without_orphans_says_so(self, memory, use_backend):
         await _seed(memory, _def("reported"), reported=True)

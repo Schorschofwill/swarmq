@@ -161,8 +161,11 @@ class ScheduleStore:
 
     async def remove_schedule(self, schedule_name: str) -> bool:
         """Permanently remove a schedule (ZREM + HDEL). True only when an
-        entry existed (Unit 4)."""
-        return await self._store.remove(schedule_name)
+        entry existed (Unit 4). Also forgets a "disabled when pruned" mark
+        (KTD8), so the next report recreates the cron enabled."""
+        removed = await self._store.remove(schedule_name)
+        await self._store.forget_pruned_disabled(schedule_name)
+        return removed
 
     async def disable_schedule(self, schedule_name: str) -> bool:
         """Mark an existing schedule disabled AND remove it from the

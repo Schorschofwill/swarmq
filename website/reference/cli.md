@@ -309,8 +309,10 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 ```
 
 Without `--permanent`, the schedule is disabled but kept; it stays
-disabled when its code changes. With `--permanent`, it is hard-deleted.
-A static cron that a live worker still reports is adopted again by the
+disabled when its code changes. With `--permanent`, it is hard-deleted,
+and a mark from pruning a disabled cron (`sq:{sched}:disabled`) is
+cleared, also when the cron itself is already gone; the next report then
+creates it enabled. A static cron that a live worker still reports is adopted again by the
 leader within one `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`; it only stays
 gone once no code reports it anymore (see
 [cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader)).
