@@ -26,7 +26,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
     WorkflowStateConflict,
 )
-from swarmq.headers import HEADER_WORKFLOW_ID
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -88,7 +88,7 @@ class RetryHandler:
             return Redelivered
 
         # 3. Read retry count from message headers
-        retry_count = delivery.headers.get("x-swarmq-retry-count", 0)
+        retry_count = delivery.headers.get(HEADER_RETRY_COUNT, 0)
 
         # 4. Check if retries exhausted
         if retry_count >= task_info.max_retries:
@@ -123,7 +123,7 @@ class RetryHandler:
         # header) survives redelivery -- ohne die Zustellzaehler des Brokers
         # (neue Nachricht, eigenes Zustellbudget).
         headers = republish_headers(delivery, ctx)
-        headers["x-swarmq-retry-count"] = retry_count + 1
+        headers[HEADER_RETRY_COUNT] = retry_count + 1
         headers["x-swarmq-traceback"] = error_message
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)

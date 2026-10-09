@@ -230,6 +230,15 @@ class Metrics:
                 labelnames=("queue",),
                 registry=self.registry,
             )
+            self.execution_guard_events_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_execution_guard_events_total",
+                (
+                    "Execution guard events: duplicate_skipped, deferred, "
+                    "orphan_limit, lease_lost"
+                ),
+                labelnames=("event",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -247,6 +256,7 @@ class Metrics:
             self.scheduler_cron_conflicts_total = noop
             self.scheduler_leader_outdated = noop
             self.consumer_reregistrations_total = noop
+            self.execution_guard_events_total = noop
 
     @property
     def enabled(self) -> bool:
@@ -256,6 +266,10 @@ class Metrics:
         """Hook des Consumer-Waechters (Plan 2026-10-08-1541, U6). Der Grund
         steht im Log ``consumer_reregistered``, nicht im Label."""
         self.consumer_reregistrations_total.labels(queue=queue).inc()
+
+    def count_execution_guard_event(self, event: str) -> None:
+        """Hook des Ausfuehrungsschutzes (Plan 2026-10-08-1541, U8)."""
+        self.execution_guard_events_total.labels(event=event).inc()
 
     def render(self) -> bytes:
         """Return the Prometheus text-exposition payload.

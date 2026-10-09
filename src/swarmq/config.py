@@ -290,6 +290,22 @@ class SwarmQConfig:
     # und die Frist, ab der ``/ready`` eine Queue ohne aktiven Consumer meldet.
     consumer_watch_interval_s: float = 5.0
     consumer_ready_grace_s: float = 30.0
+    # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): eine erneut
+    # zugestellte Nachricht laeuft nicht neben dem Original, nicht nach dessen
+    # Abschluss und nicht neben einem Retry. Running-Marker mit TTL
+    # ``execution_guard_ttl_s`` (laufend verlaengert); Done-/Superseded-Marker
+    # mit ``execution_guard_done_ttl_s``; ab ``execution_guard_max_orphans``
+    # abgelaufenen Markern ohne Freigabe (Absturzschleife) geht die Zustellung
+    # in die DLQ.
+    execution_guard: bool = True
+    execution_guard_ttl_s: float = 60.0
+    # None heisst ``max(retry_max_delay, consumer_timeout_s) + 300``,
+    # mindestens ``execution_guard_ttl_s``:
+    # zurueckgestellte Kopien koennen hinter langen Retry-Verzoegerungen
+    # stecken, und ab RabbitMQ 4.3 bleiben Zustellungen bis zum
+    # Consumer-Timeout ausgecheckt.
+    execution_guard_done_ttl_s: float | None = None
+    execution_guard_max_orphans: int = 3
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -369,6 +385,10 @@ class SwarmQConfig:
         ("SWARMQ_CONSUMER_TIMEOUT_S", "consumer_timeout_s", "float"),
         ("SWARMQ_CONSUMER_WATCH_INTERVAL_S", "consumer_watch_interval_s", "float"),
         ("SWARMQ_CONSUMER_READY_GRACE_S", "consumer_ready_grace_s", "float"),
+        ("SWARMQ_EXECUTION_GUARD", "execution_guard", "bool"),
+        ("SWARMQ_EXECUTION_GUARD_TTL_S", "execution_guard_ttl_s", "float"),
+        ("SWARMQ_EXECUTION_GUARD_DONE_TTL_S", "execution_guard_done_ttl_s", "float"),
+        ("SWARMQ_EXECUTION_GUARD_MAX_ORPHANS", "execution_guard_max_orphans", "int"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -396,6 +416,8 @@ class SwarmQConfig:
         "consumer_timeout_s",
         "consumer_watch_interval_s",
         "consumer_ready_grace_s",
+        "execution_guard_ttl_s",
+        "execution_guard_max_orphans",
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",
@@ -592,6 +614,17 @@ class SwarmQConfig:
             )
             raise ConfigurationError(msg)
 
+    def _validate_execution_guard(self) -> None:
+        """Done-/Superseded-Marker muessen den Running-Marker ueberdauern
+        (KTD5; Vorbild ``scheduler_dedup_ttl``)."""
+        assert self.execution_guard_done_ttl_s is not None  # Default in __post_init__
+        if self.execution_guard_done_ttl_s < self.execution_guard_ttl_s:
+            msg = (
+                "execution_guard_done_ttl_s must be >= execution_guard_ttl_s, "
+                f"got {self.execution_guard_done_ttl_s} < {self.execution_guard_ttl_s}"
+            )
+            raise ConfigurationError(msg)
+
     def _apply_logging_settings(self) -> None:
         settings = self.logging_settings
         if settings is None:
@@ -616,8 +649,14 @@ class SwarmQConfig:
         if self.scheduler_dedup_ttl is None:
             self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
 
+        if self.execution_guard_done_ttl_s is None:
+            self.execution_guard_done_ttl_s = max(
+                max(self.retry_max_delay, self.consumer_timeout_s) + 300.0, self.execution_guard_ttl_s,
+            )
+
         self._validate_core()
         self._validate_scheduler_relations()
+        self._validate_execution_guard()
         try:
             self.scheduler_timezone = normalize_timezone(
                 self.scheduler_timezone, "scheduler_timezone"

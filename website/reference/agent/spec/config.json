@@ -319,6 +319,30 @@
       "type": "float"
     },
     {
+      "default": true,
+      "env_var": "SWARMQ_EXECUTION_GUARD",
+      "name": "execution_guard",
+      "type": "bool"
+    },
+    {
+      "default": 60.0,
+      "env_var": "SWARMQ_EXECUTION_GUARD_TTL_S",
+      "name": "execution_guard_ttl_s",
+      "type": "float"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_EXECUTION_GUARD_DONE_TTL_S",
+      "name": "execution_guard_done_ttl_s",
+      "type": "float | None"
+    },
+    {
+      "default": 3,
+      "env_var": "SWARMQ_EXECUTION_GUARD_MAX_ORPHANS",
+      "name": "execution_guard_max_orphans",
+      "type": "int"
+    },
+    {
       "default": 131072,
       "env_var": "SWARMQ_MALLOC_TRIM_THRESHOLD",
       "name": "malloc_trim_threshold",

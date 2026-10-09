@@ -41,3 +41,20 @@ HEADER_BACKEND_DEFER_COUNT = "x-swarmq-backend-defer-count"
 # bietet es beim Claim zur Uebernahme an -- scheiterte die Freigabe am
 # Backend-Ausfall, erkennt sie den Claim als ihren statt als Duplikat.
 HEADER_SCHEDFIRE_CLAIM = "x-swarmq-schedfire-claim"
+
+# Wiederholungs-Kennung (Plan 2026-10-08-1541, KTD5): ``dlq retry`` und
+# ``dlq retry --all`` setzen sie neu. Die Ausfuehrungs-Identitaet ist Task-ID
+# plus diese Kennung -- eine bewusste Wiederholung laeuft erneut, auch wenn
+# der Done-Marker der ersten Ausfuehrung noch steht.
+HEADER_REPLAY_ID = "x-swarmq-replay-id"
+
+# Zurueckstellungen durch den Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5):
+# wie oft diese Nachricht schon zurueckgestellt wurde, weil dieselbe
+# Ausfuehrung anderswo lief. Bestimmt die naechste Wartezeit; kein
+# Retry-Zaehler.
+HEADER_GUARD_DEFER_COUNT = "x-swarmq-guard-defer-count"
+
+# Retry-Zaehler einer Zustellung: wie oft der Task schon fachlich wiederholt
+# wurde (``retry_later`` mit erhoehtem Zaehler). Der Ausfuehrungsschutz
+# erkennt daran eine durch einen Retry ueberholte Kopie (KTD5).
+HEADER_RETRY_COUNT = "x-swarmq-retry-count"

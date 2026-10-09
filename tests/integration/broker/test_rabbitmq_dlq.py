@@ -253,6 +253,33 @@ async def test_retry_resets_retry_count_header(broker_and_queue):
         await ch.close()
 
 
+async def test_retry_and_retry_all_set_a_fresh_replay_id(broker_and_queue):
+    """Plan 2026-10-08-1541, U8 (KTD5): jede Wiederholung aus der DLQ ist eine
+    neue Ausführungs-Identität -- der Ausführungsschutz ließe sie sonst als
+    abgeschlossen fallen, solange der Done-Marker des ersten Laufs steht."""
+    broker, qname = broker_and_queue
+    await broker._publish_to_dead_letter_queue(
+        qname, _make_body("t-replay"), headers={"x-swarmq-replay-id": "old"},
+    )
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-replay-all"), headers={})
+
+    assert (await broker.retry_dead_letter(qname, "t-replay"))[0] is True
+    assert (await broker.retry_all_dead_letters(qname))[0] == 1
+
+    ch = await broker._connection.channel()
+    try:
+        q = await ch.get_queue(qname)
+        replay_ids = []
+        for _ in range(2):
+            msg = await q.get(no_ack=True)
+            assert msg is not None
+            replay_ids.append((msg.headers or {}).get("x-swarmq-replay-id"))
+    finally:
+        await ch.close()
+    assert all(isinstance(r, str) and len(r) == 32 for r in replay_ids)
+    assert "old" not in replay_ids and len(set(replay_ids)) == 2
+
+
 # ---------------------------------------------------------------------------
 # retry_all_dead_letters
 # ---------------------------------------------------------------------------

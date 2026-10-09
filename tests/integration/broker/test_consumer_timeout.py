@@ -39,6 +39,12 @@ Settle-Regeln (U7, KTD4):
       konsumiert.
 - [x] 4.2.9: Ein spätes Ack nach dem Channel-Close fängt
       ``contain_delivery_errors`` ab; der neue Channel bleibt offen.
+
+Ausführungsschutz (U8, KTD5, AE4):
+- [x] 4.2.9 und 4.3.6: Ein Task läuft länger als der Consumer-Timeout. Die
+      Neuzustellung wird zurückgestellt, solange er läuft, und danach
+      übersprungen; der Task lief genau einmal, der Worker konsumiert weiter
+      mit genau einem Consumer.
 """
 
 from __future__ import annotations
@@ -487,3 +493,67 @@ async def test_42_late_ack_after_channel_close_is_contained_and_new_channel_stay
     await restored.basic_qos(prefetch_count=10)  # Round-Trip: Acks verarbeitet
     assert not restored.is_closed
     assert await _consumer_count(rabbitmq42, c.queue) == 1
+
+
+# --- Ausführungsschutz (U8, AE4) ----------------------------------------------
+
+
+@pytest.mark.timeout(60)
+async def test_long_task_runs_exactly_once_across_the_consumer_timeout(any_rabbitmq, valkey_url):
+    """Der Task läuft, bis der Ausführungsschutz die Neuzustellung des Brokers
+    zurückgestellt hat (4.3: nach ``basic.cancel`` und eigenem Cancel, 4.2:
+    nach Channel-Close und Restore). Die Running-TTL (2 s) ist kürzer als der
+    Lauf -- ohne Verlängerung liefe die Kopie parallel."""
+    node = any_rabbitmq
+    queue = f"ct_{uuid.uuid4().hex[:8]}"
+    broker = RabbitMQBroker(node.amqp_url)
+    runs: list[float] = []
+
+    with capture_swarmq_logs() as logs:
+
+        def _seen(event: str) -> bool:
+            return any(e["event"] == event for e in logs)
+
+        class OutlivesTimeout(Task):
+            task_info = TaskInfo(name="ct_guard_once", queues=[queue])
+
+            async def run(self) -> str:
+                runs.append(time.monotonic())
+                deadline = time.monotonic() + TIMEOUT_DEADLINE_S
+                while not _seen("execution_guard_deferred") and time.monotonic() < deadline:
+                    await asyncio.sleep(0.05)
+                return "once"
+
+        class Quick(Task):
+            task_info = TaskInfo(name="ct_guard_quick", queues=[queue])
+
+            async def run(self) -> str:
+                return "quick"
+
+        app = SwarmQ(
+            broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2,
+            consumer_watch_interval_s=0.5, execution_guard_ttl_s=2.0,
+        )
+        try:
+            async with node.consumer_timeout_policy(queue, CONSUMER_TIMEOUT_MS), app:
+                await app.broker.declare_queue(queue)
+                worker = asyncio.create_task(app.start_worker())
+                try:
+                    task_id = await app.schedule("ct_guard_once")
+                    assert await app.get_result(task_id, timeout=TIMEOUT_DEADLINE_S + 10) == "once"
+                    await wait_until(lambda: _seen("duplicate_delivery_skipped"), TIMEOUT_DEADLINE_S)
+                    assert len(runs) == 1
+                    assert not _seen("execution_guard_lease_lost")
+
+                    quick_id = await app.schedule("ct_guard_quick")
+                    assert await app.get_result(quick_id, timeout=EVENT_DEADLINE_S) == "quick"
+                    assert await _consumer_count(node, queue) == 1
+                    assert len(runs) == 1
+                finally:
+                    worker.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await worker
+        finally:
+            Task._clear_registered_tasks()
+            for name in (queue, f"{queue}.DQ", f"{queue}.XQ"):
+                await _delete_queue(node, name)

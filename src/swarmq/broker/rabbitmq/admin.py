@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any
 
 import aio_pika
@@ -18,6 +19,7 @@ from swarmq.broker.rabbitmq.connection import RabbitMQConnection
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, message_of, settle
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
+from swarmq.headers import HEADER_REPLAY_ID, HEADER_RETRY_COUNT
 
 
 class RabbitMQAdmin(RabbitMQDelivery):
@@ -201,7 +203,11 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         forward_headers = dict(headers)
                         # Reset retry-count so the operator's "try this
                         # again" intent isn't blocked by a stale counter.
-                        forward_headers.pop("x-swarmq-retry-count", None)
+                        forward_headers.pop(HEADER_RETRY_COUNT, None)
+                        # Neue Ausfuehrungs-Identitaet (KTD5): der Ausfuehrungs-
+                        # schutz liesse die Wiederholung sonst als abgeschlossen
+                        # fallen, solange der Done-Marker des ersten Laufs steht.
+                        forward_headers[HEADER_REPLAY_ID] = uuid.uuid4().hex
                         msg_out = aio_pika.Message(
                             body=body,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,

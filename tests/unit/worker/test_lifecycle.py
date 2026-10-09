@@ -1102,3 +1102,17 @@ class TestStartupFailureLeavesNothingBehind:
         assert w._scheduler is None
         assert _pending_scheduler_tasks() == []
         broker.close.assert_not_awaited()
+
+
+async def test_start_wires_the_execution_guard_store_of_the_backend(broker, backend, registry, config):
+    """Plan 2026-10-08-1541, U8 (KTD5): der Store des Ausführungsschutzes
+    kommt nach ``connect()`` von der Backend-Fassade."""
+    store = MagicMock()
+    backend.execution_guard = store
+    broker.declare_queue = AsyncMock(side_effect=RuntimeError("stop after wiring"))
+    w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+    with pytest.raises(RuntimeError, match="stop after wiring"):
+        await w.start()
+
+    assert w._guard_store is store

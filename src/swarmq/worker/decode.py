@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_WORKFLOW_ID
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_HASH, HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import decode_json
 from swarmq.worker.gates import GateDeps, route_via_dlx
@@ -69,7 +69,7 @@ def attempt_number(message: Any) -> int | None:
     ergibt ``None`` (das Feld fehlt dann im Kontext), statt die Zustellung
     scheitern zu lassen.
     """
-    raw = (message.headers or {}).get("x-swarmq-retry-count", 0)
+    raw = (message.headers or {}).get(HEADER_RETRY_COUNT, 0)
     if not isinstance(raw, int):
         return None
     return raw + 1

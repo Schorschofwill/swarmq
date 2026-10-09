@@ -1,5 +1,6 @@
 """Koordinationsverträge (Entwurf §2.4, KTD4): ``LockStore``,
-``RateLimitStore``, ``ChordStore``, ``ScheduleStore`` samt Token-Typen.
+``RateLimitStore``, ``ChordStore``, ``ScheduleStore`` samt Token-Typen und
+``ExecutionGuardStore`` (Plan 2026-10-08-1541, KTD5).
 
 ``ScheduleStore`` arbeitet auf ``bytes`` plus Fire-Zeitpunkt, damit die
 Implementierung ``scheduler.definition`` nicht importieren muss.
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,3 +209,47 @@ class ScheduleStore(Protocol):
         """Owner des Leader-Locks und seine Version, gelesen in einem
         Schritt; eine Version, die ein anderer Owner geschrieben hat, gilt
         nicht (KTD11)."""
+
+
+GuardStatus = Literal["claimed", "done", "superseded", "running", "orphan_limit"]
+
+
+@dataclass(frozen=True, slots=True)
+class GuardClaim:
+    """Ergebnis eines Claims des Ausführungsschutzes (KTD5).
+
+    ``claimed`` -- der Running-Marker gehört jetzt dem Aufrufer;
+    ``done``/``superseded`` -- abgeschlossen bzw. durch einen Retry überholt;
+    ``running`` -- ein fremder Running-Marker steht; ``orphan_limit`` -- die
+    Waisen-Grenze ist erreicht (der Marker gehört trotzdem dem Aufrufer, damit
+    das folgende Dead-Letter ihn abschließt). ``orphans`` zählt die
+    abgelaufenen Running-Marker ohne Freigabe."""
+
+    status: GuardStatus
+    orphans: int = 0
+
+
+@runtime_checkable
+class ExecutionGuardStore(Protocol):
+    """Running-, Done- und Superseded-Marker je Ausführungs-Identität (KTD5)."""
+
+    async def claim(
+        self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+    ) -> GuardClaim:
+        """Atomar: Done- oder Superseded-Marker (Zähler größer als
+        *retry_count*) sprechen dagegen, sonst ein fremder Running-Marker;
+        andernfalls gehört der Running-Marker (TTL *ttl_ms*) *owner*. Ein
+        abgelaufener Marker ohne Freigabe zählt als Waise."""
+
+    async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool:
+        """Compare-and-PEXPIRE: ``False``, wenn der Marker weg oder fremd ist."""
+
+    async def mark_done(self, identity: str, *, owner: str, state_ttl_ms: int) -> None:
+        """Done-Marker setzen; den Running-Marker nur löschen, wenn er *owner* gehört."""
+
+    async def mark_superseded(self, identity: str, *, owner: str, retry_count: int, state_ttl_ms: int) -> None:
+        """Superseded-Marker mit dem Zähler der Retry-Kopie (nur steigend);
+        den eigenen Running-Marker löschen."""
+
+    async def release(self, identity: str, *, owner: str) -> None:
+        """Den eigenen Running-Marker löschen (nicht-terminaler Ausgang)."""

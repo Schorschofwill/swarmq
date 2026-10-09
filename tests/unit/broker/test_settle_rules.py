@@ -20,6 +20,13 @@ Test-Liste:
 8. Gültige Zustellung → Ack sofort wie bisher, kein Anstoß des Wächters.
 9. ``retry_later`` nach erfolgreichem Publish mit zurückgehaltenem Ack →
    normaler Erfolg.
+
+Ausführungsschutz (U8, KTD5): scheitert nach erfolgreichem Publish nur das
+Ack des Originals, ist die Kopie unterwegs -- der Aufrufer muss das vom
+gescheiterten Publish unterscheiden können.
+10. ``retry_later``: Publish gelingt, Ack auf geschlossenem Channel →
+    ``SettleFailedAfterPublish`` (ein ``BrokerConnectionError``).
+11. ``dead_letter``: ebenso.
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ from aio_pika.exceptions import ChannelInvalidStateError
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import BrokerConnectionError, SettleFailedAfterPublish
 from tests.support.consumer_fakes import FakeChannel, FakeQueue, FakeUnderlay
 
 pytestmark = pytest.mark.timeout(5)
@@ -158,6 +165,26 @@ class TestClosedChannel:
 
         with pytest.raises(BrokerConnectionError):
             await setup.broker.ack(setup.delivery)
+
+
+    async def test_retry_later_reports_a_failed_ack_after_publish(self, setup: Setup) -> None:
+        await setup.broker.consumer_watch.tick()
+        setup.underlay.is_closed = True
+        setup.broker._publish_with_retry = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(SettleFailedAfterPublish):
+            await setup.broker.retry_later(setup.delivery, delay_ms=1000, headers={})
+
+        setup.broker._publish_with_retry.assert_awaited_once()
+
+
+    async def test_dead_letter_reports_a_failed_ack_after_publish(self, setup: Setup) -> None:
+        await setup.broker.consumer_watch.tick()
+        setup.underlay.is_closed = True
+        setup.broker._publish_with_retry = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(SettleFailedAfterPublish):
+            await setup.broker.dead_letter(setup.delivery, headers={})
 
 
 class TestOwnTags:

@@ -27,7 +27,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
-from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
+from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
@@ -147,13 +147,13 @@ class GateDeps:
 # gesetzten ``x-delivery-count`` bei, 3.13 zaehlt zudem Requeues).
 BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
 
-# Nicht in Kopien uebernommen: die Broker-Zaehler (s. o.) und der Zaehler der
-# Zurueckstellungen bei Backend-Ausfall. Wer eine Kopie macht, ohne am Backend
+# Nicht in Kopien uebernommen: die Broker-Zaehler (s. o.) und die Zaehler der
+# Zurueckstellungen bei Backend-Ausfall und durch den Ausfuehrungsschutz. Wer eine Kopie macht, ohne am Backend
 # gescheitert zu sein (Retry, Rate-Limit-/Lock-Requeue), hat das Backend
 # erreicht -- die Stoerung ist ueberstanden, eine naechste beginnt wieder mit
 # der Basiswartezeit. Die Zurueckstellung selbst liest den bisherigen Stand
 # vom Original und zaehlt weiter.
-_NOT_COPIED = BROKER_DELIVERY_COUNTERS | {HEADER_BACKEND_DEFER_COUNT}
+_NOT_COPIED = BROKER_DELIVERY_COUNTERS | {HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT}
 
 
 def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
@@ -181,7 +181,7 @@ def _as_count(raw: Any) -> int:
     return max(count, 0)
 
 
-def prior_deferrals(headers: Mapping[str, Any]) -> int:
+def prior_deferrals(headers: Mapping[str, Any], counter_header: str = HEADER_BACKEND_DEFER_COUNT) -> int:
     """Bisherige Zurueckstellungen in Folge.
 
     Eine Zurueckstellungs-Kopie traegt keine Broker-Zaehler (neue Nachricht).
@@ -192,7 +192,7 @@ def prior_deferrals(headers: Mapping[str, Any]) -> int:
     """
     if any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS):
         return 0
-    return _as_count(headers.get(HEADER_BACKEND_DEFER_COUNT))
+    return _as_count(headers.get(counter_header))
 
 
 def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict[str, Any], int, int]:

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
+from swarmq.headers import HEADER_RETRY_COUNT
 
 # ``_broker_from_env`` is resolved LAZILY via ``swarmq.cli`` so that
 # ``monkeypatch.setattr(cli, "_broker_from_env", fake)`` in tests/unit/
@@ -38,7 +39,7 @@ def _format_dlq_list_table(entries: list[dict[str, Any]]) -> str:
     rows = [("TASK_ID", "TASK_NAME", "RETRIES", "ERROR_PREVIEW", "BODY_BYTES")]
     for e in entries:
         headers = e.get("headers") or {}
-        retries = headers.get("x-swarmq-retry-count", "-")
+        retries = headers.get(HEADER_RETRY_COUNT, "-")
         traceback_hdr = headers.get("x-swarmq-traceback", "")
         if isinstance(traceback_hdr, bytes):
             traceback_hdr = traceback_hdr.decode("utf-8", errors="replace")

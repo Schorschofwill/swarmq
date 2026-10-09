@@ -1,9 +1,11 @@
 x-swarmq-backend-defer-count
 x-swarmq-enqueued-at
+x-swarmq-guard-defer-count
 x-swarmq-lock-conflict-count
 x-swarmq-lock-name
 x-swarmq-lock-render-error
 x-swarmq-rate-limit-count
+x-swarmq-replay-id
 x-swarmq-retry-count
 x-swarmq-schedfire
 x-swarmq-schedfire-claim

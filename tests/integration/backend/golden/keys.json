@@ -1,5 +1,7 @@
 {
   "sq:cancel:golden-task-0001": "string",
+  "sq:guard:{golden-task-0001}:run": "string",
+  "sq:guard:{golden-task-0001}:state": "hash",
   "sq:lock:golden-lock": "string",
   "sq:lock:golden-sem": "zset",
   "sq:lock:{sched}:leader": "string",

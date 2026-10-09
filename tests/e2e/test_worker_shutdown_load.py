@@ -258,7 +258,11 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
 
     _ensure_fixture_registered(queue)
 
-    proc_a = _spawn_worker(queue, concurrency=N)
+    # Ausführungsschutz (Plan 2026-10-08-1541, KTD5, R5): B führt die
+    # Neuzustellungen erst aus, wenn die Running-Marker des toten A abgelaufen
+    # sind -- bis dahin stellt er sie zurück. Kurze TTL statt 60 s.
+    guard_env = {"SWARMQ_EXECUTION_GUARD_TTL_S": "2"}
+    proc_a = _spawn_worker(queue, concurrency=N, env_extra=guard_env)
     proc_b: subprocess.Popen[str] | None = None
     try:
         _wait_for_worker_started(proc_a)
@@ -289,7 +293,7 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
 
             # Start worker B — it subscribes to the same queue and
             # will receive the redelivered messages.
-            proc_b = _spawn_worker(queue, concurrency=N)
+            proc_b = _spawn_worker(queue, concurrency=N, env_extra=guard_env)
             _wait_for_worker_started(proc_b)
 
             # Each task sleeps 3s. After SIGKILL and restart, worker B

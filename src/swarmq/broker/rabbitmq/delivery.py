@@ -26,7 +26,7 @@ from swarmq.broker.rabbitmq.connection import (
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
-from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
@@ -384,6 +384,14 @@ class RabbitMQDelivery(RabbitMQConnection):
     # Die vier Verben (KTD2)
     # ------------------------------------------------------------------
 
+    async def _ack_after_publish(self, delivery: Delivery) -> None:
+        """Ack des Originals nach dem Publish seiner Kopie: ein Kanalverlust
+        wird ``SettleFailedAfterPublish`` -- die Kopie ist unterwegs (KTD5)."""
+        try:
+            await self.ack(delivery)
+        except BrokerConnectionError as exc:
+            raise SettleFailedAfterPublish(str(exc)) from exc
+
     async def ack(self, delivery: Delivery) -> None:
         message = message_of(delivery)
         if await self._may_settle(message, "ack"):
@@ -396,8 +404,8 @@ class RabbitMQDelivery(RabbitMQConnection):
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)
-        await self.ack(delivery)
+        await self._ack_after_publish(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
         await self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers)
-        await self.ack(delivery)
+        await self._ack_after_publish(delivery)

@@ -39,7 +39,7 @@ from swarmq.workflow_orchestration import (
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
-    from swarmq.contracts.coordination import LockStore, LockToken, RateLimitStore
+    from swarmq.contracts.coordination import ExecutionGuardStore, LockStore, LockToken, RateLimitStore
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
     from swarmq.middleware import MiddlewareChain
@@ -89,6 +89,7 @@ class WorkerLifecycle:
         _scheduler: SchedulerLoop | None
         _rate_limiter: RateLimitStore | None
         _lock_manager: LockStore | None
+        _guard_store: ExecutionGuardStore | None
         _metrics: Metrics | None
         _metrics_server: MetricsServer | None
         _health_server: HealthServer | None
@@ -118,6 +119,8 @@ class WorkerLifecycle:
         # Lua-Skripte brauchen den lebenden Client).
         self._rate_limiter = self._backend.rate_limit
         self._lock_manager = self._backend.locks
+        # KTD5: ein Backend ohne Ausfuehrungsschutz (Dritt-Store) laesst ihn aus.
+        self._guard_store = getattr(self._backend, "execution_guard", None)
 
         # R4.1 workflow advancer (U5) — der ChordStore-Vertrag kommt
         # ebenfalls von der Fassade (chord_complete.lua, lebender Client).

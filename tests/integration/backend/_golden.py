@@ -150,6 +150,10 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     )
     await backend.schedules.report_worker_version("golden-worker", "0.10.0", ttl_ms=TTL_MS)
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
+    # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
+    await backend.execution_guard.claim(
+        TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
+    )
     locks = LockManager(client)
     await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
     await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)
@@ -216,6 +220,8 @@ def lua_contract() -> str:
         argv = max((int(n) for n in re.findall(r"ARGV\[(\d+)\]", text)), default=0)
         lines.append(f"{path.stem}\tKEYS={keys}\tARGV={argv}")
     multi = {
+        "guard_claim": ["sq:guard:{golden-task-0001}:run", "sq:guard:{golden-task-0001}:state"],
+        "guard_finish": ["sq:guard:{golden-task-0001}:run", "sq:guard:{golden-task-0001}:state"],
         "sched_commit": ["sq:{sched}:zset", "sq:{sched}:defs", "sq:lock:{sched}:leader"],
         "sched_disable": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_poll": ["sq:{sched}:zset", "sq:{sched}:defs"],

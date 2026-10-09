@@ -408,3 +408,19 @@ def test_consumer_reregistrations_are_counted_per_queue():
 
     sample = "swarmq_consumer_reregistrations_total"
     assert m.registry.get_sample_value(sample, {"queue": "q1"}) == 2.0
+
+
+def test_execution_guard_events_are_counted_per_event():
+    """Plan 2026-10-08-1541 (U8, KTD5): übersprungene Duplikate,
+    Zurückstellungen, Waisen-Grenze und verlorene Marker."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+
+    m.count_execution_guard_event("duplicate_skipped")
+    m.count_execution_guard_event("duplicate_skipped")
+    m.count_execution_guard_event("lease_lost")
+
+    sample = "swarmq_execution_guard_events_total"
+    assert m.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
+    assert m.registry.get_sample_value(sample, {"event": "lease_lost"}) == 1.0
