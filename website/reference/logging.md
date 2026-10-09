@@ -639,7 +639,7 @@ selection, not every event SwarmQ emits.
 | `task_not_found` | `swarmq.worker.pipeline` | ERROR | Task name not registered in this worker; routed to the DLX. |
 | `retry_publish_failed` | `swarmq.worker.retry` | ERROR | Retry could not be published; the message is redelivered. |
 | `dlq_publish_failed` | `swarmq.worker.retry` | ERROR | Dead-letter publish failed; the message is redelivered. |
-| `dlq_ack_failed_after_publish` | `swarmq.worker.retry` | WARNING | The copy is in the DLQ, only the ack of the original failed (channel lost). The failure counts as dead-lettered; the execution guard skips the redelivery. |
+| `dlq_ack_failed_after_publish` | `swarmq.worker.gates` | WARNING | The copy is in the DLQ, only the ack of the original failed (channel lost). Counts as dead-lettered (task failure, lock conflict cap, lock render error): no DLX fallback, the unique flag is released, and the execution guard skips the redelivery. |
 | `result_serialization_failed` | `swarmq.worker.results` | ERROR | Task result cannot be serialized; stored as an error. |
 | `workflow_advance_failed` | `swarmq.worker.results` | ERROR | Unexpected error while advancing a workflow; the workflow is marked failed. Field `workflow_id`. |
 | `workflow_advance_backend_error`, `workflow_advance_broker_error` | `swarmq.worker.results` | WARNING / ERROR | Backend/broker error (or state conflict) while advancing. WARNING for `AT_LEAST_ONCE`: the step is redelivered and the idempotent advance runs again. ERROR for `FIRE_AND_FORGET`: there is no redelivery, the workflow does not advance. Fields `workflow_id`, `error_type`, `error`. |

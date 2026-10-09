@@ -31,7 +31,14 @@ from typing import Any, Literal
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers, route_via_dlx
+from swarmq.worker.gates import (
+    GateContext,
+    GateDeps,
+    dead_letter_copy,
+    redeliver_in_place,
+    republish_headers,
+    route_via_dlx,
+)
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
@@ -191,7 +198,7 @@ class LockGate:
         # cap=10 means the 10th conflict routes to DLQ.
         if new_count >= LOCK_CONFLICT_DLQ_CAP:
             try:
-                await deps.broker.dead_letter(delivery, headers=original_headers)
+                await dead_letter_copy(deps, delivery, original_headers)
                 await deps.maybe_release_unique(delivery, ctx.task_id, task_info)
             except Exception as exc:
                 # DLQ-publish failure at the cap creates a hazard: nacking
@@ -250,8 +257,8 @@ class LockGate:
         original_headers = dict(delivery.headers) if delivery.headers else {}
         original_headers.update(extra_headers)
         try:
-            await deps.broker.dead_letter(delivery, headers=original_headers)
-            # Release AFTER successful ack.
+            await dead_letter_copy(deps, delivery, original_headers)
+            # Release AFTER successful ack (or a copy already in the XQ).
             await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
         except Exception as broker_exc:
             fields = dict(

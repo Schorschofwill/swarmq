@@ -657,7 +657,7 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `task_not_found` | `swarmq.worker.pipeline` | ERROR | Task-Name in diesem Worker nicht registriert; an den DLX. |
 | `retry_publish_failed` | `swarmq.worker.retry` | ERROR | Retry ließ sich nicht publizieren; die Nachricht wird neu zugestellt. |
 | `dlq_publish_failed` | `swarmq.worker.retry` | ERROR | Publish in die DLQ gescheitert; die Nachricht wird neu zugestellt. |
-| `dlq_ack_failed_after_publish` | `swarmq.worker.retry` | WARNING | Die Kopie liegt in der DLQ, nur das Ack des Originals scheiterte (Channel weg). Der Fehlschlag gilt als in die DLQ gelegt; der Ausführungsschutz überspringt die Neuzustellung. |
+| `dlq_ack_failed_after_publish` | `swarmq.worker.gates` | WARNING | Die Kopie liegt in der DLQ, nur das Ack des Originals scheiterte (Channel weg). Gilt als in die DLQ gelegt (Task-Fehler, Lock-Konfliktgrenze, Lock-Render-Fehler): kein DLX-Fallback, das Unique-Flag wird freigegeben, und der Ausführungsschutz überspringt die Neuzustellung. |
 | `result_serialization_failed` | `swarmq.worker.results` | ERROR | Task-Ergebnis nicht serialisierbar; als Fehler gespeichert. |
 | `workflow_advance_failed` | `swarmq.worker.results` | ERROR | Unerwarteter Fehler beim Voranbringen eines Workflows; der Workflow wird als gescheitert markiert. Feld `workflow_id`. |
 | `workflow_advance_backend_error`, `workflow_advance_broker_error` | `swarmq.worker.results` | WARNING / ERROR | Backend-/Broker-Fehler (oder Zustandskonflikt) beim Voranbringen. WARNING bei `AT_LEAST_ONCE`: der Schritt wird neu zugestellt und das idempotente Voranbringen läuft erneut. ERROR bei `FIRE_AND_FORGET`: ohne Neuzustellung kommt der Workflow nicht voran. Felder `workflow_id`, `error_type`, `error`. |

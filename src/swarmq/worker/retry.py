@@ -26,7 +26,6 @@ from swarmq.exceptions import (
     BackendConnectionError,
     NoRetry,
     Retry,
-    SettleFailedAfterPublish,
     TaskNotFoundError,
     WorkflowStateConflict,
 )
@@ -37,7 +36,7 @@ from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.execution import ExecutionResult
-from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers
+from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
@@ -252,7 +251,7 @@ class RetryHandler:
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
         headers["x-swarmq-traceback"] = error_message
         try:
-            await _dead_letter_copy(deps, delivery, headers)
+            await dead_letter_copy(deps, delivery, headers)
             # Release AFTER successful ack (dead_letter bestätigt das
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to
@@ -276,14 +275,3 @@ class RetryHandler:
             # path releases it. No release here.
         # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
         logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
-
-
-async def _dead_letter_copy(deps: GateDeps, delivery: Any, headers: dict[str, Any]) -> None:
-    """Kopie in die XQ, Original bestaetigen. Liegt die Kopie dort und
-    scheitert nur das Ack (``SettleFailedAfterPublish``), ist das terminal:
-    die Neuzustellung des Originals ueberspringt der Ausfuehrungsschutz als
-    ``done`` und gibt nichts frei."""
-    try:
-        await deps.broker.dead_letter(delivery, headers=headers)
-    except SettleFailedAfterPublish as exc:
-        logger.warning("dlq_ack_failed_after_publish", **_error_fields(exc))

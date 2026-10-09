@@ -27,6 +27,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
+from swarmq.exceptions import SettleFailedAfterPublish
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
@@ -251,6 +252,19 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
 
 class Gate(Protocol):
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome: ...
+
+
+async def dead_letter_copy(deps: GateDeps, delivery: Any, headers: Mapping[str, Any]) -> bool:
+    """Kopie in die XQ, Original bestaetigen. ``True``: die Kopie liegt dort,
+    nur das Ack scheiterte (``SettleFailedAfterPublish``) -- das ist
+    terminal wie ein Erfolg; die Neuzustellung des Originals ueberspringt der
+    Ausfuehrungsschutz als ``done``. Jeder andere Fehler geht durch."""
+    try:
+        await deps.broker.dead_letter(delivery, headers=headers)
+    except SettleFailedAfterPublish as exc:
+        logger.warning("dlq_ack_failed_after_publish", **_error_fields(exc))
+        return True
+    return False
 
 
 async def route_via_dlx(
