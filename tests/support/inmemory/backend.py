@@ -383,6 +383,8 @@ class InMemoryScheduleStore:
         # Leader-Version (KTD11): "leader" -> (owner, version)
         self._leader_version: _TTLDict[tuple[str, str]] = _TTLDict(clock)
         self._worker_versions: _TTLDict[str] = _TTLDict(clock)
+        # Beim Aufräumen deaktivierte Namen (KTD8)
+        self._pruned_disabled: set[str] = set()
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -509,6 +511,29 @@ class InMemoryScheduleStore:
             for (name, fp), (first, last, payload) in self._reports.items()
         )
         return CronReports(now_ms=self._clock.now_ms(), reports=reports)
+
+    async def prune_cron(
+        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+    ) -> bool:
+        if self._defs.get(name) != expected:
+            return False
+        seen = [last for (n, _), (_, last, _) in self._reports.items() if n == name]
+        if stale_after_ms is None:
+            prunable = not seen
+        else:
+            prunable = bool(seen) and max(seen) < self._clock.now_ms() - stale_after_ms
+        if not prunable:
+            return False
+        await self.remove(name)
+        if remember_disabled:
+            self._pruned_disabled.add(name)
+        return True
+
+    async def pruned_disabled(self, name: str) -> bool:
+        return name in self._pruned_disabled
+
+    async def forget_pruned_disabled(self, name: str) -> None:
+        self._pruned_disabled.discard(name)
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         self._worker_versions.set(worker_id, version, ttl_ms)

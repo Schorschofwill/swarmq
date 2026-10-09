@@ -8,6 +8,7 @@ sched_commit	KEYS=3	ARGV=6
 sched_disable	KEYS=2	ARGV=2
 sched_fire_claim	KEYS=1	ARGV=3
 sched_poll	KEYS=2	ARGV=2
+sched_prune	KEYS=4	ARGV=4
 sched_replan	KEYS=2	ARGV=4
 sched_report	KEYS=3	ARGV=3
 sched_report_prune	KEYS=3	ARGV=1
@@ -21,5 +22,6 @@ sched_disable	slots=equal	sq:{sched}:defs sq:{sched}:zset
 sched_poll	slots=equal	sq:{sched}:zset sq:{sched}:defs
 sched_replan	slots=equal	sq:{sched}:defs sq:{sched}:zset
 sched_report	slots=equal	sq:{sched}:report:first_seen sq:{sched}:report:last_seen sq:{sched}:report:def
+sched_prune	slots=equal	sq:{sched}:defs sq:{sched}:zset sq:{sched}:report:last_seen sq:{sched}:disabled
 sched_report_prune	slots=equal	sq:{sched}:report:first_seen sq:{sched}:report:last_seen sq:{sched}:report:def
 sliding_window_counter	slots=equal	sq:rl:{golden-task}:1700000000000 sq:rl:{golden-task}:1699999940000

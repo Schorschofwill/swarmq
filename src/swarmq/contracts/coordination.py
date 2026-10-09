@@ -194,6 +194,23 @@ class ScheduleStore(Protocol):
         """Löscht atomar die Meldungen, deren ``last_seen`` (Backend-Zeit)
         älter als *max_age_ms* ist; liefert ihre Anzahl."""
 
+    async def prune_cron(
+        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+    ) -> bool:
+        """Entfernt einen statischen Cron atomar samt Fire-Index-Eintrag
+        (KTD8), wenn die Definition noch *expected* ist und: mit
+        *stale_after_ms* jede Meldung des Namens älter als die Frist ist
+        (Backend-Zeit, mindestens eine Meldung); ohne Frist keine Meldung des
+        Namens existiert. Mit *remember_disabled* merkt sich der Store den
+        Namen (:meth:`pruned_disabled`). ``True``, wenn entfernt."""
+
+    async def pruned_disabled(self, name: str) -> bool:
+        """``True``, wenn *name* beim Entfernen deaktiviert war (KTD8): das
+        Wiederanlegen übernimmt den Zustand."""
+
+    async def forget_pruned_disabled(self, name: str) -> None:
+        """Vergisst die Markierung aus :meth:`pruned_disabled`."""
+
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
         (KTD11, Anzeige in ``schedule status``)."""

@@ -149,6 +149,11 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
         SCHEDULE, "0" * 16, value_fixtures()["schedule_definition.json"], live_window_ms=TTL_MS
     )
     await backend.schedules.report_worker_version("golden-worker", "0.10.0", ttl_ms=TTL_MS)
+    # Cron-Aufraeumen (KTD8): ein deaktiviert entfernter Cron landet im Set.
+    await backend.schedules.put("golden-pruned", value_fixtures()["schedule_definition.json"], None)
+    await backend.schedules.prune_cron(
+        "golden-pruned", value_fixtures()["schedule_definition.json"], stale_after_ms=None, remember_disabled=True,
+    )
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
     # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
     await backend.execution_guard.claim(
@@ -227,6 +232,7 @@ def lua_contract() -> str:
         "sched_poll": ["sq:{sched}:zset", "sq:{sched}:defs"],
         "sched_replan": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_report": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
+        "sched_prune": ["sq:{sched}:defs", "sq:{sched}:zset", "sq:{sched}:report:last_seen", "sq:{sched}:disabled"],
         "sched_report_prune": ["sq:{sched}:report:first_seen", "sq:{sched}:report:last_seen", "sq:{sched}:report:def"],
         "sliding_window_counter": ["sq:rl:{golden-task}:1700000000000", "sq:rl:{golden-task}:1699999940000"],
     }
