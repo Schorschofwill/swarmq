@@ -20,7 +20,7 @@ Grenze: Lock-Store ist der In-Memory-Vertrag (gleiche Owner-Semantik wie
 Test-Liste:
 - [x] Lock während der Ausführung verdrängt -> zweiter Halter möglich
       (Nachweis der Doppelausführung) und der Worker warnt bei der Freigabe
-      (xfail, BZ-04)
+      (``task_lock_lost``, ``event=lost_at_release``; Plan 0.12.0, MR 13)
 """
 
 from __future__ import annotations
@@ -59,10 +59,6 @@ class _EvictedMidRun(Task):
 
 
 @pytest.mark.befund("BZ-04")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-04: ein verlorener Lock (Eviction/Datenverlust) wird bei der Freigabe still uebergangen",
-)
 async def test_lost_lock_is_reported_when_the_holder_releases(
     broker: Any, backend: Any, swarmq_logs: list[dict[str, Any]]
 ) -> None:

@@ -152,6 +152,9 @@ class GateDeps:
     # Zustellung deshalb neu zugestellt wurde. Der Worker setzt es
     # (``RetryHandler.fail_workflow``); ``None`` = keine Markierung.
     fail_workflow: Callable[[Any, GateContext, str, bool], Awaitable[bool]] | None = None
+    # BZ-25 (MR 13): erworbenen Lock dem Keeper uebergeben (token, ttl_ms, ctx);
+    # der Worker setzt es (``LockKeeper.keep``); ``None`` = keine Verlaengerung.
+    keep_lock: Callable[[LockToken, int, GateContext], None] | None = None
 
 
 # Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie

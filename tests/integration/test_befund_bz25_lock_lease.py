@@ -89,10 +89,6 @@ async def _worker(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterat
 
 
 @pytest.mark.befund("BZ-25")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-25: Task-Lock wird im Lauf nicht erneuert, nach Ablauf der TTL bekommt ein zweiter Halter den Mutex",
-)
 async def test_mutex_stays_held_while_the_holder_runs_past_the_lock_ttl(
     rabbitmq_url,
     valkey_url,

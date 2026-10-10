@@ -453,6 +453,31 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   kein `OverflowError` mehr. `fixed` bleibt ohne Jitter
   ([Backoff-Formeln](../guides/scheduling-and-retries.md#backoff-formeln)).
 
+- **Task-Locks überleben einen Handler, der länger läuft als seine
+  Lock-TTL.** Der Worker verlängert einen gehaltenen Mutex oder
+  Semaphor-Slot jetzt, solange der Handler läuft, beginnend ein
+  Fenster vor dem Ablauf (ein Fenster sind drei Takte von
+  `min(max(TTL / 3, 50 ms), 20 s)`); bisher lief der Lock still ab,
+  und ein zweiter Worker bekam ihn. Ein hart beendeter Halter
+  hinterlässt den Lock weiter bis `hard_timeout + 30 s`, höchstens ein
+  Fenster länger. Neue WARNINGs `task_lock_held_past_hard_timeout`,
+  `lock_extend_failed` und `lock_extend_unsupported`; neues Lua-Skript
+  `lock_extend`, neues `LockStore.extend` (Golden-Datei
+  `lua_contract.txt`, additiv)
+  ([Locks während der Ausführung](../guides/locking-and-dedup.de.md#locks-während-der-ausführung)).
+- **Ein verlorener Lock wird gemeldet.** Ist ein Lock beim Verlängern
+  oder bei der Freigabe weg oder von einem anderen Halter besetzt
+  (verdrängt durch `maxmemory-policy`, Valkey-Datenverlust), loggt der
+  Worker `task_lock_lost` (WARNING, `stage` `running` oder `release`),
+  statt es zu übergehen ([Logging](logging.de.md)).
+- **Ein Semaphor-Erwerber mit kurzer TTL lässt den Key nicht mehr unter
+  einem Halter mit längerer TTL ablaufen.** `lock_acquire.lua`
+  verlängert die TTL des Keys nur noch, verkürzt sie nie. Bekannte
+  Grenzen: Ein Erwerber räumt weiterhin Slots ab, die älter als seine
+  eigene TTL sind (gemischte `hard_timeout` unter einem Semaphor-Namen
+  werden nicht unterstützt), und ein 0.11-Worker verkürzt den Key
+  weiter.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf

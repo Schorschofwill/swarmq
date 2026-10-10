@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
     from swarmq.worker.gates import WorkerBackend, WorkerBroker
     from swarmq.worker.gates.execution_guard import ExecutionGuard
+    from swarmq.worker.lock_keeper import LockKeeper
 
 
 class WorkerShutdown:
@@ -52,6 +53,7 @@ class WorkerShutdown:
         _detached_releases: set[asyncio.Task[None]]
         _scheduler: SchedulerLoop | None
         _lock_manager: LockStore | None
+        _lock_keeper: LockKeeper
         _execution_guard: ExecutionGuard
         _metrics_server: MetricsServer | None
         _health_server: HealthServer | None
@@ -131,8 +133,9 @@ class WorkerShutdown:
         if self._lock_manager is not None and self._active_handler_locks:
             for handler_id, locks in list(self._active_handler_locks.items()):  # noqa: B007
                 for token in locks:
+                    self._lock_keeper.drop(token)
                     try:
-                        await self._lock_manager.release(token)
+                        released = await self._lock_manager.release(token)
                     except Exception as exc:
                         # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
                         _lc.logger.warning(
@@ -140,7 +143,19 @@ class WorkerShutdown:
                             lock_name=token.name,
                             **_error_fields(exc),
                         )
+                        continue
+                    if released is False:
+                        # BZ-04 (Plan 0.12.0, MR 13): wie ``release_acquired_locks``.
+                        _lc.logger.warning(
+                            "task_lock_lost",
+                            lock_name=token.name,
+                            stage="release",
+                            hint="the lock was gone or held by another owner at release; "
+                            "a second holder may have run in parallel",
+                        )
             self._active_handler_locks.clear()
+        # BZ-25: der Keeper endet, bevor das Backend schliesst.
+        self._lock_keeper.close()
 
     async def _stop_scheduler_and_di(self) -> None:
         # 3d. Stop the embedded scheduler. Must run AFTER in-flight tasks

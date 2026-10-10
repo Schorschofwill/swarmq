@@ -67,6 +67,7 @@ from swarmq.worker.gates.schedfire import SchedfireGate
 from swarmq.worker.gates.unknown_task import lookup_task_or_route
 from swarmq.worker.guarded_broker import GuardedBroker
 from swarmq.worker.lifecycle import WorkerLifecycle, WorkerState  # Re-Export (Fassade/Tests)
+from swarmq.worker.lock_keeper import LockKeeper
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 from swarmq.worker.results import ResultTail
 from swarmq.worker.retry import RetryHandler
@@ -152,6 +153,11 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             # BZ-29: Pause vor ``redeliver``, endet beim Shutdown sofort.
             redeliver_pause=lambda delay_s: redelivery.wait_unless_shutdown(delay_s, self._shutdown_event),
         )
+        # BZ-25 (Plan 0.12.0, MR 13): verlaengert gehaltene Locks, solange der
+        # Handler lebt; endet mit der letzten Lease oder beim Schliessen.
+        self._lock_keeper = LockKeeper(lambda: self._lock_manager, op_timeout_s=config.backend_op_timeout)
+        gate_deps.keep_lock = lambda token, ttl_ms, ctx: self._lock_keeper.keep(
+            token, ttl_ms, task_id=ctx.task_id, task_name=ctx.task_name)
         self._schedfire_gate = SchedfireGate(gate_deps)
         self._cancel_gate = CancelGate(gate_deps)
         self._expiry_gate = ExpiryGate(gate_deps)
@@ -229,7 +235,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         """``gates.lock.release_acquired_locks`` mit dem Logger dieses Moduls (Q17)."""
         assert self._lock_manager is not None  # Locks existieren nur nach start()
         await release_acquired_locks(
-            self._lock_manager, self._active_handler_locks, handler_id, acquired_locks, log=logger
+            self._lock_manager, self._active_handler_locks, handler_id, acquired_locks, log=logger,
+            drop=self._lock_keeper.drop,
         )
 
     async def _on_message(self, message: Any) -> None:

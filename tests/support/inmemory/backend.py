@@ -339,6 +339,19 @@ class InMemoryLockStore:
             return False
         return self._mutex.expire(token.name, ttl_ms)
 
+    async def extend(self, token: LockToken, ttl_ms: int) -> bool:
+        """Wie ``lock_extend.lua`` (BZ-25): Frist nur verlaengern, nie verkuerzen."""
+        if token.max_concurrency == 1:
+            if self._mutex.get(token.name) != token.owner:
+                return False
+            self._mutex.expire_gt(token.name, ttl_ms)
+            return True
+        slots = self._semaphore.get(token.name)
+        if slots is None or slots.get(token.owner) is None:
+            return False
+        slots.expire_gt(token.owner, ttl_ms)
+        return True
+
     async def force_release(self, name: str, *, max_concurrency: int) -> bool:
         if max_concurrency == 1:
             return self._mutex.pop(name) is not None

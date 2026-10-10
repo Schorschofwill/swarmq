@@ -60,7 +60,12 @@ if held >= max_concurrency then
 end
 
 -- Step 3: claim a slot and refresh the whole-set TTL so the key dies
--- naturally once every holder has released or expired.
+-- naturally once every holder has released or expired. Never shorten it
+-- (Plan 0.12.0, MR 13, Rev. 3 F6): an acquirer with a short TTL must not
+-- expire the key under a holder with a longer one. Members still expire
+-- by score (step 1) at the TTL of whoever acquires next.
 redis.call('ZADD', lock_key, now_ms, owner_token)
-redis.call('PEXPIRE', lock_key, ttl_ms)
+if redis.call('PTTL', lock_key) < ttl_ms then
+    redis.call('PEXPIRE', lock_key, ttl_ms)
+end
 return 1

@@ -319,6 +319,9 @@ class LockGate:
             ctx.acquired_locks.append(token)
             assert ctx.handler_id is not None
             self._deps.register_lock(ctx.handler_id, token)
+            if self._deps.keep_lock is not None:
+                # BZ-25: der Keeper verlaengert den Lock, solange der Handler lebt.
+                self._deps.keep_lock(token, ttl_ms, ctx)
         return token is not None
 
 
@@ -329,22 +332,39 @@ async def release_acquired_locks(
     acquired_locks: list[LockToken],
     *,
     log: Any,
+    drop: Callable[[LockToken], None] | None = None,
 ) -> None:
     """Release every lock acquired by this handler. Called in the
     ``_handle_message`` finally block. Failures are logged and
     swallowed — the task already produced its result; release
     problems must not break the worker pipeline. The TTL-recovery
     path is the safety net for any lock that ends up not released.
+
+    ``drop`` (BZ-25): nimmt den Lock VOR dem Freigabeversuch aus dem Keeper,
+    auch wenn der Versuch scheitert.
     """
     for token in acquired_locks:
+        if drop is not None:
+            drop(token)
         try:
-            await lock_manager.release(token)
+            released = await lock_manager.release(token)
         except Exception as exc:
             # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
             log.warning(
                 "lock_release_failed",
                 lock_name=token.name,
                 **_error_fields(exc),
+            )
+            continue
+        if released is False:
+            # BZ-04 (Plan 0.12.0, MR 13): Key weg oder fremder Halter --
+            # ein zweiter Halter konnte parallel laufen (Eviction, Datenverlust,
+            # abgelaufene TTL). Vorher still uebergangen.
+            log.warning(
+                "task_lock_lost",
+                lock_name=token.name,
+                stage="release",
+                hint="the lock was gone or held by another owner at release; a second holder may have run in parallel",
             )
     # Drop the worker-wide registry entry whether release succeeded
     # or not — anything still held will time out via TTL, and we

@@ -420,6 +420,29 @@ All notable changes to SwarmQ. This project follows
   `OverflowError`. `fixed` stays without jitter
   ([backoff formulas](../guides/scheduling-and-retries.md#backoff-formulas)).
 
+- **Task locks survive a handler that runs longer than its lock TTL.**
+  The worker now extends a held mutex or semaphore slot while the
+  handler runs, starting one window before the lock would expire (a
+  window is three ticks of `min(max(TTL / 3, 50 ms), 20 s)`); before,
+  the lock expired silently and a second worker acquired it. A holder
+  killed hard still leaves the lock behind until `hard_timeout + 30 s`,
+  at most one window longer. New WARNINGs
+  `task_lock_held_past_hard_timeout`, `lock_extend_failed` and
+  `lock_extend_unsupported`; new Lua script `lock_extend`, new
+  `LockStore.extend` (golden file `lua_contract.txt`, additive)
+  ([locks while the task runs](../guides/locking-and-dedup.md#locks-while-the-task-runs)).
+- **A lost lock is reported.** When a lock is gone or held by another
+  owner at extension or at release (evicted by `maxmemory-policy`,
+  Valkey data loss), the worker logs `task_lock_lost` (WARNING,
+  `stage` `running` or `release`) instead of ignoring it
+  ([logging](logging.md)).
+- **A semaphore acquirer with a short TTL no longer expires the key
+  under a holder with a longer one.** `lock_acquire.lua` only extends
+  the key's TTL, never shortens it. Known limits: an acquirer still
+  sweeps slots older than its own TTL (mixed `hard_timeout` under one
+  semaphore name is not supported), and a 0.11 worker still shortens
+  the key.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback target before 0.12. **Roll out 0.11.1 to every app first,

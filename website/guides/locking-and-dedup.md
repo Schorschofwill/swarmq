@@ -41,9 +41,9 @@ becomes `"user-42"` when `schedule("sync_user", user_id=42)` is
 dispatched.
 
 `hard_timeout` is **required** when `lock` is set. The lock's TTL
-is derived from it (`max(30 s, 0.25 × hard_timeout)`), so a task
-with no hard timeout could hold the lock indefinitely after a
-worker crash.
+is derived from it (`hard_timeout + 30 s`): it is the crash-recovery
+deadline, so a task with no hard timeout could hold the lock
+indefinitely after a worker crash.
 
 ### Mutex vs semaphore
 
@@ -89,6 +89,35 @@ executed it leaves the lock held until its TTL.
 The delay backs off — repeated misses extend the wait. Most
 `lock`-using tasks want `max_age` as a safety net so a stuck
 holder does not back up the queue forever.
+
+### Locks while the task runs
+
+The worker keeps a lock it holds alive for as long as the handler
+runs (from 0.12). Until the original deadline `t0 + TTL` nothing
+happens: a task that finishes within its `hard_timeout` costs no
+extra round trip. Only when a lock would expire in less than one
+window (three ticks; a tick is `min(max(TTL / 3, 50 ms), 20 s)`, so
+the window is 60 s from a `hard_timeout` of 30 s on) and the handler
+is still running, the worker extends it by one window, mutex and
+semaphore slot alike. A holder killed hard (SIGKILL, OOM) therefore
+leaves the lock behind until `t0 + TTL` as before, or at most one
+window longer when it was killed while overrunning.
+
+A handler that outlives `hard_timeout + 30 s` (the watchdog could not
+cancel it: a blocked event loop, task code that swallows
+`CancelledError`) keeps its lock, and the worker logs
+`task_lock_held_past_hard_timeout` (WARNING) once. If the extension
+finds the lock gone or taken over (evicted by `maxmemory-policy`,
+Valkey data loss, an outage longer than the TTL), the worker logs
+`task_lock_lost` (WARNING, `stage="running"`): a second holder may now
+run in parallel. The same warning with `stage="release"` comes when
+the lock is already gone at release. A failed extension logs
+`lock_extend_failed` and is retried at the next tick.
+
+Limits: an acquirer with a short TTL still sweeps semaphore slots
+older than its own TTL, so mixed `hard_timeout` values under one
+semaphore name are not supported; and a 0.11 worker that acquires a
+slot still shortens the key's TTL to its own.
 
 ### Lock-render failures
 

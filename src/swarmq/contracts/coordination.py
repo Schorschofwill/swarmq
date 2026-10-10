@@ -33,6 +33,11 @@ class LockStore(Protocol):
     async def renew(self, token: LockToken, ttl_ms: int) -> bool:
         """Nur für ``max_concurrency == 1``."""
 
+    async def extend(self, token: LockToken, ttl_ms: int) -> bool:
+        """Frist des eigenen Locks (Mutex oder Semaphor-Slot) auf mindestens
+        ``ttl_ms`` ab jetzt setzen -- verkuerzt nie (Plan 0.12.0, MR 13,
+        BZ-25). ``False``: Lock weg, abgelaufen oder fremder Halter."""
+
     async def force_release(self, name: str, *, max_concurrency: int) -> bool:
         """Operator-Pfad ohne Owner-Check."""
 

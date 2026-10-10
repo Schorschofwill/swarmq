@@ -7,7 +7,7 @@ Vertrag ``LockStore`` (Token-Typen) über denselben Skripten.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import valkey.asyncio as valkey_asyncio
 
@@ -43,6 +43,9 @@ class LockManager:
         self._acquire_script = client.register_script(load_script("lock_acquire"))
         self._release_script = client.register_script(load_script("lock_release"))
         self._renew_script = client.register_script(load_script("lock_renew"))
+        # ``lock_extend`` (Plan 0.12.0, MR 13, BZ-25) wird bei erster Nutzung
+        # registriert: nur der Lock-Keeper ruft es.
+        self._extend_script: Any = None
 
     async def acquire(self, lock_name: str, owner_token: str, ttl_ms: int, max_concurrency: int) -> bool:
         """Try to claim the lock. Returns ``True`` on success, ``False``
@@ -104,6 +107,25 @@ class LockManager:
             raise as_backend_error(f"lock renew failed for {lock_name!r}: {exc}", exc) from exc
         return int(result) == 1
 
+    async def extend(self, lock_name: str, owner_token: str, ttl_ms: int, max_concurrency: int) -> bool:
+        """Frist eines gehaltenen Locks auf mindestens ``ttl_ms`` ab jetzt
+        setzen, nie verkuerzen (``lock_extend.lua``; Plan 0.12.0, MR 13,
+        BZ-25). Mutex und Semaphor-Slot; ``False`` ohne eigenen Halter."""
+        if self._extend_script is None:
+            self._extend_script = self._client.register_script(load_script("lock_extend"))
+        try:
+            seconds, microseconds = await self._client.time()
+            now_ms = int(seconds) * 1000 + int(microseconds) // 1000
+            result = await self._extend_script(
+                keys=[self._keys.lock(lock_name)],
+                args=[owner_token, ttl_ms, max_concurrency, now_ms],
+            )
+        except BackendConnectionError:
+            raise
+        except Exception as exc:
+            raise as_backend_error(f"lock extend failed for {lock_name!r}: {exc}", exc) from exc
+        return int(result) == 1
+
 
 class ValkeyLockStore:
     """``LockStore``-Vertrag über ``LockManager``: nur ``acquire`` gibt
@@ -131,6 +153,9 @@ class ValkeyLockStore:
         if token.max_concurrency != 1:
             raise NotImplementedError("renew is only defined for mutex locks")
         return await self._manager.renew(token.name, token.owner, ttl_ms)
+
+    async def extend(self, token: LockToken, ttl_ms: int) -> bool:
+        return await self._manager.extend(token.name, token.owner, ttl_ms, token.max_concurrency)
 
     async def force_release(self, name: str, *, max_concurrency: int) -> bool:
         """Operator-Pfad ohne Owner-Check. ``lock_release.lua`` meldet für

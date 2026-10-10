@@ -41,9 +41,9 @@ rendert der Worker das Template gegen die tatsächlichen Args —
 `schedule("sync_user", user_id=42)` dispatched wird.
 
 `hard_timeout` ist **pflicht**, wenn `lock` gesetzt ist. Die TTL
-des Locks wird davon abgeleitet (`max(30 s, 0.25 × hard_timeout)`),
-sodass ein Task ohne Hard-Timeout den Lock nach einem Worker-Crash
-sonst unbegrenzt halten könnte.
+des Locks wird davon abgeleitet (`hard_timeout + 30 s`): Sie ist die
+Absturzfrist, sodass ein Task ohne Hard-Timeout den Lock nach einem
+Worker-Crash sonst unbegrenzt halten könnte.
 
 ### Mutex vs Semaphor
 
@@ -91,6 +91,38 @@ Der Delay backed off — wiederholte Misses erweitern die Wartezeit.
 Die meisten Lock-nutzenden Tasks wollen `max_age` als
 Sicherheitsnetz, damit ein stuck Holder die Queue nicht dauerhaft
 zurückstaut.
+
+### Locks während der Ausführung
+
+Der Worker hält einen Lock, den er besitzt, so lange am Leben, wie
+der Handler läuft (ab 0.12). Bis zur ursprünglichen Frist `t0 + TTL`
+passiert nichts: Ein Task, der innerhalb seines `hard_timeout` fertig
+wird, kostet keinen zusätzlichen Roundtrip. Erst wenn ein Lock in
+weniger als einem Fenster abliefe (drei Takte; ein Takt ist
+`min(max(TTL / 3, 50 ms), 20 s)`, das Fenster also ab einem
+`hard_timeout` von 30 s 60 s) und der Handler noch läuft, verlängert
+der Worker ihn um ein Fenster, Mutex wie Semaphor-Slot. Ein hart
+beendeter Halter (SIGKILL, OOM) hinterlässt den Lock deshalb wie
+bisher bis `t0 + TTL`, oder höchstens ein Fenster länger, wenn er
+beim Überziehen beendet wurde.
+
+Ein Handler, der `hard_timeout + 30 s` überlebt (der Watchdog konnte
+ihn nicht abbrechen: blockierter Event-Loop, Task-Code, der
+`CancelledError` schluckt), behält seinen Lock, und der Worker loggt
+einmal `task_lock_held_past_hard_timeout` (WARNING). Findet die
+Verlängerung den Lock weg oder übernommen (verdrängt durch
+`maxmemory-policy`, Valkey-Datenverlust, Ausfall länger als die TTL),
+loggt der Worker `task_lock_lost` (WARNING, `stage="running"`): Ein
+zweiter Halter kann jetzt parallel laufen. Dieselbe Warnung mit
+`stage="release"` kommt, wenn der Lock bei der Freigabe schon weg
+ist. Eine gescheiterte Verlängerung loggt `lock_extend_failed` und
+wird im nächsten Takt wiederholt.
+
+Grenzen: Ein Erwerber mit kurzer TTL räumt weiterhin Semaphor-Slots
+ab, die älter als seine eigene TTL sind; gemischte
+`hard_timeout`-Werte unter einem Semaphor-Namen werden daher nicht
+unterstützt. Ein 0.11-Worker, der einen Slot erwirbt, verkürzt die
+TTL des Keys weiter auf seine eigene.
 
 ### Lock-Render-Fehler
 

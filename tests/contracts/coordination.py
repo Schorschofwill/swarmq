@@ -134,6 +134,49 @@ class LockStoreContract:
         await clock.advance(1.0)
         assert await impl.current_owner(name) == "a"
 
+    async def test_extend_keeps_the_mutex_for_the_owner_only(self, impl: LockStore, clock: Clock) -> None:
+        """BZ-25 (Plan 0.12.0, MR 13): ``extend`` verlaengert einen gehaltenen
+        Mutex nur fuer seinen Halter."""
+        name = _name("lock")
+        token = await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
+        assert token is not None
+        forged = LockToken(name=name, owner="b", max_concurrency=1)
+        assert await impl.extend(forged, ttl_ms=60_000) is False
+        assert await impl.extend(token, ttl_ms=60_000) is True
+        await clock.advance(0.8)
+        assert await impl.current_owner(name) == "a"
+
+    async def test_extend_keeps_a_semaphore_slot_and_never_shortens(self, impl: LockStore, clock: Clock) -> None:
+        name = _name("sem")
+        a = await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=2)
+        assert a is not None
+        assert await impl.extend(LockToken(name=name, owner="x", max_concurrency=2), ttl_ms=60_000) is False
+        assert await impl.extend(a, ttl_ms=60_000) is True
+        assert await impl.extend(a, ttl_ms=100) is True  # kuerzer: bleibt bei 60 s
+        await clock.advance(0.8)
+        assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2) is not None
+        assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is None  # a haelt noch
+        assert await impl.release(a) is True
+
+    async def test_extend_after_expiry_fails(self, impl: LockStore, clock: Clock) -> None:
+        name = _name("lock")
+        token = await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
+        assert token is not None
+        await clock.advance(0.8)
+        assert await impl.extend(token, ttl_ms=60_000) is False
+
+    async def test_acquire_with_a_shorter_ttl_keeps_the_longer_semaphore_holder(
+        self, impl: LockStore, clock: Clock,
+    ) -> None:
+        """Rev. 3 F6 (MR 13): ein Erwerber mit kurzer TTL verkuerzt den Key
+        nicht unter einem Langlaeufer weg."""
+        name = _name("sem")
+        a = await impl.acquire(name, owner="a", ttl_ms=3_600_000, max_concurrency=2)
+        assert a is not None
+        assert await impl.acquire(name, owner="b", ttl_ms=300, max_concurrency=2) is not None
+        await clock.advance(0.8)
+        assert await impl.release(a) is True, "a ist nach dem kurzen Erwerber b nicht mehr Halter"
+
     async def test_lock_expires_after_ttl(self, impl: LockStore, clock: Clock) -> None:
         name = _name("lock")
         await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
