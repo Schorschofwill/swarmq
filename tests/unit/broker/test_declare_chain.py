@@ -34,7 +34,7 @@ from aio_pika.exceptions import ChannelNotFoundEntity, ChannelPreconditionFailed
 from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import ConfigurationError, QueueArgumentsMismatch, UnroutableMessage
+from swarmq.exceptions import BrokerConnectionError, ConfigurationError, QueueArgumentsMismatch, UnroutableMessage
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -75,10 +75,12 @@ class FakeRabbit:
         self.refusals: list[str] = []
         #: Wird vor der ersten aktiven Deklaration der Queue angelegt (Wettlauf nach dem passiven Declare).
         self.race: dict[str, dict[str, Any]] = {}
+        #: Diese Argumente prüft der Fake zuerst (406-Reihenfolge), sonst alphabetisch.
+        self.first: tuple[str, ...] = ()
 
     def conflict(self, queue: str, declared: dict[str, Any]) -> str | None:
         current = self.queues[queue]
-        for arg in sorted(set(declared) | set(current)):
+        for arg in sorted(set(declared) | set(current), key=lambda arg: (arg not in self.first, arg)):
             have, want = current.get(arg), declared.get(arg)
             if have == want:
                 continue
@@ -323,3 +325,100 @@ async def test_legacy_mode_does_not_warn_about_at_most_once_queues(swarmq_logs: 
     await broker.report_queue_declarations()
 
     assert not [e for e in swarmq_logs if e["event"] == "queue_dead_letter_at_most_once"]
+
+
+# --- Review MR 8 ---------------------------------------------------------------
+
+
+def _unroutable(broker: RabbitMQBroker, routing_key: str) -> None:
+    frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key=routing_key)
+    broker._publish_channel.default_exchange.publish.side_effect = PublishError(  # type: ignore[union-attr]
+        SimpleNamespace(delivery=frame), frame
+    )
+
+
+async def test_effective_delivery_limit_survives_an_unroutable_publish() -> None:
+    """Review MR 8, P2-1: das Verwerfen des Caches (F5) darf das wirksame
+    Limit nicht vergessen; sonst gaelte bis zum naechsten Declare die
+    Konfiguration (50) statt der Queue (20)."""
+    broker = make_broker(FakeRabbit(_with_limit(None)), delivery_limit=50)
+    await broker.declare_queue("tasks")
+    _unroutable(broker, "tasks.DQ")
+
+    with pytest.raises(UnroutableMessage):
+        await broker.publish("tasks.DQ", b"{}")
+
+    assert broker.effective_delivery_limit("tasks") == 20
+
+
+def _at_least_once_with_overflow(overflow: str) -> dict[str, dict[str, Any]]:
+    """Von 0.12 angelegt, aber die Haupt-Queue mit einem anderen ``x-overflow``:
+    RabbitMQ dead-lettert dann trotz ``at-least-once`` nur at-most-once."""
+    family = created_by_012("tasks")
+    family["tasks"] = {**family["tasks"], "x-overflow": overflow}
+    return family
+
+
+async def test_at_least_once_without_reject_publish_counts_as_at_most_once(
+    swarmq_logs: list[dict[str, Any]],
+) -> None:
+    """Review MR 8, P2-2: at-least-once wirkt nur zusammen mit reject-publish."""
+    rabbit = FakeRabbit(_at_least_once_with_overflow("drop-head"))
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+
+    await broker.report_queue_declarations()
+
+    assert rabbit.queues == _at_least_once_with_overflow("drop-head")
+    [warning] = [e for e in swarmq_logs if e["event"] == "queue_dead_letter_at_most_once"]
+    assert warning["queues"] == ["tasks"]
+
+
+async def test_strict_mode_refuses_at_least_once_without_reject_publish() -> None:
+    """Review MR 8, P2-2: der strenge Modus prueft auch ``x-overflow``."""
+    rabbit = FakeRabbit(_at_least_once_with_overflow("drop-head"))
+    broker = make_broker(rabbit, dead_letter_strategy="at-least-once")
+
+    with pytest.raises(QueueArgumentsMismatch) as exc_info:
+        await broker.declare_queue("tasks")
+
+    assert (exc_info.value.argument, exc_info.value.declared, exc_info.value.existing) == (
+        "x-overflow",
+        "reject-publish",
+        "drop-head",
+    )
+    assert rabbit.queues == _at_least_once_with_overflow("drop-head")
+
+
+@pytest.mark.parametrize("first", ["x-dead-letter-strategy", "x-overflow"])
+async def test_adopted_overflow_is_kept_in_either_refusal_order(first: str, swarmq_logs: list[dict[str, Any]]) -> None:
+    """Review MR 8, P2-2: der volle 0.12-Satz ueberschreibt ein schon
+    uebernommenes ``x-overflow`` nicht, egal welchen 406 der Broker zuerst meldet."""
+    rabbit = FakeRabbit(_at_least_once_with_overflow("drop-head"))
+    rabbit.first = (first,)
+    broker = make_broker(rabbit)
+
+    await broker.declare_queue("tasks")
+    await broker.report_queue_declarations()
+
+    assert rabbit.queues == _at_least_once_with_overflow("drop-head")
+    [warning] = [e for e in swarmq_logs if e["event"] == "queue_dead_letter_at_most_once"]
+    assert warning["queues"] == ["tasks"]
+
+
+async def test_unrecognized_refusal_reports_the_broker_message_without_advising_deletion() -> None:
+    """Review MR 8, P2-5: ein unerkannter 406 (S8, z. B. Queue-Limit) wird
+    ``BrokerConnectionError`` mit der Broker-Meldung; kein Rat zum Loeschen,
+    die Queue kann Retries und Termine enthalten."""
+    refusal = "PRECONDITION_FAILED - cannot declare queue 'tasks': queue limit in vhost '/' (1) is reached"
+    broker = make_broker(FakeRabbit())
+    broker._connection.channel = AsyncMock(  # type: ignore[union-attr]
+        return_value=AsyncMock(is_closed=False, declare_queue=AsyncMock(side_effect=ChannelPreconditionFailed(refusal)))
+    )
+
+    with pytest.raises(BrokerConnectionError) as exc_info:
+        await broker.declare_queue("tasks")
+
+    message = str(exc_info.value)
+    assert refusal in message
+    assert "delete" not in message.lower()

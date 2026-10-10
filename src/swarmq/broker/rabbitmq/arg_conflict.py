@@ -123,7 +123,7 @@ async def declare_adopting_existing(
             arg, adopted_arguments = result
             adopted.add(arg)
             log.adopted(queue, arg, current.get(arg), adopted_arguments.get(arg))
-            current = _with_full_set(arg, adopted_arguments)
+            current = _with_full_set(arg, adopted_arguments, adopted)
         finally:
             # Auch nach einem 406: ein RobustChannel öffnet sich sonst selbst wieder.
             if channel is not None:
@@ -132,10 +132,15 @@ async def declare_adopting_existing(
             channel = None
 
 
-def _with_full_set(argument: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _with_full_set(argument: str, arguments: dict[str, Any], adopted: set[str]) -> dict[str, Any]:
     """Hat die Queue ``at-least-once``, gehört ``reject-publish`` dazu (0.12-Satz):
-    gleich mitschicken statt einen zweiten 406 abzuwarten (Plan 0.12.0, MR 8)."""
-    if argument == "x-dead-letter-strategy" and arguments.get(argument) == "at-least-once":
+    gleich mitschicken statt einen zweiten 406 abzuwarten (Plan 0.12.0, MR 8).
+    Ein schon übernommenes ``x-overflow`` bleibt (Review MR 8, P2-2)."""
+    if (
+        argument == "x-dead-letter-strategy"
+        and arguments.get(argument) == "at-least-once"
+        and "x-overflow" not in adopted
+    ):
         return {**arguments, "x-overflow": "reject-publish"}
     return arguments
 

@@ -19,6 +19,7 @@ import aio_pika
 from swarmq.broker.rabbitmq.arg_conflict import declare_adopting_existing, declare_chain
 from swarmq.broker.rabbitmq.connection import _CHANNEL_READY_TIMEOUT_S, RabbitMQConnection
 from swarmq.broker.rabbitmq.topology import (
+    AT_LEAST_ONCE_ARGUMENTS,
     at_least_once,
     dead_letter_queue_arguments,
     delay_queue_arguments,
@@ -37,6 +38,21 @@ _BROKER_DEFAULT_DELIVERY_LIMIT = 20
 
 async def _declare_plain(pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
     await pub.declare_queue(name, durable=True, arguments=arguments)
+
+
+def _family_of(name: str) -> str:
+    """Name der Haupt-Queue zur Haupt-, Delay- oder Dead-Letter-Queue ``name``."""
+    for suffix in (".DQ", ".XQ"):
+        if name.endswith(suffix):
+            return name.removesuffix(suffix)
+    return name
+
+
+def _dead_letters_at_least_once(arguments: dict[str, Any]) -> bool:
+    """At-least-once-Dead-Lettering wirkt nur zusammen mit
+    ``x-overflow=reject-publish``; sonst faellt RabbitMQ auf at-most-once
+    zurueck (Review MR 8, P2-2)."""
+    return all(arguments.get(key) == value for key, value in AT_LEAST_ONCE_ARGUMENTS.items())
 
 
 class RabbitMQDeclarations(RabbitMQConnection):
@@ -60,15 +76,14 @@ class RabbitMQDeclarations(RabbitMQConnection):
             if queue_name in self._declared_arguments:
                 self._declaration_cache.add(queue_name)
         except aio_pika.exceptions.AMQPChannelError as exc:
-            # A pre-existing queue with mismatched
-            # arguments raises aio_pika ChannelClosed (PRECONDITION_FAILED).
-            # Without this wrap, the CLI surfaces a raw aio_pika traceback
-            # instead of a clean 'queue arg conflict' message.
+            # Ein vom Broker abgelehntes Declare, das die Kette nicht erkennt
+            # (S8: z. B. Queue-Limit, Rechte). Ohne diese Huelle zeigte die CLI
+            # einen rohen aio_pika-Traceback. Kein Rat zum Loeschen: die Queue
+            # kann Retries und Termine enthalten (Review MR 8, P2-5).
             raise BrokerConnectionError(
-                f"declare_queue {queue_name!r} failed: {exc}. "
-                f"Existing queue likely has different x-queue-type or "
-                f"x-dead-letter-* args. Delete the queue via the RabbitMQ "
-                f"management UI / CLI and retry, or match the existing args."
+                f"declare_queue {queue_name!r} was refused by the broker: {exc}. "
+                f"Existing queue arguments, policies or vhost limits do not accept this declaration; "
+                f"see the broker message."
             ) from exc
 
     async def _declare_queue_triplet(
@@ -130,7 +145,7 @@ class RabbitMQDeclarations(RabbitMQConnection):
         else:
             arguments = await declare_chain(connection, name, arguments, target, timeout_s=timeout_s, log=log)
             self._require_at_least_once(name, arguments)
-            if arguments.get("x-dead-letter-strategy") != "at-least-once":
+            if not _dead_letters_at_least_once(arguments):
                 self._at_most_once_queues.add(name)
         self._declared_arguments[name] = arguments
 
@@ -160,9 +175,13 @@ class RabbitMQDeclarations(RabbitMQConnection):
         Fehlt das Argument, gilt ab RabbitMQ 4 der Broker-Default 20; ``-1``
         heisst unbegrenzt, ``0`` "keine Wiederzustellung" (Spike S1). Eine
         ``delivery-limit``-Policy ist ohne Management-API nicht sichtbar."""
-        if self._queue_type != "quorum" or queue not in self._declaration_cache:
+        # Aus den zuletzt erfolgreich deklarierten Argumenten, nicht aus dem
+        # Cache: dessen Verwerfen (F5) aendert das Limit der Queue nicht
+        # (Review MR 8, P2-1).
+        arguments = self._declared_arguments.get(queue)
+        if self._queue_type != "quorum" or arguments is None or _family_of(queue) != queue:
             return None
-        limit = self._declared_arguments[queue].get("x-delivery-limit", _BROKER_DEFAULT_DELIVERY_LIMIT)
+        limit = arguments.get("x-delivery-limit", _BROKER_DEFAULT_DELIVERY_LIMIT)
         if not isinstance(limit, int) or limit < 0:
             return None
         return limit
@@ -171,23 +190,22 @@ class RabbitMQDeclarations(RabbitMQConnection):
         """Verwirft den Cache-Eintrag der Familie von ``name`` (Haupt-, Delay-
         oder Dead-Letter-Queue): bei ``UnroutableMessage`` und NOT_FOUND ist
         die Queue weg, die naechste Deklaration legt sie neu an (Rev. 3 F5)."""
-        for suffix in (".DQ", ".XQ"):
-            if name.endswith(suffix):
-                name = name.removesuffix(suffix)
-                break
-        self._declaration_cache.discard(name)
+        self._declaration_cache.discard(_family_of(name))
 
     def _require_at_least_once(self, name: str, arguments: dict[str, Any]) -> None:
         """Strenger Modus ``at-least-once`` (BZ-19): eine Bestandsqueue ohne
         at-least-once-Dead-Lettering ist ein Konfigurationsfehler (Exit 78)."""
-        strategy = arguments.get("x-dead-letter-strategy")
-        if self.dead_letter_strategy != "at-least-once" or strategy == "at-least-once":
+        if self.dead_letter_strategy != "at-least-once" or _dead_letters_at_least_once(arguments):
             return
+        # Das erste abweichende Argument des 0.12-Satzes (Review MR 8, P2-2).
+        argument, expected = next(
+            (key, value) for key, value in AT_LEAST_ONCE_ARGUMENTS.items() if arguments.get(key) != value
+        )
         raise QueueArgumentsMismatch(
             name,
-            "x-dead-letter-strategy",
-            "at-least-once",
-            strategy,
+            argument,
+            expected,
+            arguments.get(argument),
             hint=(
                 "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once requires at-least-once dead-lettering; "
                 "migrate the queue (stop its workers, drain and delete the queue family) or use "
