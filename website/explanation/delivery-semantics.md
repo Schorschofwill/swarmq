@@ -316,7 +316,17 @@ redelivery then runs the task again.
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` seconds
 and at least `SWARMQ_EXECUTION_GUARD_TTL_S`. Deferred copies can sit
 behind long retry delays, and from RabbitMQ 4.3 deliveries stay checked
-out until the consumer timeout. The done marker of a replay (replay id
+out until the consumer timeout. A deferred copy, however, can come back
+far later than that -- behind the backlog of a queue that is catching
+up after an outage. From 0.12 the claim that defers a redelivery
+therefore extends the execution's state to
+`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (default 7 days) or `max_age +
+300`, whichever is longer, and the done or superseded marker written
+afterwards never shortens it; an ack that fails on the channel, or a
+retry or dead-letter copy whose ack failed, marks the execution for
+the same backlog because the broker will redeliver the original. A
+backlog that builds up only after the run is not covered for tasks
+without `max_age`. The done marker of a replay (replay id
 set, or dead-lettered by the broker before) lives at least
 `SWARMQ_DEAD_LETTER_TTL_S` -- a second `dlq retry` of the same `.XQ`
 message days later carries the same identity and must still be

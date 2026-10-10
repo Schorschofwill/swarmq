@@ -30,31 +30,33 @@ class GuardedBroker:
             return self._route_via_dlx
         return attr
 
-    async def _mark_done(self, delivery: Any) -> None:
+    async def _mark_done(self, delivery: Any, *, extended: bool = False) -> None:
         lease = self._guard.take_lease(delivery)
         if lease is not None:
-            await self._guard.finish(lease)
+            await self._guard.finish(lease, extended=extended)
 
     async def ack(self, delivery: Any) -> None:
         """Nach einem Claim folgt ``ack`` nur einer abgeschlossenen Ausfuehrung
         (Ergebnis gespeichert). Auch ein am Kanal gescheitertes Ack (bis 4.2
         nach dem Consumer-Timeout) setzt deshalb den Done-Marker: die
-        Neuzustellung wird uebersprungen statt erneut ausgefuehrt."""
+        Neuzustellung wird uebersprungen statt erneut ausgefuehrt -- und sie
+        kann hinter einem Rueckstand zurueckkommen (``extended``, BZ-12)."""
         try:
             await self._inner.ack(delivery)
         except BrokerConnectionError:
-            await self._mark_done(delivery)
+            await self._mark_done(delivery, extended=True)
             raise
         await self._mark_done(delivery)
 
     async def dead_letter(self, delivery: Any, *, headers: Mapping[str, Any]) -> None:
         """Done, sobald die Kopie in der DLQ liegt -- auch wenn danach nur das
-        Ack des Originals scheiterte. Scheitert der Publish, bleibt die Lease
-        stehen (der Aufrufer stellt per ``redeliver`` zurueck)."""
+        Ack des Originals scheiterte (dann fuer den Rueckstand, BZ-12).
+        Scheitert der Publish, bleibt die Lease stehen (der Aufrufer stellt
+        per ``redeliver`` zurueck)."""
         try:
             await self._inner.dead_letter(delivery, headers=headers)
         except SettleFailedAfterPublish:
-            await self._mark_done(delivery)
+            await self._mark_done(delivery, extended=True)
             raise
         await self._mark_done(delivery)
 
@@ -81,14 +83,14 @@ class GuardedBroker:
         try:
             await self._inner.retry_later(delivery, delay_ms=delay_ms, headers=headers)
         except SettleFailedAfterPublish:
-            await self._mark_superseded(delivery, retry_count)
+            await self._mark_superseded(delivery, retry_count, extended=True)
             raise
         await self._mark_superseded(delivery, retry_count)
 
-    async def _mark_superseded(self, delivery: Any, retry_count: int) -> None:
+    async def _mark_superseded(self, delivery: Any, retry_count: int, *, extended: bool = False) -> None:
         lease = self._guard.take_lease(delivery)
         if lease is not None:
-            await self._guard.supersede(lease, retry_count)
+            await self._guard.supersede(lease, retry_count, extended=extended)
 
     async def _release(self, delivery: Any) -> None:
         lease = self._guard.take_lease(delivery)

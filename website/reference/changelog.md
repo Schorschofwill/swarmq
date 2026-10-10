@@ -155,6 +155,21 @@ All notable changes to SwarmQ. This project follows
   UI move the first execution counts the raw `x-death`; a UI replay
   with `max_age` can expire at once
   ([execution guard](../explanation/delivery-semantics.md#execution-guard)).
+- **Done and completed markers no longer expire behind a long backlog.**
+  The execution guard's done marker and the completed marker of a
+  schedule fire lived a fixed 3900 s, measured from the run, not from
+  the time a deferred copy or a duplicate fire waits in the queue; after
+  more than 65 minutes of backlog the copy ran a second time. The claim
+  that defers a redelivery now extends the execution's state to
+  `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (default 7 days) or `max_age +
+  300`, the markers written afterwards never shorten it, and a failed
+  ack or a copy whose ack failed marks the execution for the same
+  backlog. The completed marker of a schedule fire lives `2 × wait +
+  300` seconds, where `wait` is how long the fire waited in the queue
+  (capped at `max_age + 300` and the backlog TTL, never below
+  `SWARMQ_SCHEDULER_DEDUP_TTL`). **Known limit:** a backlog that builds
+  up only after the run is not covered for tasks without `max_age`
+  ([marker retention](../explanation/delivery-semantics.md#execution-guard)).
 - **A cron whose task was removed from the code no longer fires until
   the prune period runs out.** Every fire of such a cron ended as an
   unregistered task in the `.XQ`, for up to 24 h. The scheduler leader

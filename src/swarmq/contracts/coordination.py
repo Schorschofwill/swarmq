@@ -267,11 +267,15 @@ class ExecutionGuardStore(Protocol):
 
     async def claim(
         self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
         """Atomar: Done- oder Superseded-Marker (Zähler größer als
         *retry_count*) sprechen dagegen, sonst ein fremder Running-Marker;
         andernfalls gehört der Running-Marker (TTL *ttl_ms*) *owner*. Ein
-        abgelaufener Marker ohne Freigabe zählt als Waise."""
+        abgelaufener Marker ohne Freigabe zählt als Waise. Meldet der Claim
+        ``running`` (die Zustellung wird zurückgestellt), lebt der Zustand
+        mindestens *backlog_ttl_ms* (BZ-12); ``mark_done``/``mark_superseded``
+        verkürzen ihn nie."""
 
     async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool:
         """Compare-and-PEXPIRE: ``False``, wenn der Marker weg oder fremd ist."""

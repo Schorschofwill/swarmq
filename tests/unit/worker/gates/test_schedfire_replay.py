@@ -23,7 +23,7 @@ from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
 from swarmq.task import TaskInfo
 from swarmq.worker.gates import GateContext
-from swarmq.worker.gates.schedfire import SchedfireGate
+from swarmq.worker.gates.schedfire import SchedfireGate, completed_marker_ttl_ms
 from swarmq.worker.outcome import Continue, Terminal
 from tests.support.inmemory import FakeClock, InMemoryBackend
 from tests.support.messages import make_message
@@ -84,3 +84,20 @@ async def test_a_plain_duplicate_fire_keeps_the_key_and_is_skipped(deps: MagicMo
     delayed = [{"queue": "q.DQ.1s", "count": 1, "reason": "expired"}]
     outcome = await gate.apply(make_message(headers={"x-swarmq-schedfire": _KEY, "x-death": delayed}), _ctx())
     assert outcome == Terminal.never_release()
+
+
+def test_completed_marker_ttl_follows_the_wait_within_its_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MR 12 (BZ-12): ``max(base, 2 * Wartezeit + 300)``, gedeckelt bei
+    ``max(base, max_age + 300)`` und ``execution_guard_backlog_ttl_s``, nie
+    unter ``scheduler_dedup_ttl``."""
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+    base_ms = int(config.scheduler_dedup_ttl * 1000)
+    monkeypatch.setattr("swarmq.worker.gates.schedfire.time.time", lambda: 1_760_000_000.0)
+    waited = {"x-swarmq-enqueued-at": 1_760_000_000 - 7_200}
+    assert completed_marker_ttl_ms(config, {}, None) == base_ms
+    assert completed_marker_ttl_ms(config, {"x-swarmq-enqueued-at": "garbage"}, None) == base_ms
+    assert completed_marker_ttl_ms(config, waited, None) == (2 * 7_200 + 300) * 1000
+    assert completed_marker_ttl_ms(config, waited, 600) == base_ms  # max_age + 300 < base: base
+    assert completed_marker_ttl_ms(config, waited, 5_000) == 5_300_000
+    week = {"x-swarmq-enqueued-at": 1_760_000_000 - 10 * 86_400}
+    assert completed_marker_ttl_ms(config, week, None) == 604_800_000

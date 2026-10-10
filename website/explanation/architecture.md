@@ -117,12 +117,12 @@ long as RabbitMQ and Valkey are still there.
 | Dedup markers | Valkey key `sq:unique:{hash}` | `unique_for` seconds |
 | Scheduler entries | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Until fired or removed |
 | Schedule-fire claims | Valkey key `sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
-| Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
+| Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, longer the longer the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
 | Leader election | Valkey key `sq:lock:{sched}:leader` | Heartbeat-renewed |
 | Leader version | Valkey key `sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
 | Cron reports | Valkey HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report (or twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, if longer) |
 | Crons disabled when pruned | Valkey SET `sq:{sched}:disabled` | Until a worker reports the cron again |
-| Execution guard | Valkey keys `sq:guard:{<task_id>[\|<replay_id>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` |
+| Execution guard | Valkey keys `sq:guard:{<task_id>[\|<replay_id>][#<deaths>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, at least `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` once a redelivery was deferred or an ack failed, at least `SWARMQ_DEAD_LETTER_TTL_S` for replays |
 | Worker versions | Valkey key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-process state — the task registry, the middleware stack, the signal

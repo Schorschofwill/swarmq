@@ -93,6 +93,9 @@ class SchedfireClaim:
     # tragen kann (die angebotenen Uebernahme-Tokens); leer, sobald der
     # Claim sicher ``owner`` gehoert.
     candidates: tuple[str, ...] = ()
+    # TTL des Completed-Markers in ms (Plan 0.12.0, MR 12, BZ-12): folgt der
+    # Wartezeit des Fires in der Queue; None = ``scheduler_dedup_ttl``.
+    completed_ttl_ms: int | None = None
 
     def header_value(self) -> str:
         """Wert von ``x-swarmq-schedfire-claim`` einer Kopie: das eigene

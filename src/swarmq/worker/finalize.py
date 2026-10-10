@@ -59,7 +59,10 @@ async def finalize_schedfire(
         finalize: Awaitable[object]
         if terminal:
             assert config.scheduler_dedup_ttl is not None  # Config-Default
-            ttl_ms = int(config.scheduler_dedup_ttl * 1000)
+            # MR 12 (BZ-12): die TTL aus dem Gate folgt der Wartezeit des Fires.
+            ttl_ms = claim.completed_ttl_ms
+            if ttl_ms is None:
+                ttl_ms = int(config.scheduler_dedup_ttl * 1000)
             finalize = backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
         else:
             # Owner-geprueft: hat eine Kopie den Claim schon uebernommen

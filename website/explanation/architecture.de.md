@@ -123,12 +123,12 @@ nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
 | Dedup-Marker | Valkey-Key `sq:unique:{hash}` | `unique_for` Sekunden |
 | Scheduler-Einträge | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Bis gefeuert oder entfernt |
 | Claims von Schedule-Fires | Valkey-Key `sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |
-| Erledigte Schedule-Fires | Valkey-Key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
+| Erledigte Schedule-Fires | Valkey-Key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, länger, je länger das Fire in der Queue wartete (`2 × Wartezeit + 300`, gedeckelt bei `max_age + 300` und `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
 | Leader-Election | Valkey-Key `sq:lock:{sched}:leader` | Per Heartbeat erneuert |
 | Leader-Version | Valkey-Key `sq:{sched}:leader_version` (Owner-Token und Version) | Lock-TTL, mit dem Lock erneuert |
 | Cron-Meldungen | Valkey-HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung (oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls länger) |
 | Beim Aufräumen deaktivierte Crons | Valkey-SET `sq:{sched}:disabled` | Bis ein Worker den Cron wieder meldet |
-| Ausführungsschutz | Valkey-Keys `sq:guard:{<task_id>[\|<replay_id>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` |
+| Ausführungsschutz | Valkey-Keys `sq:guard:{<task_id>[\|<replay_id>][#<Tode>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, mindestens `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`, sobald eine Neuzustellung zurückgestellt wurde oder ein Ack scheiterte, mindestens `SWARMQ_DEAD_LETTER_TTL_S` für Wiederholungen |
 | Worker-Versionen | Valkey-Key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-Process-State — die Task-Registry, der Middleware-Stack, der

@@ -19,6 +19,12 @@ Test-Liste:
 11. Der Superseded-Zähler wächst nur.
 12. Ein wiederholter Claim desselben Owners (Transport-Retry nach verlorener
     Antwort) ist idempotent: ``claimed``, keine zusätzliche Waise.
+
+Plan 0.12.0, MR 12 (BZ-12):
+13. Meldet ein Claim ``running`` (die Zustellung wird zurückgestellt und kann
+    hinter einem Rückstand zurückkommen), lebt der Zustand mindestens
+    ``backlog_ttl_ms``.
+14. ``mark_done``/``mark_superseded`` verkürzen einen längeren Zustand nie.
 """
 
 from __future__ import annotations
@@ -141,11 +147,37 @@ class ExecutionGuardStoreContract:
     async def test_done_and_superseded_markers_expire_after_state_ttl(
         self, impl: ExecutionGuardStore, clock: Clock,
     ) -> None:
+        # MR 12: der Abschluss verkuerzt den Zustand nie -- der Claim setzt
+        # hier dieselbe kurze TTL.
         done, superseded = _identity(), _identity()
-        await _claim(impl, done, "a")
+        await impl.claim(done, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
         await impl.mark_done(done, owner="a", state_ttl_ms=200)
-        await _claim(impl, superseded, "a")
+        await impl.claim(superseded, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
         await impl.mark_superseded(superseded, owner="a", retry_count=1, state_ttl_ms=200)
         await clock.advance(0.4)
         assert await _claim(impl, done, "b") == "claimed"
         assert await _claim(impl, superseded, "b") == "claimed"
+
+    async def test_running_claim_extends_the_state_to_the_backlog_ttl(
+        self, impl: ExecutionGuardStore, clock: Clock,
+    ) -> None:
+        identity = _identity()
+        await impl.claim(identity, owner="a", retry_count=0, ttl_ms=100, state_ttl_ms=200, max_orphans=3)
+        claim = await impl.claim(
+            identity, owner="b", retry_count=0, ttl_ms=100, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+        )
+        assert claim.status == "running"
+        await clock.advance(0.3)  # Running-Marker (100 ms) und Zustand (200 ms) waeren weg
+        # Der Zustand lebt noch: die Lease von "a" zaehlt als Waise.
+        claim = await impl.claim(identity, owner="c", retry_count=0, ttl_ms=TTL, state_ttl_ms=STATE_TTL, max_orphans=3)
+        assert claim == GuardClaim("claimed", orphans=1)
+
+    async def test_finish_never_shortens_a_longer_state(self, impl: ExecutionGuardStore, clock: Clock) -> None:
+        identity = _identity()
+        await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
+        await impl.claim(
+            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+        )
+        await impl.mark_done(identity, owner="a", state_ttl_ms=200)
+        await clock.advance(0.3)  # ueber die Done-TTL des Abschlusses, unter dem Rueckstand
+        assert await _claim(impl, identity, "c") == "done"

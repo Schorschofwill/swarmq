@@ -343,7 +343,17 @@ die Neuzustellung den Task dann erneut aus.
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` Sekunden,
 mindestens `SWARMQ_EXECUTION_GUARD_TTL_S`. Zurückgestellte Kopien
 können hinter langen Retry-Verzögerungen stecken, und ab RabbitMQ 4.3
-bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Der
+bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Eine
+zurückgestellte Kopie kann aber viel später zurückkommen -- hinter dem
+Rückstand einer Queue, die nach einer Störung aufholt. Seit 0.12
+verlängert der Claim, der eine Neuzustellung zurückstellt, den Zustand
+der Ausführung deshalb auf `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`
+(Standard 7 Tage) oder `max_age + 300`, je nachdem, was länger ist, und
+der danach geschriebene Done- oder Superseded-Marker verkürzt ihn nie;
+ein am Kanal gescheitertes Ack oder eine Retry- bzw. DLQ-Kopie, deren
+Ack scheiterte, markiert die Ausführung für denselben Rückstand, weil
+der Broker das Original neu zustellt. Ein Rückstand, der erst nach dem
+Lauf entsteht, ist bei Tasks ohne `max_age` nicht abgedeckt. Der
 Done-Marker einer Wiederholung (Replay-ID gesetzt oder zuvor vom Broker
 dead-gelettert) lebt mindestens `SWARMQ_DEAD_LETTER_TTL_S` -- ein
 zweiter `dlq retry` derselben `.XQ`-Nachricht Tage später trägt dieselbe

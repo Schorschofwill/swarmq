@@ -47,6 +47,10 @@ class GuardLease:
     # None = ``execution_guard_done_ttl_s`` (MR 12: Replay-Identitaeten leben
     # mindestens die DLQ-Frist, A4).
     state_ttl_ms: int | None = None
+    # Rueckstand (MR 12, BZ-12): so lange lebt der Zustand mindestens, sobald
+    # eine Kopie dieser Ausfuehrung zurueckgestellt wurde oder ihr Abschluss
+    # eine Neuzustellung erwartet (gescheitertes Ack); None = kein Rueckstand.
+    backlog_ttl_ms: int | None = None
 
 
 def retry_count_of(headers: Mapping[str, Any] | None) -> int:
@@ -118,6 +122,7 @@ class ExecutionGuard:
         lease = GuardLease(
             execution_identity(delivery, ctx.task_id), uuid.uuid4().hex, retry_count_of(delivery.headers), ctx.task_id,
             state_ttl_ms=self._replay_state_ttl_ms() if identity.is_replay(delivery.headers) else None,
+            backlog_ttl_ms=self._backlog_ttl_ms(ctx.task_info.max_age),
         )
         try:
             claim = await bounded_backend_call(
@@ -129,6 +134,7 @@ class ExecutionGuard:
                     ttl_ms=int(config.execution_guard_ttl_s * 1000),
                     state_ttl_ms=self._state_ttl_ms(lease),
                     max_orphans=config.execution_guard_max_orphans,
+                    backlog_ttl_ms=lease.backlog_ttl_ms,
                 ),
                 what="execution guard claim",
             )
@@ -281,6 +287,15 @@ class ExecutionGuard:
             floor = config.execution_guard_backlog_ttl_s
         return int(max(self._done_ttl_s(), floor) * 1000)
 
+    def _backlog_ttl_ms(self, max_age: int | None) -> int:
+        """Rueckstand (BZ-12): ``max(execution_guard_backlog_ttl_s, max_age + 300)``
+        -- eine zurueckgestellte Kopie kommt spaetestens mit dem Ablauf des
+        Tasks zurueck, sonst irgendwann hinter dem Rueckstand der Queue."""
+        backlog = self._deps.config.execution_guard_backlog_ttl_s
+        if max_age is not None:
+            backlog = max(backlog, max_age + 300.0)
+        return int(backlog * 1000)
+
     def _state_ttl_ms(self, lease: GuardLease) -> int:
         """Zustands-TTL der Lease: ihre eigene (Replay) oder die Konfiguration."""
         if lease.state_ttl_ms is not None:
@@ -327,14 +342,22 @@ class ExecutionGuard:
             logger.info("execution_guard_finish_recovered", identity=lease.identity, marker=marker, attempts=attempt)
             return
 
-    async def finish(self, lease: GuardLease) -> None:
+    def _finish_ttl_ms(self, lease: GuardLease, extended: bool) -> int:
+        """``extended`` (BZ-12): der Abschluss weiss, dass eine Neuzustellung
+        kommt (gescheitertes Ack, ``SettleFailedAfterPublish``) -- sie kann
+        hinter einem Rueckstand zurueckkommen, der Marker lebt den Rueckstand."""
+        ttl = self._state_ttl_ms(lease)
+        if extended and lease.backlog_ttl_ms is not None:
+            ttl = max(ttl, lease.backlog_ttl_ms)
+        return ttl
+
+    async def finish(self, lease: GuardLease, *, extended: bool = False) -> None:
         """Done-Marker setzen (terminales Verb ausgefuehrt)."""
         store = self._store()
         assert store is not None
+        ttl_ms = self._finish_ttl_ms(lease, extended)
         await self._mark(
-            lease,
-            "done",
-            lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=self._state_ttl_ms(lease)),
+            lease, "done", lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=ttl_ms),
         )
 
     async def release(self, lease: GuardLease) -> None:
@@ -343,15 +366,16 @@ class ExecutionGuard:
         assert store is not None
         await self._mark(lease, "release", lambda: store.release(lease.identity, owner=lease.owner))
 
-    async def supersede(self, lease: GuardLease, retry_count: int) -> None:
+    async def supersede(self, lease: GuardLease, retry_count: int, *, extended: bool = False) -> None:
         """Superseded-Marker mit dem Zaehler der Retry-Kopie setzen."""
         store = self._store()
         assert store is not None
+        ttl_ms = self._finish_ttl_ms(lease, extended)
         await self._mark(
             lease,
             "superseded",
             lambda: store.mark_superseded(
-                lease.identity, owner=lease.owner, retry_count=retry_count, state_ttl_ms=self._state_ttl_ms(lease),
+                lease.identity, owner=lease.owner, retry_count=retry_count, state_ttl_ms=ttl_ms,
             ),
         )
 

@@ -27,12 +27,13 @@ das, geht statt des ``nack`` eine Kopie mit dem Token.
 
 from __future__ import annotations
 
+import time
 import uuid
 from itertools import islice
 from typing import Any
 
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
-from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
+from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_SCHEDFIRE_CLAIM
 from swarmq.identity import identity_suffix
 from swarmq.logging import get_logger
 from swarmq.worker.gates import MAX_SCHEDFIRE_CLAIM_TOKENS, GateContext, GateDeps, SchedfireClaim
@@ -61,6 +62,25 @@ def schedfire_key(fire_key: str, headers: Any) -> str:
     Normale Doppel-Fires (n = 0, kein H) behalten K wie 0.11."""
     suffix = identity_suffix(headers)
     return fire_key if not suffix else f"{fire_key}|{suffix.lstrip('|')}"
+
+
+def completed_marker_ttl_ms(config: Any, headers: Any, max_age: int | None) -> int:
+    """TTL des Completed-Markers (Plan 0.12.0, MR 12, BZ-12): ``max(base,
+    2 * Wartezeit + 300)`` mit der Wartezeit des Fires in der Queue (ab
+    ``x-swarmq-enqueued-at``), gedeckelt bei ``max(base, max_age + 300)`` und
+    ``execution_guard_backlog_ttl_s``, nie unter ``scheduler_dedup_ttl``
+    (base). Ein Duplikat desselben Fires wartet hinter demselben Rueckstand."""
+    base = float(config.scheduler_dedup_ttl)
+    enqueued_at = (headers or {}).get(HEADER_ENQUEUED_AT)
+    try:
+        waited = max(0.0, time.time() - int(enqueued_at)) if enqueued_at is not None else 0.0
+    except (TypeError, ValueError):
+        waited = 0.0
+    ttl = max(base, 2 * waited + 300.0)
+    cap = float(config.execution_guard_backlog_ttl_s)
+    if max_age is not None:
+        cap = min(cap, max(base, max_age + 300.0))
+    return int(max(base, min(ttl, cap)) * 1000)
 
 
 class SchedfireGate:
@@ -107,13 +127,16 @@ class SchedfireGate:
         # configured TTL (documented residual).
         inflight_ttl_s = deps.config.scheduler_inflight_ttl
         hard_timeout: int | None = None
+        max_age: int | None = None
         try:
-            hard_timeout = deps.registry.get(ctx.task_name).task_info.hard_timeout
+            task_info = deps.registry.get(ctx.task_name).task_info
+            hard_timeout, max_age = task_info.hard_timeout, task_info.max_age
         except TaskNotFoundError:
             pass  # unknown task fails later in the pipeline anyway
         if hard_timeout is not None:
             inflight_ttl_s = max(inflight_ttl_s, hard_timeout + 30)
         inflight_ttl_ms = int(inflight_ttl_s * 1000)
+        completed_ttl_ms = completed_marker_ttl_ms(deps.config, delivery.headers, max_age)
         # Frisches Owner-Token je Zustellung; eine Kopie bietet das Token
         # ihres Vorgaengers zur Uebernahme an (der Claim rotiert dabei, eine
         # Broker-Redelivery derselben Kopie bleibt ein Duplikat).
@@ -122,7 +145,9 @@ class SchedfireGate:
         # Das Token liegt VOR dem Aufruf am Kontext: geht die Antwort
         # verloren, traegt der Claim ``owner`` (geschrieben) oder noch eines
         # der angebotenen Tokens -- die Kopie bietet alle an.
-        ctx.schedfire_claim = SchedfireClaim(key=header_value, owner=owner, candidates=offered)
+        ctx.schedfire_claim = SchedfireClaim(
+            key=header_value, owner=owner, candidates=offered, completed_ttl_ms=completed_ttl_ms,
+        )
         try:
             claimed = await bounded_backend_call(
                 deps,
@@ -138,7 +163,7 @@ class SchedfireGate:
             # This worker owns the run; the runner's finally finalizes the
             # claim (completed marker on terminal, in-flight clear otherwise).
             # Der Claim traegt jetzt sicher nur noch ``owner``.
-            ctx.schedfire_claim = SchedfireClaim(key=header_value, owner=owner)
+            ctx.schedfire_claim = SchedfireClaim(key=header_value, owner=owner, completed_ttl_ms=completed_ttl_ms)
             return Continue
 
         # Another worker is running it right now.

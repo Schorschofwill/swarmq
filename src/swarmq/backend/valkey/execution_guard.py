@@ -60,8 +60,9 @@ class ValkeyExecutionGuardStore:
 
     async def claim(
         self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
-        args: list[str | int] = [owner, ttl_ms, retry_count, state_ttl_ms, max_orphans]
+        args: list[str | int] = [owner, ttl_ms, retry_count, state_ttl_ms, max_orphans, backlog_ttl_ms or 0]
         keys = self._guard_keys(identity)
         status, orphans = await self._run("claim", self._pipeline.call(self._claim_script, keys, args))
         return GuardClaim(cast("GuardStatus", _decode(status)), int(orphans))

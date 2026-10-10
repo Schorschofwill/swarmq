@@ -142,6 +142,23 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Done- und Completed-Marker laufen hinter einem langen Rückstand
+  nicht mehr ab.** Der Done-Marker des Ausführungsschutzes und der
+  Completed-Marker eines Schedule-Fires lebten feste 3900 s, gemessen
+  ab dem Lauf, nicht ab der Zeit, die eine zurückgestellte Kopie oder
+  ein doppeltes Fire in der Queue wartet; nach mehr als 65 Minuten
+  Rückstand lief die Kopie ein zweites Mal. Der Claim, der eine
+  Neuzustellung zurückstellt, verlängert den Zustand der Ausführung
+  jetzt auf `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (Standard 7 Tage)
+  oder `max_age + 300`, die danach geschriebenen Marker verkürzen ihn
+  nie, und ein gescheitertes Ack oder eine Kopie, deren Ack scheiterte,
+  markiert die Ausführung für denselben Rückstand. Der Completed-Marker
+  eines Schedule-Fires lebt `2 × Wartezeit + 300` Sekunden, wobei die
+  Wartezeit die Zeit des Fires in der Queue ist (gedeckelt bei `max_age
+  + 300` und der Rückstands-TTL, nie unter `SWARMQ_SCHEDULER_DEDUP_TTL`).
+  **Bekannte Grenze:** Ein Rückstand, der erst nach dem Lauf entsteht,
+  ist bei Tasks ohne `max_age` nicht abgedeckt
+  ([Aufbewahrung der Marker](../explanation/delivery-semantics.de.md#ausfuhrungsschutz)).
 - **Eine DLQ-Wiederholung ohne neue `x-swarmq-replay-id` wird nicht
   mehr übersprungen.** "Move messages" in der RabbitMQ-UI, ein Shovel,
   swarmv und ein CLI vor 0.11 legen eine dead-gelettete Nachricht mit

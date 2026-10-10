@@ -1,5 +1,5 @@
 """Nachweis BZ-12: Done-/Fired-Marker (3900 s) laufen bei Rueckstand ab ->
-Doppelausfuehrung trotz Schutz.
+Doppelausfuehrung trotz Schutz (behoben in MR 12).
 
 Register: docs/befunde/betrieb-ueber-zeit-2026-10.md (BZ-12).
 
@@ -18,13 +18,14 @@ Testliste:
 # [x] Ausfuehrungsschutz: Neuzustellung waehrend des Laufs wird
 #     zurueckgestellt; Original schliesst ab; die Kopie kommt nach
 #     Rueckstand > Done-TTL -> muss uebersprungen werden
-# [x] Schedfire: Fire abgeschlossen, Duplikat desselben Fires (z. B.
-#     Leader-Doppelung) kommt nach Rueckstand > scheduler_dedup_ttl -> muss
-#     uebersprungen werden
+# [x] Schedfire: Fire (2 h gewartet) abgeschlossen, Duplikat desselben Fires
+#     (z. B. Leader-Doppelung) kommt nach Rueckstand > scheduler_dedup_ttl ->
+#     muss uebersprungen werden (MR 12: TTL folgt der Wartezeit)
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,6 +34,7 @@ import pytest
 from swarmq.config import SwarmQConfig
 from swarmq.registry import TaskRegistry
 from swarmq.task import TaskInfo
+from swarmq.worker.finalize import finalize_schedfire
 from swarmq.worker.gates import GateContext
 from swarmq.worker.gates.execution_guard import ExecutionGuard
 from swarmq.worker.gates.schedfire import SchedfireGate
@@ -76,11 +78,6 @@ def _ctx(task_id: str = "bz12-task") -> GateContext:
     return GateContext(task_id=task_id, task_name="t", queue="q", task_info=TaskInfo(name="t", queues=["q"]))
 
 
-@pytest.mark.befund("BZ-12")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-12: Done-Marker (3900 s) laeuft vor der zurueckgestellten Kopie ab, Task laeuft bei Rueckstand doppelt",
-)
 async def test_deferred_copy_after_a_long_backlog_is_still_skipped(
     deps: MagicMock, backend: InMemoryBackend, clock: FakeClock
 ) -> None:
@@ -104,22 +101,22 @@ async def test_deferred_copy_after_a_long_backlog_is_still_skipped(
     assert outcome is not Continue, "Kopie nach Rueckstand ausgefuehrt: Done-Marker war abgelaufen"
 
 
-@pytest.mark.befund("BZ-12")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-12: Schedfire-Completed-Marker (3900 s) laeuft vor dem Duplikat ab, Cron feuert bei Rueckstand doppelt",
-)
 async def test_duplicate_fire_after_a_long_backlog_is_still_skipped(
     deps: MagicMock, backend: InMemoryBackend, clock: FakeClock
 ) -> None:
+    """MR 12: Die TTL des Completed-Markers folgt der Wartezeit des Fires in
+    der Queue (``max(base, 2 * Wartezeit + 300)``): Ein Fire, das 2 h hinter
+    dem Rueckstand wartete, schuetzt sein Duplikat weitere 2 h."""
     gate = SchedfireGate(deps)
-    fire = {"x-swarmq-schedfire": "nightly:1760000000"}
+    fire = {"x-swarmq-schedfire": "nightly:1760000000", "x-swarmq-enqueued-at": int(time.time()) - _BACKLOG_S}
     assert deps.config.scheduler_dedup_ttl < _BACKLOG_S  # Default 3900 s
 
     first = _ctx("fire-1")
     assert await gate.apply(make_message(headers=dict(fire)), first) is Continue
     # Abschluss wie im finally des Runners (terminal): Completed-Marker.
-    await backend.schedules.mark_fire_completed(fire["x-swarmq-schedfire"], int(deps.config.scheduler_dedup_ttl * 1000))
+    assert await finalize_schedfire(
+        first, terminal=True, backend=backend, config=deps.config, gate_deps=deps, log=MagicMock(),
+    )
 
     await clock.advance(_BACKLOG_S)  # Duplikat (Leader-Doppelung) wartet hinter dem Rueckstand
     outcome = await gate.apply(make_message(headers=dict(fire)), _ctx("fire-2"))

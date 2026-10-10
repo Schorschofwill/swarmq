@@ -79,6 +79,16 @@ class _TTLDict[V]:
         if expires is None or new_expires < expires:
             self._data[key] = (value, new_expires)
 
+    def expire_gt(self, key: str, ttl_ms: int) -> None:
+        """Wie ``PEXPIRE … GT``: Ablaufzeit nur verlängern, nie verkürzen."""
+        self._purge()
+        if key not in self._data:
+            return
+        value, expires = self._data[key]
+        new_expires = self._clock.now_ms() + ttl_ms
+        if expires is None or new_expires > expires:
+            self._data[key] = (value, new_expires)
+
     def expire_keep(self, key: str, value: V) -> None:
         """Wert ersetzen, Ablaufzeit behalten (wie HSET/HDEL auf einem Hash)."""
         self._purge()
@@ -607,10 +617,12 @@ class InMemoryExecutionGuardStore:
     def _update(self, identity: str, state_ttl_ms: int, **fields: object) -> None:
         state = dict(self._state.get(identity) or {})
         state.update(fields)
-        self._state.set(identity, {k: v for k, v in state.items() if v is not None}, state_ttl_ms)
+        # Wie ``guard_claim.lua``: die TTL wird nur verlaengert, nie verkuerzt.
+        self._store(identity, {k: v for k, v in state.items() if v is not None}, state_ttl_ms)
 
     async def claim(
         self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
         state = self._state.get(identity) or {}
         if state.get("done"):
@@ -623,6 +635,10 @@ class InMemoryExecutionGuardStore:
             # Wiederholung desselben Claims (Transport-Retry): idempotent.
             return GuardClaim("orphan_limit" if orphans >= max_orphans else "claimed", orphans=orphans)
         if identity in self._running:
+            # BZ-12: die Kopie kann hinter einem Rueckstand zurueckkommen --
+            # der Zustand (und der kommende Done-Marker) lebt mindestens so lange.
+            if backlog_ttl_ms:
+                self._state.expire_gt(identity, backlog_ttl_ms)
             return GuardClaim("running")
         if "lease" in state:
             orphans += 1
@@ -646,8 +662,12 @@ class InMemoryExecutionGuardStore:
     def _store(self, identity: str, state: dict[str, object], state_ttl_ms: int | None) -> None:
         if not state:
             self._state.pop(identity)
-        elif state_ttl_ms is None:
+        elif state_ttl_ms is None or identity in self._state:
+            # Wie ``guard_finish.lua``: der Wert ersetzt, die TTL wird nur
+            # verlaengert, nie verkuerzt (BZ-12).
             self._state.expire_keep(identity, state)
+            if state_ttl_ms is not None:
+                self._state.expire_gt(identity, state_ttl_ms)
         else:
             self._state.set(identity, state, state_ttl_ms)
 
