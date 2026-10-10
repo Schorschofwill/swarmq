@@ -85,7 +85,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` | behoben (MR 10, 31d9bff) |
 | BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 5, 0ff3af5) |
 | BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` | behoben (MR 6, 183291e) |
-| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | offen |
+| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | teilweise (Laufzeit, MR 13, 1c5682b): `test_befund_bz04_lock_loss.py` grün; Valkey-Umgebung (Eviction-Policy, Cron-Datenverlust) in MR 14 |
 | BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` | offen; Nachweise 2/3 (`TASK_DLQ`, Fehlerergebnis am Deckel) grün seit MR 3, a570112, Umschreiben auf `LockWaitExceeded` in MR 13 |
 | BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` | behoben (MR 11, 7af55b6) |
 | BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 4, ddcb11b) |
@@ -106,7 +106,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-22 | `tests/unit/worker/test_befund_bz22_unique_expiry.py` | behoben (MR 3, d4e2b81) |
 | BZ-23 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | behoben (MR 5, 660a940) |
 | BZ-24 | `tests/unit/client/test_befund_bz24_registry_less_producer.py` | behoben (MR 2, 466cdd9) |
-| BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` | offen |
+| BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` | behoben (MR 13, 1c5682b) |
 | BZ-26 | `tests/unit/test_befund_bz26_backoff.py` | behoben (MR 2, 0fcbfe8) |
 | BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` | offen |
 | BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 4, d4719fa) |
