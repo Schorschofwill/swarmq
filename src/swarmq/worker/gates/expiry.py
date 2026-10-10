@@ -18,7 +18,7 @@ from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
-from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
 logger = get_logger(__name__)
 
@@ -61,6 +61,13 @@ class ExpiryGate:
             age_s=age,
             max_age_s=task_info.max_age,
         )
+        error_message = f"task expired: age {age}s exceeds max_age {task_info.max_age}s"
+        # BZ-13: ein abgelaufener Workflow-Schritt markiert seinen Workflow
+        # als fehlgeschlagen. Scheitert das voruebergehend, ist die Zustellung
+        # neu zugestellt (nicht terminal) -- vor dem Signal, damit es je
+        # Ablauf einmal feuert.
+        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):
+            return Redelivered
         await deps.signals.dispatch(
             Signal.TASK_EXPIRED,
             task_id=ctx.task_id,
@@ -84,7 +91,7 @@ class ExpiryGate:
                         task_name=ctx.task_name,
                         is_error=True,
                         is_cancelled=False,
-                        error_message=f"task expired: age {age}s exceeds max_age {task_info.max_age}s",
+                        error_message=error_message,
                     )),
                     ttl_ms=ttl_ms,
                     op_timeout=deps.config.backend_op_timeout,

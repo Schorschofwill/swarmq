@@ -156,15 +156,22 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         self._cancel_gate = CancelGate(gate_deps)
         self._expiry_gate = ExpiryGate(gate_deps)
         self._rate_limit_gate = RateLimitGate(gate_deps)
-        self._lock_gate = LockGate(gate_deps)
+        self._lock_gate = LockGate(
+            gate_deps,
+            dead_letter=lambda d, c, m, t, h, f: self._retry_handler.dead_letter(
+                d, c, m, t, extra_headers=h, on_publish_failure=f),
+        )
+        # Am Zustelllimit stellt eine gescheiterte Workflow-Fehlmarkierung
+        # nicht mehr neu zu (MR 3): auf 4.3 zaehlte der ``nack`` nicht.
         self._delivery_count_gate = DeliveryCountGate(
-            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t))
+            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t, may_redeliver=False))
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._retry_handler = RetryHandler(
             gate_deps, workflow_advancer=lambda: self._workflow_advancer, finish=self._result_tail.finish)
+        gate_deps.fail_workflow = self._retry_handler.fail_workflow  # BZ-13: terminale Gate-Pfade
         # Ausfuehrungsschutz (KTD5): der Store entsteht in start(); Gates,
         # Retry und Ergebnis-Tail sprechen den protokollierenden Wrapper, der
         # die Marker nach dem ausgefuehrten Verb setzt.

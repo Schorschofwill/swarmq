@@ -91,24 +91,21 @@ def _failed_workflows(worker: Worker) -> list[str]:
 
 
 @pytest.mark.befund("BZ-13")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-13: unbekannter Task im Workflow geht per DLX ins .XQ, der Workflow bleibt bis zur TTL RUNNING",
-)
 async def test_unknown_task_step_marks_the_workflow_failed(broker, backend, config) -> None:
+    # Gnadenfrist 0 (Plan 0.12.0, Abschnitt 6): Der unbekannte Task geht
+    # sofort in die DLQ. Ab MR 11 (BZ-06) stellt der Worker ihn sonst erst
+    # zurueck; dann muss hier die Gnadenfrist auf 0 gesetzt werden, statt
+    # die Voraussetzung abzuschwaechen -- der Test darf nicht vakuum-gruen
+    # werden.
     worker = _workflow_worker(broker, backend, config, AddTask)
 
     await worker._handle_message(_step("renamed_away"))
 
-    if broker.route_via_dlx.await_count or broker.dead_letter.await_count:
-        assert _failed_workflows(worker) == [_WF_ID], "Schritt im .XQ, Workflow nicht fehlmarkiert"
+    assert broker.route_via_dlx.await_count == 1, "Voraussetzung: unbekannter Task geht per DLX ins .XQ"
+    assert _failed_workflows(worker) == [_WF_ID], "Schritt im .XQ, Workflow nicht fehlmarkiert"
 
 
 @pytest.mark.befund("BZ-13")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-13: Lock-Render-Fehler eines Workflow-Schritts geht in die DLQ ohne Workflow-Fehlmarkierung",
-)
 async def test_lock_render_error_step_marks_the_workflow_failed(broker, backend, config) -> None:
     worker = _workflow_worker(broker, backend, config, RenderLocked)
 
@@ -119,10 +116,6 @@ async def test_lock_render_error_step_marks_the_workflow_failed(broker, backend,
 
 
 @pytest.mark.befund("BZ-13")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-13: max_age-Ablauf eines Workflow-Schritts markiert den Workflow nicht als fehlgeschlagen",
-)
 async def test_expired_step_marks_the_workflow_failed(broker, backend, config) -> None:
     worker = _workflow_worker(broker, backend, config, Expiring)
 
@@ -133,10 +126,6 @@ async def test_expired_step_marks_the_workflow_failed(broker, backend, config) -
 
 
 @pytest.mark.befund("BZ-13")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-13: Lock-Konflikt-Deckel eines Workflow-Schritts geht in die DLQ ohne Workflow-Fehlmarkierung",
-)
 async def test_lock_conflict_cap_step_marks_the_workflow_failed(broker, backend, config) -> None:
     worker = _workflow_worker(broker, backend, config, Mutex)
 
@@ -155,10 +144,6 @@ class _NoopPublisher:
 
 
 @pytest.mark.befund("BZ-13")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-13: abgelaufener Workflow-Zustand -- advance() kehrt still zurueck, die Kette endet ohne Log",
-)
 async def test_advance_with_expired_workflow_state_logs_a_warning() -> None:
     backend = InMemoryBackend(FakeClock())
     backend._connected = True

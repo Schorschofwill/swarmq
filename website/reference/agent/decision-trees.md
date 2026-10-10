@@ -121,7 +121,9 @@ Additional DLQ paths:
 - Lock render fails (missing kwarg for template) → DLQ with
   `x-swarmq-lock-render-error: <reason>`.
 - Lock conflict cap reached (10th conflict) → DLQ with
-  `x-swarmq-lock-conflict-count` and `x-swarmq-lock-name`.
+  `x-swarmq-lock-conflict-count` and `x-swarmq-lock-name`
+  (`task_sent_to_dlq` with `error_type=LockConflictLimitError`, error
+  result stored, `TASK_DLQ`).
 - Delivery limit reached (`delivery_limit`, default 20) → DLQ via the
   worker's delivery-count gate (`task_sent_to_dlq` with
   `error_type=WorkerHungError`), broker-native DLQ as the last resort.

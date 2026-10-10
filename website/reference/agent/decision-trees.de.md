@@ -127,7 +127,9 @@ Zusätzliche DLQ-Pfade:
 - Lock-Render schlägt fehl (fehlender Kwarg für Template) → DLQ
   mit `x-swarmq-lock-render-error: <Grund>`.
 - Lock-Konflikt-Grenze erreicht (10. Konflikt) → DLQ mit
-  `x-swarmq-lock-conflict-count` und `x-swarmq-lock-name`.
+  `x-swarmq-lock-conflict-count` und `x-swarmq-lock-name`
+  (`task_sent_to_dlq` mit `error_type=LockConflictLimitError`,
+  Fehlerergebnis gespeichert, `TASK_DLQ`).
 - Zustell-Limit erreicht (`delivery_limit`, Default 20) → DLQ über das
   Delivery-Count-Gate des Workers (`task_sent_to_dlq` mit
   `error_type=WorkerHungError`), broker-native DLQ als letzte Stufe.

@@ -11,12 +11,16 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from swarmq.exceptions import WorkflowResultExpired
+from swarmq.logging import get_logger
 from swarmq.serialization import decode_json, encode_json, encode_result
 from swarmq.workflow_state import STATUS_COMPLETED, STATUS_FAILED, STATUS_RUNNING, _StaleWorkflowState
 from swarmq.workflow_topology import aggregate_result_id
 
 if TYPE_CHECKING:
     from swarmq.contracts import ResultBackend
+
+# Q17: derselbe Logger-Name wie ``WorkflowAdvancer.advance`` (Ursprungsmodul).
+logger = get_logger("swarmq.workflow_orchestration")
 
 
 class WorkflowFailure:
@@ -99,6 +103,8 @@ class WorkflowFailure:
         FAF runtime guard (U5) and the worker terminal-failure seam (U6)."""
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
+            # BZ-13: abgelaufen oder aufgeraeumt -- nicht still enden.
+            logger.warning("workflow_state_missing", workflow_id=wf_id)
             return
         state: dict[str, Any] = decode_json(raw)
         if state["status"] != STATUS_RUNNING:

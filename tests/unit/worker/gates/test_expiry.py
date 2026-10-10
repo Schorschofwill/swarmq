@@ -223,3 +223,40 @@ class TestExpiryErrorFields:
         assert entry["log_level"] == "error"
         assert entry["error_type"] == "BrokerConnectionError"
         assert entry["error"] == "redeliver failed, channel lost"
+
+
+class TestExpiredWorkflowStep:
+    """BZ-13 (Plan 0.12.0, MR 3): ein abgelaufener Workflow-Schritt markiert
+    seinen Workflow als fehlgeschlagen.
+
+    Test-Liste:
+    - [x] Markierung scheitert voruebergehend (Valkey weg) -> neu zugestellt,
+          keine DLQ, kein ``TASK_EXPIRED`` (das Zustelllimit begrenzt das)
+    """
+
+    async def test_fail_mark_outage_redelivers_instead_of_dead_lettering(self):
+        from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
+        from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+        from swarmq.worker.outcome import Redelivered
+
+        w = _make_worker()
+        w._broker.redeliver = AsyncMock()
+        w._registry.get = MagicMock(side_effect=TaskNotFoundError("t"))
+        w._workflow_advancer = MagicMock()
+        w._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        expired: list[dict] = []
+
+        @w._signal_dispatcher.on_signal(Signal.TASK_EXPIRED)
+        async def _cap(**kw):
+            expired.append(kw)
+
+        msg = _expiry_message(int(time.time()) - 120)
+        msg.headers[HEADER_WORKFLOW_ID] = "01890a5d-ac96-774b-bcce-b302099a8057"
+        msg.headers[HEADER_WORKFLOW_STEP] = "/1"
+
+        handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
+
+        assert handled is Redelivered
+        w._broker.redeliver.assert_awaited_once_with(msg)
+        w._broker.dead_letter.assert_not_awaited()
+        assert expired == []

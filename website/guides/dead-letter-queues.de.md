@@ -26,8 +26,8 @@ Task-Fehlern abschaltest.
 | Der Worker hat die Zustellung zurückgegeben (`nack(requeue=True)`), bis `x-acquired-count` das Zustelllimit erreichte (RabbitMQ 4.3) | `x-swarmq-traceback` mit `RedeliveryLimitError` | weiter dead-gelettert |
 | Dieselbe Ausführung ist `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)) | `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
 | `TaskInfo.max_age` bei Pickup überschritten | kein eigener — die Nachricht behält ihre ursprünglichen Header; das gespeicherte Fehlerergebnis lautet `task expired: age …s exceeds max_age …s` | weiter dead-gelettert |
-| Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung | weiter dead-gelettert |
-| Lock-Konflikt-Budget erschöpft (10. Konflikt) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` | weiter dead-gelettert |
+| Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung, `x-swarmq-traceback` | weiter dead-gelettert |
+| Lock-Konflikt-Budget erschöpft (10. Konflikt) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name`, `x-swarmq-traceback` mit `LockConflictLimitError` | weiter dead-gelettert |
 | Body über der Größengrenze, nicht dekodierbarer Body, unregistrierter Task-Name, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | keiner von SwarmQ — nur das `x-death` des Brokers | weiter dead-gelettert |
 
 Jede Nachricht, die der Worker selbst dead-lettert, trägt außerdem

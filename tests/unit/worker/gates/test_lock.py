@@ -874,3 +874,61 @@ async def test_conflict_copy_of_a_claimed_fire_carries_the_claim_token(broker, b
 
     owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
     assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner
+
+
+class TestLockConflictCapTerminal:
+    """BZ-05/BZ-13 (Plan 0.12.0, MR 3): Der Konflikt-Deckel laeuft ueber den
+    terminalen Dead-Letter des Workers -- Fehlerergebnis, ``TASK_DLQ`` und
+    Workflow-Fehlmarkierung; der Deckel bleibt vorerst bei 10."""
+
+    _WF_ID = "01890a5d-ac96-774b-bcce-b302099a8057"
+
+    def _worker(self, broker, backend, config):
+        registry = TaskRegistry()
+        registry.register(LockedTask)
+        dlq: list[dict] = []
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        @w._signal_dispatcher.on_signal(Signal.TASK_DLQ)
+        async def _on_dlq(**kwargs):
+            dlq.append(kwargs)
+
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=None)
+        w._workflow_advancer = MagicMock()
+        w._workflow_advancer.fail = AsyncMock()
+        return w, dlq
+
+    async def test_cap_in_a_workflow_marks_it_failed_and_stores_the_error(self, broker, backend, config):
+        from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+
+        w, dlq = self._worker(broker, backend, config)
+        msg = make_message(
+            _default_payload(task_id="cap-1", name="locked", args=[], kwargs={}),
+            headers={
+                "x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1,
+                HEADER_WORKFLOW_ID: self._WF_ID, HEADER_WORKFLOW_STEP: "/0",
+            },
+        )
+
+        await w._handle_message(msg)
+
+        w._workflow_advancer.fail.assert_awaited_once()
+        assert w._workflow_advancer.fail.await_args.args[0] == self._WF_ID
+        assert [c.args[0] for c in backend.store_result.await_args_list] == ["cap-1"]
+        assert [d["task_id"] for d in dlq] == ["cap-1"]
+        headers = broker.dead_letter.await_args.kwargs["headers"]
+        assert headers["x-swarmq-lock-name"] == "resource"
+        assert "lock conflict limit reached" in headers["x-swarmq-traceback"]
+
+    async def test_cap_reports_lock_conflict_limit_error_type(self, broker, backend, config, swarmq_logs):
+        w, _dlq = self._worker(broker, backend, config)
+        msg = make_message(
+            _default_payload(task_id="cap-2", name="locked", args=[], kwargs={}),
+            headers={"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1},
+        )
+
+        await w._handle_message(msg)
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "task_sent_to_dlq"]
+        assert entry["error_type"] == "LockConflictLimitError"

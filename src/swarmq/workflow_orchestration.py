@@ -30,6 +30,7 @@ from swarmq.headers import (
     HEADER_WORKFLOW_ID,
     HEADER_WORKFLOW_STEP,
 )
+from swarmq.logging import get_logger
 from swarmq.serialization import decode_json
 from swarmq.workflow import (
     Chain,
@@ -68,6 +69,8 @@ from swarmq.workflow_topology import inject_result as inject_result
 from swarmq.workflow_topology import node_at_path as node_at_path
 from swarmq.workflow_topology import split_path as split_path
 from swarmq.workflow_topology import workflow_step_task_id as workflow_step_task_id
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from swarmq.contracts import ResultBackend
@@ -269,7 +272,14 @@ class WorkflowAdvancer(WorkflowFailure):
         per-step ``next-enqueued`` markers."""
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
-            return  # state gone (expired/cancelled-cleaned) — nothing to advance
+            # State gone (expired/cancelled-cleaned) — nothing to advance.
+            # BZ-13: say so; the chain ends here, and without this line it
+            # ended without a trace.
+            logger.warning(
+                "workflow_state_missing", workflow_id=wf_id,
+                step_path=completed_path, task_id=completed_task_id,
+            )
+            return
         state: dict[str, Any] = decode_json(raw)
         if state["status"] != STATUS_RUNNING:
             return  # already terminal

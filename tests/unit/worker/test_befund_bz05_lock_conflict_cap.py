@@ -82,7 +82,6 @@ async def test_long_lock_conflict_keeps_waiting_instead_of_dead_lettering(broker
 
 
 @pytest.mark.befund("BZ-05")
-@pytest.mark.xfail(strict=True, reason="BZ-05: Lock-Konflikt-Deckel fuehrt in die DLQ, ohne TASK_DLQ zu feuern")
 async def test_lock_conflict_dead_letter_fires_task_dlq(broker, backend, config) -> None:
     worker, seen, message = _worker_at_cap(broker, backend, config)
 
@@ -93,10 +92,6 @@ async def test_lock_conflict_dead_letter_fires_task_dlq(broker, backend, config)
 
 
 @pytest.mark.befund("BZ-05")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-05: Lock-Konflikt-Deckel fuehrt in die DLQ, ohne Fehlerergebnis -- get_result() laeuft in den Timeout",
-)
 async def test_lock_conflict_dead_letter_stores_an_error_result(broker, backend, config) -> None:
     worker, _seen, message = _worker_at_cap(broker, backend, config)
 

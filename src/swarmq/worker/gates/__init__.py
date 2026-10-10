@@ -143,6 +143,11 @@ class GateDeps:
     # BZ-29: Pause vor jedem ``redeliver`` (Sekunden -> Warten). Der Worker
     # setzt sie (bricht beim Shutdown ab); ``None`` = keine Pause.
     redeliver_pause: Callable[[float], Awaitable[None]] | None = None
+    # BZ-13: Workflow eines terminal endenden Schritts fehlmarkieren
+    # (delivery, ctx, error_message, may_redeliver) -> ``False``, wenn die
+    # Zustellung deshalb neu zugestellt wurde. Der Worker setzt es
+    # (``RetryHandler.fail_workflow``); ``None`` = keine Markierung.
+    fail_workflow: Callable[[Any, GateContext, str, bool], Awaitable[bool]] | None = None
 
 
 # Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie
@@ -318,6 +323,22 @@ async def route_via_dlx(
         task_name=task_name,
         error=error,
     )
+    await _fail_workflow_best_effort(deps, delivery, task_id, task_name, error or reason)
+
+
+async def _fail_workflow_best_effort(
+    deps: GateDeps, delivery: Any, task_id: str | None, task_name: str | None, error_message: str
+) -> None:
+    """BZ-13: ein per DLX beendeter Workflow-Schritt markiert seinen Workflow
+    als fehlgeschlagen -- best effort, ohne Neuzustellung (die Nachricht
+    liegt schon im ``.XQ``). Ein Fehler hier bricht den Pfad nicht ab."""
+    if deps.fail_workflow is None:
+        return
+    ctx = GateContext(task_id=task_id or "", task_name=task_name or "", queue=getattr(delivery, "queue", None) or "")
+    try:
+        await deps.fail_workflow(delivery, ctx, error_message, False)
+    except Exception as exc:
+        logger.warning("workflow_fail_mark_failed", task_id=task_id, **_error_fields(exc), redelivered=False)
 
 
 __all__ = [

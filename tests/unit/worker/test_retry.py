@@ -522,3 +522,32 @@ async def test_retry_copy_bounds_the_traceback_header(broker, backend, config):
 
     traceback_header = broker.retry_later.await_args.kwargs["headers"]["x-swarmq-traceback"]
     assert len(traceback_header.encode()) <= 8 * 1024
+
+
+async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_workflow(broker, backend, config):
+    """Plan 0.12.0, MR 3 (BZ-13, Schutz): ein spaetes Duplikat eines
+    erfolgreich erledigten Schritts (etwa am Zustelllimit) kippt den
+    weiterlaufenden Workflow nicht -- auch nicht ueber das eigene
+    Fehlerergebnis, das der Dead-Letter-Pfad speichert."""
+    from swarmq.cancellation import build_result_dict
+    from swarmq.serialization import encode_result
+
+    handler, worker = _handler(broker, backend, config)
+    results = {"abc-123": encode_result(build_result_dict(
+        task_id="abc-123", queue="default", task_name="dlq-task", is_error=False, is_cancelled=False, result="ok",
+    ))}
+
+    async def store(task_id, raw, ttl_ms, **_kw):
+        results[task_id] = raw
+
+    async def get(task_id):
+        return results.get(task_id)
+
+    backend.store_result = AsyncMock(side_effect=store)
+    backend.get_result = AsyncMock(side_effect=get)
+    msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
+
+    await handler.dead_letter(msg, _ctx(), "WorkerHungError: delivered 19 times", "WorkerHungError")
+
+    worker._workflow_advancer.fail.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()

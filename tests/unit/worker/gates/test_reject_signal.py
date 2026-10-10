@@ -101,3 +101,33 @@ async def test_fallback_broker_without_route_via_dlx_still_signals():
     await route_via_dlx(deps, _delivery(), reason="dlq_publish_failed")
     deps.broker.dead_letter.assert_awaited_once()
     deps.signals.dispatch.assert_awaited_once()
+
+
+# BZ-13 (Plan 0.12.0, MR 3): Workflow-Fehlmarkierung am DLX-Fallback, best effort.
+
+
+async def test_route_marks_the_workflow_failed_without_redelivery():
+    deps = _deps()
+    deps.fail_workflow = AsyncMock(return_value=True)
+    delivery = _delivery()
+
+    await route_via_dlx(
+        deps, delivery, reason="unregistered_task", task_id="t-1", task_name="gone", error="no such task"
+    )
+
+    deps.fail_workflow.assert_awaited_once()
+    got_delivery, ctx, message, may_redeliver = deps.fail_workflow.await_args.args
+    assert got_delivery is delivery and ctx.task_id == "t-1" and ctx.task_name == "gone"
+    assert message == "no such task" and may_redeliver is False
+
+
+async def test_failing_workflow_mark_does_not_break_the_route():
+    """Die Nachricht liegt schon im ``.XQ``: ein Fehler der Markierung wird
+    geloggt und endet den Pfad nicht mit einer Ausnahme."""
+    deps = _deps()
+    deps.fail_workflow = AsyncMock(side_effect=RuntimeError("store bug"))
+
+    await route_via_dlx(deps, _delivery(), reason="unregistered_task", task_id="t-1", task_name="gone")
+
+    deps.broker.route_via_dlx.assert_awaited_once()
+    deps.signals.dispatch.assert_awaited_once()

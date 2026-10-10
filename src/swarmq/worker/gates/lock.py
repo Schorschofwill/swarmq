@@ -26,7 +26,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from swarmq.header_text import bounded_header_text
 from swarmq.locking import compute_lock_ttl_ms, lock_key
@@ -35,7 +36,6 @@ from swarmq.signals import Signal
 from swarmq.worker.gates import (
     GateContext,
     GateDeps,
-    dead_letter_copy,
     redeliver_in_place,
     republish_headers,
     route_via_dlx,
@@ -48,12 +48,14 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_DlqFailureEvent = Literal["lock_render_dlq_failed", "lock_empty_render_dlq_failed"]
-
 # Lock-conflict requeue cap: after this many conflicts for the same
 # message, route to DLQ instead of requeuing (visibility-first, auto-DLQ
 # is the safety net).
 LOCK_CONFLICT_DLQ_CAP = 10
+
+# ``error_type`` der DLQ-Kopie am Konflikt-Deckel (``task_sent_to_dlq``); es
+# gibt keine ausloesende Ausnahme.
+LOCK_CONFLICT_LIMIT_ERROR_TYPE = "LockConflictLimitError"
 
 # Exponential backoff for lock-conflict requeue: base * 2^(n-1), capped.
 LOCK_CONFLICT_BACKOFF_BASE_MS = 100
@@ -82,9 +84,19 @@ def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any],
         raise ValueError(f"failed to render lock name {lock_template!r}: {exc}") from exc
 
 
+# (delivery, ctx, error_message, error_type, extra_headers, on_publish_failure)
+# -- der terminale Dead-Letter des Workers (``RetryHandler.dead_letter``):
+# Fehlerergebnis, Workflow-Fehlmarkierung, DLQ-Kopie, Unique-Freigabe und
+# ``TASK_DLQ`` (Plan 0.12.0, MR 3, BZ-13/BZ-05). Scheitert der DLQ-Publish,
+# laeuft statt des ``redeliver`` der DLX-Fallback des Gates.
+PublishFailure = Callable[[Exception], Awaitable[None]]
+TerminalDeadLetter = Callable[[Any, GateContext, str, str, dict[str, Any], PublishFailure], Awaitable[None]]
+
+
 class LockGate:
-    def __init__(self, deps: GateDeps) -> None:
+    def __init__(self, deps: GateDeps, *, dead_letter: TerminalDeadLetter) -> None:
         self._deps = deps
+        self._dead_letter = dead_letter
 
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
         task_info = ctx.task_info
@@ -109,8 +121,10 @@ class LockGate:
                 lock_template=task_info.lock,
                 **_error_fields(exc),
             )
-            await self._dead_letter_terminal(
-                delivery, ctx, {"x-swarmq-lock-render-error": bounded_header_text(str(exc))}, "lock_render_dlq_failed"
+            await self._dead_letter(
+                delivery, ctx, str(exc), type(exc).__name__,
+                {"x-swarmq-lock-render-error": bounded_header_text(str(exc))},
+                lambda publish_exc: self._render_dlx_fallback(delivery, ctx, publish_exc, empty=False),
             )
             return Redelivered
 
@@ -125,11 +139,10 @@ class LockGate:
             logger.error(
                 "lock_name_rendered_empty", task_id=ctx.task_id, task_name=ctx.task_name, lock_template=task_info.lock
             )
-            await self._dead_letter_terminal(
-                delivery,
-                ctx,
-                {"x-swarmq-lock-render-error": f"lock template {task_info.lock!r} rendered to empty string"},
-                "lock_empty_render_dlq_failed",
+            error_message = f"lock template {task_info.lock!r} rendered to empty string"
+            await self._dead_letter(
+                delivery, ctx, error_message, "ValueError", {"x-swarmq-lock-render-error": error_message},
+                lambda publish_exc: self._render_dlx_fallback(delivery, ctx, publish_exc, empty=True),
             )
             return Redelivered
 
@@ -201,33 +214,18 @@ class LockGate:
         # the DLQ message). Comparison uses >= so the cap is inclusive:
         # cap=10 means the 10th conflict routes to DLQ.
         if new_count >= LOCK_CONFLICT_DLQ_CAP:
-            try:
-                await dead_letter_copy(deps, delivery, original_headers)
-                await deps.maybe_release_unique(delivery, ctx.task_id, task_info)
-            except Exception as exc:
-                # DLQ-publish failure at the cap creates a hazard: nacking
-                # with requeue lets the message bounce back at count >= cap
-                # again, hit the same DLQ failure, and loop without backoff.
-                # nack(requeue=False) routes the message via the broker-side
-                # x-dead-letter-exchange config to {queue}.XQ — the message
-                # is NOT lost, but the diagnostic headers will be missing.
-                logger.error(
-                    "lock_conflict_dlq_failed",
-                    task_id=ctx.task_id,
-                    task_name=ctx.task_name,
-                    lock_name=lock_name,
-                    lock_conflict_count=new_count,
-                    **_error_fields(exc),
-                    note=f"message routed via broker DLX to {ctx.queue}.XQ "
-                    "without diagnostic headers; recover wedged lock "
-                    f"via valkey-cli DEL {lock_key(lock_name)}",
-                )
-                # Terminal DLX fallback — route first, then release.
-                await route_via_dlx(
-                    deps, delivery, reason="dlq_publish_failed",
-                    task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc),
-                )
-                await deps.maybe_release_unique(delivery, ctx.task_id, task_info)
+            # Ueber den terminalen Dead-Letter des Workers (MR 3, BZ-05/BZ-13):
+            # Fehlerergebnis, Workflow-Fehlmarkierung, ``TASK_DLQ`` und
+            # Unique-Freigabe. Der Deckel bleibt vorerst bei 10 (MR 13).
+            error_message = (
+                f"lock conflict limit reached: {new_count} conflicts on lock {lock_name!r}; "
+                f"recover a wedged lock via valkey-cli DEL {lock_key(lock_name)}"
+            )
+            await self._dead_letter(
+                delivery, ctx, error_message, LOCK_CONFLICT_LIMIT_ERROR_TYPE,
+                {"x-swarmq-lock-conflict-count": new_count, "x-swarmq-lock-name": lock_name},
+                lambda publish_exc: self._conflict_dlx_fallback(delivery, ctx, publish_exc, lock_name, new_count),
+            )
             return Redelivered
 
         delay_ms = min(LOCK_CONFLICT_BACKOFF_BASE_MS * (2 ** (new_count - 1)), LOCK_CONFLICT_BACKOFF_CAP_MS)
@@ -250,38 +248,53 @@ class LockGate:
 
         return Redelivered
 
-    async def _dead_letter_terminal(
-        self, delivery: Any, ctx: GateContext, extra_headers: dict[str, Any], failure_event: _DlqFailureEvent
+    async def _conflict_dlx_fallback(
+        self, delivery: Any, ctx: GateContext, exc: Exception, lock_name: str, conflict_count: int
     ) -> None:
-        """Render-Fehler/leerer Render: Dead-Letter mit Diagnose-Header + Ack +
-        Freigabe; bei Publish-Fehler der terminale DLX-Fallback
-        (``nack(requeue=False)``) und danach die Freigabe — Ack-Ordering
-        bleibt einheitlich."""
+        """DLQ-Publish am Konflikt-Deckel gescheitert: ein Requeue kaeme mit
+        Zaehler >= Deckel zurueck, scheiterte wieder und liefe ohne Backoff
+        im Kreis. ``nack(requeue=False)`` routet ueber die Broker-DLX nach
+        ``{queue}.XQ`` -- nicht verloren, aber ohne Diagnose-Header."""
+        logger.error(
+            "lock_conflict_dlq_failed",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            lock_name=lock_name,
+            lock_conflict_count=conflict_count,
+            **_error_fields(exc),
+            note=f"message routed via broker DLX to {ctx.queue}.XQ "
+            "without diagnostic headers; recover wedged lock "
+            f"via valkey-cli DEL {lock_key(lock_name)}",
+        )
+        # Terminal DLX fallback — route first, then release.
+        await route_via_dlx(
+            self._deps, delivery, reason="dlq_publish_failed",
+            task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc),
+        )
+        await self._deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
+
+    async def _render_dlx_fallback(self, delivery: Any, ctx: GateContext, exc: Exception, *, empty: bool) -> None:
+        """Render-Fehler/leerer Render, DLQ-Publish gescheitert: der terminale
+        DLX-Fallback (``nack(requeue=False)``) und danach die Freigabe. Der
+        Fehler ist dauerhaft -- ein Requeue liefe nur erneut hinein."""
         deps = self._deps
-        original_headers = dict(delivery.headers) if delivery.headers else {}
-        original_headers.update(extra_headers)
-        try:
-            await dead_letter_copy(deps, delivery, original_headers)
-            # Release AFTER successful ack (or a copy already in the XQ).
-            await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
-        except Exception as broker_exc:
-            fields = dict(
-                task_id=ctx.task_id,
-                task_name=ctx.task_name,
-                lock_template=ctx.task_info.lock if ctx.task_info else None,
-                **_error_fields(broker_exc),
-                note=f"message routed via broker DLX to {ctx.queue}.XQ without diagnostic headers",
-            )
-            # R18: feste Event-Namen -- je Render-Fehlerart ein Literal.
-            if failure_event == "lock_render_dlq_failed":
-                logger.error("lock_render_dlq_failed", **fields)
-            else:
-                logger.error("lock_empty_render_dlq_failed", **fields)
-            await route_via_dlx(
-                deps, delivery, reason="dlq_publish_failed",
-                task_id=ctx.task_id, task_name=ctx.task_name, error=str(broker_exc),
-            )
-            await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
+        fields = dict(
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            lock_template=ctx.task_info.lock if ctx.task_info else None,
+            **_error_fields(exc),
+            note=f"message routed via broker DLX to {ctx.queue}.XQ without diagnostic headers",
+        )
+        # R18: feste Event-Namen -- je Render-Fehlerart ein Literal.
+        if empty:
+            logger.error("lock_empty_render_dlq_failed", **fields)
+        else:
+            logger.error("lock_render_dlq_failed", **fields)
+        await route_via_dlx(
+            deps, delivery, reason="dlq_publish_failed",
+            task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc),
+        )
+        await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
 
     async def _acquire_and_register(
         self, lock_manager: Any, ctx: GateContext, lock_name: str, owner_token: str, ttl_ms: int, max_concurrency: int

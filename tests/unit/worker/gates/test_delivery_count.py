@@ -116,3 +116,32 @@ async def test_delivery_count_at_limit_stays_worker_hung_even_with_acquired_coun
     await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19, "x-acquired-count": 19}), _ctx())
 
     assert dead_letter.await_args.args[3] == "WorkerHungError"
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("counters", [{"x-delivery-count": 19}, {"x-delivery-count": 2, "x-acquired-count": 19}])
+async def test_fail_mark_outage_at_the_limit_dead_letters_instead_of_redelivering(worker, broker, counters):
+    """Plan 0.12.0, MR 3 (Folgefehler BZ-13/BZ-29): Scheitert die
+    Workflow-Fehlmarkierung voruebergehend, stellt der Dead-Letter-Pfad neu
+    zu -- das Zustelllimit soll das begrenzen. Am Limit selbst darf er das
+    nicht mehr: auf 4.3 zaehlt der ``nack`` nicht im ``x-delivery-count``,
+    die Schleife liefe ohne Ende. Die Markierung bleibt dort best effort."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from swarmq.exceptions import BackendConnectionError
+    from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+    from tests.support.messages import make_message
+    from tests.unit.worker._helpers import _default_payload
+
+    worker._workflow_advancer = MagicMock()
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+    msg = make_message(
+        _default_payload(name="add"),
+        headers={HEADER_WORKFLOW_ID: "01890a5d-ac96-774b-bcce-b302099a8057", HEADER_WORKFLOW_STEP: "/1", **counters},
+    )
+
+    await worker._handle_message(msg)
+
+    worker._workflow_advancer.fail.assert_awaited_once()
+    broker.redeliver.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()

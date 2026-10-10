@@ -20,6 +20,18 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **Workflows no longer hang until their TTL when a step ends outside
+  the retry path.** A step that expires (`max_age`), fails its lock
+  template, hits the lock conflict cap or is not registered in the
+  worker now marks its workflow `failed`, so `get()` raises `TaskError`
+  instead of timing out. The lock conflict cap and lock template errors
+  now also store an error result and fire `TASK_DLQ`
+  (`error_type=LockConflictLimitError` at the cap). A late duplicate of a
+  step that already succeeded does not mark the workflow failed, and a
+  workflow whose state expired logs `workflow_state_missing` instead of
+  ending silently. At the delivery limit, a workflow mark that fails
+  because Valkey is unreachable no longer hands the delivery back; it is
+  dead-lettered anyway ([failure modes](../guides/workflows.md#failure-modes)).
 - **A delivery the worker keeps handing back no longer loops forever
   on RabbitMQ 4.3, and no longer burns its delivery budget in a
   moment.** RabbitMQ 4.3 does not count `nack(requeue=True)` in

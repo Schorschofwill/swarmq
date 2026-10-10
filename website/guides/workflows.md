@@ -229,7 +229,8 @@ workflows.
 | What happens | Result |
 |---|---|
 | A step fails and has retries left | It is retried like any task; the workflow keeps running. |
-| A step fails terminally (retries exhausted, `NoRetry`, delivery limit) | The worker marks the workflow `failed` when it dead-letters the step; `get()` raises `TaskError` with the step's error message. No further steps run, and a chord body never runs if a header member failed. |
+| A step fails terminally (retries exhausted, `NoRetry`, delivery limit, `max_age` exceeded, lock template error, lock conflict cap, task not registered in the worker) | The worker marks the workflow `failed` when it dead-letters the step; `get()` raises `TaskError` with the step's error message. No further steps run, and a chord body never runs if a header member failed. A late duplicate of a step that already succeeded does not mark the workflow failed (`workflow_fail_skipped_step_done`). |
+| The workflow state expired while a step was still running | The step's result cannot advance the workflow; the worker logs `workflow_state_missing` (WARNING, field `workflow_id`). Raise `result_ttl` for long workflows. |
 | A middleware `pre_enqueue` raises for one of the first steps (in the client) | `apply()` raises that exception; nothing is persisted or published. |
 | A middleware `pre_enqueue` raises for a later step (in the worker) | No step of that front is published; the workflow is `failed` and `get()` raises `TaskError` with the exception's message. See [middleware for workflow steps](middleware.md#workflow-steps). |
 | A step's task is not registered | In the client, `apply()` raises `TaskNotFoundError`. In the worker that enqueues the step, the workflow is `failed` and `get()` raises `TaskError`. |

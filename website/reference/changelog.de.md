@@ -20,6 +20,21 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Workflows hängen nicht mehr bis zu ihrer TTL, wenn ein Schritt
+  außerhalb des Retry-Pfads endet.** Ein Schritt, der abläuft
+  (`max_age`), am Lock-Template scheitert, die Lock-Konflikt-Grenze
+  erreicht oder im Worker nicht registriert ist, markiert seinen
+  Workflow jetzt als `failed`; `get()` wirft `TaskError`, statt in den
+  Timeout zu laufen. Lock-Konflikt-Grenze und Lock-Template-Fehler
+  speichern jetzt auch ein Fehlerergebnis und feuern `TASK_DLQ`
+  (`error_type=LockConflictLimitError` an der Grenze). Ein spätes
+  Duplikat eines Schritts, der schon erfolgreich lief, markiert den
+  Workflow nicht als gescheitert, und ein Workflow mit abgelaufenem
+  Zustand loggt `workflow_state_missing`, statt still zu enden. Am
+  Zustelllimit gibt eine Workflow-Markierung, die an einem nicht
+  erreichbaren Valkey scheitert, die Zustellung nicht mehr zurück; sie
+  geht trotzdem in die DLQ
+  ([Fehlerfälle](../guides/workflows.md#fehlerfalle)).
 - **Eine Zustellung, die der Worker immer wieder zurückgibt, kreist
   auf RabbitMQ 4.3 nicht mehr endlos und verbraucht ihr Zustellbudget
   nicht mehr in einem Augenblick.** RabbitMQ 4.3 zählt

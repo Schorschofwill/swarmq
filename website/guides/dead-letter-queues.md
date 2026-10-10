@@ -24,8 +24,8 @@ stay, and how to switch dead-lettering of task failures off.
 | The worker handed the delivery back (`nack(requeue=True)`) until `x-acquired-count` reached the delivery limit (RabbitMQ 4.3) | `x-swarmq-traceback` with `RedeliveryLimitError` | still dead-lettered |
 | The same execution expired `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` times without release ([execution guard](../explanation/delivery-semantics.md#execution-guard)) | `x-swarmq-traceback` with `WorkerHungError` | still dead-lettered |
 | `TaskInfo.max_age` exceeded at pickup | none of its own — the message keeps its original headers; the stored error result says `task expired: age …s exceeds max_age …s` | still dead-lettered |
-| Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message | still dead-lettered |
-| Lock conflict budget exhausted (10th conflict) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` | still dead-lettered |
+| Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message, `x-swarmq-traceback` | still dead-lettered |
+| Lock conflict budget exhausted (10th conflict) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name`, `x-swarmq-traceback` with `LockConflictLimitError` | still dead-lettered |
 | Body over the size cap, undecodable body, unregistered task name, broken middleware-chain factory, failed dead-letter publish | none from SwarmQ — only the broker's `x-death` | still dead-lettered |
 
 Every message the worker dead-letters itself also carries
