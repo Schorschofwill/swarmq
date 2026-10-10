@@ -82,7 +82,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 
 | ID | Testdateien | Status |
 |---|---|---|
-| BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` | offen |
+| BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` | behoben (MR 10, 31d9bff) |
 | BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 5, 0ff3af5) |
 | BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` | behoben (MR 6, 183291e) |
 | BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | offen |
