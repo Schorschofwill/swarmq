@@ -205,12 +205,39 @@ class ScheduleStore:
 
     # ---- Poll / commit --------------------------------------------------
 
-    async def poll_due(self, now_ms: int, limit: int = 100) -> list[tuple[str, int, ScheduleDefinition]]:
+    async def poll_due(
+        self, now_ms: int, limit: int = 100, *, owner_token: str | None = None
+    ) -> list[tuple[str, int, ScheduleDefinition]]:
         """Schedules whose fire-ts is <= ``now_ms`` as
-        ``(schedule_name, score_ms, ScheduleDefinition)``."""
+        ``(schedule_name, score_ms, ScheduleDefinition)``. An undecodable
+        definition is logged and skipped; with ``owner_token`` (the leader)
+        it is also parked: it leaves the fire index, the definition stays
+        for inspection (BZ-28)."""
         rows = await self._store.poll_due(now_ms, limit=limit)
-        self._polled.update({name: (score, payload) for name, score, payload in rows})
-        return [(name, score, msgspec.json.decode(payload, type=ScheduleDefinition)) for name, score, payload in rows]
+        result: list[tuple[str, int, ScheduleDefinition]] = []
+        for name, score, payload in rows:
+            # Zeilenweise (BZ-28): eine kaputte Definition hält die übrigen
+            # nicht auf.
+            try:
+                definition = msgspec.json.decode(payload, type=ScheduleDefinition)
+            except msgspec.DecodeError as exc:
+                logger.warning("schedule_def_malformed_parked", schedule_name=name, **_error_fields(exc))
+                if owner_token is not None:
+                    await self._park(name, score, payload, owner_token)
+                continue
+            self._polled[name] = (score, payload)
+            result.append((name, score, definition))
+        return result
+
+    async def _park(self, name: str, score: int, payload: bytes, owner_token: str) -> None:
+        """Commit ohne neuen Score; Owner-, Score- und Payload-Prüfung in
+        ``sched_commit.lua``. Ein Fehler bleibt bei diesem Eintrag (R18)."""
+        try:
+            await self._store.commit_fire(
+                name, next_fire_ts_ms=None, payload=payload, owner=owner_token, fired_ts_ms=score, fired_payload=payload
+            )
+        except BackendConnectionError as exc:
+            logger.warning("scheduler_park_failed", schedule_name=name, **_error_fields(exc))
 
     async def commit_fire(
         self,

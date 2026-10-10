@@ -461,7 +461,7 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
     async def _poll_tick(self) -> None:
         now_ms = int(time.time() * 1000)
         try:
-            due = await self._store.poll_due(now_ms, limit=100)
+            due = await self._store.poll_due(now_ms, limit=100, owner_token=self._owner_token)
         except BackendConnectionError as exc:
             logger.warning("scheduler_poll_due_failed", **_error_fields(exc))
             return

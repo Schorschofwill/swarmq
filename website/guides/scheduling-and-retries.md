@@ -300,6 +300,28 @@ warning.
 workers with their versions (see
 [CLI reference](../reference/cli.md#swarmq-schedule-status)).
 
+### Fire index
+
+The leader reads at most 100 due entries per poll tick. Entries that
+can never fire are taken out of the fire index before that limit
+applies, so they cannot hold back due crons behind them:
+
+- an index entry without a definition (for example after a race
+  between `put` and `swarmq schedule remove --permanent`);
+- a disabled definition that still has a fire time (written by a
+  swarmq before 0.10, which planned disabled crons too).
+
+One poll removes at most 1000 such entries; a larger backlog clears
+over the next ticks. The definitions themselves stay.
+
+A definition the leader cannot decode (broken JSON, wrong field
+types) does not stop the poll either. The leader logs
+`schedule_def_malformed_parked` and takes the entry out of the fire
+index; the definition stays for inspection. Fix it with
+`swarmq schedule add` or clear it with
+`swarmq schedule remove --permanent <name>`. A static cron comes back
+with the next report of a worker that defines it.
+
 ### Migrating hand-converted UTC crons
 
 Before 0.10.0, crons that should fire at a local time had to be

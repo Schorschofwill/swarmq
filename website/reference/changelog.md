@@ -20,6 +20,16 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **Dead entries in the fire index no longer stop every cron.** The
+  leader reads at most 100 due entries per tick. Index entries without
+  a definition and disabled definitions that still had a fire time
+  (written before 0.10) filled that limit, so 100 of them blocked all
+  crons. The poll now takes them out of the fire index before the limit
+  applies, at most 1000 per tick; the definitions stay. A definition the
+  leader cannot decode no longer fails the whole tick either: it is
+  logged as `schedule_def_malformed_parked` and taken out of the fire
+  index ([fire index](../guides/scheduling-and-retries.md#fire-index)).
+  `sched_poll.lua` keeps its keys and arguments but now writes (`ZREM`).
 - **A unique task that expires through `max_age` releases its dedup
   flag.** Before, the flag stayed until `unique_for` ran out, and every
   new `schedule()` with the same arguments silently returned the ID of

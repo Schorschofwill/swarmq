@@ -57,6 +57,10 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 23. ``report_worker_version`` erscheint in ``worker_versions`` und läuft
 #     nach seiner TTL ab.
 
+# Test list (Plan 0.12.0, MR 4, BZ-28) -- ScheduleStoreContract:
+# 33. ``poll_due`` nimmt deaktivierte Definitionen mit Score aus dem
+#     Fire-Index, bevor das Limit greift; die Definition bleibt.
+
 # Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
 # 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
 #     gespeicherte Definition die gelesene ist und kein Score existiert.
@@ -268,6 +272,15 @@ class ScheduleStoreContract:
         for i, n in enumerate(names):
             await impl.add(n, b"x", fire_ts_ms=100 + i)
         assert len(await impl.poll_due(1_000, limit=2)) <= 2
+
+    async def test_poll_due_drops_disabled_entries_before_the_limit(self, impl: ScheduleStore) -> None:
+        """Liste 33 (BZ-28)."""
+        off, on = _name("sched"), _name("sched")
+        await impl.put(off, b'{"disabled":true}', fire_ts_ms=100)
+        await impl.put(on, b'{"disabled":false}', fire_ts_ms=200)
+        assert [n for n, _, _ in await impl.poll_due(1_000, limit=1)] == [on]
+        assert await impl.fire_ts(off) is None
+        assert await impl.get(off) == b'{"disabled":true}'
 
     async def test_disable_replaces_definition_and_removes_from_index(self, impl: ScheduleStore) -> None:
         name = _name("sched")

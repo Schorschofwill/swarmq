@@ -313,6 +313,29 @@ Worker (rollendes Upgrade), kennt Zeitzonen und löst keine Warnung aus.
 Worker mit ihren Versionen (siehe
 [CLI-Referenz](../reference/cli.md#swarmq-schedule-status)).
 
+### Fire-Index
+
+Der Leader liest pro Poll-Takt höchstens 100 fällige Einträge.
+Einträge, die nie feuern können, nimmt er aus dem Fire-Index, bevor
+dieses Limit greift; sie halten fällige Crons dahinter also nicht auf:
+
+- ein Index-Eintrag ohne Definition (etwa nach einem Wettlauf zwischen
+  `put` und `swarmq schedule remove --permanent`);
+- eine deaktivierte Definition, die noch einen Termin hat (geschrieben
+  von einem swarmq vor 0.10, der auch deaktivierte Crons einplante).
+
+Ein Poll entfernt höchstens 1000 solcher Einträge; ein größerer
+Rückstand verschwindet in den folgenden Takten. Die Definitionen
+selbst bleiben.
+
+Eine Definition, die der Leader nicht dekodieren kann (kaputtes JSON,
+falsche Feldtypen), hält den Poll ebenfalls nicht mehr auf. Der Leader
+loggt `schedule_def_malformed_parked` und nimmt den Eintrag aus dem
+Fire-Index; die Definition bleibt zur Prüfung stehen. Reparieren mit
+`swarmq schedule add` oder entfernen mit
+`swarmq schedule remove --permanent <name>`. Ein statischer Cron kommt
+mit der nächsten Meldung eines Workers zurück, der ihn definiert.
+
 ### Von Hand umgerechnete UTC-Crons umstellen
 
 Vor 0.10.0 mussten Crons, die zu einer lokalen Uhrzeit feuern sollen,

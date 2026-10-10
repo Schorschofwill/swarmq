@@ -167,8 +167,9 @@ class ValkeyScheduleStore:
         return int(result) == 1
 
     async def poll_due(self, now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
-        """``sched_poll.lua`` (read-only): ``(name, fire_ts_ms, payload)`` der
-        fälligen Einträge; Waisen ohne Definition überspringt das Skript."""
+        """``sched_poll.lua``: ``(name, fire_ts_ms, payload)`` der fälligen
+        Einträge. Waisen ohne Definition und deaktivierte Definitionen nimmt
+        das Skript aus dem Fire-Index, bevor das Limit greift (BZ-28)."""
         rows = await self._run("sched_poll", self._poll_script(keys=[self._zset, self._defs], args=[now_ms, limit]))
         result: list[tuple[str, int, bytes]] = []
         for member_raw, score_raw, def_raw in rows:

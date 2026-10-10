@@ -42,10 +42,6 @@ async def backend(valkey_url):
 
 
 @pytest.mark.befund("BZ-28")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-28: sched_poll.lua liest 100 Eintraege (LIMIT); 100 Waisen blockieren jeden Cron",
-)
 async def test_bz28_orphans_in_fire_index_do_not_block_due_cron(backend, valkey_url):
     await backend.locks.acquire(
         SCHEDULER_LOCK_NAME,

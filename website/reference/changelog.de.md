@@ -20,6 +20,18 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Tote Einträge im Fire-Index halten nicht mehr alle Crons an.** Der
+  Leader liest pro Takt höchstens 100 fällige Einträge. Index-Einträge
+  ohne Definition und deaktivierte Definitionen, die noch einen Termin
+  hatten (geschrieben vor 0.10), füllten dieses Limit, sodass 100 davon
+  alle Crons blockierten. Der Poll nimmt sie jetzt aus dem Fire-Index,
+  bevor das Limit greift, höchstens 1000 pro Takt; die Definitionen
+  bleiben. Eine Definition, die der Leader nicht dekodieren kann, lässt
+  auch nicht mehr den ganzen Takt scheitern: Sie wird als
+  `schedule_def_malformed_parked` geloggt und aus dem Fire-Index
+  genommen ([Fire-Index](../guides/scheduling-and-retries.md#fire-index)).
+  `sched_poll.lua` behält Keys und Argumente, schreibt aber jetzt
+  (`ZREM`).
 - **Ein Unique-Task, der über `max_age` abläuft, gibt sein Dedup-Flag
   frei.** Bisher blieb das Flag bis zum Ende von `unique_for` stehen,
   und jedes neue `schedule()` mit denselben Argumenten lieferte still

@@ -52,6 +52,11 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 20. Ein ``BackendConnectionError`` beim Parken bricht den Batch nicht ab;
 #     ``scheduler_park_failed`` wird geloggt.
 # 21. Ein Owner-Mismatch beim Parken wird geloggt.
+#
+# Test list (Plan 0.12.0, MR 4, BZ-28): kaputte Definition im Poll.
+# 22. Eine nicht dekodierbare Definition blockiert den Poll nicht: der
+#     Leader parkt sie (Fire-Index leer, Definition bleibt), die übrigen
+#     fälligen Crons feuern.
 
 from __future__ import annotations
 
@@ -1313,6 +1318,28 @@ class TestTakeoverBetweenPollAndCommit:
         assert stored == taken_over
         assert await memory.schedules.fire_ts("cron_a") > 1_000
 
+
+
+class TestUndecodableDefinitionInPoll:
+    """Liste 22 (BZ-28): echter ScheduleStore ueber dem In-Memory-Backend."""
+
+    async def test_leader_parks_undecodable_definition_and_fires_the_rest(
+        self, broker, config, lock_manager, signal_dispatcher
+    ):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1)
+        await memory.schedules.add("broken", b"{not json", 1_000)
+        await memory.schedules.add("cron_a", msgspec.json.encode(_def(name="cron_a", fire_ts_ms=2_000)), 2_000)
+        loop = _make_loop(memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher)
+        loop._state = "leader"
+
+        await loop._poll_tick()
+
+        fired = [call.kwargs["headers"]["x-swarmq-schedfire"] for call in broker.publish.await_args_list]
+        assert fired == ["cron_a:2000"]
+        assert await memory.schedules.fire_ts("broken") is None
+        assert await memory.schedules.get("broken") == b"{not json"
 
 
 class TestAdoptDuringFire:

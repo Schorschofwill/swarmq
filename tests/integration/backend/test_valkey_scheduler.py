@@ -3,6 +3,11 @@
 Runs the Python wrappers against a real Valkey so we see what the
 scheduler actually writes/reads. Uses the shared conftest fixtures for
 dev-stack env-var port awareness.
+
+Test-Liste Plan 0.12.0, MR 4 (BZ-28, ``sched_poll.lua``):
+1. Ein Poll entfernt hoechstens 1000 nie feuernde Eintraege (Waisen,
+   deaktivierte) aus dem Fire-Index; der Rest folgt im naechsten Poll
+   (Obergrenze der Schleife, Q6).
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import uuid
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.schedules import ZSET_KEY
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
@@ -32,6 +38,17 @@ def schedule_name() -> str:
     """Unique per test so parallel runs do not collide in the shared
     zset/defs-hash — plus we also flush_valkey between tests."""
     return f"test-{uuid.uuid4().hex[:12]}"
+
+
+class TestPollIndexHygiene:
+    async def test_poll_drops_at_most_1000_dead_entries_per_call(self, backend):
+        """Liste 1."""
+        await backend.client.zadd(ZSET_KEY, {f"orphan_{i}": 1_000 + i for i in range(1_001)})
+        await backend.schedules.put("active", b"def", 5_000)
+
+        assert await backend.schedules.poll_due(10_000, limit=100) == []
+        assert await backend.client.zcard(ZSET_KEY) == 2
+        assert await backend.schedules.poll_due(10_000, limit=100) == [("active", 5_000, b"def")]
 
 
 class TestZsetRoundtrip:

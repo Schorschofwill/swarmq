@@ -175,10 +175,6 @@ async def test_bz09_cron_unique_for_holds_on_leader_without_task_in_registry(
 
 
 @pytest.mark.befund("BZ-28")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-28: Poll liest 100 Eintraege (LIMIT); 100 deaktivierte mit Score blockieren jeden Cron",
-)
 async def test_bz28_disabled_backlog_in_fire_index_does_not_block_due_cron(
     broker,
     config,

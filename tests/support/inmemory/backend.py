@@ -369,6 +369,15 @@ class InMemoryChordStore:
         return await self.record_member(wf_id, chord_id, member_id, expected=expected_n, ttl_ms=ttl_ms)
 
 
+def _is_disabled(payload: bytes) -> bool:
+    """``disabled == true`` in einer JSON-Definition; kein JSON zählt nicht."""
+    try:
+        decoded = json.loads(payload)
+    except ValueError:
+        return False
+    return isinstance(decoded, dict) and decoded.get("disabled") is True
+
+
 class InMemoryScheduleStore:
     def __init__(self, clock: FakeClock, locks: InMemoryLockStore) -> None:
         self._clock = clock
@@ -432,7 +441,12 @@ class InMemoryScheduleStore:
         return True
 
     async def poll_due(self, now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
-        due = sorted(((ts, n) for n, ts in self._fires.items() if ts <= now_ms and n in self._defs))
+        # Wie ``sched_poll.lua`` (BZ-28): Waisen und deaktivierte Einträge
+        # verlassen den Fire-Index, bevor das Limit greift.
+        for name in [n for n, ts in self._fires.items() if ts <= now_ms]:
+            if name not in self._defs or _is_disabled(self._defs[name]):
+                del self._fires[name]
+        due = sorted((ts, n) for n, ts in self._fires.items() if ts <= now_ms)
         return [(n, ts, self._defs[n]) for ts, n in due[:limit]]
 
     async def commit_fire(
