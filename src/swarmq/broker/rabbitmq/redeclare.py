@@ -56,7 +56,7 @@ async def redeclare_on_throwaway_channel(broker: Any, queue: str) -> None:
         async with asyncio.timeout(broker._effective_publish_timeout()):
             channel = await connection.channel()
             main_args = main_queue_arguments(queue, broker._queue_type, broker.delivery_limit)
-            await broker._declare_queue_triplet(channel, queue, main_args)
+            await broker._declare_queue_triplet(channel, queue, main_args, adopt=False)
     finally:
         if channel is not None and not channel.is_closed:
             try:

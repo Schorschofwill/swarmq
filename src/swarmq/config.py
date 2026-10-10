@@ -16,6 +16,7 @@ from swarmq.logging_settings import (
     parse_logger_levels,
     split_csv,
 )
+from swarmq.namespace_guard import reject_namespace
 
 # Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
 # connection object is injected (RabbitMQBroker(connection=...) /
@@ -543,6 +544,7 @@ class SwarmQConfig(ConfigValidation):
         self.log_drain_timeout = settings.drain_timeout
 
     def __post_init__(self) -> None:
+        reject_namespace()
         self._apply_env_overrides()
         self._apply_logging_settings()
         self._apply_slot_port_offset()

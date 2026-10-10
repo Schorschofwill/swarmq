@@ -222,6 +222,17 @@ All ports are validated at config-time: a bad value raises
 |---|---|---|
 | `SWARMQ_DEFAULT_FORMAT` | *TTY-detect* | Overrides the default `--format` for output-shaped CLI subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Accepts `table` or `json`; any other value (typo, empty string) is ignored silently and the TTY-aware default applies (`table` on a terminal, `json` on a pipe). An explicit `--format` on the command line always wins. |
 
+### Namespace requires 0.12
+
+`SWARMQ_NAMESPACE` belongs to swarmq 0.12 and later. 0.11.1 rejects it:
+if it is set and not empty, worker, scheduler and `SwarmQ(...)` stop
+with `ConfigurationError` (`swarmq worker`: exit 78), and so do the CLI
+commands `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (exit 78,
+before any connection). `swarmq worker --check` reports it as an error
+(exit 1). Without that
+check a rollback to 0.11.x would silently run without the namespace,
+on different Valkey keys. Unset the variable or run swarmq >= 0.12.
+
 ## `SwarmQConfig` kwargs
 
 Programmatic equivalent of the env vars — pass any of these as

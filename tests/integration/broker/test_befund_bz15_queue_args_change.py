@@ -43,13 +43,6 @@ async def _declare(rabbitmq_url: str, queue: str, *, queue_type: str = "quorum",
 
 
 @pytest.mark.befund("BZ-15")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-15: ein erhöhtes SWARMQ_DELIVERY_LIMIT lässt die Deklaration einer "
-        "bestehenden Queue mit PRECONDITION_FAILED scheitern, der Worker startet nicht"
-    ),
-)
 async def test_raising_delivery_limit_keeps_existing_queue_declarable(rabbitmq_url: str, queue_name: str) -> None:
     await _declare(rabbitmq_url, queue_name, delivery_limit=20)
 

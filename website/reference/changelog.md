@@ -180,6 +180,41 @@ All notable changes to SwarmQ. This project follows
   `OverflowError`. `fixed` stays without jitter
   ([backoff formulas](../guides/scheduling-and-retries.md#backoff-formulas)).
 
+## [0.11.1] — 2026-10-10
+
+Rollback target before 0.12. **Roll out 0.11.1 to every app first,
+as a deployment of its own, and only then move to 0.12.** A rollback
+via Kubernetes or Docker returns to the previously deployed image; if
+that is 0.11.0, it fails on queues that 0.12 created, and it silently
+ignores a namespace.
+
+### Changed
+
+- **Existing queue arguments are adopted.** When a queue already exists
+  with a different `x-dead-letter-strategy` or `x-overflow` (as 0.12
+  creates them), the worker declares it with the existing values
+  instead of failing with `PRECONDITION_FAILED`. A different
+  `x-delivery-limit` is adopted as well and logged as WARNING
+  `queue_argument_adopted`: below `SWARMQ_DELIVERY_LIMIT` the broker
+  dead-letters after the existing limit itself, without an error
+  result; above it the worker still dead-letters at
+  `SWARMQ_DELIVERY_LIMIT - 1` deliveries. Every other argument conflict
+  fails as in 0.11.0, including a queue without `x-delivery-limit`.
+  Adopting `x-overflow=reject-publish` means: with a `max-length`
+  policy a publish to a full queue gets a nack instead of drop-head and
+  fails after the publish retries. Each declaration is first
+  checked on a separate short-lived channel, so a conflict never closes
+  the publish channel. Queues the worker creates get exactly the same
+  arguments as in 0.11.0
+  ([delivery semantics](../explanation/delivery-semantics.md#existing-queue-arguments)).
+- **`SWARMQ_NAMESPACE` is rejected.** If it is set and not empty,
+  worker, scheduler and `SwarmQ(...)` stop with `ConfigurationError`
+  (`swarmq worker`: exit 78), as do `swarmq schedule`, `swarmq dlq`
+  and `swarmq inspect` (exit 78); `swarmq worker --check` reports it as
+  an error. A namespace requires swarmq >= 0.12;
+  0.11.x would silently use the keys without namespace
+  ([configuration](configuration.md#namespace-requires-012)).
+
 ## [0.11.0] — 2026-10-09
 
 A worker keeps consuming after a broker consumer timeout, and a

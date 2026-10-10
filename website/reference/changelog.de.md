@@ -196,6 +196,42 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   kein `OverflowError` mehr. `fixed` bleibt ohne Jitter
   ([Backoff-Formeln](../guides/scheduling-and-retries.md#backoff-formeln)).
 
+## [0.11.1] — 2026-10-10
+
+Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf
+0.11.1 ausrollen, dann auf 0.12.** Ein Rollback per Kubernetes oder
+Docker landet auf dem vorher deployten Image; ist das 0.11.0, scheitert
+es an Queues, die 0.12 angelegt hat, und übergeht einen Namensraum
+still.
+
+### Geändert
+
+- **Vorhandene Queue-Argumente werden übernommen.** Existiert eine
+  Queue schon mit einem anderen `x-dead-letter-strategy` oder
+  `x-overflow` (wie 0.12 sie anlegt), deklariert der Worker sie mit den
+  vorhandenen Werten, statt mit `PRECONDITION_FAILED` abzubrechen. Ein
+  abweichendes `x-delivery-limit` wird ebenfalls übernommen und als
+  WARNING `queue_argument_adopted` geloggt: Unter
+  `SWARMQ_DELIVERY_LIMIT` dead-lettert der Broker selbst nach dem
+  vorhandenen Limit, ohne Fehlerergebnis; darüber dead-lettert weiter
+  der Worker bei `SWARMQ_DELIVERY_LIMIT - 1` Zustellungen. Jeder andere
+  Argumentkonflikt scheitert wie in 0.11.0, auch eine Queue ohne
+  `x-delivery-limit`. Die Übernahme von `x-overflow=reject-publish`
+  heißt: Mit einer `max-length`-Policy bekommt ein Publish auf eine
+  volle Queue ein Nack statt drop-head und scheitert nach den
+  Wiederholversuchen. Jede
+  Deklaration wird zuerst auf einem eigenen kurzlebigen Channel
+  geprüft; ein Konflikt schließt so nie den Publish-Channel. Queues, die
+  der Worker neu anlegt, bekommen genau die Argumente aus 0.11.0
+  ([Zustellsemantik](../explanation/delivery-semantics.md#vorhandene-queue-argumente)).
+- **`SWARMQ_NAMESPACE` wird abgelehnt.** Ist die Variable gesetzt und
+  nicht leer, brechen Worker, Scheduler und `SwarmQ(...)` mit
+  `ConfigurationError` ab (`swarmq worker`: Exit 78), ebenso
+  `swarmq schedule`, `swarmq dlq` und `swarmq inspect` (Exit 78);
+  `swarmq worker --check` meldet ihn als Fehler. Ein Namensraum
+  erfordert swarmq >= 0.12; 0.11.x nutzte still die Keys ohne
+  Namensraum ([Konfiguration](configuration.md#namensraum-erst-ab-012)).
+
 ## [0.11.0] — 2026-10-09
 
 Ein Worker konsumiert nach einem Consumer-Timeout des Brokers weiter,
