@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
@@ -29,7 +29,6 @@ logger = get_logger(__name__)
 
 _INEQUIVALENT = re.compile(r"inequivalent arg '(?P<arg>[^']+)' for queue '.*' in vhost '.*': (?P<rest>.*)$")
 _CURRENT_VALUE = re.compile(r"received none but current is the value '(?P<cur>.*)' of type '(?P<type>[^']+)'$")
-_CURRENT_NONE = re.compile(r"received the value '.*' of type '[^']+' but current is none$")
 _BOTH_PRESENT = re.compile(r"received '.*' but current is '(?P<cur>.*)'$")
 _INTEGER_ARGUMENTS = frozenset({"x-delivery-limit"})
 #: Nur diese Argumente übernimmt 0.11.1 von einer vorhandenen Queue.
@@ -46,8 +45,8 @@ def adopt_existing_argument(text: str, arguments: Mapping[str, Any]) -> tuple[st
     if arg not in ADOPTABLE_ARGUMENTS:
         return None
     rest = match["rest"]
-    if _CURRENT_NONE.match(rest):
-        return arg, {key: value for key, value in arguments.items() if key != arg}
+    # "... but current is none" (Queue ohne das Argument) bleibt ein Fehler
+    # wie in 0.11.0: 0.12 legt Queues immer mit Delivery-Limit an.
     current = _CURRENT_VALUE.match(rest) or _BOTH_PRESENT.match(rest)
     if current is None:
         return None
@@ -61,7 +60,7 @@ def adopt_existing_argument(text: str, arguments: Mapping[str, Any]) -> tuple[st
 
 
 async def declare_adopting_existing(
-    open_channel: Callable[[], Awaitable[aio_pika.abc.AbstractChannel]],
+    connection: aio_pika.abc.AbstractConnection,
     queue: str,
     arguments: Mapping[str, Any],
     *,
@@ -72,21 +71,18 @@ async def declare_adopting_existing(
     mit denen die Deklaration gelang. Jedes Argument wird höchstens einmal
     übernommen; damit endet die Schleife nach höchstens
     ``1 + len(ADOPTABLE_ARGUMENTS)`` Versuchen. Ein nicht übernehmbarer 406
-    geht unverändert an den Aufrufer; ein Versuch über ``timeout_s`` wird
-    ``BrokerConnectionError``."""
+    geht unverändert an den Aufrufer. ``timeout_s`` begrenzt nur das Öffnen
+    des Wegwerf-Channels; darüber folgt ``BrokerConnectionError``."""
     current = dict(arguments)
     adopted: set[str] = set()
     while True:
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
-            async with asyncio.timeout(timeout_s):
-                channel = await open_channel()
-                await channel.declare_queue(queue, durable=True, arguments=current)
+            channel = await _open_probe_channel(connection, queue, timeout_s)
+            # Queue.Declare ohne Client-Frist wie in 0.11.0: das Anlegen einer
+            # Quorum-Queue (Raft) kann unter Last lange dauern.
+            await channel.declare_queue(queue, durable=True, arguments=current)
             return current
-        except TimeoutError as exc:
-            raise BrokerConnectionError(
-                f"declare_queue {queue!r} timed out after {timeout_s}s on a probe channel"
-            ) from exc
         except ChannelPreconditionFailed as exc:
             result = adopt_existing_argument(str(exc.args[0] if exc.args else exc), current)
             if result is None or result[0] in adopted:
@@ -102,20 +98,57 @@ async def declare_adopting_existing(
                     await asyncio.wait_for(channel.close(), timeout=timeout_s)
 
 
+async def _open_probe_channel(
+    connection: aio_pika.abc.AbstractConnection, queue: str, timeout_s: float
+) -> aio_pika.abc.AbstractChannel:
+    """Wegwerf-Channel öffnen, binnen ``timeout_s`` (inklusive Warten auf die
+    Verbindung). Eine abgerissene Verbindung (aio_pika wirft dann synchron
+    ``RuntimeError``) und das Zeitlimit werden ``BrokerConnectionError``."""
+    pending: Any = None
+    try:
+        async with asyncio.timeout(timeout_s):
+            await connection.ready()
+            # aio_pika liefert das Channel-Objekt sofort, erst ``await`` öffnet
+            # es. So bleibt es greifbar, falls das Öffnen ins Zeitlimit läuft.
+            pending = connection.channel()
+            channel: aio_pika.abc.AbstractChannel = await pending
+            return channel
+    except TimeoutError as exc:
+        if pending is not None and not asyncio.iscoroutine(pending):
+            with suppress(Exception):
+                await asyncio.wait_for(pending.close(), timeout=timeout_s)
+        raise BrokerConnectionError(
+            f"declare_queue {queue!r}: opening a probe channel timed out after {timeout_s}s"
+        ) from exc
+    except RuntimeError as exc:  # inklusive ChannelInvalidStateError
+        raise BrokerConnectionError(f"declare_queue {queue!r}: opening a probe channel failed: {exc}") from exc
+
+
 def _log_adoption(queue: str, argument: str, declared: object, existing: object) -> None:
     if argument == "x-delivery-limit":
-        # Der Broker dead-lettert dann nach dem vorhandenen Limit, nicht nach
-        # der Konfiguration: das soll im Betrieb auffallen.
+        # Wirkt anders als konfiguriert: das soll im Betrieb auffallen.
         logger.warning(
             "queue_argument_adopted",
             queue=queue,
             argument=argument,
             declared=declared,
             existing=existing,
-            hint=(
-                "the queue keeps its existing x-delivery-limit; the broker dead-letters "
-                "after that limit, not after SWARMQ_DELIVERY_LIMIT"
-            ),
+            hint=_delivery_limit_hint(declared, existing),
         )
         return
     logger.info("queue_argument_adopted", queue=queue, argument=argument, declared=declared, existing=existing)
+
+
+def _delivery_limit_hint(declared: object, existing: object) -> str:
+    """``declared`` ist ``SWARMQ_DELIVERY_LIMIT``. Darunter dead-lettert der
+    Broker selbst (stumm, ohne Fehlerergebnis); darüber bleibt das
+    Delivery-Count-Gate des Workers bei ``SWARMQ_DELIVERY_LIMIT - 1`` wirksam."""
+    if isinstance(declared, int) and isinstance(existing, int) and existing < declared:
+        return (
+            "the queue keeps its existing x-delivery-limit, which is below SWARMQ_DELIVERY_LIMIT: "
+            "the broker dead-letters after that limit itself, without an error result"
+        )
+    return (
+        "the queue keeps its existing x-delivery-limit, which is above SWARMQ_DELIVERY_LIMIT: "
+        "the worker still dead-letters at SWARMQ_DELIVERY_LIMIT - 1 deliveries"
+    )

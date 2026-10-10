@@ -21,9 +21,15 @@ still.
   `x-overflow` (wie 0.12 sie anlegt), deklariert der Worker sie mit den
   vorhandenen Werten, statt mit `PRECONDITION_FAILED` abzubrechen. Ein
   abweichendes `x-delivery-limit` wird ebenfalls übernommen und als
-  WARNING `queue_argument_adopted` geloggt, denn der Broker dead-lettert
-  dann nach dem vorhandenen Limit, nicht nach `SWARMQ_DELIVERY_LIMIT`.
-  Jeder andere Argumentkonflikt scheitert wie in 0.11.0. Jede
+  WARNING `queue_argument_adopted` geloggt: Unter
+  `SWARMQ_DELIVERY_LIMIT` dead-lettert der Broker selbst nach dem
+  vorhandenen Limit, ohne Fehlerergebnis; darüber dead-lettert weiter
+  der Worker bei `SWARMQ_DELIVERY_LIMIT - 1` Zustellungen. Jeder andere
+  Argumentkonflikt scheitert wie in 0.11.0, auch eine Queue ohne
+  `x-delivery-limit`. Die Übernahme von `x-overflow=reject-publish`
+  heißt: Mit einer `max-length`-Policy bekommt ein Publish auf eine
+  volle Queue ein Nack statt drop-head und scheitert nach den
+  Wiederholversuchen. Jede
   Deklaration wird zuerst auf einem eigenen kurzlebigen Channel
   geprüft; ein Konflikt schließt so nie den Publish-Channel. Queues, die
   der Worker neu anlegt, bekommen genau die Argumente aus 0.11.0

@@ -21,9 +21,14 @@ ignores a namespace.
   creates them), the worker declares it with the existing values
   instead of failing with `PRECONDITION_FAILED`. A different
   `x-delivery-limit` is adopted as well and logged as WARNING
-  `queue_argument_adopted`, because the broker then dead-letters after
-  the existing limit, not after `SWARMQ_DELIVERY_LIMIT`. Every other
-  argument conflict fails as in 0.11.0. Each declaration is first
+  `queue_argument_adopted`: below `SWARMQ_DELIVERY_LIMIT` the broker
+  dead-letters after the existing limit itself, without an error
+  result; above it the worker still dead-letters at
+  `SWARMQ_DELIVERY_LIMIT - 1` deliveries. Every other argument conflict
+  fails as in 0.11.0, including a queue without `x-delivery-limit`.
+  Adopting `x-overflow=reject-publish` means: with a `max-length`
+  policy a publish to a full queue gets a nack instead of drop-head and
+  fails after the publish retries. Each declaration is first
   checked on a separate short-lived channel, so a conflict never closes
   the publish channel. Queues the worker creates get exactly the same
   arguments as in 0.11.0

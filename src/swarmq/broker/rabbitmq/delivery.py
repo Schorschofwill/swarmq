@@ -147,7 +147,7 @@ class RabbitMQDelivery(RabbitMQConnection):
         connection = self._connection
         if connection is not None and not connection.is_closed:
             arguments = await declare_adopting_existing(
-                connection.channel, name, arguments, timeout_s=self.declare_probe_timeout_s
+                connection, name, arguments, timeout_s=self.declare_probe_timeout_s
             )
         await pub.declare_queue(name, durable=True, arguments=arguments)
 

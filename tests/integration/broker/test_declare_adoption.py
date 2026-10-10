@@ -12,6 +12,7 @@ Test-Liste:
 3. Nicht übernehmbarer Konflikt (classic statt quorum) → ``BrokerConnectionError``
    wie 0.11.0; der Publish-Channel bleibt offen.
 4. Nach der Übernahme bleiben keine Wegwerf-Channels offen.
+5. Review P2-2a: Queue ohne ``x-delivery-limit`` → ``BrokerConnectionError`` wie 0.11.0.
 """
 
 from __future__ import annotations
@@ -154,3 +155,20 @@ async def test_no_probe_channel_stays_open(rabbitmq_url: str, broker: RabbitMQBr
     await broker.publish(queue, b"roundtrip")
 
     assert _open_channel_numbers(broker) == before
+
+
+async def test_queue_without_delivery_limit_fails_as_in_0_11_0(
+    rabbitmq_url: str, broker: RabbitMQBroker, queue: str
+) -> None:
+    """Review P2-2a: eine Quorum-Queue ohne ``x-delivery-limit`` wird nicht übernommen."""
+    await _declare_raw(
+        rabbitmq_url,
+        queue,
+        {"x-queue-type": "quorum", "x-dead-letter-exchange": "", "x-dead-letter-routing-key": f"{queue}.XQ"},
+    )
+    publish_channel = await broker._ensure_publish_channel()
+
+    with pytest.raises(BrokerConnectionError, match="Existing queue"):
+        await broker.declare_queue(queue)
+
+    assert not publish_channel.is_closed

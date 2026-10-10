@@ -497,8 +497,17 @@ Wert und deklariert erneut:
 - `x-dead-letter-strategy` und `x-overflow` (0.12 legt Queues mit
   `at-least-once` und `reject-publish` an): still übernommen (INFO).
 - `x-delivery-limit`: übernommen mit WARNING `queue_argument_adopted`.
-  Der Broker dead-lettert dann nach dem vorhandenen Limit, nicht nach
-  `SWARMQ_DELIVERY_LIMIT`.
+  Liegt das vorhandene Limit unter `SWARMQ_DELIVERY_LIMIT`, dead-lettert
+  der Broker selbst nach dem vorhandenen Limit, ohne Fehlerergebnis.
+  Liegt es darüber, dead-lettert weiter das Delivery-Count-Gate des
+  Workers bei `SWARMQ_DELIVERY_LIMIT - 1` Zustellungen. Eine Queue ohne
+  `x-delivery-limit` wird nicht übernommen und scheitert wie bisher.
+
+Auf Queues, die 0.12 angelegt hat, übernimmt 0.11.1 damit
+`x-overflow=reject-publish`. Mit einer `max-length`-Policy bekommt ein
+Publish auf eine volle Queue dann ein Nack, statt dass die älteste
+Nachricht verworfen wird (drop-head), und scheitert nach den
+Wiederholversuchen mit `BrokerConnectionError`.
 
 Jedes Argument wird höchstens einmal übernommen; eine Deklaration
 braucht also höchstens vier Versuche. Jeder andere Konflikt (etwa

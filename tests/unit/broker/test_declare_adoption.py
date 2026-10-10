@@ -19,18 +19,19 @@ Test-Liste:
 8. ``.DQ`` übernimmt ebenso.
 9. Ohne eigene Verbindung (kein Wegwerf-Channel möglich) → direkt auf dem
    Publish-Channel wie 0.11.0.
-10. Ein hängender Versuch endet nach ``declare_probe_timeout_s`` mit
-    ``BrokerConnectionError`` (Q6), der Wegwerf-Channel wird geschlossen.
+10. Ein hängendes Öffnen des Wegwerf-Channels endet nach
+    ``declare_probe_timeout_s`` mit ``BrokerConnectionError`` (Q6).
+11. Review P2-1: Queue.Declare selbst hat keine Client-Frist (wie 0.11.0).
 """
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from aio_pika.exceptions import ChannelPreconditionFailed
+from aio_pika.exceptions import ChannelInvalidStateError, ChannelPreconditionFailed
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError
@@ -194,20 +195,14 @@ async def test_without_own_connection_declares_on_publish_channel_like_0_11_0() 
     assert list(_published(broker)) == ["tasks", "tasks.DQ", "tasks.XQ"]
 
 
-async def test_hanging_probe_fails_with_broker_connection_error() -> None:
+async def test_hanging_channel_open_fails_with_broker_connection_error() -> None:
     probes = Probes({})
     broker = _broker(probes)
     never = asyncio.Event()
 
     async def hang() -> AsyncMock:
-        channel = AsyncMock(is_closed=False)
-
-        async def declare_queue(*args: Any, **kwargs: Any) -> None:
-            await never.wait()
-
-        channel.declare_queue = AsyncMock(side_effect=declare_queue)
-        probes.channels.append(channel)
-        return channel
+        await never.wait()
+        raise AssertionError("unreachable")
 
     broker._connection.channel = AsyncMock(side_effect=hang)  # type: ignore[union-attr]
     broker.declare_probe_timeout_s = 0.05
@@ -215,5 +210,106 @@ async def test_hanging_probe_fails_with_broker_connection_error() -> None:
     with pytest.raises(BrokerConnectionError, match="timed out"):
         await broker.declare_queue("tasks")
 
-    probes.channels[0].close.assert_awaited_once()
     broker._publish_channel.declare_queue.assert_not_called()  # type: ignore[union-attr]
+
+
+async def test_slow_declare_is_not_cut_off_by_the_open_timeout() -> None:
+    """Review P2-1: 0.11.0 hatte für Queue.Declare keine Client-Frist; das
+    Anlegen einer Quorum-Queue (Raft) kann unter Last lange dauern. Die Frist
+    gilt nur für das Öffnen des Wegwerf-Channels."""
+    probes = Probes({})
+    broker = _broker(probes)
+    released = asyncio.Event()
+
+    async def open_slow() -> AsyncMock:
+        channel = await probes.open()
+        fast = channel.declare_queue.side_effect
+
+        async def declare_queue(*args: Any, **kwargs: Any) -> None:
+            await released.wait()
+            await fast(*args, **kwargs)
+
+        channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        return channel
+
+    broker._connection.channel = AsyncMock(side_effect=open_slow)  # type: ignore[union-attr]
+    broker.declare_probe_timeout_s = 0.01
+    asyncio.get_running_loop().call_later(0.05, released.set)
+
+    await broker.declare_queue("tasks")
+
+    assert list(_published(broker)) == ["tasks", "tasks.DQ", "tasks.XQ"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [RuntimeError("Connection was not opened"), ChannelInvalidStateError("No active transport in channel")],
+)
+async def test_connection_lost_while_opening_probe_is_broker_connection_error(error: Exception) -> None:
+    """Review P2-4: aio_pika wirft beim Öffnen auf einer abgerissenen
+    Verbindung synchron ``RuntimeError``; der Aufrufer erwartet
+    ``BrokerConnectionError`` wie bei jedem anderen Verbindungsfehler."""
+    broker = _broker(Probes({}))
+    broker._connection.channel = Mock(side_effect=error)  # type: ignore[union-attr]
+
+    with pytest.raises(BrokerConnectionError, match="probe channel"):
+        await broker.declare_queue("tasks")
+
+    broker._connection.ready.assert_awaited()  # type: ignore[union-attr]
+
+
+class _HalfOpenChannel:
+    """Wie ``aio_pika.Channel``: ``connection.channel()`` liefert das Objekt
+    sofort, erst ``await`` öffnet es. Hier hängt das Öffnen."""
+
+    def __init__(self) -> None:
+        self.close = AsyncMock()
+        self._never = asyncio.Event()
+
+    def __await__(self) -> Any:
+        yield from self._never.wait().__await__()
+        return self
+
+
+async def test_half_open_probe_channel_is_closed_after_open_timeout() -> None:
+    """Review-Hinweis 5: läuft das Öffnen in das Zeitlimit, wird der halb
+    geöffnete Channel geschlossen statt liegen gelassen."""
+    broker = _broker(Probes({}))
+    half_open = _HalfOpenChannel()
+    broker._connection.channel = Mock(return_value=half_open)  # type: ignore[union-attr]
+    broker.declare_probe_timeout_s = 0.05
+
+    with pytest.raises(BrokerConnectionError, match="timed out"):
+        await broker.declare_queue("tasks")
+
+    half_open.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("existing", "expected"),
+    [
+        pytest.param(10, "without an error result", id="below-config"),
+        pytest.param(40, "SWARMQ_DELIVERY_LIMIT - 1", id="above-config"),
+    ],
+)
+async def test_delivery_limit_warning_explains_the_effect(
+    swarmq_logs: list[dict[str, Any]], existing: int, expected: str
+) -> None:
+    """Review P2-2b: unter der Konfiguration dead-lettert der Broker selbst
+    (kein Fehlerergebnis); darüber greift weiter das Gate bei config - 1."""
+    limit = _conflict("tasks", "x-delivery-limit", f"received '20' but current is '{existing}'")
+    broker = _broker(Probes({"tasks": [limit]}))
+
+    await broker.declare_queue("tasks")
+
+    [warning] = [e for e in swarmq_logs if e["event"] == "queue_argument_adopted"]
+    assert expected in warning["hint"]
+
+
+async def test_queue_without_delivery_limit_fails_as_before() -> None:
+    """Review P2-2a: eine Queue ohne Limit ist kein 0.12-Zustand; Abbruch wie 0.11.0."""
+    none = _conflict("tasks", "x-delivery-limit", "received the value '20' of type 'byte' but current is none")
+    broker = _broker(Probes({"tasks": [none]}))
+
+    with pytest.raises(BrokerConnectionError, match="Existing queue"):
+        await broker.declare_queue("tasks")

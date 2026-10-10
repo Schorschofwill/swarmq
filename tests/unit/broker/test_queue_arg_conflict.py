@@ -15,7 +15,8 @@ Test-Liste:
 1. Strategy fehlt in der Deklaration, Queue hat ``at-least-once`` → übernehmen.
 2. Overflow fehlt, Queue hat ``reject-publish`` → übernehmen.
 3. Delivery-Limit abweichend (``received '20' but current is '40'``) → 40 als int.
-4. Delivery-Limit fehlt auf der Queue (``current is none``) → Argument weglassen.
+4. Delivery-Limit fehlt auf der Queue (``current is none``) → nicht übernehmbar
+   (Review P2-2a: wie 0.11.0 abbrechen; 0.12 legt Queues immer mit Limit an).
 5. (Typ ``short`` → int: abgedeckt in ``test_declare_adoption.py``.)
 6. Anderes Argument (``x-queue-type``) → nicht übernehmbar (None).
 7. 406 ohne "inequivalent arg" (Queue-Limit) → None.
@@ -66,13 +67,10 @@ def test_adopts_differing_delivery_limit_as_int() -> None:
     assert adopted == ("x-delivery-limit", {**BASE, "x-delivery-limit": 40})
 
 
-def test_drops_delivery_limit_the_queue_does_not_have() -> None:
+def test_delivery_limit_missing_on_the_queue_is_not_adopted() -> None:
     text = _text("x-delivery-limit", "received the value '20' of type 'byte' but current is none")
 
-    adopted = adopt_existing_argument(text, BASE)
-
-    expected = {k: v for k, v in BASE.items() if k != "x-delivery-limit"}
-    assert adopted == ("x-delivery-limit", expected)
+    assert adopt_existing_argument(text, BASE) is None
 
 
 def test_other_arguments_are_not_adopted() -> None:
