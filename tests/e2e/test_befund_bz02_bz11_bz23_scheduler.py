@@ -266,10 +266,6 @@ async def test_bz11_fire_of_removed_cron_task_dead_letters_with_ttl(rabbitmq_url
 
 
 @pytest.mark.befund("BZ-23")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-23: das Cancel-Flag verfaellt nach result_ttl; ein laenger wartender stornierter Task laeuft doch",
-)
 async def test_bz23_cancelled_task_waiting_longer_than_result_ttl_does_not_run(
     rabbitmq_url,
     valkey_url,

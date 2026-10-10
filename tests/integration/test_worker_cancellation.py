@@ -10,11 +10,13 @@ import asyncio
 import uuid
 
 import pytest
+import valkey.asyncio as aio_valkey
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
+from swarmq.keyspace import KeySpace
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -26,6 +28,16 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(15)]
 
 def _unique_queue() -> str:
     return f"cancel-test-{uuid.uuid4().hex[:8]}"
+
+
+async def _cancel_flag_pttl(valkey_url: str, task_id: str) -> int:
+    """Restlaufzeit des Cancel-Flags in ms (BZ-23: der Worker verkürzt es
+    auf höchstens 1 h statt es zu löschen)."""
+    raw = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+        return int(await raw.pttl(KeySpace(None).cancel(task_id)))
+    finally:
+        await raw.aclose()
 
 
 @pytest.fixture
@@ -97,8 +109,10 @@ class TestPreStartCancelIntegration:
             finally:
                 await _stop_worker(app, worker_task)
 
-            # Flag must be cleared by the worker.
-            assert await backend.is_cancelled(task_id) is False
+            # BZ-23 (Plan 0.12.0, MR 5): der Worker verkürzt das Flag auf
+            # höchstens 1 h, statt es zu löschen.
+            assert await backend.is_cancelled(task_id) is True
+            assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
 
     async def test_double_cancel_returns_false_second_time(
         self, rabbitmq_url, valkey_url, _cleanup_tasks,
@@ -286,8 +300,9 @@ class TestRunningCancelIntegration:
                 # Monitor should catch the flag at next poll (≤100ms).
                 with pytest.raises(TaskCancelledError):
                     await app.get_result(task_id, timeout=3)
-                # Flag cleared.
-                assert await backend.is_cancelled(task_id) is False
+                # BZ-23 (Plan 0.12.0, MR 5): Flag auf höchstens 1 h verkürzt.
+                assert await backend.is_cancelled(task_id) is True
+                assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
             finally:
                 await _stop_worker(app, worker_task)
 

@@ -250,20 +250,32 @@ async def cancel(task_id: str) -> bool
 ```
 
 Request cancellation of a task. Fire-and-forget: sets a cancel flag
-with TTL `result_ttl × 1000` ms and returns immediately.
+and returns immediately. The flag lives `max(24 h, result_ttl)`. For a
+deferred task (`schedule(delay=|eta=)`) that has not fired yet, the
+wait until its fire time is added, and its `max_age` + 300 s when the
+client's registry knows the task. A cancelled task that waits longer
+than `result_ttl` in the queue therefore no longer runs.
 
-**Returns.** `True` when the flag was newly set, `False` when a
-prior `cancel()` call is still in flight.
+Once the worker has handled the cancelled delivery (cancelled before
+the start or while running), it does not delete the flag but shortens
+it to at most 1 h (`PEXPIRE … LT`). A duplicate of the same message
+stays cancelled; a flag set with a shorter TTL is never extended.
 
-**Raises.** `ValueError` on empty `task_id`.
+**Returns.** `True` when the flag was newly set, `False` when the flag
+already exists: a prior `cancel()` call is still in flight, or the
+task was cancelled within the last hour.
+
+**Raises.** `ValueError` on empty `task_id`;
+`BackendConnectionError` when Valkey is unreachable.
 
 !!! warning "Stale cancel flag"
-    The flag TTL is 24 h by default. If the same `task_id` is reused
-    within that window (deterministic IDs, redelivery after crash
-    before the worker cleared the flag), the stale flag cancels the
-    next delivery too. Mitigations: let SwarmQ generate UUIDv7 task
-    IDs (the default), or pass a shorter `ttl_ms` directly through
-    the underlying client: `await app.client.cancel(task_id, ttl_ms=...)`.
+    If the same `task_id` is enqueued again while the flag lives
+    (deterministic IDs; at least for 1 h after a cancelled delivery
+    was handled), the new task is cancelled too, and `cancel()` returns
+    `False`. Mitigations: let SwarmQ generate UUIDv7 task IDs (the
+    default), or pass a shorter `ttl_ms` directly through the
+    underlying client: `await app.client.cancel(task_id, ttl_ms=...)`.
+    The worker never extends a shorter flag.
 
 ### `get_progress()` / `watch_progress()`
 

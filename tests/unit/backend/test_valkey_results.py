@@ -342,7 +342,7 @@ class TestResultsLogging:
     @pytest.mark.timeout(5)
     async def test_failed_clear_cancel_flag_logs_error_fields(self, swarmq_logs) -> None:
         backend, client, _ = _backend(None)
-        client.delete = AsyncMock(side_effect=ValkeyConnectionError("delete down"))
+        client.pexpire = AsyncMock(side_effect=ValkeyConnectionError("delete down"))
 
         await backend.clear_cancel_flag("task-1")
 

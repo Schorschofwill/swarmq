@@ -20,6 +20,22 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein stornierter Task läuft nicht mehr, wenn er länger als
+  `result_ttl` wartet.** `app.cancel()` gab dem Flag die TTL
+  `result_ttl`, und der Worker löschte es nach der stornierten
+  Zustellung. Ein Task, der länger in der Queue wartete (Rückstau,
+  gestoppte Worker, langes `delay`), oder ein Duplikat einer stornierten
+  Nachricht lief doch. Das Flag lebt jetzt `max(24 h, result_ttl)`, dazu
+  die Wartezeit bis zum Fire eines verzögerten Tasks und dessen
+  `max_age` + 300 s, wenn die Registry des Clients den Task kennt. Ein
+  sofort publizierter Task bleibt 24 h stornierbar. Hat der Worker die
+  stornierte Zustellung abgeschlossen, verkürzt er das Flag auf
+  höchstens 1 h (`PEXPIRE … LT`), statt es zu löschen; ein kürzeres Flag
+  wird nie verlängert. **Geändertes Verhalten:** Wird dieselbe `task_id`
+  innerhalb dieser Stunde neu eingereiht, wird sie storniert, und
+  `cancel()` liefert `False`. `cancel()` liest jetzt auch den
+  Oneshot-Eintrag der Task-ID und wirft `BackendConnectionError`, wenn
+  dieses Lesen scheitert ([`cancel()`](api.md#cancel)).
 - **Ein verzögerter Task läuft unter der ID, die `schedule()`
   geliefert hat.** `schedule(delay=|eta=)` lieferte eine ID, und der
   Leader feuerte den Task unter einer neuen. `get_result()` auf die

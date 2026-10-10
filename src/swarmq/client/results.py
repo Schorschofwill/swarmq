@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -16,10 +17,13 @@ if TYPE_CHECKING:
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
 
+import msgspec
+
 from swarmq.exceptions import (
     ResultNotReadyError,
 )
 from swarmq.progress import ProgressInfo
+from swarmq.scheduler.definition import ScheduleDefinition
 
 # Default TTL for the cancel flag. 24h is wide enough to outlive the
 # typical retry-horizon + redelivery window while still self-healing
@@ -27,6 +31,9 @@ from swarmq.progress import ProgressInfo
 # tighter window (e.g. deterministic task_id systems vulnerable to
 # stale-flag-zombie, see Client.cancel docstring) can override.
 _DEFAULT_CANCEL_FLAG_TTL_MS = 86_400_000  # 24h
+# BZ-23: Puffer über ``max_age`` eines verzögerten Tasks (Uhrabweichung,
+# Zustelllatenz).
+_CANCEL_FLAG_MAX_AGE_BUFFER_S = 300
 
 
 class ClientResults:
@@ -184,29 +191,56 @@ class ClientResults:
             task_id: the task to cancel.  Must be a non-empty string;
                 format is not validated otherwise — cancellation for
                 unknown IDs is harmless and self-heals via TTL.
-            ttl_ms: how long the flag lives in Valkey, in milliseconds.
+            ttl_ms: base lifetime of the flag in Valkey, in milliseconds.
                 Defaults to 24 hours.  The SwarmQ app wrapper passes
-                ``config.result_ttl * 1000`` so the flag outlives a
-                typical retry window.
+                ``max(24 h, config.result_ttl)``.  For a deferred task
+                that has not fired yet, the wait until its fire time is
+                added, plus ``max_age`` + 300 s when the registry knows
+                the task (BZ-23).
 
         Returns:
             True when the flag was newly set, False when it already
-            existed (i.e. a prior cancel() call is still in flight).
+            existed (a prior cancel() call is still in flight, or the
+            worker handled a cancelled delivery of this ID within the
+            last hour).
 
         .. warning::
 
            **Stale-flag zombie class** (accepted limitation).
            The cancel flag lives for ``ttl_ms`` (24h by default) in
-           Valkey. If the same ``task_id`` is reused within that window
-           (e.g. deterministic IDs, nack-requeue redelivery after a
-           crash before clear_cancel_flag ran), the stale flag will
-           cancel the next delivery too. Two mitigations if you hit
-           this in production: (a) keep ``task_id`` unique per
-           schedule (uuid.uuid7 defaults do this), (b) shorten
-           ``ttl_ms`` to less than your expected redelivery window.
-           A flag-nonce scheme is tracked for a future release if
-           a real caller reports the issue.
+           Valkey; after the worker handled the cancelled delivery it
+           is shortened to at most 1 h, never extended. If the same
+           ``task_id`` is reused while it lives (e.g. deterministic
+           IDs), the stale flag cancels the next delivery too. Two
+           mitigations: (a) keep ``task_id`` unique per schedule
+           (uuid.uuid7 defaults do this), (b) shorten ``ttl_ms``.
         """
         if not task_id:
             raise ValueError("task_id must be a non-empty string")
+        ttl_ms += await self._pending_oneshot_extra_ms(task_id)
         return bool(await self._backend.set_cancel_flag(task_id, ttl_ms))
+
+    async def _pending_oneshot_extra_ms(self, task_id: str) -> int:
+        """Zusatz zur Flag-TTL für einen noch nicht gefeuerten verzögerten
+        Task (BZ-23): die Wartezeit bis zum Fire, dazu ``max_age`` + 300 s,
+        wenn die Registry den Task kennt. Ein Verbindungsfehler propagiert
+        wie beim Setzen des Flags."""
+        raw = await self._backend.schedules.get(f"oneshot:{task_id}")
+        if raw is None:
+            return 0
+        try:
+            definition = msgspec.json.decode(raw, type=ScheduleDefinition)
+        except msgspec.DecodeError:
+            return 0  # unlesbarer Eintrag: der Leader parkt ihn, er feuert nicht
+        extra_ms = 0
+        if definition.fire_ts_ms is not None:
+            extra_ms = max(0, definition.fire_ts_ms - int(time.time() * 1000))
+        max_age = self._known_max_age(definition.task_name)
+        if max_age is not None:
+            extra_ms += (max_age + _CANCEL_FLAG_MAX_AGE_BUFFER_S) * 1000
+        return extra_ms
+
+    def _known_max_age(self, task_name: str) -> int | None:
+        if self._registry is None or not self._registry.has(task_name):
+            return None
+        return self._registry.get_entry(task_name).task_info.max_age

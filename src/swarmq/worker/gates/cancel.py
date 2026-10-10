@@ -66,8 +66,8 @@ class CancelGate:
             workflow_cancel = True
             logger.info("workflow_step_cancelled_pre_start", task_id=task_id, workflow_id=wf_id)
             # Fall through to the shared cancelled-handling below.
-            # clear_cancel_flag(task_id) is an idempotent DEL on a key
-            # that does not exist — harmless.
+            # clear_cancel_flag(task_id) is an idempotent PEXPIRE LT on a
+            # key that does not exist — harmless.
 
         # Cancel flag is set. Resolve DeliveryMode + result_ttl from
         # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
@@ -112,7 +112,8 @@ class CancelGate:
                 except Exception as exc:
                     logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
-            # Clear the flag (log+swallow at backend boundary — Unit 3).
+            # Shorten the flag to at most 1 h (BZ-23; log+swallow at the
+            # backend boundary — Unit 3).
             await deps.backend.clear_cancel_flag(task_id, op_timeout=deps.config.backend_op_timeout)
 
             # If this was a schedfire delivery we claimed in-flight, mark it

@@ -18,6 +18,7 @@ import valkey.asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import ValkeyConnection
+from swarmq.cancellation import CANCEL_FLAG_SPENT_TTL_MS
 from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.logging import _error_fields, get_logger
@@ -328,11 +329,17 @@ class ValkeyResults(ValkeyConnection):
         return bool(result == 1)
 
     async def clear_cancel_flag(self, task_id: str, op_timeout: float | None = None) -> None:
-        """Delete the cancel flag. Failures are logged and swallowed — an
-        orphan flag self-heals via TTL, and a DEL failure must not break
-        the worker pipeline (plan Unit 3 / Unit 6 Flag-DEL-Failure rule)."""
+        """Shorten the cancel flag to at most 1 h (``PEXPIRE … LT``, BZ-23)
+        instead of deleting it: a duplicate of the cancelled message stays
+        cancelled, and a shorter flag is never extended. Failures are logged
+        and swallowed — the flag self-heals via TTL, and a failure must not
+        break the worker pipeline (plan Unit 3 / Unit 6 Flag-DEL-Failure rule)."""
         try:
-            await self._run("clear_cancel_flag", self._require_client().delete(self._cancel_key(task_id)), op_timeout)
+            await self._run(
+                "clear_cancel_flag",
+                self._require_client().pexpire(self._cancel_key(task_id), CANCEL_FLAG_SPENT_TTL_MS, lt=True),
+                op_timeout,
+            )
         except BackendConnectionError as exc:
             logger.warning("cancel_flag_delete_failed", task_id=task_id, **_error_fields(exc))
 

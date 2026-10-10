@@ -20,6 +20,21 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A cancelled task no longer runs after waiting longer than
+  `result_ttl`.** `app.cancel()` gave the flag a TTL of `result_ttl`,
+  and the worker deleted it after the cancelled delivery. A task that
+  waited longer in the queue (backlog, stopped workers, long `delay`),
+  or a duplicate of a cancelled message, ran anyway. The flag now lives
+  `max(24 h, result_ttl)`, plus the wait until a deferred task fires
+  and its `max_age` + 300 s when the client's registry knows the task.
+  A task published right away stays cancellable for 24 h. Once the
+  worker has handled the cancelled delivery, it shortens the flag to at
+  most 1 h (`PEXPIRE … LT`) instead of deleting it; a shorter flag is
+  never extended. **Changed behaviour:** if the same `task_id` is
+  enqueued again within that hour, it is cancelled, and `cancel()`
+  returns `False`. `cancel()` now also reads the one-shot entry of the
+  task ID and raises `BackendConnectionError` when that read fails
+  ([`cancel()`](api.md#cancel)).
 - **A deferred task runs under the ID that `schedule()` returned.**
   `schedule(delay=|eta=)` returned one ID, and the leader fired the task
   under a new one. `get_result()` on the returned ID timed out,

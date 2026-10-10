@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.client import _MISSING, Client, _MissingType
+from swarmq.client.results import _DEFAULT_CANCEL_FLAG_TTL_MS
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
@@ -196,14 +197,15 @@ class SwarmQ:
     async def cancel(self, task_id: str) -> bool:
         """Request cancellation of *task_id*.
 
-        Fire-and-forget delegation to :meth:`Client.cancel`. Computes the
-        flag's TTL from ``config.result_ttl`` so the cancel flag outlives
-        a typical retry window (default: 24 hours).
+        Fire-and-forget delegation to :meth:`Client.cancel`. The flag's
+        base TTL is ``max(24 h, config.result_ttl)`` (BZ-23): a short
+        ``result_ttl`` must not let a cancelled task that waits longer in
+        the queue run anyway.
 
         Returns True when the flag was newly set, False when it already
         existed.
         """
-        ttl_ms = self.config.result_ttl * 1000
+        ttl_ms = max(_DEFAULT_CANCEL_FLAG_TTL_MS, self.config.result_ttl * 1000)
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
 
     async def apply(

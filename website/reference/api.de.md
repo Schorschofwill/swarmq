@@ -256,21 +256,35 @@ async def cancel(task_id: str) -> bool
 ```
 
 Fordert den Abbruch eines Tasks an. Fire-and-forget: setzt ein
-Cancel-Flag mit TTL `result_ttl × 1000` ms und kehrt sofort zurück.
+Cancel-Flag und kehrt sofort zurück. Das Flag lebt
+`max(24 h, result_ttl)`. Bei einem verzögerten Task
+(`schedule(delay=|eta=)`), der noch nicht gefeuert hat, kommt die
+Wartezeit bis zum Fire dazu, und `max_age` + 300 s, wenn die Registry
+des Clients den Task kennt. Ein stornierter Task, der länger als
+`result_ttl` in der Queue wartet, läuft daher nicht mehr.
+
+Hat der Worker die stornierte Zustellung abgeschlossen (Abbruch vor
+dem Start oder während des Laufs), löscht er das Flag nicht, sondern
+verkürzt es auf höchstens 1 h (`PEXPIRE … LT`). Ein Duplikat derselben
+Nachricht bleibt storniert; ein Flag mit kürzerer TTL wird nie
+verlängert.
 
 **Returns.** `True`, wenn das Flag neu gesetzt wurde, `False`, wenn
-ein vorheriger `cancel()`-Aufruf noch in Flight ist.
+es schon existiert: Ein vorheriger `cancel()`-Aufruf ist noch in
+Flight, oder der Task wurde innerhalb der letzten Stunde storniert.
 
-**Raises.** `ValueError` bei leerer `task_id`.
+**Raises.** `ValueError` bei leerer `task_id`;
+`BackendConnectionError`, wenn Valkey nicht erreichbar ist.
 
 !!! warning "Stale Cancel-Flag"
-    Die Flag-TTL ist per Default 24 h. Wird dieselbe `task_id`
-    innerhalb dieses Fensters wiederverwendet (deterministische
-    IDs, Redelivery nach Crash, bevor der Worker das Flag gelöscht
-    hat), wird das stale Flag auch die nächste Zustellung abbrechen.
-    Mitigation: lass SwarmQ UUIDv7 task_ids erzeugen (Default)
-    oder übergib eine kürzere `ttl_ms` direkt über den
-    darunterliegenden Client: `await app.client.cancel(task_id, ttl_ms=...)`.
+    Wird dieselbe `task_id` neu eingereiht, solange das Flag lebt
+    (deterministische IDs; mindestens 1 h nach einer abgeschlossenen
+    stornierten Zustellung), wird auch der neue Task storniert, und
+    `cancel()` liefert `False`. Mitigation: lass SwarmQ UUIDv7
+    task_ids erzeugen (Default) oder übergib eine kürzere `ttl_ms`
+    direkt über den darunterliegenden Client:
+    `await app.client.cancel(task_id, ttl_ms=...)`. Der Worker
+    verlängert ein kürzeres Flag nie.
 
 ### `get_progress()` / `watch_progress()`
 

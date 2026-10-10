@@ -479,7 +479,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         aktuelle Outcome unverändert zurück).
 
         FIRE_AND_FORGET mit Fehler/Cancel überspringt die Result-/Retry-
-        Pipeline (bei Cancel wird das Flag hier gelöscht — der
+        Pipeline (bei Cancel wird das Flag hier auf höchstens 1 h verkürzt — der
         result-ttl-0-Zweig des Tails wird auf diesem Pfad nie erreicht).
         Bewusste (user-approved) Verhaltensänderung von damals:
         ``max_retries=0``-Fehler laufen wie jeder Fehler durch die

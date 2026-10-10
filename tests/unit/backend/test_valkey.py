@@ -499,7 +499,8 @@ class TestValkeyBackendIsCancelled:
 
 
 class TestValkeyBackendClearCancelFlag:
-    async def test_clear_cancel_flag_calls_delete(self):
+    async def test_clear_cancel_flag_shortens_to_one_hour(self):
+        # BZ-23 (Plan 0.12.0, MR 5): PEXPIRE … LT statt DEL.
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
@@ -507,7 +508,8 @@ class TestValkeyBackendClearCancelFlag:
 
         await backend.clear_cancel_flag("task-abc")
 
-        mock_client.delete.assert_awaited_once_with("sq:cancel:task-abc")
+        mock_client.pexpire.assert_awaited_once_with("sq:cancel:task-abc", 3_600_000, lt=True)
+        mock_client.delete.assert_not_awaited()
 
     async def test_clear_cancel_flag_swallows_valkey_error(self):
         """Flag-DEL failures must not propagate — orphan self-heals via TTL.
@@ -518,7 +520,7 @@ class TestValkeyBackendClearCancelFlag:
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
-        mock_client.delete.side_effect = ValkeyError("delete failed")
+        mock_client.pexpire.side_effect = ValkeyError("pexpire failed")
         backend._client = mock_client
 
         # Must not raise

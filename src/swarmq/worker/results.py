@@ -122,9 +122,9 @@ class ResultTail:
                 return outcome
         if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
             await deps.broker.ack(delivery)
-        # Even with result_ttl=0 we must clear the cancel flag when the task
-        # was cancelled — otherwise it lives until TTL expires and a
-        # task_id reuse would silently cancel.
+        # Even with result_ttl=0 the cancel flag is shortened to at most
+        # 1 h (BZ-23, PEXPIRE LT) so it does not live its full TTL; a
+        # duplicate of the message within that hour stays cancelled.
         if execution.is_cancelled:
             await deps.backend.clear_cancel_flag(ctx.task_id, op_timeout=deps.config.backend_op_timeout)
         return Terminal.release_in_finally()
@@ -268,7 +268,8 @@ class ResultTail:
                 task_id=ctx.task_id,
             )
 
-        # Clear the cancel flag AFTER the result is safely stored so a
+        # Shorten the cancel flag (BZ-23: at most 1 h, not deleted) AFTER
+        # the result is safely stored so a
         # mid-op failure leaves the flag in place and a redelivery
         # re-triggers the cancel branch.
         if execution.is_cancelled:

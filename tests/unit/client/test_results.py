@@ -21,6 +21,13 @@ from swarmq.serialization import encode_result
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_pending_oneshot(backend):
+    """BZ-23 (Plan 0.12.0, MR 5): ``cancel()`` liest den Oneshot-Eintrag der
+    task_id; der Mock-Backend kennt keinen."""
+    backend.schedules.get = AsyncMock(return_value=None)
+
+
 @pytest.mark.asyncio
 async def test_get_result_returns_deserialized_value(client, backend):
     result_data = encode_result({"result": 42, "is_error": False})
@@ -360,3 +367,84 @@ class TestClientProgress:
         client = Client(broker=broker, backend=progress_backend, registry=registry)
         observed = [info async for info in client.watch_progress("task-x")]
         assert [i.current for i in observed] == [10]
+
+
+# ---------------------------------------------------------------------------
+# BZ-23 (Plan 0.12.0, MR 5): Cancel-Flag überdauert Wartezeit und max_age
+# Test-Liste:
+# - [ ] verzögerter Task: Flag-TTL = Basis + (fire_ts - now)
+# - [ ] bekanntes max_age des verzögerten Tasks: + max_age + 300 s
+# - [ ] unlesbarer Oneshot-Eintrag: Basis-TTL
+# - [ ] Verbindungsfehler beim Lesen des Eintrags propagiert
+# ---------------------------------------------------------------------------
+
+
+async def _memory_backend():
+    from tests.support.inmemory import InMemoryBackend
+    from tests.support.inmemory.clock import FakeClock
+
+    memory = InMemoryBackend(FakeClock())
+    await memory.connect()
+    memory.set_cancel_flag = AsyncMock(wraps=memory.set_cancel_flag)
+    return memory
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_of_deferred_task_outlives_its_fire_time():
+    memory = await _memory_backend()
+    client = Client(broker=AsyncMock(), backend=memory)
+    tid = await client.schedule("ping", queue="default", delay=48 * 3600)
+
+    await client.cancel(tid, ttl_ms=60_000)
+
+    ((_, ttl_ms), _) = memory.set_cancel_flag.await_args
+    # Basis 60 s plus rund 48 h bis zum Fire (Toleranz für die Laufzeit).
+    assert 48 * 3_600_000 + 50_000 <= ttl_ms <= 48 * 3_600_000 + 60_000
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_of_deferred_task_adds_known_max_age_plus_buffer():
+    from swarmq.registry import TaskRegistry
+    from swarmq.task import Task, TaskInfo
+
+    class Expiring(Task):
+        task_info = TaskInfo(name="bz23_expiring", queues=["default"], max_age=600)
+
+        async def run(self) -> None:
+            return None
+
+    registry = TaskRegistry()
+    registry.register(Expiring)
+    memory = await _memory_backend()
+    client = Client(broker=AsyncMock(), backend=memory, registry=registry)
+    tid = await client.schedule("bz23_expiring", delay=3600)
+
+    await client.cancel(tid, ttl_ms=60_000)
+
+    ((_, ttl_ms), _) = memory.set_cancel_flag.await_args
+    # Basis 60 s + rund 1 h bis zum Fire + max_age 600 s + Puffer 300 s.
+    expected = 60_000 + 3_600_000 + 900_000
+    assert expected - 10_000 <= ttl_ms <= expected
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_with_unreadable_oneshot_entry_uses_base_ttl():
+    memory = await _memory_backend()
+    await memory.schedules.put("oneshot:broken-id", b"not json", None)
+    client = Client(broker=AsyncMock(), backend=memory)
+
+    assert await client.cancel("broken-id", ttl_ms=60_000) is True
+
+    memory.set_cancel_flag.assert_awaited_once_with("broken-id", 60_000)
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_propagates_connection_error_of_the_oneshot_lookup(client, backend):
+    from swarmq.exceptions import BackendConnectionError
+
+    backend.schedules.get = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+    backend.set_cancel_flag = AsyncMock(return_value=True)
+
+    with pytest.raises(BackendConnectionError):
+        await client.cancel("task-abc")
+    backend.set_cancel_flag.assert_not_awaited()

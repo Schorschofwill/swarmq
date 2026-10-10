@@ -20,6 +20,13 @@ CancelReason = Literal["cancel", "timeout"]
 CANCEL_REASON_CANCEL: CancelReason = "cancel"
 CANCEL_REASON_TIMEOUT: CancelReason = "timeout"
 
+# BZ-23 (Plan 0.12.0, MR 5): Restlaufzeit des Cancel-Flags, nachdem der
+# Worker die stornierte Zustellung abgeschlossen hat. Das Flag wird nicht
+# gelöscht, sondern per ``PEXPIRE … LT`` auf höchstens diese Dauer verkürzt:
+# ein Duplikat derselben Nachricht (at-least-once) bleibt storniert, ein
+# kürzer gesetztes Flag wird nie verlängert.
+CANCEL_FLAG_SPENT_TTL_MS = 3_600_000
+
 
 def build_result_dict(
     *,

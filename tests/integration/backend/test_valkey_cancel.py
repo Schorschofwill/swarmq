@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 
+import valkey.asyncio as aio_valkey
+
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.keyspace import KeySpace
 
 
 async def test_set_is_clear_round_trip(valkey_url: str):
@@ -20,8 +23,18 @@ async def test_set_is_clear_round_trip(valkey_url: str):
         assert await backend.set_cancel_flag("task-rt", 60_000) is True
         assert await backend.is_cancelled("task-rt") is True
 
+        # BZ-23 (Plan 0.12.0, MR 5): clear verkürzt auf höchstens 1 h
+        # (PEXPIRE … LT) statt zu löschen.
+        assert await backend.set_cancel_flag("task-long", 86_400_000) is True
         await backend.clear_cancel_flag("task-rt")
-        assert await backend.is_cancelled("task-rt") is False
+        await backend.clear_cancel_flag("task-long")
+        assert await backend.is_cancelled("task-rt") is True
+        raw = aio_valkey.Valkey.from_url(valkey_url)
+        try:
+            assert 0 < await raw.pttl(KeySpace(None).cancel("task-rt")) <= 60_000
+            assert 3_590_000 < await raw.pttl(KeySpace(None).cancel("task-long")) <= 3_600_000
+        finally:
+            await raw.aclose()
     finally:
         await backend.close()
 

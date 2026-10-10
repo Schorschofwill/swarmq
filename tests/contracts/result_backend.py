@@ -145,12 +145,22 @@ class ResultBackendContract:
         assert await impl.set_cancel_flag(tid, ttl_ms=60_000) is True
         assert await impl.set_cancel_flag(tid, ttl_ms=60_000) is False
         assert await impl.is_cancelled(tid) is True
+        # BZ-23 (Plan 0.12.0, MR 5): clear verkürzt das Flag auf höchstens
+        # 1 h statt es zu löschen; eine Neuzustellung bleibt storniert.
         await impl.clear_cancel_flag(tid)
-        assert await impl.is_cancelled(tid) is False
+        assert await impl.is_cancelled(tid) is True
 
     async def test_cancel_flag_expires(self, impl: ResultBackend, clock: Clock) -> None:
         tid = _id()
         await impl.set_cancel_flag(tid, ttl_ms=300)
+        await clock.advance(0.8)
+        assert await impl.is_cancelled(tid) is False
+
+    async def test_clear_never_extends_a_shorter_cancel_flag(self, impl: ResultBackend, clock: Clock) -> None:
+        # BZ-23: PEXPIRE … LT — die Abhilfe "kurze ttl_ms" bleibt intakt.
+        tid = _id()
+        await impl.set_cancel_flag(tid, ttl_ms=300)
+        await impl.clear_cancel_flag(tid)
         await clock.advance(0.8)
         assert await impl.is_cancelled(tid) is False
 

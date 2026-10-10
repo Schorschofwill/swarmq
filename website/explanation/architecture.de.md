@@ -119,7 +119,7 @@ nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
 | Progress-Updates | Valkey HASH `sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
 | Rate-Limit-Counter | Valkey Sorted Set | Sliding Window |
 | Locks | Valkey-Key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
-| Cancel-Flags | Valkey-Key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
+| Cancel-Flags | Valkey-Key `sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus Wartezeit bis zum Fire eines verzögerten Tasks und dessen `max_age` + 300 s; höchstens 1 h, sobald der Worker die stornierte Zustellung abgeschlossen hat |
 | Dedup-Marker | Valkey-Key `sq:unique:{hash}` | `unique_for` Sekunden |
 | Scheduler-Einträge | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Bis gefeuert oder entfernt |
 | Claims von Schedule-Fires | Valkey-Key `sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |

@@ -113,7 +113,7 @@ long as RabbitMQ and Valkey are still there.
 | Progress updates | Valkey HASH `sq:progress:{task_id}` | Same TTL as results |
 | Rate-limit counters | Valkey sorted set | Sliding window |
 | Locks | Valkey key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
-| Cancel flags | Valkey key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
+| Cancel flags | Valkey key `sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus the wait until a deferred task fires and its `max_age` + 300 s; at most 1 h once the worker has handled the cancelled delivery |
 | Dedup markers | Valkey key `sq:unique:{hash}` | `unique_for` seconds |
 | Scheduler entries | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Until fired or removed |
 | Schedule-fire claims | Valkey key `sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |

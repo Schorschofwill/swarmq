@@ -14,6 +14,7 @@ import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from swarmq.cancellation import CANCEL_FLAG_SPENT_TTL_MS
 from swarmq.contracts import (
     ChordStore,
     CronReport,
@@ -67,6 +68,16 @@ class _TTLDict[V]:
         value, _ = self._data[key]
         self.set(key, value, ttl_ms)
         return True
+
+    def expire_lt(self, key: str, ttl_ms: int) -> None:
+        """Wie ``PEXPIRE … LT``: Ablaufzeit nur verkürzen, nie verlängern."""
+        self._purge()
+        if key not in self._data:
+            return
+        value, expires = self._data[key]
+        new_expires = self._clock.now_ms() + ttl_ms
+        if expires is None or new_expires < expires:
+            self._data[key] = (value, new_expires)
 
     def expire_keep(self, key: str, value: V) -> None:
         """Wert ersetzen, Ablaufzeit behalten (wie HSET/HDEL auf einem Hash)."""
@@ -208,7 +219,7 @@ class InMemoryBackend:
         return task_id in self._cancel
 
     async def clear_cancel_flag(self, task_id: str, *, op_timeout: float | None = None) -> None:
-        self._cancel.pop(task_id)
+        self._cancel.expire_lt(task_id, CANCEL_FLAG_SPENT_TTL_MS)
 
     # --- Workflow ---------------------------------------------------------------
 
