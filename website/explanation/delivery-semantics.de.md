@@ -486,6 +486,27 @@ zurückgesetzt, sodass der Task sein volles Retry-Budget zurückbekommt,
 und eine neue Replay-ID lässt ihn am Ausführungsschutz vorbei.
 Der Original-Traceback bleibt in den Headern für die Post-Mortem.
 
+## Vorhandene Queue-Argumente
+
+Der Worker deklariert beim Start `{queue}`, `{queue}.DQ` und
+`{queue}.XQ`. Existiert eine Queue schon mit anderen Argumenten, lehnt
+RabbitMQ die Deklaration ab (`PRECONDITION_FAILED - inequivalent arg`).
+Seit 0.11.1 übernimmt der Worker für drei Argumente den vorhandenen
+Wert und deklariert erneut:
+
+- `x-dead-letter-strategy` und `x-overflow` (0.12 legt Queues mit
+  `at-least-once` und `reject-publish` an): still übernommen (INFO).
+- `x-delivery-limit`: übernommen mit WARNING `queue_argument_adopted`.
+  Der Broker dead-lettert dann nach dem vorhandenen Limit, nicht nach
+  `SWARMQ_DELIVERY_LIMIT`.
+
+Jedes Argument wird höchstens einmal übernommen; eine Deklaration
+braucht also höchstens vier Versuche. Jeder andere Konflikt (etwa
+`x-queue-type`) scheitert wie bisher mit `BrokerConnectionError`. Die
+Versuche laufen auf einem eigenen kurzlebigen Channel; ein Konflikt
+schließt nie den Publish-Channel. Noch nicht vorhandene Queues werden
+mit denselben Argumenten wie in 0.11.0 angelegt.
+
 ## Was SwarmQ nicht tut
 
 - **`schedule()` blockiert nicht bis zur Task-Vollendung.** Nutze

@@ -450,6 +450,27 @@ gets its full retry budget back, and a new replay id lets it pass the
 execution guard. The original traceback stays in the
 headers for post-mortem.
 
+## Existing queue arguments
+
+The worker declares `{queue}`, `{queue}.DQ` and `{queue}.XQ` at
+startup. If a queue already exists with different arguments, RabbitMQ
+refuses the declaration (`PRECONDITION_FAILED - inequivalent arg`).
+Since 0.11.1 the worker adopts the existing value for three arguments
+and declares again:
+
+- `x-dead-letter-strategy` and `x-overflow` (0.12 creates queues with
+  `at-least-once` and `reject-publish`): adopted silently (INFO).
+- `x-delivery-limit`: adopted with WARNING `queue_argument_adopted`.
+  The broker then dead-letters after the existing limit, not after
+  `SWARMQ_DELIVERY_LIMIT`.
+
+Each argument is adopted at most once, so a declaration takes at most
+four attempts. Every other conflict (for example `x-queue-type`) fails
+with `BrokerConnectionError` as before. The attempts run on a separate
+short-lived channel; a conflict never closes the publish channel.
+Queues that do not exist yet are created with the same arguments as in
+0.11.0.
+
 ## What SwarmQ will not do
 
 - **Block `schedule()` until the task completes.** Use `app.run()` or

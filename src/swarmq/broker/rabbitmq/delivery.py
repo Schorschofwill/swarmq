@@ -21,7 +21,9 @@ from typing import Any, cast
 import aio_pika
 from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError
 
+from swarmq.broker.rabbitmq.arg_conflict import declare_adopting_existing
 from swarmq.broker.rabbitmq.connection import (
+    _CHANNEL_READY_TIMEOUT_S,
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
     RabbitMQConnection,
@@ -74,6 +76,8 @@ class RabbitMQDelivery(RabbitMQConnection):
     settle_cancel_wait_s: float = 10.0
     #: Wanduhr fuer ``x-swarmq-dead-lettered-at`` und die Rest-TTL (KTD6).
     clock: Callable[[], float] = staticmethod(time.time)
+    #: Obergrenze je Deklarationsversuch auf dem Wegwerf-Channel (Patch 0.11.1).
+    declare_probe_timeout_s: float = _CHANNEL_READY_TIMEOUT_S
 
     # ------------------------------------------------------------------
     # Deklaration
@@ -118,23 +122,34 @@ class RabbitMQDelivery(RabbitMQConnection):
         # instead of acking it, and each round costs one delivery.
         if self._queue_type == "quorum":
             main_args["x-delivery-limit"] = self.delivery_limit
-        await pub.declare_queue(queue_name, durable=True, arguments=main_args)
+        await self._declare_adopting(pub, queue_name, main_args)
         # Delay queue — DLX points back to main queue
-        await pub.declare_queue(
+        await self._declare_adopting(
+            pub,
             f"{queue_name}.DQ",
-            durable=True,
-            arguments={
+            {
                 "x-queue-type": self._queue_type,
                 "x-dead-letter-exchange": "",
                 "x-dead-letter-routing-key": queue_name,
             },
         )
         # Dead-letter queue
-        await pub.declare_queue(
-            f"{queue_name}.XQ",
-            durable=True,
-            arguments={"x-queue-type": self._queue_type},
-        )
+        await self._declare_adopting(pub, f"{queue_name}.XQ", {"x-queue-type": self._queue_type})
+
+    async def _declare_adopting(self, pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
+        """Patch 0.11.1: erst auf Wegwerf-Channels deklarieren und vorhandene
+        Argumente übernehmen (``arg_conflict``), dann mit den übernommenen
+        Argumenten auf dem Publish-Channel. Ein 406 trifft so nie den
+        Publish-Channel und reißt keine parallelen Publishes ab.
+
+        Ohne offene eigene Verbindung gibt es keinen Wegwerf-Channel; dann
+        gilt das Verhalten aus 0.11.0 (direkt auf dem Publish-Channel)."""
+        connection = self._connection
+        if connection is not None and not connection.is_closed:
+            arguments = await declare_adopting_existing(
+                connection.channel, name, arguments, timeout_s=self.declare_probe_timeout_s
+            )
+        await pub.declare_queue(name, durable=True, arguments=arguments)
 
     # ------------------------------------------------------------------
     # Publish
