@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from typing import Any
 
 import aio_pika
@@ -28,7 +27,7 @@ from swarmq.headers import (
     HEADER_RETRY_COUNT,
     LOOP_STATE_HEADERS,
 )
-from swarmq.identity import HEADER_X_DEATH, copy_headers, replay_id_of
+from swarmq.identity import HEADER_X_DEATH, copy_headers, replay_id_of, retry_replay_id
 from swarmq.queue_names import delay_tiers
 
 
@@ -273,7 +272,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         msg_out = aio_pika.Message(
                             body=body,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                            headers=self._forward_headers(headers),
+                            headers=self._forward_headers(headers, body),
                         )
                         await self._publish_with_retry(queue_name, msg_out)
                     else:
@@ -305,7 +304,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
                 ) from errors[0]
         return entries, matched
 
-    def _forward_headers(self, headers: dict[str, Any]) -> dict[str, Any]:
+    def _forward_headers(self, headers: dict[str, Any], body: bytes) -> dict[str, Any]:
         """Header einer Wiederholung aus der DLQ (``dlq retry``)."""
         # MR 12: ``x-death`` geht als Base mit (stabile Identitaet).
         forward_headers = copy_headers(headers)
@@ -329,9 +328,11 @@ class RabbitMQAdmin(RabbitMQDelivery):
         # der Ausfuehrungsschutz liesse sie sonst als abgeschlossen fallen,
         # solange der Done-Marker des ersten Laufs steht. Die Generations-ID
         # eines 0.12-Workers bleibt (ein wiederholter Retry derselben
-        # XQ-Nachricht laeuft nicht doppelt); sonst neue uuid4.
+        # XQ-Nachricht laeuft nicht doppelt); sonst eine aus der Identitaet
+        # der XQ-Nachricht abgeleitete ID (Review MR 12, P2-2: ebenso
+        # idempotent), ohne Task-ID im Body eine neue uuid4.
         if not _fresh_generation(headers):
-            forward_headers[HEADER_REPLAY_ID] = uuid.uuid4().hex
+            forward_headers[HEADER_REPLAY_ID] = retry_replay_id(headers, body)
         forward_headers.pop(HEADER_DLQ_GENERATION, None)
         return forward_headers
 

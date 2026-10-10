@@ -207,9 +207,12 @@ Dead-Lettern gestempelt hat (seit 0.12): Der
 [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
 behandelt sie als neue Ausführung und lässt sie laufen; ein zweiter
 `dlq retry` derselben Nachricht -- oder ihr at-least-once-Duplikat --
-trägt dieselbe Identität und wird übersprungen. Eine Nachricht, die ein
-0.11-Worker dead-gelettert hat, oder Altbestand ohne diesen Stempel
-bekommt stattdessen bei jedem Retry eine neue ID. "Move messages" in
+trägt dieselbe Identität und wird übersprungen. Eine Nachricht ohne
+diesen Stempel -- von einem 0.11-Worker oder vom Broker selbst
+dead-gelettert (Delivery-Limit, `route_via_dlx`) oder Altbestand --
+bekommt stattdessen eine aus ihrer Identität abgeleitete ID; auch dort
+läuft ein wiederholter Retry nur einmal. Nur eine Nachricht ohne Task-ID
+bekommt eine zufällige ID. "Move messages" in
 der RabbitMQ-UI oder ein Shovel legt die Nachricht mit denselben Headern
 zurück und lässt sie deshalb ebenfalls laufen, setzt aber
 `x-swarmq-enqueued-at` nicht neu. Dead-lettert der Broker eine solche

@@ -30,6 +30,12 @@ Review MR 12 (Hinweise, P2-3):
        verbraucht: neue ID.
 9. [x] ``RetryHandler.dead_letter`` (Worker-Pfad) stempelt die Generation
        genau dann, wenn der Body eine Task-ID hat.
+
+Review MR 12 (P2-2):
+10. [x] Ohne frische Generation, mit Task-ID im Body: die neue Replay-ID ist
+        deterministisch aus der Identitaet der XQ-Nachricht (Broker-DLX-
+        Eintrag zweimal wiederholt -> dieselbe ID), verschieden fuer eine
+        andere Identitaet; ``uuid4`` nur ohne Task-ID.
 """
 
 from __future__ import annotations
@@ -215,3 +221,13 @@ async def test_the_worker_dead_letter_path_stamps_a_generation_only_with_a_task_
     assert await handler.dead_letter(_delivery({_REPLAY: "r1"}, body=b"no task"), ctx, "boom", "ValueError") is True
     unstamped = _published(broker).headers
     assert unstamped[_REPLAY] == "r1" and _GEN not in unstamped
+
+
+async def test_dlq_retry_without_a_generation_derives_the_replay_id_from_the_identity() -> None:
+    deaths = [{"queue": "tasks", "count": 1, "reason": "delivery_limit"}]
+    parked = {"x-death": deaths, _AT: _AT_MS, "x-swarmq-dead-letter-ttl-ms": 7_200_000}
+    other = {**parked, "x-death": [{**deaths[0], "count": 2}]}
+    broker = _dlq_broker(_incoming(parked), _incoming(parked), _incoming(other))
+    await broker.retry_all_dead_letters("tasks")
+    first, again, different = (msg.headers[_REPLAY] for _, msg in broker.published)
+    assert first == again != different

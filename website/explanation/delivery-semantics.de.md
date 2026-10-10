@@ -363,8 +363,8 @@ Sekunden -- etwa 100 MB Valkey-Speicher bei einer Million Tasks am Tag
 mit `max_age` 24 h; `max_age` ist die Stellschraube. Ein Rückstand, der
 erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht
 abgedeckt; `max_age` daher für Cron-Tasks und für Tasks setzen, die
-nicht doppelt laufen dürfen. Der Done-Marker einer Wiederholung (Replay-ID gesetzt oder zuvor vom Broker
-dead-gelettert) lebt mindestens `SWARMQ_DEAD_LETTER_TTL_S` -- ein
+nicht doppelt laufen dürfen. Der Done-Marker einer Wiederholung
+(Replay-ID gesetzt oder zuvor vom Broker dead-gelettert) lebt mindestens `SWARMQ_DEAD_LETTER_TTL_S` -- ein
 zweiter `dlq retry` derselben `.XQ`-Nachricht Tage später trägt dieselbe
 Identität und muss weiter übersprungen werden; bei
 `SWARMQ_DEAD_LETTER_TTL_S=none` stattdessen
@@ -402,9 +402,7 @@ nicht exactly-once:
   0.11-Worker erreicht, wird wie bisher verworfen, ebenso ein
   wiederholter Scheduler-Fire (Verlust, keine Doppelausführung). Eine
   Wiederholung in-flight beim Versionswechsel kann doppelt laufen
-  (Identität mit und ohne Todeszähler). Bestand in der `.XQ` ohne
-  Generation bekommt bei jedem `dlq retry` eine neue ID, ein mehrfacher
-  Retry läuft dort weiter doppelt. Nach "Move messages" in der
+  (Identität mit und ohne Todeszähler). Nach "Move messages" in der
   RabbitMQ-UI zählt die erste Ausführung das rohe `x-death` (keine
   Base). Eine UI-Wiederholung eines Tasks mit `max_age` kann sofort
   ablaufen: Nur `dlq retry` setzt `x-swarmq-enqueued-at` neu.

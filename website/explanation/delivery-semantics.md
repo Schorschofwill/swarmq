@@ -371,9 +371,8 @@ SwarmQ exactly-once:
   dead-lettering (delivery limit, `route_via_dlx`) that reaches a 0.11
   worker is skipped as before, and so is a replayed scheduler fire
   (loss, no double run). A replay in flight during the version switch
-  can run twice (identity with and without the death count). Old stock
-  in the `.XQ` without a generation gets a new id on every `dlq retry`,
-  so repeating the retry there still runs twice. After "Move messages"
+  can run twice (identity with and without the death count). After
+  "Move messages"
   in the RabbitMQ UI the first execution counts the raw `x-death`
   (no base). A UI replay of a task with `max_age` can expire at once:
   only `dlq retry` restarts `x-swarmq-enqueued-at`.

@@ -198,9 +198,11 @@ message (from 0.12): the
 [execution guard](../explanation/delivery-semantics.md#execution-guard)
 treats the replay as a new execution and runs it, while a second
 `dlq retry` of the same message -- or its at-least-once duplicate --
-carries the same identity and is skipped. A message a 0.11 worker
-dead-lettered, or old stock without that stamp, gets a fresh id on
-every retry instead. "Move messages" in the RabbitMQ UI or a shovel
+carries the same identity and is skipped. A message without that
+stamp -- dead-lettered by a 0.11 worker or by the broker itself
+(delivery limit, `route_via_dlx`), or old stock -- gets an id derived
+from its identity instead, so repeating the retry runs it once as
+well; only a message without a task id gets a random id. "Move messages" in the RabbitMQ UI or a shovel
 replays the message with the same headers and therefore runs it too,
 but does not restart `x-swarmq-enqueued-at`. If the broker
 dead-letters such a replay again (`route_via_dlx`, delivery limit), a

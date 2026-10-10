@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -97,6 +98,25 @@ def generation_id(identity: str) -> str:
     DLQ-Kopien derselben Ausfuehrung (``PublishIndeterminate``) dieselbe ID
     tragen und ein wiederholter ``dlq retry`` dieselbe Identitaet ergibt."""
     return "g" + hashlib.sha1(identity.encode()).hexdigest()[:39]
+
+
+#: Namensraum der Replay-IDs, die ``dlq retry`` ohne frische Generation
+#: vergibt (uuid5): uuid-foermig wie bisher, getrennt von den
+#: Generations-IDs des Workers (``g`` + sha1).
+_RETRY_NAMESPACE = uuid.UUID("5f0c1d2e-8a4b-5c6d-9e7f-0a1b2c3d4e5f")
+
+
+def retry_replay_id(headers: Mapping[str, Any] | None, body: bytes) -> str:
+    """Replay-ID fuer ``dlq retry`` einer Nachricht ohne frische Generation
+    (Review MR 12, P2-2): deterministisch aus der Identitaet der
+    XQ-Nachricht -- ein wiederholter Retry desselben Eintrags (Broker-DLX,
+    0.11-Worker, Altbestand) ergibt dieselbe Identitaet und laeuft nur
+    einmal; jede neue Generation hat eine andere. Ohne Task-ID im Body gibt
+    es keine Identitaet: neue ``uuid4``."""
+    task_id = task_id_of(body)
+    if task_id is None:
+        return uuid.uuid4().hex
+    return uuid.uuid5(_RETRY_NAMESPACE, execution_identity(headers, task_id)).hex
 
 
 def task_id_of(body: bytes) -> str | None:

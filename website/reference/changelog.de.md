@@ -123,8 +123,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   0.12-Worker gestempelt hat**, statt eine neue zu setzen, und setzt
   `x-swarmq-enqueued-at` neu. Ein zweiter Retry derselben
   `.XQ`-Nachricht wird vom Ausführungsschutz als Duplikat des ersten
-  übersprungen; Nachrichten ohne passendes `x-swarmq-dlq-gen`
-  (0.11-Worker, Altbestand) bekommen weiter bei jedem Retry eine neue ID
+  übersprungen. Nachrichten ohne passendes `x-swarmq-dlq-gen`
+  (0.11-Worker, Broker-Dead-Lettering, Altbestand) bekommen eine aus
+  ihrer Identität abgeleitete ID, ein wiederholter Retry läuft also auch
+  dort nur einmal; nur eine Nachricht ohne Task-ID bekommt eine
+  zufällige ID
   ([Nachrichten retryen](../guides/dead-letter-queues.de.md#nachrichten-retryen)).
 - **Die Leader-Versionsprüfung warnt jetzt bei jedem Leader vor 0.12**
   (Mindestversion für Leader, bisher 0.10). Scheduler-Korrekturen wie
@@ -225,7 +228,7 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Wiederholung nach einem Broker-Dead-Lettering, die einen 0.11-Worker
   erreicht, wird weiter verworfen, ebenso ein wiederholter Cron-Fire;
   eine Wiederholung in-flight beim Versionswechsel kann doppelt laufen;
-  Altbestand ohne Generation läuft bei zweimaligem Retry doppelt; nach
+  nach
   einem UI-Move zählt die erste Ausführung das rohe `x-death`;
   wiederholte UI-Moves nach erneutem Broker-Dead-Lettering werden
   übersprungen (`swarmq dlq retry` verwenden, das eine gestempelte, vom

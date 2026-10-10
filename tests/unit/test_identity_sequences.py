@@ -13,8 +13,9 @@ Test-Liste:
 1. [x] A1: Broker-DLX -> UI-Move -> Lauf scheitert -> Worker-DLQ -> CLI:
        drei verschiedene Generationen, jede laeuft genau einmal.
 2. [x] A2: Worker-DLQ -> UI-Move -> Lauf -> route_via_dlx -> UI-Move: ebenso.
-3. [x] A3: 0.11-DLQ ohne Generation, zweimal CLI: jede CLI vergibt eine neue
-       ID (dokumentierte Grenze: doppelt moeglich).
+3. [x] A3: 0.11-DLQ ohne Generation, zweimal CLI: die CLI leitet die ID aus
+       der Identitaet ab (Review MR 12, P2-2) -- derselbe Bestand laeuft
+       einmal, eine neue Generation (0.11-Worker stempelt neu) laeuft.
 4. [x] PublishIndeterminate-Doppelkopie: beide DLQ-Kopien tragen dieselbe
        Generations-ID; der zweite CLI-Retry wird verworfen.
 5. [x] ``dlq list`` dazwischen aendert nichts: die Generation bleibt frisch.
@@ -242,7 +243,7 @@ async def test_a2_second_round_ui_move_is_skipped_dlq_retry_runs() -> None:
     assert w.runs[:3] == [TASK, f"{TASK}|{gen}", f"{TASK}|{gen}#1"] and len(set(w.runs)) == 4
 
 
-async def test_a3_legacy_dlq_without_generation_gets_a_new_id_on_every_cli_retry() -> None:
+async def test_a3_legacy_dlq_without_generation_replays_once_per_generation() -> None:
     w = World()
     first = await w.cli_retry(_legacy_dlq())
     assert await w.run_ok(first) is True
@@ -250,8 +251,8 @@ async def test_a3_legacy_dlq_without_generation_gets_a_new_id_on_every_cli_retry
     second = await w.cli_retry(again_dead)
     assert await w.run_ok(second) is True
     assert len(set(w.runs)) == 2 and all(len(r.split("|")[1]) == 32 for r in w.runs)
-    # Dokumentierte Grenze (Abschnitt 7): derselbe Bestand zweimal per CLI laeuft doppelt.
-    assert await w.run_ok(await w.cli_retry(_legacy_dlq())) is True
+    # Review MR 12 (P2-2): derselbe Bestand ein zweites Mal per CLI wird verworfen.
+    assert await w.run_ok(await w.cli_retry(_legacy_dlq())) is False
 
 
 async def test_publish_indeterminate_double_copy_replays_once() -> None:

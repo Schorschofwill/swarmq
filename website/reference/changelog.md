@@ -119,9 +119,11 @@ All notable changes to SwarmQ. This project follows
 - **`swarmq dlq retry` keeps the `x-swarmq-replay-id` a 0.12 worker
   stamped** instead of setting a new one, and restarts
   `x-swarmq-enqueued-at`. A second retry of the same `.XQ` message is
-  skipped by the execution guard as a duplicate of the first; messages
-  without a matching `x-swarmq-dlq-gen` (0.11 worker, old stock) still
-  get a fresh id on every retry
+  skipped by the execution guard as a duplicate of the first. Messages
+  without a matching `x-swarmq-dlq-gen` (0.11 worker, broker
+  dead-lettering, old stock) get an id derived from their identity, so
+  a repeated retry of them runs once as well; only a message without a
+  task id gets a random id
   ([retrying messages](../guides/dead-letter-queues.md#retrying-messages)).
 - **The leader version check now warns about every leader before 0.12**
   (minimum leader version, was 0.10). Scheduler fixes such as the stable
@@ -187,7 +189,7 @@ All notable changes to SwarmQ. This project follows
   as well. **Known limits:** a replay after a broker dead-lettering that
   reaches a 0.11 worker is still skipped, and so is a replayed cron
   fire; a replay in flight during the version switch can run twice;
-  old stock without a generation runs twice when retried twice; after a
+  after a
   UI move the first execution counts the raw `x-death`; repeated UI
   moves after another broker dead-lettering are skipped (use `swarmq
   dlq retry`, which treats a stamped message the broker dead-lettered

@@ -684,7 +684,7 @@ Der BZ-16-Nachweis überspringt sich ohne lokalen Broker-Alarm. Abgenommen ist e
 - **BZ-08 im Mischbetrieb:**
   - Ein Broker-DLX-Replay an einen 0.11-Worker wird verworfen. Ein Cron-Replay an einen 0.11-Worker ebenso (Verlust).
   - Ein Replay in-flight beim Versionswechsel kann doppelt laufen.
-  - Bestandsnachrichten in der DLQ ohne Generation erhalten bei jedem CLI-Retry eine neue ID. Ein mehrfacher Retry ist dort weiter doppelt möglich.
+  - ~~Bestandsnachrichten in der DLQ ohne Generation erhalten bei jedem CLI-Retry eine neue ID. Ein mehrfacher Retry ist dort weiter doppelt möglich.~~ Entfällt (Review MR 12, P2-2; Nachtrag): ohne frische Generation, aber mit Task-ID im Body leitet `dlq retry` die Replay-ID deterministisch aus der Identität der XQ-Nachricht ab (uuid5, 32 Hex wie bisher; `uuid4` nur ohne Task-ID). Das gilt auch für Broker-DLX-Einträge (Delivery-Limit, `route_via_dlx`).
   - UI-Replays mit `max_age` können sofort ablaufen.
 - **BZ-12:** Ein Rückstand, der erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht abgedeckt. Mit `max_age` leben Done-, Superseded- und Cron-Completed-Marker mindestens `max_age + 300` s (Nachtrag, von Georg am 2026-10-10 entschieden; Kosten: ein kleiner Hash je Ausführung über diese Zeit, etwa 100 MB bei 1 Mio. Tasks/Tag mit `max_age` 24 h). Der Cron-Completed-Marker bleibt bei 7 d gedeckelt.
 - **BZ-01:**
