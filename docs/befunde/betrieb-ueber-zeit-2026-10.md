@@ -88,7 +88,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | offen |
 | BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` | offen; Nachweise 2/3 (`TASK_DLQ`, Fehlerergebnis am Deckel) grün seit MR 3, a570112, Umschreiben auf `LockWaitExceeded` in MR 13 |
 | BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` | offen |
-| BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
+| BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 4, ddcb11b) |
 | BZ-08 | `tests/integration/test_befund_bz08_replay_without_id.py` | offen |
 | BZ-09 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
 | BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` | offen |
