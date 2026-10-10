@@ -43,6 +43,10 @@ All notable changes to SwarmQ. This project follows
 - **`swarmq_queue_depth{kind="delayed"}`**: messages in the delay queues
   only. `kind="pending"` keeps its meaning (`{queue}` plus all delay
   queues, now including the tiers).
+- **`swarmq_queue_depth` and `swarmq_dlq_messages` per consumed queue**:
+  with `SWARMQ_PRIORITIES` the worker now also samples the `{queue}.high`
+  and `{queue}.low` bands, the same labels as
+  `swarmq_delay_tiers_unavailable`.
 - **`RabbitMQBroker.ready_depth(queue)`**: messages ready in `{queue}`
   itself, without delay queues and DLQ.
 - **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (default `900`): how long a worker

@@ -32,7 +32,12 @@ AdminFactory = Callable[[], SamplerBroker]
 
 async def _ready_depth(broker: SamplerBroker, queue: str) -> int:
     """Der Autoscaler zaehlt nur die Haupt-Queue (Plan 0.12.0, MR 10, F9):
-    ``ready_depth``; ohne sie ``queue_depth`` wie bis 0.11 (Q15)."""
+    ``ready_depth``; ohne sie ``queue_depth`` wie bis 0.11 (Q15).
+
+    Scheitert ``ready_depth`` mit einer Ausnahme, folgt ``queue_depth`` als
+    zweiter Roundtrip auf derselben Verbindung: bewusst in Kauf genommen,
+    der Sampler laeuft alle 10 s und der Rueckfall ist der sichere Wert
+    (Review MR 10, Hinweis)."""
     ready = await ready_depth_or_none(broker, queue)
     return ready if ready is not None else await broker.queue_depth(queue)
 

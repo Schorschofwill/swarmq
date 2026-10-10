@@ -44,6 +44,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **`swarmq_queue_depth{kind="delayed"}`**: nur die Nachrichten in den
   Delay-Queues. `kind="pending"` behält seine Bedeutung (`{queue}` plus
   alle Delay-Queues, jetzt mit den Stufen).
+- **`swarmq_queue_depth` und `swarmq_dlq_messages` je konsumierter
+  Queue**: Mit `SWARMQ_PRIORITIES` tastet der Worker jetzt auch die Bänder
+  `{queue}.high` und `{queue}.low` ab, dieselben Labels wie
+  `swarmq_delay_tiers_unavailable`.
 - **`RabbitMQBroker.ready_depth(queue)`**: Nachrichten, die in `{queue}`
   selbst bereitliegen, ohne Delay-Queues und DLQ.
 - **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (Standard `900`): wie lange ein

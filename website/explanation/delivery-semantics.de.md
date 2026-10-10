@@ -536,8 +536,10 @@ ersten Gebrauch an, mit den Argumenten von `{queue}.DQ` und über dieselbe
 Kette (siehe [vorhandene Queue-Argumente](#vorhandene-queue-argumente)):
 Im Modus `auto` dead-lettert eine neue Stufe at-least-once. Eine Queue
 hat höchstens sieben Stufen, mit `SWARMQ_PRIORITIES` höchstens 21 (sieben
-je Band). Ein Prozess, der die Queue-Familie nicht selbst deklariert hat,
-etwa ein Producer, nutzt `{queue}.DQ` wie in 0.11.
+je Band). Nur `retry_later` eines Prozesses, der die Queue-Familie selbst
+deklariert hat, also des Workers, nutzt die Stufen; Producer und der
+Scheduler publizieren nie an eine Delay-Queue. Ein Worker, der die
+Familie nicht deklariert hat, nutzt `{queue}.DQ` wie in 0.11.
 
 **Ablehnung:** Lehnt der Broker eine Stufe ab (Queue-Limit des vhosts,
 fehlendes Recht, eine vorhandene Queue gleichen Namens mit anderen

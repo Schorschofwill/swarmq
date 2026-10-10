@@ -9,13 +9,14 @@ class ConfigurationError(SwarmQError):
     pass
 
 
-#: Migration einer Queue-Familie (Review MR 8, P2-3): ``{queue}.DQ`` enthaelt
-#: Retries und Termine, sie wird nie einfach geloescht.
+#: Migration einer Queue-Familie (Review MR 8, P2-3): ``{queue}.DQ`` und die
+#: Delay-Stufen ``{queue}.DQ.*`` (BZ-01, Review MR 10, P2-5) enthalten Retries
+#: und Termine, sie werden nie einfach geloescht.
 MIGRATION_HINT = (
-    "migrate the queue: stop its producers, let its workers drain the queue and its .DQ "
-    "(the .DQ holds pending retries and deferred tasks: wait for them or move them with a shovel, "
-    "never just delete it), stop the workers, move or keep the .XQ, then delete the queue family "
-    "and start the workers with the new setting."
+    "migrate the queue: stop its producers, let its workers drain the queue, its .DQ and its .DQ.* tiers "
+    "(the .DQ and its .DQ.* tiers hold pending retries and deferred tasks: wait for them or move them "
+    "with a shovel, never just delete them), stop the workers, move or keep the .XQ, then delete the "
+    "queue family and start the workers with the new setting."
 )
 
 

@@ -520,7 +520,9 @@ class WorkerLifecycle:
         self._metrics.worker_uptime_seconds.labels(
             worker_id=worker_id,
         ).set(uptime)
-        for queue in self._config.queues:
+        # Dieselben Labels wie ``swarmq_delay_tiers_unavailable``: die
+        # konsumierten Queues, mit Prioritaeten also je Band (Review MR 10, P2-6).
+        for queue in self._config.consumed_queues:
             try:
                 depth = await self._broker.queue_depth(queue)
                 self._metrics.queue_depth.labels(
@@ -531,6 +533,11 @@ class WorkerLifecycle:
                 ready = await ready_depth_or_none(self._broker, queue)
                 if ready is not None:
                     self._metrics.queue_depth.labels(queue=queue, kind="delayed").set(max(0, depth - ready))
+                else:
+                    # Scheitert ``ready_depth`` in diesem Takt, bliebe der
+                    # letzte Wert stehen: die Serie faellt aus, statt zu
+                    # luegen (Review MR 10, Hinweis).
+                    self._metrics.queue_depth.remove(queue, "delayed")
                 dlq = await self._broker.dead_letter_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
             except Exception as exc:

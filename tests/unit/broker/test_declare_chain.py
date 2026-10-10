@@ -520,3 +520,17 @@ async def test_strict_mode_advises_a_safe_migration() -> None:
         await broker.declare_queue("tasks")
 
     assert _advises_safe_migration(str(exc_info.value))
+
+
+async def test_migration_hint_names_the_delay_tiers() -> None:
+    """Review MR 10, P2-5: seit BZ-01 halten auch die Stufen ``{queue}.DQ.*``
+    Retries und Termine; der Rat zum Leeren muss sie nennen."""
+    family = legacy("tasks")
+    broker = make_broker(FakeRabbit({"tasks": {**family["tasks"], "x-queue-type": "classic"}}))
+
+    with pytest.raises(QueueArgumentsMismatch) as exc_info:
+        await broker.declare_queue("tasks")
+
+    message = str(exc_info.value)
+    assert ".DQ.* tiers" in message
+    assert _advises_safe_migration(message)

@@ -495,9 +495,11 @@ hour keep the head-of-line blocking of `{queue}.DQ`.
 first use, with the arguments of `{queue}.DQ` and through the same chain
 (see [existing queue arguments](#existing-queue-arguments)): in mode
 `auto` a new tier dead-letters at-least-once. A queue has at most seven
-tiers, with `SWARMQ_PRIORITIES` at most 21 (seven per band). A process
-that has not declared the queue family itself, such as a producer, uses
-`{queue}.DQ` as in 0.11.
+tiers, with `SWARMQ_PRIORITIES` at most 21 (seven per band). Only
+`retry_later` of a process that has declared the queue family itself,
+that is the worker, uses the tiers; producers and the scheduler never
+publish to a delay queue. A worker that has not declared the family
+uses `{queue}.DQ` as in 0.11.
 
 **Refusal:** if the broker refuses a tier (queue limit of the vhost,
 missing permission, an existing queue of that name with other

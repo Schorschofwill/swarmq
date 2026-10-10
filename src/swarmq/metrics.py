@@ -95,6 +95,7 @@ class _NoopMetric:
     def inc(self, _amount: float = 1.0) -> None: pass
     def dec(self, _amount: float = 1.0) -> None: pass
     def set(self, _value: float) -> None: pass
+    def remove(self, *_labelvalues: Any) -> None: pass
     def observe(self, _value: float) -> None: pass
 
 
