@@ -423,11 +423,13 @@ class Worker(WorkerLifecycle, WorkerShutdown):
                 return False
         return True
 
-    async def _lookup_task_or_route(
-        self, message: Any, task_name: str, task_id: str | None = None,
-    ) -> type[Task] | None:
+    async def _lookup_task_or_route(self, message: Any, ctx: GateContext) -> type[Task] | DeliveryOutcome:
         """``gates.unknown_task.lookup_task_or_route`` mit dem Logger dieses Moduls (Q17)."""
-        return await lookup_task_or_route(self._registry, self._gate_deps, message, task_name, task_id, log=logger)
+        return await lookup_task_or_route(
+            self._registry, self._gate_deps, message, ctx, log=logger,
+            dead_letter=lambda d, c, m, t, h, f: self._retry_handler.dead_letter(
+                d, c, m, t, extra_headers=h, on_publish_failure=f),
+        )
 
     def _log_context(self, message: Any, ctx: GateContext) -> Any:
         """Task-Kontext fuer alle Logaufrufe dieser Zustellung (KTD13)."""
@@ -575,10 +577,15 @@ class Worker(WorkerLifecycle, WorkerShutdown):
                 await redeliver_in_place(self._gate_deps, message, ctx)
                 return
 
-            # 4-5. Look up task in registry
-            task_class = await self._lookup_task_or_route(message, task_name, task_id)
-            if task_class is None:
+            # 4-5. Look up task in registry. Ein unbekannter Task wird
+            # innerhalb der Gnadenfrist zurueckgestellt (BZ-06): das Outcome
+            # des Gates gilt, sonst schriebe der finally den
+            # Schedfire-Completed-Marker und gaebe das Unique-Flag frei.
+            resolved = await self._lookup_task_or_route(message, ctx)
+            if isinstance(resolved, DeliveryOutcome):
+                outcome = resolved
                 return
+            task_class = resolved
 
             task_info = task_class.task_info
             ctx.task_info = task_info

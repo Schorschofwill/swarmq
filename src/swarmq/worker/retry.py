@@ -28,7 +28,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.header_text import bounded_header_text
-from swarmq.headers import HEADER_RETRY_COUNT
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNKNOWN_SINCE
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -128,6 +128,9 @@ class RetryHandler:
         # header) survives redelivery -- ohne die Zustellzaehler des Brokers
         # (neue Nachricht, eigenes Zustellbudget).
         headers = republish_headers(delivery, ctx)
+        # Q6 (BZ-06): der Task lief -- die Rueckstellschleife "unbekannt" ist
+        # beendet, eine spaetere beginnt mit frischer Frist.
+        headers.pop(HEADER_UNKNOWN_SINCE, None)
         headers[HEADER_RETRY_COUNT] = retry_count + 1
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
@@ -190,8 +193,12 @@ class RetryHandler:
         may_redeliver: bool = True,
         extra_headers: Mapping[str, Any] | None = None,
         on_publish_failure: Callable[[Exception], Awaitable[None]] | None = None,
-    ) -> None:
+    ) -> bool:
         """Store error result in backend, dead-letter, and ack the original.
+
+        ``True``, wenn die DLQ-Kopie liegt (auch bei ``SettleFailedAfterPublish``);
+        ``False``, wenn die Zustellung stattdessen neu zugestellt wurde oder der
+        DLX-Fallback des Aufrufers lief (Plan 0.12.0, MR 11).
 
         ``error_type`` ist der Klassenname der ausloesenden Ausnahme (R17):
         ``task_sent_to_dlq`` traegt damit dasselbe Fehlerschema wie
@@ -225,7 +232,7 @@ class RetryHandler:
         # die Markierung prueft, ob der Schritt schon erfolgreich erledigt
         # ist (MR 3, BZ-13), und saehe sonst das eigene Fehlerergebnis.
         if not await self.fail_workflow(delivery, ctx, error_message, may_redeliver):
-            return
+            return False
 
         # Store error result so callers of get_result() get a response
         result_data = build_error_result_dict(
@@ -254,8 +261,10 @@ class RetryHandler:
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         headers.update(extra_headers or {})
+        placed = False
         try:
             await dead_letter_copy(deps, delivery, headers)
+            placed = True
             # Release AFTER successful ack (dead_letter bestätigt das
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to
@@ -283,3 +292,4 @@ class RetryHandler:
                 # path releases it. No release here.
         # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
         logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
+        return placed

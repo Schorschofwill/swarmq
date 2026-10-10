@@ -211,8 +211,11 @@ Was das praktisch heißt:
 - Ein statischer Cron, den ein lebender Worker meldet, ist nach
   `swarmq schedule remove --permanent` binnen eines Takts wieder da.
   Dauerhaft weg ist er erst, wenn ihn kein Code mehr meldet.
-- Ein aus dem Code entfernter Cron hört auf zu feuern, sobald ihn
-  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` lang (Standard 24 h; ab 0.11.0, siehe
+- Ein aus dem Code entfernter Cron hört auf zu feuern, sobald ihn kein
+  lebender Worker mehr meldet: Ab 0.12 hält der Leader ihn zurück (siehe
+  [zurückgehaltene Crons](#crons-die-niemand-meldet-werden-zuruckgehalten))
+  und entfernt ihn, sobald ihn `SWARMQ_SCHEDULER_PRUNE_AFTER_S` lang
+  (Standard 24 h; ab 0.11.0, siehe
   [Crons entfernen](#crons-entfernen-die-keine-app-mehr-meldet)) kein
   Worker gemeldet hat. Sofort loswerden lässt er sich mit
   `swarmq schedule remove --permanent NAME`, sobald ihn kein Worker mehr
@@ -296,6 +299,50 @@ nichts. Die Frist muss mindestens das Dreifache von
     0.11.0-Apps `SWARMQ_SCHEDULER_PRUNE=log` setzen, bis die letzte App
     umgestellt ist; dann `scheduler_cron_prune_skipped` auf Crons
     beobachten, die entfernt worden wären.
+
+### Crons, die niemand meldet, werden zurückgehalten
+
+Seit 0.12 feuert der Leader keinen statischen Cron, den kein lebender
+Worker mehr meldet und den er selbst nicht registriert. Vorher feuerte
+ein Cron, dessen Task aus dem Code entfernt wurde, weiter, bis die
+Aufräumfrist (24 h) ablief, und jeder Fire endete als unregistrierter
+Task in der `.XQ`. Jetzt hält der Leader einen solchen Cron zurück: Er
+verschiebt den Termin in jedem Poll ohne Publish auf
+`jetzt + SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, bis ein Worker den Cron
+wieder meldet oder der Leader ihn aufräumt.
+
+Ein Cron gilt als verwaist, wenn alles Folgende zutrifft:
+
+- Der Leader hat die Cron-Meldungen in seiner aktuellen Amtszeit
+  geladen (direkt nach dem Erwerb des Locks wartet er darauf höchstens
+  5 s; ohne Meldungen, etwa weil Valkey nicht erreichbar war, feuert er
+  wie bisher — fail-open).
+- Ein Worker ab 0.12 hat den Namen irgendwann gemeldet
+  (`sq:{sched}:report:known`, ein Set von Namen, das nur zusammen mit
+  der Definition entfernt wird, durch das Aufräumen oder durch
+  `swarmq schedule remove --permanent`).
+- Es gibt keine lebende Meldung des Namens.
+- Der Cron ist keiner der eigenen statischen Crons des Leaders.
+- Die gespeicherte Definition hat `source="static"` (ein CLI-Schedule
+  gleichen Namens wird nie zurückgehalten).
+
+Der Übergang wird einmal je Cron geloggt: `scheduler_cron_held_unowned`
+(WARNING), wenn das Zurückhalten beginnt, `scheduler_cron_unowned_released`
+(INFO), wenn der Cron wieder feuert oder entfernt wird. Das Signal
+`SCHEDULER_CRON_UNOWNED` (`schedule_name`, `task_name`, `held`,
+`held_count`) feuert bei beiden Übergängen, und die Gauge
+`swarmq_scheduler_crons_held{worker_id}` zeigt, wie viele Crons der
+Leader zurückhält. Ein zurückgehaltener Cron holt verpasste Termine
+nicht nach: Der nächste Fire ist der nächste Termin, nachdem ein Worker
+ihn gemeldet hat.
+
+**Mischbetrieb.** Nur ein Leader ab 0.12 hält Crons zurück; solange
+eine 0.11-App die Führung hat, feuern entfernte Crons wie bisher (ihre
+Fires enden mit Aufbewahrungsfrist in der `.XQ`, sobald ein
+0.12-Worker sie aufgibt, siehe
+[unregistrierte Tasks](dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)).
+Crons, die nur Worker vor 0.12 melden, stehen nie in
+`sq:{sched}:report:known` und werden nicht zurückgehalten.
 
 ### Konflikte
 

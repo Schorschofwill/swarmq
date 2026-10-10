@@ -14,5 +14,6 @@ x-swarmq-schedfire-claim
 x-swarmq-traceback
 x-swarmq-unique-hash
 x-swarmq-unique-until
+x-swarmq-unknown-since
 x-swarmq-workflow-id
 x-swarmq-workflow-step

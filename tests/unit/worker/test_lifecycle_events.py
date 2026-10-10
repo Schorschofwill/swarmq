@@ -14,8 +14,8 @@ Test-Liste:
 - [x] Die Pipeline meldet ``task_received`` (DEBUG) vor ``task_started`` und
       ``task_succeeded``, mit Task-Kontext.
 - [x] Mit Lebenszyklus-Level INFO erscheint ``task_received`` auf INFO.
-- [x] Ein unbekannter Task (``task_not_found``) ergibt ``task_received``, aber
-      kein ``task_started``.
+- [x] Ein unbekannter Task (``task_unknown_deferred``) ergibt ``task_received``,
+      aber kein ``task_started``.
 - [x] Ein fehlschlagender Task mit Retry ergibt ``task_failed`` und danach
       ``task_retrying``.
 - [x] ``--logger-level swarmq.task=WARNING`` unterdrueckt die Lebenszyklus-Events,
@@ -165,10 +165,12 @@ async def test_pipeline_lifecycle_level_info_raises_task_received_to_info(broker
 
 
 async def test_unknown_task_is_received_but_never_started(worker, swarmq_logs):
+    # Plan 0.12.0, MR 11 (BZ-06): innerhalb der Gnadenfrist wird der
+    # unbekannte Task zurueckgestellt (``task_unknown_deferred``, WARNING).
     await worker._handle_message(_message("not_registered"))
 
-    events = [e["event"] for e in swarmq_logs]
-    assert "task_not_found" in events
+    [deferred] = [e for e in swarmq_logs if e["event"] == "task_unknown_deferred"]
+    assert (deferred["log_level"], deferred["logger"]) == ("warning", "swarmq.worker.pipeline")
     assert [e["event"] for e in _lifecycle(swarmq_logs)] == ["task_received"]
 
 

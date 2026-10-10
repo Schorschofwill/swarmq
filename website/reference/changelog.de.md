@@ -46,6 +46,26 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   alle Delay-Queues, jetzt mit den Stufen).
 - **`RabbitMQBroker.ready_depth(queue)`**: Nachrichten, die in `{queue}`
   selbst bereitliegen, ohne Delay-Queues und DLQ.
+- **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (Standard `900`): wie lange ein
+  Worker eine Nachricht zurückstellt, deren Task er nicht registriert,
+  bevor er sie dead-lettert; `0` dead-lettert beim ersten Kontakt
+  ([Konfiguration](configuration.de.md),
+  [unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)).
+- **Signal `SCHEDULER_CRON_UNOWNED`** (`worker_id`, `schedule_name`,
+  `task_name`, `held`, `held_count`), die Gauge
+  `swarmq_scheduler_crons_held{worker_id}`, das Valkey-Set
+  `sq:{sched}:report:known` (Namen, die ein Worker ab 0.12 je gemeldet
+  hat; wird zusammen mit der Definition entfernt) und die Log-Events
+  `scheduler_cron_held_unowned`, `scheduler_cron_unowned_released`,
+  `scheduler_unowned_check_skipped`
+  ([zurückgehaltene Crons](../guides/scheduling-and-retries.de.md#crons-die-niemand-meldet-werden-zuruckgehalten)).
+- **Signal `TASK_UNKNOWN_DEFERRED`** (`task_id`, `task_name`, `queue`,
+  `delay`, `unknown_since`), der Zähler
+  `swarmq_tasks_unknown_deferred_total{queue}` und der Header
+  `x-swarmq-unknown-since` (erster Kontakt, Unix-Millisekunden), dazu
+  die Log-Events `task_unknown_deferred`, `unknown_task_defer_failed`
+  und `unknown_task_dlq_failed` ([Signale](../guides/signals.de.md),
+  [Logging](logging.de.md)).
 
 ### Geändert
 
@@ -103,6 +123,45 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein Cron, dessen Task aus dem Code entfernt wurde, feuert nicht
+  mehr bis zum Ablauf der Aufräumfrist.** Jeder Fire eines solchen
+  Crons endete als unregistrierter Task in der `.XQ`, bis zu 24 h
+  lang. Der Scheduler-Leader hält jetzt einen statischen Cron zurück,
+  den ein Worker ab 0.12 irgendwann gemeldet hat, den kein lebender
+  Worker mehr meldet und den der Leader selbst nicht registriert: Der
+  Termin wandert ohne Publish auf
+  `jetzt + SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, bis ein Worker ihn wieder
+  meldet oder der Leader ihn aufräumt. Ein CLI-Schedule gleichen Namens
+  wird nie zurückgehalten. Direkt nach einer Übernahme wartet der
+  Leader höchstens 5 s auf die Cron-Meldungen; ohne sie feuert er wie
+  bisher (fail-open, `scheduler_unowned_check_skipped`). **Bekannte
+  Grenzen:** Nur ein Leader ab 0.12 hält zurück; ein 0.11-Leader feuert
+  entfernte Crons wie bisher. Crons, die nur Worker vor 0.12 melden,
+  werden nicht zurückgehalten. Ein zurückgehaltener Cron holt verpasste
+  Termine nicht nach
+  ([zurückgehaltene Crons](../guides/scheduling-and-retries.de.md#crons-die-niemand-meldet-werden-zuruckgehalten)).
+- **Ein unregistrierter Task landet beim ersten Kontakt nicht mehr in
+  der `.XQ`.** Bei einem Rolling Deploy mit Producern vor den Workern
+  wurde jeder neue Task-Name ohne Aufbewahrungsfrist und ohne
+  Fehlerergebnis an den Broker-DLX abgewiesen, und jeder Workflow mit
+  einem solchen Schritt schlug fehl. Der Worker stellt die Nachricht
+  jetzt für `SWARMQ_UNKNOWN_TASK_GRACE_S` (Standard 15 min) mit Backoff
+  zurück (1 s, dann so lang wie bisher gewartet, höchstens 60 s je
+  Runde), gemessen ab dem ersten Kontakt in `x-swarmq-unknown-since`;
+  ein Scheduler-Fire behält dabei seinen In-Flight-Claim und sein
+  Unique-Flag. Nach der Frist dead-lettert der Worker die Nachricht
+  selbst: Fehlerergebnis, Workflow-Schritt als fehlgeschlagen markiert,
+  Unique-Flag freigegeben, `TASK_DLQ`, Aufbewahrungsfrist und
+  `x-swarmq-traceback` auf der DLQ-Kopie, danach `TASK_REJECTED` mit
+  `unregistered_task` und `task_not_found` (ERROR). **Geändertes
+  Verhalten:** `unregistered_task` folgt jetzt auf `TASK_DLQ`, und die
+  DLQ-Kopie trägt SwarmQ-Header; `task_not_found` kommt erst nach der
+  Frist. **Bekannte Grenzen:** Nur Worker ab 0.12 stellen zurück — ein
+  0.11-Worker an derselben Queue weist einen unbekannten Task (auch
+  eine Rückstellungs-Kopie) beim ersten Kontakt ab wie bisher; bis jeder
+  Worker 0.12 fährt, Worker vor Producern starten. Ein Producer, der
+  länger als die Frist voraus ist, füllt die `.XQ` wie bisher
+  ([unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)).
 - **Ein kurzer Retry oder eine kurze Rückstellung wartet nicht mehr
   hinter einer langen.** Alle Wartezeiten einer Queue teilten sich
   `{queue}.DQ`, und RabbitMQ lässt nur die Nachricht am Kopf verfallen:

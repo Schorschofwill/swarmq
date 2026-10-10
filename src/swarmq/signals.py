@@ -60,8 +60,11 @@ class Signal(enum.Enum):
       * TASK_REJECTED:     queue, reason, task_id, task_name, error
         - Emitted for every message the worker hands to the broker's DLX
           without diagnostic headers (the ``route_via_dlx`` path): a body
-          over the size cap, an undecodable body, an unregistered task, a
-          broken middleware-chain factory, or a failed dead-letter publish.
+          over the size cap, an undecodable body, a broken middleware-chain
+          factory, or a failed dead-letter publish -- and, after the grace
+          period ``unknown_task_grace_s`` ran out, for an unregistered task
+          (that one is dead-lettered by the worker with an error result,
+          so TASK_DLQ fires first; Plan 0.12.0, MR 11, BZ-06).
         - reason is one of "body_too_large" | "undecodable" |
           "unregistered_task" | "middleware_chain_factory" |
           "dlq_publish_failed".
@@ -75,6 +78,15 @@ class Signal(enum.Enum):
           publishes, in addition to TASK_ENQUEUED. Carries the workflow
           identity that TASK_ENQUEUED cannot grow without breaking
           handlers with a fixed signature (U11, R16).
+      * TASK_UNKNOWN_DEFERRED: task_id, task_name, queue, delay,
+                               unknown_since
+        - The worker does not register the task and defers the message
+          (copy via the delay queue) within ``unknown_task_grace_s``,
+          typically during a rolling deploy with producers ahead of the
+          workers (Plan 0.12.0, MR 11, BZ-06). ``delay`` in seconds,
+          ``unknown_since`` the first contact in Unix milliseconds. Once
+          per deferral; counted in
+          ``swarmq_tasks_unknown_deferred_total{queue}``.
       * TASK_DLQ:          task_id, task_name, queue, error
         - Emitted when a message is terminally dead-lettered (retry
           exhaustion / non-retryable error). Distinct from TASK_FAILED,
@@ -146,6 +158,7 @@ class Signal(enum.Enum):
     TASK_DUPLICATE_DETECTED = "task_duplicate_detected"
     TASK_DLQ = "task_dlq"
     TASK_REJECTED = "task_rejected"
+    TASK_UNKNOWN_DEFERRED = "task_unknown_deferred"
 
     # Workflow lifecycle
     WORKFLOW_STEP_ENQUEUED = "workflow_step_enqueued"

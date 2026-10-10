@@ -17,6 +17,8 @@ Metrics (plan §R5.1):
 - ``swarmq_tasks_rejected_total{queue,reason}`` — counter
   (outcome: completed | failed | cancelled | expired | rate_limited
   | dlq | duplicate)
+- ``swarmq_tasks_unknown_deferred_total{queue}`` — counter of messages
+  deferred because the worker does not register the task (BZ-06)
 - ``swarmq_task_duration_seconds{task_name,queue}`` — histogram
 - ``swarmq_tasks_active{queue}`` — gauge of in-flight tasks per queue
 - ``swarmq_queue_depth{queue,kind}`` — gauge (kind: pending = main queue
@@ -259,6 +261,14 @@ class Metrics:
                 labelnames=("queue",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 11 (BZ-06): Rueckstellungen unbekannter Tasks
+            # innerhalb der Gnadenfrist (Rolling Deploy).
+            self.tasks_unknown_deferred_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_tasks_unknown_deferred_total",
+                "Messages deferred because this worker does not register the task (within unknown_task_grace_s)",
+                labelnames=("queue",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -279,6 +289,7 @@ class Metrics:
             self.consumer_reregistrations_total = noop
             self.execution_guard_events_total = noop
             self.delay_tiers_unavailable = noop
+            self.tasks_unknown_deferred_total = noop
 
     @property
     def enabled(self) -> bool:
@@ -423,6 +434,11 @@ def _install_rejected_counter(dispatcher: SignalDispatcher, metrics: Metrics) ->
         ).inc()
 
     dispatcher.on_signal(Signal.TASK_REJECTED)(_count)
+
+    async def _count_deferred(**kw: Any) -> None:
+        metrics.tasks_unknown_deferred_total.labels(queue=str(kw.get("queue") or "")).inc()
+
+    dispatcher.on_signal(Signal.TASK_UNKNOWN_DEFERRED)(_count_deferred)
 
 
 def _install_outcome_counters(

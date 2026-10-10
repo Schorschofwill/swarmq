@@ -296,14 +296,14 @@ class TestRejectReasons:
     """
 
     @staticmethod
-    def _worker_with_spy(broker, backend, *tasks):
+    def _worker_with_spy(broker, backend, *tasks, **cfg):
         # Die Conftest-Fixtures bringen die Cancel-Flag-Defaults mit; ein
         # nackter ``MagicMock(spec=...)`` liefert dort truthy Mocks und der
         # Pre-Start-Cancel-Gate greift, bevor der Reject-Pfad erreicht ist.
         registry = TaskRegistry()
         for task in tasks:
             registry.register(task)
-        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **cfg)
         worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
         events: list[dict] = []
 
@@ -346,8 +346,10 @@ class TestRejectReasons:
         assert rejected["reason"] == "undecodable"
         assert rejected["task_id"] is None
 
+    # Gnadenfrist 0 (Plan 0.12.0, MR 11, BZ-06): erst nach der Frist ist der
+    # unbekannte Task terminal und ``TASK_REJECTED`` feuert.
     async def test_unregistered_task_names_the_task(self, broker, backend):
-        worker, _broker, events = self._worker_with_spy(broker, backend)
+        worker, _broker, events = self._worker_with_spy(broker, backend, unknown_task_grace_s=0)
         msg = make_message(_default_payload(name="not-registered"))
         msg.queue = "default"
 
@@ -363,7 +365,7 @@ class TestRejectReasons:
         unregistrierten Task ist er dekodiert -- ``task_not_found`` loggt die
         Kennung --, das Signal trug sie trotzdem nicht. Ohne Kennung ist die
         Nachricht im ``.XQ`` nicht wiederzufinden (``swarmq dlq inspect``)."""
-        worker, _broker, events = self._worker_with_spy(broker, backend)
+        worker, _broker, events = self._worker_with_spy(broker, backend, unknown_task_grace_s=0)
         payload = _default_payload(name="not-registered")
         msg = make_message(payload)
         msg.queue = "default"

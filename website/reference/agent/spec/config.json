@@ -379,6 +379,12 @@
       "type": "bool"
     },
     {
+      "default": 900.0,
+      "env_var": "SWARMQ_UNKNOWN_TASK_GRACE_S",
+      "name": "unknown_task_grace_s",
+      "type": "float"
+    },
+    {
       "default": 131072,
       "env_var": "SWARMQ_MALLOC_TRIM_THRESHOLD",
       "name": "malloc_trim_threshold",

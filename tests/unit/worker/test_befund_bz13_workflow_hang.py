@@ -20,6 +20,7 @@ Testliste:
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -93,15 +94,14 @@ def _failed_workflows(worker: Worker) -> list[str]:
 @pytest.mark.befund("BZ-13")
 async def test_unknown_task_step_marks_the_workflow_failed(broker, backend, config) -> None:
     # Gnadenfrist 0 (Plan 0.12.0, Abschnitt 6): Der unbekannte Task geht
-    # sofort in die DLQ. Ab MR 11 (BZ-06) stellt der Worker ihn sonst erst
-    # zurueck; dann muss hier die Gnadenfrist auf 0 gesetzt werden, statt
-    # die Voraussetzung abzuschwaechen -- der Test darf nicht vakuum-gruen
-    # werden.
-    worker = _workflow_worker(broker, backend, config, AddTask)
+    # sofort in die DLQ. Seit MR 11 (BZ-06) stellt der Worker ihn sonst erst
+    # zurueck; die Gnadenfrist steht deshalb auf 0, statt die Voraussetzung
+    # abzuschwaechen -- der Test darf nicht vakuum-gruen werden.
+    worker = _workflow_worker(broker, backend, dataclasses.replace(config, unknown_task_grace_s=0), AddTask)
 
     await worker._handle_message(_step("renamed_away"))
 
-    assert broker.route_via_dlx.await_count == 1, "Voraussetzung: unbekannter Task geht per DLX ins .XQ"
+    assert broker.dead_letter.await_count == 1, "Voraussetzung: unbekannter Task geht in die DLQ"
     assert _failed_workflows(worker) == [_WF_ID], "Schritt im .XQ, Workflow nicht fehlmarkiert"
 
 

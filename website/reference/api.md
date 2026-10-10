@@ -633,7 +633,8 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate limit hit; message delayed. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | `unique_for` dedup hit. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Terminal: the task was dead-lettered (retries exhausted or not retryable). Fires once. |
-| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | A message went to the broker DLX without diagnostic headers (`body_too_large`, `undecodable`, `unregistered_task`, `middleware_chain_factory`, `dlq_publish_failed`). |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | A message went to the broker DLX without diagnostic headers (`body_too_large`, `undecodable`, `middleware_chain_factory`, `dlq_publish_failed`), or an unregistered task was dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S` (`unregistered_task`, after `TASK_DLQ`). |
+| `TASK_UNKNOWN_DEFERRED` | `task_id`, `task_name`, `queue`, `delay`, `unknown_since` | The worker does not register the task and deferred the message within `SWARMQ_UNKNOWN_TASK_GRACE_S`; `delay` in seconds, `unknown_since` the first contact in Unix milliseconds. Once per deferral; counted in `swarmq_tasks_unknown_deferred_total`. |
 | `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` | After each workflow step publish, in addition to `TASK_ENQUEUED`. |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | `worker_id` | Worker start / graceful shutdown. |
 | `WORKER_HEARTBEAT` | `worker_id`, `uptime_seconds` | Every `SWARMQ_METRICS_SAMPLE_INTERVAL` seconds; only while metrics are enabled. |
@@ -643,6 +644,7 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Catch-up after downtime skipped cron occurrences. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Several definitions of one static cron have been live for more than 10 minutes; the leader emits it on every adoption tick while the conflict lasts. |
 | `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | A non-leader saw a scheduler leader without time zone support (`leader_version` `None` means before 0.10.0); once per leader with `outdated=True`, again with `outdated=False` when a current leader follows. |
+| `SCHEDULER_CRON_UNOWNED` | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` | The leader holds a static cron no live worker reports and it does not register itself (`held=True`), or releases it (`held=False`); once per transition, `held_count` is the number of held crons afterwards. Sets `swarmq_scheduler_crons_held`. |
 | `SCHEDULER_FIRE_UNROUTABLE` | `worker_id`, `schedule_name`, `queue`, `kind` | The leader's publish was returned (no such queue, BZ-03): `kind="cron_lost"` for a lost cron fire, `"oneshot_dropped"` for a deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`. Counted in `swarmq_scheduler_fires_unroutable_total`. |
 
 Handlers must accept `**kwargs`. Use `kwargs.get("batch_index")` for the

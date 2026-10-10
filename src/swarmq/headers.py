@@ -71,3 +71,10 @@ HEADER_DEAD_LETTERED_AT = "x-swarmq-dead-lettered-at"
 # der eigenen Konfiguration -- ein Leser mit kuerzerer Frist loescht sonst
 # Nachrichten, die der Worker laenger halten wollte (Review Phase 2).
 HEADER_DEAD_LETTER_TTL_MS = "x-swarmq-dead-letter-ttl-ms"
+
+# Erster Kontakt mit einem Task-Namen, den der Worker nicht kennt, in
+# Epoch-Millisekunden (Plan 0.12.0, MR 11, BZ-06). Zustands-Header der
+# Rueckstellschleife: jede Kopie der Gates traegt ihn weiter (Q6); die
+# fachliche Retry-Kopie, der DLQ-Stempel und ``dlq retry`` entfernen ihn,
+# damit eine spaetere Unbekanntheit (naechster Rollout) neu gemessen wird.
+HEADER_UNKNOWN_SINCE = "x-swarmq-unknown-since"

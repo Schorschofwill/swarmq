@@ -41,6 +41,7 @@ class ConfigValidation:
         heartbeat_timeout_s: float
         execution_guard_ttl_s: float
         execution_guard_done_ttl_s: float | None
+        unknown_task_grace_s: float
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
@@ -85,6 +86,10 @@ class ConfigValidation:
 
         if self.concurrency < 1:
             msg = f"concurrency must be >= 1, got {self.concurrency}"
+            raise ConfigurationError(msg)
+
+        if self.unknown_task_grace_s < 0:
+            msg = f"unknown_task_grace_s must be >= 0, got {self.unknown_task_grace_s}"
             raise ConfigurationError(msg)
 
         self._validate_logging()

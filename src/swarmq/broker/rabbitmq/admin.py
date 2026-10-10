@@ -19,7 +19,13 @@ from swarmq.broker.rabbitmq.connection import RabbitMQConnection
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
-from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+from swarmq.headers import (
+    HEADER_DEAD_LETTER_TTL_MS,
+    HEADER_DEAD_LETTERED_AT,
+    HEADER_REPLAY_ID,
+    HEADER_RETRY_COUNT,
+    HEADER_UNKNOWN_SINCE,
+)
 from swarmq.queue_names import delay_tiers
 
 
@@ -250,6 +256,10 @@ class RabbitMQAdmin(RabbitMQDelivery):
                         # Zeitstempel; ein erneutes Dead-Lettering stempelt neu.
                         forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
                         forward_headers.pop(HEADER_DEAD_LETTER_TTL_MS, None)
+                        # Q6 (Plan 0.12.0, MR 11): die Gnadenfrist fuer einen
+                        # unbekannten Task beginnt mit der Wiederholung neu
+                        # (eine DLX-Kopie per ``nack`` behielt den Header).
+                        forward_headers.pop(HEADER_UNKNOWN_SINCE, None)
                         # Neue Ausfuehrungs-Identitaet (KTD5): der Ausfuehrungs-
                         # schutz liesse die Wiederholung sonst als abgeschlossen
                         # fallen, solange der Done-Marker des ersten Laufs steht.

@@ -332,6 +332,12 @@ class SwarmQConfig(ConfigValidation):
     # Retries ausgeschoepft) in die DLQ legen (KTD7). Aus: Fehlerergebnis
     # speichern und bestaetigen wie vor MR !12. ``TaskInfo.dead_letter`` gewinnt.
     dead_letter_terminal_failures: bool = True
+    # Gnadenfrist fuer unbekannte Task-Namen (Plan 0.12.0, MR 11, BZ-06): ein
+    # Task, den dieser Worker nicht kennt (Rolling Deploy: neuer Producer,
+    # alter Worker), wird so lange mit Backoff zurueckgestellt, gemessen ab
+    # dem ersten Kontakt; danach Dead-Letter mit Fehlerergebnis. 0 schaltet
+    # die Frist ab (sofort Dead-Letter).
+    unknown_task_grace_s: float = 900.0
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -421,6 +427,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_EXECUTION_GUARD_MAX_ORPHANS", "execution_guard_max_orphans", "int"),
         ("SWARMQ_DEAD_LETTER_TTL_S", "dead_letter_ttl_s", "optional_float"),
         ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
+        ("SWARMQ_UNKNOWN_TASK_GRACE_S", "unknown_task_grace_s", "float"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),

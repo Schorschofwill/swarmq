@@ -45,6 +45,26 @@ All notable changes to SwarmQ. This project follows
   queues, now including the tiers).
 - **`RabbitMQBroker.ready_depth(queue)`**: messages ready in `{queue}`
   itself, without delay queues and DLQ.
+- **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (default `900`): how long a worker
+  defers a message whose task it does not register before it
+  dead-letters it; `0` dead-letters at first contact
+  ([configuration](configuration.md),
+  [unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
+- **Signal `SCHEDULER_CRON_UNOWNED`** (`worker_id`, `schedule_name`,
+  `task_name`, `held`, `held_count`), the gauge
+  `swarmq_scheduler_crons_held{worker_id}`, the Valkey set
+  `sq:{sched}:report:known` (names a worker from 0.12 has ever
+  reported; removed together with the definition) and the log events
+  `scheduler_cron_held_unowned`, `scheduler_cron_unowned_released`,
+  `scheduler_unowned_check_skipped`
+  ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)).
+- **Signal `TASK_UNKNOWN_DEFERRED`** (`task_id`, `task_name`, `queue`,
+  `delay`, `unknown_since`), the counter
+  `swarmq_tasks_unknown_deferred_total{queue}` and the header
+  `x-swarmq-unknown-since` (first contact, Unix milliseconds), plus the
+  log events `task_unknown_deferred`, `unknown_task_defer_failed` and
+  `unknown_task_dlq_failed` ([signals](../guides/signals.md),
+  [logging](logging.md)).
 
 ### Changed
 
@@ -99,6 +119,42 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A cron whose task was removed from the code no longer fires until
+  the prune period runs out.** Every fire of such a cron ended as an
+  unregistered task in the `.XQ`, for up to 24 h. The scheduler leader
+  now holds a static cron that a worker from 0.12 has reported at some
+  point, that no live worker reports any more and that the leader does
+  not register itself: the fire moves to `now +
+  SWARMQ_SCHEDULER_SEEN_INTERVAL_S` without publishing until a worker
+  reports it again or the leader prunes it. A CLI schedule of the same
+  name is never held. Right after a takeover the leader waits up to 5 s
+  for the cron reports; without them it fires as before (fail-open,
+  `scheduler_unowned_check_skipped`). **Known limits:** only a leader
+  from 0.12 holds; a 0.11 leader fires removed crons as before. Crons
+  reported only by workers before 0.12 are not held. A held cron does
+  not catch up its missed occurrences
+  ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)).
+- **An unregistered task no longer ends in the `.XQ` at first contact.**
+  During a rolling deploy with producers ahead of the workers, every
+  new task name was rejected to the broker DLX without retention or
+  error result, and every workflow with such a step failed. The worker
+  now defers the message with backoff (1 s, then as long as it has
+  waited so far, at most 60 s per round) for `SWARMQ_UNKNOWN_TASK_GRACE_S`
+  (default 15 min), measured from the first contact in
+  `x-swarmq-unknown-since`; a scheduler fire keeps its in-flight claim
+  open and its unique flag held meanwhile. After the grace period the
+  worker dead-letters the message itself: error result, workflow step
+  marked failed, unique flag released, `TASK_DLQ`, retention and
+  `x-swarmq-traceback` on the DLQ copy, then `TASK_REJECTED` with
+  `unregistered_task` and `task_not_found` (ERROR). **Changed
+  behaviour:** `unregistered_task` now follows `TASK_DLQ` and the DLQ
+  copy carries SwarmQ headers; `task_not_found` comes only after the
+  grace period. **Known limits:** only workers from 0.12 defer — a 0.11
+  worker on the same queue rejects an unknown task (also a deferral
+  copy) at first contact as before; until every worker runs 0.12,
+  start workers before producers. A producer that stays ahead longer
+  than the grace period fills the `.XQ` as before
+  ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
 - **A short retry or deferral no longer waits behind a long one.**
   All delays of a queue shared `{queue}.DQ`, and RabbitMQ only expires
   the message at its head: a retry waiting an hour held back every

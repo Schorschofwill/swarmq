@@ -34,7 +34,7 @@ DELIVERY_COUNT_HEADER = "x-delivery-count"
 ACQUIRED_COUNT_HEADER = "x-acquired-count"
 
 # (delivery, ctx, error_message, error_type) — siehe ``RetryHandler.dead_letter``.
-DeadLetter = Callable[[Any, GateContext, str, str], Awaitable[None]]
+DeadLetter = Callable[[Any, GateContext, str, str], Awaitable[object]]
 
 # Fester ``error_type`` fuer ``task_sent_to_dlq``: auf diesem Pfad gibt es
 # keine ausloesende Ausnahme, nur den Zustellzaehler des Brokers.

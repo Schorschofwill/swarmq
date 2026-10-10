@@ -70,7 +70,8 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | `TASK_RATE_LIMITED` | When the rate limiter defers a message | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | When a unique-task SETNX loses the race | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
 | `TASK_DLQ` | Once, when a message is terminally dead-lettered by the worker (retry exhaustion, `NoRetry`, delivery limit or execution guard orphan limit reached) | `task_id`, `task_name`, `queue`, `error` |
-| `TASK_REJECTED` | When the worker hands a message to the broker's dead-letter exchange without diagnostic headers: oversized body, undecodable body, unregistered task, broken middleware-chain factory, failed dead-letter publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `TASK_REJECTED` | When the worker hands a message to the broker's dead-letter exchange without diagnostic headers: oversized body, undecodable body, broken middleware-chain factory, failed dead-letter publish — and when it dead-letters an unregistered task after `SWARMQ_UNKNOWN_TASK_GRACE_S` (after `TASK_DLQ`) | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `TASK_UNKNOWN_DEFERRED` | Once per deferral of a message whose task this worker does not register, within `SWARMQ_UNKNOWN_TASK_GRACE_S` (rolling deploy) | `task_id`, `task_name`, `queue`, `delay` (seconds), `unknown_since` (Unix ms) |
 | `WORKFLOW_STEP_ENQUEUED` | After each workflow step is published (by `app.apply()` or the advancer in the worker), in addition to `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker lifecycle | `worker_id` |
 | `WORKER_HEARTBEAT` | Periodic liveness tick of the worker's metrics sampler | `worker_id`, `uptime_seconds` |
@@ -80,6 +81,7 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up after downtime skipped cron occurrences | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Several definitions of one static cron live for more than 10 minutes (leader, every adoption tick while it lasts) | `worker_id`, `schedule_name`, `fingerprints` |
 | `SCHEDULER_LEADER_OUTDATED` | The scheduler leader runs a swarmq without time zone support (`outdated=True`, once per leader), or a current leader follows (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = before 0.10.0), `outdated` |
+| `SCHEDULER_CRON_UNOWNED` | The leader starts holding a static cron that no live worker reports and it does not register itself (`held=True`), or releases it again (`held=False`); once per transition | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` |
 | `SCHEDULER_FIRE_UNROUTABLE` | The leader's publish was returned because the queue does not exist: a lost cron fire (`kind="cron_lost"`) or a deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (`kind="oneshot_dropped"`) | `worker_id`, `schedule_name`, `queue`, `kind` |
 
 `TASK_FAILED` is per attempt: a task with `max_retries=3` that always
@@ -101,7 +103,11 @@ when the source is `client.schedule_many` — use
 body never decoded. It is distinct from `TASK_DLQ`, which promises an
 error result and a task identity; the
 [dead letter guide](dead-letter-queues.md#three-ways-into-the-xq)
-explains which path a message took.
+explains which path a message took. `unregistered_task` is the one
+reason that follows `TASK_DLQ`: from 0.12 the worker defers an unknown
+task for `SWARMQ_UNKNOWN_TASK_GRACE_S` (`TASK_UNKNOWN_DEFERRED` on
+every deferral) and then dead-letters it itself, with an error result
+([unregistered tasks](dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
 
 Workflow steps fire `TASK_ENQUEUED` with the step's real task name
 (there is no `<workflow>` placeholder any more) and then

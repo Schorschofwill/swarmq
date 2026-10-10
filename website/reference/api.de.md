@@ -653,7 +653,8 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate-Limit erreicht; Nachricht verzögert. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | Dedup-Treffer durch `unique_for`. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Endgültig: Der Task ging in die DLQ (Retries erschöpft oder nicht wiederholbar). Feuert einmal. |
-| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` können `None` sein | Eine Nachricht ging ohne Diagnose-Header an den Broker-DLX (`body_too_large`, `undecodable`, `unregistered_task`, `middleware_chain_factory`, `dlq_publish_failed`). |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` können `None` sein | Eine Nachricht ging ohne Diagnose-Header an den Broker-DLX (`body_too_large`, `undecodable`, `middleware_chain_factory`, `dlq_publish_failed`), oder ein unregistrierter Task wurde nach `SWARMQ_UNKNOWN_TASK_GRACE_S` dead-gelettert (`unregistered_task`, nach `TASK_DLQ`). |
+| `TASK_UNKNOWN_DEFERRED` | `task_id`, `task_name`, `queue`, `delay`, `unknown_since` | Der Worker registriert den Task nicht und hat die Nachricht innerhalb von `SWARMQ_UNKNOWN_TASK_GRACE_S` zurückgestellt; `delay` in Sekunden, `unknown_since` der erste Kontakt in Unix-Millisekunden. Einmal je Rückstellung; gezählt in `swarmq_tasks_unknown_deferred_total`. |
 | `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` | Nach jedem Publish eines Workflow-Schritts, zusätzlich zu `TASK_ENQUEUED`. |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | `worker_id` | Worker-Start / Graceful Shutdown. |
 | `WORKER_HEARTBEAT` | `worker_id`, `uptime_seconds` | Alle `SWARMQ_METRICS_SAMPLE_INTERVAL` Sekunden; nur bei eingeschalteten Metriken. |
@@ -663,6 +664,7 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Nachholen nach Ausfallzeit hat Cron-Termine übersprungen. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Mehrere Definitionen eines statischen Crons leben seit mehr als 10 Minuten; der Leader sendet es in jedem Übernahme-Takt, solange der Konflikt besteht. |
 | `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | Ein Nicht-Leader hat einen Scheduler-Leader ohne Zeitzonen-Unterstützung gesehen (`leader_version` `None` heißt vor 0.10.0); einmal pro Leader mit `outdated=True`, erneut mit `outdated=False`, wenn ein aktueller Leader folgt. |
+| `SCHEDULER_CRON_UNOWNED` | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` | Der Leader hält einen statischen Cron zurück, den kein lebender Worker meldet und den er selbst nicht registriert (`held=True`), oder gibt ihn frei (`held=False`); einmal je Übergang, `held_count` ist die Zahl der danach zurückgehaltenen Crons. Setzt `swarmq_scheduler_crons_held`. |
 | `SCHEDULER_FIRE_UNROUTABLE` | `worker_id`, `schedule_name`, `queue`, `kind` | Der Broker hat einen Publish des Leaders zurückgegeben (Queue fehlt, BZ-03): `kind="cron_lost"` für einen verlorenen Cron-Fire, `"oneshot_dropped"` für einen nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfenen verzögerten Task. Gezählt in `swarmq_scheduler_fires_unroutable_total`. |
 
 Handler müssen `**kwargs` akzeptieren. Nutze `kwargs.get("batch_index")` für das nur in

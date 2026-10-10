@@ -90,7 +90,7 @@ def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any],
 # ``TASK_DLQ`` (Plan 0.12.0, MR 3, BZ-13/BZ-05). Scheitert der DLQ-Publish,
 # laeuft statt des ``redeliver`` der DLX-Fallback des Gates.
 PublishFailure = Callable[[Exception], Awaitable[None]]
-TerminalDeadLetter = Callable[[Any, GateContext, str, str, dict[str, Any], PublishFailure], Awaitable[None]]
+TerminalDeadLetter = Callable[[Any, GateContext, str, str, dict[str, Any], PublishFailure], Awaitable[object]]
 
 
 class LockGate:

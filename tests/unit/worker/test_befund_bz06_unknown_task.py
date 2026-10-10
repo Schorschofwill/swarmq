@@ -26,10 +26,6 @@ pytestmark = pytest.mark.timeout(5)
 
 
 @pytest.mark.befund("BZ-06")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-06: unbekannter Task geht beim ersten Kontakt per DLX ins .XQ, ohne Gnadenfrist fuer den Rolling Deploy",
-)
 async def test_first_delivery_of_an_unknown_task_is_deferred_not_dead_lettered(broker, backend, config) -> None:
     # Alter Worker: kennt nur ``add``; ein neuer Producer schickt ``new_task``.
     registry = TaskRegistry()

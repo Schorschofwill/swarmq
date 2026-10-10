@@ -204,9 +204,12 @@ What this means in practice:
 - A static cron that a live worker reports comes back within one
   interval after `swarmq schedule remove --permanent`. It only stays
   gone once no code reports it anymore.
-- A cron removed from code stops firing once no worker has reported
-  it for `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (default 24 h; from 0.11.0,
-  see [removing crons](#removing-crons-no-app-reports-anymore)). To get
+- A cron removed from code stops firing as soon as no live worker
+  reports it any more: from 0.12 the leader holds it (see
+  [held crons](#crons-nobody-reports-are-held)) and removes it once no
+  worker has reported it for `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (default
+  24 h; from 0.11.0, see
+  [removing crons](#removing-crons-no-app-reports-anymore)). To get
   rid of it at once, use `swarmq schedule remove --permanent NAME` once
   no worker reports it anymore.
 - A CLI schedule of the same name still beats the static cron, with
@@ -284,6 +287,47 @@ nothing. The period must be at least three times
     0.11.0 apps until the last app is upgraded; then watch
     `scheduler_cron_prune_skipped` for crons that would have been
     removed.
+
+### Crons nobody reports are held
+
+From 0.12 the leader does not fire a static cron that no live worker
+reports any more and that it does not register itself. Before, a cron
+whose task was removed from the code kept firing until the prune
+period (24 h) ran out, and every fire ended as an unregistered task in
+the `.XQ`. Now the leader holds such a cron: it moves the fire to
+`now + SWARMQ_SCHEDULER_SEEN_INTERVAL_S` without publishing, on every
+poll, until a worker reports the cron again or the leader prunes it.
+
+A cron counts as unowned when all of the following hold:
+
+- the leader has loaded the cron reports in its current term (right
+  after it took the lock it waits up to 5 s for that; without reports,
+  for example because Valkey was unreachable, it fires as before —
+  fail-open);
+- a worker from 0.12 has reported the name at some point
+  (`sq:{sched}:report:known`, a set of names that is only removed
+  together with the definition, by the prune or by `swarmq schedule
+  remove --permanent`);
+- no live report of the name exists;
+- the cron is not one of the leader's own static crons;
+- the stored definition has `source="static"` (a CLI schedule of the
+  same name is never held).
+
+The transition is logged once per cron: `scheduler_cron_held_unowned`
+(WARNING) when the hold starts, `scheduler_cron_unowned_released`
+(INFO) when the cron fires again or is removed. The signal
+`SCHEDULER_CRON_UNOWNED` (`schedule_name`, `task_name`, `held`,
+`held_count`) fires on both transitions, and the gauge
+`swarmq_scheduler_crons_held{worker_id}` shows how many crons the
+leader holds. A held cron does not fire its missed occurrences later:
+the next fire is the next occurrence after a worker reports it.
+
+**Mixed versions.** Only a leader from 0.12 holds crons; while a 0.11
+app holds the leadership, removed crons fire as before (their fires
+end in the `.XQ` with a retention once a 0.12 worker gives up on them,
+see [unregistered tasks](dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
+Crons reported only by workers before 0.12 are never in
+`sq:{sched}:report:known` and are not held.
 
 ### Conflicts
 

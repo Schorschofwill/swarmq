@@ -74,7 +74,8 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `TASK_RATE_LIMITED` | Wenn Rate-Limiter eine Nachricht aufschiebt | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
 | `TASK_DUPLICATE_DETECTED` | Wenn Unique-Task-SETNX das Race verliert | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
 | `TASK_DLQ` | Einmal, wenn der Worker eine Nachricht terminal dead-lettert (Retries erschöpft, `NoRetry`, Delivery-Limit oder Waisen-Grenze des Ausführungsschutzes erreicht) | `task_id`, `task_name`, `queue`, `error` |
-| `TASK_REJECTED` | Wenn der Worker eine Nachricht ohne Diagnose-Header an den Dead-Letter-Exchange des Brokers gibt: zu großer Body, nicht dekodierbarer Body, unregistrierter Task, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `TASK_REJECTED` | Wenn der Worker eine Nachricht ohne Diagnose-Header an den Dead-Letter-Exchange des Brokers gibt: zu großer Body, nicht dekodierbarer Body, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish — und wenn er einen unregistrierten Task nach `SWARMQ_UNKNOWN_TASK_GRACE_S` dead-lettert (nach `TASK_DLQ`) | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `TASK_UNKNOWN_DEFERRED` | Einmal je Rückstellung einer Nachricht, deren Task dieser Worker nicht registriert, innerhalb von `SWARMQ_UNKNOWN_TASK_GRACE_S` (Rolling Deploy) | `task_id`, `task_name`, `queue`, `delay` (Sekunden), `unknown_since` (Unix-ms) |
 | `WORKFLOW_STEP_ENQUEUED` | Nach jedem publizierten Workflow-Schritt (durch `app.apply()` oder den Advancer im Worker), zusätzlich zu `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker-Lifecycle | `worker_id` |
 | `WORKER_HEARTBEAT` | Periodischer Lebenszeichen-Tick des Metrik-Samplers im Worker | `worker_id`, `uptime_seconds` |
@@ -84,6 +85,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up nach Downtime hat Cron-Termine übersprungen | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Mehrere Definitionen eines statischen Crons leben länger als 10 Minuten (Leader, in jedem Übernahme-Takt, solange er besteht) | `worker_id`, `schedule_name`, `fingerprints` |
 | `SCHEDULER_LEADER_OUTDATED` | Der Scheduler-Leader führt ein swarmq ohne Zeitzonen-Unterstützung aus (`outdated=True`, einmal pro Leader), oder ein aktueller Leader folgt (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = vor 0.10.0), `outdated` |
+| `SCHEDULER_CRON_UNOWNED` | Der Leader beginnt, einen statischen Cron zurückzuhalten, den kein lebender Worker meldet und den er selbst nicht registriert (`held=True`), oder gibt ihn wieder frei (`held=False`); einmal je Übergang | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` |
 | `SCHEDULER_FIRE_UNROUTABLE` | Der Broker hat einen Publish des Leaders zurückgegeben, weil die Queue fehlt: ein verlorener Cron-Fire (`kind="cron_lost"`) oder ein nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfener verzögerter Task (`kind="oneshot_dropped"`) | `worker_id`, `schedule_name`, `queue`, `kind` |
 
 `TASK_FAILED` gilt pro Versuch: Ein Task mit `max_retries=3`, der immer
@@ -106,7 +108,12 @@ vorhanden, wenn die Quelle `client.schedule_many` ist — nutze
 Body nie dekodiert wurde. Es ist von `TASK_DLQ` zu unterscheiden, das
 ein Fehlerergebnis und eine Task-Identität verspricht; der
 [Dead-Letter-Guide](dead-letter-queues.de.md#drei-wege-in-die-xq)
-erklärt, welchen Weg eine Nachricht genommen hat.
+erklärt, welchen Weg eine Nachricht genommen hat. `unregistered_task`
+ist der eine Grund, der auf `TASK_DLQ` folgt: Seit 0.12 stellt der
+Worker einen unbekannten Task für `SWARMQ_UNKNOWN_TASK_GRACE_S` zurück
+(`TASK_UNKNOWN_DEFERRED` bei jeder Rückstellung) und dead-lettert ihn
+danach selbst, mit Fehlerergebnis
+([unregistrierte Tasks](dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)).
 
 Workflow-Schritte feuern `TASK_ENQUEUED` mit dem echten Task-Namen des
 Schritts (den Platzhalter `<workflow>` gibt es nicht mehr) und danach

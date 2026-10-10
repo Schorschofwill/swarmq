@@ -457,3 +457,20 @@ async def test_fire_unroutable_signal_increments_unroutable_counter():
     body = m.render().decode()
     assert 'swarmq_scheduler_fires_unroutable_total{kind="cron_lost",queue="reports"} 2.0' in body
     assert 'swarmq_scheduler_fires_unroutable_total{kind="oneshot_dropped",queue="reports"} 1.0' in body
+
+
+async def test_unknown_task_deferrals_are_counted_per_queue():
+    """Plan 0.12.0, MR 11 (BZ-06): jede Rueckstellung eines unbekannten Tasks."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+
+    for _ in range(2):
+        await disp.dispatch(
+            Signal.TASK_UNKNOWN_DEFERRED, task_id="t", task_name="new_task", queue="q1",
+            delay=1.0, unknown_since=0,
+        )
+
+    assert m.registry.get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
