@@ -72,6 +72,10 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # Neues Feld am Ende mit Default None, damit Eintraege aus aelteren
     # Versionen weiter dekodieren und ihr Fingerabdruck gleich bleibt.
     timezone: str | None = None
+    # Plan 0.12.0 (BZ-02): die von ``schedule(delay=|eta=)`` gelieferte ID,
+    # unter der der Leader den Oneshot feuert. Neues Feld am Ende mit Default
+    # None (Q1); Crons lassen es leer und bekommen je Fire eine neue ID.
+    task_id: str | None = None
 
 
 def make_schedfire_key(schedule_name: str, fire_ts_ms: int) -> str:

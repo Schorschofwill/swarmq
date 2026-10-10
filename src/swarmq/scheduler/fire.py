@@ -81,7 +81,7 @@ class SchedulerFire:
             return
 
         # Build the task message body — same shape as Client.schedule.
-        task_id = str(uuid.uuid7())
+        task_id = _fire_task_id(schedule_name, definition)
         body = encode_json(
             {
                 "task": {
@@ -276,3 +276,18 @@ class SchedulerFire:
                 task_name=task_name,
                 **_error_fields(exc),
             )
+
+
+_ONESHOT_PREFIX = "oneshot:"
+
+
+def _fire_task_id(schedule_name: str, definition: ScheduleDefinition) -> str:
+    """task_id eines Fires (BZ-02): ein Oneshot (delay/eta) feuert unter der
+    ID, die ``schedule()`` geliefert hat (Feld ``task_id``, sonst Suffix von
+    ``oneshot:<id>`` für Einträge eines 0.11-Producers); ein Cron bekommt je
+    Fire eine neue."""
+    if definition.cron is None and definition.task_id:
+        return definition.task_id
+    if definition.cron is None and schedule_name.startswith(_ONESHOT_PREFIX):
+        return schedule_name.removeprefix(_ONESHOT_PREFIX)
+    return str(uuid.uuid7())

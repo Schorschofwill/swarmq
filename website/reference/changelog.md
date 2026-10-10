@@ -20,6 +20,18 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A deferred task runs under the ID that `schedule()` returned.**
+  `schedule(delay=|eta=)` returned one ID, and the leader fired the task
+  under a new one. `get_result()` on the returned ID timed out,
+  `cancel()` had no effect, and the dedup flag of `unique_for` was never
+  released, so every new call with the same arguments returned the old
+  ID until `unique_for` ran out. The one-shot entry now stores the ID in
+  the new field `ScheduleDefinition.task_id`; entries without it fire
+  under the ID in their name `oneshot:<task_id>`. Crons still get a new
+  ID per fire. This needs a leader on 0.12 or later: while a leader
+  before 0.12 holds the role, deferred tasks still fire under a new ID
+  ([deferred execution](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
+  The schedule definition gets the field `task_id` (`null` for crons).
 - **A new scheduler leader no longer scans the whole Valkey database.**
   On takeover it looked for the handover marker of its predecessor with
   `SCAN`, before its first lock renewal; with millions of keys that

@@ -38,6 +38,14 @@ store and publishes to RabbitMQ at fire time. See
 `delay=0` is a plain immediate publish; only a positive `delay` or
 any `eta` takes the scheduler path.
 
+A deferred task runs under the ID that `schedule()` returned, so
+`get_result()`, `cancel()` and the dedup flag of `unique_for` work as
+for an immediate task. The ID is stored in the field `task_id` of the
+one-shot entry (`oneshot:<task_id>`). A leader before 0.12 ignores the
+field and fires under a new ID: while such a leader holds the role,
+`get_result()` on the returned ID times out and `cancel()` has no
+effect. Each cron fire gets a new ID.
+
 ## Cron scheduling
 
 For recurring work, set `cron` on `TaskInfo`:

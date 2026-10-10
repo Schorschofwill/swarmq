@@ -606,6 +606,7 @@ class ClientScheduling(ClientScheduleResolve):
             source="cli_unique" if dedup_hash is not None else "cli",
             dedup_hash=dedup_hash,
             unique_until=unique_until,
+            task_id=task_id,
         )
 
         # Rollback the dedup flag if the

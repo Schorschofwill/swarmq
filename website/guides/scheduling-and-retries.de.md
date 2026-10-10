@@ -39,6 +39,15 @@ Store und publisht zum Fire-Zeitpunkt an RabbitMQ. Siehe
 `delay=0` ist ein einfacher Immediate-Publish; nur positives
 `delay` oder beliebiges `eta` nimmt den Scheduler-Pfad.
 
+Ein verzögerter Task läuft unter der ID, die `schedule()` geliefert
+hat. `get_result()`, `cancel()` und das Dedup-Flag von `unique_for`
+wirken daher wie bei einem sofortigen Task. Die ID steht im Feld
+`task_id` des Oneshot-Eintrags (`oneshot:<task_id>`). Ein Leader vor
+0.12 kennt das Feld nicht und feuert unter einer neuen ID. Solange ein
+solcher Leader die Rolle hat, läuft `get_result()` auf die gelieferte ID
+in den Timeout, und `cancel()` wirkt nicht. Jeder Cron-Fire bekommt eine
+neue ID.
+
 ## Cron-Scheduling
 
 Für wiederkehrende Arbeit setze `cron` auf `TaskInfo`:

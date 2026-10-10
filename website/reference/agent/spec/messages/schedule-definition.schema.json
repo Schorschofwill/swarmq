@@ -68,6 +68,17 @@
             "static"
           ]
         },
+        "task_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "task_name": {
           "type": "string"
         },

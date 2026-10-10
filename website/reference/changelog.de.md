@@ -20,6 +20,20 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein verzögerter Task läuft unter der ID, die `schedule()`
+  geliefert hat.** `schedule(delay=|eta=)` lieferte eine ID, und der
+  Leader feuerte den Task unter einer neuen. `get_result()` auf die
+  gelieferte ID lief in den Timeout, `cancel()` wirkte nicht, und das
+  Dedup-Flag von `unique_for` wurde nie freigegeben: Jeder neue Aufruf
+  mit gleichen Argumenten lieferte bis zum Ablauf von `unique_for` die
+  alte ID. Der Oneshot-Eintrag speichert die ID jetzt im neuen Feld
+  `ScheduleDefinition.task_id`; Einträge ohne das Feld feuern unter der
+  ID aus ihrem Namen `oneshot:<task_id>`. Crons bekommen weiter je Fire
+  eine neue ID. Das setzt einen Leader ab 0.12 voraus: Solange ein
+  Leader vor 0.12 die Rolle hat, feuern verzögerte Tasks weiter unter
+  einer neuen ID
+  ([verzögerte Ausführung](../guides/scheduling-and-retries.md#immediate-vs-deferred)).
+  Die Schedule-Definition bekommt das Feld `task_id` (`null` bei Crons).
 - **Ein neuer Scheduler-Leader durchsucht nicht mehr die ganze
   Valkey-Datenbank.** Bei der Übernahme suchte er den Handover-Marker
   seines Vorgängers per `SCAN`, noch vor der ersten Lock-Verlängerung;

@@ -118,10 +118,6 @@ async def _stop(task: asyncio.Task[None]) -> None:
 
 
 @pytest.mark.befund("BZ-02")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-02: Ergebnis liegt unter der neuen Fire-ID; get_result(tid) laeuft in den Timeout",
-)
 async def test_bz02_get_result_of_delayed_task(rabbitmq_url, valkey_url):
     queue, task_name = _queue(), _name("delayed")
 
@@ -138,10 +134,6 @@ async def test_bz02_get_result_of_delayed_task(rabbitmq_url, valkey_url):
 
 
 @pytest.mark.befund("BZ-02")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-02: cancel(tid) setzt das Flag fuer die zurueckgegebene ID, der Worker prueft die neue ID des Fires",
-)
 async def test_bz02_cancel_prevents_delayed_task(rabbitmq_url, valkey_url):
     queue = _queue()
     victim_name, marker_name = _name("victim"), _name("marker")
@@ -172,10 +164,6 @@ async def test_bz02_cancel_prevents_delayed_task(rabbitmq_url, valkey_url):
 
 
 @pytest.mark.befund("BZ-02")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-02: Freigabe mit der neuen Fire-ID scheitert; das Flag bleibt unique_for + delay stehen",
-)
 async def test_bz02_unique_completion_flag_released_after_delayed_run(rabbitmq_url, valkey_url):
     queue, task_name = _queue(), _name("uniq")
     runs = 0

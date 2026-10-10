@@ -52,10 +52,6 @@ def _published_task_ids(broker) -> list[str]:
 
 
 @pytest.mark.befund("BZ-02")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-02: der Leader feuert delay/eta-Tasks mit einer neuen task_id statt der von schedule() gelieferten",
-)
 async def test_bz02_deferred_task_fires_under_returned_task_id(
     broker,
     config,
