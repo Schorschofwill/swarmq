@@ -10,11 +10,14 @@ Queue-Argumente unverändert.
 Test-Liste:
 - [x] 0.11.0-Worker auf einer von 0.12 angelegten Queue: 406, Exit ≠ 0, Nachrichten
       und Argumente unverändert
+- [x] Rollback auf 0.11.1 (Review MR 8, P2-6): 0.12 legt die Queue an und stoppt,
+      0.11.1 allein arbeitet Retry und DLQ ab, Argumente unverändert
 """
 
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from typing import Any
 
 import aio_pika
@@ -24,12 +27,21 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
-from tests.compat._harness import ROLLBACK_LIMIT_VERSION, message_count
+from tests.compat._harness import (
+    OLD_VERSION,
+    ROLLBACK_LIMIT_VERSION,
+    CompatWorker,
+    consumer_count,
+    message_count,
+    recorded_runs,
+)
+from tests.support.wait import wait_until
 from tests.support.worker_subprocess import kill_subprocess, spawn_worker
 
 pytestmark = [pytest.mark.compat, pytest.mark.timeout(120)]
 
 _MESSAGES = 3
+_EVENT_TIMEOUT = 20.0
 _ALO = {"x-dead-letter-strategy": "at-least-once", "x-overflow": "reject-publish"}
 
 
@@ -93,5 +105,48 @@ async def test_0_11_0_fails_cleanly_on_a_queue_created_by_0_12(
     assert "PRECONDITION_FAILED" in output, output[-2000:]
     assert "x-dead-letter-strategy" in output, output[-2000:]
     assert await message_count(rabbitmq_url, queue) == _MESSAGES
+    for name, arguments in _arguments_012(queue).items():
+        await _declare_equivalent(rabbitmq_url, name, arguments)
+
+
+async def test_0_11_1_alone_retries_and_dead_letters_on_a_queue_created_by_0_12(
+    start_worker: Callable[..., CompatWorker],
+    python_011: str,
+    python_repo: str,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    """Rollback (Review MR 8, P2-6): 0.12 legt die Queue-Familie an und stoppt;
+    0.11.1 allein übernimmt die at-least-once-Argumente und arbeitet Retry
+    (über ``{queue}.DQ``) und DLQ (``{queue}.XQ``) ab."""
+
+    async def consumers(count: int) -> bool:
+        return await consumer_count(rabbitmq_url, queue) == count
+
+    new = start_worker(python_repo, "repo")
+    assert await wait_until(lambda: consumers(1), timeout=_EVENT_TIMEOUT)
+    new.stop()
+    assert await wait_until(lambda: consumers(0), timeout=_EVENT_TIMEOUT)
+    start_worker(python_011, OLD_VERSION)
+    assert await wait_until(lambda: consumers(1), timeout=_EVENT_TIMEOUT)
+
+    swarm = SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue])
+    async with swarm:
+        producer = Client(swarm.broker, swarm.backend)
+        flaky = await producer.schedule("compat_flaky", queue=queue)
+        poison = await producer.schedule("compat_poison", queue=queue)
+        assert await swarm.get_result(flaky, timeout=_EVENT_TIMEOUT) == f"pypi-{OLD_VERSION}"
+
+        async def dead_lettered() -> bool:
+            return await message_count(rabbitmq_url, f"{queue}.XQ") == 1
+
+        assert await wait_until(dead_lettered, timeout=_EVENT_TIMEOUT), "poison message never reached the DLQ"
+
+    runs = [(tid, attempt, runtime) for _, tid, attempt, runtime in await recorded_runs(valkey_url, queue)]
+    assert sorted(runs) == sorted(
+        [(flaky, 1, f"pypi-{OLD_VERSION}"), (flaky, 2, f"pypi-{OLD_VERSION}"), (poison, 1, f"pypi-{OLD_VERSION}")]
+    )
+    assert await message_count(rabbitmq_url, queue) == 0
     for name, arguments in _arguments_012(queue).items():
         await _declare_equivalent(rabbitmq_url, name, arguments)

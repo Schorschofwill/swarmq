@@ -11,7 +11,8 @@ unbekannter Task, Replay in-flight, Rollback, Namensraum, zwei Apps).
 
 Test-Liste:
 - [x] 0.11- und 0.12-Worker auf derselben Queue mit Retry: jede Nachricht genau
-      zwei Versuche, Ergebnis über den 0.12-Client lesbar, beide Versionen arbeiten
+      zwei Versuche, Ergebnis über den 0.12-Client lesbar, beide Versionen arbeiten;
+      in beiden Startreihenfolgen, die erste Version legt die Queue an (Review MR 8, P2-6)
 - [x] Cron-Fire mit Leaderwechsel 0.11 -> 0.12: je erzwungenem Fire genau ein Lauf
 - [x] Cron-Fire mit Leaderwechsel 0.12 -> 0.11: dito
 - [x] DLQ-Replay über die 0.12-CLI an einen 0.11-Worker: der Task läuft erneut und gelingt
@@ -65,6 +66,15 @@ async def app(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterator[S
 
 
 @pytest.fixture
+async def undeclared_app(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterator[SwarmQ]:
+    """App aus dem Arbeitsstand ohne Vorab-Deklaration: der zuerst gestartete
+    Worker legt die Queue-Familie an."""
+    swarm = SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue])
+    async with swarm:
+        yield swarm
+
+
+@pytest.fixture
 def producer(app: SwarmQ) -> Client:
     """Producer ohne Registry: die Tasks leben nur in den Worker-Prozessen."""
     return Client(app.broker, app.backend)
@@ -94,19 +104,26 @@ async def _wait_runs(valkey_url: str, queue: str, name: str, count: int) -> list
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("first", ["old", "new"], ids=["old-creates", "new-creates"])
 async def test_retry_between_old_and_new_worker_on_one_queue(
+    first: str,
     start_worker: StartWorker,
     python_011: str,
     python_repo: str,
-    app: SwarmQ,
-    producer: Client,
+    undeclared_app: SwarmQ,
     rabbitmq_url: str,
     valkey_url: str,
     queue: str,
 ) -> None:
-    start_worker(python_011, OLD_VERSION)
-    start_worker(python_repo, "repo")
+    """Review MR 8, P2-6: die zuerst gestartete Version legt die Queue an
+    (0.11.1: Argumente aus 0.11; 0.12: at-least-once), die zweite übernimmt sie."""
+    old, new = (python_011, OLD_VERSION), (python_repo, "repo")
+    for python, expect in (old, new) if first == "old" else (new, old):
+        start_worker(python, expect)
+        await _wait_consumers(rabbitmq_url, queue, 1)
     await _wait_consumers(rabbitmq_url, queue, 2)
+    app = undeclared_app
+    producer = Client(app.broker, app.backend)
 
     task_ids = [await producer.schedule("compat_flaky", queue=queue) for _ in range(20)]
     results = {task_id: await app.get_result(task_id, timeout=_EVENT_TIMEOUT) for task_id in task_ids}
