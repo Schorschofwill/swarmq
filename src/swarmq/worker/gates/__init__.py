@@ -29,6 +29,7 @@ from swarmq.contracts.coordination import (
 )
 from swarmq.exceptions import SettleFailedAfterPublish
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
+from swarmq.identity import copy_headers
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
@@ -170,13 +171,12 @@ def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
     """Header fuer eine neue Kopie von *delivery* (Retry, Zurueckstellung,
     Requeue): alle Header des Originals ohne die Zustellzaehler des Brokers
     und ohne ``x-swarmq-backend-defer-count`` (die Zurueckstellung setzt ihn
-    selbst). Hielt die Zustellung einen Schedfire-Claim, traegt die Kopie
-    dessen Owner-Token -- sie uebernimmt den Claim, falls dessen Freigabe
-    scheitert."""
-    headers = {
-        key: value for key, value in (delivery.headers or {}).items()
-        if key not in _NOT_COPIED
-    }
+    selbst); ``x-death`` geht als ``x-swarmq-xdeath-base`` mit (MR 12). Hielt
+    die Zustellung einen Schedfire-Claim, traegt die Kopie dessen Owner-Token
+    -- sie uebernimmt den Claim, falls dessen Freigabe scheitert."""
+    # MR 12 (BZ-08): ``x-death`` wird zur Base -- der Broker baut es beim
+    # naechsten Dead-Lettern neu auf (Spike S5), die Identitaet bleibt so stabil.
+    headers = {key: value for key, value in copy_headers(delivery.headers).items() if key not in _NOT_COPIED}
     if ctx.schedfire_claim is not None:
         headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim.header_value()
     return headers

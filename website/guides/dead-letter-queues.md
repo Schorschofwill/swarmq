@@ -191,10 +191,18 @@ full retry budget on redelivery. Other headers (traceback, dedup
 hash, enqueued-at) survive so the operator context is preserved.
 The republished message carries no `expiration` and no
 `x-swarmq-dead-lettered-at`; if it fails again, it is dead-lettered
-with a fresh retention. It also gets a new `x-swarmq-replay-id`: the
+with a fresh retention, and `x-swarmq-enqueued-at` restarts, so a task
+with `max_age` does not expire at once. The replay keeps the
+`x-swarmq-replay-id` the worker stamped when it dead-lettered the
+message (from 0.12): the
 [execution guard](../explanation/delivery-semantics.md#execution-guard)
-would otherwise skip it as already finished while the marker of the
-first run still exists.
+treats the replay as a new execution and runs it, while a second
+`dlq retry` of the same message -- or its at-least-once duplicate --
+carries the same identity and is skipped. A message a 0.11 worker
+dead-lettered, or old stock without that stamp, gets a fresh id on
+every retry instead. "Move messages" in the RabbitMQ UI or a shovel
+replays the message with the same headers and therefore runs it too,
+but does not restart `x-swarmq-enqueued-at`.
 
 ### All messages
 

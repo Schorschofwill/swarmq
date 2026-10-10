@@ -37,6 +37,7 @@ from swarmq.exceptions import (
     UnroutableMessage,
 )
 from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, HEADER_UNKNOWN_SINCE
+from swarmq.identity import dead_letter_generation
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
@@ -116,6 +117,8 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         queue_name: str,
         message_body: bytes,
         headers: Mapping[str, Any] | None = None,
+        *,
+        at_ms: int | None = None,
     ) -> None:
         # Q6 (Plan 0.12.0, MR 11): Zustands-Header der Rueckstellschleife
         # enden am DLQ-Stempel; ein ``dlq retry`` beginnt mit frischer Frist.
@@ -126,7 +129,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             expiration=self.dead_letter_ttl_s,
             headers={
                 **stamped,
-                HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000),
+                HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000) if at_ms is None else at_ms,
                 HEADER_DEAD_LETTER_TTL_MS: dead_letter_ttl_header(self.dead_letter_ttl_s),
             },
         )
@@ -399,9 +402,14 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         await self._ack_after_publish(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
+        # Neue Ausfuehrungsgeneration (Plan 0.12.0, MR 12, BZ-08): Generations-
+        # ID und ``x-swarmq-dlq-gen`` entstehen mit ``x-swarmq-dead-lettered-at``
+        # im selben Stempel; alle Dead-Letter-Pfade des Workers laufen hier durch.
+        at_ms = int(self.clock() * 1000)
+        stamped = dead_letter_generation(headers, delivery.body, at_ms)
         await publish_redeclaring_once(
             self,
             delivery.queue,
-            lambda: self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers),
+            lambda: self._publish_to_dead_letter_queue(delivery.queue, delivery.body, stamped, at_ms=at_ms),
         )
         await self._ack_after_publish(delivery)

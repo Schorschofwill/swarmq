@@ -368,6 +368,12 @@
     },
     {
       "default": 604800.0,
+      "env_var": "SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S",
+      "name": "execution_guard_backlog_ttl_s",
+      "type": "float"
+    },
+    {
+      "default": 604800.0,
       "env_var": "SWARMQ_DEAD_LETTER_TTL_S",
       "name": "dead_letter_ttl_s",
       "type": "float | None"

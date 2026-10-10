@@ -239,11 +239,29 @@ standardmäßig an). Eine erneut zugestellte Nachricht läuft nicht,
 solange dieselbe Ausführung anderswo läuft, nachdem sie abgeschlossen
 ist oder nachdem ein Retry sie überholt hat.
 
-**Identität.** Eine Ausführung ist die Task-ID plus der Header
-`x-swarmq-replay-id`, falls vorhanden. `swarmq dlq retry` und
-`dlq retry --all` setzen eine neue Replay-ID, damit eine bewusste
-Wiederholung erneut läuft, auch solange der Marker des ersten Laufs
-steht.
+**Identität.** Eine Ausführung ist die Task-ID, plus der Header
+`x-swarmq-replay-id`, falls vorhanden, plus die Zahl der Broker-Tode
+der Nachricht außerhalb der Delay-Queues (seit 0.12). Diese Zahl ist
+`x-swarmq-xdeath-base` plus die `count`-Werte in `x-death`, deren Queue
+weder `{queue}.DQ` noch eine Delay-Stufe ist; ohne beides ist die
+Identität byte-gleich zu 0.11 (`task_id` bzw. `task_id|<Replay-ID>`).
+Jede Kopie, die SwarmQ selbst publiziert (Retry, Zurückstellung,
+Dead-Lettering, `dlq retry`), nimmt `x-death` als
+`x-swarmq-xdeath-base` mit, denn der Broker baut `x-death` beim
+nächsten Dead-Lettern neu auf. Dead-lettert der Worker eine Nachricht,
+trägt die Kopie in `{queue}.XQ` bereits die Replay-ID der nächsten
+Generation (`x-swarmq-replay-id`, aus der aktuellen Identität
+abgeleitet, dazu `x-swarmq-dlq-gen` gleich `x-swarmq-dead-lettered-at`).
+Eine Wiederholung, die die Header behält -- `swarmq dlq retry`, "Move
+messages" in der RabbitMQ-UI, ein Shovel, ein älteres CLI --, ist damit
+eine neue Ausführung und läuft, auch solange der Done-Marker des ersten
+Laufs steht. Eine Nachricht, die der Broker selbst dead-gelettert hat
+(Delivery-Limit, `route_via_dlx`), bekommt ihre neue Identität genauso
+aus `x-death`. Zwei Zustellungen derselben Wiederholung
+(at-least-once-Duplikat, zweimal `dlq retry` derselben Nachricht)
+teilen die Identität, die zweite wird übersprungen. Ein so wiederholter
+Scheduler-Fire läuft ebenfalls: Seine Completed- und In-Flight-Marker
+nutzen den Key `<Fire>|<Identitäts-Suffix>`.
 
 **Ablauf.** Nach dem Task-Lookup und vor der Expiry-Prüfung setzt der
 Worker einen Running-Marker mit eigenem Owner-Token und einer TTL von
@@ -325,7 +343,13 @@ die Neuzustellung den Task dann erneut aus.
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` Sekunden,
 mindestens `SWARMQ_EXECUTION_GUARD_TTL_S`. Zurückgestellte Kopien
 können hinter langen Retry-Verzögerungen stecken, und ab RabbitMQ 4.3
-bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Keys:
+bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Der
+Done-Marker einer Wiederholung (Replay-ID gesetzt oder zuvor vom Broker
+dead-gelettert) lebt mindestens `SWARMQ_DEAD_LETTER_TTL_S` -- ein
+zweiter `dlq retry` derselben `.XQ`-Nachricht Tage später trägt dieselbe
+Identität und muss weiter übersprungen werden; bei
+`SWARMQ_DEAD_LETTER_TTL_S=none` stattdessen
+`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (Standard 7 Tage). Keys:
 `sq:guard:{<identity>}:run` (Running-Marker) und
 `sq:guard:{<identity>}:state` (Done, Superseded, Waisen), beide unter
 demselben Hash-Tag.
@@ -353,6 +377,18 @@ nicht exactly-once:
   setzen und prüfen keine Marker. Bis jeder Worker einer Queue 0.11.0
   läuft, ist eine Zustellung, die ein älterer Worker bearbeitet, nicht
   geschützt.
+- **Wiederholungen im Mischbetrieb mit 0.11.** Ein 0.11-Worker ignoriert
+  `x-swarmq-xdeath-base` und `x-death`: Eine Wiederholung nach einem
+  Broker-Dead-Lettering (Delivery-Limit, `route_via_dlx`), die einen
+  0.11-Worker erreicht, wird wie bisher verworfen, ebenso ein
+  wiederholter Scheduler-Fire (Verlust, keine Doppelausführung). Eine
+  Wiederholung in-flight beim Versionswechsel kann doppelt laufen
+  (Identität mit und ohne Todeszähler). Bestand in der `.XQ` ohne
+  Generation bekommt bei jedem `dlq retry` eine neue ID, ein mehrfacher
+  Retry läuft dort weiter doppelt. Nach "Move messages" in der
+  RabbitMQ-UI zählt die erste Ausführung das rohe `x-death` (keine
+  Base). Eine UI-Wiederholung eines Tasks mit `max_age` kann sofort
+  ablaufen: Nur `dlq retry` setzt `x-swarmq-enqueued-at` neu.
 - `FIRE_AND_FORGET`-Tasks werden vor der Ausführung bestätigt und
   nicht geschützt. Ein eigenes Backend ohne `execution_guard`-Store
   schaltet den Schutz ab.

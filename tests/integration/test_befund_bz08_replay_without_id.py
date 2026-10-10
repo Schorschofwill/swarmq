@@ -1,21 +1,23 @@
-"""Nachweis BZ-08: DLQ-Replay ohne ``x-swarmq-replay-id`` wird vom
-Ausfuehrungsschutz still verworfen.
+"""Nachweis BZ-08: DLQ-Replay ohne neue ``x-swarmq-replay-id`` wurde vom
+Ausfuehrungsschutz still verworfen (behoben in MR 12).
 
 Register: docs/befunde/betrieb-ueber-zeit-2026-10.md (BZ-08).
 
-Nur ``swarmq dlq retry`` ab 0.11 setzt eine neue ``x-swarmq-replay-id``. Wer
-die Nachricht anders aus dem ``.XQ`` zurueckspielt -- "Move messages" in der
+Bis 0.11 setzte nur ``swarmq dlq retry`` eine neue ``x-swarmq-replay-id``. Wer
+die Nachricht anders aus dem ``.XQ`` zurueckspielte -- "Move messages" in der
 RabbitMQ-UI, Shovel, swarmv (pinnt swarmq<0.8), ein CLI vor 0.11 --,
-publiziert sie mit derselben Task-ID und ohne Replay-ID. ``dead_letter`` hat
-den Done-Marker gesetzt (TTL 3900 s); ``guard_claim.lua`` liefert ``done``,
-das Gate bestaetigt und verwirft die Nachricht mit einer INFO-Zeile
-(``duplicate_delivery_skipped``). Der Task laeuft nicht.
+publizierte sie mit derselben Identitaet; ``guard_claim.lua`` lieferte
+``done``, das Gate verwarf die Nachricht (``duplicate_delivery_skipped``).
+
+Seit MR 12 traegt die DLQ-Kopie des Workers als ``x-swarmq-replay-id`` die
+Generations-ID der naechsten Ausfuehrung. Ein Replay, das die Header
+unveraendert laesst, ist damit eine neue Identitaet und laeuft.
 
 Gegen echtes RabbitMQ und Valkey (Testports 5699/6399 via itest.sh).
 
 Testliste:
-# [x] Task scheitert -> DLQ; Nachricht unveraendert (ohne Replay-ID) aus dem
-#     .XQ in die Haupt-Queue zurueckgelegt -> der Task laeuft erneut
+# [x] Task scheitert -> DLQ; Nachricht unveraendert (Generations-ID bleibt)
+#     aus dem .XQ in die Haupt-Queue zurueckgelegt -> der Task laeuft erneut
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
+from swarmq.identity import generation_id, task_id_of
 from swarmq.task import Task, TaskInfo
 from tests.support.wait import wait_until
 from tests.unit._log_capture import capture_swarmq_logs
@@ -85,7 +88,8 @@ async def _wait_for(predicate: Callable[[], bool], timeout: float = 10.0) -> Non
 
 async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any]:
     """Nachricht aus ``{queue}.XQ`` holen und unveraendert (Body + Header,
-    ohne neue Replay-ID) in die Haupt-Queue legen -- wie "Move messages"."""
+    Replay-ID = Generations-ID des Stempels) in die Haupt-Queue legen -- wie
+    "Move messages"."""
     broker = RabbitMQBroker(rabbitmq_url)
     await broker.connect()
     try:
@@ -94,18 +98,13 @@ async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any
         await channel.close()
         assert message is not None, "Voraussetzung: Nachricht liegt im .XQ"
         headers = dict(message.headers or {})
-        assert "x-swarmq-replay-id" not in headers
+        assert headers["x-swarmq-replay-id"] == generation_id(task_id_of(message.body) or "")
         await broker.publish(queue, message.body, headers=headers)
         return headers
     finally:
         await broker.close()
 
 
-@pytest.mark.befund("BZ-08")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-08: Replay aus dem .XQ ohne x-swarmq-replay-id wird als Duplikat (done) still bestaetigt und verworfen",
-)
 async def test_replay_without_replay_id_runs_the_task_again(rabbitmq_url, valkey_url, queue, runs, _tasks) -> None:
     with capture_swarmq_logs() as logs:
         async with _worker(rabbitmq_url, valkey_url, queue) as app:

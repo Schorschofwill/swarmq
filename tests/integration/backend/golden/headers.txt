@@ -1,6 +1,7 @@
 x-swarmq-backend-defer-count
 x-swarmq-dead-letter-ttl-ms
 x-swarmq-dead-lettered-at
+x-swarmq-dlq-gen
 x-swarmq-enqueued-at
 x-swarmq-guard-defer-count
 x-swarmq-lock-conflict-count
@@ -17,3 +18,4 @@ x-swarmq-unique-until
 x-swarmq-unknown-since
 x-swarmq-workflow-id
 x-swarmq-workflow-step
+x-swarmq-xdeath-base

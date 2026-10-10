@@ -71,8 +71,23 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   und `unknown_task_dlq_failed` ([Signale](../guides/signals.de.md),
   [Logging](logging.de.md)).
 
+- **Header `x-swarmq-xdeath-base` und `x-swarmq-dlq-gen`** sowie
+  **`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`** (Standard `604800`): Die
+  Ausführungs-Identität zählt jetzt Broker-Dead-Letterings, und der
+  Done-Marker einer Wiederholung lebt mindestens die DLQ-Frist
+  ([Ausführungsschutz](../explanation/delivery-semantics.de.md#ausfuhrungsschutz),
+  [Header](agent/message-formats.de.md#amqp-header),
+  [Konfiguration](configuration.de.md)).
+
 ### Geändert
 
+- **`swarmq dlq retry` behält die `x-swarmq-replay-id`, die ein
+  0.12-Worker gestempelt hat**, statt eine neue zu setzen, und setzt
+  `x-swarmq-enqueued-at` neu. Ein zweiter Retry derselben
+  `.XQ`-Nachricht wird vom Ausführungsschutz als Duplikat des ersten
+  übersprungen; Nachrichten ohne passendes `x-swarmq-dlq-gen`
+  (0.11-Worker, Altbestand) bekommen weiter bei jedem Retry eine neue ID
+  ([Nachrichten retryen](../guides/dead-letter-queues.de.md#nachrichten-retryen)).
 - **Die Leader-Versionsprüfung warnt jetzt bei jedem Leader vor 0.12**
   (Mindestversion für Leader, bisher 0.10). Scheduler-Korrekturen wie
   die stabile Task-ID zurückgestellter Tasks wirken nur, solange der
@@ -127,6 +142,25 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Eine DLQ-Wiederholung ohne neue `x-swarmq-replay-id` wird nicht
+  mehr übersprungen.** "Move messages" in der RabbitMQ-UI, ein Shovel,
+  swarmv und ein CLI vor 0.11 legen eine dead-gelettete Nachricht mit
+  ihren Headern zurück; der Ausführungsschutz sah den Done-Marker des
+  ersten Laufs und bestätigte die Wiederholung, ohne sie auszuführen.
+  Der Worker stempelt jetzt die Replay-ID der nächsten Generation auf
+  jede DLQ-Kopie, die er publiziert, und eine Nachricht, die der Broker
+  selbst dead-gelettert hat (Delivery-Limit, `route_via_dlx`), bekommt
+  ihre neue Identität aus `x-death`; jede Kopie, die SwarmQ publiziert,
+  nimmt diesen Zähler als `x-swarmq-xdeath-base` mit, weil der Broker
+  `x-death` beim nächsten Dead-Lettern neu aufbaut. Ein wiederholter
+  Scheduler-Fire läuft ebenfalls. **Bekannte Grenzen:** Eine
+  Wiederholung nach einem Broker-Dead-Lettering, die einen 0.11-Worker
+  erreicht, wird weiter verworfen, ebenso ein wiederholter Cron-Fire;
+  eine Wiederholung in-flight beim Versionswechsel kann doppelt laufen;
+  Altbestand ohne Generation läuft bei zweimaligem Retry doppelt; nach
+  einem UI-Move zählt die erste Ausführung das rohe `x-death`; eine
+  UI-Wiederholung mit `max_age` kann sofort ablaufen
+  ([Ausführungsschutz](../explanation/delivery-semantics.de.md#ausfuhrungsschutz)).
 - **Ein Cron, dessen Task aus dem Code entfernt wurde, feuert nicht
   mehr bis zum Ablauf der Aufräumfrist.** Jeder Fire eines solchen
   Crons endete als unregistrierter Task in der `.XQ`, bis zu 24 h

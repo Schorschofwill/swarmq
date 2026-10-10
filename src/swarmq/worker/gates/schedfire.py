@@ -33,6 +33,7 @@ from typing import Any
 
 from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.headers import HEADER_SCHEDFIRE_CLAIM
+from swarmq.identity import identity_suffix
 from swarmq.logging import get_logger
 from swarmq.worker.gates import MAX_SCHEDFIRE_CLAIM_TOKENS, GateContext, GateDeps, SchedfireClaim
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
@@ -50,6 +51,16 @@ def _claim_tokens(raw: Any) -> tuple[str, ...]:
         return ()
     tokens = (token for token in (part.strip() for part in raw.split(",")) if token)
     return tuple(islice(tokens, MAX_SCHEDFIRE_CLAIM_TOKENS))
+
+
+def schedfire_key(fire_key: str, headers: Any) -> str:
+    """Key der Marker eines Fires (Plan 0.12.0, MR 12, BZ-08 Cron): bei einer
+    Replay-Identitaet (``x-swarmq-replay-id`` gesetzt oder Broker-Tode
+    ausserhalb der Delay-Queues) ``K|<Identitaet ohne task_id>``, damit der
+    Completed-Marker des ersten Laufs das bewusste Replay nicht verwirft.
+    Normale Doppel-Fires (n = 0, kein H) behalten K wie 0.11."""
+    suffix = identity_suffix(headers)
+    return fire_key if not suffix else f"{fire_key}|{suffix.lstrip('|')}"
 
 
 class SchedfireGate:
@@ -71,6 +82,7 @@ class SchedfireGate:
         header_value = (delivery.headers or {}).get("x-swarmq-schedfire")
         if not header_value:
             return Continue
+        header_value = schedfire_key(header_value, delivery.headers)
         deps = self._deps
 
         try:

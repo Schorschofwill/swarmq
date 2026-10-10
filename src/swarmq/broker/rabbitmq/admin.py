@@ -22,10 +22,13 @@ from swarmq.exceptions import BrokerConnectionError
 from swarmq.headers import (
     HEADER_DEAD_LETTER_TTL_MS,
     HEADER_DEAD_LETTERED_AT,
+    HEADER_DLQ_GENERATION,
+    HEADER_ENQUEUED_AT,
     HEADER_REPLAY_ID,
     HEADER_RETRY_COUNT,
     HEADER_UNKNOWN_SINCE,
 )
+from swarmq.identity import copy_headers
 from swarmq.queue_names import delay_tiers
 
 
@@ -36,6 +39,18 @@ def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _fresh_generation(headers: dict[str, Any]) -> bool:
+    """True, wenn ``x-swarmq-dlq-gen`` dem Zeitstempel
+    ``x-swarmq-dead-lettered-at`` gleicht: Die Replay-ID ist die
+    Generations-ID des Stempels eines 0.12-Workers (MR 12). Hat ein
+    0.11-Worker die Nachricht erneut dead-gelettert, stempelt er den
+    Zeitstempel neu, und die Gleichheit bricht."""
+    generation = headers.get(HEADER_DLQ_GENERATION)
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        return False
+    return generation == _dead_lettered_at_ms(headers)
 
 
 _UNLIMITED = ("none", b"none")
@@ -245,26 +260,10 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     # messages. Same contract as every other publish
                     # site.
                     if to_main:
-                        forward_headers = dict(headers)
-                        # Reset retry-count so the operator's "try this
-                        # again" intent isn't blocked by a stale counter.
-                        forward_headers.pop(HEADER_RETRY_COUNT, None)
-                        # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und
-                        # Zeitstempel; ein erneutes Dead-Lettering stempelt neu.
-                        forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
-                        forward_headers.pop(HEADER_DEAD_LETTER_TTL_MS, None)
-                        # Q6 (Plan 0.12.0, MR 11): die Gnadenfrist fuer einen
-                        # unbekannten Task beginnt mit der Wiederholung neu
-                        # (eine DLX-Kopie per ``nack`` behielt den Header).
-                        forward_headers.pop(HEADER_UNKNOWN_SINCE, None)
-                        # Neue Ausfuehrungs-Identitaet (KTD5): der Ausfuehrungs-
-                        # schutz liesse die Wiederholung sonst als abgeschlossen
-                        # fallen, solange der Done-Marker des ersten Laufs steht.
-                        forward_headers[HEADER_REPLAY_ID] = uuid.uuid4().hex
                         msg_out = aio_pika.Message(
                             body=body,
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                            headers=forward_headers,
+                            headers=self._forward_headers(headers),
                         )
                         await self._publish_with_retry(queue_name, msg_out)
                     else:
@@ -295,6 +294,34 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     f"dlq republish failed on {len(errors)} of {len(drained)} message(s); first error: {errors[0]}"
                 ) from errors[0]
         return entries, matched
+
+    def _forward_headers(self, headers: dict[str, Any]) -> dict[str, Any]:
+        """Header einer Wiederholung aus der DLQ (``dlq retry``)."""
+        # MR 12: ``x-death`` geht als Base mit (stabile Identitaet).
+        forward_headers = copy_headers(headers)
+        # A6 (MR 12): die Wiederholung beginnt mit frischem Alter, sonst
+        # liefe sie mit ``max_age`` sofort wieder ab.
+        forward_headers[HEADER_ENQUEUED_AT] = int(self.clock())
+        # Reset retry-count so the operator's "try this again" intent isn't
+        # blocked by a stale counter.
+        forward_headers.pop(HEADER_RETRY_COUNT, None)
+        # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und Zeitstempel; ein
+        # erneutes Dead-Lettering stempelt neu.
+        forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
+        forward_headers.pop(HEADER_DEAD_LETTER_TTL_MS, None)
+        # Q6 (Plan 0.12.0, MR 11): die Gnadenfrist fuer einen unbekannten Task
+        # beginnt mit der Wiederholung neu (eine DLX-Kopie per ``nack`` behielt
+        # den Header).
+        forward_headers.pop(HEADER_UNKNOWN_SINCE, None)
+        # Ausfuehrungs-Identitaet der Wiederholung (KTD5; Plan 0.12.0, MR 12):
+        # der Ausfuehrungsschutz liesse sie sonst als abgeschlossen fallen,
+        # solange der Done-Marker des ersten Laufs steht. Die Generations-ID
+        # eines 0.12-Workers bleibt (ein wiederholter Retry derselben
+        # XQ-Nachricht laeuft nicht doppelt); sonst neue uuid4.
+        if not _fresh_generation(headers):
+            forward_headers[HEADER_REPLAY_ID] = uuid.uuid4().hex
+        forward_headers.pop(HEADER_DLQ_GENERATION, None)
+        return forward_headers
 
     def _remaining_dead_letter_ttl(self, headers: dict[str, Any]) -> float | None:
         """Rest der Verfallsfrist in Sekunden ab dem Dead-Lettering (KTD6);

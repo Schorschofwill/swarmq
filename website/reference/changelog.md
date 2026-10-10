@@ -70,8 +70,23 @@ All notable changes to SwarmQ. This project follows
   `unknown_task_dlq_failed` ([signals](../guides/signals.md),
   [logging](logging.md)).
 
+- **Headers `x-swarmq-xdeath-base` and `x-swarmq-dlq-gen`** and
+  **`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`** (default `604800`): the
+  execution identity now counts broker dead-letterings, and the done
+  marker of a replay lives at least the DLQ retention
+  ([execution guard](../explanation/delivery-semantics.md#execution-guard),
+  [headers](agent/message-formats.md#amqp-headers),
+  [configuration](configuration.md)).
+
 ### Changed
 
+- **`swarmq dlq retry` keeps the `x-swarmq-replay-id` a 0.12 worker
+  stamped** instead of setting a new one, and restarts
+  `x-swarmq-enqueued-at`. A second retry of the same `.XQ` message is
+  skipped by the execution guard as a duplicate of the first; messages
+  without a matching `x-swarmq-dlq-gen` (0.11 worker, old stock) still
+  get a fresh id on every retry
+  ([retrying messages](../guides/dead-letter-queues.md#retrying-messages)).
 - **The leader version check now warns about every leader before 0.12**
   (minimum leader version, was 0.10). Scheduler fixes such as the stable
   task ID of deferred tasks only take effect while the leader has them.
@@ -123,6 +138,23 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A DLQ replay without a new `x-swarmq-replay-id` is no longer
+  skipped.** "Move messages" in the RabbitMQ UI, a shovel, swarmv and a
+  CLI before 0.11 replay a dead-lettered message with its headers; the
+  execution guard saw the done marker of the first run and acknowledged
+  the replay without running it. The worker now stamps the replay id of
+  the next generation on every DLQ copy it publishes, and a message the
+  broker dead-lettered itself (delivery limit, `route_via_dlx`) gets a
+  new identity from `x-death`; every copy SwarmQ publishes carries that
+  count on as `x-swarmq-xdeath-base`, because the broker rebuilds
+  `x-death` on the next dead-lettering. A replayed scheduler fire runs
+  as well. **Known limits:** a replay after a broker dead-lettering that
+  reaches a 0.11 worker is still skipped, and so is a replayed cron
+  fire; a replay in flight during the version switch can run twice;
+  old stock without a generation runs twice when retried twice; after a
+  UI move the first execution counts the raw `x-death`; a UI replay
+  with `max_age` can expire at once
+  ([execution guard](../explanation/delivery-semantics.md#execution-guard)).
 - **A cron whose task was removed from the code no longer fires until
   the prune period runs out.** Every fire of such a cron ended as an
   unregistered task in the `.XQ`, for up to 24 h. The scheduler leader

@@ -20,7 +20,14 @@ from typing import TYPE_CHECKING, Any
 
 from swarmq.contracts import Broker, BrokerAdmin, Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import BrokerConnectionError
-from swarmq.headers import HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+from swarmq.headers import (
+    HEADER_DEAD_LETTERED_AT,
+    HEADER_DLQ_GENERATION,
+    HEADER_ENQUEUED_AT,
+    HEADER_REPLAY_ID,
+    HEADER_RETRY_COUNT,
+)
+from swarmq.identity import copy_headers
 from tests.support.inmemory.clock import FakeClock
 
 _ids = itertools.count(1)
@@ -33,10 +40,19 @@ class _Message:
     message_id: str = field(default_factory=lambda: f"im-{next(_ids)}")
 
 
-def _replay_headers(headers: dict[str, Any]) -> dict[str, Any]:
-    """Wie ``RabbitMQAdmin``: Retry-Zaehler zuruecksetzen, neue Replay-ID (KTD5)."""
-    out = {k: v for k, v in headers.items() if k != HEADER_RETRY_COUNT}
-    out[HEADER_REPLAY_ID] = uuid.uuid4().hex
+def _replay_headers(headers: dict[str, Any], now_s: int) -> dict[str, Any]:
+    """Wie ``RabbitMQAdmin`` (KTD5; Plan 0.12.0, MR 12): Retry-Zaehler und
+    DLQ-Stempel weg, ``x-death`` als Base, frisches Alter; die Replay-ID
+    bleibt nur, wenn ``x-swarmq-dlq-gen`` dem Zeitstempel gleicht (frische
+    Generation eines 0.12-Workers), sonst neue ``uuid4``."""
+    fresh = HEADER_DLQ_GENERATION in headers and headers[HEADER_DLQ_GENERATION] == headers.get(HEADER_DEAD_LETTERED_AT)
+    out = {
+        k: v for k, v in copy_headers(headers).items()
+        if k not in (HEADER_RETRY_COUNT, HEADER_DEAD_LETTERED_AT, HEADER_DLQ_GENERATION)
+    }
+    if not fresh:
+        out[HEADER_REPLAY_ID] = uuid.uuid4().hex
+    out[HEADER_ENQUEUED_AT] = now_s
     return out
 
 
@@ -183,7 +199,7 @@ class InMemoryBroker:
         for index, d in enumerate(letters[:scan_limit]):
             if _task_id(d.body) == task_id:
                 letters.pop(index)
-                await self.publish(queue, d.body, _replay_headers(d.headers))
+                await self.publish(queue, d.body, _replay_headers(d.headers, self._clock.now_ms() // 1000))
                 return True, len(letters) + 1
         return False, len(letters)
 
@@ -192,7 +208,7 @@ class InMemoryBroker:
         movable = [d for d in letters[:limit] if _task_id(d.body) is not None]
         for d in movable:
             letters.remove(d)
-            await self.publish(queue, d.body, _replay_headers(d.headers))
+            await self.publish(queue, d.body, _replay_headers(d.headers, self._clock.now_ms() // 1000))
         return len(movable), len(letters) + len(movable)
 
     async def purge_dead_letters(self, queue: str) -> int:

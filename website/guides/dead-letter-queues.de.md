@@ -200,11 +200,19 @@ bekommt sein volles Retry-Budget bei Redelivery. Andere Header
 (Traceback, Dedup-Hash, Enqueued-at) bleiben erhalten, damit der
 Operator-Kontext bleibt. Die zurückgelegte Nachricht trägt weder
 `expiration` noch `x-swarmq-dead-lettered-at`; scheitert sie erneut,
-wird sie mit frischer Frist dead-gelettert. Außerdem bekommt sie eine
-neue `x-swarmq-replay-id`: Der
+wird sie mit frischer Frist dead-gelettert; `x-swarmq-enqueued-at`
+beginnt neu, damit ein Task mit `max_age` nicht sofort abläuft. Die
+Wiederholung behält die `x-swarmq-replay-id`, die der Worker beim
+Dead-Lettern gestempelt hat (seit 0.12): Der
 [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
-würde sie sonst als bereits abgeschlossen überspringen, solange der
-Marker des ersten Laufs noch steht.
+behandelt sie als neue Ausführung und lässt sie laufen; ein zweiter
+`dlq retry` derselben Nachricht -- oder ihr at-least-once-Duplikat --
+trägt dieselbe Identität und wird übersprungen. Eine Nachricht, die ein
+0.11-Worker dead-gelettert hat, oder Altbestand ohne diesen Stempel
+bekommt stattdessen bei jedem Retry eine neue ID. "Move messages" in
+der RabbitMQ-UI oder ein Shovel legt die Nachricht mit denselben Headern
+zurück und lässt sie deshalb ebenfalls laufen, setzt aber
+`x-swarmq-enqueued-at` nicht neu.
 
 ### Alle Nachrichten
 

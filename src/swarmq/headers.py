@@ -78,3 +78,17 @@ HEADER_DEAD_LETTER_TTL_MS = "x-swarmq-dead-letter-ttl-ms"
 # fachliche Retry-Kopie, der DLQ-Stempel und ``dlq retry`` entfernen ihn,
 # damit eine spaetere Unbekanntheit (naechster Rollout) neu gemessen wird.
 HEADER_UNKNOWN_SINCE = "x-swarmq-unknown-since"
+
+# Ausfuehrungsidentitaet (Plan 0.12.0, MR 12, BZ-08): Summe der ``x-death``-
+# Zaehler ausserhalb der Delay-Queues, die eine Kopie von swarmq mitnimmt.
+# Der Broker baut ``x-death`` beim naechsten Dead-Lettern neu auf (Spike S5);
+# die Base haelt den Stand fest, damit die Identitaet ``task_id|H#n`` stabil
+# bleibt. Fehlt der Header (0.11, UI-Move), gilt Base 0.
+HEADER_XDEATH_BASE = "x-swarmq-xdeath-base"
+
+# Generation beim Dead-Lettern durch den Worker (MR 12): der Wert von
+# ``x-swarmq-dead-lettered-at`` desselben Stempels. ``dlq retry`` behaelt die
+# Replay-ID (Generations-ID) nur, wenn beide gleich sind; hat ein 0.11-Worker
+# die Nachricht erneut dead-gelettert, stempelt er ``dead-lettered-at`` neu,
+# und die CLI vergibt eine neue ``uuid4``.
+HEADER_DLQ_GENERATION = "x-swarmq-dlq-gen"

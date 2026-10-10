@@ -220,10 +220,28 @@ Valkey before it runs the task (`SWARMQ_EXECUTION_GUARD`, on by
 default). A redelivered message does not run while the same execution
 runs elsewhere, after it finished, or after a retry superseded it.
 
-**Identity.** An execution is the task id plus the header
-`x-swarmq-replay-id`, if present. `swarmq dlq retry` and
-`dlq retry --all` set a new replay id, so a deliberate replay runs
-again even while the marker of the first run exists.
+**Identity.** An execution is the task id, plus the header
+`x-swarmq-replay-id` if present, plus the number of times the broker
+dead-lettered the message outside the delay queues (from 0.12). That
+number is `x-swarmq-xdeath-base` plus the `count` values in `x-death`
+whose queue is neither `{queue}.DQ` nor a delay tier; with none of
+them the identity is byte-identical to 0.11 (`task_id` or
+`task_id|<replay id>`). Every copy SwarmQ publishes itself (retry,
+deferral, dead-lettering, `dlq retry`) moves `x-death` into
+`x-swarmq-xdeath-base`, because the broker rebuilds `x-death` on the
+next dead-lettering. When the worker dead-letters a message, the copy
+in `{queue}.XQ` already carries the replay id of the next generation
+(`x-swarmq-replay-id`, derived from the current identity, with
+`x-swarmq-dlq-gen` equal to `x-swarmq-dead-lettered-at`). A replay that
+keeps the headers -- `swarmq dlq retry`, "Move messages" in the
+RabbitMQ UI, a shovel, an older CLI -- is therefore a new execution
+and runs, even while the done marker of the first run exists. A message
+the broker dead-lettered itself (delivery limit, `route_via_dlx`) gets a
+new identity from `x-death` the same way. Two deliveries of the same
+replay (at-least-once duplicate, `dlq retry` run twice on the same
+message) share the identity, so the second one is skipped. A scheduler
+fire replayed this way runs too: its completed and in-flight markers
+use the key `<fire>|<identity suffix>`.
 
 **How it works.** After the task lookup and before the expiry check,
 the worker claims a running marker with its own owner token and a TTL
@@ -298,9 +316,15 @@ redelivery then runs the task again.
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` seconds
 and at least `SWARMQ_EXECUTION_GUARD_TTL_S`. Deferred copies can sit
 behind long retry delays, and from RabbitMQ 4.3 deliveries stay checked
-out until the consumer timeout. Keys: `sq:guard:{<identity>}:run` (the
-running marker) and `sq:guard:{<identity>}:state` (done, superseded,
-orphans), both under the same hash tag.
+out until the consumer timeout. The done marker of a replay (replay id
+set, or dead-lettered by the broker before) lives at least
+`SWARMQ_DEAD_LETTER_TTL_S` -- a second `dlq retry` of the same `.XQ`
+message days later carries the same identity and must still be
+skipped; with `SWARMQ_DEAD_LETTER_TTL_S=none` it lives
+`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (default 7 days) instead. Keys:
+`sq:guard:{<identity>}:run` (the running marker) and
+`sq:guard:{<identity>}:state` (done, superseded, orphans), both under
+the same hash tag.
 
 **Remaining risks.** The guard narrows duplicates, it does not make
 SwarmQ exactly-once:
@@ -323,6 +347,17 @@ SwarmQ exactly-once:
   0.11.0 neither set nor check markers. Until every worker consuming a
   queue runs 0.11.0, a delivery handled by an older worker is not
   guarded.
+- **Replays in mixed operation with 0.11.** A 0.11 worker ignores
+  `x-swarmq-xdeath-base` and `x-death`: a replay after a broker
+  dead-lettering (delivery limit, `route_via_dlx`) that reaches a 0.11
+  worker is skipped as before, and so is a replayed scheduler fire
+  (loss, no double run). A replay in flight during the version switch
+  can run twice (identity with and without the death count). Old stock
+  in the `.XQ` without a generation gets a new id on every `dlq retry`,
+  so repeating the retry there still runs twice. After "Move messages"
+  in the RabbitMQ UI the first execution counts the raw `x-death`
+  (no base). A UI replay of a task with `max_age` can expire at once:
+  only `dlq retry` restarts `x-swarmq-enqueued-at`.
 - `FIRE_AND_FORGET` tasks are acknowledged before they run and are not
   guarded. A backend of your own without an `execution_guard` store
   switches the guard off.

@@ -324,6 +324,11 @@ class SwarmQConfig(ConfigValidation):
     # Consumer-Timeout ausgecheckt.
     execution_guard_done_ttl_s: float | None = None
     execution_guard_max_orphans: int = 3
+    # Rueckstand (Plan 0.12.0, MR 12, BZ-12): so lange lebt der Zustand einer
+    # Ausfuehrung mindestens, sobald eine Kopie von ihr zurueckgestellt wurde
+    # (sie kann hinter einem Rueckstand der Queue zurueckkommen) oder sie ein
+    # Replay ist (``dead_letter_ttl_s`` = None); Deckel der Fired-Marker-TTL.
+    execution_guard_backlog_ttl_s: float = 604800.0
     # Verfallsfrist einer von swarmq in die DLQ gelegten Nachricht, gemessen
     # ab dem Dead-Lettering (Plan 2026-10-08-1541, KTD6). Lesen per ``dlq
     # list``/``inspect`` verlaengert sie nicht. None heisst unbegrenzt.
@@ -425,6 +430,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_EXECUTION_GUARD_TTL_S", "execution_guard_ttl_s", "float"),
         ("SWARMQ_EXECUTION_GUARD_DONE_TTL_S", "execution_guard_done_ttl_s", "float"),
         ("SWARMQ_EXECUTION_GUARD_MAX_ORPHANS", "execution_guard_max_orphans", "int"),
+        ("SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S", "execution_guard_backlog_ttl_s", "float"),
         ("SWARMQ_DEAD_LETTER_TTL_S", "dead_letter_ttl_s", "optional_float"),
         ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
         ("SWARMQ_UNKNOWN_TASK_GRACE_S", "unknown_task_grace_s", "float"),
@@ -459,6 +465,7 @@ class SwarmQConfig(ConfigValidation):
         "consumer_ready_grace_s",
         "execution_guard_ttl_s",
         "execution_guard_max_orphans",
+        "execution_guard_backlog_ttl_s",
         "dead_letter_ttl_s",
         "malloc_trim_threshold",
         "malloc_arena_max",
