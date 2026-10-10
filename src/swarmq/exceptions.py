@@ -9,6 +9,16 @@ class ConfigurationError(SwarmQError):
     pass
 
 
+#: Migration einer Queue-Familie (Review MR 8, P2-3): ``{queue}.DQ`` enthaelt
+#: Retries und Termine, sie wird nie einfach geloescht.
+MIGRATION_HINT = (
+    "migrate the queue: stop its producers, let its workers drain the queue and its .DQ "
+    "(the .DQ holds pending retries and deferred tasks: wait for them or move them with a shovel, "
+    "never just delete it), stop the workers, move or keep the .XQ, then delete the queue family "
+    "and start the workers with the new setting."
+)
+
+
 class QueueArgumentsMismatch(ConfigurationError):
     """Eine vorhandene Queue hat andere Argumente als die Konfiguration, und
     swarmq kann sie nicht uebernehmen (BZ-15), etwa ein geaenderter
@@ -23,10 +33,7 @@ class QueueArgumentsMismatch(ConfigurationError):
         self.argument = argument
         self.declared = declared
         self.existing = existing
-        hint = hint or (
-            "Restore the previous setting, or migrate the queue: stop its workers, "
-            "drain and delete the queue family, then start the workers again."
-        )
+        hint = hint or f"Restore the previous setting, or {MIGRATION_HINT}"
         message = (
             f"queue {queue!r}: argument {argument!r} differs from the existing queue "
             f"(declared {declared!r}, existing {existing!r}); RabbitMQ never changes the arguments "

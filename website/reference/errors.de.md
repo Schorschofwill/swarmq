@@ -128,7 +128,9 @@ Die Meldung und die Attribute `queue`, `argument`, `declared` und
 **Ursache.** RabbitMQ ändert die Argumente einer bestehenden Queue nie.
 Typisch: `SWARMQ_QUEUE_TYPE` wurde für schon vorhandene Queues geändert,
 oder `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` trifft auf eine
-Queue ohne at-least-once-Dead-Lettering. Ein abweichendes
+Queue ohne at-least-once-Dead-Lettering
+(`x-dead-letter-strategy=at-least-once` zusammen mit
+`x-overflow=reject-publish`). Ein abweichendes
 `x-delivery-limit`, `x-dead-letter-strategy` oder `x-overflow` wird
 übernommen und löst sie nicht aus
 ([vorhandene Queue-Argumente](../explanation/delivery-semantics.md#vorhandene-queue-argumente)).

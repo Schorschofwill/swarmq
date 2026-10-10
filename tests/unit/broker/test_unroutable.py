@@ -5,7 +5,8 @@ Test-Liste:
 - [x] injizierte Verbindung: Publish-Channel mit ``on_return_raises``
 - [x] neu geoeffneter Publish-Channel (nach Verlust) mit ``on_return_raises``
 - [x] ``PublishError`` wird sofort ``UnroutableMessage``, ohne Wiederholung, Kanal bleibt
-- [x] ``retry_later`` an die fehlende ``.DQ``: eigene Queue auf Wegwerf-Channel neu deklariert, zweiter Versuch
+- [x] ``retry_later`` an die fehlende ``.DQ``: eigene Queue auf Wegwerf-Channels neu deklariert
+      (seit Review MR 8, H1, ueber die Kette mit passivem Declare), zweiter Versuch
 - [x] ``dead_letter`` an die fehlende ``.XQ``: ebenso
 - [x] Neu-Deklarieren scheitert (beliebige Ausnahme) -> ``BrokerConnectionError``, Original unbestaetigt
 - [x] zweiter Versuch wieder unroutbar -> ``UnroutableMessage``, nur ein Neu-Deklarieren
@@ -87,7 +88,14 @@ def _delivery(queue: str = "tasks") -> Delivery:
 
 
 def _declared_names(channel: AsyncMock) -> list[str]:
-    return [call.args[0] for call in channel.declare_queue.await_args_list]
+    """Aktive Deklarationen (ohne das passive Declare der Kette, Review MR 8, H1)."""
+    return [call.args[0] for call in channel.declare_queue.await_args_list if not call.kwargs.get("passive")]
+
+
+def _all_throwaway_channels_closed(broker: RabbitMQBroker, throwaway: AsyncMock) -> bool:
+    """Jeder Wegwerf-Channel der Kette wird wieder geschlossen (Review MR 8, H1)."""
+    opened = broker._connection.channel.call_count  # type: ignore[union-attr]
+    return opened > 0 and throwaway.close.await_count == opened
 
 
 async def test_retry_later_redeclares_own_queue_on_throwaway_channel_and_retries() -> None:
@@ -98,7 +106,7 @@ async def test_retry_later_redeclares_own_queue_on_throwaway_channel_and_retries
 
     assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ"]
     channel.declare_queue.assert_not_awaited()
-    throwaway.close.assert_awaited_once()
+    assert _all_throwaway_channels_closed(broker, throwaway)
     assert channel.default_exchange.publish.await_count == 2
     delivery.handle.ack.assert_awaited_once()
 

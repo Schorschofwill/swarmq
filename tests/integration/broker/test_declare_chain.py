@@ -8,6 +8,7 @@ Test-Liste:
 - [x] Bestandsqueue mit Delivery-Limit 20, Konfiguration 50: effektives Limit 20
 - [x] Queue gelöscht → ``UnroutableMessage`` → nächste Deklaration legt sie neu an (Rev. 3 F5)
 - [x] Modus ``at-least-once`` auf einer 0.11-Queue → ``QueueArgumentsMismatch``
+- [x] neue Queue (NOT_FOUND beim passiven Declare): kein Wegwerf-Channel bleibt offen (Review MR 8, H5b)
 """
 
 from __future__ import annotations
@@ -139,3 +140,22 @@ async def test_strict_mode_refuses_a_0_11_queue(rabbitmq_url: str, broker: Rabbi
 
     for name, arguments in _legacy(queue).items():
         await _declare_raw(rabbitmq_url, name, arguments)
+
+
+def _open_channel_numbers(broker: RabbitMQBroker) -> set[int]:
+    assert broker._connection is not None
+    underlay = broker._connection.transport.connection  # type: ignore[attr-defined]
+    return {number for number, channel in underlay.channels.items() if channel is not None and not channel.is_closed}
+
+
+async def test_no_probe_channel_stays_open_after_not_found(broker: RabbitMQBroker, queue: str) -> None:
+    """Review MR 8, H5b: der Broker schliesst den Channel nach NOT_FOUND; die
+    Kette schliesst ihn auch auf ihrer Seite, sonst oeffnete ein
+    RobustChannel ihn selbst wieder."""
+    await broker._ensure_publish_channel()
+    before = _open_channel_numbers(broker)
+
+    await broker.declare_queue(queue)
+    await broker.publish(queue, b"roundtrip")
+
+    assert _open_channel_numbers(broker) == before

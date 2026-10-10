@@ -31,9 +31,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aio_pika.exceptions import ChannelNotFoundEntity, ChannelPreconditionFailed, PublishError
+from aiormq.exceptions import ChannelInvalidStateError, ConnectionClosed
 from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError, QueueArgumentsMismatch, UnroutableMessage
 
 pytestmark = pytest.mark.timeout(5)
@@ -422,3 +424,99 @@ async def test_unrecognized_refusal_reports_the_broker_message_without_advising_
     message = str(exc_info.value)
     assert refusal in message
     assert "delete" not in message.lower()
+
+
+async def test_redeclare_after_unroutable_runs_the_chain_and_refills_the_cache() -> None:
+    """Review MR 8, H1: das Neu-Deklarieren aus MR 6 laeuft ueber die Kette
+    mit Uebernahme wie beim Start. Hat ein 0.11-Pod die geloeschte ``.DQ``
+    inzwischen mit seinen Argumenten angelegt, gelingt es trotzdem; danach
+    ist der Cache wieder gesetzt."""
+    rabbit = FakeRabbit(created_by_012("tasks"))
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+    rabbit.queues["tasks.DQ"] = legacy("tasks")["tasks.DQ"]  # geloescht, von 0.11 neu angelegt
+    frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key="tasks.DQ")
+    broker._publish_channel.default_exchange.publish.side_effect = [  # type: ignore[union-attr]
+        PublishError(SimpleNamespace(delivery=frame), frame),
+        None,
+    ]
+    delivery = Delivery(body=b"{}", headers={}, queue="tasks", handle=AsyncMock(consumer_tag=None))
+
+    await broker.retry_later(delivery, delay_ms=1000, headers={})
+
+    delivery.handle.ack.assert_awaited_once()
+    assert rabbit.queues["tasks.DQ"] == legacy("tasks")["tasks.DQ"]
+    opened = len(rabbit.channels)
+    await broker.declare_queue("tasks")
+    assert len(rabbit.channels) == opened
+
+
+@pytest.mark.parametrize(
+    ("step", "error"),
+    [
+        pytest.param("passive", ConnectionClosed(320, "CONNECTION_FORCED"), id="passive-connection-closed"),
+        pytest.param("active", ConnectionClosed(320, "CONNECTION_FORCED"), id="active-connection-closed"),
+        pytest.param("active", ChannelInvalidStateError("channel closed"), id="active-channel-invalid"),
+        pytest.param("active", RuntimeError("connection closed"), id="active-runtime-error"),
+    ],
+)
+async def test_connection_loss_inside_the_chain_becomes_broker_connection_error(step: str, error: Exception) -> None:
+    """Review MR 8, H5a: ein Verbindungsabriss mitten in der Kette ist ein
+    ``BrokerConnectionError`` (Neustart, Wiederverbinden), kein roher Fehler."""
+    rabbit = FakeRabbit(legacy("tasks"))
+    broker = make_broker(rabbit)
+    real_open = rabbit.open
+
+    async def open_failing(**kwargs: Any) -> AsyncMock:
+        channel = await real_open(**kwargs)
+        real_declare = channel.declare_queue.side_effect
+
+        async def declare_queue(name: str, **declare_kwargs: Any) -> None:
+            if bool(declare_kwargs.get("passive")) == (step == "passive"):
+                raise error
+            await real_declare(name, **declare_kwargs)
+
+        channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        return channel
+
+    broker._connection.channel = AsyncMock(side_effect=open_failing)  # type: ignore[union-attr]
+
+    with pytest.raises(BrokerConnectionError) as exc_info:
+        await broker.declare_queue("tasks")
+
+    assert exc_info.value.__cause__ is error
+    assert all(channel.close.await_count for channel in rabbit.channels)
+
+
+def _advises_safe_migration(message: str) -> bool:
+    """Review MR 8, P2-3: erst Producer stoppen, Worker leeren lassen, dann
+    Worker stoppen; ``.DQ`` enthaelt Retries und Termine -> verschieben oder
+    abwarten, nie einfach loeschen."""
+    lowered = message.lower()
+    order = ["stop its producers", "let its workers drain", "stop the workers"]
+    positions = [lowered.find(step) for step in order]
+    return (
+        all(position >= 0 for position in positions)
+        and positions == sorted(positions)
+        and "shovel" in lowered
+        and "drain and delete" not in lowered
+    )
+
+
+async def test_queue_arguments_mismatch_advises_a_safe_migration() -> None:
+    family = legacy("tasks")
+    broker = make_broker(FakeRabbit({"tasks": {**family["tasks"], "x-queue-type": "classic"}}))
+
+    with pytest.raises(QueueArgumentsMismatch) as exc_info:
+        await broker.declare_queue("tasks")
+
+    assert _advises_safe_migration(str(exc_info.value))
+
+
+async def test_strict_mode_advises_a_safe_migration() -> None:
+    broker = make_broker(FakeRabbit(legacy("tasks")), dead_letter_strategy="at-least-once")
+
+    with pytest.raises(QueueArgumentsMismatch) as exc_info:
+        await broker.declare_queue("tasks")
+
+    assert _advises_safe_migration(str(exc_info.value))

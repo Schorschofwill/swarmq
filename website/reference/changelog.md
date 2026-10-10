@@ -59,7 +59,13 @@ All notable changes to SwarmQ. This project follows
   `UnroutableMessage` or a missing queue). A queue without
   `x-delivery-limit` is now adopted as well (WARNING; RabbitMQ applies
   20). Only the first adoption of `x-dead-letter-strategy`/`x-overflow`
-  per process is logged as INFO, later ones as DEBUG
+  per process is logged as INFO, later ones as DEBUG. An `x-overflow`
+  adopted first is kept when the strategy follows. A refusal swarmq
+  does not recognise (queue limit, permission) is reported with the
+  broker message and no longer advises deleting the queue; a connection
+  loss during the declaration is a `BrokerConnectionError`.
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` together with
+  `SWARMQ_QUEUE_TYPE=classic` is a `ConfigurationError`
   ([existing queue arguments](../explanation/delivery-semantics.md#existing-queue-arguments)).
 - **The worker dead-letters at the smaller delivery limit.** The
   delivery-count gate uses the smaller of `SWARMQ_DELIVERY_LIMIT` and
@@ -81,8 +87,15 @@ All notable changes to SwarmQ. This project follows
   queues now get `x-dead-letter-strategy=at-least-once` and
   `x-overflow=reject-publish` on `{queue}` and `{queue}.DQ`. Existing
   queues keep their arguments; one WARNING
-  `queue_dead_letter_at_most_once` per process lists them, until a
-  policy is set or `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`.
+  `queue_dead_letter_at_most_once` per process lists them (also those
+  with `at-least-once` but another `x-overflow` than `reject-publish`).
+  A policy with `dead-letter-strategy=at-least-once` and
+  `overflow=reject-publish` fixes the dead-lettering but does not end
+  the warning, since swarmq cannot see policies; only
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy` does. Every worker process,
+  each supervisor child included, logs the warning on its own, and each
+  start costs up to two refusals (`PRECONDITION_FAILED` channel errors in
+  the broker log) per queue that 0.12 created.
   **Changed behaviour:**
   - With a `max-length` policy, a publish to a full queue gets a nack
     instead of drop-head and fails with `BrokerConnectionError` after
@@ -128,8 +141,10 @@ All notable changes to SwarmQ. This project follows
     released. The schedule definition gets the field `unroutable_since`
     (`null` unless such a retry is pending).
   - A worker whose own `{queue}.DQ`/`.XQ` was deleted while it ran
-    declares the queue family once on a separate channel and publishes
-    the retry or DLQ copy again (`own_queue_unroutable_redeclaring`).
+    declares the queue family once again, through the same chain with
+    adoption as at startup, on separate channels, and publishes the retry
+    or DLQ copy again (`own_queue_unroutable_redeclaring`). The effective
+    delivery limit of the queue stays meanwhile.
   - A workflow step whose next step goes to a missing queue marks the
     workflow `failed` at once (`workflow_advance_unroutable`) instead of
     being redelivered up to the delivery limit

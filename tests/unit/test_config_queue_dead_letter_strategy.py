@@ -5,6 +5,8 @@ Test-Liste:
 2. [x] Env ``SWARMQ_QUEUE_DEAD_LETTER_STRATEGY``.
 3. [x] Nur ``auto``, ``at-least-once`` oder ``legacy``.
 4. [x] ``SwarmQ`` reicht den Wert an den Broker.
+5. [x] ``at-least-once`` mit ``SWARMQ_QUEUE_TYPE=classic`` -> ``ConfigurationError`` (Review MR 8, H3);
+       ``auto`` und ``legacy`` bleiben mit classic erlaubt.
 """
 
 from __future__ import annotations
@@ -47,3 +49,10 @@ def test_swarmq_hands_the_strategy_to_the_broker() -> None:
     app = SwarmQ(RabbitMQBroker("amqp://x"), ValkeyBackend("valkey://x"), queue_dead_letter_strategy="at-least-once")
 
     assert app.broker.dead_letter_strategy == "at-least-once"
+
+
+def test_strict_mode_with_classic_queues_is_rejected() -> None:
+    """Review MR 8, H3: classic-Queues kennen kein at-least-once-Dead-Lettering;
+    der strenge Modus waere dort still wirkungslos."""
+    with pytest.raises(ConfigurationError, match="queue_dead_letter_strategy='at-least-once'.*quorum"):
+        _cfg(queue_type="classic", queue_dead_letter_strategy="at-least-once")

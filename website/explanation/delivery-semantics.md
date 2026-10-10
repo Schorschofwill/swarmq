@@ -481,9 +481,10 @@ queue the worker:
      arguments; see [dead-lettering guarantee](#dead-lettering-guarantee).
 2. Adopts the existing value of three arguments and declares again:
    - `x-dead-letter-strategy` and `x-overflow`, whether the queue has a
-     value or none. Only the first adoption per process is logged as
+     value or none. An `x-overflow` adopted first is kept when the
+     strategy follows. Only the first adoption per process is logged as
      INFO `queue_argument_adopted`, every further one as DEBUG; a queue
-     that 0.12 created costs one refusal per start.
+     that 0.12 created costs one, at most two, refusals per start.
    - `x-delivery-limit`, also when the queue has none: WARNING
      `queue_argument_adopted` per queue. The worker then uses the
      [effective delivery limit](#effective-delivery-limit).
@@ -496,10 +497,28 @@ queue the worker:
    `BrokerConnectionError`.
 
 Each argument is adopted at most once, so a declaration takes at most
-four attempts. The result is cached per process; a publish that comes
+four attempts. The passive declaration has no deadline of its own, as
+the declaration in 0.11 had none: creating a quorum queue can take long
+under load. The result is cached per process; a publish that comes
 back unroutable (`UnroutableMessage`) or a consumer that finds the queue
 missing drops the cache entry, and the next declaration creates the
-queue again.
+queue again. The effective delivery limit stays until a declaration
+succeeds again. A worker whose own `{queue}.DQ` or `{queue}.XQ` is
+missing declares the queue family again the same way, with adoption,
+and then publishes once more.
+
+**Operations:** every worker process, each child of a supervisor
+included, runs this chain on its own start. It logs its own INFO
+`queue_argument_adopted` and its own WARNING
+`queue_dead_letter_at_most_once`. For a queue that 0.12 created, every
+start of a process costs up to two refusals per queue. RabbitMQ logs
+each refusal as a channel error (`PRECONDITION_FAILED`); exclude them
+from alerts on channel errors, or expect them there. A connection loss
+during the chain ends the declaration as `BrokerConnectionError`.
+
+Only without a connection of its own, as in unit tests and the golden
+generator, does the broker declare on the publish channel without the
+chain, as in 0.11.0. A connected broker never takes this path.
 
 ### Dead-lettering guarantee
 
@@ -512,14 +531,25 @@ leader change or an unavailable target such a message can be lost.
 | Value | New queues | Existing queues |
 |---|---|---|
 | `auto` (default) | `x-dead-letter-strategy=at-least-once` and `x-overflow=reject-publish` on `{queue}` and `{queue}.DQ` (not `{queue}.XQ`) | keep their arguments; one WARNING `queue_dead_letter_at_most_once` per process lists those without at-least-once |
-| `at-least-once` | as `auto` | without at-least-once: `QueueArgumentsMismatch` (exit 78) |
+| `at-least-once` | as `auto` | without at-least-once and `reject-publish`: `QueueArgumentsMismatch` (exit 78) |
 | `legacy` | arguments of 0.11 (at-most-once) | keep their arguments, no warning |
+
+At-least-once only takes effect together with `x-overflow=reject-publish`;
+with any other overflow RabbitMQ dead-letters at-most-once. swarmq
+therefore counts a queue with `at-least-once` and, for example,
+`drop-head` as at-most-once: it is listed in the warning, and in mode
+`at-least-once` it fails with `QueueArgumentsMismatch` on `x-overflow`.
 
 For existing queues set a policy with
 `dead-letter-strategy=at-least-once` and `overflow=reject-publish`, or
 migrate the queues (see below). A policy is not visible to swarmq, so
-the warning stays until you set `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`.
-Classic queues are not affected.
+the policy does not end the warning; only
+`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy` does. Only one policy applies
+to a queue, the one with the highest priority: a new policy displaces an
+existing one, for example one that sets `max-length`. Put every key the
+queue needs into the one policy. An operator policy with `max-length`
+has the same effect as a `max-length` policy under `reject-publish`
+(see below). Classic queues are not affected.
 
 `reject-publish` changes one behaviour: with a `max-length` policy, a
 publish to a full queue gets a nack instead of dropping the oldest
@@ -552,11 +582,19 @@ it without the management API. Do not set one on swarmq queues.
 `SWARMQ_DELIVERY_LIMIT` can change at any time: new queues get the new
 value, existing ones keep theirs and the worker uses the smaller one
 (see above). To change `SWARMQ_QUEUE_TYPE`, or to give an existing
-queue at-least-once dead-lettering without a policy, migrate it: stop
-its producers and workers, wait until `{queue}` and `{queue}.DQ` are
-empty, move or keep what is in `{queue}.XQ`, delete the three queues,
-then start the workers with the new setting. They create the queues
-anew.
+queue at-least-once dead-lettering without a policy, migrate it:
+
+1. Stop the producers of the queue (including the scheduler crons that
+   publish to it).
+2. Let the workers drain `{queue}` and `{queue}.DQ`. `{queue}.DQ` holds
+   pending retries and deferred tasks (`delay`/`eta`) that may be due
+   only much later: wait for them, or move them to a temporary queue
+   with a shovel. Never delete a `{queue}.DQ` that still holds
+   messages; they would be lost.
+3. Stop the workers.
+4. Move or keep what is in `{queue}.XQ`.
+5. Delete the three queues and start the workers with the new setting.
+   They create the queues anew; then shovel the moved messages back.
 
 ## What SwarmQ will not do
 

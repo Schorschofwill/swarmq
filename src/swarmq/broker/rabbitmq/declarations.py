@@ -26,7 +26,7 @@ from swarmq.broker.rabbitmq.topology import (
     main_queue_arguments,
     queue_family,
 )
-from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
+from swarmq.exceptions import MIGRATION_HINT, BrokerConnectionError, QueueArgumentsMismatch
 from swarmq.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,10 +34,6 @@ logger = get_logger(__name__)
 #: Wirksames Delivery-Limit einer Quorum-Queue ohne ``x-delivery-limit``
 #: ab RabbitMQ 4 (Spike S1, belegt auf 4.2.9 und 4.3.6).
 _BROKER_DEFAULT_DELIVERY_LIMIT = 20
-
-
-async def _declare_plain(pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
-    await pub.declare_queue(name, durable=True, arguments=arguments)
 
 
 def _family_of(name: str) -> str:
@@ -85,29 +81,24 @@ class RabbitMQDeclarations(RabbitMQConnection):
                 f"Existing queue arguments, policies or vhost limits do not accept this declaration; "
                 f"see the broker message."
             ) from exc
+        except (aio_pika.exceptions.AMQPConnectionError, RuntimeError) as exc:
+            # Verbindungsabriss mitten in der Kette (aiormq ``ConnectionClosed``,
+            # ``ChannelInvalidStateError``, ``RuntimeError`` aus aio_pika): wie
+            # jeder Verbindungsverlust ein ``BrokerConnectionError`` (Review MR 8, H5a).
+            raise BrokerConnectionError(
+                f"declare_queue {queue_name!r}: the connection was lost while declaring: {exc!r}"
+            ) from exc
 
     async def _declare_queue_triplet(
         self,
         pub: aio_pika.abc.AbstractChannel,
         queue_name: str,
         main_args: dict[str, Any],
-        *,
-        adopt: bool = True,
     ) -> None:
-        """``adopt=False``: direkt auf ``pub`` deklarieren, ohne die
-        Argument-Uebernahme aus 0.11.1 (Neu-Deklarieren aus MR 6 auf einem
-        ohnehin eigenen Wegwerf-Channel; MR 8 fuehrt beides zusammen)."""
+        """Haupt-, Delay- und Dead-Letter-Queue ueber die Kette; auch das
+        Neu-Deklarieren aus MR 6 nimmt diesen Weg (Review MR 8, H1)."""
         main, delay, dead_letter = queue_family(queue_name)
         delay_args = delay_queue_arguments(queue_name, self._queue_type)
-        if not adopt:
-            # Neu-Deklarieren (MR 6): mit den zuletzt erfolgreichen Argumenten,
-            # sonst traefe eine von 0.12 angelegte Queue auf einen 406.
-            known = self._declared_arguments
-            await _declare_plain(pub, main, known.get(main, main_args))
-            await _declare_plain(pub, delay, known.get(delay, delay_args))
-            dead_letter_args = dead_letter_queue_arguments(self._queue_type)
-            await _declare_plain(pub, dead_letter, known.get(dead_letter, dead_letter_args))
-            return
         # Ziel at-least-once nur fuer Quorum-Queues mit Broker-DLX und nicht im
         # Modus ``legacy`` (BZ-19).
         wants_at_least_once = self._queue_type == "quorum" and self.dead_letter_strategy != "legacy"
@@ -133,7 +124,11 @@ class RabbitMQDeclarations(RabbitMQConnection):
         parallele Publishes mit offenen Confirms ab (Plan 0.12.0, MR 8).
 
         Ohne offene eigene Verbindung gibt es keinen Wegwerf-Channel; dann
-        gilt das Verhalten aus 0.11.0 (direkt auf dem Publish-Channel)."""
+        gilt das Verhalten aus 0.11.0 (direkt auf dem Publish-Channel). Dieser
+        Rueckfall existiert nur fuer Unit-Tests und den Golden-Generator
+        (``_publish_channel`` ohne ``connect``); ein verbundener Broker hat
+        immer eine Verbindung und erreicht ihn im Betrieb nicht (Review MR 8,
+        H2: bewusst beibehalten)."""
         connection = self._connection
         if connection is None or connection.is_closed:
             await pub.declare_queue(name, durable=True, arguments=arguments)
@@ -207,8 +202,8 @@ class RabbitMQDeclarations(RabbitMQConnection):
             expected,
             arguments.get(argument),
             hint=(
-                "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once requires at-least-once dead-lettering; "
-                "migrate the queue (stop its workers, drain and delete the queue family) or use "
-                "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=auto."
+                "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once requires at-least-once dead-lettering "
+                "(x-dead-letter-strategy=at-least-once and x-overflow=reject-publish). Use "
+                f"SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=auto, set a policy, or {MIGRATION_HINT}"
             ),
         )

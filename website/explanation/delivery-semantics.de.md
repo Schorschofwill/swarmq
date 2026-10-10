@@ -520,9 +520,10 @@ abreißen. Je Queue geht der Worker so vor:
 2. Für drei Argumente übernimmt er den vorhandenen Wert und deklariert
    erneut:
    - `x-dead-letter-strategy` und `x-overflow`, ob die Queue einen Wert
-     hat oder keinen. Nur die erste Übernahme je Prozess kommt als INFO
-     `queue_argument_adopted`, jede weitere als DEBUG; eine von 0.12
-     angelegte Queue kostet je Start eine Ablehnung.
+     hat oder keinen. Ein zuerst übernommenes `x-overflow` bleibt, wenn
+     die Strategy folgt. Nur die erste Übernahme je Prozess kommt als
+     INFO `queue_argument_adopted`, jede weitere als DEBUG; eine von 0.12
+     angelegte Queue kostet je Start eine, höchstens zwei Ablehnungen.
    - `x-delivery-limit`, auch wenn die Queue keines hat: WARNING
      `queue_argument_adopted` je Queue. Der Worker nutzt dann das
      [effektive Delivery-Limit](#effektives-delivery-limit).
@@ -535,10 +536,31 @@ abreißen. Je Queue geht der Worker so vor:
    `BrokerConnectionError`.
 
 Jedes Argument wird höchstens einmal übernommen; eine Deklaration
-braucht also höchstens vier Versuche. Das Ergebnis wird je Prozess
+braucht also höchstens vier Versuche. Das passive Declare hat keine
+eigene Frist, wie schon die Deklaration in 0.11: Das Anlegen einer
+Quorum-Queue kann unter Last lange dauern. Das Ergebnis wird je Prozess
 gecacht. Kommt ein Publish als unroutbar zurück (`UnroutableMessage`)
 oder findet ein Consumer die Queue nicht, wird der Eintrag verworfen,
-und die nächste Deklaration legt die Queue neu an.
+und die nächste Deklaration legt die Queue neu an. Das effektive
+Delivery-Limit bleibt dabei erhalten, bis wieder eine Deklaration
+gelingt. Fehlt einem Worker seine eigene `{queue}.DQ` oder `{queue}.XQ`,
+deklariert er die Queue-Familie auf dieselbe Weise neu, mit Übernahme,
+und publiziert dann ein zweites Mal.
+
+**Betrieb:** Jeder Worker-Prozess, auch jedes Kind eines Supervisors,
+durchläuft diese Kette bei seinem eigenen Start. Er schreibt seine
+eigene INFO `queue_argument_adopted` und seine eigene WARNING
+`queue_dead_letter_at_most_once`. Für eine von 0.12 angelegte Queue
+kostet jeder Prozessstart bis zu zwei Ablehnungen je Queue. RabbitMQ
+protokolliert jede Ablehnung als Channel-Fehler
+(`PRECONDITION_FAILED`); diese aus Alarmen auf Channel-Fehler
+ausnehmen oder dort erwarten. Ein Verbindungsabriss mitten in der Kette
+beendet die Deklaration als `BrokerConnectionError`.
+
+Nur ohne eigene Verbindung, etwa in Unit-Tests und im
+Golden-Generator, deklariert der Broker wie in 0.11.0 direkt auf dem
+Publish-Channel, ohne Kette. Ein verbundener Broker nimmt diesen Weg
+nie.
 
 ### Garantie beim Dead-Lettering
 
@@ -552,13 +574,24 @@ verfügbaren Ziel kann eine solche Nachricht verloren gehen.
 | Wert | Neue Queues | Bestandsqueues |
 |---|---|---|
 | `auto` (Standard) | `x-dead-letter-strategy=at-least-once` und `x-overflow=reject-publish` auf `{queue}` und `{queue}.DQ` (nicht `{queue}.XQ`) | behalten ihre Argumente; eine WARNING `queue_dead_letter_at_most_once` je Prozess listet die ohne at-least-once |
-| `at-least-once` | wie `auto` | ohne at-least-once: `QueueArgumentsMismatch` (Exit 78) |
+| `at-least-once` | wie `auto` | ohne at-least-once und `reject-publish`: `QueueArgumentsMismatch` (Exit 78) |
 | `legacy` | Argumente aus 0.11 (at-most-once) | behalten ihre Argumente, keine Warnung |
+
+At-least-once wirkt nur zusammen mit `x-overflow=reject-publish`; mit
+jedem anderen Overflow dead-lettert RabbitMQ at-most-once. swarmq zählt
+eine Queue mit `at-least-once` und etwa `drop-head` deshalb als
+at-most-once: Sie steht in der Warnung, und im Modus `at-least-once`
+endet sie mit `QueueArgumentsMismatch` auf `x-overflow`.
 
 Für Bestandsqueues eine Policy mit `dead-letter-strategy=at-least-once`
 und `overflow=reject-publish` setzen oder die Queues migrieren (siehe
-unten). Eine Policy sieht swarmq nicht; die Warnung bleibt deshalb, bis
-`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy` gesetzt ist. Klassische
+unten). Eine Policy sieht swarmq nicht; die Policy beendet die Warnung
+deshalb nicht, das tut nur `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`.
+Auf eine Queue wirkt nur eine Policy, die mit der höchsten Priorität:
+Eine neue Policy verdrängt eine bestehende, etwa eine mit `max-length`.
+Alle Schlüssel, die die Queue braucht, gehören in diese eine Policy.
+Eine Operator-Policy mit `max-length` hat unter `reject-publish`
+dieselbe Folge wie eine `max-length`-Policy (siehe unten). Klassische
 Queues sind nicht betroffen.
 
 `reject-publish` ändert ein Verhalten: Mit einer `max-length`-Policy
@@ -594,10 +627,21 @@ ohne Management-API aber unsichtbar. Auf swarmq-Queues keine setzen.
 bekommen den neuen Wert, bestehende behalten ihren, und der Worker nutzt
 den kleineren (siehe oben). Um `SWARMQ_QUEUE_TYPE` zu ändern oder einer
 bestehenden Queue ohne Policy at-least-once-Dead-Lettering zu geben,
-die Queue migrieren: Producer und Worker stoppen, warten, bis `{queue}`
-und `{queue}.DQ` leer sind, den Inhalt von `{queue}.XQ` sichern oder
-behalten, die drei Queues löschen, dann die Worker mit der neuen
-Einstellung starten. Sie legen die Queues neu an.
+die Queue migrieren:
+
+1. Die Producer der Queue stoppen (auch die Crons des Schedulers, die
+   an sie publizieren).
+2. Die Worker `{queue}` und `{queue}.DQ` leeren lassen. `{queue}.DQ`
+   enthält ausstehende Rückstellungen und verzögerte Tasks
+   (`delay`/`eta`), die womöglich erst viel später fällig sind: auf sie
+   warten oder sie per Shovel in eine Zwischen-Queue verschieben. Eine
+   `{queue}.DQ` mit Nachrichten nie einfach löschen; sie gingen
+   verloren.
+3. Die Worker stoppen.
+4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
+5. Die drei Queues löschen und die Worker mit der neuen Einstellung
+   starten. Sie legen die Queues neu an; danach die verschobenen
+   Nachrichten per Shovel zurückholen.
 
 ## Was SwarmQ nicht tut
 

@@ -124,7 +124,8 @@ conflict.
 **Cause.** RabbitMQ never changes the arguments of an existing queue.
 Typical: `SWARMQ_QUEUE_TYPE` was changed for queues that already exist,
 or `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` meets a queue
-without at-least-once dead-lettering. A different `x-delivery-limit`,
+without at-least-once dead-lettering (`x-dead-letter-strategy=at-least-once`
+together with `x-overflow=reject-publish`). A different `x-delivery-limit`,
 `x-dead-letter-strategy` or `x-overflow` is adopted and does not raise
 it ([existing queue arguments](../explanation/delivery-semantics.md#existing-queue-arguments)).
 

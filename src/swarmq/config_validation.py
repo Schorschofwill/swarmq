@@ -99,6 +99,10 @@ class ConfigValidation:
                 f"queue_dead_letter_strategy must be one of {list(strategies)}, got {self.queue_dead_letter_strategy!r}"
             )
             raise ConfigurationError(msg)
+        if self.queue_dead_letter_strategy == "at-least-once" and self.queue_type != "quorum":
+            # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
+            msg = "queue_dead_letter_strategy='at-least-once' requires queue_type='quorum'; use 'auto' or 'legacy'"
+            raise ConfigurationError(msg)
 
         for field_name in self._POSITIVE_FIELDS:
             value = getattr(self, field_name)
