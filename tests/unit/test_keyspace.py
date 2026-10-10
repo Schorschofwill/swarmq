@@ -55,6 +55,7 @@ _TABLE: list[tuple[str, Callable[[], str]]] = [
     ("sq:wf:golden-wf-0001", lambda: _KS.workflow(WF_ID)),
     ("sq:{sched}:defs", lambda: _KS.sched_defs()),
     ("sq:{sched}:disabled", lambda: _KS.sched_disabled()),
+    ("sq:{sched}:handover", lambda: _KS.sched_handover_latest()),
     ("sq:{sched}:leader_version", lambda: _KS.sched_leader_version()),
     ("sq:{sched}:report:def", lambda: _KS.sched_report_def()),
     ("sq:{sched}:report:first_seen", lambda: _KS.sched_report_first_seen()),

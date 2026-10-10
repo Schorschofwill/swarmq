@@ -96,6 +96,7 @@ class SchedulerLeaderVersion:
     _owner_token: str
     _version: str
     _leader_watch: LeaderVersionWatch
+    _last_seen_leader: str | None
 
     if TYPE_CHECKING:
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
@@ -118,6 +119,10 @@ class SchedulerLeaderVersion:
         except Exception as exc:
             logger.warning("scheduler_leader_version_check_failed", **_error_fields(exc))
             return
+        if info.owner is not None:
+            # BZ-07: ein 0.11-Leader hinterlässt seinen Handover-Marker nur
+            # unter seinem Owner-Token.
+            self._last_seen_leader = info.owner
         await self._observe_leader(info.owner, info.version)
 
     async def _observe_leader(self, owner: str | None, version: str | None) -> None:

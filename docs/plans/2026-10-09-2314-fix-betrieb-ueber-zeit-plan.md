@@ -631,7 +631,7 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
 | 2,6,8,13,16 | `website/reference/agent/spec/*` (geprüft von `test_agent_spec.py:440-452`) | neue Fehlerklassen, Konfigurationsfelder, CLI |
 | 3 | `tests/unit/worker/gates/test_lock.py:491-660`, `test_lock_dlq_ack_failed.py`, `test_expiry.py:116,153,169`, `test_pipeline.py:254`, `tests/integration/backend/test_expiry_result_store.py:93` | Ergebnis, Workflow-Fail und Freigabe in terminalen Pfaden |
 | 3 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` Test 1 (Grace=0) | sonst ab MR 11 vakuum-grün |
-| 4 | `tests/unit/backend/test_valkey_schedules.py:243-251`, `golden/keys.json` (+handover) | doppelter Handover-Marker |
+| 4 | `tests/unit/backend/test_valkey_schedules.py:243-251`, `golden/keys.json` (+handover), `tests/unit/test_keyspace.py` (`_TABLE` +1 Zeile handover; Nachtrag, von Georg am 2026-10-10 freigegeben) | doppelter Handover-Marker |
 | 5 | `tests/unit/test_app.py:729-747`, Fixture `tests/unit/client/test_results.py:213-234`, Cancel-Tests, die das Löschen des Flags erwarten (grep `clear_cancel_flag` in `tests/`, auch zu `worker/results.py:129,275` und `pipeline.py:589`) | Cancel-TTL; Flag per `PEXPIRE LT` 1 h statt Löschen |
 | 5 | `tests/unit/scheduler/test_leader_version.py:38,44,50-51,55,72,75-79,90`, `test_loop.py:348,353-369,375-394`, `tests/integration/test_scheduler_leader_election.py:287-310` (prüfen) | KTD11 ≥ 0.12, Hinweistext |
 | 5,6,9 | `golden/values/schedule_definition.json`, Feldliste `test_golden_fixtures.py:49-56` | neue Felder (Q3-Ausnahme) |

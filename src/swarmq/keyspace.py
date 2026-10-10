@@ -131,6 +131,10 @@ class KeySpace:
     def sched_inflight(self, schedfire_key: str) -> str:
         return f"{self._root}sched:inflight:{schedfire_key}"
 
+    def sched_handover_latest(self) -> str:
+        """Fester Handover-Marker ab 0.12 (BZ-07), Wert: Owner-Token."""
+        return f"{self._root}{{sched}}:handover"
+
     def sched_handover(self, owner_token: str) -> str:
         return f"{self._root}sched:handover:{owner_token}"
 

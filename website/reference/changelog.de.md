@@ -20,6 +20,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein neuer Scheduler-Leader durchsucht nicht mehr die ganze
+  Valkey-Datenbank.** Bei der Übernahme suchte er den Handover-Marker
+  seines Vorgängers per `SCAN`, noch vor der ersten Lock-Verlängerung;
+  bei Millionen Keys konnte das die Lock-TTL überdauern, und die
+  Leader-Rolle flatterte. Der Marker hat jetzt einen festen Key,
+  `sq:{sched}:handover`, gelesen per `GETDEL`, und der Leader verlängert
+  sein Lock direkt nach der Übernahme. Leader vor 0.12 finden den Marker
+  weiter, und ihr Marker wird weiter erkannt
+  ([Leader-Übernahme](../guides/scheduling-and-retries.md#leader-ubernahme)).
+  Neuer Valkey-Key `sq:{sched}:handover` (String, wenige Sekunden TTL).
 - **Tote Einträge im Fire-Index halten nicht mehr alle Crons an.** Der
   Leader liest pro Takt höchstens 100 fällige Einträge. Index-Einträge
   ohne Definition und deaktivierte Definitionen, die noch einen Termin

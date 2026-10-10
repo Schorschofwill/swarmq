@@ -241,8 +241,18 @@ class ValkeyScheduleStore:
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None:
         await self.set_schedfire_handover_marker(owner, ttl_ms)
 
-    async def take_handover_marker(self) -> bool:
-        return await self.get_and_del_schedfire_handover_marker()
+    async def take_handover_marker(self, previous_owner: str | None = None) -> bool:
+        """``GETDEL`` auf den festen Key, kein SCAN über die DB (BZ-07); der
+        Legacy-Key des gefundenen Owners wird mit entfernt. Ein Leader vor
+        0.12 schreibt nur den Legacy-Key: ihn findet ``previous_owner``."""
+        owner = await self._run("take_handover_marker", self._client.getdel(self._keys.sched_handover_latest()))
+        if owner is not None:
+            await self._run("take_handover_marker", self._client.delete(self._keys.sched_handover(_decode(owner))))
+            return True
+        if previous_owner is None:
+            return False
+        legacy = await self._run("take_handover_marker", self._client.getdel(self._keys.sched_handover(previous_owner)))
+        return legacy is not None
 
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
@@ -404,20 +414,19 @@ class ValkeyScheduleStore:
         return bool(result == 1)
 
     async def set_schedfire_handover_marker(self, owner_token: str, ttl_ms: int) -> None:
-        """Leader marker set right before graceful release."""
+        """Leader marker set right before graceful release: the fixed key for
+        successors from 0.12 on (BZ-07, no SCAN) plus the per-owner key that
+        successors before 0.12 find by SCAN."""
+        await self._run(
+            "set_schedfire_handover_marker",
+            self._client.set(self._keys.sched_handover_latest(), owner_token, px=ttl_ms),
+        )
         key = self._keys.sched_handover(owner_token)
         await self._run("set_schedfire_handover_marker", self._client.set(key, "1", px=ttl_ms))
 
-    async def get_and_del_schedfire_handover_marker(self) -> bool:
-        """Consume any handover marker set by a previous leader (scan + delete)."""
-        found_any = False
-        try:
-            async for key in self._client.scan_iter(match=self._keys.sched_handover_pattern(), count=100):
-                await self._client.delete(key)
-                found_any = True
-        except (ValkeyError, OSError) as exc:
-            raise BackendConnectionError(str(exc)) from exc
-        return found_any
+    async def get_and_del_schedfire_handover_marker(self, previous_owner: str | None = None) -> bool:
+        """Alias von :meth:`take_handover_marker` (Name der früheren Fassade)."""
+        return await self.take_handover_marker(previous_owner)
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

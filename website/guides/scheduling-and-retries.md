@@ -322,6 +322,22 @@ index; the definition stays for inspection. Fix it with
 `swarmq schedule remove --permanent <name>`. A static cron comes back
 with the next report of a worker that defines it.
 
+### Leader takeover
+
+A leader that stops cleanly leaves a short-lived handover marker, so
+its successor sends `SCHEDULER_LEADER` instead of
+`SCHEDULER_LEADER_FAILOVER`. From 0.12 the marker sits under one fixed
+key, `sq:{sched}:handover`, and the successor reads it with a single
+`GETDEL`. Before, it scanned the whole Valkey database, which could
+take longer than the lock TTL on a large database and cost the new
+leader its lock again. Right after the takeover the leader also renews
+its lock once, before the first regular renewal.
+
+Mixed versions keep working: a 0.12 leader also writes the marker
+under the old per-owner key that successors before 0.12 scan for, and
+a 0.12 successor recognises the marker of a leader before 0.12 through
+the leader it saw last. A missed marker only changes the signal.
+
 ### Migrating hand-converted UTC crons
 
 Before 0.10.0, crons that should fire at a local time had to be

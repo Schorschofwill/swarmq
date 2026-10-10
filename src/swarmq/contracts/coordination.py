@@ -177,7 +177,11 @@ class ScheduleStore(Protocol):
 
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None: ...
 
-    async def take_handover_marker(self) -> bool: ...
+    async def take_handover_marker(self, previous_owner: str | None = None) -> bool:
+        """Verbraucht den Handover-Marker des letzten Leaders (``True``, wenn
+        einer da war). ``previous_owner``: zuletzt gesehener Leader; erkennt
+        auch den Marker eines Leaders vor 0.12, der nur unter seinem
+        Owner-Token liegt (BZ-07)."""
 
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,

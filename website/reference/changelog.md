@@ -20,6 +20,15 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A new scheduler leader no longer scans the whole Valkey database.**
+  On takeover it looked for the handover marker of its predecessor with
+  `SCAN`, before its first lock renewal; with millions of keys that
+  could outlast the lock TTL, and the leader role flapped. The marker
+  now has a fixed key, `sq:{sched}:handover`, read with `GETDEL`, and
+  the leader renews its lock right after the takeover. Leaders before
+  0.12 still find the marker, and their marker is still recognised
+  ([leader takeover](../guides/scheduling-and-retries.md#leader-takeover)).
+  New Valkey key `sq:{sched}:handover` (string, a few seconds TTL).
 - **Dead entries in the fire index no longer stop every cron.** The
   leader reads at most 100 due entries per tick. Index entries without
   a definition and disabled definitions that still had a fire time

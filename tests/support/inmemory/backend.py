@@ -386,6 +386,8 @@ class InMemoryScheduleStore:
         self._fires: dict[str, int] = {}
         self._completed: _TTLDict[str] = _TTLDict(clock)
         self._inflight: _TTLDict[str] = _TTLDict(clock)
+        # Handover (BZ-07): fester Marker (Wert: Owner) plus Legacy je Owner.
+        self._handover_latest: _TTLDict[str] = _TTLDict(clock)
         self._handover: _TTLDict[str] = _TTLDict(clock)
         # Cron-Meldungen (KTD10): (name, fingerprint) -> [first, last, payload]
         self._reports: dict[tuple[str, str], tuple[int, int, bytes]] = {}
@@ -494,13 +496,17 @@ class InMemoryScheduleStore:
         return fire_key in self._completed
 
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None:
+        self._handover_latest.set("latest", owner, ttl_ms)
         self._handover.set(owner, "1", ttl_ms)
 
-    async def take_handover_marker(self) -> bool:
-        keys = self._handover.keys()
-        for key in keys:
-            self._handover.pop(key)
-        return bool(keys)
+    async def take_handover_marker(self, previous_owner: str | None = None) -> bool:
+        # Wie ``ValkeyScheduleStore``: fester Marker, sonst der Legacy-Marker
+        # des zuletzt gesehenen Leaders (0.11 schreibt nur diesen).
+        owner = self._handover_latest.pop("latest")
+        if owner is not None:
+            self._handover.pop(owner)
+            return True
+        return previous_owner is not None and self._handover.pop(previous_owner) is not None
 
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,

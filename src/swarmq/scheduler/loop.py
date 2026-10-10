@@ -137,6 +137,8 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
         self._version = version or swarmq_version()
         self._leader_watch = LeaderVersionWatch()
+        # Zuletzt gesehener Leader (Standby), für dessen Handover-Marker.
+        self._last_seen_leader: str | None = None
 
         self._state: _SchedulerState = "standby"
         self._prev_leader_seen = False
@@ -416,14 +418,19 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
 
         # Acquired the lock — decide which signal to emit.
         try:
-            had_handover = (
-                await self._backend.schedules.take_handover_marker()
-            )
+            had_handover = await self._take_handover_marker()
         except BackendConnectionError as exc:
             logger.warning(
                 "scheduler_handover_marker_read_failed", **_error_fields(exc)
             )
             had_handover = False
+
+        # BZ-07: die Übernahme (Handover-Marker) kann dauern; direkt danach
+        # verlängern, damit das Lock nicht vor der ersten Verlängerung abläuft.
+        if not await self._renew_after_takeover():
+            logger.warning("scheduler_lock_lost")
+            self._prev_leader_seen = True
+            return
 
         self._state = "leader"
         self._renew_failures = 0  # fresh term, fresh renew budget
@@ -437,6 +444,23 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         # KTD10: die Cron-Meldungen aller Worker sofort übernehmen, nicht erst
         # nach einem Meldetakt.
         self._adopt_now.set()
+
+    async def _take_handover_marker(self) -> bool:
+        """Ohne gesehenen Vorgänger ohne Argument (älterer Vertrag)."""
+        schedules: ContractScheduleStore = self._backend.schedules
+        if self._last_seen_leader is None:
+            return await schedules.take_handover_marker()
+        return await schedules.take_handover_marker(previous_owner=self._last_seen_leader)
+
+    async def _renew_after_takeover(self) -> bool:
+        """``False`` nur, wenn das Lock beobachtbar weg ist. Ein Fehler beim
+        Verlängern kostet die frisch erworbene Rolle nicht; die folgenden
+        Wahl-Takte entscheiden wie bei jeder Verlängerung."""
+        try:
+            return await self._lock_manager.renew(self._lock_token, int(self._config.scheduler_lock_ttl * 1000))
+        except BackendConnectionError as exc:
+            logger.warning("scheduler_renew_error", **_error_fields(exc))
+            return True
 
     # ---- poll loop ------------------------------------------------------
 

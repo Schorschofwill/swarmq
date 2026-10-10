@@ -86,10 +86,6 @@ async def test_bz02_deferred_task_fires_under_returned_task_id(
 
 
 @pytest.mark.befund("BZ-07")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-07: dauert der Handover-SCAN laenger als Lock-TTL minus Heartbeat, verliert der Leader das Lock",
-)
 async def test_bz07_slow_handover_scan_does_not_cost_the_new_leader_its_lock(
     backend,
     broker,

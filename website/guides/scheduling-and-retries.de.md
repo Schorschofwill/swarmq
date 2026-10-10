@@ -336,6 +336,24 @@ Fire-Index; die Definition bleibt zur Prüfung stehen. Reparieren mit
 `swarmq schedule remove --permanent <name>`. Ein statischer Cron kommt
 mit der nächsten Meldung eines Workers zurück, der ihn definiert.
 
+### Leader-Übernahme
+
+Ein Leader, der sauber stoppt, hinterlässt einen kurzlebigen
+Handover-Marker, damit sein Nachfolger `SCHEDULER_LEADER` statt
+`SCHEDULER_LEADER_FAILOVER` sendet. Ab 0.12 liegt der Marker unter
+einem festen Key, `sq:{sched}:handover`, und der Nachfolger liest ihn
+mit einem einzigen `GETDEL`. Bisher durchsuchte er die ganze
+Valkey-Datenbank; bei einer großen Datenbank konnte das länger dauern
+als die Lock-TTL und den neuen Leader sein Lock gleich wieder kosten.
+Direkt nach der Übernahme verlängert der Leader sein Lock außerdem
+einmal, noch vor der ersten regulären Verlängerung.
+
+Gemischte Versionen funktionieren weiter: Ein 0.12-Leader schreibt den
+Marker zusätzlich unter dem alten Key je Owner, nach dem Nachfolger vor
+0.12 suchen, und ein 0.12-Nachfolger erkennt den Marker eines Leaders
+vor 0.12 über den zuletzt gesehenen Leader. Ein verpasster Marker
+ändert nur das Signal.
+
 ### Von Hand umgerechnete UTC-Crons umstellen
 
 Vor 0.10.0 mussten Crons, die zu einer lokalen Uhrzeit feuern sollen,

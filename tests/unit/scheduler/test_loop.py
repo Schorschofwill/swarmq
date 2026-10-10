@@ -57,6 +57,15 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 22. Eine nicht dekodierbare Definition blockiert den Poll nicht: der
 #     Leader parkt sie (Fire-Index leer, Definition bleibt), die übrigen
 #     fälligen Crons feuern.
+#
+# Test list (Plan 0.12.0, MR 4, BZ-07): Verlängerung direkt nach der Übernahme.
+# 23. Liefert sie ``False`` (Lock während der Übernahme abgelaufen), bleibt
+#     der Loop Standby: kein Leader-Signal, ``scheduler_lock_lost``.
+# 24. Wirft sie ``BackendConnectionError``, wird er trotzdem Leader (Lock
+#     gerade erworben) und loggt ``scheduler_renew_error``; die folgenden
+#     Wahl-Takte entscheiden wie bei jeder Verlängerung.
+# 25. Der Standby merkt sich den zuletzt gesehenen Leader und reicht ihn an
+#     ``take_handover_marker`` (Handover eines 0.11-Leaders).
 
 from __future__ import annotations
 
@@ -1318,6 +1327,56 @@ class TestTakeoverBetweenPollAndCommit:
         assert stored == taken_over
         assert await memory.schedules.fire_ts("cron_a") > 1_000
 
+
+
+class TestRenewRightAfterTakeover:
+    """Liste 23-25 (BZ-07)."""
+
+    async def test_renew_false_after_takeover_stays_standby(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs
+    ):
+        """Liste 23."""
+        signals: list[Signal] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER)
+        async def _on_leader(**_kw):
+            signals.append(Signal.SCHEDULER_LEADER)
+
+        lock_manager.renew.return_value = False
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        assert loop.state == "standby"
+        assert signals == []
+        assert any(e["event"] == "scheduler_lock_lost" for e in swarmq_logs)
+
+    async def test_renew_error_after_takeover_still_leads(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs
+    ):
+        """Liste 24."""
+        lock_manager.renew.side_effect = BackendConnectionError("valkey down")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        assert loop.state == "leader"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_renew_error"]
+        assert entry["error_type"] == "BackendConnectionError"
+
+    async def test_takeover_offers_last_seen_leader_for_its_handover_marker(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        """Liste 25."""
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="old-leader", version="0.11.0")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        lock_manager.acquire.return_value = None
+        await loop._election_tick()
+
+        lock_manager.acquire.return_value = _LEADER_TOKEN
+        await loop._election_tick()
+
+        backend.schedules.take_handover_marker.assert_awaited_once_with(previous_owner="old-leader")
 
 
 class TestUndecodableDefinitionInPoll:
