@@ -8,6 +8,7 @@ Test-Liste:
 - [x] Stufe abgelehnt (vorhandene Queue mit anderem Typ): Rückfall auf ``{queue}.DQ``, Nachricht kommt zurück
 - [x] gelöschte Stufe: der nächste Retry legt sie neu an, die Nachricht kommt zurück
 - [x] ``queue_depth`` zählt die Stufen mit, ``ready_depth`` nur die Haupt-Queue
+- [x] ``queue_depth`` auf eine Familie ohne Stufen lässt keinen Channel offen (Review MR 10, P0-1)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
+from tests.integration.broker.test_declare_chain import _declare_raw, _legacy, _open_channel_numbers
 from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
@@ -128,3 +130,20 @@ async def test_queue_depth_counts_tiers_and_ready_depth_only_the_main_queue(work
 
     assert await worker.broker.queue_depth(worker.queue) == 1
     assert await worker.broker.ready_depth(worker.queue) == 0
+
+
+async def test_queue_depth_on_a_family_without_tiers_leaves_no_channel_open(worker: Worker, rabbitmq_url: str) -> None:
+    """Review MR 10, P0-1: jede fehlende Stufe ist ein NOT_FOUND, der Broker
+    schliesst den Wegwerf-Channel; ohne eigenes ``close`` oeffnete ein
+    RobustChannel ihn wieder, und die Verbindung erreichte in Stunden
+    ``channel_max``."""
+    for name, arguments in _legacy(worker.queue).items():
+        await _declare_raw(rabbitmq_url, name, arguments)
+    await worker.broker._ensure_publish_channel()
+    before = _open_channel_numbers(worker.broker)
+
+    for published in range(3):
+        assert await worker.broker.queue_depth(worker.queue) == published
+        await worker.broker.publish(worker.queue, b"roundtrip")
+
+    assert _open_channel_numbers(worker.broker) == before

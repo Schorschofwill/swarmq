@@ -15,7 +15,7 @@ from typing import Any
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity
 
-from swarmq.broker.rabbitmq.connection import RabbitMQConnection
+from swarmq.broker.rabbitmq.connection import RabbitMQConnection, close_channel_quietly
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
@@ -55,10 +55,7 @@ def _message_ttl_s(headers: dict[str, Any]) -> tuple[bool, float | None]:
 
 async def _close_quietly(channel: aio_pika.abc.AbstractChannel) -> None:
     if not channel.is_closed:
-        try:
-            await channel.close()
-        except Exception:
-            pass
+        await close_channel_quietly(channel)
 
 
 class RabbitMQAdmin(RabbitMQDelivery):
@@ -469,8 +466,10 @@ class RabbitMQAdmin(RabbitMQDelivery):
                     q = await channel.declare_queue(name, passive=True)
                 except ChannelNotFoundEntity:
                     # Queue does not exist — counts as 0. The broker closed the
-                    # channel; close it here as well, or a RobustChannel reopens itself.
-                    await _close_quietly(channel)
+                    # channel, so ``is_closed`` is already True: close it here
+                    # WITHOUT that guard, or a RobustChannel reopens itself and
+                    # is never closed (Review MR 10, P0-1; like ``arg_conflict``).
+                    await close_channel_quietly(channel)
                     channel = None
                     continue
                 result = getattr(q, "declaration_result", None)

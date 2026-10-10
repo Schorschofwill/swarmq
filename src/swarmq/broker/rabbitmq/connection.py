@@ -72,6 +72,20 @@ _POOL_ACQUIRE_TIMEOUT_S = 10.0
 ChannelFactory = Callable[[], Awaitable[aio_pika.abc.AbstractChannel]]
 
 
+async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) -> None:
+    """``close()`` ohne ``is_closed``-Pruefung und ohne Ausnahme: nach einem
+    vom Broker geschlossenen Channel (NOT_FOUND, 406) ist ``is_closed`` schon
+    True; ohne eigenes ``close`` oeffnete ein RobustChannel sich wieder und
+    bliebe offen, bis die Verbindung ``channel_max`` erreicht (Review MR 10,
+    P0-1; wie ``arg_conflict``)."""
+    if channel is None:
+        return
+    try:
+        await channel.close()
+    except Exception:
+        pass
+
+
 class RabbitMQConnection:
     def __init__(
         self,
@@ -564,12 +578,14 @@ class RabbitMQConnection:
                 return int(getattr(result, "message_count", 0))
             return 0
         except aio_pika.exceptions.ChannelNotFoundEntity:
+            # Der Broker hat den Channel geschlossen (``is_closed`` ist schon
+            # True): trotzdem ``close()``, sonst oeffnet ein RobustChannel
+            # sich wieder und bleibt offen (Review MR 10, P0-1).
+            await close_channel_quietly(channel)
+            channel = None
             return 0
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
         finally:
             if channel is not None and not channel.is_closed:
-                try:
-                    await channel.close()
-                except Exception:
-                    pass
+                await close_channel_quietly(channel)
