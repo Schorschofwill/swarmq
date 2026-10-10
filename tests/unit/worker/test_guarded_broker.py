@@ -31,7 +31,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.config import SwarmQConfig
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError, SettleFailedAfterPublish
+from swarmq.exceptions import (
+    BackendConnectionError,
+    BrokerConnectionError,
+    MessageHeadersTooLarge,
+    SettleFailedAfterPublish,
+)
 from swarmq.task import TaskInfo
 from swarmq.worker.gates import GateContext
 from swarmq.worker.gates.execution_guard import ExecutionGuard
@@ -225,6 +230,20 @@ async def test_retry_copy_published_but_ack_failed_still_marks_superseded(
         await broker.retry_later(delivery, delay_ms=500, headers={"x-swarmq-retry-count": 1})
 
     assert await _status(backend, retry_count=0) == "superseded"
+
+
+async def test_too_large_dead_letter_headers_leave_the_lease_for_the_fallback(
+    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+) -> None:
+    """Q14 (Plan 0.12.0, MR 2): ``MessageHeadersTooLarge`` ist ein
+    gescheiterter Publish, kein ``SettleFailedAfterPublish`` -- kein Done."""
+    delivery = await _claimed(guard)
+    inner.dead_letter.side_effect = MessageHeadersTooLarge("headers take 70000 bytes")
+
+    with pytest.raises(MessageHeadersTooLarge):
+        await broker.dead_letter(delivery, headers={})
+
+    assert await _status(backend) == "running"
 
 
 async def test_failed_retry_publish_leaves_the_lease_for_the_fallback(

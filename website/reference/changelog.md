@@ -6,7 +6,24 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`swarmq.MessageHeadersTooLarge`** (subclass of
+  `BrokerConnectionError`): a publish whose headers do not fit into half
+  of the negotiated `frame_max`, even with long texts truncated, raises
+  it without sending anything
+  ([error catalog](errors.md#messageheaderstoolarge)).
+
 ### Fixed
+
+- **A task that fails with a huge error text no longer sends its
+  neighbours back to the queue.** `x-swarmq-traceback` and
+  `x-swarmq-lock-render-error` are bounded to 8 KiB (first 6 KiB and
+  last 2 KiB); before, an error text beyond `frame_max` (128 KiB) made
+  the broker close the worker connection, and every message the worker
+  held was redelivered. Every publish now also checks its headers
+  against half of `frame_max`
+  ([inspecting a message](../guides/dead-letter-queues.md#inspecting-one-message)).
 
 - **Retries at the delay cap no longer come back all at once.** Above
   `retry_max_delay` an `exponential` or `linear` retry now waits

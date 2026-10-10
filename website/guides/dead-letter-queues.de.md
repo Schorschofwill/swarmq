@@ -118,6 +118,19 @@ BODY:
 }
 ```
 
+`x-swarmq-traceback` und `x-swarmq-lock-render-error` fassen höchstens
+8 KiB: Ein längerer Text behält seine ersten 6 KiB und seine letzten
+2 KiB, dazwischen steht ein Vermerk `[... N bytes truncated ...]`. Die
+volle Fehlermeldung steht weiter im gespeicherten Fehlerergebnis. Ein
+Nachrichten-Header muss in einen AMQP-Frame passen; ein zu großer Header
+schloss die ganze Worker-Verbindung, und jede Nachricht, die der Worker
+hielt, kam in die Queue zurück. Vor jedem Publish prüft SwarmQ zusätzlich
+alle Header gegen die Hälfte des ausgehandelten `frame_max` (bei RabbitMQ
+standardmäßig 128 KiB) und kürzt lange Texte bei Bedarf weiter; passen
+sie dann immer noch nicht, wirft der Publish
+[`MessageHeadersTooLarge`](../reference/errors.md#messageheaderstoolarge),
+ohne etwas zu senden.
+
 Nutze `--scan-limit N`, um die Suche zu verbreitern, wenn die
 task_id tief in einer großen DLQ liegt. Exit-Code `3` bedeutet
 task_id nicht gefunden; `0` bedeutet gefunden.

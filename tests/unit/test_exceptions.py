@@ -124,3 +124,15 @@ def test_backend_response_error_is_a_backend_connection_error_exported_from_the_
     assert BackendResponseError is exceptions.BackendResponseError
     assert issubclass(BackendResponseError, exceptions.BackendConnectionError)
     assert "BackendResponseError" in swarmq.__all__
+
+
+def test_message_headers_too_large_is_a_broker_connection_error_exported_from_the_root():
+    """BZ-17 (Plan 0.12.0, MR 2, Q14): Header, die auch gekuerzt nicht in
+    einen Frame passen -- Unterklasse von ``BrokerConnectionError``, damit
+    bestehende Handler sie weiter fangen."""
+    import swarmq
+    from swarmq import MessageHeadersTooLarge, exceptions
+
+    assert MessageHeadersTooLarge is exceptions.MessageHeadersTooLarge
+    assert issubclass(MessageHeadersTooLarge, exceptions.BrokerConnectionError)
+    assert "MessageHeadersTooLarge" in swarmq.__all__

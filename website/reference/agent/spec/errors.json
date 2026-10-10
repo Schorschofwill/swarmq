@@ -93,6 +93,23 @@
       ]
     },
     {
+      "dlq_on_uncaught": "n/a",
+      "doc": "Die Header einer Nachricht passen auch nach dem Kuerzen langer Texte\nnicht in die Haelfte von ``frame_max``; der Publish wurde nicht\nversucht (BZ-17). Ein zu grosser Content-Header schloesse sonst die\nganze Verbindung, und alle unbestaetigten Nachbar-Zustellungen kaemen\nzurueck. Unterklasse von :class:`BrokerConnectionError` (Q14).",
+      "exception_class": "swarmq.exceptions.MessageHeadersTooLarge",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "MessageHeadersTooLarge",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
+      ]
+    },
+    {
       "dlq_on_uncaught": "yes",
       "doc": null,
       "exception_class": "swarmq.exceptions.NoRetry",

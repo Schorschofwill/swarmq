@@ -29,6 +29,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
     WorkflowStateConflict,
 )
+from swarmq.header_text import bounded_header_text
 from swarmq.headers import HEADER_RETRY_COUNT, HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
@@ -129,7 +130,7 @@ class RetryHandler:
         # (neue Nachricht, eigenes Zustellbudget).
         headers = republish_headers(delivery, ctx)
         headers[HEADER_RETRY_COUNT] = retry_count + 1
-        headers["x-swarmq-traceback"] = error_message
+        headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
         except Exception as broker_exc:
@@ -249,7 +250,7 @@ class RetryHandler:
         # x-swarmq-unique-hash for operator introspection (inline
         # release below takes care of the actual flag cleanup).
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
-        headers["x-swarmq-traceback"] = error_message
+        headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
             await dead_letter_copy(deps, delivery, headers)
             # Release AFTER successful ack (dead_letter bestätigt das

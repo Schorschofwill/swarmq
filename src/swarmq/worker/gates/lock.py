@@ -28,6 +28,7 @@ import inspect
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
+from swarmq.header_text import bounded_header_text
 from swarmq.locking import compute_lock_ttl_ms, lock_key
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
@@ -109,7 +110,7 @@ class LockGate:
                 **_error_fields(exc),
             )
             await self._dead_letter_terminal(
-                delivery, ctx, {"x-swarmq-lock-render-error": str(exc)}, "lock_render_dlq_failed"
+                delivery, ctx, {"x-swarmq-lock-render-error": bounded_header_text(str(exc))}, "lock_render_dlq_failed"
             )
             return Redelivered
 

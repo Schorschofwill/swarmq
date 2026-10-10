@@ -11,7 +11,8 @@ normal zurückgestellt; ein gleichzeitig laufender Nachbar-Task auf demselben
 Worker bleibt unberührt (seine Nachricht geht nicht an die Queue zurück).
 
 Test-Liste:
-- [x] riesiger Fehlertext reißt die Nachbarn nicht mit (BZ-17)
+- [x] riesiger Fehlertext reißt die Nachbarn nicht mit (BZ-17); gemessen
+      wird die Tiefe der Haupt-Queue per passivem Declare (Plan 0.12.0, MR 2)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import contextlib
 import time
 import uuid
 
+import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -39,18 +41,22 @@ _HUGE_ERROR = "x" * (1024 * 1024)
 _OBSERVE_S = 3.0
 
 
+async def _main_queue_depth(rabbitmq_url: str, queue: str) -> int:
+    """Bereite Nachrichten nur der Haupt-Queue, per passivem Declare."""
+    connection = await aio_pika.connect(rabbitmq_url)
+    try:
+        channel = await connection.channel()
+        declared = await channel.declare_queue(queue, passive=True)
+        return int(declared.declaration_result.message_count or 0)
+    finally:
+        await connection.close()
+
+
 def _body(task_id: str, task_name: str, queue: str) -> bytes:
     return encode_json({"task": {"id": task_id, "name": task_name, "queue": queue}, "args": [], "kwargs": {}})
 
 
 @pytest.mark.befund("BZ-17")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-17: x-swarmq-traceback ist unbegrenzt; ein 1-MiB-Fehlertext sprengt "
-        "frame_max, der Broker schließt die Verbindung und stellt Nachbar-Tasks neu zu"
-    ),
-)
 async def test_huge_error_text_does_not_requeue_neighbour_tasks(rabbitmq_url: str, valkey_url: str) -> None:
     suffix = uuid.uuid4().hex[:10]
     queue = f"bz17-{suffix}"
@@ -97,11 +103,13 @@ async def test_huge_error_text_does_not_requeue_neighbour_tasks(rabbitmq_url: st
 
         # Kein Broker-Ereignis meldet "Nachricht zurück in der Queue"; die
         # Tiefe der Haupt-Queue ist die beobachtbare Größe, daher Pollen.
+        # Nur die Haupt-Queue (passives Declare): ``queue_depth`` zählt
+        # ``{queue}.DQ`` mit, dort liegt die gewollte Retry-Kopie.
         requeued = 0
 
         async def any_requeued() -> bool:
             nonlocal requeued
-            requeued = await producer.queue_depth(queue)
+            requeued = await _main_queue_depth(rabbitmq_url, queue)
             return requeued != 0
 
         await wait_until(any_requeued, timeout=_OBSERVE_S)

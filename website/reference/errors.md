@@ -24,6 +24,7 @@ except SwarmQError as exc:
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
 | `PublishIndeterminate` | `BrokerConnectionError` | A publish broke its deadline; whether it arrived is unknown |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
+| `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
@@ -433,6 +434,22 @@ the original while the copy is already on its way; the
 sets its superseded or done marker as after success, so the
 redelivered original is skipped. Import it from `swarmq.exceptions` if
 you need it in tests.
+
+## `MessageHeadersTooLarge`
+
+**When raised.** By a publish (`schedule()`, and inside the worker by
+retry and dead-letter copies) when the encoded message headers need
+more than half of the negotiated `frame_max`, even after long texts
+were truncated to 8 KiB. Subclass of `BrokerConnectionError`. Nothing
+was sent.
+
+**Cause.** Many or large headers of non-text values, for example a
+middleware that adds hundreds of headers. SwarmQ's own diagnostic
+headers are bounded and do not cause it.
+
+**Recovery.** Do not retry with the same headers; they fail again.
+Reduce the headers. Unlike `PublishIndeterminate`, a `unique_for` claim
+is released, because nothing reached the broker.
 
 ## `WorkflowValidationError`
 

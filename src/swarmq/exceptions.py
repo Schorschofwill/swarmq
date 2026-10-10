@@ -55,6 +55,15 @@ class SettleFailedAfterPublish(BrokerConnectionError):
     """
 
 
+class MessageHeadersTooLarge(BrokerConnectionError):
+    """Die Header einer Nachricht passen auch nach dem Kuerzen langer Texte
+    nicht in die Haelfte von ``frame_max``; der Publish wurde nicht
+    versucht (BZ-17). Ein zu grosser Content-Header schloesse sonst die
+    ganze Verbindung, und alle unbestaetigten Nachbar-Zustellungen kaemen
+    zurueck. Unterklasse von :class:`BrokerConnectionError` (Q14).
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 

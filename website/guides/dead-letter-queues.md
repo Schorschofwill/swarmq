@@ -112,6 +112,18 @@ BODY:
 }
 ```
 
+`x-swarmq-traceback` and `x-swarmq-lock-render-error` hold at most
+8 KiB: a longer text keeps its first 6 KiB and its last 2 KiB with a
+`[... N bytes truncated ...]` note in between. The full error message
+stays in the stored error result. A message header must fit into one
+AMQP frame; an oversized header closed the whole worker connection, and
+every message the worker held came back to the queue. Before each
+publish SwarmQ also checks all headers against half of the negotiated
+`frame_max` (128 KiB on RabbitMQ by default) and truncates long texts
+further if needed; if they still do not fit, the publish raises
+[`MessageHeadersTooLarge`](../reference/errors.md#messageheaderstoolarge)
+without sending anything.
+
 Use `--scan-limit N` to widen the search when the task_id is deep
 in a large DLQ. Exit code `3` means the task_id was not found; `0`
 means found.

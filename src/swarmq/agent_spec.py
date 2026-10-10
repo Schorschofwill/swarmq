@@ -111,6 +111,12 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "MessageHeadersTooLarge": dict(
+        # Dieselben Header scheitern wieder; nichts wurde gesendet
+        # (Plan 0.12.0, MR 2, BZ-17).
+        origin="library", when=["schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "BackendConnectionError": dict(
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",

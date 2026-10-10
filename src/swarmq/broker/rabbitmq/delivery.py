@@ -27,6 +27,7 @@ from swarmq.broker.rabbitmq.connection import (
     RabbitMQConnection,
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
+from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
 from swarmq.broker.rabbitmq.topology import (
     dead_letter_queue_arguments,
     delay_queue_arguments,
@@ -174,6 +175,9 @@ class RabbitMQDelivery(RabbitMQConnection):
         current_task().cancelling() indicates our task is being
         cancelled.
         """
+        # Vor jedem Versuch und ohne Wiederholung: zu grosse Header schloessen
+        # die ganze Verbindung (BZ-17).
+        msg.headers = guard_headers(msg.headers, negotiated_frame_max(self._connection)) or {}
         timeout_s = self._effective_publish_timeout()
         # Pro-Aufruf-Container statt Instanzzustand: bei nebenlaeufigen
         # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU

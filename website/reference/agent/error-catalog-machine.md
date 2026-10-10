@@ -29,6 +29,7 @@ Every row has the following columns:
 | `swarmq.exceptions.BrokerConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.PublishIndeterminate` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.SettleFailedAfterPublish` | `BrokerConnectionError` | library | run | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.MessageHeadersTooLarge` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendResponseError` | `BackendConnectionError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
@@ -94,6 +95,7 @@ For agents that need a quick action table:
 |---|---|
 | `BrokerConnectionError` / `BackendConnectionError` | Back off, retry — the library reconnects automatically. |
 | `PublishIndeterminate` | Do not blindly re-publish: the broker may already have the message. Check the result or make the task idempotent first. |
+| `MessageHeadersTooLarge` | Do not retry with the same headers: nothing was sent, and they fail again. Reduce the headers. |
 | `BackendResponseError` | Valkey answered with an error (`WRONGTYPE`, script error); waiting does not help. Inspect the key or script, then retry. |
 | `ConfigurationError` | Do not retry. Fix the config and restart. |
 | `TaskNotFoundError` at `schedule()` | Report a bug; the task is not registered. |

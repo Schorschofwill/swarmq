@@ -25,6 +25,7 @@ except SwarmQError as exc:
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
+| `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
@@ -452,6 +453,23 @@ Original erneut zu, während die Kopie schon unterwegs ist; der
 setzt seinen Superseded- bzw. Done-Marker wie nach Erfolg, sodass das
 neu zugestellte Original übersprungen wird. Für Tests aus
 `swarmq.exceptions` importieren.
+
+## `MessageHeadersTooLarge`
+
+**Wann geworfen.** Von einem Publish (`schedule()`, im Worker auch von
+Retry- und Dead-Letter-Kopien), wenn die kodierten Nachrichten-Header
+mehr als die Hälfte des ausgehandelten `frame_max` brauchen, auch
+nachdem lange Texte auf 8 KiB gekürzt wurden. Unterklasse von
+`BrokerConnectionError`. Es wurde nichts gesendet.
+
+**Ursache.** Viele oder große Header mit Nicht-Text-Werten, etwa eine
+Middleware, die Hunderte Header ergänzt. Die eigenen Diagnose-Header von
+SwarmQ sind begrenzt und lösen den Fehler nicht aus.
+
+**Recovery.** Nicht mit denselben Headern wiederholen; sie scheitern
+wieder. Die Header verkleinern. Anders als bei `PublishIndeterminate`
+wird eine `unique_for`-Sperre freigegeben, weil nichts beim Broker
+ankam.
 
 ## `WorkflowValidationError`
 

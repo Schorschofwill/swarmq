@@ -22,6 +22,7 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     ConfigurationError,
     LoggingConfigError,
+    MessageHeadersTooLarge,
     NoRetry,
     PublishIndeterminate,
     ResultExpiredError,
@@ -123,6 +124,7 @@ __all__ = [
     "LoggingConfigError",
     # Middleware
     "MessageContext",
+    "MessageHeadersTooLarge",
     # Metrics
     "Metrics",
     "MetricsServer",

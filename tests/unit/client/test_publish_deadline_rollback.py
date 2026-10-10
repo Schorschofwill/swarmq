@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from swarmq.exceptions import BrokerConnectionError, MessageHeadersTooLarge, PublishIndeterminate
 
 
 @pytest.fixture
@@ -83,3 +83,16 @@ class TestDeadlineErrorReachesTheCaller:
         eng gefassten Handler im Ablauf-Gate fangen ihn unveraendert."""
         with pytest.raises(BrokerConnectionError):
             await client.schedule("add", 1, 2, queue="math")
+
+
+async def test_unique_claim_is_released_when_headers_are_too_large(client, broker, backend):
+    """Q14 (Plan 0.12.0, MR 2): ``MessageHeadersTooLarge`` heisst, es wurde
+    nichts gesendet -- anders als ``PublishIndeterminate`` weicht die Sperre."""
+    broker.publish = AsyncMock(side_effect=MessageHeadersTooLarge("headers take 70000 bytes"))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    with pytest.raises(MessageHeadersTooLarge):
+        await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+    backend.release_unique.assert_awaited_once()

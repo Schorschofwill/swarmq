@@ -18,6 +18,10 @@ Test-Liste 0.9.0 (drittes Review):
       ``lock_acquire_failed`` und Requeue, keine Zurueckstellung
 - [x] die Konflikt-Kopie einer Schedfire-Zustellung mit gewonnenem Claim
       traegt dessen Owner-Token (``x-swarmq-schedfire-claim``)
+
+Test-Liste BZ-17 (Plan 0.12.0, MR 2):
+- [x] ``x-swarmq-lock-render-error`` ist hoechstens 8 KiB lang, auch wenn der
+      Renderfehler einen riesigen Argumentnamen zitiert
 """
 
 from __future__ import annotations
@@ -508,6 +512,25 @@ class TestFormatStringLock:
         broker.dead_letter.assert_awaited_once()
         _, kwargs = broker.dead_letter.call_args
         assert "x-swarmq-lock-render-error" in kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_render_error_header_is_bounded(self, broker, backend, config):
+        reg = TaskRegistry()
+        reg.register(FormatStringLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+
+        # Der TypeError von ``bind`` zitiert den unbekannten Argumentnamen.
+        msg = make_message(
+            _default_payload(name="user_charge", args=[], kwargs={"user_id": 1, "amount": 1, "k" * 1_000_000: 1})
+        )
+        await w._handle_message(msg)
+
+        broker.dead_letter.assert_awaited_once()
+        render_error = broker.dead_letter.call_args.kwargs["headers"]["x-swarmq-lock-render-error"]
+        assert len(render_error.encode()) <= 8 * 1024
 
     @pytest.mark.asyncio
     async def test_render_error_with_dlq_publish_failure_nacks_no_requeue(
