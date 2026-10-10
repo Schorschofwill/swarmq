@@ -140,6 +140,24 @@ Pick `"completion"` for idempotent work ("send welcome email to
 user 42") and `"start"` for work where overlapping executions are
 fine but duplicated pending messages are not.
 
+### Unique crons
+
+On a static cron, `unique_for` keeps a long run from overlapping the
+next fire: the scheduler leader claims the flag before it publishes a
+fire, and a fire whose flag is still held is skipped
+(`TASK_DUPLICATE_DETECTED`, `source="scheduler.fire"`) and counts as
+done. From 0.12 this works on every leader, also one that does not
+have the task in its registry: workers report `unique_for` and
+`unique_until` with their crons
+([cron reports](scheduling-and-retries.md#cron-reports-and-the-leader)).
+
+If the publish of a fire fails after the leader claimed the flag, the
+leader releases the flag again, so the retry on the next tick is not
+taken for a duplicate. The flag stays when the publish timed out while
+waiting for the broker's confirm (`PublishIndeterminate`), because the
+message may have arrived. A flag that `schedule(delay=|eta=)` claimed
+belongs to the producer and is never released on such a failure.
+
 ### Per-call override
 
 `unique_for` and `unique_until` can be overridden at the

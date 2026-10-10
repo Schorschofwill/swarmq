@@ -22,6 +22,14 @@
 # 12. Leader wählt im Takt ``scheduler_seen_interval_s``, nicht im Poll-Takt;
 #     sofort beim Erwerb der Leader-Rolle.
 # 13. Übernommene fremde Crons lösen beim Fire keine Registry-Warnung aus.
+#
+# Plan 0.12.0, MR 9 (BZ-09):
+# 14. Statische Definition trägt ``unique_for``/``unique_until`` des Tasks;
+#     ohne ``unique_for`` bleibt ``unique_until`` beim Default (Abdruck und
+#     Payload unverändert).
+# 15. Fingerabdruck ohne ``unique_for`` unverändert (Hex gepinnt); mit
+#     ``unique_for`` gehen beide Werte ein.
+# 16. Geändertes ``unique_for`` in der Meldung → Leader übernimmt.
 
 from __future__ import annotations
 
@@ -66,9 +74,23 @@ class TestFingerprint:
         {"timezone": "Europe/Berlin"},
         {"queue": "other"},
         {"task_name": "renamed"},
+        {"unique_for": 3600},
     ])
     def test_each_code_field_changes_the_fingerprint(self, change):
         assert cron_fingerprint(_static(**change)) != cron_fingerprint(_static())
+
+    def test_fingerprint_without_unique_for_is_unchanged_since_0_11(self):
+        """BZ-09: ohne ``unique_for`` bleibt der Abdruck byte-gleich zu
+        0.11 (Hex vor MR 9 berechnet), sonst meldeten 0.11- und 0.12-Worker
+        derselben App verschiedene Abdrücke und lösten einen Konflikt aus."""
+        assert cron_fingerprint(_static()) == "45aefb29ef5d1558"
+        assert cron_fingerprint(_static(timezone="Europe/Berlin")) == "ad10efb6fc42167b"
+        assert cron_fingerprint(_static(unique_until="start")) == "45aefb29ef5d1558"
+
+    def test_unique_until_changes_the_fingerprint_when_unique_for_is_set(self):
+        assert cron_fingerprint(_static(unique_for=3600, unique_until="start")) != cron_fingerprint(
+            _static(unique_for=3600)
+        )
 
 
 def _task(**info) -> type[Task]:
@@ -101,6 +123,22 @@ class TestStaticDefinitions:
         }
 
         assert zones == {"own": "Asia/Tokyo", "default": "Europe/Berlin", "utc": None}
+
+    def test_unique_settings_of_the_task_are_carried(self, _cleanup_tasks):
+        """BZ-09: der Leader braucht die Task-Klasse nicht, um ``unique_for``
+        eines gemeldeten Crons anzuwenden."""
+        unique = _task(name="nightly", queues=["default"], cron="0 1 * * *", unique_for=3600, unique_until="start")
+
+        assert static_definitions([unique], None) == [
+            _static(unique_for=3600, unique_until="start"),
+        ]
+
+    def test_unique_until_without_unique_for_is_not_carried(self, _cleanup_tasks):
+        """Ohne ``unique_for`` wirkt ``unique_until`` nicht; die Definition
+        bleibt wie vor 0.12 (gleicher Abdruck, kein Übernahme-Schreiben)."""
+        plain = _task(name="nightly", queues=["default"], cron="0 1 * * *", unique_until="start")
+
+        assert static_definitions([plain], None) == [_static()]
 
 
 _NOW = 1_800_000_000_000

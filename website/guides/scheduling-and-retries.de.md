@@ -180,7 +180,8 @@ an Valkey: beim Start und danach alle
 Meldung enthält den Namen, die vollständige Definition und einen
 Fingerabdruck über die Felder aus dem Code: Cron-Ausdruck, Zeitzone
 (bereits aufgelöst aus Task oder Standard des Workers), Queue und
-Task-Name. Meldungen tragen die Serverzeit von Valkey, Uhrabweichungen
+Task-Name, dazu `unique_for` und `unique_until`, wenn der Task
+`unique_for` setzt (ab 0.12). Meldungen tragen die Serverzeit von Valkey, Uhrabweichungen
 zwischen Workern spielen keine Rolle.
 
 Der Scheduler-Leader übernimmt gemeldete Crons im selben Takt: sofort
@@ -220,9 +221,16 @@ Was das praktisch heißt:
   mit der Warnung `scheduler_static_cron_shadowed_by_cli`.
 - Crons anderer Apps auf demselben Valkey feuern ohne die Warnung
   `scheduler_task_not_in_local_registry`, solange ein lebender Worker
-  sie meldet. Ihre `TaskInfo` kennt der Leader weiterhin nicht;
-  `unique_for` eines solchen Tasks wirkt also nicht auf seine
-  Cron-Fires.
+  sie meldet.
+- `unique_for` eines Cron-Tasks wirkt bei jedem Leader, auch bei einem,
+  dessen eigene Registry den Task nicht kennt (andere App, anderes
+  `--module`, getrennte CPU- und IO-Worker). Die Meldung trägt
+  `unique_for` und `unique_until`, und der Leader nimmt beide aus der
+  Definition; eine Definition ohne sie (vor 0.12 geschrieben oder ein
+  CLI-Schedule) nutzt die eigene `TaskInfo` des Leaders. Das braucht
+  einen Leader ab 0.12; solange ein Leader vor 0.12 die Rolle hält,
+  kann ein langer Cron-Lauf den nächsten Termin wieder überlappen
+  ([Unique-Crons](locking-and-dedup.de.md#unique-crons)).
 
 Meldungen, die 7 Tage lang nicht erneuert wurden, löscht der Leader,
 oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls das

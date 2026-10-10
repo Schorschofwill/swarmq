@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from swarmq.exceptions import BackendConnectionError, UnroutableMessage
+from swarmq.exceptions import BackendConnectionError, PublishIndeterminate, UnroutableMessage
 from swarmq.logging import _error_fields
 from swarmq.scheduler.definition import ScheduleDefinition, make_schedfire_key
 from swarmq.serialization import compute_dedup_hash, encode_json
@@ -121,6 +121,8 @@ class SchedulerFire:
             "x-swarmq-enqueued-at": int(self._wall_time()),
         }
         dup_detected = False
+        # BZ-09/B7: Hash eines Unique-Claims, den genau dieses Fire genommen hat.
+        own_claim: str | None = None
 
         if definition.source == "cli_unique" and definition.dedup_hash:
             # Client already SETNX'd this task at schedule(delay=/eta=) time.
@@ -152,7 +154,13 @@ class SchedulerFire:
                         "or fix the task name"
                     ),
                 )
-            if task_info is not None and task_info.unique_for is not None:
+            # BZ-09: Traegt die Definition ``unique_for`` (gemeldet vom Worker,
+            # der den Task kennt), gelten beide Werte aus ihr; sonst beide aus
+            # der Registry des Leaders, nie gemischt.
+            unique_for, unique_until = definition.unique_for, definition.unique_until
+            if unique_for is None and task_info is not None:
+                unique_for, unique_until = task_info.unique_for, task_info.unique_until
+            if unique_for is not None:
                 dedup_hash = compute_dedup_hash(
                     definition.task_name,
                     tuple(definition.args),
@@ -162,7 +170,7 @@ class SchedulerFire:
                     existing = await self._backend.claim_unique(
                         dedup_hash,
                         task_id,
-                        task_info.unique_for * 1000,
+                        unique_for * 1000,
                         op_timeout=self._config.backend_op_timeout,
                     )
                 except BackendConnectionError as exc:
@@ -188,8 +196,9 @@ class SchedulerFire:
                     )
                     dup_detected = True
                 else:
+                    own_claim = dedup_hash
                     headers["x-swarmq-unique-hash"] = dedup_hash
-                    headers["x-swarmq-unique-until"] = task_info.unique_until
+                    headers["x-swarmq-unique-until"] = unique_until
 
         if not dup_detected and not await self._publish_fire(
             schedule_name,
@@ -199,6 +208,7 @@ class SchedulerFire:
             headers,
             now_ms,
             task_id,
+            own_claim,
         ):
             return  # Do NOT commit — retry on the next poll tick.
 
@@ -256,8 +266,12 @@ class SchedulerFire:
         headers: dict[str, Any],
         now_ms: int,
         task_id: str,
+        own_claim: str | None = None,
     ) -> bool:
-        """Publish eines Fires; ``True``, wenn ``_fire_one`` festschreiben soll."""
+        """Publish eines Fires; ``True``, wenn ``_fire_one`` festschreiben soll.
+        *own_claim* ist der Unique-Hash, den dieses Fire beansprucht hat; ein
+        Fehlschlag gibt ihn frei, damit der naechste Poll nicht als Duplikat
+        endet (BZ-09/B7)."""
         try:
             await self._broker.publish(
                 definition.queue,
@@ -268,6 +282,9 @@ class SchedulerFire:
             # BZ-03: die Queue fehlt. Ein Oneshot wird zurueckgestellt; ein
             # Cron-Fire ist verloren und wird festgeschrieben, sonst
             # feuerte er in jedem Takt erneut.
+            # Nichts wurde zugestellt: das eigene Flag freigeben, sonst endete
+            # der naechste Versuch (Oneshot) bzw. Termin (Cron) als Duplikat.
+            await self._release_own_claim(schedule_name, own_claim, task_id)
             if definition.cron is None:
                 await self._defer_unroutable_oneshot(schedule_name, score_ms, definition, now_ms, task_id)
                 return False
@@ -278,8 +295,29 @@ class SchedulerFire:
                 schedule_name=schedule_name,
                 **_error_fields(exc),
             )
+            # Q14: bei ``PublishIndeterminate`` kann die Nachricht angekommen
+            # sein; das Flag bleibt.
+            if not isinstance(exc, PublishIndeterminate):
+                await self._release_own_claim(schedule_name, own_claim, task_id)
             return False
         return True
+
+    async def _release_own_claim(self, schedule_name: str, own_claim: str | None, task_id: str) -> None:
+        """Gibt den Unique-Claim frei, den dieses Fire genommen hat (BZ-09/B7);
+        Owner-geprueft, ein fremder Claim bleibt stehen. Best effort (Q15):
+        scheitert die Freigabe, laeuft das Flag ueber seine TTL ab."""
+        if own_claim is None:
+            return
+        try:
+            await self._backend.release_unique(own_claim, task_id, op_timeout=self._config.backend_op_timeout)
+        except Exception as exc:
+            self._log.warning(
+                "scheduler_unique_release_failed",
+                schedule_name=schedule_name,
+                task_id=task_id,
+                dedup_hash=own_claim,
+                **_error_fields(exc),
+            )
 
     def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).

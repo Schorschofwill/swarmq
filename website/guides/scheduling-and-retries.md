@@ -174,7 +174,8 @@ Valkey: at start and then every `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`
 seconds (default `60`). A report holds the name, the full definition
 and a fingerprint over the fields that come from code: cron
 expression, time zone (already resolved from the task or the worker's
-default), queue and task name. Reports carry the Valkey server time,
+default), queue and task name, plus `unique_for` and `unique_until`
+when the task sets `unique_for` (from 0.12). Reports carry the Valkey server time,
 so clock skew between workers does not matter.
 
 The scheduler leader adopts reported crons on the same interval, right
@@ -212,8 +213,16 @@ What this means in practice:
   the warning `scheduler_static_cron_shadowed_by_cli`.
 - Crons of other apps on the same Valkey fire without the warning
   `scheduler_task_not_in_local_registry`, as long as a live worker
-  reports them. The leader still does not know their `TaskInfo`, so
-  `unique_for` of such a task has no effect on its cron fires.
+  reports them.
+- `unique_for` of a cron task applies on every leader, also one whose
+  own registry does not know the task (another app, another
+  `--module`, separate CPU and IO workers). The report carries
+  `unique_for` and `unique_until`, and the leader takes both from the
+  definition; a definition without them (written before 0.12, or a CLI
+  schedule) uses the leader's own `TaskInfo`. This needs a leader on
+  0.12 or later; while a leader before 0.12 holds the role, a long cron
+  run can overlap the next fire again
+  ([unique crons](locking-and-dedup.md#unique-crons)).
 
 The leader deletes reports that were not refreshed for 7 days, or for
 twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S` if that is longer.

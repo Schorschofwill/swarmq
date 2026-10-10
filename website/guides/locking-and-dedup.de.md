@@ -145,6 +145,25 @@ Wähle `"completion"` für idempotente Arbeit („Welcome-E-Mail an
 User 42 senden") und `"start"` für Arbeit, bei der überlappende
 Ausführungen ok sind, doppelte pending Messages aber nicht.
 
+### Unique-Crons
+
+Bei einem statischen Cron verhindert `unique_for`, dass ein langer Lauf
+den nächsten Termin überlappt: Der Scheduler-Leader nimmt das Flag,
+bevor er einen Termin veröffentlicht, und ein Termin, dessen Flag noch
+gehalten wird, wird übersprungen (`TASK_DUPLICATE_DETECTED`,
+`source="scheduler.fire"`) und gilt als erledigt. Ab 0.12 gilt das bei
+jedem Leader, auch bei einem, der den Task nicht in seiner Registry
+hat: Worker melden `unique_for` und `unique_until` mit ihren Crons
+([Cron-Meldungen](scheduling-and-retries.de.md#cron-meldungen-und-leader)).
+
+Scheitert der Publish eines Termins, nachdem der Leader das Flag
+genommen hat, gibt er es wieder frei; der Versuch im nächsten Takt gilt
+dann nicht als Duplikat. Das Flag bleibt, wenn der Publish beim Warten
+auf das Confirm des Brokers seine Frist gerissen hat
+(`PublishIndeterminate`), denn die Nachricht kann angekommen sein. Ein
+Flag, das `schedule(delay=|eta=)` genommen hat, gehört dem Producer und
+wird bei einem solchen Fehler nie freigegeben.
+
 ### Per-Call-Override
 
 `unique_for` und `unique_until` können am `schedule()`-Aufruf

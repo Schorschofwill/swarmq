@@ -162,6 +162,33 @@ All notable changes to SwarmQ. This project follows
   before 0.12 holds the role, deferred tasks still fire under a new ID
   ([deferred execution](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
   The schedule definition gets the field `task_id` (`null` for crons).
+- **`unique_for` of a cron no longer depends on which worker is the
+  leader.** The leader read `unique_for` from its own task registry, so
+  a leader from another app, another `--module` or the other half of
+  separate CPU and IO workers fired the cron without dedup, and long
+  runs overlapped. Workers now report `unique_for` and `unique_until`
+  with their crons, and the leader takes both from the definition; a
+  definition without them (written before 0.12, or a CLI schedule)
+  still uses the leader's `TaskInfo`. The cron fingerprint includes
+  both values only when `unique_for` is set, so the fingerprint of every
+  other cron is unchanged. If the publish of a fire fails after the
+  leader claimed the flag, the leader now releases it; before, the
+  retry on the next tick found the flag, counted the fire as a
+  duplicate and it was lost. The flag stays after `PublishIndeterminate`
+  and when `schedule(delay=|eta=)` claimed it. New log event
+  `scheduler_unique_release_failed`. **Changed behaviour:**
+  - This needs a leader on 0.12 or later; while a leader before 0.12
+    holds the role, a long cron run can overlap the next fire again.
+  - A cron with `unique_for` gets a new fingerprint. While 0.11 and
+    0.12 workers of one app both report it for more than 10 minutes,
+    the leader logs `scheduler_cron_conflict`; the 0.12 definition
+    wins.
+  - A 0.12 leader rewrites the stored definition of such a cron once
+    (`scheduler_static_cron_updated`), including after a 0.11 leader
+    held the role.
+  ([unique crons](../guides/locking-and-dedup.md#unique-crons)).
+  The schedule definition gets the field `unique_for` (`null` unless
+  the cron task sets it).
 - **A new scheduler leader no longer scans the whole Valkey database.**
   On takeover it looked for the handover marker of its predecessor with
   `SCAN`, before its first lock renewal; with millions of keys that

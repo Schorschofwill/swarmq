@@ -175,6 +175,35 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   einer neuen ID
   ([verzögerte Ausführung](../guides/scheduling-and-retries.md#immediate-vs-deferred)).
   Die Schedule-Definition bekommt das Feld `task_id` (`null` bei Crons).
+- **`unique_for` eines Crons hängt nicht mehr davon ab, welcher Worker
+  Leader ist.** Der Leader las `unique_for` aus seiner eigenen
+  Task-Registry; ein Leader aus einer anderen App, mit anderem
+  `--module` oder aus der anderen Hälfte getrennter CPU- und IO-Worker
+  feuerte den Cron ohne Dedup, und lange Läufe überlappten. Worker
+  melden `unique_for` und `unique_until` jetzt mit ihren Crons, und der
+  Leader nimmt beide aus der Definition; eine Definition ohne sie (vor
+  0.12 geschrieben oder ein CLI-Schedule) nutzt weiter die `TaskInfo`
+  des Leaders. Der Cron-Fingerabdruck enthält beide Werte nur, wenn
+  `unique_for` gesetzt ist; der Abdruck aller anderen Crons bleibt
+  gleich. Scheitert der Publish eines Termins, nachdem der Leader das
+  Flag genommen hat, gibt er es jetzt frei; vorher fand der Versuch im
+  nächsten Takt das Flag, zählte den Termin als Duplikat, und er ging
+  verloren. Das Flag bleibt nach `PublishIndeterminate` und wenn
+  `schedule(delay=|eta=)` es genommen hat. Neues Log-Event
+  `scheduler_unique_release_failed`. **Geändertes Verhalten:**
+  - Das setzt einen Leader ab 0.12 voraus; solange ein Leader vor 0.12
+    die Rolle hält, kann ein langer Cron-Lauf den nächsten Termin wieder
+    überlappen.
+  - Ein Cron mit `unique_for` bekommt einen neuen Fingerabdruck. Melden
+    ihn 0.11- und 0.12-Worker einer App länger als 10 Minuten
+    gleichzeitig, loggt der Leader `scheduler_cron_conflict`; die
+    Definition von 0.12 gewinnt.
+  - Ein Leader ab 0.12 schreibt die gespeicherte Definition eines
+    solchen Crons einmal neu (`scheduler_static_cron_updated`), auch
+    nachdem ein 0.11-Leader die Rolle hatte.
+  ([Unique-Crons](../guides/locking-and-dedup.md#unique-crons)).
+  Die Schedule-Definition bekommt das Feld `unique_for` (`null`, wenn
+  der Cron-Task es nicht setzt).
 - **Ein neuer Scheduler-Leader durchsucht nicht mehr die ganze
   Valkey-Datenbank.** Bei der Übernahme suchte er den Handover-Marker
   seines Vorgängers per `SCAN`, noch vor der ersten Lock-Verlängerung;

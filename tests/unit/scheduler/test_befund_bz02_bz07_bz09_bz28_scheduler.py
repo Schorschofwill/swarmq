@@ -114,10 +114,6 @@ async def test_bz07_slow_handover_scan_does_not_cost_the_new_leader_its_lock(
 
 
 @pytest.mark.befund("BZ-09")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-09: unique_for eines Crons greift nur, wenn der Leader den Task in seiner lokalen Registry hat",
-)
 async def test_bz09_cron_unique_for_holds_on_leader_without_task_in_registry(
     broker,
     config,

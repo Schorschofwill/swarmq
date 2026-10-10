@@ -81,6 +81,11 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # nach ``scheduler_unroutable_oneshot_max_s`` ab diesem Zeitpunkt. Neues
     # Feld am Ende mit Default None (Q1).
     unroutable_since: int | None = None
+    # Plan 0.12.0 (BZ-09): ``TaskInfo.unique_for`` eines statischen Crons,
+    # vom meldenden Worker mitgeführt. Gesetzt gelten ``unique_for`` und
+    # ``unique_until`` beim Fire aus der Definition, sonst beide aus der
+    # Registry des Leaders. Neues Feld am Ende mit Default None (Q1).
+    unique_for: int | None = None
 
 
 def make_schedfire_key(schedule_name: str, fire_ts_ms: int) -> str:

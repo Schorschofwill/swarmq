@@ -93,6 +93,17 @@
           ],
           "default": null
         },
+        "unique_for": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "unique_until": {
           "default": "completion",
           "enum": [
