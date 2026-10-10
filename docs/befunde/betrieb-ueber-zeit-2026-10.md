@@ -104,7 +104,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-20 | `tests/integration/broker/test_befund_bz20_prefetch_per_consumer.py` | offen |
 | BZ-21 | `tests/integration/broker/test_befund_bz21_dlq_destructive_read.py` | offen |
 | BZ-22 | `tests/unit/worker/test_befund_bz22_unique_expiry.py` | behoben (MR 3, d4e2b81) |
-| BZ-23 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | offen |
+| BZ-23 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | behoben (MR 5, 660a940) |
 | BZ-24 | `tests/unit/client/test_befund_bz24_registry_less_producer.py` | behoben (MR 2, 466cdd9) |
 | BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` | offen |
 | BZ-26 | `tests/unit/test_befund_bz26_backoff.py` | behoben (MR 2, 0fcbfe8) |
