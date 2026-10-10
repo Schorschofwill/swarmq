@@ -225,7 +225,7 @@ class Metrics:
                 f"{namespace}_scheduler_leader_outdated",
                 (
                     "1 while this worker sees a scheduler leader running a "
-                    "swarmq before 0.10 without timezone support, else 0"
+                    "swarmq before 0.12 (minimum leader version), else 0"
                 ),
                 labelnames=("worker_id",),
                 registry=self.registry,

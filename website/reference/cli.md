@@ -341,9 +341,9 @@ WORKERS:
 `LEADER_VERSION` is `(not reported: swarmq before 0.10.0)` when the
 leader runs a swarmq that writes no version, and `-` without a leader.
 `WORKERS` lists every worker whose report is live (three
-`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Before you
-change crons or time zones, every version shown here should be 0.10.0
-or later (see
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Every
+version shown here should be at least the minimum leader version
+(currently 0.12; see
 [leader version](../guides/scheduling-and-retries.md#leader-version)).
 Fire times are shown in UTC.
 

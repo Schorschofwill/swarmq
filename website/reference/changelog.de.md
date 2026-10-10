@@ -30,6 +30,20 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   wie lange der Leader einen verzögerten Task erneut versucht, dessen
   Queue fehlt ([Konfiguration](configuration.md)).
 
+### Geändert
+
+- **Die Leader-Versionsprüfung warnt jetzt bei jedem Leader vor 0.12**
+  (Mindestversion für Leader, bisher 0.10). Scheduler-Korrekturen wie
+  die stabile Task-ID zurückgestellter Tasks wirken nur, solange der
+  Leader sie kennt. `scheduler_leader_outdated` kommt weiter einmal je
+  Leaderwechsel, die Gauge `swarmq_scheduler_leader_outdated` bleibt;
+  ihr `hint`, die Gauge-Beschreibung und die Signal-Dokumentation nennen
+  keine Zeitzonen mehr. **Geändertes Verhalten:** Beim rollenden Upgrade
+  von 0.11 warnen die 0.12-Worker, bis die Führung zu einem 0.12-Worker
+  wechselt; die Gauge bleibt auf `1`, solange eine 0.11-App auf
+  demselben Valkey die Führung hält
+  ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)).
+
 ### Behoben
 
 - **Ein Publish an eine Queue, die es nicht gibt, verschwindet nicht

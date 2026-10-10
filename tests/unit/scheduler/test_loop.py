@@ -359,7 +359,9 @@ class TestLeaderVersion:
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_outdated"]
         assert entry["log_level"] == "warning"
         assert (entry["leader"], entry["leader_version"], entry["version"]) == ("old:1:aa", None, "0.10.0")
-        assert "timezone" in entry["hint"]
+        # KTD11 (Plan 2026-10-09-2314, MR 5): Hinweis nennt die Mindestversion,
+        # nicht mehr nur die Zeitzonen.
+        assert "0.12 or later" in entry["hint"] and "timezone" not in entry["hint"]
         assert signals == [
             {"worker_id": "w-1", "leader": "old:1:aa", "leader_version": None, "outdated": True},
         ]
@@ -374,7 +376,7 @@ class TestLeaderVersion:
             signals.append(kw)
 
         lock_manager.acquire.return_value = None
-        backend.schedules.leader_info.return_value = LeaderInfo(owner="new:1:aa", version="0.10.0")
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="new:1:aa", version="0.12.0")
         loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         for _ in range(3):
@@ -395,7 +397,7 @@ class TestLeaderVersion:
 
         lock_manager.acquire.return_value = None
         backend.schedules.leader_info.return_value = LeaderInfo(owner="old:1:aa", version=None)
-        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher, version="0.12.0")
         await loop._election_tick()
         await loop._election_tick()
         lock_manager.acquire.return_value = _LEADER_TOKEN
@@ -405,7 +407,7 @@ class TestLeaderVersion:
         assert loop.state == "leader"
         assert [kw["outdated"] for kw in signals] == [True, False]
         assert signals[-1] == {
-            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.10.0", "outdated": False,
+            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.12.0", "outdated": False,
         }
 
     async def test_version_check_failure_is_logged(

@@ -397,6 +397,18 @@ async def test_leader_outdated_signal_sets_and_clears_gauge():
     assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
 
 
+def test_leader_outdated_help_names_the_minimum_version():
+    """KTD11 (Plan 2026-10-09-2314, MR 5): die Gauge meldet einen Leader
+    unter der Mindestversion 0.12, nicht mehr nur fehlende Zeitzonen."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    [help_line] = [
+        line for line in m.render().decode().splitlines() if line.startswith("# HELP swarmq_scheduler_leader_outdated ")
+    ]
+    assert "before 0.12" in help_line and "timezone" not in help_line
+
+
 def test_consumer_reregistrations_are_counted_per_queue():
     """Plan 2026-10-08-1541 (U6, R2): jede Neuanmeldung des Consumer-Wächters."""
     m = Metrics()

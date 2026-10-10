@@ -29,6 +29,20 @@ All notable changes to SwarmQ. This project follows
   how long the leader keeps retrying a deferred task whose queue does
   not exist ([configuration](configuration.md)).
 
+### Changed
+
+- **The leader version check now warns about every leader before 0.12**
+  (minimum leader version, was 0.10). Scheduler fixes such as the stable
+  task ID of deferred tasks only take effect while the leader has them.
+  `scheduler_leader_outdated` still comes once per leader change, and
+  the gauge `swarmq_scheduler_leader_outdated` stays; its `hint`, the
+  gauge description and the signal documentation no longer mention time
+  zones. **Changed behaviour:** during a rolling upgrade from 0.11 the
+  0.12 workers warn until the leadership moves to a 0.12 worker; the
+  gauge stays at `1` as long as a 0.11 app on the same Valkey holds the
+  leadership
+  ([leader version](../guides/scheduling-and-retries.md#leader-version)).
+
 ### Fixed
 
 - **A publish to a queue that does not exist no longer disappears

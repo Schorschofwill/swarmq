@@ -353,9 +353,9 @@ WORKERS:
 `LEADER_VERSION` ist `(not reported: swarmq before 0.10.0)`, wenn der
 Leader ein swarmq ohne Versionsangabe ausführt, und `-` ohne Leader.
 `WORKERS` listet jeden Worker mit lebender Meldung (drei
-`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), ohne einen `(none)`. Bevor Crons
-oder Zeitzonen umgestellt werden, sollten alle hier gezeigten Versionen
-0.10.0 oder neuer sein (siehe
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), ohne einen `(none)`. Alle hier
+gezeigten Versionen sollten mindestens die Mindestversion für Leader
+erreichen (derzeit 0.12; siehe
 [Leader-Version](../guides/scheduling-and-retries.md#leader-version)).
 Termine erscheinen in UTC.
 

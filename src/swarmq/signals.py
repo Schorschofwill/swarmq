@@ -115,9 +115,9 @@ class Signal(enum.Enum):
                                    while the conflict lasts)
       * SCHEDULER_LEADER_OUTDATED: worker_id, leader, leader_version,
                                    outdated (a non-leader saw the scheduler
-                                   leader run a swarmq before 0.10 without
-                                   timezone support — leader_version None
-                                   means before 0.10.0; once per leader
+                                   leader run a swarmq before the minimum
+                                   leader version, 0.12 — leader_version
+                                   None means before 0.10.0; once per leader
                                    change with outdated=True, and with
                                    outdated=False when a current leader
                                    follows)

@@ -290,19 +290,22 @@ same name in two apps on one Valkey; give them different names.
 ### Leader version
 
 The leader writes its swarmq version next to the leader lock, and
-every worker reports its version with its cron reports. A swarmq
-before 0.10.0 writes no version and does not know the `timezone`
-field: as leader it drops the zone of every cron it fires and fires
-it in UTC again.
+every worker reports its version with its cron reports. Scheduler
+fixes only take effect while the leader has them: a swarmq before
+0.10.0 writes no version and does not know the `timezone` field (as
+leader it drops the zone of every cron it fires), and a leader before
+0.12 lacks, among others, the stable task ID of deferred tasks.
 
-A worker that sees such a leader (no version, or one before 0.10.0) on two
-election ticks in a row (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`) logs `scheduler_leader_outdated` once per
-leader, sends the `SCHEDULER_LEADER_OUTDATED` signal and sets the
-gauge `swarmq_scheduler_leader_outdated{worker_id}` to `1`. When a
-current leader follows, the signal comes again with `outdated=False`
-and the gauge drops to `0`. A leader on 0.10.0 or later that is older
-than the worker (a rolling upgrade) knows time zones and triggers no
-warning.
+A worker that sees a leader below the **minimum leader version**
+(currently 0.12; no version counts as below) on two election ticks in
+a row (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`) logs
+`scheduler_leader_outdated` once per leader, sends the
+`SCHEDULER_LEADER_OUTDATED` signal and sets the gauge
+`swarmq_scheduler_leader_outdated{worker_id}` to `1`. When a current
+leader follows, the signal comes again with `outdated=False` and the
+gauge drops to `0`. During a rolling upgrade from 0.11 the warning is
+expected until the leadership moves to a 0.12 worker; the gauge stays
+at `1` as long as a 0.11 app on the same Valkey holds the leadership.
 
 `swarmq schedule status` shows `LEADER_VERSION` and the reporting
 workers with their versions (see

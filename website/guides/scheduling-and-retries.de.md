@@ -304,19 +304,24 @@ verschiedene Namen.
 ### Leader-Version
 
 Der Leader schreibt seine swarmq-Version neben das Leader-Lock, und
-jeder Worker meldet seine Version mit seinen Cron-Meldungen. Ein
-swarmq vor 0.10.0 schreibt keine Version und kennt das Feld
-`timezone` nicht: Als Leader verwirft er die Zone jedes Crons, den er
-feuert, und feuert ihn danach wieder in UTC.
+jeder Worker meldet seine Version mit seinen Cron-Meldungen.
+Scheduler-Korrekturen wirken nur, solange der Leader sie kennt: Ein
+swarmq vor 0.10.0 schreibt keine Version und kennt das Feld `timezone`
+nicht (als Leader verwirft er die Zone jedes Crons, den er feuert), und
+einem Leader vor 0.12 fehlt unter anderem die stabile Task-ID
+zurückgestellter Tasks.
 
-Ein Worker, der einen solchen Leader (ohne Version oder vor 0.10.0)
-in zwei Wahl-Takten in Folge sieht (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`),
-loggt einmal pro Leader `scheduler_leader_outdated`, sendet das Signal
+Ein Worker, der einen Leader unter der **Mindestversion für Leader**
+(derzeit 0.12; ohne Version zählt als darunter) in zwei Wahl-Takten in
+Folge sieht (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`), loggt einmal pro
+Leader `scheduler_leader_outdated`, sendet das Signal
 `SCHEDULER_LEADER_OUTDATED` und setzt die Gauge
 `swarmq_scheduler_leader_outdated{worker_id}` auf `1`. Folgt ein
 aktueller Leader, kommt das Signal erneut mit `outdated=False`, und die
-Gauge fällt auf `0`. Ein Leader ab 0.10.0, der älter ist als der
-Worker (rollendes Upgrade), kennt Zeitzonen und löst keine Warnung aus.
+Gauge fällt auf `0`. Beim rollenden Upgrade von 0.11 ist die Warnung
+zu erwarten, bis die Führung zu einem 0.12-Worker wechselt; die Gauge
+bleibt auf `1`, solange eine 0.11-App auf demselben Valkey die Führung
+hält.
 
 `swarmq schedule status` zeigt `LEADER_VERSION` und die meldenden
 Worker mit ihren Versionen (siehe
