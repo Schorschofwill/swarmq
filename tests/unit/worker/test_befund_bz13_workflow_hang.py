@@ -13,7 +13,7 @@ Testliste:
 # [x] unbekannter Task im Workflow (route_via_dlx) -> Workflow fehlmarkiert
 # [x] Lock-Render-Fehler im Workflow (dead_letter_copy) -> fehlmarkiert
 # [x] max_age-Ablauf im Workflow (ExpiryGate) -> fehlmarkiert
-# [x] Lock-Konflikt-Deckel im Workflow (falls DLQ) -> fehlmarkiert
+# [x] Stillstand des Lock-Halters im Workflow (MR 13: DLQ statt Deckel) -> fehlmarkiert
 # [x] WorkflowAdvancer.advance bei abgelaufenem Zustand -> WARNING mit
 #     workflow_id (heute: stilles ``return``)
 """
@@ -27,11 +27,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from swarmq.headers import HEADER_ENQUEUED_AT, HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+from swarmq.contracts.coordination import LockObservation
+from swarmq.headers import (
+    HEADER_ENQUEUED_AT,
+    HEADER_LOCK_HOLDER,
+    HEADER_LOCK_HOLDER_SINCE,
+    HEADER_LOCK_HOLDER_TTL_MS,
+    HEADER_WORKFLOW_ID,
+    HEADER_WORKFLOW_STEP,
+)
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
-from swarmq.worker.gates.lock import LOCK_CONFLICT_DLQ_CAP
+from swarmq.worker.gates.lock import holder_fingerprint
 from swarmq.workflow_orchestration import WorkflowAdvancer
 from tests.support.inmemory import FakeClock, InMemoryBackend
 from tests.support.messages import make_message
@@ -126,13 +134,26 @@ async def test_expired_step_marks_the_workflow_failed(broker, backend, config) -
 
 
 @pytest.mark.befund("BZ-13")
-async def test_lock_conflict_cap_step_marks_the_workflow_failed(broker, backend, config) -> None:
+async def test_stalled_lock_holder_step_marks_the_workflow_failed(broker, backend, config) -> None:
+    """MR 13 (Abschnitt 6): Stillstand -- derselbe Halter haelt laenger als
+    die beobachtete PTTL + 60 s -- statt des Deckels 10."""
     worker = _workflow_worker(broker, backend, config, Mutex)
+    worker._lock_manager.observe = AsyncMock(return_value=LockObservation(frozenset({"holder"}), 90_000))
+    now_ms = int(time.time() * 1000)
 
-    await worker._handle_message(_step("bz13_mutex", **{"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1}))
+    await worker._handle_message(
+        _step(
+            "bz13_mutex",
+            **{
+                HEADER_LOCK_HOLDER: holder_fingerprint(frozenset({"holder"})),
+                HEADER_LOCK_HOLDER_SINCE: now_ms - 90_000 - 60_000 - 1_000,
+                HEADER_LOCK_HOLDER_TTL_MS: 90_000,
+            },
+        )
+    )
 
-    if broker.dead_letter.await_count:
-        assert _failed_workflows(worker) == [_WF_ID], "Schritt im .XQ, Workflow nicht fehlmarkiert"
+    assert broker.dead_letter.await_count == 1, "Voraussetzung: Stillstand des Halters geht in die DLQ"
+    assert _failed_workflows(worker) == [_WF_ID], "Schritt im .XQ, Workflow nicht fehlmarkiert"
 
 
 class _NoopPublisher:

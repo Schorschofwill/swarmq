@@ -69,13 +69,39 @@ raises `ValueError` at class definition.
 
 When the worker picks up a message whose lock is held:
 
-- The message is **requeued with a delay**. It does not block the
-  worker or fail the task.
-- The worker logs `task_lock_conflict` (INFO, with `lock_name` and
-  `lock_conflict_count`) and fires the `TASK_LOCKED` signal so you can
-  observe it.
-- If the task's `max_age` is set, it eventually expires to the DLQ
-  rather than retrying forever.
+- The message is **requeued with a delay** (100 ms, doubling per
+  conflict, at most 60 s). It does not block the worker or fail the
+  task.
+- The worker fires the `TASK_LOCKED` signal on every conflict
+  (`lock_conflict_count` counts the conflicts of this message) and logs
+  `task_lock_conflict` (INFO, with `lock_name`, `lock_conflict_count`
+  and `waited_ms`) on the first conflict and then about once a minute.
+- The message keeps waiting as long as the lock changes hands or its
+  holder keeps it alive (from 0.12 there is no cap of 10 conflicts).
+  It is dead-lettered with `LockWaitExceeded` (error result,
+  `TASK_DLQ`, a workflow step marks its workflow failed) only when
+  - the same holder has held the lock longer than the key's TTL seen
+    at the last change of holder plus 60 s (a stalled holder whose
+    lock is kept alive), or
+  - `SWARMQ_LOCK_WAIT_MAX_S` (default 6 h) has passed since the first
+    conflict.
+- `max_age` stays the hard limit: a task with `max_age` expires to the
+  DLQ when it is older, whatever the wait.
+
+The wait is measured with the workers' wall clocks
+(`x-swarmq-lock-wait-since`, `x-swarmq-lock-holder-since`); keep the
+clocks in sync, a skew of up to about 60 s is tolerated. A lock store
+that cannot report its holders (a third-party store) logs
+`lock_observe_unsupported` once and waits until
+`SWARMQ_LOCK_WAIT_MAX_S`. The gauges `swarmq_lock_waits` and
+`swarmq_lock_wait_oldest_seconds` show per worker how many messages it
+recently deferred and how long the oldest has waited.
+
+In mixed operation with 0.11 workers of the same app: 0.12 no longer
+raises `x-swarmq-lock-conflict-count`, so a 0.11 worker never sees a
+0.12 copy at its cap of 10. A 0.11 worker that defers a message itself
+still raises that counter and dead-letters at 10 as before, and it
+drops nothing of the 0.12 wait state.
 
 If Valkey is unreachable during the acquire (or does not answer within
 `SWARMQ_BACKEND_OP_TIMEOUT`), that is not a conflict: the message is
@@ -86,9 +112,8 @@ Any other error of the acquire logs `lock_acquire_failed` (ERROR) and
 requeues the message in place. An acquire that times out after Valkey
 executed it leaves the lock held until its TTL.
 
-The delay backs off — repeated misses extend the wait. Most
-`lock`-using tasks want `max_age` as a safety net so a stuck
-holder does not back up the queue forever.
+Set `max_age` on `lock`-using tasks whose work goes stale, so a
+message does not wait for hours behind a long holder.
 
 ### Locks while the task runs
 

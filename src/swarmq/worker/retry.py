@@ -28,7 +28,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.header_text import bounded_header_text
-from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNKNOWN_SINCE
+from swarmq.headers import HEADER_RETRY_COUNT, LOOP_STATE_HEADERS
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -128,9 +128,11 @@ class RetryHandler:
         # header) survives redelivery -- ohne die Zustellzaehler des Brokers
         # (neue Nachricht, eigenes Zustellbudget).
         headers = republish_headers(delivery, ctx)
-        # Q6 (BZ-06): der Task lief -- die Rueckstellschleife "unbekannt" ist
-        # beendet, eine spaetere beginnt mit frischer Frist.
-        headers.pop(HEADER_UNKNOWN_SINCE, None)
+        # Q6 (BZ-06, BZ-05): der Task lief -- die Rueckstellschleifen
+        # ("unbekannt", Lock-Wartezeit) sind beendet, spaetere beginnen mit
+        # frischer Frist.
+        for state_header in LOOP_STATE_HEADERS:
+            headers.pop(state_header, None)
         headers[HEADER_RETRY_COUNT] = retry_count + 1
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:

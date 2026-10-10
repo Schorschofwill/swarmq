@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from swarmq.worker.execution import TaskExecutor
     from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
     from swarmq.worker.gates.execution_guard import ExecutionGuard
+    from swarmq.worker.gates.lock import LockGate
 
 logger = get_logger(__name__)
 
@@ -100,6 +101,7 @@ class WorkerLifecycle:
         _recycle_ack_missing: bool
         _drain_timeout_override: float | None
         _metrics_sampler_task: asyncio.Task[None] | None
+        _lock_gate: LockGate
         _executor: TaskExecutor
         _gate_deps: GateDeps
 
@@ -551,6 +553,10 @@ class WorkerLifecycle:
                     **_error_fields(exc),
                 )
         self._sample_delay_tiers_unavailable()
+        # Plan 0.12.0, MR 13 (BZ-05, R11): Lock-Wartezeit je Worker.
+        waiting, oldest_s = self._lock_gate.waits.snapshot(now_ms=int(time.time() * 1000))
+        self._metrics.lock_waits.labels(worker_id=worker_id).set(waiting)
+        self._metrics.lock_wait_oldest_seconds.labels(worker_id=worker_id).set(oldest_s)
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
         await self._signal_dispatcher.dispatch(

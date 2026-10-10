@@ -23,6 +23,16 @@ class LockToken:
     max_concurrency: int
 
 
+@dataclass(frozen=True, slots=True)
+class LockObservation:
+    """Was ein Wartender ueber einen Lock sieht (Plan 0.12.0, MR 13, BZ-05):
+    die Halter (Mutex: der Owner; Semaphor: alle Member) und die Rest-TTL
+    des Keys in ms (``-2``: kein Key, ``-1``: ohne Frist)."""
+
+    owners: frozenset[str]
+    pttl_ms: int
+
+
 @runtime_checkable
 class LockStore(Protocol):
     async def acquire(self, name: str, *, owner: str, ttl_ms: int, max_concurrency: int) -> LockToken | None:
@@ -42,6 +52,9 @@ class LockStore(Protocol):
         """Operator-Pfad ohne Owner-Check."""
 
     async def current_owner(self, name: str) -> str | None: ...
+
+    async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
+        """Halter und Rest-TTL eines Locks, ohne ihn zu veraendern."""
 
 
 @dataclass(frozen=True, slots=True)

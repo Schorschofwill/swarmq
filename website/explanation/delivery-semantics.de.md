@@ -89,7 +89,7 @@ Nachricht entweder oder routet sie in die DLQ:
 | RabbitMQs `x-delivery-limit=20` erreicht | Broker-native DLQ-Route |
 | Backend nicht erreichbar bei einer Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) | Neue Nachricht in die Delay-Queue mit wachsendem Backoff, Original bestätigt (`task_deferred_backend_unavailable`); kein Retry |
 | Task-Alter übersteigt `max_age` bei Pickup | `TASK_EXPIRED`-Signal + DLQ |
-| Lock-Render-Fehler oder Conflict-Cap erreicht | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (Conflict-Cap) |
+| Lock-Render-Fehler, oder die Wartezeit auf einen Lock ist zu Ende (hängender Halter, `SWARMQ_LOCK_WAIT_MAX_S`) | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (`LockWaitExceeded`) |
 | Dieselbe Ausführung ist bereits abgeschlossen, von einem Retry überholt oder läuft anderswo ([Ausführungsschutz](#ausfuhrungsschutz)) | Bestätigt und übersprungen (`duplicate_delivery_skipped`) oder neue Nachricht in die Delay-Queue mit wachsendem Backoff (`execution_guard_deferred`); kein Retry |
 | `Task.run()` scheitert terminal bei abgeschaltetem Dead-Lettering (`TaskInfo(dead_letter=False)`) | Fehlerergebnis gespeichert, Original bestätigt; keine DLQ |
 
@@ -525,9 +525,10 @@ erreicht die DLQ über einen von fünf Wegen:
    buggy Worker ab. Ein Backend-Ausfall zählt nicht dagegen: Die
    Prüfungen vor der Ausführung stellen die Nachricht als neue
    Nachricht zurück, statt sie neu einzureihen (siehe oben).
-4. **Expiry / Lock-Render / Conflict-Cap.** `max_age` überschritten,
-   Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg),
-   Lock-Conflict-Budget getroffen. Die DLQ trägt die Nachricht mit
+4. **Expiry / Lock-Render / Lock-Wartezeit.** `max_age` überschritten,
+   Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg), oder
+   die Wartezeit auf einen Lock ist zu Ende (hängender Halter,
+   `SWARMQ_LOCK_WAIT_MAX_S`). Die DLQ trägt die Nachricht mit
    Diagnostik-Headern.
 5. **Waisen-Grenze des Ausführungsschutzes.** Dieselbe Ausführung ist
    `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen;

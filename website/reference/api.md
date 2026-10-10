@@ -629,7 +629,7 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | A retry was scheduled; `retry_count` is the new count, `delay` in seconds. |
 | `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Cancelled before or during execution. |
 | `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Picked up older than `max_age`; routed to the DLQ. |
-| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | The task's lock was held by another execution (lock conflict); the message is requeued, or dead-lettered at the conflict cap. |
+| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | The task's lock was held by another execution (lock conflict); the message is requeued, or dead-lettered as `LockWaitExceeded` when the wait ends. |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate limit hit; message delayed. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | `unique_for` dedup hit. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Terminal: the task was dead-lettered (retries exhausted or not retryable). Fires once. |

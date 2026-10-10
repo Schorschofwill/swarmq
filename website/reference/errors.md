@@ -30,6 +30,7 @@ except SwarmQError as exc:
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
+| `LockWaitExceeded` | `SwarmQError` | Never raised: error type of a DLQ copy whose wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`) |
 | `RedeliveryLimitError` | `SwarmQError` | Never raised: error type of a DLQ copy whose deliveries were handed back until the delivery limit |
 | `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` tripped during execution |
@@ -496,6 +497,29 @@ The worker redeclares its own `{queue}.DQ`/`.XQ` once by itself; the
 scheduler leader commits a lost cron fire and retries a deferred task
 every 60 s up to `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
 ([missing queues](../guides/scheduling-and-retries.md#missing-queues)).
+
+## `LockWaitExceeded`
+
+**When raised.** Never; the name only appears as `error_type` in
+`task_sent_to_dlq` and at the start of `x-swarmq-traceback` on the DLQ
+message. A message whose task lock is held waits through the delay
+queue. The worker dead-letters it with this error type when the same
+holder has held the lock longer than the key's TTL plus 60 s (the text
+says `lock holder stalled`) or when `SWARMQ_LOCK_WAIT_MAX_S` has passed
+since the first conflict (`lock wait limit reached`). The error result
+is stored, `TASK_DLQ` fires, and a workflow step marks its workflow
+failed. Until 0.11 the worker dead-lettered at the 10th conflict as
+`LockConflictLimitError`.
+
+**Cause.** A holder that does not finish (hung task whose lock the
+worker keeps alive, `hard_timeout` too long), or a lock that is busy
+for longer than the limit allows.
+
+**Recovery.** Look at the holder: the log line `lock_wait_exceeded`
+names the lock (`lock_name`), `x-swarmq-lock-name` on the DLQ message
+as well. A wedged lock is removed with `valkey-cli DEL sq:lock:<name>`.
+Then replay the message with `swarmq dlq retry`. Raise
+`SWARMQ_LOCK_WAIT_MAX_S` if long waits are expected.
 
 ## `RedeliveryLimitError`
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import valkey.asyncio as valkey_asyncio
 
 from swarmq.backend.valkey.connection import as_backend_error
-from swarmq.contracts import LockToken
+from swarmq.contracts import LockObservation, LockToken
 from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
@@ -181,6 +181,30 @@ class ValkeyLockStore:
         # Treat empty string the same as "no owner" — defensive against an
         # upstream writer that SET an empty value.
         return result if result else None
+
+    async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
+        """Halter und Rest-TTL eines Locks in einem Roundtrip (MULTI/EXEC;
+        Plan 0.12.0, MR 13, BZ-05). Nur auf dem Konfliktpfad (Q7)."""
+        key = self._keys.lock(name)
+        try:
+            async with self._client.pipeline(transaction=True) as pipe:
+                if max_concurrency == 1:
+                    pipe.get(key)
+                else:
+                    pipe.zrange(key, 0, -1)
+                pipe.pttl(key)
+                raw, pttl = await pipe.execute()
+        except BackendConnectionError:
+            raise
+        except Exception as exc:
+            raise as_backend_error(f"lock observe failed for {name!r}: {exc}", exc) from exc
+        values = [raw] if max_concurrency == 1 else list(raw or [])
+        owners = frozenset(_as_text(value) for value in values if value is not None and _as_text(value))
+        return LockObservation(owners, int(pttl))
+
+
+def _as_text(value: object) -> str:
+    return value.decode(errors="replace") if isinstance(value, bytes) else str(value)
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

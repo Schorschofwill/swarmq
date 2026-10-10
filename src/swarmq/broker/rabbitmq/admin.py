@@ -26,7 +26,7 @@ from swarmq.headers import (
     HEADER_ENQUEUED_AT,
     HEADER_REPLAY_ID,
     HEADER_RETRY_COUNT,
-    HEADER_UNKNOWN_SINCE,
+    LOOP_STATE_HEADERS,
 )
 from swarmq.identity import copy_headers
 from swarmq.queue_names import delay_tiers
@@ -312,7 +312,9 @@ class RabbitMQAdmin(RabbitMQDelivery):
         # Q6 (Plan 0.12.0, MR 11): die Gnadenfrist fuer einen unbekannten Task
         # beginnt mit der Wiederholung neu (eine DLX-Kopie per ``nack`` behielt
         # den Header).
-        forward_headers.pop(HEADER_UNKNOWN_SINCE, None)
+        # MR 13 (BZ-05): ebenso die Lock-Wartezeit.
+        for state_header in LOOP_STATE_HEADERS:
+            forward_headers.pop(state_header, None)
         # Ausfuehrungs-Identitaet der Wiederholung (KTD5; Plan 0.12.0, MR 12):
         # der Ausfuehrungsschutz liesse sie sonst als abgeschlossen fallen,
         # solange der Done-Marker des ersten Laufs steht. Die Generations-ID

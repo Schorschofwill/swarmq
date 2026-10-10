@@ -649,7 +649,7 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | Ein Retry wurde eingeplant; `retry_count` ist der neue Zähler, `delay` in Sekunden. |
 | `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Vor oder während der Ausführung abgebrochen. |
 | `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Älter als `max_age` abgeholt; in die DLQ geleitet. |
-| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | Der Lock des Tasks war von einer anderen Ausführung belegt (Lock-Konflikt); die Nachricht wird neu eingereiht, an der Konfliktgrenze in die DLQ geleitet. |
+| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | Der Lock des Tasks war von einer anderen Ausführung belegt (Lock-Konflikt); die Nachricht wird neu eingereiht, am Ende der Wartezeit als `LockWaitExceeded` in die DLQ geleitet. |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate-Limit erreicht; Nachricht verzögert. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | Dedup-Treffer durch `unique_for`. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Endgültig: Der Task ging in die DLQ (Retries erschöpft oder nicht wiederholbar). Feuert einmal. |

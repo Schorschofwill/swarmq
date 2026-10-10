@@ -54,7 +54,12 @@ means the feature is not active.
 | `x-swarmq-dead-lettered-at` | `int` (Unix milliseconds) | Worker (dead-lettering), `swarmq dlq` (old stock on first read) | When the message was dead-lettered; the `dlq` commands compute the remaining retention from it. Milliseconds because AMQP tables encode floats only in single precision. Removed by `dlq retry`. Messages the worker dead-letters also carry the property `expiration` (the retention, `SWARMQ_DEAD_LETTER_TTL_S`), unless the retention is `none`. |
 | `x-swarmq-dead-letter-ttl-ms` | `int` (milliseconds) or `"none"` | Worker (dead-lettering), `swarmq dlq` (on first read when it is missing) | The retention the message was dead-lettered with; `"none"` means unlimited. The `dlq` commands compute the remaining retention from it, not from their own `SWARMQ_DEAD_LETTER_TTL_S`. Removed by `dlq retry`. |
 | `x-swarmq-lock-render-error` | `string` | Worker (lock render failure) | Why the lock template could not be rendered; the message is DLQ-routed. |
-| `x-swarmq-lock-conflict-count` | `int` | Worker (lock conflict) | Conflicts so far; at 10 the message is DLQ-routed. |
+| `x-swarmq-lock-conflict-count` | `int` | 0.11 worker (lock conflict) | Legacy counter: a 0.11 worker raises it and dead-letters at 10. 0.12 neither raises nor reads it; copies carry it unchanged. |
+| `x-swarmq-lock-conflicts` | `int` | Worker (lock conflict) | Lock conflicts of this message so far; the `lock_conflict_count` of `TASK_LOCKED`. |
+| `x-swarmq-lock-wait-since` | `int` (Unix milliseconds) | Worker (lock conflict) | First lock conflict; `SWARMQ_LOCK_WAIT_MAX_S` is measured from it. |
+| `x-swarmq-lock-holder` | `string` | Worker (lock conflict) | Fingerprint of the lock's holders (the set of owners) at the last change of holder. |
+| `x-swarmq-lock-holder-since` | `int` (Unix milliseconds) | Worker (lock conflict) | When the worker last saw the holders change. |
+| `x-swarmq-lock-holder-ttl-ms` | `int` (milliseconds) | Worker (lock conflict) | Remaining TTL of the lock key at that change; a holder that keeps the lock longer than this plus 60 s counts as stalled. The five lock headers stay on every deferral copy a worker makes before execution and are removed on a retry copy, at dead-lettering and by `dlq retry`. |
 | `x-swarmq-lock-name` | `string` | Worker (lock conflict) | Rendered lock name the conflicts refer to. |
 | `x-swarmq-rate-limit-count` | `int` | Worker (rate limit) | How often the message bounced off its rate limit. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow the message belongs to (workflow steps only). |

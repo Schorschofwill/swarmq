@@ -214,6 +214,21 @@ class LockStoreContract:
     async def test_current_owner_of_unknown_lock_is_none(self, impl: LockStore) -> None:
         assert await impl.current_owner(_name("lock")) is None
 
+    async def test_observe_reports_holders_and_remaining_ttl(self, impl: LockStore) -> None:
+        """BZ-05 (Plan 0.12.0, MR 13): ein Wartender liest die Halter (Fingerprint)
+        und die Rest-TTL des Keys; -2 ohne Key."""
+        mutex, sem = _name("lock"), _name("sem")
+        await impl.acquire(mutex, owner="a", ttl_ms=60_000, max_concurrency=1)
+        await impl.acquire(sem, owner="a", ttl_ms=60_000, max_concurrency=3)
+        await impl.acquire(sem, owner="b", ttl_ms=60_000, max_concurrency=3)
+
+        seen = await impl.observe(mutex, max_concurrency=1)
+        assert seen.owners == frozenset({"a"}) and 0 < seen.pttl_ms <= 60_000
+        seen = await impl.observe(sem, max_concurrency=3)
+        assert seen.owners == frozenset({"a", "b"}) and 0 < seen.pttl_ms <= 60_000
+        gone = await impl.observe(_name("lock"), max_concurrency=1)
+        assert gone.owners == frozenset() and gone.pttl_ms == -2
+
 
 @pytest.mark.timeout(5)
 class RateLimitStoreContract:

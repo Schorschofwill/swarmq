@@ -31,6 +31,7 @@ except SwarmQError as exc:
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
+| `LockWaitExceeded` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Task-Lock endete (hängender Halter oder `SWARMQ_LOCK_WAIT_MAX_S`) |
 | `RedeliveryLimitError` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Zustellungen bis zum Zustelllimit zurückgegeben wurden |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
@@ -520,6 +521,31 @@ beim Broker ankam. Der Worker deklariert seine eigene
 einen verlorenen Cron-Fire fest und versucht einen verzögerten Task
 alle 60 s erneut, bis `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
 ([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)).
+
+## `LockWaitExceeded`
+
+**Wann geworfen.** Nie; der Name steht nur als `error_type` in
+`task_sent_to_dlq` und am Anfang von `x-swarmq-traceback` der
+DLQ-Nachricht. Eine Nachricht, deren Task-Lock belegt ist, wartet über
+die Delay-Queue. Der Worker schickt sie mit diesem Fehlertyp in die
+DLQ, wenn derselbe Halter den Lock länger hält als die TTL des Keys
+plus 60 s (der Text sagt `lock holder stalled`) oder wenn seit dem
+ersten Konflikt `SWARMQ_LOCK_WAIT_MAX_S` vergangen ist (`lock wait
+limit reached`). Das Fehlerergebnis wird gespeichert, `TASK_DLQ`
+feuert, und ein Workflow-Schritt markiert seinen Workflow als
+gescheitert. Bis 0.11 ging die Nachricht beim 10. Konflikt als
+`LockConflictLimitError` in die DLQ.
+
+**Ursache.** Ein Halter, der nicht fertig wird (hängender Task, dessen
+Lock der Worker am Leben hält, zu langes `hard_timeout`), oder ein
+Lock, der länger belegt ist, als die Grenze erlaubt.
+
+**Recovery.** Den Halter ansehen: Die Logzeile `lock_wait_exceeded`
+nennt den Lock (`lock_name`), ebenso `x-swarmq-lock-name` an der
+DLQ-Nachricht. Einen festgefahrenen Lock entfernt
+`valkey-cli DEL sq:lock:<name>`. Danach die Nachricht mit
+`swarmq dlq retry` wiederholen. `SWARMQ_LOCK_WAIT_MAX_S` anheben, wenn
+lange Wartezeiten erwartet sind.
 
 ## `RedeliveryLimitError`
 

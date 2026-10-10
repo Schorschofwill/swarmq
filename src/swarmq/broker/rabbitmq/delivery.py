@@ -36,7 +36,7 @@ from swarmq.exceptions import (
     SettleFailedAfterPublish,
     UnroutableMessage,
 )
-from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, HEADER_UNKNOWN_SINCE
+from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, LOOP_STATE_HEADERS
 from swarmq.identity import dead_letter_generation
 from swarmq.logging import _error_fields, get_logger
 
@@ -120,9 +120,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         *,
         at_ms: int | None = None,
     ) -> None:
-        # Q6 (Plan 0.12.0, MR 11): Zustands-Header der Rueckstellschleife
+        # Q6 (Plan 0.12.0, MR 11, MR 13): Zustands-Header der Rueckstellschleifen
         # enden am DLQ-Stempel; ein ``dlq retry`` beginnt mit frischer Frist.
-        stamped = {k: v for k, v in (headers or {}).items() if k != HEADER_UNKNOWN_SINCE}
+        stamped = {k: v for k, v in (headers or {}).items() if k not in LOOP_STATE_HEADERS}
         msg = aio_pika.Message(
             body=message_body,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,

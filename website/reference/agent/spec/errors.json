@@ -73,6 +73,22 @@
       ]
     },
     {
+      "dlq_on_uncaught": "yes",
+      "doc": "Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Lock endete\n(Plan 0.12.0, MR 13, BZ-05): entweder hielt derselbe Halter laenger als\nseine TTL + 60 s (Stillstand), oder die Obergrenze\n``SWARMQ_LOCK_WAIT_MAX_S`` ab dem ersten Konflikt war erreicht. Wird\nnicht geworfen; der Name steht als ``error_type`` in ``task_sent_to_dlq``\nund am Anfang von ``x-swarmq-traceback``.",
+      "exception_class": "swarmq.exceptions.LockWaitExceeded",
+      "exit_code_on_cli": null,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "LockWaitExceeded",
+      "origin": "library",
+      "parent": "SwarmQError",
+      "retriable": "no",
+      "transport_field": "error_message, is_error=true",
+      "when": [
+        "run"
+      ]
+    },
+    {
       "dlq_on_uncaught": "n/a",
       "doc": "Eine Logging-Konfigurationsdatei ist nicht ladbar oder ungueltig.\n\nPlan 2026-10-06-0831, U6 (R14, AE4). Traegt den Pfad der Datei; die\nUrsache steht in ``__cause__``. Als ``ConfigurationError`` endet sie in\nden Einstiegspunkten mit Exit 78.",
       "exception_class": "swarmq.exceptions.LoggingConfigError",

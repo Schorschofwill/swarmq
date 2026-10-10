@@ -84,7 +84,7 @@ it to the DLQ:
 | RabbitMQ's `x-delivery-limit=20` reached | Broker-native DLQ route |
 | Backend unreachable for a check before execution (schedule-fire dedup, cancel check, rate limit, lock) | New message to the delay queue with growing backoff, original acked (`task_deferred_backend_unavailable`); not a retry |
 | Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
-| Lock render-fail or conflict cap reached | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (conflict cap) header |
+| Lock render-fail, or the wait for a lock ended (stalled holder, `SWARMQ_LOCK_WAIT_MAX_S`) | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (`LockWaitExceeded`) header |
 | Same execution already finished, superseded by a retry, or running elsewhere ([execution guard](#execution-guard)) | Acked and skipped (`duplicate_delivery_skipped`), or new message to the delay queue with growing backoff (`execution_guard_deferred`); not a retry |
 | `Task.run()` fails terminally with dead-lettering switched off (`TaskInfo(dead_letter=False)`) | Error result stored, original acked; no DLQ |
 
@@ -487,9 +487,9 @@ reaches the DLQ by one of five routes:
    loop guard; it protects the broker from a buggy worker. A backend
    outage does not count against it: the checks before execution defer
    the message as a new message instead of requeuing it (see above).
-4. **Expiry / lock-render / conflict-cap.** `max_age` exceeded,
-   lock key cannot be rendered (e.g. missing kwarg), or lock
-   conflict budget hit. DLQ carries the message with diagnostic
+4. **Expiry / lock-render / lock wait.** `max_age` exceeded,
+   lock key cannot be rendered (e.g. missing kwarg), or the wait for
+   a lock ended (stalled holder, `SWARMQ_LOCK_WAIT_MAX_S`). DLQ carries the message with diagnostic
    headers.
 5. **Orphan limit of the execution guard.** The same execution expired
    `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` times without release; the

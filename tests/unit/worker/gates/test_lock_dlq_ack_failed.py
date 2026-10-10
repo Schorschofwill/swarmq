@@ -10,8 +10,8 @@ Test-Liste:
 1. Render-Fehler: Kopie liegt, Ack scheitert -> kein ``route_via_dlx``,
    kein ``lock_render_dlq_failed``, Unique-Freigabe, WARNING
    ``dlq_ack_failed_after_publish``.
-2. Konflikt-Grenze: dasselbe (kein ``route_via_dlx``, kein
-   ``lock_conflict_dlq_failed``).
+2. Ende der Wartezeit (MR 13: ``lock_wait_max_s`` statt Deckel 10):
+   dasselbe (kein ``route_via_dlx``, kein ``lock_conflict_dlq_failed``).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from swarmq.task import Task, TaskInfo
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Redelivered
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, lock_wait_exceeded_headers
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -74,15 +74,13 @@ class _Locked(Task):
         return None
 
 
-async def test_conflict_cap_with_failed_ack_after_publish_is_terminal(worker, broker, swarmq_logs) -> None:
-    from swarmq.worker.gates.lock import LOCK_CONFLICT_DLQ_CAP
-
+async def test_wait_limit_with_failed_ack_after_publish_is_terminal(worker, broker, swarmq_logs) -> None:
     worker._lock_manager = MagicMock()
     worker._lock_manager.acquire = AsyncMock(return_value=None)  # Konflikt
     broker.dead_letter = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
     worker._gate_deps.maybe_release_unique = AsyncMock()
     msg = make_message(_default_payload())
-    msg.headers = {"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1}
+    msg.headers = lock_wait_exceeded_headers(worker._config)
 
     outcome = await worker._lock_gate.apply(msg, _ctx(_Locked))
 

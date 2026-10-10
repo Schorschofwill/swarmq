@@ -25,7 +25,7 @@ from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import AddTask, _default_payload  # Re-Export (test_app)
+from tests.unit.worker._helpers import AddTask, _default_payload, lock_wait_exceeded_headers  # Re-Export (test_app)
 from tests.unit.worker.gates.test_lock import LockedTask
 
 # ---------------------------------------------------------------------------
@@ -2733,10 +2733,10 @@ class TestWorkerUniqueRelease:
         await worker._handle_message(msg)
         release_backend.release_unique.assert_not_awaited()
 
-    async def test_lock_conflict_cap_dlq_releases_unique(
+    async def test_lock_wait_limit_dlq_releases_unique(
         self, broker, backend, config,
     ):
-        """Lock-conflict at DLQ cap terminal → release_unique fires AFTER
+        """Lock wait limit (MR 13) terminal → release_unique fires AFTER
         ack (P1 #3 ordering)."""
         reg = TaskRegistry()
         reg.register(LockedTask)
@@ -2750,7 +2750,7 @@ class TestWorkerUniqueRelease:
             headers={
                 "x-swarmq-unique-hash": "4" * 64,
                 "x-swarmq-unique-until": "completion",
-                "x-swarmq-lock-conflict-count": 9,  # 9+1 = cap
+                **lock_wait_exceeded_headers(config),
             },
         )
         await w._handle_message(msg)

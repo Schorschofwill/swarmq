@@ -54,7 +54,12 @@ bedeutet, das Feature ist nicht aktiv.
 | `x-swarmq-dead-lettered-at` | `int` (Unix-Millisekunden) | Worker (Dead-Lettering), `swarmq dlq` (Altbestand beim ersten Lesen) | Zeitpunkt des Dead-Letterings; daraus berechnen die `dlq`-Befehle die Restfrist. Millisekunden, weil AMQP-Tabellen Gleitkommazahlen nur einfach genau kodieren. `dlq retry` entfernt ihn. Vom Worker dead-gelettete Nachrichten tragen außerdem die Property `expiration` (die Frist, `SWARMQ_DEAD_LETTER_TTL_S`), außer die Frist ist `none`. |
 | `x-swarmq-dead-letter-ttl-ms` | `int` (Millisekunden) oder `"none"` | Worker (Dead-Lettering), `swarmq dlq` (beim ersten Lesen, wenn er fehlt) | Die Frist, mit der die Nachricht dead-gelettert wurde; `"none"` heißt unbegrenzt. Die `dlq`-Befehle berechnen die Restfrist daraus, nicht aus ihrer eigenen `SWARMQ_DEAD_LETTER_TTL_S`. `dlq retry` entfernt ihn. |
 | `x-swarmq-lock-render-error` | `string` | Worker (Lock-Template-Fehler) | Warum das Lock-Template nicht gerendert werden konnte; die Nachricht geht in die DLQ. |
-| `x-swarmq-lock-conflict-count` | `int` | Worker (Lock-Konflikt) | Bisherige Konflikte; beim 10. geht die Nachricht in die DLQ. |
+| `x-swarmq-lock-conflict-count` | `int` | 0.11-Worker (Lock-Konflikt) | Legacy-Zähler: Ein 0.11-Worker erhöht ihn und dead-lettert beim 10. Konflikt. 0.12 erhöht und liest ihn nicht; Kopien tragen ihn unverändert weiter. |
+| `x-swarmq-lock-conflicts` | `int` | Worker (Lock-Konflikt) | Bisherige Lock-Konflikte dieser Nachricht; der `lock_conflict_count` von `TASK_LOCKED`. |
+| `x-swarmq-lock-wait-since` | `int` (Unix-Millisekunden) | Worker (Lock-Konflikt) | Erster Lock-Konflikt; ab ihm wird `SWARMQ_LOCK_WAIT_MAX_S` gemessen. |
+| `x-swarmq-lock-holder` | `string` | Worker (Lock-Konflikt) | Fingerprint der Halter des Locks (Menge der Owner) beim letzten Halterwechsel. |
+| `x-swarmq-lock-holder-since` | `int` (Unix-Millisekunden) | Worker (Lock-Konflikt) | Wann der Worker zuletzt einen Halterwechsel gesehen hat. |
+| `x-swarmq-lock-holder-ttl-ms` | `int` (Millisekunden) | Worker (Lock-Konflikt) | Rest-TTL des Lock-Keys bei diesem Wechsel; ein Halter, der den Lock länger hält als diese plus 60 s, gilt als hängend. Die fünf Lock-Header bleiben auf jeder Rückstellungs-Kopie, die ein Worker vor der Ausführung anlegt, und werden bei einer Retry-Kopie, beim Dead-Lettering und durch `dlq retry` entfernt. |
 | `x-swarmq-lock-name` | `string` | Worker (Lock-Konflikt) | Gerenderter Lock-Name, auf den sich die Konflikte beziehen. |
 | `x-swarmq-rate-limit-count` | `int` | Worker (Rate-Limit) | Wie oft die Nachricht am Rate-Limit abgeprallt ist. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow, zu dem die Nachricht gehört (nur Workflow-Schritte). |

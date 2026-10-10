@@ -343,6 +343,12 @@ class SwarmQConfig(ConfigValidation):
     # dem ersten Kontakt; danach Dead-Letter mit Fehlerergebnis. 0 schaltet
     # die Frist ab (sofort Dead-Letter).
     unknown_task_grace_s: float = 900.0
+    # Obergrenze der Wartezeit bei Lock-Konflikten (Plan 0.12.0, MR 13,
+    # BZ-05), gemessen ab dem ersten Konflikt (``x-swarmq-lock-wait-since``):
+    # danach Dead-Letter mit Fehlerergebnis (``LockWaitExceeded``). Davor
+    # endet die Wartezeit nur, wenn derselbe Halter laenger haelt als seine
+    # TTL + 60 s (Stillstand) oder ``max_age`` greift.
+    lock_wait_max_s: float = 21600.0
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -434,6 +440,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_DEAD_LETTER_TTL_S", "dead_letter_ttl_s", "optional_float"),
         ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
         ("SWARMQ_UNKNOWN_TASK_GRACE_S", "unknown_task_grace_s", "float"),
+        ("SWARMQ_LOCK_WAIT_MAX_S", "lock_wait_max_s", "float"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -467,6 +474,7 @@ class SwarmQConfig(ConfigValidation):
         "execution_guard_max_orphans",
         "execution_guard_backlog_ttl_s",
         "dead_letter_ttl_s",
+        "lock_wait_max_s",
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",

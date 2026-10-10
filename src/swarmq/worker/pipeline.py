@@ -58,7 +58,6 @@ from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
     LOCK_CONFLICT_BACKOFF_BASE_MS,
     LOCK_CONFLICT_BACKOFF_CAP_MS,
-    LOCK_CONFLICT_DLQ_CAP,
     LockGate,
     release_acquired_locks,
 )

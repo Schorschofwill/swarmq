@@ -126,10 +126,11 @@ Zusätzliche DLQ-Pfade:
   Signal + DLQ. Der Task läuft nie.
 - Lock-Render schlägt fehl (fehlender Kwarg für Template) → DLQ
   mit `x-swarmq-lock-render-error: <Grund>`.
-- Lock-Konflikt-Grenze erreicht (10. Konflikt) → DLQ mit
-  `x-swarmq-lock-conflict-count` und `x-swarmq-lock-name`
-  (`task_sent_to_dlq` mit `error_type=LockConflictLimitError`,
-  Fehlerergebnis gespeichert, `TASK_DLQ`).
+- Wartezeit auf einen Task-Lock zu Ende (derselbe Halter länger als
+  seine TTL + 60 s, oder `SWARMQ_LOCK_WAIT_MAX_S` seit dem ersten
+  Konflikt) → DLQ mit `x-swarmq-lock-name` (`task_sent_to_dlq` mit
+  `error_type=LockWaitExceeded`, Fehlerergebnis gespeichert,
+  `TASK_DLQ`).
 - Zustell-Limit erreicht (`delivery_limit`, Default 20) → DLQ über das
   Delivery-Count-Gate des Workers (`task_sent_to_dlq` mit
   `error_type=WorkerHungError`), broker-native DLQ als letzte Stufe.

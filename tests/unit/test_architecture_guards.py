@@ -68,7 +68,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
         "lifecycle", "decode",
         "shutdown", "finalize",  # Plan 0.12.0, MR 0
         "redelivery", "terminal",  # Plan 0.12.0, MR 3 (BZ-29, BZ-13)
-        "lock_keeper",  # Plan 0.12.0, MR 13 (BZ-25)
+        "lock_keeper", "lock_wait_tracker",  # Plan 0.12.0, MR 13 (BZ-25, BZ-05)
     ],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows", "schedule_resolve"],  # U10; Plan 0.12.0, MR 0
     "swarmq.scheduler": ["definition", "loop", "sync", "fire"],  # U11; fire: Plan 0.12.0, MR 0

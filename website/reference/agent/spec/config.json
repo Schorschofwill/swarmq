@@ -391,6 +391,12 @@
       "type": "float"
     },
     {
+      "default": 21600.0,
+      "env_var": "SWARMQ_LOCK_WAIT_MAX_S",
+      "name": "lock_wait_max_s",
+      "type": "float"
+    },
+    {
       "default": 131072,
       "env_var": "SWARMQ_MALLOC_TRIM_THRESHOLD",
       "name": "malloc_trim_threshold",

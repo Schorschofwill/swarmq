@@ -22,6 +22,7 @@ from swarmq.contracts import (
     ExecutionGuardStore,
     GuardClaim,
     LeaderInfo,
+    LockObservation,
     LockStore,
     LockToken,
     RateLimitDecision,
@@ -99,6 +100,14 @@ class _TTLDict[V]:
         self._purge()
         entry = self._data.pop(key, None)
         return None if entry is None else entry[0]
+
+    def pttl(self, key: str) -> int:
+        """Wie ``PTTL``: Rest in ms, -1 ohne Frist, -2 ohne Schluessel."""
+        self._purge()
+        entry = self._data.get(key)
+        if entry is None:
+            return -2
+        return -1 if entry[1] is None else max(entry[1] - self._clock.now_ms(), 0)
 
     def keys(self) -> list[str]:
         self._purge()
@@ -360,6 +369,16 @@ class InMemoryLockStore:
 
     async def current_owner(self, name: str) -> str | None:
         return self._mutex.get(name)
+
+    async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
+        if max_concurrency == 1:
+            owner = self._mutex.get(name)
+            return LockObservation(frozenset() if owner is None else frozenset({owner}), self._mutex.pttl(name))
+        slots = self._semaphore.get(name)
+        if slots is None or not slots.keys():
+            return LockObservation(frozenset(), -2)
+        # Der Key lebt so lange wie sein langlebigster Slot (wie der ZSET).
+        return LockObservation(frozenset(slots.keys()), max(slots.pttl(owner) for owner in slots.keys()))  # noqa: SIM118 (_TTLDict)
 
 
 class InMemoryRateLimitStore:

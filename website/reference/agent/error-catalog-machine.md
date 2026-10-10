@@ -34,6 +34,7 @@ Every row has the following columns:
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendResponseError` | `BackendConnectionError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.LockWaitExceeded` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (cancel bypasses DLQ) | n/a | `is_cancelled=true` |
@@ -99,6 +100,7 @@ For agents that need a quick action table:
 | `PublishIndeterminate` | Do not blindly re-publish: the broker may already have the message. Check the result or make the task idempotent first. |
 | `MessageHeadersTooLarge` | Do not retry with the same headers: nothing was sent, and they fail again. Reduce the headers. |
 | `UnroutableMessage` | Do not retry until the queue exists: start (or fix) the worker that declares it, then publish again. Nothing was delivered. |
+| `LockWaitExceeded` (DLQ `error_type`) | The wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`). Check the holder named by `x-swarmq-lock-name`, `DEL` a wedged lock, then `swarmq dlq retry`. |
 | `RedeliveryLimitError` (DLQ `error_type`) | The worker handed the delivery back until the delivery limit. Fix the cause in the log before the DLQ entry, then `swarmq dlq retry`. |
 | `BackendResponseError` | Valkey answered with an error (`WRONGTYPE`, script error); waiting does not help. Inspect the key or script, then retry. |
 | `ConfigurationError` | Do not retry. Fix the config and restart. |

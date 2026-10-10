@@ -92,3 +92,34 @@ HEADER_XDEATH_BASE = "x-swarmq-xdeath-base"
 # die Nachricht erneut dead-gelettert, stempelt er ``dead-lettered-at`` neu,
 # und die CLI vergibt eine neue ``uuid4``.
 HEADER_DLQ_GENERATION = "x-swarmq-dlq-gen"
+
+# Lock-Konflikte warten zeitbasiert (Plan 0.12.0, MR 13, BZ-05). Zustands-
+# Header der Rueckstellschleife (Q6): jede Kopie der Gates traegt sie weiter;
+# die fachliche Retry-Kopie, der DLQ-Stempel und ``dlq retry`` entfernen sie.
+# ``x-swarmq-lock-conflicts`` zaehlt die Konflikte (speist das Signal-kwarg
+# ``lock_conflict_count``); der Legacy-Zaehler ``x-swarmq-lock-conflict-count``
+# wird von 0.12 nicht mehr erhoeht, weil 0.11-Worker derselben App ab 10 in
+# die DLQ schicken. ``lock-wait-since``: erster Konflikt (Epoch-ms, Worker-
+# Wanduhr); ``lock-holder``: Fingerprint der Halter beim letzten Wechsel,
+# ``lock-holder-since``: Zeitpunkt des Wechsels, ``lock-holder-ttl-ms``: die
+# damals beobachtete PTTL des Keys (Basis fuer die Stillstandsgrenze + 60 s).
+HEADER_LOCK_CONFLICTS = "x-swarmq-lock-conflicts"
+# Legacy-Zaehler aus 0.11 (Deckel 10): 0.12 setzt und liest ihn nicht mehr,
+# Kopien tragen ihn unveraendert weiter (Wire-Name bleibt, Golden).
+HEADER_LOCK_CONFLICT_COUNT_LEGACY = "x-swarmq-lock-conflict-count"
+HEADER_LOCK_WAIT_SINCE = "x-swarmq-lock-wait-since"
+HEADER_LOCK_HOLDER = "x-swarmq-lock-holder"
+HEADER_LOCK_HOLDER_SINCE = "x-swarmq-lock-holder-since"
+HEADER_LOCK_HOLDER_TTL_MS = "x-swarmq-lock-holder-ttl-ms"
+
+# Zustands-Header aller Rueckstellschleifen (Q6): bleiben auf jeder Kopie,
+# die ein Gate vor der Ausfuehrung anlegt; entfernt nur in der fachlichen
+# Retry-Kopie, im DLQ-Stempel und durch ``dlq retry``.
+LOOP_STATE_HEADERS: tuple[str, ...] = (
+    HEADER_UNKNOWN_SINCE,
+    HEADER_LOCK_CONFLICTS,
+    HEADER_LOCK_WAIT_SINCE,
+    HEADER_LOCK_HOLDER,
+    HEADER_LOCK_HOLDER_SINCE,
+    HEADER_LOCK_HOLDER_TTL_MS,
+)

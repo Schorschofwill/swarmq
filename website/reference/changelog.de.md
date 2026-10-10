@@ -17,6 +17,22 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `error_type` einer DLQ-Kopie, deren Zustellungen der Worker
   zurückgegeben hat, bis `x-acquired-count` das Zustelllimit erreichte
   ([Fehlerkatalog](errors.md#redeliverylimiterror)).
+- **`swarmq.LockWaitExceeded`**: wird nie geworfen; der `error_type`
+  einer DLQ-Kopie, deren Wartezeit auf einen Task-Lock endete
+  ([Fehlerkatalog](errors.md#lockwaitexceeded)).
+- **`SWARMQ_LOCK_WAIT_MAX_S`** (Standard `21600`): Obergrenze, wie lange
+  eine Nachricht auf einen belegten Task-Lock wartet, ab ihrem ersten
+  Konflikt ([Konfiguration](configuration.md)).
+- **Header `x-swarmq-lock-conflicts`, `x-swarmq-lock-wait-since`,
+  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since` und
+  `x-swarmq-lock-holder-ttl-ms`**, die Gauges
+  `swarmq_lock_waits{worker_id}` und
+  `swarmq_lock_wait_oldest_seconds{worker_id}`, die Log-Events
+  `lock_wait_exceeded`, `lock_observe_unsupported` und
+  `lock_observe_failed` sowie `LockStore.observe` (Golden-Datei
+  `headers.txt`, additiv)
+  ([Lock-Acquisition](../guides/locking-and-dedup.de.md#lock-acquisition-verhalten),
+  [Header](agent/message-formats.de.md#amqp-header)).
 - **`swarmq.UnroutableMessage`** (Unterklasse von
   `BrokerConnectionError`): Der Broker hat einen Publish zurückgegeben,
   weil es keine Queue mit diesem Namen gibt; nichts wurde zugestellt
@@ -80,6 +96,28 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   [Konfiguration](configuration.de.md)).
 
 ### Geändert
+
+- **Ein Lock-Konflikt wartet zeitbasiert statt 10 Versuche.** Eine
+  Nachricht, deren Task-Lock belegt ist, wird zurückgestellt (100 ms,
+  verdoppelt, höchstens 60 s), solange der Lock den Halter wechselt
+  oder sein Halter lebt. In die DLQ geht sie als `LockWaitExceeded`,
+  mit Fehlerergebnis, `TASK_DLQ` und fehlmarkiertem Workflow, erst wenn
+  derselbe Halter den Lock länger hält als die TTL des Keys + 60 s
+  oder seit dem ersten Konflikt `SWARMQ_LOCK_WAIT_MAX_S` vergangen ist;
+  `max_age` bleibt die harte Grenze. Bisher schickte der 10. Konflikt
+  (etwa 51 s) die Nachricht als `LockConflictLimitError` in die DLQ.
+  **Geändertes Verhalten:** `LockConflictLimitError` kommt nicht mehr
+  vor; `x-swarmq-lock-conflict-count` wird von 0.12 weder erhöht noch
+  gelesen (das neue `x-swarmq-lock-conflicts` speist
+  `lock_conflict_count`, dessen Bedeutung gleich bleibt);
+  `task_lock_conflict` wird beim ersten Konflikt und danach etwa einmal
+  je Minute geloggt; `lock_conflict_dlq_failed` nennt das Feld
+  `lock_conflicts` statt `lock_conflict_count`. Die Wartezeit nutzt die
+  Wanduhren der Worker (ein Versatz bis etwa 60 s wird toleriert).
+  Grenzen im Mischbetrieb: Ein 0.11-Worker, der eine Nachricht selbst
+  zurückstellt, erhöht weiter den alten Zähler und dead-lettert beim
+  10. Konflikt; eine 0.12-Kopie sieht er nie an seinem Deckel
+  ([Lock-Acquisition](../guides/locking-and-dedup.de.md#lock-acquisition-verhalten)).
 
 - **`swarmq dlq retry` behält die `x-swarmq-replay-id`, die ein
   0.12-Worker gestempelt hat**, statt eine neue zu setzen, und setzt

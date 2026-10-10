@@ -30,7 +30,7 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.workflow_orchestration import WorkflowStep, WorkflowStepEnqueuer
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, lock_wait_exceeded_headers
 
 _HASH = "a" * 64
 _SCHEDFIRE = "golden-sched:1700000000000"
@@ -235,12 +235,12 @@ async def test_terminal_release_in_finally_releases_after_ack_and_writes_complet
 
 
 async def test_terminal_already_released_does_not_release_twice(broker, backend, rec) -> None:
-    """Lock-Konflikt am Cap: Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
+    """Ende der Lock-Wartezeit (MR 13): Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
     worker = _worker(broker, backend, rec, LockedTask)
     worker._lock_manager.acquire = rec.spy("lock_manager.acquire", None)
     msg = make_message(
         _payload("pipe-locked"),
-        headers={HEADER_UNIQUE_HASH: _HASH, "x-swarmq-lock-conflict-count": 9},
+        headers={HEADER_UNIQUE_HASH: _HASH, **lock_wait_exceeded_headers(worker._config)},
     )
 
     await worker._handle_message(msg)

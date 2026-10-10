@@ -17,6 +17,22 @@ All notable changes to SwarmQ. This project follows
   a DLQ copy whose deliveries the worker handed back until
   `x-acquired-count` reached the delivery limit
   ([error catalog](errors.md#redeliverylimiterror)).
+- **`swarmq.LockWaitExceeded`**: never raised; the `error_type` of a
+  DLQ copy whose wait for a task lock ended
+  ([error catalog](errors.md#lockwaitexceeded)).
+- **`SWARMQ_LOCK_WAIT_MAX_S`** (default `21600`): upper limit for how
+  long a message waits for a held task lock, from its first conflict
+  ([configuration](configuration.md)).
+- **Headers `x-swarmq-lock-conflicts`, `x-swarmq-lock-wait-since`,
+  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since` and
+  `x-swarmq-lock-holder-ttl-ms`**, the gauges
+  `swarmq_lock_waits{worker_id}` and
+  `swarmq_lock_wait_oldest_seconds{worker_id}`, the log events
+  `lock_wait_exceeded`, `lock_observe_unsupported` and
+  `lock_observe_failed`, and `LockStore.observe` (golden file
+  `headers.txt`, additive)
+  ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour),
+  [headers](agent/message-formats.md#amqp-headers)).
 - **`swarmq.UnroutableMessage`** (subclass of `BrokerConnectionError`):
   the broker returned a publish because no queue with that name exists;
   nothing was delivered ([error catalog](errors.md#unroutablemessage)).
@@ -79,6 +95,26 @@ All notable changes to SwarmQ. This project follows
   [configuration](configuration.md)).
 
 ### Changed
+
+- **A lock conflict waits by time instead of 10 attempts.** A message
+  whose task lock is held is deferred (100 ms, doubling, at most 60 s)
+  as long as the lock changes hands or its holder is alive. It is
+  dead-lettered as `LockWaitExceeded`, with an error result, `TASK_DLQ`
+  and the workflow marked failed, only when the same holder keeps the
+  lock longer than the key's TTL + 60 s or `SWARMQ_LOCK_WAIT_MAX_S`
+  passed since the first conflict; `max_age` stays the hard limit.
+  Before, the 10th conflict (about 51 s) dead-lettered the message as
+  `LockConflictLimitError`. **Changed behaviour:** `LockConflictLimitError`
+  no longer appears; `x-swarmq-lock-conflict-count` is neither raised
+  nor read by 0.12 (the new `x-swarmq-lock-conflicts` feeds
+  `lock_conflict_count`, whose meaning is unchanged); `task_lock_conflict`
+  is logged on the first conflict and then about once a minute;
+  `lock_conflict_dlq_failed` names the field `lock_conflicts` instead
+  of `lock_conflict_count`. The wait uses the workers' wall clocks (a
+  skew of up to about 60 s is tolerated). Limits in mixed operation: a
+  0.11 worker that defers a message itself still raises the old
+  counter and dead-letters at 10; it never sees a 0.12 copy at its cap
+  ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)).
 
 - **`swarmq dlq retry` keeps the `x-swarmq-replay-id` a 0.12 worker
   stamped** instead of setting a new one, and restarts

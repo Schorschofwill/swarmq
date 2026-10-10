@@ -282,6 +282,19 @@ class Metrics:
                 labelnames=("queue",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 13 (BZ-05, R11): Lock-Wartezeit je Worker.
+            self.lock_waits: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_lock_waits",
+                "Messages this worker recently deferred because their task lock was held",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            self.lock_wait_oldest_seconds: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_lock_wait_oldest_seconds",
+                "Seconds the oldest of these messages has waited since its first lock conflict",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -304,6 +317,8 @@ class Metrics:
             self.delay_tiers_unavailable = noop
             self.tasks_unknown_deferred_total = noop
             self.scheduler_crons_held = noop
+            self.lock_waits = noop
+            self.lock_wait_oldest_seconds = noop
 
     @property
     def enabled(self) -> bool:

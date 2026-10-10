@@ -146,6 +146,16 @@ class RedeliveryLimitError(SwarmQError):
     """
 
 
+class LockWaitExceeded(SwarmQError):
+    """Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Lock endete
+    (Plan 0.12.0, MR 13, BZ-05): entweder hielt derselbe Halter laenger als
+    seine TTL + 60 s (Stillstand), oder die Obergrenze
+    ``SWARMQ_LOCK_WAIT_MAX_S`` ab dem ersten Konflikt war erreicht. Wird
+    nicht geworfen; der Name steht als ``error_type`` in ``task_sent_to_dlq``
+    und am Anfang von ``x-swarmq-traceback``.
+    """
+
+
 class TaskError(SwarmQError):
     pass
 

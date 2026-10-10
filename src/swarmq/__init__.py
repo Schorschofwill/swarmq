@@ -21,6 +21,7 @@ from swarmq.exceptions import (
     BackendResponseError,
     BrokerConnectionError,
     ConfigurationError,
+    LockWaitExceeded,
     LoggingConfigError,
     MessageHeadersTooLarge,
     NoRetry,
@@ -123,6 +124,7 @@ __all__ = [
     # Health
     "HealthChecker",
     "HealthServer",
+    "LockWaitExceeded",
     "LoggingConfigError",
     # Middleware
     "MessageContext",

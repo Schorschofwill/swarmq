@@ -69,13 +69,43 @@ rendern, über die ganze Flotte hinweg, unabhängig von
 
 Wenn der Worker eine Nachricht aufnimmt, deren Lock gehalten wird:
 
-- Die Nachricht wird **mit Delay requeued**. Sie blockiert den
-  Worker nicht und scheitert den Task nicht.
-- Der Worker loggt `task_lock_conflict` (INFO, mit `lock_name` und
-  `lock_conflict_count`) und feuert das `TASK_LOCKED`-Signal, damit du
-  es beobachten kannst.
-- Ist `max_age` des Tasks gesetzt, läuft sie irgendwann in die DLQ,
-  statt ewig zu retry'n.
+- Die Nachricht wird **mit Delay requeued** (100 ms, je Konflikt
+  verdoppelt, höchstens 60 s). Sie blockiert den Worker nicht und
+  scheitert den Task nicht.
+- Der Worker feuert bei jedem Konflikt das `TASK_LOCKED`-Signal
+  (`lock_conflict_count` zählt die Konflikte dieser Nachricht) und
+  loggt `task_lock_conflict` (INFO, mit `lock_name`,
+  `lock_conflict_count` und `waited_ms`) beim ersten Konflikt und
+  danach etwa einmal je Minute.
+- Die Nachricht wartet, solange der Lock den Halter wechselt oder sein
+  Halter ihn am Leben hält (ab 0.12 gibt es keinen Deckel von 10
+  Konflikten mehr). In die DLQ geht sie mit `LockWaitExceeded`
+  (Fehlerergebnis, `TASK_DLQ`, ein Workflow-Schritt markiert seinen
+  Workflow als gescheitert) erst, wenn
+  - derselbe Halter den Lock länger hält als die beim letzten
+    Halterwechsel gesehene TTL des Keys plus 60 s (ein hängender
+    Halter, dessen Lock am Leben gehalten wird), oder
+  - seit dem ersten Konflikt `SWARMQ_LOCK_WAIT_MAX_S` (Standard 6 h)
+    vergangen ist.
+- `max_age` bleibt die harte Grenze: Ein Task mit `max_age` läuft in
+  die DLQ, sobald er älter ist, egal wie lange er gewartet hat.
+
+Gemessen wird mit den Wanduhren der Worker
+(`x-swarmq-lock-wait-since`, `x-swarmq-lock-holder-since`); halte die
+Uhren synchron, ein Versatz bis etwa 60 s wird toleriert. Ein
+Lock-Store, der seine Halter nicht melden kann (fremder Store), loggt
+einmal `lock_observe_unsupported` und wartet bis
+`SWARMQ_LOCK_WAIT_MAX_S`. Die Gauges `swarmq_lock_waits` und
+`swarmq_lock_wait_oldest_seconds` zeigen je Worker, wie viele
+Nachrichten er zuletzt zurückgestellt hat und wie lange die älteste
+schon wartet.
+
+Im Mischbetrieb mit 0.11-Workern derselben App: 0.12 erhöht
+`x-swarmq-lock-conflict-count` nicht mehr, ein 0.11-Worker sieht eine
+0.12-Kopie also nie an seinem Deckel von 10. Stellt ein 0.11-Worker
+eine Nachricht selbst zurück, erhöht er diesen Zähler weiter und
+dead-lettert wie bisher beim 10. Konflikt; den Wartezustand von 0.12
+lässt er dabei stehen.
 
 Ist Valkey beim Acquire nicht erreichbar (oder antwortet nicht
 innerhalb von `SWARMQ_BACKEND_OP_TIMEOUT`), ist das kein Konflikt: Die
@@ -87,10 +117,9 @@ erhöhen, und der Worker loggt `task_deferred_backend_unavailable`
 Stelle neu ein. Ein Acquire, der nach Ablauf der Frist in Valkey doch
 noch ausgeführt wurde, lässt den Lock bis zu seiner TTL gehalten.
 
-Der Delay backed off — wiederholte Misses erweitern die Wartezeit.
-Die meisten Lock-nutzenden Tasks wollen `max_age` als
-Sicherheitsnetz, damit ein stuck Holder die Queue nicht dauerhaft
-zurückstaut.
+Setze `max_age` bei Lock-nutzenden Tasks, deren Arbeit veraltet,
+damit eine Nachricht nicht stundenlang hinter einem langen Halter
+wartet.
 
 ### Locks während der Ausführung
 
