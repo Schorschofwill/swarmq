@@ -86,7 +86,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
 | BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` | offen |
 | BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | offen |
-| BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` | offen |
+| BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` | offen; Nachweise 2/3 (`TASK_DLQ`, Fehlerergebnis am Deckel) grün seit MR 3, a570112, Umschreiben auf `LockWaitExceeded` in MR 13 |
 | BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` | offen |
 | BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
 | BZ-08 | `tests/integration/test_befund_bz08_replay_without_id.py` | offen |
@@ -94,7 +94,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` | offen |
 | BZ-11 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | offen |
 | BZ-12 | `tests/unit/worker/gates/test_befund_bz12_marker_ttl.py` | offen |
-| BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` | offen |
+| BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` | behoben (MR 3, a570112) |
 | BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` | offen |
 | BZ-15 | `tests/integration/broker/test_befund_bz15_queue_args_change.py` | offen |
 | BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` | offen |
