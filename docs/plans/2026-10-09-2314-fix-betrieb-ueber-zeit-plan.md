@@ -275,7 +275,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
   - Oberhalb von `max_delay` gilt `max_delay·(0,6+0,2u)`.
   - `fixed` bleibt unverändert.
 - **BZ-24:**
-  - `client_task_defaults_unresolved` erscheint einmal je Task-Name und Client, und **nur**, wenn weder `queue=` noch `priority=` ausdrücklich gesetzt ist. Gewollt app-übergreifende Producer bleiben dadurch still.
+  - `client_task_defaults_unresolved` (WARNING) erscheint einmal je Task-Name und Client-Instanz, wenn der Producer ohne TaskInfo sendet (keine Registry oder Name nicht in der Registry); kein Abschalter. (Rev. 4: Ausnahme „`queue=`/`priority=` gesetzt“ entfernt, unerreichbar: ohne Registry ist `queue=` Pflicht, `priority=` gibt es nicht.)
   - Die Menge der gemeldeten Namen ist auf 1000 gedeckelt.
 - **BZ-17:**
   - `bounded_header_text()` begrenzt Traceback- und Lock-Render-Header auf 8 KiB: 6 KiB vom Anfang, 2 KiB vom Ende.

@@ -30,10 +30,6 @@ pytestmark = pytest.mark.timeout(5)
 
 
 @pytest.mark.befund("BZ-24")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-24: Producer ohne Registry reiht ohne Dedup und Prioritaet ein, ohne jede Warnung",
-)
 async def test_registry_less_schedule_warns_that_task_defaults_are_unresolved(broker, backend) -> None:
     with capture_swarmq_logs() as logs:
         # Konstruktion im Mitschnitt: der Plan sah den Log bei der Konstruktion vor.

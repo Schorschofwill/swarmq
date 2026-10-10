@@ -700,6 +700,7 @@ selection, not every event SwarmQ emits.
 | `scheduler_leader_version_write_failed`, `scheduler_leader_version_check_failed` | `swarmq.scheduler.leader_version` | WARNING | The leader could not write its version next to the lock (it stays leader; the next renewal writes again), or a non-leader could not read it. Fields `error_type`, `error`. |
 | `dedup_detected` | `swarmq.client.schedule`, `swarmq.scheduler.loop` | INFO | |
 | `dedup_rollback_failed` | `swarmq.client.schedule` | WARNING | |
+| `client_task_defaults_unresolved` | `swarmq.client.schedule_resolve` | WARNING | A client without a registry sends a task whose `TaskInfo` it does not know: `unique_for`, `priority` and the delivery mode are not applied. Once per task name and client instance, at most 1000 names. Fields `task_name`, `hint`. See [client-only mode](api.md#schedule). |
 | `http_server_started`, `http_server_stopped` | `swarmq._http` | INFO | Field `server` (`health_server`/`metrics_server`); `host`, `port` on start. |
 | `http_server_request_failed` | `swarmq._http` | ERROR | With traceback; field `server`. |
 | `check_backend_failed`, `check_broker_failed` | `swarmq.health` | WARNING | Readiness check failed. The `consumers` check logs nothing of its own; its reason is in the `/ready` body and in the consumer watch events above. |

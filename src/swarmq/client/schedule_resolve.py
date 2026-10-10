@@ -10,7 +10,14 @@ import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.exceptions import TaskNotFoundError
+from swarmq.logging import get_logger
 from swarmq.serialization import compute_dedup_hash
+
+logger = get_logger(__name__)
+
+# BZ-24: so viele Task-Namen merkt sich ein Client fuer die einmalige
+# Warnung; dynamische Namen fuellen den Speicher sonst unbegrenzt.
+_MAX_UNRESOLVED_NAMES = 1000
 
 if TYPE_CHECKING:
     from swarmq.registry import TaskRegistry
@@ -55,6 +62,7 @@ class ClientScheduleResolve:
     # Mixin über dem Client-Zustand; die Attribute setzt ``Client.__init__``.
     if TYPE_CHECKING:
         _registry: TaskRegistry | None
+        _unresolved_task_names: set[str]
 
     def _resolve_queue_and_delivery_mode(self, task_name: str, queue: str | None) -> tuple[str, str]:
         """Resolve the target queue and delivery mode for *task_name*.
@@ -74,6 +82,8 @@ class ClientScheduleResolve:
             priority = entry.task_info.priority
         if resolved_queue is None:
             raise ValueError("No queue specified and no registry available to resolve one")
+        if self._registry is None:
+            self._warn_task_defaults_unresolved(task_name)
         # R4.3: apply priority suffix (.high / .low). 'normal' passes
         # through unchanged. Only applied when the registry knows the
         # task — a bare client.schedule(name, queue=...) without a
@@ -81,6 +91,22 @@ class ClientScheduleResolve:
         if priority != "normal":
             resolved_queue = f"{resolved_queue}.{priority}"
         return resolved_queue, delivery_mode
+
+    def _warn_task_defaults_unresolved(self, task_name: str) -> None:
+        """BZ-24: einmal je Task-Name und Instanz, hoechstens fuer
+        ``_MAX_UNRESOLVED_NAMES`` Namen."""
+        names = self._unresolved_task_names
+        if task_name in names or len(names) >= _MAX_UNRESOLVED_NAMES:
+            return
+        names.add(task_name)
+        logger.warning(
+            "client_task_defaults_unresolved",
+            task_name=task_name,
+            hint=(
+                "client has no registry: unique_for, priority and delivery mode "
+                "from the task's TaskInfo are not applied"
+            ),
+        )
 
     def _resolve_unique(
         self,

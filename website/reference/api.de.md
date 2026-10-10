@@ -129,6 +129,17 @@ Enqueuet einen Task und gibt seine `task_id` zurück.
 die *bestehende* Owner-`task_id` still zurückgegeben; ein
 `TASK_DUPLICATE_DETECTED`-Signal feuert zur Observability.
 
+**Client-Only-Modus (ohne Registry).** Ohne Registry kennt der Client
+die `TaskInfo` des Tasks nicht: `unique_for`, `priority` und der
+Liefermodus des Worker-Tasks werden nicht angewendet. Dedup gibt es nur
+mit ausdrücklichem `unique_for=`, die Nachricht geht an die einfache
+`queue` (ohne `.high`/`.low`-Suffix) und wird `at_least_once` gesendet.
+Der Client loggt einmal je Task-Name und Client-Instanz, für höchstens
+1000 Namen, eine WARNING `client_task_defaults_unresolved` (mit
+`task_name`). Damit die Defaults greifen, den Producer mit denselben
+registrierten Tasks bauen, etwa über eine `SwarmQ`-App, die die
+Task-Module importiert.
+
 **Raises.**
 
 - `TaskNotFoundError` — task_name nicht in der Registry (Registry-Modus).

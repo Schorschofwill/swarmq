@@ -16,6 +16,12 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein Producer ohne Registry verliert Dedup und Priorität nicht mehr
+  still.** Ein Client ohne Registry kann `unique_for`, `priority` und den
+  Liefermodus aus der `TaskInfo` des Tasks nicht anwenden; er loggt jetzt
+  einmal je Task-Name und Client-Instanz (für höchstens 1000 Namen) eine
+  WARNING `client_task_defaults_unresolved`
+  ([Client-Only-Modus](api.md#schedule)).
 - **Ein Task, der mit einem riesigen Fehlertext scheitert, schickt
   seine Nachbarn nicht mehr in die Queue zurück.** `x-swarmq-traceback`
   und `x-swarmq-lock-render-error` sind auf 8 KiB begrenzt (die ersten

@@ -127,6 +127,16 @@ Enqueue a task and return its `task_id`.
 *existing* owner's `task_id` is returned silently; a
 `TASK_DUPLICATE_DETECTED` signal fires for observability.
 
+**Client-only mode (no registry).** Without a registry the client does
+not know the task's `TaskInfo`: `unique_for`, `priority` and the
+delivery mode of the worker's task are not applied. Dedup only happens
+with an explicit `unique_for=`, the message goes to the plain `queue`
+(no `.high`/`.low` suffix), and it is sent `at_least_once`. The client
+logs a WARNING `client_task_defaults_unresolved` (with `task_name`) once
+per task name and client instance, for at most 1000 names. To apply the
+defaults, build the producer with the same tasks registered, e.g. via a
+`SwarmQ` app that imports the task modules.
+
 **Raises.**
 
 - `TaskNotFoundError` — task_name not in the registry (registry mode).

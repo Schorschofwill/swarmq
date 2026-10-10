@@ -47,6 +47,9 @@ class Client(ClientScheduling, ClientResults, ClientWorkflows):
         self._broker = broker
         self._backend = backend
         self._registry = registry
+        # BZ-24: Task-Namen, fuer die ``client_task_defaults_unresolved``
+        # schon gemeldet wurde (einmal je Name und Instanz).
+        self._unresolved_task_names: set[str] = set()
         # R3.5: bound every Valkey call on the enqueue hot path so a
         # hung backend cannot wedge Client.schedule. None preserves
         # pre-R3.5 behavior (no enforcement at the Client layer);

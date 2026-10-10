@@ -718,6 +718,7 @@ sind eine Auswahl, nicht jedes Event, das SwarmQ ausgibt.
 | `scheduler_leader_version_write_failed`, `scheduler_leader_version_check_failed` | `swarmq.scheduler.leader_version` | WARNING | Der Leader konnte seine Version nicht neben das Lock schreiben (er bleibt Leader; die nächste Verlängerung schreibt erneut), oder ein Nicht-Leader konnte sie nicht lesen. Felder `error_type`, `error`. |
 | `dedup_detected` | `swarmq.client.schedule`, `swarmq.scheduler.loop` | INFO | |
 | `dedup_rollback_failed` | `swarmq.client.schedule` | WARNING | |
+| `client_task_defaults_unresolved` | `swarmq.client.schedule_resolve` | WARNING | Ein Client ohne Registry sendet einen Task, dessen `TaskInfo` er nicht kennt: `unique_for`, `priority` und Liefermodus werden nicht angewendet. Einmal je Task-Name und Client-Instanz, höchstens 1000 Namen. Felder `task_name`, `hint`. Siehe [Client-Only-Modus](api.md#schedule). |
 | `http_server_started`, `http_server_stopped` | `swarmq._http` | INFO | Feld `server` (`health_server`/`metrics_server`); beim Start `host`, `port`. |
 | `http_server_request_failed` | `swarmq._http` | ERROR | Mit Traceback; Feld `server`. |
 | `check_backend_failed`, `check_broker_failed` | `swarmq.health` | WARNING | Readiness-Prüfung fehlgeschlagen. Die Prüfung `consumers` loggt nichts Eigenes; ihren Grund nennen der `/ready`-Body und die Events des Consumer-Wächters oben. |
