@@ -469,6 +469,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "worker":
         return _run_worker_command(args)
+    # Patch 0.11.1 (Review P2-3): schedule/dlq/inspect bauen Backend bzw.
+    # Broker direkt, ohne ``SwarmQConfig``; die Namensraum-Sperre muss hier
+    # greifen, bevor eine Verbindung entsteht.
+    from swarmq.namespace_guard import reject_namespace
+
+    try:
+        reject_namespace()
+    except ConfigurationError as exc:
+        sys.stderr.write(f"swarmq {args.command}: {exc}\n")
+        return CONFIG_ERROR_EXIT_CODE
     if args.command == "schedule":
         runner = _run_schedule_async(args)
         error_prefix = f"swarmq schedule {args.schedule_command}"
