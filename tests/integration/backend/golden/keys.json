@@ -23,6 +23,7 @@
   "sq:{sched}:leader_version": "string",
   "sq:{sched}:report:def": "hash",
   "sq:{sched}:report:first_seen": "hash",
+  "sq:{sched}:report:known": "set",
   "sq:{sched}:report:last_seen": "hash",
   "sq:{sched}:worker_version:golden-worker": "string",
   "sq:{sched}:zset": "zset"

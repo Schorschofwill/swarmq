@@ -12,8 +12,13 @@ Test-Liste:
 2. BZ-02: ``cancel(tid)`` vor dem Fire verhindert die Ausfuehrung.
 3. BZ-02: Bei ``unique_for`` (completion) ist nach dem Lauf ein erneutes
    ``schedule(delay=)`` mit gleichen Argumenten moeglich (neue ID, neuer Lauf).
-4. BZ-11: Ein Cron, dessen Task kein Worker mehr kennt, landet im ``.XQ``
-   mit Ablaufzeit (``expiration`` bzw. ``x-swarmq-dead-letter-ttl-ms``).
+4. BZ-11 (Worker-Teil): Ein Cron-Fire, dessen Task kein Worker mehr kennt,
+   landet im ``.XQ`` mit Ablaufzeit (``expiration`` bzw.
+   ``x-swarmq-dead-letter-ttl-ms``); Gnadenfrist 0, sonst wuerde der Fire
+   15 min zurueckgestellt (BZ-06).
+4b. BZ-11 (Leader-Teil): Ein je gemeldeter statischer Cron, den kein lebender
+   Worker mehr meldet und den der Leader nicht kennt, wird zurueckgehalten
+   (``SCHEDULER_CRON_UNOWNED``, Termin verschoben, nichts im ``.XQ``).
 5. BZ-23: Ein stornierter Task, der laenger als ``result_ttl`` in der Queue
    wartet, laeuft trotzdem nicht.
 """
@@ -218,11 +223,22 @@ async def _get_xq_message(rabbitmq_url: str, queue: str) -> aio_pika.abc.Abstrac
         await connection.close()
 
 
+def _removed_cron(name: str, queue: str, due_ms: int) -> ScheduleDefinition:
+    """Der Cron eines aus dem Code entfernten Tasks bleibt bis zum Prune
+    (24 h) im Store."""
+    return ScheduleDefinition(
+        schedule_name=name,
+        task_name=name,
+        args=(),
+        kwargs={},
+        queue=queue,
+        cron="* * * * *",
+        fire_ts_ms=due_ms,
+        source="static",
+    )
+
+
 @pytest.mark.befund("BZ-11")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-11: Fire ohne registrierten Task geht per nack/DLX ohne Ablaufzeit ins .XQ",
-)
 async def test_bz11_fire_of_removed_cron_task_dead_letters_with_ttl(rabbitmq_url, valkey_url):
     queue, removed = _queue(), _name("removed_cron")
 
@@ -237,27 +253,75 @@ async def test_bz11_fire_of_removed_cron_task_dead_letters_with_ttl(rabbitmq_url
         valkey_url,
         queue,
         dead_letter_ttl_s=3600.0,
+        # Gnadenfrist 0 (MR 11, BZ-06): der unbekannte Fire geht sofort den
+        # terminalen Weg; nie gemeldet, also haelt der Leader ihn nicht zurueck.
+        unknown_task_grace_s=0,
     ) as app:
-        # Der Cron eines aus dem Code entfernten Tasks bleibt bis zum Prune
-        # (24 h) im Store und feuert weiter.
         due_ms = int(time.time() * 1000) - 1000
-        definition = ScheduleDefinition(
-            schedule_name=removed,
-            task_name=removed,
-            args=(),
-            kwargs={},
-            queue=queue,
-            cron="* * * * *",
-            fire_ts_ms=due_ms,
-            source="static",
-        )
-        await app.backend.schedules.put(removed, msgspec.json.encode(definition), due_ms)
+        await app.backend.schedules.put(removed, msgspec.json.encode(_removed_cron(removed, queue, due_ms)), due_ms)
 
         message = await _get_xq_message(rabbitmq_url, queue)
 
     headers = message.headers or {}
     assert msgspec.json.decode(message.body)["task"]["name"] == removed
     assert message.expiration is not None or HEADER_DEAD_LETTER_TTL_MS in headers
+
+
+@pytest.mark.befund("BZ-11")
+async def test_bz11_removed_cron_once_reported_is_held_by_the_leader(rabbitmq_url, valkey_url):
+    queue, removed = _queue(), _name("removed_cron")
+    held = asyncio.Event()
+    transitions: list[dict[str, object]] = []
+
+    class StillThere(Task):
+        task_info = TaskInfo(name=_name("still_there"), queues=[queue])
+
+        async def run(self) -> None:
+            return None
+
+    async with _leader_app(
+        rabbitmq_url,
+        valkey_url,
+        queue,
+        dead_letter_ttl_s=3600.0,
+        unknown_task_grace_s=0,
+        scheduler_seen_interval_s=0.2,
+    ) as app:
+
+        @app.on_signal(Signal.SCHEDULER_CRON_UNOWNED)
+        async def _on_unowned(**kwargs: object) -> None:
+            transitions.append(kwargs)
+            held.set()
+
+        due_ms = int(time.time() * 1000) - 1000
+        definition = msgspec.json.encode(_removed_cron(removed, queue, due_ms))
+        # "Je gemeldet": ein Worker mit dem Task hat den Cron einmal gemeldet;
+        # die Meldung ist tot (kein lebender Worker), der Name bleibt bekannt.
+        await app.backend.schedules.report_cron(removed, "0" * 16, definition, live_window_ms=1)
+        await app.backend.schedules.prune_cron_reports(max_age_ms=-1)
+        await app.backend.schedules.put(removed, definition, due_ms)
+
+        await asyncio.wait_for(held.wait(), timeout=_EVENT_TIMEOUT)
+        next_fire = await app.backend.schedules.fire_ts(removed)
+        xq_empty = not await wait_until(
+            lambda: _xq_has_message(rabbitmq_url, queue),
+            timeout=2.0,
+            interval=0.2,
+        )
+
+    assert transitions[0]["schedule_name"] == removed and transitions[0]["held"] is True
+    assert next_fire is not None and next_fire > due_ms
+    assert xq_empty, "zurueckgehaltener Cron hat trotzdem gefeuert"
+
+
+async def _xq_has_message(rabbitmq_url: str, queue: str) -> bool:
+    connection = await aio_pika.connect(rabbitmq_url)
+    try:
+        channel = await connection.channel()
+        xq = await channel.declare_queue(f"{queue}.XQ", passive=True)
+        return await xq.get(no_ack=True, fail=False) is not None
+    finally:
+        await connection.close()
 
 
 # ---------------------------------------------------------------------------

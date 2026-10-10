@@ -26,6 +26,8 @@ Metrics (plan §R5.1):
   worker on a schedule; the exporter reads it.
 - ``swarmq_delay_tiers_unavailable{queue}`` — gauge of delay tiers the
   broker refused to declare (their delays fall back to ``{queue}.DQ``)
+- ``swarmq_scheduler_crons_held{worker_id}`` — gauge of static crons the
+  leader holds because no live worker reports them (BZ-11)
 - ``swarmq_worker_uptime_seconds{worker_id}`` — gauge
 - ``swarmq_retries_total{task_name,queue}`` — counter
 - ``swarmq_dlq_messages{queue}`` — gauge (live DLQ depth)
@@ -235,6 +237,16 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 11 (BZ-11): vom Leader zurueckgehaltene Crons.
+            self.scheduler_crons_held: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_scheduler_crons_held",
+                (
+                    "Static crons the scheduler leader holds because no live worker "
+                    "reports them and it does not register them itself"
+                ),
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.consumer_reregistrations_total: Counter | _NoopMetric = Counter(
                 f"{namespace}_consumer_reregistrations_total",
                 (
@@ -290,6 +302,7 @@ class Metrics:
             self.execution_guard_events_total = noop
             self.delay_tiers_unavailable = noop
             self.tasks_unknown_deferred_total = noop
+            self.scheduler_crons_held = noop
 
     @property
     def enabled(self) -> bool:
@@ -511,13 +524,19 @@ def _install_scheduler_gauge(
             worker_id=str(kw.get("worker_id", "")),
         ).set(1 if kw.get("outdated") else 0)
 
+    @dispatcher.on_signal(Signal.SCHEDULER_CRON_UNOWNED)
+    async def _cron_unowned(**kw: Any) -> None:
+        metrics.scheduler_crons_held.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(int(kw.get("held_count") or 0))
+
     @dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)
     @dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
     async def _scheduler_not_leader(**kw: Any) -> None:
-        metrics.scheduler_leader.labels(
-            worker_id=str(kw.get("worker_id", "")),
-        ).set(0)
+        worker_id = str(kw.get("worker_id", ""))
+        metrics.scheduler_leader.labels(worker_id=worker_id).set(0)
+        metrics.scheduler_crons_held.labels(worker_id=worker_id).set(0)
 
 
 def install_signal_collectors(

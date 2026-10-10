@@ -74,6 +74,7 @@ class ValkeyScheduleStore:
         self._defs = k.sched_defs()
         self._report_last_seen = k.sched_report_last_seen()
         self._report_keys = [k.sched_report_first_seen(), self._report_last_seen, k.sched_report_def()]
+        self._report_known = k.sched_report_known()
         self._disabled = k.sched_disabled()
         self._leader_version = k.sched_leader_version()
         self._scheduler_lock = k.scheduler_lock()
@@ -135,6 +136,9 @@ class ValkeyScheduleStore:
         await self.zrem_schedule(name)
         await self.hdel_schedule_def(name)
         return existed
+
+    async def forget_known_cron(self, name: str) -> None:
+        await self._run(f"forget_known_cron for {name!r}", self._client.srem(self._report_known, name))
 
     async def get(self, name: str) -> bytes | None:
         return await self.hget_schedule_def(name)
@@ -257,13 +261,20 @@ class ValkeyScheduleStore:
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
     ) -> None:
-        """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``)."""
+        """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``); danach der
+        Name ins Set der je gemeldeten Crons (BZ-11, eigener Befehl: die
+        Arität des Skripts bleibt, Q3)."""
         await self._run(
             f"sched_report for {name!r}",
             self._report_script(
                 keys=self._report_keys, args=[f"{name}|{fingerprint}", payload, live_window_ms],
             ),
         )
+        await self._run(f"sched_report_known for {name!r}", self._client.sadd(self._report_known, name))
+
+    async def known_cron_names(self) -> frozenset[str]:
+        raw = await self._run("known_cron_names", self._client.smembers(self._report_known))
+        return frozenset(_decode(name) for name in raw)
 
     async def cron_reports(self) -> CronReports:
         """``TIME`` und die drei Meldungs-Hashes in einer Transaktion."""
@@ -303,7 +314,12 @@ class ValkeyScheduleStore:
                 ],
             ),
         )
-        return int(result) == 1
+        if int(result) != 1:
+            return False
+        # BZ-11: der Name verlaesst das Set der je gemeldeten Crons nur mit
+        # der Definition (eigener Befehl, Aritaet des Skripts bleibt, Q3).
+        await self._run(f"sched_prune_known for {name!r}", self._client.srem(self._report_known, name))
+        return True
 
     async def pruned_disabled(self, name: str) -> bool:
         result = await self._run("pruned_disabled", self._client.sismember(self._disabled, name))

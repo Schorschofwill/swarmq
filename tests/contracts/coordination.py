@@ -61,6 +61,13 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 33. ``poll_due`` nimmt deaktivierte Definitionen mit Score aus dem
 #     Fire-Index, bevor das Limit greift; die Definition bleibt.
 
+# Test list (Plan 0.12.0, MR 11, BZ-11) -- ScheduleStoreContract:
+# 34. ``report_cron`` merkt den Namen in ``known_cron_names`` (je gemeldet).
+# 35. ``prune_cron_reports`` laesst ``known_cron_names`` unberuehrt.
+# 36. ``prune_cron`` entfernt den Namen zusammen mit der Definition.
+# 37. ``forget_known_cron`` (CLI ``schedule remove --permanent``) entfernt ihn
+#     ebenso.
+
 # Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
 # 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
 #     gespeicherte Definition die gelesene ist und kein Score existiert.
@@ -654,3 +661,34 @@ class ScheduleStoreContract:
         await impl.set_handover_marker(_name("owner"), ttl_ms=60_000)
         assert await impl.take_handover_marker() is True
         assert await impl.take_handover_marker() is False
+
+    async def test_report_cron_remembers_the_name_as_known(self, impl: ScheduleStore) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        assert name in await impl.known_cron_names()
+
+    async def test_pruning_reports_keeps_the_known_name(self, impl: ScheduleStore, clock: Clock) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        await impl.prune_cron_reports(max_age_ms=100)
+        assert await self._reports_of(impl, name) == []
+        assert name in await impl.known_cron_names()
+
+    async def test_prune_cron_forgets_the_known_name_with_the_definition(
+        self, impl: ScheduleStore, clock: Clock
+    ) -> None:
+        name = _name("cron")
+        await impl.put(name, b"def", 1_000)
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        assert await impl.prune_cron(name, b"def", stale_after_ms=100, remember_disabled=False) is True
+        assert name not in await impl.known_cron_names()
+
+    async def test_forget_known_cron_removes_the_name(self, impl: ScheduleStore) -> None:
+        name, other = _name("cron"), _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await impl.report_cron(other, "fp1", b"def", live_window_ms=60_000)
+        await impl.forget_known_cron(name)
+        known = await impl.known_cron_names()
+        assert name not in known and other in known

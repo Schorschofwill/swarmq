@@ -474,3 +474,21 @@ async def test_unknown_task_deferrals_are_counted_per_queue():
         )
 
     assert m.registry.get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
+
+
+async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
+    """Plan 0.12.0, MR 11 (BZ-11): Zahl der zurueckgehaltenen Crons des Leaders,
+    0 sobald der Worker die Fuehrung abgibt."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+    sample = "swarmq_scheduler_crons_held"
+
+    await disp.dispatch(
+        Signal.SCHEDULER_CRON_UNOWNED, worker_id="w", schedule_name="ghost", task_name="t", held=True, held_count=2,
+    )
+    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 2.0
+    await disp.dispatch(Signal.SCHEDULER_STANDBY, worker_id="w")
+    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0

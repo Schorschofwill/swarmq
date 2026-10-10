@@ -402,6 +402,8 @@ class InMemoryScheduleStore:
         self._handover: _TTLDict[str] = _TTLDict(clock)
         # Cron-Meldungen (KTD10): (name, fingerprint) -> [first, last, payload]
         self._reports: dict[tuple[str, str], tuple[int, int, bytes]] = {}
+        # Je gemeldete Namen (BZ-11): bleiben, bis die Definition geht.
+        self._known: set[str] = set()
         # Leader-Version (KTD11): "leader" -> (owner, version)
         self._leader_version: _TTLDict[tuple[str, str]] = _TTLDict(clock)
         self._worker_versions: _TTLDict[str] = _TTLDict(clock)
@@ -427,6 +429,9 @@ class InMemoryScheduleStore:
         self._defs.pop(name, None)
         self._fires.pop(name, None)
         return existed
+
+    async def forget_known_cron(self, name: str) -> None:
+        self._known.discard(name)
 
     async def get(self, name: str) -> bytes | None:
         return self._defs.get(name)
@@ -528,6 +533,10 @@ class InMemoryScheduleStore:
         alive = previous is not None and previous[1] >= now - live_window_ms
         first = previous[0] if previous is not None and alive else now
         self._reports[(name, fingerprint)] = (first, now, payload)
+        self._known.add(name)
+
+    async def known_cron_names(self) -> frozenset[str]:
+        return frozenset(self._known)
 
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         cutoff = self._clock.now_ms() - max_age_ms
@@ -556,6 +565,7 @@ class InMemoryScheduleStore:
         if not prunable:
             return False
         await self.remove(name)
+        self._known.discard(name)
         if remember_disabled:
             self._pruned_disabled.add(name)
         return True

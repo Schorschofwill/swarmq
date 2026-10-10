@@ -179,6 +179,19 @@ class ScheduleStore:
         (KTD8), so the next report recreates the cron enabled."""
         removed = await self._store.remove(schedule_name)
         await self._store.forget_pruned_disabled(schedule_name)
+        # BZ-11: mit der Definition verlaesst der Name das Set der je
+        # gemeldeten Crons -- best effort (Q15: ein Store ohne die Methode
+        # bleibt nutzbar; bleibt der Name stehen, wird ein gleichnamiger
+        # statischer Cron erst nach erneuter Meldung gefeuert).
+        try:
+            await self._store.forget_known_cron(schedule_name)
+        except Exception as exc:
+            logger.warning(
+                "schedule_known_forget_failed",
+                schedule_name=schedule_name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
         return removed
 
     async def disable_schedule(self, schedule_name: str) -> bool:

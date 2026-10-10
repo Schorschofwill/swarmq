@@ -499,3 +499,19 @@ class TestScheduleStoreErrorWrapping:
         schedules.add.side_effect = BackendConnectionError("down")
         with pytest.raises(BackendConnectionError):
             await store.add_schedule(_def())
+
+
+# Plan 0.12.0, MR 11 (BZ-11): ``remove_schedule`` nimmt den Namen aus dem Set
+# der je gemeldeten Crons; ein Store ohne die Methode (Q15) bricht nicht.
+
+
+class TestRemoveScheduleForgetsKnown:
+    async def test_remove_schedule_forgets_the_known_name(self):
+        store, schedules = _make_store(hexists_return=1)
+        schedules.forget_known_cron = AsyncMock()
+        assert await store.remove_schedule("drop") is True
+        schedules.forget_known_cron.assert_awaited_once_with("drop")
+
+    async def test_store_without_forget_known_cron_is_tolerated(self):
+        store, _schedules = _make_store(hexists_return=1)  # MagicMock: nicht awaitbar
+        assert await store.remove_schedule("drop") is True

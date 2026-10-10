@@ -194,6 +194,17 @@ class ScheduleStore(Protocol):
     async def cron_reports(self) -> CronReports:
         """Alle Meldungen samt Backend-Zeit des Lesens."""
 
+    async def known_cron_names(self) -> frozenset[str]:
+        """Namen, die je ein Worker gemeldet hat (Plan 0.12.0, MR 11, BZ-11).
+        Anders als die Meldungen werden sie nicht nach Alter aufgeräumt,
+        sondern nur zusammen mit der Definition entfernt (``prune_cron``,
+        ``remove``); so erkennt der Leader einen verwaisten Cron auch dann,
+        wenn ein Leader vor 0.12 die Meldungen gelöscht hat."""
+
+    async def forget_known_cron(self, name: str) -> None:
+        """Nimmt *name* aus :meth:`known_cron_names` (``schedule remove
+        --permanent``); ``prune_cron`` tut es von selbst."""
+
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         """Löscht atomar die Meldungen, deren ``last_seen`` (Backend-Zeit)
         älter als *max_age_ms* ist; liefert ihre Anzahl."""

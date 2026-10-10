@@ -112,6 +112,11 @@ class KeySpace:
     def sched_report_def(self) -> str:
         return f"{self._root}{{sched}}:report:def"
 
+    def sched_report_known(self) -> str:
+        """Set der je von einem Worker ab 0.12 gemeldeten Cron-Namen (BZ-11);
+        ein Name faellt nur zusammen mit der Definition heraus (Q5)."""
+        return f"{self._root}{{sched}}:report:known"
+
     def sched_leader_version(self) -> str:
         return f"{self._root}{{sched}}:leader_version"
 

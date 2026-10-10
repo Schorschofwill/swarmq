@@ -141,6 +141,13 @@ class Signal(enum.Enum):
                                    task stayed unroutable longer than
                                    scheduler_unroutable_oneshot_max_s and
                                    was dropped with an error result)
+      * SCHEDULER_CRON_UNOWNED:    worker_id, schedule_name, task_name, held,
+                                   held_count (the leader starts holding a
+                                   static cron that no live worker reports
+                                   and that it does not register itself,
+                                   held=True, or releases it again,
+                                   held=False; once per transition, BZ-11;
+                                   held_count = crons held afterwards)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -179,6 +186,7 @@ class Signal(enum.Enum):
     SCHEDULER_CRON_CONFLICT = "scheduler_cron_conflict"
     SCHEDULER_LEADER_OUTDATED = "scheduler_leader_outdated"
     SCHEDULER_FIRE_UNROUTABLE = "scheduler_fire_unroutable"
+    SCHEDULER_CRON_UNOWNED = "scheduler_cron_unowned"
 
 
 class SignalDispatcher:

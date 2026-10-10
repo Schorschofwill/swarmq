@@ -34,6 +34,7 @@ from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderV
 from swarmq.scheduler.prune import SchedulerCronPrune
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
+from swarmq.scheduler.unowned import SchedulerUnowned
 from swarmq.scheduler.unroutable import SchedulerUnroutable
 
 logger = get_logger(__name__)
@@ -80,6 +81,7 @@ class SchedulerLoop(
     SchedulerLeaderVersion,
     SchedulerFirePlan,
     SchedulerUnroutable,
+    SchedulerUnowned,
     SchedulerFire,
 ):
     """Embedded scheduler — one instance per worker.
@@ -339,6 +341,10 @@ class SchedulerLoop(
                         logger.warning(
                             "scheduler_cron_adopt_failed", **_error_fields(exc)
                         )
+                    finally:
+                        # BZ-11: der Poll wartet nur auf den ersten Versuch
+                        # der Amtszeit, nicht auf dessen Gelingen (fail-open).
+                        self._note_adopt_ran()
         except asyncio.CancelledError:
             return
 
@@ -442,6 +448,8 @@ class SchedulerLoop(
             self._prev_leader_seen = True
             return
 
+        # BZ-11: neue Amtszeit -- die Meldungen der alten gelten nicht mehr.
+        self._begin_term(int(self._wall_time() * 1000))
         self._state = "leader"
         self._renew_failures = 0  # fresh term, fresh renew budget
         await self._write_leader_version()
@@ -494,6 +502,9 @@ class SchedulerLoop(
 
     async def _poll_tick(self) -> None:
         now_ms = int(time.time() * 1000)
+        if not self._poll_may_fire(now_ms):
+            # BZ-11: direkt nach dem Erwerb erst die Meldungen abwarten.
+            return
         try:
             due = await self._store.poll_due(now_ms, limit=100, owner_token=self._owner_token)
         except BackendConnectionError as exc:
@@ -508,6 +519,10 @@ class SchedulerLoop(
                 return
             if definition.disabled:
                 continue
+            if self._is_unowned(schedule_name, definition):
+                await self._hold_unowned(schedule_name, score_ms, definition, now_ms)
+                continue
+            await self._release_unowned(schedule_name, task_name=definition.task_name)
             await self._fire_one(schedule_name, score_ms, definition)
 
     # ---- helpers --------------------------------------------------------
