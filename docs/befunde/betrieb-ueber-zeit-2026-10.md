@@ -110,7 +110,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-26 | `tests/unit/test_befund_bz26_backoff.py` | behoben (MR 2, 0fcbfe8) |
 | BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` | offen |
 | BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
-| BZ-29 | `tests/unit/worker/gates/test_befund_bz29_redeliver_limit.py` | offen |
+| BZ-29 | `tests/unit/worker/gates/test_befund_bz29_redeliver_limit.py` | behoben (MR 3, 47aed19) |
 
 ## Entscheidungen (Georg, 2026-10-09)
 
