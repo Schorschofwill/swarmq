@@ -352,9 +352,18 @@ der Ausführung deshalb auf `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`
 der danach geschriebene Done- oder Superseded-Marker verkürzt ihn nie;
 ein am Kanal gescheitertes Ack oder eine Retry- bzw. DLQ-Kopie, deren
 Ack scheiterte, markiert die Ausführung für denselben Rückstand, weil
-der Broker das Original neu zustellt. Ein Rückstand, der erst nach dem
-Lauf entsteht, ist bei Tasks ohne `max_age` nicht abgedeckt. Der
-Done-Marker einer Wiederholung (Replay-ID gesetzt oder zuvor vom Broker
+der Broker das Original neu zustellt. Bei einem Task mit `max_age`
+leben Done- und Superseded-Marker in jedem Fall mindestens
+`max_age + 300` Sekunden: Ein Duplikat (at-least-once, ein zweiter Fire
+des Schedulers) kann bis `max_age` in der Queue warten, auch wenn das
+Original sofort lief. Der Completed-Marker eines Schedule-Fires folgt
+derselben Regel, gedeckelt bei `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`.
+Das kostet einen kleinen Hash je Ausführung für `max_age + 300`
+Sekunden -- etwa 100 MB Valkey-Speicher bei einer Million Tasks am Tag
+mit `max_age` 24 h; `max_age` ist die Stellschraube. Ein Rückstand, der
+erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht
+abgedeckt; `max_age` daher für Cron-Tasks und für Tasks setzen, die
+nicht doppelt laufen dürfen. Der Done-Marker einer Wiederholung (Replay-ID gesetzt oder zuvor vom Broker
 dead-gelettert) lebt mindestens `SWARMQ_DEAD_LETTER_TTL_S` -- ein
 zweiter `dlq retry` derselben `.XQ`-Nachricht Tage später trägt dieselbe
 Identität und muss weiter übersprungen werden; bei

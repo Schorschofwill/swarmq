@@ -324,9 +324,18 @@ therefore extends the execution's state to
 300`, whichever is longer, and the done or superseded marker written
 afterwards never shortens it; an ack that fails on the channel, or a
 retry or dead-letter copy whose ack failed, marks the execution for
-the same backlog because the broker will redeliver the original. A
-backlog that builds up only after the run is not covered for tasks
-without `max_age`. The done marker of a replay (replay id
+the same backlog because the broker will redeliver the original. For
+a task with `max_age`, the done and superseded markers live at least
+`max_age + 300` seconds in any case: a duplicate (at-least-once, a
+second fire of the scheduler) can wait up to `max_age` in the queue,
+even when the original ran at once. The completed marker of a schedule
+fire follows the same rule, capped at
+`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`. This costs one small hash per
+execution for `max_age + 300` seconds -- about 100 MB of Valkey memory
+at one million tasks a day with `max_age` of 24 h; `max_age` is the
+knob. A backlog that builds up only after the run is not covered for
+tasks without `max_age`, so set `max_age` on cron tasks and on tasks
+that must not run twice. The done marker of a replay (replay id
 set, or dead-lettered by the broker before) lives at least
 `SWARMQ_DEAD_LETTER_TTL_S` -- a second `dlq retry` of the same `.XQ`
 message days later carries the same identity and must still be

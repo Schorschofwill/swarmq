@@ -654,6 +654,17 @@ On pickup, if `now - enqueued_at >= max_age`, the worker logs
 `TASK_EXPIRED` signal, routes the message to the DLQ and does not call
 `run()`.
 
+`max_age` also bounds how long a duplicate can turn up, so it sets how
+long the duplicate protection holds: the done marker of the
+[execution guard](../explanation/delivery-semantics.md#execution-guard)
+and the completed marker of a cron fire live at least `max_age + 300`
+seconds. Set `max_age` on cron tasks and on tasks that must not run
+twice; without it, a duplicate that waits behind a backlog longer than
+the marker retention (about 65 minutes by default) runs again. The
+cost is one small hash per execution in Valkey for `max_age + 300`
+seconds (about 100 MB at one million tasks a day with `max_age` of
+24 h).
+
 ## Cancellation
 
 To cancel a task already in-flight (or still in the queue):

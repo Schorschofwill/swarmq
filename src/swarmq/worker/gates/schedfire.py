@@ -69,7 +69,12 @@ def completed_marker_ttl_ms(config: Any, headers: Any, max_age: int | None) -> i
     2 * Wartezeit + 300)`` mit der Wartezeit des Fires in der Queue (ab
     ``x-swarmq-enqueued-at``), gedeckelt bei ``max(base, max_age + 300)`` und
     ``execution_guard_backlog_ttl_s``, nie unter ``scheduler_dedup_ttl``
-    (base). Ein Duplikat desselben Fires wartet hinter demselben Rueckstand."""
+    (base). Ein Duplikat desselben Fires wartet hinter demselben Rueckstand.
+
+    Mit ``max_age`` gilt ``max_age + 300`` zugleich als Untergrenze (Review
+    MR 12, P1-1, von Georg am 2026-10-10 entschieden): ein Duplikat kann bis
+    ``max_age`` warten, auch wenn das Fire selbst sofort lief. Der Deckel
+    ``execution_guard_backlog_ttl_s`` bleibt."""
     base = float(config.scheduler_dedup_ttl)
     enqueued_at = (headers or {}).get(HEADER_ENQUEUED_AT)
     try:
@@ -80,6 +85,7 @@ def completed_marker_ttl_ms(config: Any, headers: Any, max_age: int | None) -> i
     cap = float(config.execution_guard_backlog_ttl_s)
     if max_age is not None:
         cap = min(cap, max(base, max_age + 300.0))
+        ttl = max(ttl, max_age + 300.0)
     return int(max(base, min(ttl, cap)) * 1000)
 
 

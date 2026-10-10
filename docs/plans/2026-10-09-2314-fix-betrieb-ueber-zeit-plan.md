@@ -69,6 +69,7 @@ Grundlage ist der Abschnitt „Entscheidungen“ im Register. Georg hat am 09.10
   - `auto` (Default): Neue Queues bekommen at-least-once plus `reject-publish` (nicht `.XQ`); Bestandsqueues behalten ihre Argumente, dazu eine gedrosselte Warnung je Prozess.
   - `at-least-once`: strenger Modus. Neue Queues wie `auto`; eine Bestandsqueue ohne at-least-once führt zu `QueueArgumentsMismatch` (Exit 78).
   - `legacy`: immer die Argumente aus 0.11, keine Warnung.
+- **`max_age`-Untergrenze der Marker (Review MR 12, P1-1; Nachtrag, von Georg am 2026-10-10 entschieden):** Ist `max_age` gesetzt, leben **beide** Marker mindestens `max_age + 300` s: der Done-/Superseded-Zustand des Ausführungsschutzes (`execution_guard.py`, auch ohne Rückstellung) und der Cron-Fire-Completed-Marker (`schedfire.py`, Untergrenze zusätzlich zum bisherigen Deckel; der Deckel `execution_guard_backlog_ttl_s` = 7 d bleibt). Kosten (Doku EN/DE): ein kleiner Hash je Ausführung über `max_age + 300` s, etwa 100 MB bei 1 Mio. Tasks/Tag mit `max_age` 24 h; Betreiber steuern das über `max_age`. Die Doku empfiehlt `max_age` für Cron- und kritische Tasks (BZ-12).
 - **Mischbetrieb-Suite ab MR 8 (Nachtrag, von Georg am 2026-10-10 freigegeben):** Basis ist 0.11.1 (`OLD_VERSION`, `constraints-0.11.1.txt`). Ein eigenes Szenario prüft die Rollback-Grenze: 0.11.0 scheitert auf einer von 0.12 angelegten Queue sauber (406, Exit ≠ 0, kein Datenverlust, Queue-Argumente unverändert).
 
 ---
@@ -685,7 +686,7 @@ Der BZ-16-Nachweis überspringt sich ohne lokalen Broker-Alarm. Abgenommen ist e
   - Ein Replay in-flight beim Versionswechsel kann doppelt laufen.
   - Bestandsnachrichten in der DLQ ohne Generation erhalten bei jedem CLI-Retry eine neue ID. Ein mehrfacher Retry ist dort weiter doppelt möglich.
   - UI-Replays mit `max_age` können sofort ablaufen.
-- **BZ-12:** Ein Rückstand, der erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht abgedeckt.
+- **BZ-12:** Ein Rückstand, der erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht abgedeckt. Mit `max_age` leben Done-, Superseded- und Cron-Completed-Marker mindestens `max_age + 300` s (Nachtrag, von Georg am 2026-10-10 entschieden; Kosten: ein kleiner Hash je Ausführung über diese Zeit, etwa 100 MB bei 1 Mio. Tasks/Tag mit `max_age` 24 h). Der Cron-Completed-Marker bleibt bei 7 d gedeckelt.
 - **BZ-01:**
   - Über 1 h bleibt Head-of-Line-Blocking.
   - Innerhalb einer Stufe kann eine Wartezeit bis zum Vierfachen dauern.

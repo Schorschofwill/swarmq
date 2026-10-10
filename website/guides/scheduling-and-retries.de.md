@@ -683,6 +683,17 @@ Bei Pickup, wenn `now - enqueued_at >= max_age`, loggt der Worker
 `TASK_EXPIRED`-Signal, routet die Nachricht in die DLQ und ruft
 `run()` nicht auf.
 
+`max_age` begrenzt auch, wie spät ein Duplikat noch auftauchen kann,
+und legt damit fest, wie lange der Duplikatschutz hält: Der Done-Marker
+des [Ausführungsschutzes](../explanation/delivery-semantics.de.md#ausfuhrungsschutz)
+und der Completed-Marker eines Cron-Fires leben mindestens
+`max_age + 300` Sekunden. `max_age` für Cron-Tasks und für Tasks
+setzen, die nicht doppelt laufen dürfen; ohne `max_age` läuft ein
+Duplikat erneut, das länger als die Marker-Aufbewahrung (im Standard
+etwa 65 Minuten) hinter einem Rückstand wartet. Das kostet einen
+kleinen Hash je Ausführung in Valkey für `max_age + 300` Sekunden (etwa
+100 MB bei einer Million Tasks am Tag mit `max_age` 24 h).
+
 ## Cancellation
 
 Um einen bereits in-flight (oder noch in der Queue liegenden) Task

@@ -194,8 +194,19 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   eines Schedule-Fires lebt `2 × Wartezeit + 300` Sekunden, wobei die
   Wartezeit die Zeit des Fires in der Queue ist (gedeckelt bei `max_age
   + 300` und der Rückstands-TTL, nie unter `SWARMQ_SCHEDULER_DEDUP_TTL`).
-  **Bekannte Grenze:** Ein Rückstand, der erst nach dem Lauf entsteht,
-  ist bei Tasks ohne `max_age` nicht abgedeckt
+  Bei einem Task mit `max_age` leben Done- und Superseded-Marker und der
+  Completed-Marker eines Schedule-Fires mindestens `max_age + 300`
+  Sekunden, auch wenn der Lauf selbst sofort begann, denn ein Duplikat
+  kann bis `max_age` in der Queue warten (der Completed-Marker bleibt
+  bei der Rückstands-TTL gedeckelt). **Kosten:** ein kleiner Hash je
+  Ausführung in Valkey für `max_age + 300` Sekunden, etwa 100 MB bei
+  einer Million Tasks am Tag mit `max_age` 24 h; Betreiber steuern das
+  über `max_age`. `max_age` für Cron-Tasks und für Tasks setzen, die
+  nicht doppelt laufen dürfen. **Bekannte Grenzen:** Ein Rückstand, der
+  erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht
+  abgedeckt. Die Behebung wirkt voll erst, wenn alle Worker 0.12
+  ausführen: Ein 0.11-Worker verkürzt den Zustand beim Schreiben seines
+  Done-Markers ohne Bedingung
   ([Aufbewahrung der Marker](../explanation/delivery-semantics.de.md#ausfuhrungsschutz)).
 - **Eine DLQ-Wiederholung ohne neue `x-swarmq-replay-id` wird nicht
   mehr übersprungen.** "Move messages" in der RabbitMQ-UI, ein Shovel,

@@ -203,8 +203,19 @@ All notable changes to SwarmQ. This project follows
   backlog. The completed marker of a schedule fire lives `2 × wait +
   300` seconds, where `wait` is how long the fire waited in the queue
   (capped at `max_age + 300` and the backlog TTL, never below
-  `SWARMQ_SCHEDULER_DEDUP_TTL`). **Known limit:** a backlog that builds
-  up only after the run is not covered for tasks without `max_age`
+  `SWARMQ_SCHEDULER_DEDUP_TTL`). For a task with `max_age`, the done
+  and superseded markers and the completed marker of a schedule fire
+  live at least `max_age + 300` seconds, even when the run itself
+  started at once, because a duplicate can wait up to `max_age` in the
+  queue (the completed marker stays capped at the backlog TTL). **Cost:**
+  one small hash per execution in Valkey for `max_age + 300` seconds,
+  about 100 MB at one million tasks a day with `max_age` of 24 h; the
+  operator controls it through `max_age`. Set `max_age` on cron tasks
+  and on tasks that must not run twice. **Known limits:** a backlog
+  that builds up only after the run is not covered for tasks without
+  `max_age`. The fix works fully only once every worker runs 0.12: a
+  0.11 worker shortens the state unconditionally when it writes its
+  done marker
   ([marker retention](../explanation/delivery-semantics.md#execution-guard)).
 - **A cron whose task was removed from the code no longer fires until
   the prune period runs out.** Every fire of such a cron ended as an

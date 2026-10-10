@@ -45,7 +45,8 @@ class GuardLease:
     task_id: str
     # TTL des Zustands (Done-/Superseded-Marker) dieser Ausfuehrung in ms;
     # None = ``execution_guard_done_ttl_s`` (MR 12: Replay-Identitaeten leben
-    # mindestens die DLQ-Frist, A4).
+    # mindestens die DLQ-Frist, A4; mit ``max_age`` mindestens
+    # ``max_age + 300``, Review MR 12 P1-1).
     state_ttl_ms: int | None = None
     # Rueckstand (MR 12, BZ-12): so lange lebt der Zustand mindestens, sobald
     # eine Kopie dieser Ausfuehrung zurueckgestellt wurde oder ihr Abschluss
@@ -121,7 +122,7 @@ class ExecutionGuard:
             return Continue
         lease = GuardLease(
             execution_identity(delivery, ctx.task_id), uuid.uuid4().hex, retry_count_of(delivery.headers), ctx.task_id,
-            state_ttl_ms=self._replay_state_ttl_ms() if identity.is_replay(delivery.headers) else None,
+            state_ttl_ms=self._lease_state_ttl_ms(delivery.headers, ctx.task_info.max_age),
             backlog_ttl_ms=self._backlog_ttl_ms(ctx.task_info.max_age),
         )
         try:
@@ -286,6 +287,17 @@ class ExecutionGuard:
         if floor is None:
             floor = config.execution_guard_backlog_ttl_s
         return int(max(self._done_ttl_s(), floor) * 1000)
+
+    def _lease_state_ttl_ms(self, headers: Mapping[str, Any] | None, max_age: int | None) -> int | None:
+        """Zustands-TTL der Ausfuehrung: Replay-Identitaeten mindestens die
+        DLQ-Frist (A4); mit ``max_age`` mindestens ``max_age + 300`` (Review
+        MR 12, P1-1) -- ein Duplikat kann so lange in der Queue warten, auch
+        wenn das Original sofort lief. None = ``execution_guard_done_ttl_s``."""
+        ttl = self._replay_state_ttl_ms() if identity.is_replay(headers) else None
+        if max_age is None:
+            return ttl
+        floor = int((max_age + 300.0) * 1000)
+        return max(int(self._done_ttl_s() * 1000) if ttl is None else ttl, floor)
 
     def _backlog_ttl_ms(self, max_age: int | None) -> int:
         """Rueckstand (BZ-12): ``max(execution_guard_backlog_ttl_s, max_age + 300)``
