@@ -256,8 +256,8 @@ def _add_worker_parser(subparsers: Any) -> None:
             "R4.3: auto-declare + consume the high/normal/low triplet "
             "for every --queues base queue, so tasks with "
             "TaskInfo(priority='high'|'low') route correctly. Without "
-            "this flag, priority-tagged tasks publish to "
-            "{queue}.high/.low which are never consumed."
+            "this flag, publishing priority-tagged tasks raises "
+            "UnroutableMessage (no {queue}.high/.low exists)."
         ),
     )
     worker.add_argument(

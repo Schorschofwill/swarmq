@@ -738,7 +738,7 @@
           "flags": [
             "--priorities"
           ],
-          "help": "R4.3: auto-declare + consume the high/normal/low triplet for every --queues base queue, so tasks with TaskInfo(priority='high'|'low') route correctly. Without this flag, priority-tagged tasks publish to {queue}.high/.low which are never consumed.",
+          "help": "R4.3: auto-declare + consume the high/normal/low triplet for every --queues base queue, so tasks with TaskInfo(priority='high'|'low') route correctly. Without this flag, publishing priority-tagged tasks raises UnroutableMessage (no {queue}.high/.low exists).",
           "name": "--priorities",
           "nargs": 0,
           "positional": false,

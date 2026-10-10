@@ -87,8 +87,9 @@ options:
   --priorities          R4.3: auto-declare + consume the high/normal/low
                         triplet for every --queues base queue, so tasks with
                         TaskInfo(priority='high'|'low') route correctly.
-                        Without this flag, priority-tagged tasks publish to
-                        {queue}.high/.low which are never consumed.
+                        Without this flag, publishing priority-tagged tasks
+                        raises UnroutableMessage (no {queue}.high/.low
+                        exists).
   --processes, -p N     R4.6: run N worker subprocesses under a supervisor
                         (ProcessManager). Default 1 still runs under the
                         supervisor. Subprocesses use multiprocessing spawn —
