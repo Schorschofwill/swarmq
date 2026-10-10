@@ -136,3 +136,17 @@ def test_message_headers_too_large_is_a_broker_connection_error_exported_from_th
     assert MessageHeadersTooLarge is exceptions.MessageHeadersTooLarge
     assert issubclass(MessageHeadersTooLarge, exceptions.BrokerConnectionError)
     assert "MessageHeadersTooLarge" in swarmq.__all__
+
+
+def test_redelivery_limit_error_names_the_dead_letter_reason_of_the_delivery_count_gate():
+    """BZ-29 (Plan 0.12.0, MR 3, Q11): Fehlertyp der DLQ-Kopie, wenn nur
+    ``x-acquired-count`` das Zustelllimit erreicht -- eine eigene Klasse,
+    damit der Fehlerkatalog ihn fuehrt."""
+    import swarmq
+    from swarmq import RedeliveryLimitError, exceptions
+    from swarmq.worker.gates.delivery_count import REDELIVERY_LIMIT_ERROR_TYPE
+
+    assert RedeliveryLimitError is exceptions.RedeliveryLimitError
+    assert issubclass(RedeliveryLimitError, exceptions.SwarmQError)
+    assert RedeliveryLimitError.__name__ == REDELIVERY_LIMIT_ERROR_TYPE
+    assert "RedeliveryLimitError" in swarmq.__all__

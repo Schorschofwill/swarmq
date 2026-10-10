@@ -145,6 +145,22 @@
       ]
     },
     {
+      "dlq_on_uncaught": "yes",
+      "doc": "Fehlertyp einer DLQ-Kopie, deren Zustellungen immer wieder per\n``redeliver`` (``nack(requeue=True)``) zurueckgegeben wurden, bis\n``x-acquired-count`` (RabbitMQ 4.3) das Zustelllimit erreichte (BZ-29).\nWird nicht geworfen; der Name steht als ``error_type`` in\n``task_sent_to_dlq`` und am Anfang von ``x-swarmq-traceback``.",
+      "exception_class": "swarmq.exceptions.RedeliveryLimitError",
+      "exit_code_on_cli": null,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "RedeliveryLimitError",
+      "origin": "library",
+      "parent": "SwarmQError",
+      "retriable": "no",
+      "transport_field": "error_message, is_error=true",
+      "when": [
+        "run"
+      ]
+    },
+    {
       "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.ResultExpiredError",

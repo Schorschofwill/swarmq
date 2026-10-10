@@ -124,6 +124,18 @@ if the broker cannot take the copy either does the worker fall back to
 `basic.nack(requeue=True)`. Fire-and-forget tasks are deferred the
 same way, because these checks run before their early ack.
 
+A hand-back in place (`basic.nack(requeue=True)`: a Valkey error
+reply, a failed copy or dead-letter publish, no free compute slot)
+first waits `min(0.1 s × 2^k, 5 s)`, where k is the number of earlier
+deliveries (the larger of `x-delivery-count` and `x-acquired-count`).
+The task slot stays taken while it waits; a shutdown ends the wait at
+once. The roughly 20 rounds of the default delivery limit therefore
+take more than a minute, and a short outage does not use up the
+budget. RabbitMQ 4.3 counts such a requeue only in `x-acquired-count`,
+not in `x-delivery-count`. The worker's delivery-count check counts
+both and dead-letters the delivery one round before the limit, as
+`RedeliveryLimitError` when only `x-acquired-count` reached it.
+
 Retry copies and the copies after a rate-limit hit or a lock conflict
 drop the broker's delivery counters the same way, so an inherited
 `x-delivery-count` cannot send them to `{queue}.XQ` as a hung message.

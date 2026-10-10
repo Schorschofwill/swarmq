@@ -43,10 +43,6 @@ def _ctx() -> GateContext:
 
 
 @pytest.mark.befund("BZ-29")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-29: Gate liest nur x-delivery-count, auf 4.3 zaehlt nack(requeue) dort nicht: grenzenlos",
-)
 async def test_acquired_count_at_limit_goes_to_application_dead_letter() -> None:
     deps = MagicMock()
     deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="redis://x", delivery_limit=20)
@@ -64,10 +60,6 @@ async def test_acquired_count_at_limit_goes_to_application_dead_letter() -> None
 
 
 @pytest.mark.befund("BZ-29")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-29: redeliver gibt die Zustellung ohne Pause zurueck, die rund 20 Runden laufen in Sekundenbruchteilen",
-)
 @pytest.mark.parametrize(
     ("headers", "pause_s"),
     [

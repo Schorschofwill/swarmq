@@ -13,8 +13,28 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   gekürzten Texten nicht in die Hälfte des ausgehandelten `frame_max`
   passen, wirft sie, ohne etwas zu senden
   ([Fehlerkatalog](errors.md#messageheaderstoolarge)).
+- **`swarmq.RedeliveryLimitError`**: wird nie geworfen; der
+  `error_type` einer DLQ-Kopie, deren Zustellungen der Worker
+  zurückgegeben hat, bis `x-acquired-count` das Zustelllimit erreichte
+  ([Fehlerkatalog](errors.md#redeliverylimiterror)).
 
 ### Behoben
+
+- **Eine Zustellung, die der Worker immer wieder zurückgibt, kreist
+  auf RabbitMQ 4.3 nicht mehr endlos und verbraucht ihr Zustellbudget
+  nicht mehr in einem Augenblick.** RabbitMQ 4.3 zählt
+  `nack(requeue=True)` nicht in `x-delivery-count`, nur in
+  `x-acquired-count`. Die Zustellzähler-Prüfung zählt jetzt beide und
+  schickt eine solche Zustellung eine Runde vor `SWARMQ_DELIVERY_LIMIT`
+  als `RedeliveryLimitError` in die DLQ; bisher kreiste eine
+  Zustellung, die eine Prüfung jedes Mal zurückgab (Fehlerantwort von
+  Valkey, gescheiterter Dead-Letter-Publish, kein Rechen-Slot), auf 4.3
+  ohne Ende und verbrauchte auf 4.2 ihre rund 20 Zustellungen in einem
+  Augenblick, sodass schon eine kurze Störung sie in die DLQ schickte.
+  Vor jeder Rückgabe wartet der Worker jetzt
+  `min(0,1 s × 2^k, 5 s)` (k = bisherige Zustellungen) und hält dabei
+  den Slot; ein Shutdown beendet die Wartezeit
+  ([Zustellsemantik](../explanation/delivery-semantics.md)).
 
 - **Ein Producer ohne Registry verliert Dedup und Priorität nicht mehr
   still.** Ein Client ohne Registry kann `unique_for`, `priority` und den

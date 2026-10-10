@@ -40,7 +40,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.scheduler import SchedulerLoop
 from swarmq.signals import SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
-from swarmq.worker import decode
+from swarmq.worker import decode, redelivery
 from swarmq.worker.execution import TaskExecutor, lifecycle_level, task_logger
 from swarmq.worker.finalize import finalize_schedfire, maybe_release_unique
 from swarmq.worker.gates import (
@@ -149,6 +149,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             maybe_release_unique=self._maybe_release_unique,
             extract_valid_workflow_id=self._extract_valid_workflow_id,
             register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
+            # BZ-29: Pause vor ``redeliver``, endet beim Shutdown sofort.
+            redeliver_pause=lambda delay_s: redelivery.wait_unless_shutdown(delay_s, self._shutdown_event),
         )
         self._schedfire_gate = SchedfireGate(gate_deps)
         self._cancel_gate = CancelGate(gate_deps)

@@ -134,6 +134,13 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         dlq_on_uncaught="n/a", exit_code_on_cli=None,
         transport_field="raised to caller",
     ),
+    "RedeliveryLimitError": dict(
+        # Nie geworfen: Fehlertyp der DLQ-Kopie, wenn nur ``x-acquired-count``
+        # (RabbitMQ 4.3) das Zustelllimit erreicht (Plan 0.12.0, MR 3, BZ-29).
+        origin="library", when=["run"], retriable="no",
+        dlq_on_uncaught="yes", exit_code_on_cli=None,
+        transport_field="error_message, is_error=true",
+    ),
     "TaskError": dict(
         origin="library", when=["result"], retriable="n/a",
         dlq_on_uncaught="n/a", exit_code_on_cli=None,

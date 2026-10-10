@@ -28,6 +28,7 @@ except SwarmQError as exc:
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
+| `RedeliveryLimitError` | `SwarmQError` | Never raised: error type of a DLQ copy whose deliveries were handed back until the delivery limit |
 | `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` tripped during execution |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` timed out before a result landed |
@@ -450,6 +451,26 @@ headers are bounded and do not cause it.
 **Recovery.** Do not retry with the same headers; they fail again.
 Reduce the headers. Unlike `PublishIndeterminate`, a `unique_for` claim
 is released, because nothing reached the broker.
+
+## `RedeliveryLimitError`
+
+**When raised.** Never; the name only appears as `error_type` in
+`task_sent_to_dlq` and at the start of `x-swarmq-traceback` on the DLQ
+message. The worker hands a delivery back to the queue
+(`nack(requeue=True)`) when it cannot decide about it right now, for
+example when Valkey answers with an error or a dead-letter publish
+fails. On RabbitMQ 4.3 such a hand-back only raises
+`x-acquired-count`, not `x-delivery-count`. Once `x-acquired-count`
+reaches `SWARMQ_DELIVERY_LIMIT - 1`, the worker dead-letters the
+delivery with this error type. If `x-delivery-count` reached the limit
+first (hung worker, closed channel), the type stays `WorkerHungError`.
+
+**Cause.** A failure that persists over all deliveries: Valkey keeps
+answering with an error, the dead-letter queue cannot be published to,
+or no compute slot becomes available.
+
+**Recovery.** Fix the cause named in the worker log before the
+dead-letter entry, then replay the message with `swarmq dlq retry`.
 
 ## `WorkflowValidationError`
 

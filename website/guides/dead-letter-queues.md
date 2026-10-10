@@ -21,6 +21,7 @@ stay, and how to switch dead-lettering of task failures off.
 | `raise NoRetry("reason")` from task body | `x-swarmq-traceback` with the error message | not dead-lettered: error result stored, acked |
 | Exception not in `retry_exceptions` | `x-swarmq-traceback` with the error message | not dead-lettered: error result stored, acked |
 | `x-delivery-limit=20` tripped by RabbitMQ, or the worker's own delivery-count check one delivery earlier | `x-death` from broker; from the worker `x-swarmq-traceback` with `WorkerHungError` | still dead-lettered |
+| The worker handed the delivery back (`nack(requeue=True)`) until `x-acquired-count` reached the delivery limit (RabbitMQ 4.3) | `x-swarmq-traceback` with `RedeliveryLimitError` | still dead-lettered |
 | The same execution expired `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` times without release ([execution guard](../explanation/delivery-semantics.md#execution-guard)) | `x-swarmq-traceback` with `WorkerHungError` | still dead-lettered |
 | `TaskInfo.max_age` exceeded at pickup | none of its own — the message keeps its original headers; the stored error result says `task expired: age …s exceeds max_age …s` | still dead-lettered |
 | Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message | still dead-lettered |

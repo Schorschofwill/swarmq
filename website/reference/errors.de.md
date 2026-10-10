@@ -29,6 +29,7 @@ except SwarmQError as exc:
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
+| `RedeliveryLimitError` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Zustellungen bis zum Zustelllimit zurückgegeben wurden |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` lief in Timeout, bevor ein Ergebnis ankam |
@@ -470,6 +471,28 @@ SwarmQ sind begrenzt und lösen den Fehler nicht aus.
 wieder. Die Header verkleinern. Anders als bei `PublishIndeterminate`
 wird eine `unique_for`-Sperre freigegeben, weil nichts beim Broker
 ankam.
+
+## `RedeliveryLimitError`
+
+**Wann geworfen.** Nie; der Name steht nur als `error_type` in
+`task_sent_to_dlq` und am Anfang von `x-swarmq-traceback` der
+DLQ-Nachricht. Der Worker gibt eine Zustellung an die Queue zurück
+(`nack(requeue=True)`), wenn er gerade nicht über sie entscheiden kann,
+etwa weil Valkey mit einem Fehler antwortet oder ein Dead-Letter-Publish
+scheitert. Auf RabbitMQ 4.3 erhöht eine solche Rückgabe nur
+`x-acquired-count`, nicht `x-delivery-count`. Erreicht
+`x-acquired-count` den Wert `SWARMQ_DELIVERY_LIMIT - 1`, schickt der
+Worker die Zustellung mit diesem Fehlertyp in die DLQ. Hat zuerst
+`x-delivery-count` die Grenze erreicht (hängender Worker, geschlossener
+Channel), bleibt der Typ `WorkerHungError`.
+
+**Ursache.** Ein Fehler, der über alle Zustellungen anhält: Valkey
+antwortet weiter mit einem Fehler, die Dead-Letter-Queue nimmt keinen
+Publish an, oder es wird kein Rechen-Slot frei.
+
+**Recovery.** Die Ursache beheben, die das Worker-Log vor dem
+Dead-Letter-Eintrag nennt, dann die Nachricht mit `swarmq dlq retry`
+erneut einreihen.
 
 ## `WorkflowValidationError`
 

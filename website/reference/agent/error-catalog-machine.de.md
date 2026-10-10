@@ -34,6 +34,7 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendResponseError` | `BackendConnectionError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (Cancel umgeht DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
@@ -99,6 +100,7 @@ Für Agenten, die eine schnelle Aktionstabelle brauchen:
 | `BrokerConnectionError` / `BackendConnectionError` | Back-off, Retry — die Library reconnected automatisch. |
 | `PublishIndeterminate` | Nicht blind neu veröffentlichen: Der Broker kann die Nachricht schon haben. Erst das Ergebnis prüfen oder den Task idempotent machen. |
 | `MessageHeadersTooLarge` | Nicht mit denselben Headern wiederholen: Es wurde nichts gesendet, und sie scheitern wieder. Die Header verkleinern. |
+| `RedeliveryLimitError` (`error_type` in der DLQ) | Der Worker hat die Zustellung bis zum Zustelllimit zurückgegeben. Die Ursache im Log vor dem DLQ-Eintrag beheben, dann `swarmq dlq retry`. |
 | `BackendResponseError` | Valkey hat mit einem Fehler geantwortet (`WRONGTYPE`, Skriptfehler); Warten hilft nicht. Schlüssel oder Skript prüfen, dann erneut versuchen. |
 | `ConfigurationError` | Nicht retry'n. Config fixen und neustarten. |
 | `TaskNotFoundError` bei `schedule()` | Bug melden; der Task ist nicht registriert. |

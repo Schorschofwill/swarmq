@@ -25,6 +25,7 @@ from swarmq.exceptions import (
     MessageHeadersTooLarge,
     NoRetry,
     PublishIndeterminate,
+    RedeliveryLimitError,
     ResultExpiredError,
     ResultNotReadyError,
     ResultSerializationError,
@@ -135,6 +136,7 @@ __all__ = [
     "PublishIndeterminate",
     # Heavy lazy surface (resolved via __getattr__)
     "RabbitMQBroker",
+    "RedeliveryLimitError",
     "ResultExpiredError",
     "ResultNotReadyError",
     "ResultSerializationError",

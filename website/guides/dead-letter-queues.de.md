@@ -23,6 +23,7 @@ Task-Fehlern abschaltest.
 | `raise NoRetry("reason")` aus Task-Body | `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
 | Exception außerhalb von `retry_exceptions` | `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
 | `x-delivery-limit=20` von RabbitMQ ausgelöst, oder die eigene Zustellzähler-Prüfung des Workers eine Zustellung vorher | `x-death` vom Broker; vom Worker `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
+| Der Worker hat die Zustellung zurückgegeben (`nack(requeue=True)`), bis `x-acquired-count` das Zustelllimit erreichte (RabbitMQ 4.3) | `x-swarmq-traceback` mit `RedeliveryLimitError` | weiter dead-gelettert |
 | Dieselbe Ausführung ist `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)) | `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
 | `TaskInfo.max_age` bei Pickup überschritten | kein eigener — die Nachricht behält ihre ursprünglichen Header; das gespeicherte Fehlerergebnis lautet `task expired: age …s exceeds max_age …s` | weiter dead-gelettert |
 | Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung | weiter dead-gelettert |

@@ -91,6 +91,15 @@ class TaskNotFoundError(SwarmQError):
     pass
 
 
+class RedeliveryLimitError(SwarmQError):
+    """Fehlertyp einer DLQ-Kopie, deren Zustellungen immer wieder per
+    ``redeliver`` (``nack(requeue=True)``) zurueckgegeben wurden, bis
+    ``x-acquired-count`` (RabbitMQ 4.3) das Zustelllimit erreichte (BZ-29).
+    Wird nicht geworfen; der Name steht als ``error_type`` in
+    ``task_sent_to_dlq`` und am Anfang von ``x-swarmq-traceback``.
+    """
+
+
 class TaskError(SwarmQError):
     pass
 

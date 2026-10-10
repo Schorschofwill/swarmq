@@ -13,8 +13,26 @@ All notable changes to SwarmQ. This project follows
   of the negotiated `frame_max`, even with long texts truncated, raises
   it without sending anything
   ([error catalog](errors.md#messageheaderstoolarge)).
+- **`swarmq.RedeliveryLimitError`**: never raised; the `error_type` of
+  a DLQ copy whose deliveries the worker handed back until
+  `x-acquired-count` reached the delivery limit
+  ([error catalog](errors.md#redeliverylimiterror)).
 
 ### Fixed
+
+- **A delivery the worker keeps handing back no longer loops forever
+  on RabbitMQ 4.3, and no longer burns its delivery budget in a
+  moment.** RabbitMQ 4.3 does not count `nack(requeue=True)` in
+  `x-delivery-count`, only in `x-acquired-count`. The delivery-count
+  check now counts both and dead-letters such a delivery as
+  `RedeliveryLimitError` one round before `SWARMQ_DELIVERY_LIMIT`;
+  before, a delivery that a check handed back each time (Valkey error
+  reply, failed dead-letter publish, no compute slot) cycled without
+  end on 4.3 and used up its roughly 20 deliveries on 4.2 within a
+  moment, so a short outage was enough to dead-letter it. Each hand-back now first waits
+  `min(0.1 s × 2^k, 5 s)` (k = earlier deliveries) while holding the
+  slot; a shutdown ends the wait
+  ([delivery semantics](../explanation/delivery-semantics.md)).
 
 - **A producer without a registry no longer loses dedup and priority
   silently.** A client without a registry cannot apply `unique_for`,

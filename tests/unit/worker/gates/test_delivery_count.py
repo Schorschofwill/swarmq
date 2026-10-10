@@ -75,3 +75,44 @@ async def test_dead_letter_reports_worker_hung_error_type():
     await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}), _ctx())
 
     assert dead_letter.await_args.args[3] == "WorkerHungError"
+
+
+# BZ-29 (Plan 0.12.0, MR 3): ``x-acquired-count`` (RabbitMQ 4.3) zaehlt mit.
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"x-acquired-count": 18},
+        {"x-delivery-count": 2, "x-acquired-count": 18},
+        {"x-delivery-count": 2, "x-acquired-count": "abc"},
+    ],
+)
+async def test_acquired_count_below_limit_or_unparseable_continues(headers):
+    gate, dead_letter = _gate(limit=20)
+    assert await gate.apply(SimpleNamespace(headers=headers), _ctx()) is Continue
+    dead_letter.assert_not_awaited()
+
+
+@pytest.mark.timeout(5)
+async def test_acquired_count_at_limit_reports_redelivery_limit_error():
+    gate, dead_letter = _gate(limit=20)
+
+    outcome = await gate.apply(SimpleNamespace(headers={"x-delivery-count": 1, "x-acquired-count": 25}), _ctx())
+
+    assert isinstance(outcome, Terminal) and outcome.release_unique is False
+    _delivery, _ctx_arg, message, error_type = dead_letter.await_args.args
+    assert error_type == "RedeliveryLimitError"
+    assert message.startswith("RedeliveryLimitError: handed back 25 times")
+
+
+@pytest.mark.timeout(5)
+async def test_delivery_count_at_limit_stays_worker_hung_even_with_acquired_count():
+    """Der Hang-Pfad (Channel-Abbruch) zaehlt auf 4.3 beide Zaehler hoch:
+    erreicht ``x-delivery-count`` die Grenze, bleibt es ``WorkerHungError``."""
+    gate, dead_letter = _gate(limit=20)
+
+    await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19, "x-acquired-count": 19}), _ctx())
+
+    assert dead_letter.await_args.args[3] == "WorkerHungError"

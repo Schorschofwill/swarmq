@@ -97,3 +97,15 @@ def _restore_logging_state():
     """
     with preserved_root_logger():
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_redeliver_pause(monkeypatch):
+    """Plan 0.12.0, MR 3 (BZ-29): Der Worker wartet vor jedem ``redeliver``
+    bis zu 5 s. Unit-Tests warten nicht real: die Zeitquelle der Pause kehrt
+    sofort zurueck. Tests der Pause selbst injizieren ihre eigene."""
+
+    async def instant(_delay_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("swarmq.worker.redelivery._sleep", instant)

@@ -32,6 +32,7 @@ from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT,
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
+from swarmq.worker.redelivery import redeliver_pause_s
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
@@ -139,6 +140,9 @@ class GateDeps:
     maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
     register_lock: Callable[[uuid.UUID, LockEntry], None]
+    # BZ-29: Pause vor jedem ``redeliver`` (Sekunden -> Warten). Der Worker
+    # setzt sie (bricht beim Shutdown ab); ``None`` = keine Pause.
+    redeliver_pause: Callable[[float], Awaitable[None]] | None = None
 
 
 # Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie
@@ -230,12 +234,12 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     ``nack`` zaehlt wieder aufs Zustelllimit (Logikfehler -> DLQ)."""
     claim = ctx.schedfire_claim
     if claim is None:
-        await deps.broker.redeliver(delivery)
+        await _pause_then_redeliver(deps, delivery)
         return
     # Vor der Freigabe gebaut: sie nimmt den Claim vom Kontext.
     headers, attempt, delay_ms = deferral_copy(deps, delivery, ctx)
     if await deps.finalize_schedfire(ctx, False):
-        await deps.broker.redeliver(delivery)
+        await _pause_then_redeliver(deps, delivery)
         return
     fields = {"task_id": ctx.task_id, "task_name": ctx.task_name, "schedfire_key": claim.key}
     try:
@@ -245,9 +249,21 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     except Exception as exc:
         # Broker ebenfalls gestoert: letzter Ausweg ``nack``.
         logger.warning("task_copy_failed_redelivered", **fields, **_error_fields(exc))
-        await deps.broker.redeliver(delivery)
+        await _pause_then_redeliver(deps, delivery)
         return
     logger.warning("task_requeued_as_copy", **fields, defer_count=attempt, delay_ms=delay_ms)
+
+
+async def _pause_then_redeliver(deps: GateDeps, delivery: Any) -> None:
+    """``redeliver`` nach der Pause aus ``redeliver_pause_s`` (BZ-29). Eine
+    scheiternde Pause verhindert das ``nack`` nicht (die Zustellung bliebe
+    sonst unbestaetigt bis zum Kanalende); ein Abbruch geht durch."""
+    if deps.redeliver_pause is not None:
+        try:
+            await deps.redeliver_pause(redeliver_pause_s(delivery.headers or {}))
+        except Exception as exc:
+            logger.warning("redeliver_pause_failed", **_error_fields(exc))
+    await deps.broker.redeliver(delivery)
 
 
 class Gate(Protocol):

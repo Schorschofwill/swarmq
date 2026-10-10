@@ -135,6 +135,20 @@ annimmt, fällt der Worker auf `basic.nack(requeue=True)` zurück.
 Fire-and-forget-Tasks werden genauso zurückgestellt, denn diese
 Prüfungen laufen vor ihrem frühen Ack.
 
+Vor einer Rückgabe an Ort und Stelle (`basic.nack(requeue=True)`:
+Fehlerantwort von Valkey, gescheiterter Kopie- oder
+Dead-Letter-Publish, kein freier Rechen-Slot) wartet der Worker
+`min(0,1 s × 2^k, 5 s)`; k ist die Zahl der bisherigen Zustellungen
+(der größere Wert aus `x-delivery-count` und `x-acquired-count`). Der
+Task-Slot bleibt dabei belegt; ein Shutdown beendet die Wartezeit
+sofort. Die rund 20 Runden des Default-Zustelllimits dauern damit mehr
+als eine Minute, und eine kurze Störung verbraucht das Budget nicht.
+RabbitMQ 4.3 zählt eine solche Rückgabe nur in `x-acquired-count`,
+nicht in `x-delivery-count`. Die Zustellzähler-Prüfung des Workers
+zählt beide und schickt die Zustellung eine Runde vor dem Limit in die
+DLQ, als `RedeliveryLimitError`, wenn nur `x-acquired-count` es
+erreicht hat.
+
 Retry-Kopien und die Kopien nach einem Rate-Limit-Treffer oder
 Lock-Konflikt lassen die Zustellzähler des Brokers genauso weg; ein
 geerbter `x-delivery-count` kann sie also nicht als hängende Nachricht
