@@ -24,6 +24,7 @@ from pamqp.commands import Basic
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError, UnroutableMessage
+from swarmq.queue_names import delay_tiers
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -104,7 +105,7 @@ async def test_retry_later_redeclares_own_queue_on_throwaway_channel_and_retries
 
     await broker.retry_later(delivery, delay_ms=1000, headers={})
 
-    assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ"]
+    assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ", *delay_tiers("tasks")]
     channel.declare_queue.assert_not_awaited()
     assert _all_throwaway_channels_closed(broker, throwaway)
     assert channel.default_exchange.publish.await_count == 2
@@ -117,7 +118,7 @@ async def test_dead_letter_redeclares_own_queue_and_retries() -> None:
 
     await broker.dead_letter(delivery, headers={})
 
-    assert _declared_names(throwaway) == ["tasks.p5", "tasks.p5.DQ", "tasks.p5.XQ"]
+    assert _declared_names(throwaway) == ["tasks.p5", "tasks.p5.DQ", "tasks.p5.XQ", *delay_tiers("tasks.p5")]
     assert channel.default_exchange.publish.await_count == 2
     delivery.handle.ack.assert_awaited_once()
 
@@ -142,5 +143,5 @@ async def test_second_unroutable_publish_raises_after_a_single_redeclare() -> No
     with pytest.raises(UnroutableMessage):
         await broker.retry_later(delivery, delay_ms=1000, headers={})
 
-    assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ"]
+    assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ", *delay_tiers("tasks")]
     delivery.handle.ack.assert_not_awaited()

@@ -9,6 +9,7 @@ Test-Liste:
 - [x] ``delay_tiers``: sieben Stufen von 1 s bis 1 h, benachbarte hoechstens Faktor 4
 - [x] ``is_delay_queue``: auch jede Delay-Stufe (Voraussetzung MR 12)
 - [x] ``main_queue_of``: Haupt-Queue zu Haupt-, Delay-, Stufen- und Dead-Letter-Queue
+- [x] ``is_delay_tier``: nur eine Delay-Stufe, nicht ``{q}.DQ``, Haupt- oder Dead-Letter-Queue (Review MR 10, P2-3)
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from swarmq.queue_names import (
     delay_tier_for,
     delay_tiers,
     is_delay_queue,
+    is_delay_tier,
     main_queue_of,
     queue_family,
 )
@@ -89,3 +91,19 @@ def test_every_delay_tier_is_a_delay_queue(tier: str) -> None:
 )
 def test_main_queue_of(name: str, expected: str) -> None:
     assert main_queue_of(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("orders.DQ.15s", True),
+        ("orders.high.DQ.1h", True),
+        ("orders.DQ", False),
+        ("orders", False),
+        ("orders.XQ", False),
+        ("orders.DQ.backup", False),
+        ("DQ.1s", False),
+    ],
+)
+def test_is_delay_tier(name: str, expected: bool) -> None:
+    assert is_delay_tier(name) is expected

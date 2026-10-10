@@ -37,6 +37,7 @@ from pamqp.commands import Basic
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError, QueueArgumentsMismatch, UnroutableMessage
+from swarmq.queue_names import delay_tiers
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -62,6 +63,15 @@ def created_by_012(queue: str, limit: int = 20) -> dict[str, dict[str, Any]]:
     family[queue] = {**family[queue], **ALO}
     family[f"{queue}.DQ"] = {**family[f"{queue}.DQ"], **ALO}
     return family
+
+
+def with_tiers(
+    family: dict[str, dict[str, Any]], queue: str = "tasks", *, at_least_once: bool = True
+) -> dict[str, dict[str, Any]]:
+    """Die Familie plus die sieben Delay-Stufen, die der Start seit Review
+    MR 10 (P1-2) mit den Argumenten von ``{queue}.DQ`` anlegt."""
+    tier_args = {**legacy(queue)[f"{queue}.DQ"], **(ALO if at_least_once else {})}
+    return {**family, **{tier: dict(tier_args) for tier in delay_tiers(queue)}}
 
 
 def _type(value: object) -> str:
@@ -140,7 +150,7 @@ async def test_queue_created_by_012_costs_one_refusal_per_queue() -> None:
     await broker.declare_queue("tasks")
 
     assert rabbit.refusals == ["tasks", "tasks.DQ"]
-    assert rabbit.queues == created_by_012("tasks")
+    assert rabbit.queues == with_tiers(created_by_012("tasks"))
 
 
 async def test_queue_created_by_0_11_after_the_passive_declare_is_adopted() -> None:
@@ -151,7 +161,7 @@ async def test_queue_created_by_0_11_after_the_passive_declare_is_adopted() -> N
 
     await broker.declare_queue("tasks")
 
-    assert rabbit.queues == legacy("tasks")
+    assert rabbit.queues == with_tiers(legacy("tasks"))
 
 
 async def test_legacy_mode_creates_queues_with_0_11_arguments() -> None:
@@ -160,7 +170,7 @@ async def test_legacy_mode_creates_queues_with_0_11_arguments() -> None:
 
     await broker.declare_queue("tasks")
 
-    assert rabbit.queues == legacy("tasks")
+    assert rabbit.queues == with_tiers(legacy("tasks"), at_least_once=False)
 
 
 async def test_changed_queue_type_raises_queue_arguments_mismatch() -> None:
@@ -200,7 +210,7 @@ async def test_strict_mode_accepts_at_least_once_queues(existing: dict[str, dict
 
     await broker.declare_queue("tasks")
 
-    assert rabbit.queues == created_by_012("tasks")
+    assert rabbit.queues == with_tiers(created_by_012("tasks"))
 
 
 async def test_declarations_never_touch_the_publish_channel() -> None:
@@ -371,7 +381,7 @@ async def test_at_least_once_without_reject_publish_counts_as_at_most_once(
 
     await broker.report_queue_declarations()
 
-    assert rabbit.queues == _at_least_once_with_overflow("drop-head")
+    assert rabbit.queues == with_tiers(_at_least_once_with_overflow("drop-head"))
     [warning] = [e for e in swarmq_logs if e["event"] == "queue_dead_letter_at_most_once"]
     assert warning["queues"] == ["tasks"]
 
@@ -403,7 +413,7 @@ async def test_adopted_overflow_is_kept_in_either_refusal_order(first: str, swar
     await broker.declare_queue("tasks")
     await broker.report_queue_declarations()
 
-    assert rabbit.queues == _at_least_once_with_overflow("drop-head")
+    assert rabbit.queues == with_tiers(_at_least_once_with_overflow("drop-head"))
     [warning] = [e for e in swarmq_logs if e["event"] == "queue_dead_letter_at_most_once"]
     assert warning["queues"] == ["tasks"]
 

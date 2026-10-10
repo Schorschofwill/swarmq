@@ -491,10 +491,13 @@ tiers are at most a factor of four apart: a delay takes at most four
 times as long as asked, and at least up to one second. Delays over one
 hour keep the head-of-line blocking of `{queue}.DQ`.
 
-**Creation:** the worker that consumes `{queue}` creates a tier on its
-first use, with the arguments of `{queue}.DQ` and through the same chain
-(see [existing queue arguments](#existing-queue-arguments)): in mode
-`auto` a new tier dead-letters at-least-once. A queue has at most seven
+**Creation:** the worker that consumes `{queue}` creates the seven
+tiers at start, right after the queue family, with the arguments of
+`{queue}.DQ` and through the same chain (see [existing queue
+arguments](#existing-queue-arguments)): in mode `auto` a new tier
+dead-letters at-least-once; in mode `at-least-once` an existing tier
+without at-least-once dead-lettering is a configuration error (exit
+78), as for any existing queue. A queue has at most seven
 tiers, with `SWARMQ_PRIORITIES` at most 21 (seven per band). Only
 `retry_later` of a process that has declared the queue family itself,
 that is the worker, uses the tiers; producers and the scheduler never
@@ -507,9 +510,9 @@ arguments), the worker keeps running. Its delays of that tier go to
 `{queue}.DQ` for the rest of the process, it logs the WARNING
 `delay_tier_unavailable` once per tier and reports the gauge
 `swarmq_delay_tiers_unavailable{queue}`. Fix the cause and restart the
-worker. A tier deleted while the worker runs is declared again on the
-next unroutable publish to it, once; if that fails, `{queue}.DQ` is
-used.
+worker. A tier deleted while the worker runs is declared again, by
+itself, on the next unroutable publish to it, once; if that fails,
+`{queue}.DQ` is used.
 
 **Permissions and policies:** the configure and write permissions of
 the swarmq user must cover `{queue}.DQ.<tier>`. A policy written for the

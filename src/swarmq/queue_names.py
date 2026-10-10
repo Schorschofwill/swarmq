@@ -47,6 +47,13 @@ def is_delay_queue(name: str) -> bool:
     return name.endswith(_DELAY_SUFFIX) and len(name) > len(_DELAY_SUFFIX)
 
 
+def is_delay_tier(name: str) -> bool:
+    """``True`` nur fuer eine Delay-Stufe ``{q}.DQ.<stufe>`` (BZ-01, MR 10),
+    nicht fuer ``{q}.DQ`` selbst (Review MR 10, P2-3)."""
+    base, dot, label = name.rpartition(".")
+    return bool(dot) and label in _TIER_LABELS and base.endswith(_DELAY_SUFFIX) and len(base) > len(_DELAY_SUFFIX)
+
+
 def main_queue_of(name: str) -> str:
     """Die Haupt-Queue der Familie von ``name``: Haupt-, Delay-, Stufen- oder
     Dead-Letter-Queue (BZ-01, MR 10)."""

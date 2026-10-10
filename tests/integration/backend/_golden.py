@@ -40,10 +40,9 @@ from swarmq.backend.valkey.locks import LockManager
 from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.cancellation import build_result_dict
-from swarmq.contracts import Delivery
 from swarmq.contracts.control import Setpoint
 from swarmq.limits import RateLimitConfig
-from swarmq.queue_names import DELAY_TIERS
+from swarmq.queue_names import queue_family
 from swarmq.scheduler import ScheduleDefinition
 from swarmq.serialization import encode_json, encode_result
 from swarmq.workflow import Signature, chain, chord, group
@@ -205,7 +204,8 @@ async def _declared_on_own_channels(queue_type: str, strategy: str, *, tiers: bo
     NOT_FOUND: die Queue ist neu); erfasst wird je Queue die gelungene.
 
     Mit ``tiers`` (MR 10, Q3: getrennter Aufruf, eigener Schluessel) nur die
-    Delay-Stufen, die ``retry_later`` beim ersten Gebrauch anlegt."""
+    Delay-Stufen, die der Start seit Review MR 10 (P1-2) nach der Familie
+    anlegt; ohne ``tiers`` nur die Familie."""
     broker = RabbitMQBroker("amqp://golden", queue_type=queue_type)
     broker.dead_letter_strategy = strategy
     broker._publish_channel = AsyncMock(is_closed=False)
@@ -227,13 +227,8 @@ async def _declared_on_own_channels(queue_type: str, strategy: str, *, tiers: bo
     broker._connection = AsyncMock(is_closed=False)
     broker._connection.channel = AsyncMock(side_effect=open_channel)
     await broker.declare_queue("golden")
-    if not tiers:
-        return declared
-    family = set(declared)
-    for _label, limit_ms in DELAY_TIERS:
-        delivery = Delivery(body=b"{}", headers={}, queue="golden", handle=AsyncMock(consumer_tag=None))
-        await broker.retry_later(delivery, delay_ms=limit_ms, headers={})
-    return {name: value for name, value in declared.items() if name not in family}
+    family = set(queue_family("golden"))
+    return {name: value for name, value in declared.items() if (name not in family) == tiers}
 
 
 async def queue_args() -> dict[str, Any]:

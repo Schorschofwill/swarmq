@@ -309,7 +309,7 @@ class TestRabbitMQBrokerDeclareQueue:
         await broker.declare_queue("tasks")
 
         calls = broker._publish_channel.declare_queue.call_args_list
-        assert len(calls) == 3
+        assert len(calls) == 10  # Familie plus sieben Delay-Stufen (Review MR 10, P1-2)
 
         # Main queue: tasks
         main_call = calls[0]
@@ -390,7 +390,7 @@ class TestRabbitMQBrokerDeclareQueue:
         await broker.declare_queue("tasks")
 
         calls = broker._publish_channel.declare_queue.call_args_list
-        assert len(calls) == 3
+        assert len(calls) == 10  # Familie plus sieben Delay-Stufen (Review MR 10, P1-2)
         for c in calls:
             assert c.kwargs["arguments"]["x-queue-type"] == "classic"
 

@@ -165,7 +165,7 @@ All notable changes to SwarmQ. This project follows
   lock, rate-limit, backend or guard deferral behind it. The worker now
   uses seven delay tiers `{queue}.DQ.1s` to `{queue}.DQ.1h` and puts a
   delay into the smallest tier that reaches it; delays over one hour
-  stay in `{queue}.DQ`. A tier is created on first use with the
+  stay in `{queue}.DQ`. The tiers are created at worker start with the
   arguments of `{queue}.DQ`; a refusal is not fatal (the delays of that
   tier use `{queue}.DQ`). **Known limits:** inside a tier a delay can
   take up to four times as long, at least up to one second; over one

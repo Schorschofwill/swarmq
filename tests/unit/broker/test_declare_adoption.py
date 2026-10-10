@@ -39,6 +39,9 @@ from aio_pika.exceptions import ChannelInvalidStateError, ChannelPreconditionFai
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
+from swarmq.queue_names import delay_tiers
+
+FAMILY_AND_TIERS = ["tasks", "tasks.DQ", "tasks.XQ", *delay_tiers("tasks")]
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -191,7 +194,7 @@ async def test_throwaway_channels_are_always_closed() -> None:
 
     await broker.declare_queue("tasks")
 
-    assert len(probes.channels) == 4  # tasks zweimal, .DQ, .XQ
+    assert len(probes.channels) == 11  # tasks zweimal, .DQ, .XQ, sieben Stufen (Review MR 10, P1-2)
     for channel in probes.channels:
         channel.close.assert_awaited_once()
 
@@ -212,7 +215,7 @@ async def test_without_own_connection_declares_on_publish_channel_like_0_11_0() 
 
     await broker.declare_queue("tasks")
 
-    assert list(_published(broker)) == ["tasks", "tasks.DQ", "tasks.XQ"]
+    assert list(_published(broker)) == FAMILY_AND_TIERS
 
 
 async def test_hanging_channel_open_fails_with_broker_connection_error() -> None:
@@ -258,7 +261,7 @@ async def test_slow_declare_is_not_cut_off_by_the_open_timeout() -> None:
 
     await broker.declare_queue("tasks")
 
-    assert list(_published(broker)) == ["tasks", "tasks.DQ", "tasks.XQ"]
+    assert list(_published(broker)) == FAMILY_AND_TIERS
 
 
 @pytest.mark.parametrize(

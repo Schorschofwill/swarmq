@@ -7,12 +7,13 @@ Bestandsqueue mit den Argumenten aus 0.11, neue Queue mit den Zielargumenten
 (at-least-once im Modus ``auto``), Übernahme von ``x-dead-letter-strategy``,
 ``x-overflow`` und ``x-delivery-limit``, andere erkannte Konflikte als
 ``QueueArgumentsMismatch`` (Exit 78). Das Ergebnis wird je Familie gecacht;
-``UnroutableMessage`` und NOT_FOUND verwerfen den Eintrag.
+``UnroutableMessage`` und NOT_FOUND verwerfen den Eintrag. Die Delay-Stufen
+(BZ-01, MR 10) folgen beim Start auf die Familie, ein Fehler je Stufe ist
+nicht fatal (Review MR 10, P1-2).
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import aio_pika
@@ -32,7 +33,7 @@ from swarmq.broker.rabbitmq.topology import (
 )
 from swarmq.exceptions import MIGRATION_HINT, BrokerConnectionError, QueueArgumentsMismatch
 from swarmq.logging import _error_fields, get_logger
-from swarmq.queue_names import main_queue_of
+from swarmq.queue_names import is_delay_tier, main_queue_of
 
 logger = get_logger(__name__)
 
@@ -108,23 +109,25 @@ class RabbitMQDeclarations(RabbitMQConnection):
         await self._declare_adopting(pub, delay, delay_args, target(delay_args))
         # Dead-letter queue
         await self._declare_adopting(pub, dead_letter, dead_letter_queue_arguments(self._queue_type))
+        # Delay-Stufen (BZ-01, MR 10) beim Start, nach der Familie: Rechte- und
+        # Limit-Fehler zeigen sich sofort, der Hot-Path kennt keine Kette
+        # (Review MR 10, P1-2). Ein Fehler je Stufe ist nicht fatal.
+        for tier in delay_tiers(queue_name):
+            if tier not in self._ready_delay_tiers and tier not in self._unavailable_delay_tiers:
+                await self._declare_delay_tier(queue_name, tier, delay)
 
-    async def _delay_target(self, queue_name: str, delay_ms: int) -> str:
+    def _delay_target(self, queue_name: str, delay_ms: int) -> str:
         """Ziel einer Rueckstellung um ``delay_ms`` (BZ-01, MR 10): die
         kleinste Delay-Stufe ``{queue}.DQ.<stufe>``, deren Obergrenze
-        ``delay_ms`` erreicht. Eine Stufe entsteht beim ersten Gebrauch ueber
-        die Kette; nur ein Prozess, der die Familie selbst deklariert hat (der
-        Worker), nutzt Stufen. Sonst, ueber 1 h und fuer eine nicht
-        verfuegbare Stufe gilt ``{queue}.DQ`` wie bis 0.11."""
+        ``delay_ms`` erreicht, sofern dieser Prozess sie beim Start deklariert
+        hat (Review MR 10, P1-2); nur ein Prozess, der die Familie selbst
+        deklariert hat (der Worker), nutzt Stufen. Sonst, ueber 1 h und fuer
+        eine nicht verfuegbare Stufe gilt ``{queue}.DQ`` wie bis 0.11."""
         fallback = delay_queue_for(queue_name, delay_ms)
         tier = delay_tier_for(queue_name, delay_ms)
         if tier == fallback or queue_name not in self._declared_arguments:
             return fallback
-        if tier in self._ready_delay_tiers:
-            return tier
-        if tier in self._unavailable_delay_tiers:
-            return fallback
-        return tier if await self._declare_delay_tier(queue_name, tier, fallback) else fallback
+        return tier if tier in self._ready_delay_tiers else fallback
 
     def delay_tiers_unavailable(self, queue: str) -> int:
         """Zahl der Delay-Stufen von ``queue``, deren Deklaration der Broker in
@@ -132,19 +135,21 @@ class RabbitMQDeclarations(RabbitMQConnection):
         return sum(1 for tier in delay_tiers(queue) if tier in self._unavailable_delay_tiers)
 
     async def _declare_delay_tier(self, queue_name: str, tier: str, fallback: str) -> bool:
-        """Deklariert die Stufe ``tier`` mit den Argumenten von ``{queue}.DQ``."""
+        """Deklariert die Stufe ``tier`` mit den Argumenten von ``{queue}.DQ``
+        ueber die Kette (beim Start und beim Neu-Deklarieren nach einem
+        unroutbaren Publish); ``False``, wenn der Broker sie ablehnt."""
         delay_args = delay_queue_arguments(queue_name, self._queue_type)
         wants_at_least_once = self._queue_type == "quorum" and self.dead_letter_strategy != "legacy"
         target = at_least_once(delay_args) if wants_at_least_once else None
         pub = await self._ensure_publish_channel()
-        timeout_s = self._effective_publish_timeout()
         try:
-            # Im Hot-Path von ``retry_later``: gedeckelt durch die Publish-Frist (Q6).
-            async with asyncio.timeout(timeout_s):
-                await self._declare_adopting(pub, tier, delay_args, target)
-        except TimeoutError as exc:
-            raise BrokerConnectionError(f"declaring delay tier {tier!r} did not complete within {timeout_s}s") from exc
+            await self._declare_adopting(pub, tier, delay_args, target)
         except (aio_pika.exceptions.AMQPChannelError, QueueArgumentsMismatch) as exc:
+            if isinstance(exc, QueueArgumentsMismatch) and exc.argument in AT_LEAST_ONCE_ARGUMENTS:
+                # Der strenge Modus ``at-least-once`` (``_require_at_least_once``):
+                # eine at-most-once-Stufe ist derselbe Konfigurationsfehler wie
+                # eine at-most-once-Bestandsqueue, Exit 78 (Review MR 10, P2-4).
+                raise
             # Nicht fatal (Plan MR 10): Queue-Limit, Rechte, ein Konflikt mit
             # einer vorhandenen Queue. Die Rueckstellung geht an ``{queue}.DQ``;
             # die Stufe bleibt fuer diesen Prozess aus, damit nicht jede
@@ -163,10 +168,6 @@ class RabbitMQDeclarations(RabbitMQConnection):
                 ),
             )
             return False
-        except (aio_pika.exceptions.AMQPConnectionError, RuntimeError) as exc:
-            # Wie beim Start: ein Verbindungsverlust; das Original bleibt
-            # unbestaetigt und kommt per Redelivery wieder.
-            raise BrokerConnectionError(f"declaring delay tier {tier!r}: the connection was lost: {exc!r}") from exc
         self._ready_delay_tiers.add(tier)
         return True
 
@@ -243,9 +244,19 @@ class RabbitMQDeclarations(RabbitMQConnection):
         """Verwirft den Cache-Eintrag der Familie von ``name`` (Haupt-, Delay-
         oder Dead-Letter-Queue): bei ``UnroutableMessage`` und NOT_FOUND ist
         die Queue weg, die naechste Deklaration legt sie neu an (Rev. 3 F5).
-        Eine Delay-Stufe (BZ-01, MR 10) entsteht beim naechsten Gebrauch neu."""
+        Eine Delay-Stufe (BZ-01, MR 10) verliert nur ihren eigenen Eintrag;
+        die Familie bleibt deklariert (Review MR 10, P2-3)."""
+        if is_delay_tier(name):
+            self._ready_delay_tiers.discard(name)
+            return
         self._declaration_cache.discard(main_queue_of(name))
-        self._ready_delay_tiers.discard(name)
+
+    async def redeclare_delay_tier(self, tier: str) -> None:
+        """Deklariert nur die Stufe ``tier`` neu, nach einem unroutbaren
+        Publish an sie (Review MR 10, P2-3); lehnt der Broker sie ab, gilt
+        ``{queue}.DQ`` fuer den Rest des Prozesses."""
+        queue_name = main_queue_of(tier)
+        await self._declare_delay_tier(queue_name, tier, delay_queue_for(queue_name, 0))
 
     def _require_at_least_once(self, name: str, arguments: dict[str, Any]) -> None:
         """Strenger Modus ``at-least-once`` (BZ-19): eine Bestandsqueue ohne

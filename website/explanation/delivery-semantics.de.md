@@ -531,10 +531,13 @@ auseinander: Eine Wartezeit dauert höchstens das Vierfache, mindestens
 aber bis zu einer Sekunde. Wartezeiten über einer Stunde behalten das
 Head-of-Line-Blocking von `{queue}.DQ`.
 
-**Anlage:** Der Worker, der `{queue}` konsumiert, legt eine Stufe beim
-ersten Gebrauch an, mit den Argumenten von `{queue}.DQ` und über dieselbe
-Kette (siehe [vorhandene Queue-Argumente](#vorhandene-queue-argumente)):
-Im Modus `auto` dead-lettert eine neue Stufe at-least-once. Eine Queue
+**Anlage:** Der Worker, der `{queue}` konsumiert, legt die sieben
+Stufen beim Start an, direkt nach der Queue-Familie, mit den Argumenten
+von `{queue}.DQ` und über dieselbe Kette (siehe [vorhandene
+Queue-Argumente](#vorhandene-queue-argumente)): Im Modus `auto`
+dead-lettert eine neue Stufe at-least-once; im Modus `at-least-once` ist
+eine vorhandene Stufe ohne at-least-once-Dead-Lettering ein
+Konfigurationsfehler (Exit 78), wie bei jeder vorhandenen Queue. Eine Queue
 hat höchstens sieben Stufen, mit `SWARMQ_PRIORITIES` höchstens 21 (sieben
 je Band). Nur `retry_later` eines Prozesses, der die Queue-Familie selbst
 deklariert hat, also des Workers, nutzt die Stufen; Producer und der
@@ -548,8 +551,8 @@ gehen für den Rest des Prozesses an `{queue}.DQ`; er loggt die WARNING
 `delay_tier_unavailable` einmal je Stufe und meldet die Gauge
 `swarmq_delay_tiers_unavailable{queue}`. Ursache beheben und den Worker
 neu starten. Eine Stufe, die während des Laufs gelöscht wird, legt der
-nächste unroutbare Publish an sie einmal neu an; scheitert das, gilt
-`{queue}.DQ`.
+nächste unroutbare Publish an sie einmal für sich allein neu an;
+scheitert das, gilt `{queue}.DQ`.
 
 **Rechte und Policies:** Die configure- und write-Rechte des
 swarmq-Benutzers müssen `{queue}.DQ.<stufe>` abdecken. Eine Policy für die

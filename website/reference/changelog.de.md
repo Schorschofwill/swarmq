@@ -173,9 +173,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Backend- oder Guard-Rückstellung dahinter fest. Der Worker nutzt jetzt
   sieben Delay-Stufen `{queue}.DQ.1s` bis `{queue}.DQ.1h` und legt eine
   Wartezeit in die kleinste Stufe, die sie erreicht; Wartezeiten über
-  einer Stunde bleiben in `{queue}.DQ`. Eine Stufe entsteht beim ersten
-  Gebrauch mit den Argumenten von `{queue}.DQ`; eine Ablehnung ist nicht
-  fatal (die Wartezeiten dieser Stufe nutzen `{queue}.DQ`). **Bekannte
+  einer Stunde bleiben in `{queue}.DQ`. Die Stufen entstehen beim Start
+  des Workers mit den Argumenten von `{queue}.DQ`; eine Ablehnung ist
+  nicht fatal (die Wartezeiten dieser Stufe nutzen `{queue}.DQ`). **Bekannte
   Grenzen:** Innerhalb einer Stufe kann eine Wartezeit bis zum
   Vierfachen dauern, mindestens bis zu einer Sekunde; über einer Stunde
   bleibt das Head-of-Line-Blocking; at-least-once-Dead-Lettering kann ein
