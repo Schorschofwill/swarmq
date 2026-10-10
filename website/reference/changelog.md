@@ -35,7 +35,9 @@ ignores a namespace.
   ([delivery semantics](../explanation/delivery-semantics.md#existing-queue-arguments)).
 - **`SWARMQ_NAMESPACE` is rejected.** If it is set and not empty,
   worker, scheduler and `SwarmQ(...)` stop with `ConfigurationError`
-  (`swarmq worker`: exit 78). A namespace requires swarmq >= 0.12;
+  (`swarmq worker`: exit 78), as do `swarmq schedule`, `swarmq dlq`
+  and `swarmq inspect` (exit 78); `swarmq worker --check` reports it as
+  an error. A namespace requires swarmq >= 0.12;
   0.11.x would silently use the keys without namespace
   ([configuration](configuration.md#namespace-requires-012)).
 

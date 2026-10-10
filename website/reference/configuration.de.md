@@ -227,7 +227,9 @@ Alle Ports werden zur Config-Zeit validiert: ein Bad Value raist
 `SWARMQ_NAMESPACE` gehört zu swarmq 0.12 und später. 0.11.1 lehnt die
 Variable ab: Ist sie gesetzt und nicht leer, brechen Worker, Scheduler
 und `SwarmQ(...)` mit `ConfigurationError` ab (`swarmq worker`:
-Exit 78). Ohne diese Prüfung liefe ein Rollback auf 0.11.x still ohne
+Exit 78), ebenso die CLI-Befehle `swarmq schedule`, `swarmq dlq` und
+`swarmq inspect` (Exit 78, vor jeder Verbindung). `swarmq worker
+--check` meldet ihn als Fehler (Exit 1). Ohne diese Prüfung liefe ein Rollback auf 0.11.x still ohne
 Namensraum, auf anderen Valkey-Keys. Die Variable entfernen oder
 swarmq >= 0.12 fahren.
 

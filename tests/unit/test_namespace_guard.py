@@ -11,6 +11,11 @@ Test-Liste:
 2. Leer gesetzt → kein Fehler (wie nicht gesetzt).
 3. Producer: ``SwarmQ(...)`` wirft ``ConfigurationError``.
 4. ``swarmq worker`` endet mit Exit 78.
+5. Review P2-3: ``swarmq schedule``, ``dlq`` und ``inspect`` bauen Backend bzw.
+   Broker direkt (ohne ``SwarmQConfig``) → ebenfalls Exit 78, bevor eine
+   Verbindung entsteht.
+6. ``swarmq worker --check`` meldet den Namensraum als Fehler (Exit 1 nach
+   dem ``--check``-Vertrag).
 """
 
 from __future__ import annotations
@@ -58,3 +63,42 @@ def test_worker_cli_exits_78(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SWARMQ_NAMESPACE", "app1")
 
     assert main(["worker", "--module=json"]) == CONFIG_ERROR_EXIT_CODE == 78
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["schedule", "list"], id="schedule-list"),
+        pytest.param(["schedule", "remove", "nightly"], id="schedule-remove"),
+        pytest.param(["dlq", "list", "--queue", "default"], id="dlq-list"),
+        pytest.param(["inspect", "--module", "json"], id="inspect"),
+    ],
+)
+def test_cli_commands_exit_78_before_connecting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], argv: list[str]
+) -> None:
+    from swarmq.cli import _shared, main
+
+    async def must_not_connect() -> None:
+        raise AssertionError("no backend/broker may be built with a namespace set")
+
+    monkeypatch.setattr(_shared, "_backend_from_env", must_not_connect)
+    monkeypatch.setattr(_shared, "_broker_from_env", must_not_connect)
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://x")
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://x")
+    monkeypatch.setenv("SWARMQ_NAMESPACE", "app1")
+
+    assert main(argv) == 78
+    assert "swarmq >= 0.12" in capsys.readouterr().err
+
+
+def test_worker_check_reports_namespace(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    from swarmq.cli import main
+
+    monkeypatch.setenv("SWARMQ_NAMESPACE", "app1")
+
+    assert main(["worker", "--module=json", "--check"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "swarmq >= 0.12" in json.dumps(payload)

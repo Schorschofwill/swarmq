@@ -36,7 +36,9 @@ still.
   ([Zustellsemantik](../explanation/delivery-semantics.md#vorhandene-queue-argumente)).
 - **`SWARMQ_NAMESPACE` wird abgelehnt.** Ist die Variable gesetzt und
   nicht leer, brechen Worker, Scheduler und `SwarmQ(...)` mit
-  `ConfigurationError` ab (`swarmq worker`: Exit 78). Ein Namensraum
+  `ConfigurationError` ab (`swarmq worker`: Exit 78), ebenso
+  `swarmq schedule`, `swarmq dlq` und `swarmq inspect` (Exit 78);
+  `swarmq worker --check` meldet ihn als Fehler. Ein Namensraum
   erfordert swarmq >= 0.12; 0.11.x nutzte still die Keys ohne
   Namensraum ([Konfiguration](configuration.md#namensraum-erst-ab-012)).
 
