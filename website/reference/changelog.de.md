@@ -29,6 +29,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **`SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`** (Standard `86400`):
   wie lange der Leader einen verzögerten Task erneut versucht, dessen
   Queue fehlt ([Konfiguration](configuration.md)).
+- **`swarmq.QueueArgumentsMismatch`** (Unterklasse von
+  `ConfigurationError`): Eine vorhandene Queue hat ein Argument, das von
+  der Konfiguration abweicht und das swarmq nicht übernimmt, etwa ein
+  geänderter `SWARMQ_QUEUE_TYPE`; `swarmq worker` endet mit 78
+  ([Fehlerkatalog](errors.md#queueargumentsmismatch)).
+- **`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY`** (`auto`, `at-least-once`,
+  `legacy`; Standard `auto`): Dead-Lettering neuer Quorum-Queues
+  ([Konfiguration](configuration.md),
+  [Garantie beim Dead-Lettering](../explanation/delivery-semantics.md#garantie-beim-dead-lettering)).
 
 ### Geändert
 
@@ -43,8 +52,59 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   wechselt; die Gauge bleibt auf `1`, solange eine 0.11-App auf
   demselben Valkey die Führung hält
   ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)).
+- **Queue-Deklarationen laufen auf einem eigenen Channel, nach einer
+  passiven Prüfung.** Eine vorhandene Queue wird mit den Argumenten aus
+  0.11 deklariert; von 0.11 angelegte Queues bekommen so nie eine
+  Ablehnung. Eine neue Queue wird mit den Zielargumenten angelegt.
+  Deklarationen laufen nie mehr auf dem Publish-Channel, und das
+  Ergebnis wird je Prozess gecacht (verworfen bei `UnroutableMessage`
+  oder fehlender Queue). Eine Queue ohne `x-delivery-limit` wird jetzt
+  ebenfalls übernommen (WARNING; RabbitMQ nimmt 20). Nur die erste
+  Übernahme von `x-dead-letter-strategy`/`x-overflow` je Prozess kommt
+  als INFO, weitere als DEBUG
+  ([vorhandene Queue-Argumente](../explanation/delivery-semantics.md#vorhandene-queue-argumente)).
+- **Der Worker dead-lettert beim kleineren Delivery-Limit.** Das
+  Delivery-Count-Gate nutzt das kleinere aus `SWARMQ_DELIVERY_LIMIT`
+  und dem `x-delivery-limit` der Queue, aus der die Zustellung kam
+  (fehlend: 20, `-1`: unbegrenzt, `0`: keine Wiederzustellung).
+  **Geändertes Verhalten:** Eine Queue mit Limit 20 bei
+  `SWARMQ_DELIVERY_LIMIT=50` dead-lettert der Worker bei 19
+  Zustellungen mit Fehlerergebnis, statt dass der Broker sie still
+  verwirft
+  ([effektives Delivery-Limit](../explanation/delivery-semantics.md#effektives-delivery-limit)).
+- Golden-Datei `queue_args.json`: neuer Schlüssel `quorum_at_least_once`;
+  die bestehenden Einträge sind unverändert.
 
 ### Behoben
+
+- **Neue Quorum-Queues dead-lettern at-least-once.** Rückstellungen
+  und das Delivery-Limit bewegen Nachrichten per Dead-Lettering des
+  Brokers, und das tut RabbitMQ bei Quorum-Queues standardmäßig
+  at-most-once: Ein Leaderwechsel konnte sie verlieren, obwohl die Doku
+  at-least-once versprach. Neue Queues bekommen jetzt
+  `x-dead-letter-strategy=at-least-once` und `x-overflow=reject-publish`
+  auf `{queue}` und `{queue}.DQ`. Bestandsqueues behalten ihre
+  Argumente; eine WARNING `queue_dead_letter_at_most_once` je Prozess
+  listet sie, bis eine Policy gesetzt ist oder
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`. **Geändertes Verhalten:**
+  - Mit einer `max-length`-Policy bekommt ein Publish auf eine volle
+    Queue ein Nack statt drop-head und scheitert nach fünf Versuchen mit
+    `BrokerConnectionError`.
+  - Duplikate aus at-least-once-Dead-Lettering laufen bei Tasks ohne
+    Ausführungsschutz (`FIRE_AND_FORGET`, `execution_guard=False`)
+    doppelt.
+  - **Rollback nur auf 0.11.1 oder neuer:** 0.11.0 kann von 0.12
+    angelegte Queues nicht deklarieren (`PRECONDITION_FAILED`). Erst
+    0.11.1 ausrollen
+  ([Garantie beim Dead-Lettering](../explanation/delivery-semantics.md#garantie-beim-dead-lettering)).
+- **Geänderte Queue-Argumente enden mit Exit 78 statt einer
+  Neustartschleife.** Ein geändertes `SWARMQ_DELIVERY_LIMIT` lässt die
+  bestehenden Queues deklarierbar (ihr Limit gilt, mit WARNING). Jeder
+  andere erkannte Konflikt, etwa ein geänderter `SWARMQ_QUEUE_TYPE`,
+  wirft `QueueArgumentsMismatch` mit deklariertem und vorhandenem Wert;
+  bisher endete er als `BrokerConnectionError`, Exit 1 und endlose
+  Neustarts
+  ([Queue-Argumente ändern](../explanation/delivery-semantics.md#queue-argumente-andern)).
 
 - **Ein Publish an eine Queue, die es nicht gibt, verschwindet nicht
   mehr still.** Der Broker gab eine solche Nachricht zurück

@@ -145,3 +145,86 @@ async def test_fail_mark_outage_at_the_limit_dead_letters_instead_of_redeliverin
     worker._workflow_advancer.fail.assert_awaited_once()
     broker.redeliver.assert_not_awaited()
     broker.dead_letter.assert_awaited_once()
+
+
+# Plan 0.12.0, MR 8 (BZ-15): das effektive Delivery-Limit der Zustellungs-Queue
+# (``broker.effective_delivery_limit(delivery.queue)``) deckelt die Konfiguration.
+
+
+def _gate_with_queue_limit(config_limit: int, queue_limits: dict[str, int | None]):
+    gate, dead_letter = _gate(limit=config_limit)
+    gate._deps.broker = SimpleNamespace(effective_delivery_limit=queue_limits.get)
+    return gate, dead_letter
+
+
+@pytest.mark.timeout(5)
+async def test_queue_limit_below_config_dead_letters_at_queue_limit_minus_one():
+    gate, dead_letter = _gate_with_queue_limit(50, {"tasks": 20})
+
+    assert await gate.apply(SimpleNamespace(headers={"x-delivery-count": 18}, queue="tasks"), _ctx()) is Continue
+    outcome = await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}, queue="tasks"), _ctx())
+
+    assert isinstance(outcome, Terminal)
+    assert "delivery limit 20" in dead_letter.await_args.args[2]
+
+
+@pytest.mark.timeout(5)
+async def test_queue_limit_zero_dead_letters_on_the_first_redelivery():
+    """``x-delivery-limit=0`` heißt "keine Wiederzustellung" (Spike S1)."""
+    gate, _dead_letter = _gate_with_queue_limit(20, {"tasks": 0})
+
+    assert await gate.apply(SimpleNamespace(headers={"x-delivery-count": 0}, queue="tasks"), _ctx()) is Continue
+    outcome = await gate.apply(SimpleNamespace(headers={"x-delivery-count": 1}, queue="tasks"), _ctx())
+
+    assert isinstance(outcome, Terminal)
+
+
+@pytest.mark.timeout(5)
+async def test_queue_limit_is_looked_up_by_the_delivery_queue_not_the_body_queue():
+    """Prioritätsbänder: ``ctx.queue`` ist die Queue aus dem Body (``q``), die
+    Zustellung kam aber aus ``tasks.high`` mit eigenem Limit."""
+    gate, _dead_letter = _gate_with_queue_limit(50, {"tasks.high": 20})
+
+    outcome = await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}, queue="tasks.high"), _ctx())
+
+    assert isinstance(outcome, Terminal)
+
+
+@pytest.mark.timeout(5)
+async def test_acquired_count_uses_the_queue_limit_too():
+    gate, dead_letter = _gate_with_queue_limit(50, {"tasks": 20})
+
+    outcome = await gate.apply(SimpleNamespace(headers={"x-acquired-count": 19}, queue="tasks"), _ctx())
+
+    assert isinstance(outcome, Terminal)
+    assert dead_letter.await_args.args[3] == "RedeliveryLimitError"
+
+
+def _raising(_queue: str) -> int:
+    raise RuntimeError("broker gone")
+
+
+async def _async_limit(_queue: str) -> int:
+    return 1
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    "broker",
+    [
+        pytest.param(MagicMock(), id="magicmock"),
+        pytest.param(SimpleNamespace(), id="missing"),
+        pytest.param(SimpleNamespace(effective_delivery_limit=_raising), id="raising"),
+        pytest.param(SimpleNamespace(effective_delivery_limit=_async_limit), id="async"),
+        pytest.param(SimpleNamespace(effective_delivery_limit=lambda _q: True), id="bool"),
+    ],
+)
+async def test_unusable_queue_limit_falls_back_to_the_configuration(broker):
+    """Q15: optionale Fähigkeit, bei Mock, Fehler oder Nicht-Zahl gilt die Konfiguration."""
+    gate, _dead_letter = _gate(limit=20)
+    gate._deps.broker = broker
+
+    delivery = SimpleNamespace(headers={"x-delivery-count": 18}, queue="tasks")
+    assert await gate.apply(delivery, _ctx()) is Continue
+    delivery = SimpleNamespace(headers={"x-delivery-count": 19}, queue="tasks")
+    assert isinstance(await gate.apply(delivery, _ctx()), Terminal)

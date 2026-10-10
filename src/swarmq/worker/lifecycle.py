@@ -348,6 +348,19 @@ class WorkerLifecycle:
                 self._on_message,
                 concurrency=self._config.concurrency,
             )
+        await self._report_queue_declarations()
+
+    async def _report_queue_declarations(self) -> None:
+        # Plan 0.12.0, MR 8 (BZ-19): hoechstens eine Warnung zu at-most-once-
+        # Bestandsqueues. Optionale Broker-Faehigkeit (Q15): fehlt sie oder
+        # scheitert sie, startet der Worker trotzdem.
+        report = getattr(self._broker, "report_queue_declarations", None)
+        if report is None:
+            return
+        try:
+            await report()
+        except Exception as exc:
+            logger.debug("queue_declaration_report_failed", **_error_fields(exc))
 
     def _start_consumer_watch(self) -> None:
         # U6 (R1, KTD3): verlorene Consumer selbst neu anmelden. Optional am

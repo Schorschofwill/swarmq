@@ -56,7 +56,10 @@ _FORBIDDEN_IN_CORE = ("aio_pika", "valkey", "swarmq.backend.valkey", "swarmq.bro
 _ALIAS_MODULES: frozenset[str] = frozenset()  # seit U15 leer (KTD10 abgeschlossen)
 
 _SPLIT_MODULES: dict[str, list[str]] = {
-    "swarmq.broker.rabbitmq": ["connection", "delivery", "admin", "consumer_watch", "topology"],  # U5; U6; 0.12 MR 0
+    "swarmq.broker.rabbitmq": [
+        "connection", "delivery", "admin", "consumer_watch", "topology",  # U5; U6; 0.12 MR 0
+        "declarations",  # Plan 0.12.0, MR 8
+    ],
     "swarmq.backend.valkey": ["connection", "results"],  # U17
     # ``decode`` seit U6 (Plan 2026-09-08-001): Header-Pruefung, Size-Cap und
     # Body-Dekodierung aus ``pipeline.py`` gezogen.

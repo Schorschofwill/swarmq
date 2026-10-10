@@ -472,8 +472,9 @@ erreicht die DLQ über einen von fünf Wegen:
    sie bestätigt hat.
 2. **`NoRetry`.** Der Task-Body raiste `NoRetry("reason")`. Das
    überspringt den Retry-Entscheid komplett — direkt in die DLQ.
-3. **Broker-native Delivery-Limit.** RabbitMQ hat die Nachricht
-   20-mal redelivered, ohne dass ein Ack gelandet ist. Das ist der
+3. **Delivery-Limit.** Die Nachricht wurde `limit - 1`-mal zugestellt,
+   ohne dass ein Ack gelandet ist ([effektives Delivery-Limit](#effektives-delivery-limit);
+   standardmäßig 20). Das ist der
    Pathologischer-Loop-Schutz; er schirmt den Broker gegen einen
    buggy Worker ab. Ein Backend-Ausfall zählt nicht dagegen: Die
    Prüfungen vor der Ausführung stellen die Nachricht als neue
@@ -503,32 +504,100 @@ Der Original-Traceback bleibt in den Headern für die Post-Mortem.
 ## Vorhandene Queue-Argumente
 
 Der Worker deklariert beim Start `{queue}`, `{queue}.DQ` und
-`{queue}.XQ`. Existiert eine Queue schon mit anderen Argumenten, lehnt
-RabbitMQ die Deklaration ab (`PRECONDITION_FAILED - inequivalent arg`).
-Seit 0.11.1 übernimmt der Worker für drei Argumente den vorhandenen
-Wert und deklariert erneut:
+`{queue}.XQ`. RabbitMQ ändert die Argumente einer bestehenden Queue nie;
+eine Deklaration mit anderen Argumenten wird abgelehnt
+(`PRECONDITION_FAILED - inequivalent arg`). Seit 0.12 läuft jede
+Deklaration auf einem eigenen kurzlebigen Channel, nie auf dem
+Publish-Channel; eine Ablehnung kann so keine laufenden Publishes
+abreißen. Je Queue geht der Worker so vor:
 
-- `x-dead-letter-strategy` und `x-overflow` (0.12 legt Queues mit
-  `at-least-once` und `reject-publish` an): still übernommen (INFO).
-- `x-delivery-limit`: übernommen mit WARNING `queue_argument_adopted`.
-  Liegt das vorhandene Limit unter `SWARMQ_DELIVERY_LIMIT`, dead-lettert
-  der Broker selbst nach dem vorhandenen Limit, ohne Fehlerergebnis.
-  Liegt es darüber, dead-lettert weiter das Delivery-Count-Gate des
-  Workers bei `SWARMQ_DELIVERY_LIMIT - 1` Zustellungen. Eine Queue ohne
-  `x-delivery-limit` wird nicht übernommen und scheitert wie bisher.
-
-Auf Queues, die 0.12 angelegt hat, übernimmt 0.11.1 damit
-`x-overflow=reject-publish`. Mit einer `max-length`-Policy bekommt ein
-Publish auf eine volle Queue dann ein Nack, statt dass die älteste
-Nachricht verworfen wird (drop-head), und scheitert nach den
-Wiederholversuchen mit `BrokerConnectionError`.
+1. Ein passives Declare prüft, ob die Queue existiert.
+   - Sie existiert: Der Worker deklariert sie mit den Argumenten aus
+     0.11 und `SWARMQ_DELIVERY_LIMIT`. Queues, die 0.11 angelegt hat,
+     bekommen so nie eine Ablehnung.
+   - Sie existiert nicht: Der Worker legt sie mit den Zielargumenten an,
+     siehe [Garantie beim Dead-Lettering](#garantie-beim-dead-lettering).
+2. Für drei Argumente übernimmt er den vorhandenen Wert und deklariert
+   erneut:
+   - `x-dead-letter-strategy` und `x-overflow`, ob die Queue einen Wert
+     hat oder keinen. Nur die erste Übernahme je Prozess kommt als INFO
+     `queue_argument_adopted`, jede weitere als DEBUG; eine von 0.12
+     angelegte Queue kostet je Start eine Ablehnung.
+   - `x-delivery-limit`, auch wenn die Queue keines hat: WARNING
+     `queue_argument_adopted` je Queue. Der Worker nutzt dann das
+     [effektive Delivery-Limit](#effektives-delivery-limit).
+3. Jeder andere erkannte Konflikt, etwa ein geänderter
+   `SWARMQ_QUEUE_TYPE`, endet mit `QueueArgumentsMismatch`
+   (`swarmq worker`: Exit 78, keine Neustartschleife). Die Meldung nennt
+   das Argument, den deklarierten und den vorhandenen Wert
+   ([Migration](#queue-argumente-andern)). Jede andere Ablehnung
+   (Queue-Limit des vhosts, fehlendes Recht, exklusive Queue) bleibt ein
+   `BrokerConnectionError`.
 
 Jedes Argument wird höchstens einmal übernommen; eine Deklaration
-braucht also höchstens vier Versuche. Jeder andere Konflikt (etwa
-`x-queue-type`) scheitert wie bisher mit `BrokerConnectionError`. Die
-Versuche laufen auf einem eigenen kurzlebigen Channel; ein Konflikt
-schließt nie den Publish-Channel. Noch nicht vorhandene Queues werden
-mit denselben Argumenten wie in 0.11.0 angelegt.
+braucht also höchstens vier Versuche. Das Ergebnis wird je Prozess
+gecacht. Kommt ein Publish als unroutbar zurück (`UnroutableMessage`)
+oder findet ein Consumer die Queue nicht, wird der Eintrag verworfen,
+und die nächste Deklaration legt die Queue neu an.
+
+### Garantie beim Dead-Lettering
+
+Rückstellungen (`{queue}.DQ` zurück nach `{queue}`) und das
+Delivery-Limit des Brokers (`{queue}` nach `{queue}.XQ`) bewegen
+Nachrichten per Dead-Lettering. Bei Quorum-Queues tut RabbitMQ das
+standardmäßig **at-most-once**: Bei einem Leaderwechsel oder einem nicht
+verfügbaren Ziel kann eine solche Nachricht verloren gehen.
+`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` legt fest, was swarmq deklariert:
+
+| Wert | Neue Queues | Bestandsqueues |
+|---|---|---|
+| `auto` (Standard) | `x-dead-letter-strategy=at-least-once` und `x-overflow=reject-publish` auf `{queue}` und `{queue}.DQ` (nicht `{queue}.XQ`) | behalten ihre Argumente; eine WARNING `queue_dead_letter_at_most_once` je Prozess listet die ohne at-least-once |
+| `at-least-once` | wie `auto` | ohne at-least-once: `QueueArgumentsMismatch` (Exit 78) |
+| `legacy` | Argumente aus 0.11 (at-most-once) | behalten ihre Argumente, keine Warnung |
+
+Für Bestandsqueues eine Policy mit `dead-letter-strategy=at-least-once`
+und `overflow=reject-publish` setzen oder die Queues migrieren (siehe
+unten). Eine Policy sieht swarmq nicht; die Warnung bleibt deshalb, bis
+`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy` gesetzt ist. Klassische
+Queues sind nicht betroffen.
+
+`reject-publish` ändert ein Verhalten: Mit einer `max-length`-Policy
+bekommt ein Publish auf eine volle Queue ein Nack, statt dass die
+älteste Nachricht verworfen wird (drop-head), und scheitert nach fünf
+Versuchen mit `BrokerConnectionError`. At-least-once-Dead-Lettering kann
+eine Nachricht auch doppelt zustellen; der
+[Ausführungsschutz](#ausfuhrungsschutz) überspringt das Duplikat, außer
+bei Tasks ohne ihn (`FIRE_AND_FORGET`, `execution_guard=False`).
+
+**Rollback:** Von 0.12 angelegte Queues kann erst 0.11.1 deklarieren.
+Erst alle Apps als eigenes Deployment auf 0.11.1 ausrollen, dann auf
+0.12.
+
+### Effektives Delivery-Limit
+
+Der Worker dead-lettert eine Nachricht ab dem vorletzten Zustellversuch
+selbst, mit Fehlerergebnis: bei `limit - 1` Zustellungen. `limit` ist
+das kleinere aus `SWARMQ_DELIVERY_LIMIT` und dem effektiven Limit der
+Queue, aus der die Zustellung kam. Das effektive Limit ist das
+`x-delivery-limit` der Queue; fehlt es, nimmt RabbitMQ 4 den Wert 20,
+`-1` heißt unbegrenzt (dann gilt `SWARMQ_DELIVERY_LIMIT`), und `0` heißt
+keine Wiederzustellung (der Worker dead-lettert bei der ersten
+Wiederzustellung). Beispiel: Eine Queue mit Limit 20 bei
+`SWARMQ_DELIVERY_LIMIT=50` dead-lettert der Worker bei 19 Zustellungen.
+
+Eine `delivery-limit`-Policy deckelt das Limit ebenfalls, ist für swarmq
+ohne Management-API aber unsichtbar. Auf swarmq-Queues keine setzen.
+
+### Queue-Argumente ändern
+
+`SWARMQ_DELIVERY_LIMIT` lässt sich jederzeit ändern: Neue Queues
+bekommen den neuen Wert, bestehende behalten ihren, und der Worker nutzt
+den kleineren (siehe oben). Um `SWARMQ_QUEUE_TYPE` zu ändern oder einer
+bestehenden Queue ohne Policy at-least-once-Dead-Lettering zu geben,
+die Queue migrieren: Producer und Worker stoppen, warten, bis `{queue}`
+und `{queue}.DQ` leer sind, den Inhalt von `{queue}.XQ` sichern oder
+behalten, die drei Queues löschen, dann die Worker mit der neuen
+Einstellung starten. Sie legen die Queues neu an.
 
 ## Was SwarmQ nicht tut
 

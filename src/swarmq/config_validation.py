@@ -27,6 +27,7 @@ class ConfigValidation:
         log_drain_timeout: float
         retry_max_delay: float
         queue_type: str
+        queue_dead_letter_strategy: str
         backend_defer_base_delay: float
         backend_defer_max_delay: float
         scheduler_heartbeat_interval: float
@@ -91,6 +92,12 @@ class ConfigValidation:
         valid_queue_types = {"quorum", "classic"}
         if self.queue_type not in valid_queue_types:
             msg = f"queue_type must be one of {sorted(valid_queue_types)}, got {self.queue_type!r}"
+            raise ConfigurationError(msg)
+        strategies = ("auto", "at-least-once", "legacy")
+        if self.queue_dead_letter_strategy not in strategies:
+            msg = (
+                f"queue_dead_letter_strategy must be one of {list(strategies)}, got {self.queue_dead_letter_strategy!r}"
+            )
             raise ConfigurationError(msg)
 
         for field_name in self._POSITIVE_FIELDS:

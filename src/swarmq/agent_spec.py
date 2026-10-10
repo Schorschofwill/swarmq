@@ -86,6 +86,13 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
         transport_field="stderr line",
     ),
+    "QueueArgumentsMismatch": dict(
+        # Eine vorhandene Queue hat andere, nicht uebernehmbare Argumente
+        # (BZ-15, Plan 0.12.0, MR 8); ein Neustart aendert nichts.
+        origin="library", when=["startup"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
+        transport_field="stderr line",
+    ),
     "LoggingConfigError": dict(
         # Ungueltige Logging-Einstellungen enden im Worker mit Exit 78
         # (Plan 2026-10-06-0831, R14).

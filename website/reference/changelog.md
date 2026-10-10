@@ -28,6 +28,15 @@ All notable changes to SwarmQ. This project follows
 - **`SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`** (default `86400`):
   how long the leader keeps retrying a deferred task whose queue does
   not exist ([configuration](configuration.md)).
+- **`swarmq.QueueArgumentsMismatch`** (subclass of
+  `ConfigurationError`): an existing queue has an argument that differs
+  from the configuration and that swarmq does not adopt, for example a
+  changed `SWARMQ_QUEUE_TYPE`; `swarmq worker` exits with 78
+  ([error catalog](errors.md#queueargumentsmismatch)).
+- **`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY`** (`auto`, `at-least-once`,
+  `legacy`; default `auto`): dead-lettering of new quorum queues
+  ([configuration](configuration.md),
+  [dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)).
 
 ### Changed
 
@@ -42,8 +51,54 @@ All notable changes to SwarmQ. This project follows
   gauge stays at `1` as long as a 0.11 app on the same Valkey holds the
   leadership
   ([leader version](../guides/scheduling-and-retries.md#leader-version)).
+- **Queue declarations run on a separate channel, after a passive
+  check.** A queue that exists is declared with the arguments of 0.11,
+  so queues created by 0.11 never see a refusal; a new queue is created
+  with the target arguments. Declarations never run on the publish
+  channel any more, and the result is cached per process (dropped on
+  `UnroutableMessage` or a missing queue). A queue without
+  `x-delivery-limit` is now adopted as well (WARNING; RabbitMQ applies
+  20). Only the first adoption of `x-dead-letter-strategy`/`x-overflow`
+  per process is logged as INFO, later ones as DEBUG
+  ([existing queue arguments](../explanation/delivery-semantics.md#existing-queue-arguments)).
+- **The worker dead-letters at the smaller delivery limit.** The
+  delivery-count gate uses the smaller of `SWARMQ_DELIVERY_LIMIT` and
+  the `x-delivery-limit` of the queue the delivery came from (missing:
+  20, `-1`: unlimited, `0`: no redelivery). **Changed behaviour:** a
+  queue with limit 20 under `SWARMQ_DELIVERY_LIMIT=50` is dead-lettered
+  by the worker at 19 deliveries, with an error result, instead of
+  silently by the broker
+  ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)).
+- Golden file `queue_args.json`: new key `quorum_at_least_once`; the
+  existing entries are unchanged.
 
 ### Fixed
+
+- **New quorum queues dead-letter at-least-once.** Retries and the
+  delivery limit move messages by broker dead-lettering, which RabbitMQ
+  does at-most-once by default for quorum queues: a leader change could
+  lose them, although the documentation promised at-least-once. New
+  queues now get `x-dead-letter-strategy=at-least-once` and
+  `x-overflow=reject-publish` on `{queue}` and `{queue}.DQ`. Existing
+  queues keep their arguments; one WARNING
+  `queue_dead_letter_at_most_once` per process lists them, until a
+  policy is set or `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`.
+  **Changed behaviour:**
+  - With a `max-length` policy, a publish to a full queue gets a nack
+    instead of drop-head and fails with `BrokerConnectionError` after
+    five attempts.
+  - Duplicates from at-least-once dead-lettering run twice for tasks
+    without execution guard (`FIRE_AND_FORGET`, `execution_guard=False`).
+  - **Rollback only to 0.11.1 or later:** 0.11.0 cannot declare queues
+    that 0.12 created (`PRECONDITION_FAILED`). Roll out 0.11.1 first
+  ([dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)).
+- **Changed queue arguments end with exit 78 instead of a restart
+  loop.** A changed `SWARMQ_DELIVERY_LIMIT` keeps the existing queues
+  declarable (their limit applies, with a WARNING). Any other recognised
+  conflict, such as a changed `SWARMQ_QUEUE_TYPE`, raises
+  `QueueArgumentsMismatch` with the declared and the existing value; it
+  used to end as `BrokerConnectionError`, exit 1 and endless restarts
+  ([changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
 
 - **A publish to a queue that does not exist no longer disappears
   silently.** The broker returned such a message (`basic.return`), but

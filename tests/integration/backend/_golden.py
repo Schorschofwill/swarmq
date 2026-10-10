@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import msgspec
+from aio_pika.exceptions import ChannelNotFoundEntity
 from valkey.crc import key_slot
 
 from swarmq.backend.valkey import ValkeyBackend
@@ -196,18 +197,42 @@ def channels() -> str:
     return "\n".join(lines) + "\n"
 
 
+async def _declared_on_own_channels(queue_type: str, strategy: str) -> dict[str, Any]:
+    """Die Deklarationen einer neuen Queue-Familie ``golden``. Seit MR 8 laufen
+    sie auf eigenen Wegwerf-Channels nach einem passiven Declare (hier
+    NOT_FOUND: die Queue ist neu); erfasst wird je Queue die gelungene."""
+    broker = RabbitMQBroker("amqp://golden", queue_type=queue_type)
+    broker.dead_letter_strategy = strategy
+    broker._publish_channel = AsyncMock(is_closed=False)
+    declared: dict[str, Any] = {}
+
+    async def open_channel(**_: Any) -> AsyncMock:
+        channel = AsyncMock(is_closed=False)
+
+        async def declare_queue(
+            name: str, *, durable: bool = True, arguments: dict[str, Any] | None = None, passive: bool = False
+        ) -> None:
+            if passive:
+                raise ChannelNotFoundEntity(f"NOT_FOUND - no queue '{name}' in vhost '/'")
+            declared[name] = {"durable": durable, "arguments": arguments}
+
+        channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        return channel
+
+    broker._connection = AsyncMock(is_closed=False)
+    broker._connection.channel = AsyncMock(side_effect=open_channel)
+    await broker.declare_queue("golden")
+    return declared
+
+
 async def queue_args() -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for queue_type in ("quorum", "classic"):
-        broker = RabbitMQBroker("amqp://golden", queue_type=queue_type)
-        channel = AsyncMock()
-        channel.is_closed = False
-        broker._publish_channel = channel
-        await broker.declare_queue("golden")
-        out[queue_type] = {
-            call.args[0]: {"durable": call.kwargs["durable"], "arguments": call.kwargs["arguments"]}
-            for call in channel.declare_queue.await_args_list
-        }
+    # Q3 (MR 8): ``quorum`` und ``classic`` bleiben die Argumente aus 0.11
+    # (Modus ``legacy``); die at-least-once-Neuanlage ist ein eigener Schlüssel.
+    out: dict[str, Any] = {
+        "quorum": await _declared_on_own_channels("quorum", "legacy"),
+        "classic": await _declared_on_own_channels("classic", "legacy"),
+        "quorum_at_least_once": await _declared_on_own_channels("quorum", "auto"),
+    }
     out["delay"] = "per-message expiration (Sekunden) auf {queue}.DQ; kein x-message-ttl"
     return out
 

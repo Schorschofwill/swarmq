@@ -14,14 +14,17 @@ Der Verlust selbst ist nur im Cluster mit Leader-Wechsel beobachtbar
 setzen; swarmq dokumentiert keine.
 
 Test-Liste:
-- [x] Quorum-Haupt-Queue und DQ fordern at-least-once-Dead-Lettering an (BZ-19)
+- [x] Quorum-Haupt-Queue und DQ fordern at-least-once-Dead-Lettering an (BZ-19);
+      seit MR 8 für neu angelegte Queues, auf eigenen Wegwerf-Channels
 """
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from aio_pika.exceptions import ChannelNotFoundEntity
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 
@@ -29,22 +32,30 @@ pytestmark = [pytest.mark.timeout(5)]
 
 
 @pytest.mark.befund("BZ-19")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-19: Quorum-Queues mit DLX werden ohne x-dead-letter-strategy=at-least-once "
-        "deklariert; der Broker-Standard at-most-once verliert DQ/XQ-Übergänge bei Leader-Wechsel"
-    ),
-)
 async def test_quorum_dead_lettering_queues_request_at_least_once() -> None:
+    # Plan 0.12.0, MR 8 (Abschnitt 6): Deklarationen laufen auf eigenen
+    # Wegwerf-Channels; die Queues existieren noch nicht (passives Declare
+    # NOT_FOUND), werden also mit den Zielargumenten angelegt.
     broker = RabbitMQBroker("amqp://guest:guest@localhost/", queue_type="quorum")
-    channel = AsyncMock(is_closed=False)
-    broker._publish_channel = channel
-    broker._connection = AsyncMock()
+    broker._publish_channel = AsyncMock(is_closed=False)
+    declared: dict[str, dict[str, Any]] = {}
+
+    async def open_channel(**_: Any) -> AsyncMock:
+        channel = AsyncMock(is_closed=False)
+
+        async def declare_queue(name: str, *, passive: bool = False, **kwargs: Any) -> None:
+            if passive:
+                raise ChannelNotFoundEntity(f"NOT_FOUND - no queue '{name}' in vhost '/'")
+            declared[name] = kwargs["arguments"]
+
+        channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        return channel
+
+    broker._connection = AsyncMock(is_closed=False)
+    broker._connection.channel = AsyncMock(side_effect=open_channel)
 
     await broker.declare_queue("tasks")
 
-    declared = {call.args[0]: call.kwargs["arguments"] for call in channel.declare_queue.call_args_list}
     # Beide Queues mit DLX: Haupt-Queue (→ XQ) und Delay-Queue (→ Haupt-Queue).
     for name in ("tasks", "tasks.DQ"):
         args = declared[name]

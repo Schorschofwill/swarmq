@@ -33,6 +33,19 @@ def main_queue_arguments(queue: str, queue_type: str, delivery_limit: int) -> di
     return arguments
 
 
+#: Ziel ab 0.12 fuer neu angelegte Quorum-Queues mit Broker-DLX (BZ-19, MR 8):
+#: at-least-once-Dead-Lettering braucht ``x-overflow=reject-publish``.
+AT_LEAST_ONCE_ARGUMENTS: dict[str, Any] = {
+    "x-dead-letter-strategy": "at-least-once",
+    "x-overflow": "reject-publish",
+}
+
+
+def at_least_once(arguments: dict[str, Any]) -> dict[str, Any]:
+    """``arguments`` plus at-least-once-Dead-Lettering (BZ-19)."""
+    return {**arguments, **AT_LEAST_ONCE_ARGUMENTS}
+
+
 def delay_queue_arguments(queue: str, queue_type: str) -> dict[str, Any]:
     """Delay-Queue: die Broker-DLX zeigt zurueck auf die Haupt-Queue."""
     return {
@@ -47,6 +60,8 @@ def dead_letter_queue_arguments(queue_type: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "AT_LEAST_ONCE_ARGUMENTS",
+    "at_least_once",
     "dead_letter_queue_arguments",
     "delay_queue_arguments",
     "delay_queue_for",

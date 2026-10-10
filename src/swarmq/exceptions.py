@@ -9,6 +9,32 @@ class ConfigurationError(SwarmQError):
     pass
 
 
+class QueueArgumentsMismatch(ConfigurationError):
+    """Eine vorhandene Queue hat andere Argumente als die Konfiguration, und
+    swarmq kann sie nicht uebernehmen (BZ-15), etwa ein geaenderter
+    ``SWARMQ_QUEUE_TYPE``. RabbitMQ aendert die Argumente einer bestehenden
+    Queue nie; ein Neustart aendert daran nichts, darum Exit 78 statt einer
+    Neustartschleife. ``x-delivery-limit``, ``x-dead-letter-strategy`` und
+    ``x-overflow`` werden dagegen uebernommen.
+    """
+
+    def __init__(self, queue: str, argument: str, declared: object, existing: object, hint: str = "") -> None:
+        self.queue = queue
+        self.argument = argument
+        self.declared = declared
+        self.existing = existing
+        hint = hint or (
+            "Restore the previous setting, or migrate the queue: stop its workers, "
+            "drain and delete the queue family, then start the workers again."
+        )
+        message = (
+            f"queue {queue!r}: argument {argument!r} differs from the existing queue "
+            f"(declared {declared!r}, existing {existing!r}); RabbitMQ never changes the arguments "
+            f"of an existing queue. {hint}"
+        )
+        super().__init__(message)
+
+
 class LoggingConfigError(ConfigurationError):
     """Eine Logging-Konfigurationsdatei ist nicht ladbar oder ungueltig.
 

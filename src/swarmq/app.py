@@ -57,6 +57,7 @@ class SwarmQ:
         self.broker._queue_type = self.config.queue_type
         self.broker.publish_timeout_s = self.config.publish_timeout_s
         self.broker.delivery_limit = self.config.delivery_limit
+        self.broker.dead_letter_strategy = self.config.queue_dead_letter_strategy
         self.broker.dead_letter_ttl_s = self.config.dead_letter_ttl_s
         self.registry = TaskRegistry()
         for task_class in Task._registered_tasks:

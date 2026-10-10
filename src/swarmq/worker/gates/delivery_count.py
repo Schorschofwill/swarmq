@@ -19,6 +19,7 @@ fehlt ``x-acquired-count``; dort bleibt alles wie bisher.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -53,24 +54,49 @@ def _count(headers: Mapping[str, Any], name: str) -> int | None:
         return None
 
 
+def _queue_delivery_limit(broker: Any, queue: object) -> int | None:
+    """``broker.effective_delivery_limit(queue)`` als optionale Fähigkeit
+    (Q15): fehlt sie, scheitert sie oder liefert sie keine Zahl (Mock,
+    Fremd-Broker), gilt ``None`` und damit die Konfiguration."""
+    lookup = getattr(broker, "effective_delivery_limit", None)
+    if not isinstance(queue, str) or lookup is None or inspect.iscoroutinefunction(lookup):
+        return None
+    try:
+        value = lookup(queue)
+    except Exception:
+        return None
+    return value if type(value) is int else None
+
+
 class DeliveryCountGate:
     def __init__(self, deps: GateDeps, dead_letter: DeadLetter) -> None:
         self._deps = deps
         self._dead_letter = dead_letter
 
+    def _limit(self, delivery: Any) -> int:
+        """``min(Konfiguration, effektives Limit der Zustellungs-Queue)`` (BZ-15,
+        Plan 0.12.0, MR 8). Bestimmt über ``delivery.queue``, nicht
+        ``ctx.queue``: so stimmen die Prioritätsbänder."""
+        configured = self._deps.config.delivery_limit
+        effective = _queue_delivery_limit(self._deps.broker, getattr(delivery, "queue", None))
+        return configured if effective is None else min(configured, effective)
+
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
         headers = delivery.headers or {}
         delivered = _count(headers, DELIVERY_COUNT_HEADER)
         acquired = _count(headers, ACQUIRED_COUNT_HEADER)
-        limit = self._deps.config.delivery_limit
-        if delivered is not None and delivered >= limit - 1:
+        limit = self._limit(delivery)
+        # Ab dem vorletzten Zustellversuch; bei Limit 0 ("keine
+        # Wiederzustellung", S1) ab der ersten Wiederzustellung.
+        threshold = 1 if limit == 0 else limit - 1
+        if delivered is not None and delivered >= threshold:
             count, error_type = delivered, WORKER_HUNG_ERROR_TYPE
             message = (
                 f"{WORKER_HUNG_ERROR_TYPE}: delivered {count} times without acknowledgement "
                 f"(delivery limit {limit}); no consumer completed this message "
                 "(hung worker, killed compute child or unavailable compute slot)"
             )
-        elif acquired is not None and acquired >= limit - 1:
+        elif acquired is not None and acquired >= threshold:
             count, error_type = acquired, REDELIVERY_LIMIT_ERROR_TYPE
             message = (
                 f"{REDELIVERY_LIMIT_ERROR_TYPE}: handed back {count} times without completion "

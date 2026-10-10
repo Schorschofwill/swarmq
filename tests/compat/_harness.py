@@ -1,7 +1,11 @@
-"""Mischbetrieb-Suite (Q2): Fixtures und Helfer für Worker aus swarmq 0.11.0 und dem Arbeitsstand.
+"""Mischbetrieb-Suite (Q2): Fixtures und Helfer für Worker aus swarmq 0.11.x und dem Arbeitsstand.
 
-Umgebung: ein isoliertes venv mit ``swarmq==0.11.0`` von PyPI, Abhängigkeiten
-exakt wie im Lockfile des Tags (``constraints-0.11.0.txt``). Der Plan nennt
+Umgebung: ein isoliertes venv mit ``swarmq==0.11.1`` von PyPI, Abhängigkeiten
+exakt wie im Lockfile des Tags (``constraints-0.11.1.txt``). Seit MR 8 ist
+0.11.1 die Basis: Der Rollout geht erst auf 0.11.1, und nur 0.11.1 kann die
+von 0.12 angelegten Queues deklarieren (Plan Abschnitt 1, Nachtrag
+2026-10-10). Ein zweites venv mit ``swarmq==0.11.0``
+(``constraints-0.11.0.txt``) prüft genau diese Rollback-Grenze. Der Plan nennt
 ``uv run --no-project --isolated --with ... --constraints``; uv 0.11 kennt für
 ``uv run`` aber keine Constraints, und das ``--isolated``-Umfeld ist nach dem
 Aufruf weg. Deshalb ``uv venv`` + ``uv pip install -c`` in ein Sitzungs-
@@ -30,8 +34,11 @@ from tests.support.services import flush_valkey_db, valkey_db_url
 from tests.support.worker_subprocess import kill_subprocess, spawn_worker, wait_for_worker_started, worker_children
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONSTRAINTS = Path(__file__).with_name("constraints-0.11.0.txt")
-OLD_VERSION = "0.11.0"
+CONSTRAINTS = Path(__file__).with_name("constraints-0.11.1.txt")
+OLD_VERSION = "0.11.1"
+#: Rollback-Grenze (MR 8): 0.11.0 kann von 0.12 angelegte Queues nicht deklarieren.
+ROLLBACK_LIMIT_VERSION = "0.11.0"
+ROLLBACK_LIMIT_CONSTRAINTS = Path(__file__).with_name("constraints-0.11.0.txt")
 
 # Schnelle Leader-Übergabe, damit ein Wechsel Sekunden statt der Standard-TTL dauert.
 SCHEDULER_ENV = {
@@ -53,10 +60,9 @@ def _run(cmd: list[str], **kwargs: object) -> str:
     return str(result.stdout)
 
 
-@pytest.fixture(scope="session")
-def python_011(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """Interpreter eines venv mit swarmq 0.11.0 von PyPI, echt geprüft."""
-    venv = tmp_path_factory.mktemp("swarmq-0.11.0") / "venv"
+def _pypi_python(tmp_path_factory: pytest.TempPathFactory, version: str, constraints: Path) -> str:
+    """Interpreter eines venv mit ``swarmq==version`` von PyPI, echt geprüft."""
+    venv = tmp_path_factory.mktemp(f"swarmq-{version}") / "venv"
     _run(["uv", "venv", "-q", "--python", sys.executable, str(venv)])
     _run(
         [
@@ -66,15 +72,27 @@ def python_011(tmp_path_factory: pytest.TempPathFactory) -> str:
             "-q",
             "--python",
             str(venv / "bin" / "python"),
-            f"swarmq=={OLD_VERSION}",
+            f"swarmq=={version}",
             "-c",
-            str(CONSTRAINTS),
+            str(constraints),
         ]
     )
-    version, location, executable = _run([str(venv / "bin" / "python"), "-c", _PROBE], cwd=str(REPO_ROOT)).split()
-    assert version == OLD_VERSION, f"compat venv runs swarmq {version}"
+    found, location, executable = _run([str(venv / "bin" / "python"), "-c", _PROBE], cwd=str(REPO_ROOT)).split()
+    assert found == version, f"compat venv runs swarmq {found}, expected {version}"
     assert not Path(location).resolve().is_relative_to(REPO_ROOT / "src"), f"compat venv imports the repo: {location}"
     return executable
+
+
+@pytest.fixture(scope="session")
+def python_011(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Interpreter eines venv mit swarmq 0.11.1 (``OLD_VERSION``) von PyPI."""
+    return _pypi_python(tmp_path_factory, OLD_VERSION, CONSTRAINTS)
+
+
+@pytest.fixture(scope="session")
+def python_0110(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Interpreter eines venv mit swarmq 0.11.0 von PyPI (Rollback-Grenze, MR 8)."""
+    return _pypi_python(tmp_path_factory, ROLLBACK_LIMIT_VERSION, ROLLBACK_LIMIT_CONSTRAINTS)
 
 
 @pytest.fixture(scope="session")

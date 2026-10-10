@@ -25,6 +25,7 @@ from swarmq.exceptions import (
     MessageHeadersTooLarge,
     NoRetry,
     PublishIndeterminate,
+    QueueArgumentsMismatch,
     RedeliveryLimitError,
     ResultExpiredError,
     ResultNotReadyError,
@@ -134,6 +135,7 @@ __all__ = [
     # Progress
     "ProgressInfo",
     "PublishIndeterminate",
+    "QueueArgumentsMismatch",
     # Heavy lazy surface (resolved via __getattr__)
     "RabbitMQBroker",
     "RedeliveryLimitError",

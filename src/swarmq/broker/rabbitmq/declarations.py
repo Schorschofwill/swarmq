@@ -1,0 +1,196 @@
+"""RabbitMQ: Deklaration der Queue-Familie (Plan 0.12.0, MR 8, BZ-15/BZ-19).
+
+Deklarationen laufen auf eigenen Wegwerf-Channels, nie auf dem
+Publish-Channel: ein 406 risse dort parallele Publishes mit offenen Confirms
+ab. Je Queue gilt die Kette aus ``arg_conflict``: passives Declare,
+Bestandsqueue mit den Argumenten aus 0.11, neue Queue mit den Zielargumenten
+(at-least-once im Modus ``auto``), Übernahme von ``x-dead-letter-strategy``,
+``x-overflow`` und ``x-delivery-limit``, andere erkannte Konflikte als
+``QueueArgumentsMismatch`` (Exit 78). Das Ergebnis wird je Familie gecacht;
+``UnroutableMessage`` und NOT_FOUND verwerfen den Eintrag.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import aio_pika
+
+from swarmq.broker.rabbitmq.arg_conflict import declare_adopting_existing, declare_chain
+from swarmq.broker.rabbitmq.connection import _CHANNEL_READY_TIMEOUT_S, RabbitMQConnection
+from swarmq.broker.rabbitmq.topology import (
+    at_least_once,
+    dead_letter_queue_arguments,
+    delay_queue_arguments,
+    main_queue_arguments,
+    queue_family,
+)
+from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
+from swarmq.logging import get_logger
+
+logger = get_logger(__name__)
+
+#: Wirksames Delivery-Limit einer Quorum-Queue ohne ``x-delivery-limit``
+#: ab RabbitMQ 4 (Spike S1, belegt auf 4.2.9 und 4.3.6).
+_BROKER_DEFAULT_DELIVERY_LIMIT = 20
+
+
+async def _declare_plain(pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
+    await pub.declare_queue(name, durable=True, arguments=arguments)
+
+
+class RabbitMQDeclarations(RabbitMQConnection):
+    #: Obergrenze je Deklarationsversuch auf dem Wegwerf-Channel (Patch 0.11.1).
+    declare_probe_timeout_s: float = _CHANNEL_READY_TIMEOUT_S
+
+    # ------------------------------------------------------------------
+    # Deklaration
+    # ------------------------------------------------------------------
+
+    async def declare_queue(self, queue_name: str) -> None:
+        """Deklariert die Queue-Familie einmal je Prozess (Cache, Plan 0.12.0,
+        MR 8); ``invalidate_declaration`` verwirft den Eintrag."""
+        if queue_name in self._declaration_cache:
+            return
+        pub = await self._ensure_publish_channel()
+        # Main queue — DLX points to dead-letter queue
+        main_args = main_queue_arguments(queue_name, self._queue_type, self.delivery_limit)
+        try:
+            await self._declare_queue_triplet(pub, queue_name, main_args)
+            if queue_name in self._declared_arguments:
+                self._declaration_cache.add(queue_name)
+        except aio_pika.exceptions.AMQPChannelError as exc:
+            # A pre-existing queue with mismatched
+            # arguments raises aio_pika ChannelClosed (PRECONDITION_FAILED).
+            # Without this wrap, the CLI surfaces a raw aio_pika traceback
+            # instead of a clean 'queue arg conflict' message.
+            raise BrokerConnectionError(
+                f"declare_queue {queue_name!r} failed: {exc}. "
+                f"Existing queue likely has different x-queue-type or "
+                f"x-dead-letter-* args. Delete the queue via the RabbitMQ "
+                f"management UI / CLI and retry, or match the existing args."
+            ) from exc
+
+    async def _declare_queue_triplet(
+        self,
+        pub: aio_pika.abc.AbstractChannel,
+        queue_name: str,
+        main_args: dict[str, Any],
+        *,
+        adopt: bool = True,
+    ) -> None:
+        """``adopt=False``: direkt auf ``pub`` deklarieren, ohne die
+        Argument-Uebernahme aus 0.11.1 (Neu-Deklarieren aus MR 6 auf einem
+        ohnehin eigenen Wegwerf-Channel; MR 8 fuehrt beides zusammen)."""
+        main, delay, dead_letter = queue_family(queue_name)
+        delay_args = delay_queue_arguments(queue_name, self._queue_type)
+        if not adopt:
+            # Neu-Deklarieren (MR 6): mit den zuletzt erfolgreichen Argumenten,
+            # sonst traefe eine von 0.12 angelegte Queue auf einen 406.
+            known = self._declared_arguments
+            await _declare_plain(pub, main, known.get(main, main_args))
+            await _declare_plain(pub, delay, known.get(delay, delay_args))
+            dead_letter_args = dead_letter_queue_arguments(self._queue_type)
+            await _declare_plain(pub, dead_letter, known.get(dead_letter, dead_letter_args))
+            return
+        # Ziel at-least-once nur fuer Quorum-Queues mit Broker-DLX und nicht im
+        # Modus ``legacy`` (BZ-19).
+        wants_at_least_once = self._queue_type == "quorum" and self.dead_letter_strategy != "legacy"
+
+        def target(arguments: dict[str, Any]) -> dict[str, Any] | None:
+            return at_least_once(arguments) if wants_at_least_once else None
+
+        await self._declare_adopting(pub, main, main_args, target(main_args))
+        # Delay queue — DLX points back to main queue
+        await self._declare_adopting(pub, delay, delay_args, target(delay_args))
+        # Dead-letter queue
+        await self._declare_adopting(pub, dead_letter, dead_letter_queue_arguments(self._queue_type))
+
+    async def _declare_adopting(
+        self,
+        pub: aio_pika.abc.AbstractChannel,
+        name: str,
+        arguments: dict[str, Any],
+        target: dict[str, Any] | None = None,
+    ) -> None:
+        """Deklariert ``name`` auf eigenen Wegwerf-Channels (Kette aus
+        ``arg_conflict``), nie auf dem Publish-Channel: ein 406 risse dort
+        parallele Publishes mit offenen Confirms ab (Plan 0.12.0, MR 8).
+
+        Ohne offene eigene Verbindung gibt es keinen Wegwerf-Channel; dann
+        gilt das Verhalten aus 0.11.0 (direkt auf dem Publish-Channel)."""
+        connection = self._connection
+        if connection is None or connection.is_closed:
+            await pub.declare_queue(name, durable=True, arguments=arguments)
+            return
+        timeout_s = self.declare_probe_timeout_s
+        log = self._adoption_log
+        if target is None:
+            arguments = await declare_adopting_existing(connection, name, arguments, timeout_s=timeout_s, log=log)
+        else:
+            arguments = await declare_chain(connection, name, arguments, target, timeout_s=timeout_s, log=log)
+            self._require_at_least_once(name, arguments)
+            if arguments.get("x-dead-letter-strategy") != "at-least-once":
+                self._at_most_once_queues.add(name)
+        self._declared_arguments[name] = arguments
+
+    async def report_queue_declarations(self) -> None:
+        """Höchstens eine WARNING ``queue_dead_letter_at_most_once`` je Prozess
+        (Broker) mit allen Bestandsqueues ohne at-least-once-Dead-Lettering
+        (BZ-19). Der Worker ruft es nach dem Deklarieren seiner Queues."""
+        if self._at_most_once_reported or not self._at_most_once_queues:
+            return
+        self._at_most_once_reported = True
+        logger.warning(
+            "queue_dead_letter_at_most_once",
+            queues=sorted(self._at_most_once_queues),
+            hint=(
+                "these existing quorum queues dead-letter at-most-once (RabbitMQ default): retries "
+                "and DLQ transfers can be lost on a leader change. Set a policy with "
+                "dead-letter-strategy=at-least-once and overflow=reject-publish, or set "
+                "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy to silence this warning"
+            ),
+        )
+
+    def effective_delivery_limit(self, queue: str) -> int | None:
+        """Das wirksame ``x-delivery-limit`` einer von diesem Prozess deklarierten
+        Haupt-Queue (BZ-15, Plan 0.12.0, MR 8); ``None`` = unbekannt oder
+        unbegrenzt, dann gilt die Konfiguration.
+
+        Fehlt das Argument, gilt ab RabbitMQ 4 der Broker-Default 20; ``-1``
+        heisst unbegrenzt, ``0`` "keine Wiederzustellung" (Spike S1). Eine
+        ``delivery-limit``-Policy ist ohne Management-API nicht sichtbar."""
+        if self._queue_type != "quorum" or queue not in self._declaration_cache:
+            return None
+        limit = self._declared_arguments[queue].get("x-delivery-limit", _BROKER_DEFAULT_DELIVERY_LIMIT)
+        if not isinstance(limit, int) or limit < 0:
+            return None
+        return limit
+
+    def invalidate_declaration(self, name: str) -> None:
+        """Verwirft den Cache-Eintrag der Familie von ``name`` (Haupt-, Delay-
+        oder Dead-Letter-Queue): bei ``UnroutableMessage`` und NOT_FOUND ist
+        die Queue weg, die naechste Deklaration legt sie neu an (Rev. 3 F5)."""
+        for suffix in (".DQ", ".XQ"):
+            if name.endswith(suffix):
+                name = name.removesuffix(suffix)
+                break
+        self._declaration_cache.discard(name)
+
+    def _require_at_least_once(self, name: str, arguments: dict[str, Any]) -> None:
+        """Strenger Modus ``at-least-once`` (BZ-19): eine Bestandsqueue ohne
+        at-least-once-Dead-Lettering ist ein Konfigurationsfehler (Exit 78)."""
+        strategy = arguments.get("x-dead-letter-strategy")
+        if self.dead_letter_strategy != "at-least-once" or strategy == "at-least-once":
+            return
+        raise QueueArgumentsMismatch(
+            name,
+            "x-dead-letter-strategy",
+            "at-least-once",
+            strategy,
+            hint=(
+                "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once requires at-least-once dead-lettering; "
+                "migrate the queue (stop its workers, drain and delete the queue family) or use "
+                "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=auto."
+            ),
+        )

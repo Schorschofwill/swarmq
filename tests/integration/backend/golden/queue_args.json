@@ -48,5 +48,34 @@
       },
       "durable": true
     }
+  },
+  "quorum_at_least_once": {
+    "golden": {
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "golden.XQ",
+        "x-dead-letter-strategy": "at-least-once",
+        "x-delivery-limit": 20,
+        "x-overflow": "reject-publish",
+        "x-queue-type": "quorum"
+      },
+      "durable": true
+    },
+    "golden.DQ": {
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "golden",
+        "x-dead-letter-strategy": "at-least-once",
+        "x-overflow": "reject-publish",
+        "x-queue-type": "quorum"
+      },
+      "durable": true
+    },
+    "golden.XQ": {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "durable": true
+    }
   }
 }

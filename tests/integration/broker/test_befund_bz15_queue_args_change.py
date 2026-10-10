@@ -51,13 +51,6 @@ async def test_raising_delivery_limit_keeps_existing_queue_declarable(rabbitmq_u
 
 
 @pytest.mark.befund("BZ-15")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-15: ein geänderter SWARMQ_QUEUE_TYPE endet als BrokerConnectionError "
-        "(Exit 1, Neustart-Schleife) statt als Konfigurationsfehler"
-    ),
-)
 async def test_changed_queue_type_is_reported_as_configuration_error(rabbitmq_url: str, queue_name: str) -> None:
     await _declare(rabbitmq_url, queue_name, queue_type="quorum")
 

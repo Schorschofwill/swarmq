@@ -21,6 +21,7 @@ except SwarmQError as exc:
 | `SwarmQError` | `Exception` | Root of the hierarchy |
 | `ConfigurationError` | `SwarmQError` | Bad config at worker start, bad CLI args, missing env vars |
 | `LoggingConfigError` | `ConfigurationError` | Logging config file (`--log-config`) not loadable or invalid |
+| `QueueArgumentsMismatch` | `ConfigurationError` | An existing queue has other arguments than the configuration, which swarmq cannot adopt (for example a changed `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
 | `PublishIndeterminate` | `BrokerConnectionError` | A publish broke its deadline; whether it arrived is unknown |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
@@ -110,6 +111,26 @@ The exception carries the file in `path`; the original error is in
 `78` and logs one `worker_config_error` line with `path`, `error_type`
 and `error`. During a reload the running supervisor logs
 `log_config_reload_failed` instead and keeps its workers running.
+
+## `QueueArgumentsMismatch`
+
+**When raised.** When the worker declares its queues at startup and an
+existing queue has an argument that differs from the configuration and
+that swarmq does not adopt. Subclass of `ConfigurationError`,
+importable from `swarmq` and `swarmq.exceptions`. The message and the
+attributes `queue`, `argument`, `declared` and `existing` name the
+conflict.
+
+**Cause.** RabbitMQ never changes the arguments of an existing queue.
+Typical: `SWARMQ_QUEUE_TYPE` was changed for queues that already exist,
+or `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` meets a queue
+without at-least-once dead-lettering. A different `x-delivery-limit`,
+`x-dead-letter-strategy` or `x-overflow` is adopted and does not raise
+it ([existing queue arguments](../explanation/delivery-semantics.md#existing-queue-arguments)).
+
+**Recovery.** A restart does not help, so `swarmq worker` exits with
+`78` and the supervisor does not restart it. Restore the previous
+setting, or [migrate the queue](../explanation/delivery-semantics.md#changing-queue-arguments).
 
 ## `BrokerConnectionError`
 

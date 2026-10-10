@@ -1,10 +1,10 @@
-"""Fixture-Modul der Mischbetrieb-Suite (Q2): läuft unter swarmq 0.11.0 und 0.12.
+"""Fixture-Modul der Mischbetrieb-Suite (Q2): läuft unter swarmq 0.11.x und 0.12.
 
 Nur stdlib, ``valkey`` und die öffentliche Task-API, die beide Versionen
 kennen; nichts aus ``tests.support`` (gibt es im 0.11-venv nicht in dieser Form).
 
 Echtheitsprüfung beim Import: ``COMPAT_EXPECT_SWARMQ`` ist ``repo`` (der
-Arbeitsstand unter ``<repo>/src``) oder eine Version wie ``0.11.0`` (aus
+Arbeitsstand unter ``<repo>/src``) oder eine Version wie ``0.11.1`` (aus
 PyPI, nicht unter ``<repo>/src``). Passt die geladene swarmq nicht, bricht
 der Prozess ab; sonst würde die Suite vakuum-grün.
 

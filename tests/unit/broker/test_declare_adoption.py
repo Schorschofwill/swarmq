@@ -1,5 +1,9 @@
 """``declare_queue`` übernimmt vorhandene Argumente (Patch 0.11.1).
 
+Ab 0.12 (Plan MR 8) deklariert swarmq nur noch auf den Wegwerf-Channels, nach
+einem passiven Declare; ``_published`` liest deshalb die dort gelungenen
+Deklarationen.
+
 Ein 406 schließt den Channel, auf dem deklariert wurde. Auf dem
 Publish-Channel risse das parallele Publishes mit offenen Confirms ab. 0.11.1
 prüft deshalb jede Deklaration zuerst auf einem Wegwerf-Channel, übernimmt dort
@@ -11,8 +15,8 @@ Test-Liste:
 1. Queue hat ``at-least-once`` → Publish-Channel deklariert mit übernommener Strategy.
 2. Abweichendes Delivery-Limit → übernommen, WARNING ``queue_argument_adopted``.
 3. Strategy/Overflow-Übernahme → INFO, nicht WARNING.
-4. Nicht übernehmbarer 406 (``x-queue-type``) → ``BrokerConnectionError`` wie 0.11.0,
-   Publish-Channel unberührt.
+4. Nicht übernehmbarer 406 (``x-queue-type``) → ab 0.12 ``QueueArgumentsMismatch``
+   (Exit 78), Publish-Channel unberührt.
 5. Dasselbe Argument widerspricht erneut → ``BrokerConnectionError`` (Obergrenze).
 6. Strategy, Overflow und Limit nacheinander → 4 Versuche, dann Erfolg.
 7. Wegwerf-Channels werden immer geschlossen, auch nach einem 406.
@@ -34,7 +38,7 @@ import pytest
 from aio_pika.exceptions import ChannelInvalidStateError, ChannelPreconditionFailed
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -59,17 +63,25 @@ class Probes:
         self.outcomes = {name: list(seq) for name, seq in outcomes.items()}
         self.channels: list[AsyncMock] = []
         self.declared: list[tuple[str, dict[str, Any]]] = []
+        #: Die zuletzt gelungene Deklaration je Queue (0.12: die wirksamen Argumente).
+        self.succeeded: dict[str, dict[str, Any]] = {}
 
     async def open(self) -> AsyncMock:
         channel = AsyncMock(is_closed=False)
 
-        async def declare_queue(name: str, *, durable: bool, arguments: dict[str, Any]) -> None:
+        async def declare_queue(
+            name: str, *, durable: bool = True, arguments: dict[str, Any] | None = None, passive: bool = False
+        ) -> None:
+            if passive:  # 0.12 (MR 8): passives Declare vorab; die Queue existiert hier
+                return
+            assert arguments is not None
             self.declared.append((name, dict(arguments)))
             pending = self.outcomes.get(name) or [None]
             outcome = pending.pop(0) if self.outcomes.get(name) else None
             if outcome is not None:
                 channel.is_closed = True
                 raise outcome
+            self.succeeded[name] = dict(arguments)
 
         channel.declare_queue = AsyncMock(side_effect=declare_queue)
         self.channels.append(channel)
@@ -81,11 +93,17 @@ def _broker(probes: Probes) -> RabbitMQBroker:
     broker._publish_channel = AsyncMock(is_closed=False)
     connection = AsyncMock(is_closed=False)
     connection.channel = AsyncMock(side_effect=probes.open)
+    connection.probes = probes
     broker._connection = connection
     return broker
 
 
 def _published(broker: RabbitMQBroker) -> dict[str, dict[str, Any]]:
+    """Die wirksam deklarierten Argumente je Queue. Ab 0.12 (MR 8) deklariert
+    swarmq nur noch auf den Wegwerf-Channels; ohne eigene Verbindung wie
+    0.11.0 auf dem Publish-Channel."""
+    if broker._connection is not None:
+        return dict(broker._connection.probes.succeeded)  # type: ignore[attr-defined]
     calls = broker._publish_channel.declare_queue.call_args_list  # type: ignore[union-attr]
     return {call.args[0]: call.kwargs["arguments"] for call in calls}
 
@@ -127,10 +145,12 @@ async def test_adopted_strategy_is_logged_as_info(swarmq_logs: list[dict[str, An
 
 
 async def test_other_conflict_fails_as_before_without_touching_publish_channel() -> None:
+    """0.12 (Plan MR 8, Punkt 3): ein anderer erkannter Konflikt ist ein
+    ``QueueArgumentsMismatch`` (Exit 78) statt ``BrokerConnectionError``."""
     queue_type = _conflict("tasks", "x-queue-type", "received 'quorum' but current is 'classic'")
     broker = _broker(Probes({"tasks": [queue_type]}))
 
-    with pytest.raises(BrokerConnectionError, match="Existing queue"):
+    with pytest.raises(QueueArgumentsMismatch, match="x-queue-type"):
         await broker.declare_queue("tasks")
 
     broker._publish_channel.declare_queue.assert_not_called()  # type: ignore[union-attr]
@@ -288,15 +308,16 @@ async def test_half_open_probe_channel_is_closed_after_open_timeout() -> None:
 @pytest.mark.parametrize(
     ("existing", "expected"),
     [
-        pytest.param(10, "without an error result", id="below-config"),
+        pytest.param(10, "dead-letters at the existing limit - 1", id="below-config"),
         pytest.param(40, "SWARMQ_DELIVERY_LIMIT - 1", id="above-config"),
     ],
 )
 async def test_delivery_limit_warning_explains_the_effect(
     swarmq_logs: list[dict[str, Any]], existing: int, expected: str
 ) -> None:
-    """Review P2-2b: unter der Konfiguration dead-lettert der Broker selbst
-    (kein Fehlerergebnis); darüber greift weiter das Gate bei config - 1."""
+    """Review P2-2b: darüber greift weiter das Gate bei config - 1. Darunter
+    dead-lettert ab 0.12 (Plan MR 8, ``min(config, effektiv)``) ebenfalls das
+    Gate, bei vorhandenem Limit - 1 und mit Fehlerergebnis."""
     limit = _conflict("tasks", "x-delivery-limit", f"received '20' but current is '{existing}'")
     broker = _broker(Probes({"tasks": [limit]}))
 
@@ -306,10 +327,14 @@ async def test_delivery_limit_warning_explains_the_effect(
     assert expected in warning["hint"]
 
 
-async def test_queue_without_delivery_limit_fails_as_before() -> None:
-    """Review P2-2a: eine Queue ohne Limit ist kein 0.12-Zustand; Abbruch wie 0.11.0."""
+async def test_queue_without_delivery_limit_is_adopted_with_warning(swarmq_logs: list[dict[str, Any]]) -> None:
+    """0.12 (Plan MR 8, BZ-15): eine Queue ohne Limit wird übernommen (Broker-
+    Default 20), mit WARNING; 0.11.1 brach hier noch ab (Review P2-2a)."""
     none = _conflict("tasks", "x-delivery-limit", "received the value '20' of type 'byte' but current is none")
     broker = _broker(Probes({"tasks": [none]}))
 
-    with pytest.raises(BrokerConnectionError, match="Existing queue"):
-        await broker.declare_queue("tasks")
+    await broker.declare_queue("tasks")
+
+    assert "x-delivery-limit" not in _published(broker)["tasks"]
+    [warning] = [e for e in swarmq_logs if e["event"] == "queue_argument_adopted"]
+    assert (warning["log_level"], warning["argument"], warning["existing"]) == ("warning", "x-delivery-limit", None)

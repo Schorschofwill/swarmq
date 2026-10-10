@@ -145,6 +145,28 @@
       ]
     },
     {
+      "dlq_on_uncaught": "n/a",
+      "doc": "Eine vorhandene Queue hat andere Argumente als die Konfiguration, und\nswarmq kann sie nicht uebernehmen (BZ-15), etwa ein geaenderter\n``SWARMQ_QUEUE_TYPE``. RabbitMQ aendert die Argumente einer bestehenden\nQueue nie; ein Neustart aendert daran nichts, darum Exit 78 statt einer\nNeustartschleife. ``x-delivery-limit``, ``x-dead-letter-strategy`` und\n``x-overflow`` werden dagegen uebernommen.",
+      "exception_class": "swarmq.exceptions.QueueArgumentsMismatch",
+      "exit_code_on_cli": 78,
+      "init_params": [
+        "queue",
+        "argument",
+        "declared",
+        "existing",
+        "hint"
+      ],
+      "module": "swarmq.exceptions",
+      "name": "QueueArgumentsMismatch",
+      "origin": "library",
+      "parent": "ConfigurationError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "startup"
+      ]
+    },
+    {
       "dlq_on_uncaught": "yes",
       "doc": "Fehlertyp einer DLQ-Kopie, deren Zustellungen immer wieder per\n``redeliver`` (``nack(requeue=True)``) zurueckgegeben wurden, bis\n``x-acquired-count`` (RabbitMQ 4.3) das Zustelllimit erreichte (BZ-29).\nWird nicht geworfen; der Name steht als ``error_type`` in\n``task_sent_to_dlq`` und am Anfang von ``x-swarmq-traceback``.",
       "exception_class": "swarmq.exceptions.RedeliveryLimitError",

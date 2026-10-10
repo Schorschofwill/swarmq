@@ -22,6 +22,7 @@ except SwarmQError as exc:
 | `SwarmQError` | `Exception` | Wurzel der Hierarchie |
 | `ConfigurationError` | `SwarmQError` | Fehlkonfiguration beim Worker-Start, CLI-Args, fehlende Env-Vars |
 | `LoggingConfigError` | `ConfigurationError` | Logging-Konfigurationsdatei (`--log-config`) nicht ladbar oder ungültig |
+| `QueueArgumentsMismatch` | `ConfigurationError` | Eine vorhandene Queue hat andere Argumente als die Konfiguration, die swarmq nicht übernehmen kann (etwa ein geänderter `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
@@ -114,6 +115,28 @@ mit `78` und loggt genau eine Zeile `worker_config_error` mit `path`,
 `error_type` und `error`. Bei einem Reload loggt der laufende Supervisor
 stattdessen `log_config_reload_failed` und lässt seine Worker
 weiterlaufen.
+
+## `QueueArgumentsMismatch`
+
+**Wann geworfen.** Wenn der Worker beim Start seine Queues deklariert
+und eine vorhandene Queue ein Argument hat, das von der Konfiguration
+abweicht und das swarmq nicht übernimmt. Unterklasse von
+`ConfigurationError`, importierbar aus `swarmq` und `swarmq.exceptions`.
+Die Meldung und die Attribute `queue`, `argument`, `declared` und
+`existing` nennen den Konflikt.
+
+**Ursache.** RabbitMQ ändert die Argumente einer bestehenden Queue nie.
+Typisch: `SWARMQ_QUEUE_TYPE` wurde für schon vorhandene Queues geändert,
+oder `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` trifft auf eine
+Queue ohne at-least-once-Dead-Lettering. Ein abweichendes
+`x-delivery-limit`, `x-dead-letter-strategy` oder `x-overflow` wird
+übernommen und löst sie nicht aus
+([vorhandene Queue-Argumente](../explanation/delivery-semantics.md#vorhandene-queue-argumente)).
+
+**Behebung.** Ein Neustart hilft nicht; `swarmq worker` endet deshalb
+mit `78`, und der Supervisor startet ihn nicht neu. Die vorherige
+Einstellung wiederherstellen oder die
+[Queue migrieren](../explanation/delivery-semantics.md#queue-argumente-andern).
 
 ## `BrokerConnectionError`
 

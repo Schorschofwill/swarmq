@@ -20,6 +20,7 @@ from aio_pika.exceptions import (
     ConnectionClosed,
 )
 
+from swarmq.broker.rabbitmq.arg_conflict import AdoptionLog
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
@@ -129,6 +130,19 @@ class RabbitMQConnection:
         # Verfallsfrist der von swarmq in die DLQ gelegten Nachrichten (KTD6);
         # None heisst unbegrenzt. Wie oben aus der Konfiguration ueberschrieben.
         self.dead_letter_ttl_s: float | None = _DEFAULT_DEAD_LETTER_TTL_S
+        # Plan 0.12.0, MR 8: die zuletzt erfolgreich deklarierten Argumente je
+        # Queue (das Neu-Deklarieren aus MR 6 legt eine geloeschte Queue so
+        # wieder an, wie sie war) und die gedrosselten Uebernahme-Logs.
+        self._declared_arguments: dict[str, dict[str, Any]] = {}
+        # Cache: Queue-Familien, die dieser Prozess schon deklariert hat.
+        self._declaration_cache: set[str] = set()
+        # Bestandsqueues ohne at-least-once (BZ-19) fuer die eine Warnung.
+        self._at_most_once_queues: set[str] = set()
+        self._at_most_once_reported = False
+        # ``SWARMQ_QUEUE_DEAD_LETTER_STRATEGY`` (BZ-19): ``auto``, ``at-least-once``
+        # oder ``legacy``; ``SwarmQ.__init__`` ueberschreibt aus der Konfiguration.
+        self.dead_letter_strategy: str = "auto"
+        self._adoption_log = AdoptionLog()
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
         # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden

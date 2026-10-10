@@ -1,6 +1,7 @@
-"""Mischbetrieb 0.11.0 / 0.12 (Plan 0.12.0, Q2): Grundszenarien, Basislinie gegen den Arbeitsstand.
+"""Mischbetrieb 0.11.1 / 0.12 (Plan 0.12.0, Q2): Grundszenarien, Basislinie gegen den Arbeitsstand.
 
-Worker aus swarmq 0.11.0 (PyPI, isoliertes venv) und aus dem Arbeitsstand
+Seit MR 8 ist 0.11.1 die Basis (Rollout erst auf 0.11.1, Plan Abschnitt 1).
+Worker aus swarmq 0.11.1 (PyPI, isoliertes venv) und aus dem Arbeitsstand
 teilen sich Queue, Valkey und Scheduler-Leader. Erwartet wird neues oder
 unverändertes altes Verhalten; Verlust oder Doppelausführung nur, wo
 Abschnitt 7 des Plans es nennt (heute: nirgends in diesen Szenarien).
@@ -139,7 +140,7 @@ async def _leader(valkey_url: str) -> tuple[int, str] | None:
 
 async def _wait_leader(valkey_url: str, worker: CompatWorker) -> None:
     """Leader ist ein Kind von ``worker`` (PID im Owner); die gemeldete Version
-    passt zur Laufzeit des Workers (0.11.0 bzw. Arbeitsstand)."""
+    passt zur Laufzeit des Workers (0.11.1 bzw. Arbeitsstand)."""
     expected = importlib.metadata.version("swarmq") if worker.runtime == "repo" else OLD_VERSION
 
     async def is_leader() -> bool:

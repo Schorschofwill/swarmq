@@ -19,24 +19,16 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import aio_pika
-from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError, PublishError
+from aio_pika.exceptions import ChannelInvalidStateError, ChannelNotFoundEntity, DeliveryError, PublishError
 
-from swarmq.broker.rabbitmq.arg_conflict import declare_adopting_existing
 from swarmq.broker.rabbitmq.connection import (
-    _CHANNEL_READY_TIMEOUT_S,
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
-    RabbitMQConnection,
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
+from swarmq.broker.rabbitmq.declarations import RabbitMQDeclarations
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
 from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
-from swarmq.broker.rabbitmq.topology import (
-    dead_letter_queue_arguments,
-    delay_queue_arguments,
-    main_queue_arguments,
-    queue_family,
-)
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
     BrokerConnectionError,
@@ -82,75 +74,13 @@ async def settle(action: Awaitable[None], verb: str) -> None:
         raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
 
 
-async def _declare_plain(pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
-    await pub.declare_queue(name, durable=True, arguments=arguments)
-
-
-class RabbitMQDelivery(RabbitMQConnection):
+class RabbitMQDelivery(RabbitMQDeclarations):
     #: Höchstens so lange wartet ein Settle auf einen vom Broker beendeten
     #: Consumer auf den eigenen Cancel des Wächters (U7, KTD4). Deckt einen
     #: Takt mit Channel-, Cancel- und Consume-RPC (je 2 s) mit Luft ab.
     settle_cancel_wait_s: float = 10.0
     #: Wanduhr fuer ``x-swarmq-dead-lettered-at`` und die Rest-TTL (KTD6).
     clock: Callable[[], float] = staticmethod(time.time)
-    #: Obergrenze je Deklarationsversuch auf dem Wegwerf-Channel (Patch 0.11.1).
-    declare_probe_timeout_s: float = _CHANNEL_READY_TIMEOUT_S
-
-    # ------------------------------------------------------------------
-    # Deklaration
-    # ------------------------------------------------------------------
-
-    async def declare_queue(self, queue_name: str) -> None:
-        pub = await self._ensure_publish_channel()
-        # Main queue — DLX points to dead-letter queue
-        main_args = main_queue_arguments(queue_name, self._queue_type, self.delivery_limit)
-        try:
-            await self._declare_queue_triplet(pub, queue_name, main_args)
-        except aio_pika.exceptions.AMQPChannelError as exc:
-            # A pre-existing queue with mismatched
-            # arguments raises aio_pika ChannelClosed (PRECONDITION_FAILED).
-            # Without this wrap, the CLI surfaces a raw aio_pika traceback
-            # instead of a clean 'queue arg conflict' message.
-            raise BrokerConnectionError(
-                f"declare_queue {queue_name!r} failed: {exc}. "
-                f"Existing queue likely has different x-queue-type or "
-                f"x-dead-letter-* args. Delete the queue via the RabbitMQ "
-                f"management UI / CLI and retry, or match the existing args."
-            ) from exc
-
-    async def _declare_queue_triplet(
-        self,
-        pub: aio_pika.abc.AbstractChannel,
-        queue_name: str,
-        main_args: dict[str, Any],
-        *,
-        adopt: bool = True,
-    ) -> None:
-        """``adopt=False``: direkt auf ``pub`` deklarieren, ohne die
-        Argument-Uebernahme aus 0.11.1 (Neu-Deklarieren aus MR 6 auf einem
-        ohnehin eigenen Wegwerf-Channel; MR 8 fuehrt beides zusammen)."""
-        main, delay, dead_letter = queue_family(queue_name)
-        declare = self._declare_adopting if adopt else _declare_plain
-        await declare(pub, main, main_args)
-        # Delay queue — DLX points back to main queue
-        await declare(pub, delay, delay_queue_arguments(queue_name, self._queue_type))
-        # Dead-letter queue
-        await declare(pub, dead_letter, dead_letter_queue_arguments(self._queue_type))
-
-    async def _declare_adopting(self, pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
-        """Patch 0.11.1: erst auf Wegwerf-Channels deklarieren und vorhandene
-        Argumente übernehmen (``arg_conflict``), dann mit den übernommenen
-        Argumenten auf dem Publish-Channel. Ein 406 trifft so nie den
-        Publish-Channel und reißt keine parallelen Publishes ab.
-
-        Ohne offene eigene Verbindung gibt es keinen Wegwerf-Channel; dann
-        gilt das Verhalten aus 0.11.0 (direkt auf dem Publish-Channel)."""
-        connection = self._connection
-        if connection is not None and not connection.is_closed:
-            arguments = await declare_adopting_existing(
-                connection, name, arguments, timeout_s=self.declare_probe_timeout_s
-            )
-        await pub.declare_queue(name, durable=True, arguments=arguments)
 
     # ------------------------------------------------------------------
     # Publish
@@ -266,6 +196,7 @@ class RabbitMQDelivery(RabbitMQConnection):
             except PublishError as exc:
                 # basic.return: keine Queue mit diesem Namen. Eine Wiederholung
                 # aendert daran nichts; vor DeliveryError fangen (Unterklasse).
+                self.invalidate_declaration(routing_key)
                 raise UnroutableMessage(
                     f"publish to {routing_key!r} was returned unroutable: no queue with this name (BZ-03)"
                 ) from exc
@@ -320,7 +251,12 @@ class RabbitMQDelivery(RabbitMQConnection):
         # only re-applies after a recreate (avoids an AMQP RPC per
         # consume-channel access).
         await chan.set_qos(prefetch_count=concurrency)
-        amqp_queue = await chan.get_queue(queue)
+        try:
+            amqp_queue = await chan.get_queue(queue)
+        except ChannelNotFoundEntity:
+            # Die Queue ist weg: die naechste Deklaration legt sie neu an (MR 8).
+            self.invalidate_declaration(queue)
+            raise
 
         async def _on_raw(message: aio_pika.abc.AbstractIncomingMessage) -> None:
             delivery = Delivery(body=message.body, headers=dict(message.headers or {}), queue=queue, handle=message)
