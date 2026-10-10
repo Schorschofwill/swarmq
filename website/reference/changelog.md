@@ -198,7 +198,9 @@ All notable changes to SwarmQ. This project follows
   more than 65 minutes of backlog the copy ran a second time. The claim
   that defers a redelivery now extends the execution's state to
   `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (default 7 days) or `max_age +
-  300`, the markers written afterwards never shorten it, and a failed
+  300` -- also when the running delivery only releases its marker (for
+  example to wait for a lock) or runs longer than the done TTL --, the
+  markers written afterwards never shorten it, and a failed
   ack or a copy whose ack failed marks the execution for the same
   backlog. The completed marker of a schedule fire lives `2 × wait +
   300` seconds, where `wait` is how long the fire waited in the queue

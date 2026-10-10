@@ -42,8 +42,16 @@ if holder == ARGV[1] then
 end
 if holder then
     local backlog = tonumber(ARGV[6]) or 0
-    if backlog > 0 and backlog > redis.call('PTTL', KEYS[2]) then
-        redis.call('PEXPIRE', KEYS[2], backlog)
+    if backlog > 0 then
+        -- Eigenes Feld (Review MR 12, P2-1): ohne es verschwaende der Hash
+        -- samt Frist, sobald die letzte Lease freigegeben wird (HDEL in
+        -- guard_finish.lua); und lief die Ausfuehrung laenger als die
+        -- Zustands-TTL, legt es den Zustand neu an. Claim und Abschluss
+        -- lesen das Feld nicht.
+        redis.call('HSET', KEYS[2], 'backlog', 1)
+        if backlog > redis.call('PTTL', KEYS[2]) then
+            redis.call('PEXPIRE', KEYS[2], backlog)
+        end
     end
     return {'running', 0}
 end

@@ -188,7 +188,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Rückstand lief die Kopie ein zweites Mal. Der Claim, der eine
   Neuzustellung zurückstellt, verlängert den Zustand der Ausführung
   jetzt auf `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (Standard 7 Tage)
-  oder `max_age + 300`, die danach geschriebenen Marker verkürzen ihn
+  oder `max_age + 300` -- auch wenn die laufende Zustellung ihren Marker
+  nur freigibt (etwa um auf einen Lock zu warten) oder länger als die
+  Done-TTL läuft --, die danach geschriebenen Marker verkürzen ihn
   nie, und ein gescheitertes Ack oder eine Kopie, deren Ack scheiterte,
   markiert die Ausführung für denselben Rückstand. Der Completed-Marker
   eines Schedule-Fires lebt `2 × Wartezeit + 300` Sekunden, wobei die

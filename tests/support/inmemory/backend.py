@@ -639,7 +639,7 @@ class InMemoryExecutionGuardStore:
     """Ausfuehrungsschutz (Plan 2026-10-08-1541, U8, KTD5) -- dieselbe
     Semantik wie ``guard_claim.lua``/``guard_finish.lua``: ein Running-Marker
     mit eigener TTL und ein Zustand (``done``, ``sup``, ``orphans``,
-    ``lease``) mit gemeinsamer TTL wie der Valkey-Hash."""
+    ``lease``, ``backlog``) mit gemeinsamer TTL wie der Valkey-Hash."""
 
     def __init__(self, clock: FakeClock) -> None:
         self._clock = clock
@@ -670,7 +670,15 @@ class InMemoryExecutionGuardStore:
             # BZ-12: die Kopie kann hinter einem Rueckstand zurueckkommen --
             # der Zustand (und der kommende Done-Marker) lebt mindestens so lange.
             if backlog_ttl_ms:
-                self._state.expire_gt(identity, backlog_ttl_ms)
+                # Wie ``guard_claim.lua`` (Review MR 12, P2-1): ein eigenes Feld
+                # haelt den Zustand, auch wenn die letzte Lease freigegeben wird
+                # oder der Zustand schon abgelaufen war.
+                current = self._state.get(identity)
+                if current is None:
+                    self._state.set(identity, {"backlog": True}, backlog_ttl_ms)
+                else:
+                    self._state.expire_keep(identity, {**current, "backlog": True})
+                    self._state.expire_gt(identity, backlog_ttl_ms)
             return GuardClaim("running")
         if "lease" in state:
             orphans += 1

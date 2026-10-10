@@ -25,6 +25,13 @@ Plan 0.12.0, MR 12 (BZ-12):
     hinter einem Rückstand zurückkommen), lebt der Zustand mindestens
     ``backlog_ttl_ms``.
 14. ``mark_done``/``mark_superseded`` verkürzen einen längeren Zustand nie.
+
+Review MR 12 (P2-1):
+15. ``release`` nach einem ``running``-Claim behält den Rückstand: der
+    Zustand verschwindet nicht mit der letzten Lease, der Done-Marker der
+    nächsten Kopie lebt den Rückstand.
+16. Läuft die Ausführung länger als die Zustands-TTL (Hash schon weg),
+    legt der ``running``-Claim den Zustand mit dem Rückstand neu an.
 """
 
 from __future__ import annotations
@@ -180,4 +187,33 @@ class ExecutionGuardStoreContract:
         )
         await impl.mark_done(identity, owner="a", state_ttl_ms=200)
         await clock.advance(0.3)  # ueber die Done-TTL des Abschlusses, unter dem Rueckstand
+        assert await _claim(impl, identity, "c") == "done"
+
+    async def test_release_after_a_running_claim_keeps_the_backlog(
+        self, impl: ExecutionGuardStore, clock: Clock,
+    ) -> None:
+        identity = _identity()
+        await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
+        await impl.claim(
+            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+        )
+        await impl.release(identity, owner="a")  # z. B. Lock-Konflikt: Kopie per retry_later
+        claim = await impl.claim(identity, owner="a2", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
+        assert claim == GuardClaim("claimed", orphans=0)
+        await impl.mark_done(identity, owner="a2", state_ttl_ms=200)
+        await clock.advance(0.3)  # ueber die Done-TTL, unter dem Rueckstand
+        assert await _claim(impl, identity, "c") == "done"
+
+    async def test_running_claim_recreates_an_expired_state_with_the_backlog(
+        self, impl: ExecutionGuardStore, clock: Clock,
+    ) -> None:
+        identity = _identity()
+        await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
+        await clock.advance(0.3)  # der Lauf dauert laenger als die Zustands-TTL
+        claim = await impl.claim(
+            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+        )
+        assert claim.status == "running"
+        await impl.mark_done(identity, owner="a", state_ttl_ms=200)
+        await clock.advance(0.3)  # ueber die Done-TTL, unter dem Rueckstand
         assert await _claim(impl, identity, "c") == "done"
