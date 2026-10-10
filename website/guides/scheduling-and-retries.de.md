@@ -363,6 +363,28 @@ Marker zusätzlich unter dem alten Key je Owner, nach dem Nachfolger vor
 vor 0.12 über den zuletzt gesehenen Leader. Ein verpasster Marker
 ändert nur das Signal.
 
+### Fehlende Queues
+
+Queues deklarieren die Worker, die sie konsumieren. Ab 0.12 wirft ein
+Publish an eine Queue, die es nicht gibt, `UnroutableMessage`, statt
+vom Broker bestätigt und verworfen zu werden. Die Worker einer **neuen
+Queue vor ihren Producern** starten – das gilt für jede neue Queue,
+nicht nur beim Upgrade. Ein Producer bekommt die Ausnahme sofort; es
+gibt keine Wiederholung.
+
+Der Scheduler-Leader behandelt eine fehlende Queue so:
+
+| Fire | Was passiert |
+|---|---|
+| Cron | Der Fire ist verloren und wird festgeschrieben, der Cron rückt auf seinen nächsten Termin. `SCHEDULER_FIRE_UNROUTABLE` mit `kind="cron_lost"` zählt ihn (`swarmq_scheduler_fires_unroutable_total`). `scheduler_fire_unroutable` wird höchstens einmal je Cron und 10 Minuten geloggt; dazu kommt `scheduler_fire_unroutable_foreign`, wenn ein Worker einer anderen App den Cron meldet (prüfen, ob alle Apps am selben Valkey denselben RabbitMQ-vhost nutzen). |
+| Verzögerter Task (`delay=`/`eta=`) | Alle 60 s erneut versucht (`scheduler_oneshot_unroutable`, ebenso gedrosselt). Die Definition hält den ersten unroutbaren Versuch in `unroutable_since` fest. Nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (Standard ein Tag) ab diesem Versuch wird der Task verworfen: `scheduler_oneshot_unroutable_dropped`, `kind="oneshot_dropped"`, ein Fehlerergebnis unter seiner Task-ID (`get_result()` wirft `TaskError`), und seine `unique_for`-Sperre wird freigegeben. |
+
+Ein Worker, dessen eigene `{queue}.DQ` oder `{queue}.XQ` während des
+Laufs gelöscht wurde, deklariert die Queue-Familie einmal auf einem
+eigenen Channel neu und veröffentlicht die Retry- bzw. DLQ-Kopie
+erneut. Ein Workflow-Schritt, dessen nächster Schritt an eine fehlende
+Queue geht, lässt den Workflow sofort scheitern.
+
 ### Von Hand umgerechnete UTC-Crons umstellen
 
 Vor 0.10.0 mussten Crons, die zu einer lokalen Uhrzeit feuern sollen,

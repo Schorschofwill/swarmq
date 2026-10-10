@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import aio_pika
-from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError
+from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError, PublishError
 
 from swarmq.broker.rabbitmq.connection import (
     _CHANNEL_TRANSIENT_ERRORS,
@@ -28,6 +28,7 @@ from swarmq.broker.rabbitmq.connection import (
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
+from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
 from swarmq.broker.rabbitmq.topology import (
     dead_letter_queue_arguments,
     delay_queue_arguments,
@@ -35,7 +36,12 @@ from swarmq.broker.rabbitmq.topology import (
     queue_family,
 )
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
-from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
+from swarmq.exceptions import (
+    BrokerConnectionError,
+    PublishIndeterminate,
+    SettleFailedAfterPublish,
+    UnroutableMessage,
+)
 from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT
 from swarmq.logging import _error_fields, get_logger
 
@@ -229,6 +235,12 @@ class RabbitMQDelivery(RabbitMQConnection):
             try:
                 await pub.default_exchange.publish(msg, routing_key=routing_key)
                 return
+            except PublishError as exc:
+                # basic.return: keine Queue mit diesem Namen. Eine Wiederholung
+                # aendert daran nichts; vor DeliveryError fangen (Unterklasse).
+                raise UnroutableMessage(
+                    f"publish to {routing_key!r} was returned unroutable: no queue with this name (BZ-03)"
+                ) from exc
             except DeliveryError as exc:
                 # A publisher-confirm Nack/Reject (e.g. a quorum queue briefly
                 # without disk quorum) is a NEGATIVE confirm, not a channel
@@ -403,9 +415,17 @@ class RabbitMQDelivery(RabbitMQConnection):
             await settle(message.nack(requeue=True), "redeliver")
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
-        await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)
+        await publish_redeclaring_once(
+            self,
+            delivery.queue,
+            lambda: self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers),
+        )
         await self._ack_after_publish(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
-        await self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers)
+        await publish_redeclaring_once(
+            self,
+            delivery.queue,
+            lambda: self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers),
+        )
         await self._ack_after_publish(delivery)

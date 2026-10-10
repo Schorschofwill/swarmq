@@ -76,6 +76,11 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # unter der der Leader den Oneshot feuert. Neues Feld am Ende mit Default
     # None (Q1); Crons lassen es leer und bekommen je Fire eine neue ID.
     task_id: str | None = None
+    # Plan 0.12.0 (BZ-03): Wanduhr in ms des ersten unroutbaren Fire-Versuchs
+    # eines Oneshots. Der Leader stellt ihn alle 60 s zurueck und verwirft ihn
+    # nach ``scheduler_unroutable_oneshot_max_s`` ab diesem Zeitpunkt. Neues
+    # Feld am Ende mit Default None (Q1).
+    unroutable_since: int | None = None
 
 
 def make_schedfire_key(schedule_name: str, fire_ts_ms: int) -> str:

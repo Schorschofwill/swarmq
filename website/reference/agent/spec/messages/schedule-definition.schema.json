@@ -99,6 +99,17 @@
             "completion",
             "start"
           ]
+        },
+        "unroutable_since": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

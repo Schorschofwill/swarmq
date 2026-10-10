@@ -34,6 +34,7 @@ from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderV
 from swarmq.scheduler.prune import SchedulerCronPrune
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
+from swarmq.scheduler.unroutable import SchedulerUnroutable
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,14 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersion, SchedulerFirePlan, SchedulerFire):
+class SchedulerLoop(
+    SchedulerCronSync,
+    SchedulerCronPrune,
+    SchedulerLeaderVersion,
+    SchedulerFirePlan,
+    SchedulerUnroutable,
+    SchedulerFire,
+):
     """Embedded scheduler — one instance per worker.
 
     Runs four cooperating coroutines:
@@ -139,6 +147,8 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         self._leader_watch = LeaderVersionWatch()
         # Zuletzt gesehener Leader (Standby), für dessen Handover-Marker.
         self._last_seen_leader: str | None = None
+        # Drossel der Unroutable-Logs je Schedule (BZ-03, ``unroutable.py``).
+        self._unroutable_logged_at: dict[str, float] = {}
 
         self._state: _SchedulerState = "standby"
         self._prev_leader_seen = False

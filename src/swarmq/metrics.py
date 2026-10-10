@@ -212,6 +212,15 @@ class Metrics:
                 labelnames=("schedule_name",),
                 registry=self.registry,
             )
+            self.scheduler_fires_unroutable_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_scheduler_fires_unroutable_total",
+                (
+                    "Scheduler fires the broker returned as unroutable (no queue "
+                    "with this name): kind=cron_lost or oneshot_dropped"
+                ),
+                labelnames=("queue", "kind"),
+                registry=self.registry,
+            )
             self.scheduler_leader_outdated: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_scheduler_leader_outdated",
                 (
@@ -254,6 +263,7 @@ class Metrics:
             self.dlq_messages = noop
             self.scheduler_leader = noop
             self.scheduler_cron_conflicts_total = noop
+            self.scheduler_fires_unroutable_total = noop
             self.scheduler_leader_outdated = noop
             self.consumer_reregistrations_total = noop
             self.execution_guard_events_total = noop
@@ -458,6 +468,13 @@ def _install_scheduler_gauge(
     async def _cron_conflict(**kw: Any) -> None:
         metrics.scheduler_cron_conflicts_total.labels(
             schedule_name=str(kw.get("schedule_name", "")),
+        ).inc()
+
+    @dispatcher.on_signal(Signal.SCHEDULER_FIRE_UNROUTABLE)
+    async def _fire_unroutable(**kw: Any) -> None:
+        metrics.scheduler_fires_unroutable_total.labels(
+            queue=str(kw.get("queue", "")),
+            kind=str(kw.get("kind", "")),
         ).inc()
 
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)

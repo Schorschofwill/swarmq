@@ -26,6 +26,7 @@ except SwarmQError as exc:
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
+| `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
@@ -471,6 +472,29 @@ SwarmQ sind begrenzt und lösen den Fehler nicht aus.
 wieder. Die Header verkleinern. Anders als bei `PublishIndeterminate`
 wird eine `unique_for`-Sperre freigegeben, weil nichts beim Broker
 ankam.
+
+## `UnroutableMessage`
+
+**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, im Worker auch Retry- und Dead-Letter-Kopien), wenn
+der Broker die Nachricht zurückgibt, weil es keine Queue mit diesem
+Namen gibt. Unterklasse von `BrokerConnectionError`. Sofort geworfen,
+ohne Wiederholung; nichts wurde zugestellt. Vor 0.12 bestätigte der
+Broker einen solchen Publish und verwarf die Nachricht still.
+
+**Ursache.** Die Queue wurde nie deklariert oder wurde gelöscht. Worker
+deklarieren die Queues, die sie konsumieren; meist startet also ein
+Producer vor dem ersten Worker einer neuen Queue, `queue=` ist
+vertippt, oder ein Task mit `TaskInfo(priority="high"|"low")` hat
+Worker ohne `--priorities` (kein `{queue}.high`/`.low`).
+
+**Recovery.** Zuerst den Worker der Queue starten, dann erneut
+veröffentlichen. Eine `unique_for`-Sperre wird freigegeben, weil nichts
+beim Broker ankam. Der Worker deklariert seine eigene
+`{queue}.DQ`/`.XQ` einmal selbst neu; der Scheduler-Leader schreibt
+einen verlorenen Cron-Fire fest und versucht einen verzögerten Task
+alle 60 s erneut, bis `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
+([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)).
 
 ## `RedeliveryLimitError`
 

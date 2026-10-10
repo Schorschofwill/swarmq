@@ -121,6 +121,14 @@ class Signal(enum.Enum):
                                    change with outdated=True, and with
                                    outdated=False when a current leader
                                    follows)
+      * SCHEDULER_FIRE_UNROUTABLE: worker_id, schedule_name, queue, kind
+                                   (the leader's publish was returned: no
+                                   queue with this name, BZ-03. kind
+                                   "cron_lost": this cron fire is lost and
+                                   committed; "oneshot_dropped": a delayed
+                                   task stayed unroutable longer than
+                                   scheduler_unroutable_oneshot_max_s and
+                                   was dropped with an error result)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -157,6 +165,7 @@ class Signal(enum.Enum):
     SCHEDULER_FIRE_SKIPPED = "scheduler_fire_skipped"
     SCHEDULER_CRON_CONFLICT = "scheduler_cron_conflict"
     SCHEDULER_LEADER_OUTDATED = "scheduler_leader_outdated"
+    SCHEDULER_FIRE_UNROUTABLE = "scheduler_fire_unroutable"
 
 
 class SignalDispatcher:

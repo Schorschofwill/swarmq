@@ -315,9 +315,9 @@ class WorkerLifecycle:
     def _warn_priority_tasks_without_routing(self) -> None:
         # Warn when a registered task declares
         # priority != "normal" but the worker is not configured for
-        # priority routing. Without the warning, a publish to
-        # {queue}.high is silently dropped into a queue nobody
-        # consumes and get_result() times out with no diagnostic.
+        # priority routing. Without a declared {queue}.high the broker
+        # returns such a publish and the producer gets UnroutableMessage
+        # (BZ-03, 0.12); before 0.12 it was dropped silently.
         if not self._config.priorities:
             priority_tasks: list[str] = []
             for task_name in self._registry.get_all():
@@ -333,9 +333,9 @@ class WorkerLifecycle:
                     tasks=priority_tasks[:20],
                     hint=(
                         "Enable worker priorities (SwarmQConfig.priorities="
-                        "True) or change TaskInfo.priority='normal' to "
-                        "avoid silent message drop into .high/.low queues "
-                        "nobody consumes."
+                        "True) or change TaskInfo.priority='normal'; without "
+                        "a declared .high/.low queue, publishing these tasks "
+                        "raises UnroutableMessage."
                     ),
                 )
 

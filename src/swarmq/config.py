@@ -248,6 +248,10 @@ class SwarmQConfig(ConfigValidation):
     # werden. ``log`` loggt nur, ``off`` schaltet das Aufraeumen ab.
     scheduler_prune: str = "on"
     scheduler_prune_after_s: float = 86400.0
+    # Unroutbare Oneshots (Plan 0.12.0, MR 6, BZ-03): der Leader stellt einen
+    # verzoegerten Task, dessen Queue fehlt, alle 60 s zurueck und verwirft ihn
+    # nach dieser Frist ab dem ersten unroutbaren Versuch (Fehlerergebnis).
+    scheduler_unroutable_oneshot_max_s: float = 86400.0
     # R4.5 Burst-Mode: when True, the worker exits cleanly once all
     # configured queues have been idle for `burst_idle_timeout` seconds
     # without delivering a single message. Used for batch/cron-style
@@ -383,6 +387,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "scheduler_seen_interval_s", "float"),
         ("SWARMQ_SCHEDULER_PRUNE", "scheduler_prune", "str"),
         ("SWARMQ_SCHEDULER_PRUNE_AFTER_S", "scheduler_prune_after_s", "float"),
+        ("SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S", "scheduler_unroutable_oneshot_max_s", "float"),
         ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
         # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
         # Port-Ranges werden beim Parsen validiert, damit eine kaputte
@@ -428,6 +433,7 @@ class SwarmQConfig(ConfigValidation):
         "scheduler_inflight_ttl",
         "scheduler_seen_interval_s",
         "scheduler_prune_after_s",
+        "scheduler_unroutable_oneshot_max_s",
         "burst_idle_timeout",
         "publish_timeout_s",
         "delivery_limit",

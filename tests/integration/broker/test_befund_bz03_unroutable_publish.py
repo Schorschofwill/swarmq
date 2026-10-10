@@ -51,14 +51,6 @@ async def _publish_outcome(broker: RabbitMQBroker, queue: str) -> tuple[object, 
     return outcome, time.monotonic() - started
 
 
-@pytest.mark.befund("BZ-03")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-03: publish an eine nicht deklarierte Queue liefert eine Quittung, "
-        "die Nachricht ist still verworfen (basic.return wird ignoriert)"
-    ),
-)
 async def test_publish_to_undeclared_queue_fails_fast_with_clear_error(broker: RabbitMQBroker) -> None:
     queue = f"bz03-never-declared-{uuid.uuid4().hex[:10]}"
 

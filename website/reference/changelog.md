@@ -17,8 +17,54 @@ All notable changes to SwarmQ. This project follows
   a DLQ copy whose deliveries the worker handed back until
   `x-acquired-count` reached the delivery limit
   ([error catalog](errors.md#redeliverylimiterror)).
+- **`swarmq.UnroutableMessage`** (subclass of `BrokerConnectionError`):
+  the broker returned a publish because no queue with that name exists;
+  nothing was delivered ([error catalog](errors.md#unroutablemessage)).
+- **Signal `SCHEDULER_FIRE_UNROUTABLE`** (`worker_id`, `schedule_name`,
+  `queue`, `kind`) and the counter
+  `swarmq_scheduler_fires_unroutable_total{queue, kind}`, with `kind`
+  `cron_lost` or `oneshot_dropped`
+  ([signals](../guides/signals.md)).
+- **`SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`** (default `86400`):
+  how long the leader keeps retrying a deferred task whose queue does
+  not exist ([configuration](configuration.md)).
 
 ### Fixed
+
+- **A publish to a queue that does not exist no longer disappears
+  silently.** The broker returned such a message (`basic.return`), but
+  the publisher confirm still arrived, so `send()`/`schedule()` reported
+  success and the message was gone. Publish channels now treat a return
+  as an error: the publish raises `UnroutableMessage` at once, without
+  retries. **Changed behaviour:**
+  - *Workers before producers* now applies permanently to **every new
+    queue**: a producer that publishes before the first worker of a
+    queue has declared it gets `UnroutableMessage` where the message
+    used to be lost silently.
+  - A task with `TaskInfo(priority="high"|"low")` published to a queue
+    whose workers run without `--priorities` now raises
+    `UnroutableMessage` (no `{queue}.high`/`.low` exists).
+  - The scheduler leader counts a cron fire to a missing queue as lost:
+    it commits the fire, emits `SCHEDULER_FIRE_UNROUTABLE`
+    (`kind="cron_lost"`) and logs `scheduler_fire_unroutable` at most
+    once per cron and 10 minutes, plus
+    `scheduler_fire_unroutable_foreign` when the cron is reported by
+    another app's worker.
+  - A deferred task (`schedule(delay=|eta=)`) whose queue is missing is
+    retried every 60 s. After
+    `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`, counted from the first
+    unroutable attempt, it is dropped: `scheduler_oneshot_unroutable_dropped`,
+    `SCHEDULER_FIRE_UNROUTABLE` (`kind="oneshot_dropped"`), an error
+    result under its task ID, and the dedup flag of `unique_for` is
+    released. The schedule definition gets the field `unroutable_since`
+    (`null` unless such a retry is pending).
+  - A worker whose own `{queue}.DQ`/`.XQ` was deleted while it ran
+    declares the queue family once on a separate channel and publishes
+    the retry or DLQ copy again (`own_queue_unroutable_redeclaring`).
+  - A workflow step whose next step goes to a missing queue marks the
+    workflow `failed` at once (`workflow_advance_unroutable`) instead of
+    being redelivered up to the delivery limit
+  ([deploy order](../guides/scheduling-and-retries.md#missing-queues)).
 
 - **A cancelled task no longer runs after waiting longer than
   `result_ttl`.** `app.cancel()` gave the flag a TTL of `result_ttl`,

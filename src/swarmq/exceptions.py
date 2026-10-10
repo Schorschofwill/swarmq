@@ -64,6 +64,18 @@ class MessageHeadersTooLarge(BrokerConnectionError):
     """
 
 
+class UnroutableMessage(BrokerConnectionError):
+    """Der Broker hat die Nachricht per ``basic.return`` zurueckgewiesen:
+    keine Queue mit diesem Namen (BZ-03). Nichts wurde zugestellt.
+
+    Typisch ist ein Producer, der vor dem ersten Worker einer neuen Queue
+    sendet, oder ein Prioritaets-Publish an ``{queue}.high``/``.low`` ohne
+    ``--priorities``. Vor 0.12 bestaetigte der Broker solche Nachrichten
+    und verwarf sie still. Unterklasse von :class:`BrokerConnectionError`
+    (Q14): bestehende Handler fangen sie weiter.
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 

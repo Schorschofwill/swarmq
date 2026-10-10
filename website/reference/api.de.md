@@ -663,6 +663,7 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Nachholen nach Ausfallzeit hat Cron-Termine übersprungen. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Mehrere Definitionen eines statischen Crons leben seit mehr als 10 Minuten; der Leader sendet es in jedem Übernahme-Takt, solange der Konflikt besteht. |
 | `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | Ein Nicht-Leader hat einen Scheduler-Leader ohne Zeitzonen-Unterstützung gesehen (`leader_version` `None` heißt vor 0.10.0); einmal pro Leader mit `outdated=True`, erneut mit `outdated=False`, wenn ein aktueller Leader folgt. |
+| `SCHEDULER_FIRE_UNROUTABLE` | `worker_id`, `schedule_name`, `queue`, `kind` | Der Broker hat einen Publish des Leaders zurückgegeben (Queue fehlt, BZ-03): `kind="cron_lost"` für einen verlorenen Cron-Fire, `"oneshot_dropped"` für einen nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfenen verzögerten Task. Gezählt in `swarmq_scheduler_fires_unroutable_total`. |
 
 Handler müssen `**kwargs` akzeptieren. Nutze `kwargs.get("batch_index")` für das nur in
 `TASK_DUPLICATE_DETECTED` vorhandene Feld, da Nicht-Batch-Quellen

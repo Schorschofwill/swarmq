@@ -84,6 +84,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up nach Downtime hat Cron-Termine übersprungen | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Mehrere Definitionen eines statischen Crons leben länger als 10 Minuten (Leader, in jedem Übernahme-Takt, solange er besteht) | `worker_id`, `schedule_name`, `fingerprints` |
 | `SCHEDULER_LEADER_OUTDATED` | Der Scheduler-Leader führt ein swarmq ohne Zeitzonen-Unterstützung aus (`outdated=True`, einmal pro Leader), oder ein aktueller Leader folgt (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = vor 0.10.0), `outdated` |
+| `SCHEDULER_FIRE_UNROUTABLE` | Der Broker hat einen Publish des Leaders zurückgegeben, weil die Queue fehlt: ein verlorener Cron-Fire (`kind="cron_lost"`) oder ein nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfener verzögerter Task (`kind="oneshot_dropped"`) | `worker_id`, `schedule_name`, `queue`, `kind` |
 
 `TASK_FAILED` gilt pro Versuch: Ein Task mit `max_retries=3`, der immer
 scheitert, feuert es viermal, im Wechsel mit drei `TASK_RETRYING`. Um

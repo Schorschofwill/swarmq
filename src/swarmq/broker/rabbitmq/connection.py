@@ -204,7 +204,9 @@ class RabbitMQConnection:
             # lines were once outside the BrokerConnectionError
             # wrapper, letting raw aio_pika exceptions escape to the CLI
             # as unformatted tracebacks; keep them inside.
-            self._publish_channel = await self._connection.channel()
+            # on_return_raises: ein basic.return (keine Queue) scheitert als
+            # PublishError statt still bestaetigt zu werden (BZ-03).
+            self._publish_channel = await self._connection.channel(on_return_raises=True)
             self._consume_channel = await self._connection.channel()
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
@@ -235,7 +237,7 @@ class RabbitMQConnection:
                     ),
                 )
             assert self._connection is not None
-            self._publish_channel = await self._connection.channel()
+            self._publish_channel = await self._connection.channel(on_return_raises=True)
         except BrokerConnectionError:
             raise
         except Exception as exc:
@@ -514,9 +516,13 @@ class RabbitMQConnection:
                     # wartet jeder andere Sperr-Interessent mit — auch der
                     # Verwurf nach einem Deadline-Bruch, der dadurch seine
                     # eigene Frist ueberschreiten wuerde.
-                    channel = await asyncio.wait_for(
-                        self._connection.channel(), timeout=_CHANNEL_READY_TIMEOUT_S
+                    # Nur der Publish-Kanal meldet basic.return (BZ-03).
+                    opened = (
+                        self._connection.channel(on_return_raises=True)
+                        if attr == "_publish_channel"
+                        else self._connection.channel()
                     )
+                    channel = await asyncio.wait_for(opened, timeout=_CHANNEL_READY_TIMEOUT_S)
             except Exception as exc:
                 raise BrokerConnectionError(
                     f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"

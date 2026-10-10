@@ -424,3 +424,24 @@ def test_execution_guard_events_are_counted_per_event():
     sample = "swarmq_execution_guard_events_total"
     assert m.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
     assert m.registry.get_sample_value(sample, {"event": "lease_lost"}) == 1.0
+
+
+async def test_fire_unroutable_signal_increments_unroutable_counter():
+    """Plan 0.12.0 (MR 6, BZ-03): verlorene Cron-Fires und verworfene Oneshots
+    sind zaehlbar."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+    for kind in ("cron_lost", "cron_lost", "oneshot_dropped"):
+        await disp.dispatch(
+            Signal.SCHEDULER_FIRE_UNROUTABLE,
+            worker_id="w",
+            schedule_name="nightly",
+            queue="reports",
+            kind=kind,
+        )
+    body = m.render().decode()
+    assert 'swarmq_scheduler_fires_unroutable_total{kind="cron_lost",queue="reports"} 2.0' in body
+    assert 'swarmq_scheduler_fires_unroutable_total{kind="oneshot_dropped",queue="reports"} 1.0' in body

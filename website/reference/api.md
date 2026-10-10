@@ -643,6 +643,7 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Catch-up after downtime skipped cron occurrences. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Several definitions of one static cron have been live for more than 10 minutes; the leader emits it on every adoption tick while the conflict lasts. |
 | `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | A non-leader saw a scheduler leader without time zone support (`leader_version` `None` means before 0.10.0); once per leader with `outdated=True`, again with `outdated=False` when a current leader follows. |
+| `SCHEDULER_FIRE_UNROUTABLE` | `worker_id`, `schedule_name`, `queue`, `kind` | The leader's publish was returned (no such queue, BZ-03): `kind="cron_lost"` for a lost cron fire, `"oneshot_dropped"` for a deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`. Counted in `swarmq_scheduler_fires_unroutable_total`. |
 
 Handlers must accept `**kwargs`. Use `kwargs.get("batch_index")` for the
 `TASK_DUPLICATE_DETECTED`-only field, since non-batch sources do

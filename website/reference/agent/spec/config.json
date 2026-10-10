@@ -229,6 +229,12 @@
       "type": "float"
     },
     {
+      "default": 86400.0,
+      "env_var": "SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S",
+      "name": "scheduler_unroutable_oneshot_max_s",
+      "type": "float"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_BURST_MODE",
       "name": "burst_mode",

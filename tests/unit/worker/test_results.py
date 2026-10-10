@@ -32,6 +32,12 @@ Test-Liste B23 (0.9.1, Level-Regel KTD11: selbstheilend → WARNING):
 15. [x] ``workflow_advance_broker_error`` mit Fehlerfeldern, WARNING bei
     AT_LEAST_ONCE.
 16. [x] ... ERROR bei FIRE_AND_FORGET.
+
+Test-Liste Plan 0.12.0, MR 6 (BZ-03, Q14):
+
+17. [x] ``UnroutableMessage`` aus ``advance``: Workflow sofort fail-markiert,
+    Ack, kein Redeliver (die Queue des naechsten Schritts fehlt).
+18. [x] Fail-Mark scheitert transient: Redeliver wie bei jedem Fail-Mark.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from unittest.mock import AsyncMock, MagicMock
 from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
+    UnroutableMessage,
     WorkflowStateConflict,
 )
 from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
@@ -415,3 +422,30 @@ async def test_advance_broker_error_fire_and_forget_logs_error(broker, backend, 
     [entry] = _events(swarmq_logs, "workflow_advance_broker_error")
     assert entry["log_level"] == "error"
     assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"
+
+
+async def test_unroutable_advance_fail_marks_workflow_and_acks_without_redeliver(broker, backend, config):
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=UnroutableMessage("no queue 'next-step'"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(), _execution())
+    assert outcome == Terminal.release_in_finally()
+    worker._workflow_advancer.fail.assert_awaited_once()
+    assert worker._workflow_advancer.fail.await_args.args[1] == "UnroutableMessage"
+    broker.redeliver.assert_not_awaited()
+    broker.ack.assert_awaited_once_with(msg)
+
+
+async def test_unroutable_advance_with_transient_fail_mark_error_is_redelivered(broker, backend, config):
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=UnroutableMessage("no queue 'next-step'"))
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+    outcome = await tail.finish(msg, _ctx(), _execution())
+    assert outcome is Redelivered
+    broker.redeliver.assert_awaited_once_with(msg)
+    broker.ack.assert_not_awaited()

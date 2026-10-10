@@ -327,6 +327,23 @@
     },
     {
       "dlq_on_uncaught": "n/a",
+      "doc": "Der Broker hat die Nachricht per ``basic.return`` zurueckgewiesen:\nkeine Queue mit diesem Namen (BZ-03). Nichts wurde zugestellt.\n\nTypisch ist ein Producer, der vor dem ersten Worker einer neuen Queue\nsendet, oder ein Prioritaets-Publish an ``{queue}.high``/``.low`` ohne\n``--priorities``. Vor 0.12 bestaetigte der Broker solche Nachrichten\nund verwarf sie still. Unterklasse von :class:`BrokerConnectionError`\n(Q14): bestehende Handler fangen sie weiter.",
+      "exception_class": "swarmq.exceptions.UnroutableMessage",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "UnroutableMessage",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
       "doc": "Raised by ``client.workflow(workflow_id)`` when no workflow state\nexists for the id (never started, or expired) — R14.",
       "exception_class": "swarmq.exceptions.WorkflowNotFound",
       "exit_code_on_cli": null,

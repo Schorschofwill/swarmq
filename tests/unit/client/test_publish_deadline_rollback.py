@@ -15,7 +15,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from swarmq.exceptions import BrokerConnectionError, MessageHeadersTooLarge, PublishIndeterminate
+from swarmq.exceptions import (
+    BrokerConnectionError,
+    MessageHeadersTooLarge,
+    PublishIndeterminate,
+    UnroutableMessage,
+)
 
 
 @pytest.fixture
@@ -93,6 +98,19 @@ async def test_unique_claim_is_released_when_headers_are_too_large(client, broke
     backend.release_unique = AsyncMock()
 
     with pytest.raises(MessageHeadersTooLarge):
+        await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+    backend.release_unique.assert_awaited_once()
+
+
+async def test_unique_claim_is_released_when_the_publish_is_unroutable(client, broker, backend):
+    """Q14 (Plan 0.12.0, MR 6, BZ-03): ``UnroutableMessage`` heisst, der
+    Broker hat die Nachricht zurueckgewiesen -- die Sperre weicht."""
+    broker.publish = AsyncMock(side_effect=UnroutableMessage("no queue 'math'"))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    with pytest.raises(UnroutableMessage):
         await client.schedule("add", 1, 2, queue="math", unique_for=60)
 
     backend.release_unique.assert_awaited_once()

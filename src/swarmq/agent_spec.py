@@ -111,6 +111,13 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "UnroutableMessage": dict(
+        # Die Queue fehlt; dieselbe Nachricht scheitert wieder, bis ein
+        # Worker sie deklariert hat. Nichts wurde zugestellt (Plan 0.12.0,
+        # MR 6, BZ-03).
+        origin="library", when=["schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "MessageHeadersTooLarge": dict(
         # Dieselben Header scheitern wieder; nichts wurde gesendet
         # (Plan 0.12.0, MR 2, BZ-17).

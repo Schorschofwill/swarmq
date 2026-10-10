@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, UnroutableMessage
 from swarmq.logging import _error_fields
 from swarmq.scheduler.definition import ScheduleDefinition, make_schedfire_key
 from swarmq.serialization import compute_dedup_hash, encode_json
@@ -43,6 +43,22 @@ class SchedulerFire:
         def _log(self) -> Any: ...
 
         def _wall_time(self) -> float: ...
+
+        async def _report_unroutable_cron(
+            self,
+            schedule_name: str,
+            definition: ScheduleDefinition,
+            exc: BaseException,
+        ) -> None: ...
+
+        async def _defer_unroutable_oneshot(
+            self,
+            schedule_name: str,
+            score_ms: int,
+            definition: ScheduleDefinition,
+            now_ms: int,
+            task_id: str,
+        ) -> None: ...
 
         def _plan_next_fire(self, schedule_name: str, definition: ScheduleDefinition, now_ms: int) -> int | None: ...
 
@@ -175,20 +191,16 @@ class SchedulerFire:
                     headers["x-swarmq-unique-hash"] = dedup_hash
                     headers["x-swarmq-unique-until"] = task_info.unique_until
 
-        if not dup_detected:
-            try:
-                await self._broker.publish(
-                    definition.queue,
-                    body,
-                    headers=headers,
-                )
-            except Exception as exc:
-                self._log.warning(
-                    "scheduler_publish_failed",
-                    schedule_name=schedule_name,
-                    **_error_fields(exc),
-                )
-                return  # Do NOT commit — retry on the next poll tick.
+        if not dup_detected and not await self._publish_fire(
+            schedule_name,
+            score_ms,
+            definition,
+            body,
+            headers,
+            now_ms,
+            task_id,
+        ):
+            return  # Do NOT commit — retry on the next poll tick.
 
         # The commit runs even on dup-skip: commit_fire MUST advance the
         # zset (otherwise the same schedule re-fires on every poll tick
@@ -234,6 +246,40 @@ class SchedulerFire:
                 schedule_name=schedule_name,
             )
             self._state = "standby"
+
+    async def _publish_fire(
+        self,
+        schedule_name: str,
+        score_ms: int,
+        definition: ScheduleDefinition,
+        body: bytes,
+        headers: dict[str, Any],
+        now_ms: int,
+        task_id: str,
+    ) -> bool:
+        """Publish eines Fires; ``True``, wenn ``_fire_one`` festschreiben soll."""
+        try:
+            await self._broker.publish(
+                definition.queue,
+                body,
+                headers=headers,
+            )
+        except UnroutableMessage as exc:
+            # BZ-03: die Queue fehlt. Ein Oneshot wird zurueckgestellt; ein
+            # Cron-Fire ist verloren und wird festgeschrieben, sonst
+            # feuerte er in jedem Takt erneut.
+            if definition.cron is None:
+                await self._defer_unroutable_oneshot(schedule_name, score_ms, definition, now_ms, task_id)
+                return False
+            await self._report_unroutable_cron(schedule_name, definition, exc)
+        except Exception as exc:
+            self._log.warning(
+                "scheduler_publish_failed",
+                schedule_name=schedule_name,
+                **_error_fields(exc),
+            )
+            return False
+        return True
 
     def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
         """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).

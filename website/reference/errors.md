@@ -25,6 +25,7 @@ except SwarmQError as exc:
 | `PublishIndeterminate` | `BrokerConnectionError` | A publish broke its deadline; whether it arrived is unknown |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
+| `UnroutableMessage` | `BrokerConnectionError` | The broker returned a publish: no queue with this name exists; nothing was delivered |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
@@ -451,6 +452,28 @@ headers are bounded and do not cause it.
 **Recovery.** Do not retry with the same headers; they fail again.
 Reduce the headers. Unlike `PublishIndeterminate`, a `unique_for` claim
 is released, because nothing reached the broker.
+
+## `UnroutableMessage`
+
+**When raised.** By a publish (`send()`, `schedule()`, workflow steps,
+and inside the worker by retry and dead-letter copies) when the broker
+returns the message because no queue with that name exists. Subclass
+of `BrokerConnectionError`. Raised at once, without retries; nothing
+was delivered. Before 0.12 the broker confirmed such a publish and
+dropped the message silently.
+
+**Cause.** The queue was never declared or was deleted. Workers declare
+the queues they consume, so the usual cause is a producer that starts
+before the first worker of a new queue, a typo in `queue=`, or a task
+with `TaskInfo(priority="high"|"low")` whose workers run without
+`--priorities` (no `{queue}.high`/`.low`).
+
+**Recovery.** Start the worker of the queue first, then publish again.
+A `unique_for` claim is released, because nothing reached the broker.
+The worker redeclares its own `{queue}.DQ`/`.XQ` once by itself; the
+scheduler leader commits a lost cron fire and retries a deferred task
+every 60 s up to `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
+([missing queues](../guides/scheduling-and-retries.md#missing-queues)).
 
 ## `RedeliveryLimitError`
 

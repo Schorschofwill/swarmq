@@ -346,6 +346,27 @@ under the old per-owner key that successors before 0.12 scan for, and
 a 0.12 successor recognises the marker of a leader before 0.12 through
 the leader it saw last. A missed marker only changes the signal.
 
+### Missing queues
+
+Queues are declared by the workers that consume them. From 0.12 a
+publish to a queue that does not exist raises `UnroutableMessage`
+instead of being confirmed and dropped by the broker. Start the
+workers of a **new queue before its producers** — this holds for every
+new queue, not only during an upgrade. A producer gets the exception
+right away; it is not retried.
+
+The scheduler leader handles a missing queue like this:
+
+| Fire | What happens |
+|---|---|
+| Cron | The fire is lost and committed, so the cron moves to its next occurrence. `SCHEDULER_FIRE_UNROUTABLE` with `kind="cron_lost"` counts it (`swarmq_scheduler_fires_unroutable_total`). `scheduler_fire_unroutable` is logged at most once per cron and 10 minutes; `scheduler_fire_unroutable_foreign` is added when the cron is reported by a worker of another app (check that all apps sharing the Valkey use the same RabbitMQ vhost). |
+| Deferred task (`delay=`/`eta=`) | Retried every 60 s (`scheduler_oneshot_unroutable`, throttled the same way). The definition records the first unroutable attempt in `unroutable_since`. After `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (default one day) from that attempt the task is dropped: `scheduler_oneshot_unroutable_dropped`, `kind="oneshot_dropped"`, an error result under its task ID (so `get_result()` raises `TaskError`), and its `unique_for` flag is released. |
+
+A worker whose own `{queue}.DQ` or `{queue}.XQ` was deleted while it
+ran declares the queue family once on a separate channel and publishes
+the retry or DLQ copy again. A workflow step whose next step goes to a
+missing queue fails the workflow at once.
+
 ### Migrating hand-converted UTC crons
 
 Before 0.10.0, crons that should fire at a local time had to be

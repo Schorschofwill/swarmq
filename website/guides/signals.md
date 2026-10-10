@@ -80,6 +80,7 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up after downtime skipped cron occurrences | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Several definitions of one static cron live for more than 10 minutes (leader, every adoption tick while it lasts) | `worker_id`, `schedule_name`, `fingerprints` |
 | `SCHEDULER_LEADER_OUTDATED` | The scheduler leader runs a swarmq without time zone support (`outdated=True`, once per leader), or a current leader follows (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = before 0.10.0), `outdated` |
+| `SCHEDULER_FIRE_UNROUTABLE` | The leader's publish was returned because the queue does not exist: a lost cron fire (`kind="cron_lost"`) or a deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (`kind="oneshot_dropped"`) | `worker_id`, `schedule_name`, `queue`, `kind` |
 
 `TASK_FAILED` is per attempt: a task with `max_retries=3` that always
 fails fires it four times, interleaved with three `TASK_RETRYING`. To

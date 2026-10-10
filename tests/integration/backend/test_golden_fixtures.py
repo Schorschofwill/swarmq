@@ -53,6 +53,7 @@ def test_schedule_definition_is_field_equal() -> None:
     assert list(json.loads(fixture)) == [
         "schedule_name", "task_name", "args", "kwargs", "queue", "cron", "fire_ts_ms", "source",
         "disabled", "last_fire_at", "dedup_hash", "unique_until", "timezone", "task_id",
+        "unroutable_since",
     ]
 
 

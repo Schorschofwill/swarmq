@@ -17,8 +17,59 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `error_type` einer DLQ-Kopie, deren Zustellungen der Worker
   zurückgegeben hat, bis `x-acquired-count` das Zustelllimit erreichte
   ([Fehlerkatalog](errors.md#redeliverylimiterror)).
+- **`swarmq.UnroutableMessage`** (Unterklasse von
+  `BrokerConnectionError`): Der Broker hat einen Publish zurückgegeben,
+  weil es keine Queue mit diesem Namen gibt; nichts wurde zugestellt
+  ([Fehlerkatalog](errors.md#unroutablemessage)).
+- **Signal `SCHEDULER_FIRE_UNROUTABLE`** (`worker_id`, `schedule_name`,
+  `queue`, `kind`) und der Zähler
+  `swarmq_scheduler_fires_unroutable_total{queue, kind}`, mit `kind`
+  `cron_lost` oder `oneshot_dropped`
+  ([Signale](../guides/signals.md)).
+- **`SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`** (Standard `86400`):
+  wie lange der Leader einen verzögerten Task erneut versucht, dessen
+  Queue fehlt ([Konfiguration](configuration.md)).
 
 ### Behoben
+
+- **Ein Publish an eine Queue, die es nicht gibt, verschwindet nicht
+  mehr still.** Der Broker gab eine solche Nachricht zurück
+  (`basic.return`), das Publisher-Confirm kam trotzdem, also meldeten
+  `send()`/`schedule()` Erfolg, und die Nachricht war weg. Die
+  Publish-Channels werten eine Rückgabe jetzt als Fehler: Der Publish
+  wirft sofort `UnroutableMessage`, ohne Wiederholung.
+  **Geändertes Verhalten:**
+  - *Worker vor Producern* gilt jetzt dauerhaft für **jede neue
+    Queue**: Ein Producer, der sendet, bevor der erste Worker die Queue
+    deklariert hat, bekommt `UnroutableMessage`, wo die Nachricht
+    vorher still verloren ging.
+  - Ein Task mit `TaskInfo(priority="high"|"low")`, dessen Worker ohne
+    `--priorities` laufen, wirft beim Publish jetzt `UnroutableMessage`
+    (es gibt kein `{queue}.high`/`.low`).
+  - Der Scheduler-Leader zählt einen Cron-Fire an eine fehlende Queue
+    als verloren: Er schreibt den Fire fest, sendet
+    `SCHEDULER_FIRE_UNROUTABLE` (`kind="cron_lost"`) und loggt
+    `scheduler_fire_unroutable` höchstens einmal je Cron und 10 Minuten,
+    dazu `scheduler_fire_unroutable_foreign`, wenn der Cron von einem
+    Worker einer anderen App gemeldet wird.
+  - Ein verzögerter Task (`schedule(delay=|eta=)`), dessen Queue fehlt,
+    wird alle 60 s erneut versucht. Nach
+    `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`, gezählt ab dem ersten
+    unroutbaren Versuch, wird er verworfen:
+    `scheduler_oneshot_unroutable_dropped`, `SCHEDULER_FIRE_UNROUTABLE`
+    (`kind="oneshot_dropped"`), ein Fehlerergebnis unter seiner Task-ID,
+    und die Dedup-Sperre von `unique_for` wird freigegeben. Die
+    Schedule-Definition bekommt das Feld `unroutable_since` (`null`,
+    solange kein solcher Wiederholversuch ansteht).
+  - Ein Worker, dessen eigene `{queue}.DQ`/`.XQ` während des Laufs
+    gelöscht wurde, deklariert die Queue-Familie einmal auf einem
+    eigenen Channel neu und veröffentlicht die Retry- bzw. DLQ-Kopie
+    erneut (`own_queue_unroutable_redeclaring`).
+  - Ein Workflow-Schritt, dessen nächster Schritt an eine fehlende Queue
+    geht, markiert den Workflow sofort als `failed`
+    (`workflow_advance_unroutable`), statt bis zum Zustelllimit neu
+    zugestellt zu werden
+  ([Reihenfolge beim Deploy](../guides/scheduling-and-retries.md#fehlende-queues)).
 
 - **Ein stornierter Task läuft nicht mehr, wenn er länger als
   `result_ttl` wartet.** `app.cancel()` gab dem Flag die TTL
