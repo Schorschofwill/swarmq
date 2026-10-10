@@ -19,6 +19,7 @@ Test-Liste:
 from __future__ import annotations
 
 import collections
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -137,12 +138,13 @@ async def _leader(valkey_url: str) -> tuple[int, str] | None:
 
 
 async def _wait_leader(valkey_url: str, worker: CompatWorker) -> None:
-    """Leader ist ein Kind von ``worker``. Der Arbeitsstand meldet heute ebenfalls
-    ``0.11.0`` als Version; unterschieden wird daher über die PID im Owner."""
+    """Leader ist ein Kind von ``worker`` (PID im Owner); die gemeldete Version
+    passt zur Laufzeit des Workers (0.11.0 bzw. Arbeitsstand)."""
+    expected = importlib.metadata.version("swarmq") if worker.runtime == "repo" else OLD_VERSION
 
     async def is_leader() -> bool:
         leader = await _leader(valkey_url)
-        return leader is not None and leader[1] == OLD_VERSION and leader[0] in worker.child_pids()
+        return leader is not None and leader[1] == expected and leader[0] in worker.child_pids()
 
     assert await wait_until(is_leader, timeout=_EVENT_TIMEOUT), (
         f"{worker.runtime} never became leader (current: {await _leader(valkey_url)})"
