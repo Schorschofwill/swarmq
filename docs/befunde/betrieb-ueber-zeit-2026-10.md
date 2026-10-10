@@ -78,36 +78,38 @@ Alle Befunde stammen aus Code- und Doku-Analyse. Keiner ist durch einen Test bes
 
 ## Nachweis-Tests
 
-| ID | Testdateien |
-|---|---|
-| BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` |
-| BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
-| BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` |
-| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` |
-| BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` |
-| BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` |
-| BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
-| BZ-08 | `tests/integration/test_befund_bz08_replay_without_id.py` |
-| BZ-09 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
-| BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` |
-| BZ-11 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` |
-| BZ-12 | `tests/unit/worker/gates/test_befund_bz12_marker_ttl.py` |
-| BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` |
-| BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` |
-| BZ-15 | `tests/integration/broker/test_befund_bz15_queue_args_change.py` |
-| BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` |
-| BZ-17 | `tests/integration/broker/test_befund_bz17_traceback_header.py` |
-| BZ-18 | `tests/unit/process_manager/test_befund_bz18_shutdown_budget.py`, `tests/unit/worker/test_befund_bz18_cleanup_after_grace.py` |
-| BZ-19 | `tests/unit/broker/test_befund_bz19_dead_letter_strategy.py` |
-| BZ-20 | `tests/integration/broker/test_befund_bz20_prefetch_per_consumer.py` |
-| BZ-21 | `tests/integration/broker/test_befund_bz21_dlq_destructive_read.py` |
-| BZ-22 | `tests/unit/worker/test_befund_bz22_unique_expiry.py` |
-| BZ-23 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` |
-| BZ-24 | `tests/unit/client/test_befund_bz24_registry_less_producer.py` |
-| BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` |
-| BZ-26 | `tests/unit/test_befund_bz26_backoff.py` |
-| BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` |
-| BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` |
+Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix ist der `xfail`-Marker des Nachweises entfernt.
+
+| ID | Testdateien | Status |
+|---|---|---|
+| BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` | offen |
+| BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
+| BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` | offen |
+| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | offen |
+| BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` | offen |
+| BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` | offen |
+| BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
+| BZ-08 | `tests/integration/test_befund_bz08_replay_without_id.py` | offen |
+| BZ-09 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
+| BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` | offen |
+| BZ-11 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | offen |
+| BZ-12 | `tests/unit/worker/gates/test_befund_bz12_marker_ttl.py` | offen |
+| BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` | offen |
+| BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` | offen |
+| BZ-15 | `tests/integration/broker/test_befund_bz15_queue_args_change.py` | offen |
+| BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` | offen |
+| BZ-17 | `tests/integration/broker/test_befund_bz17_traceback_header.py` | behoben (MR 2, f588215) |
+| BZ-18 | `tests/unit/process_manager/test_befund_bz18_shutdown_budget.py`, `tests/unit/worker/test_befund_bz18_cleanup_after_grace.py` | offen |
+| BZ-19 | `tests/unit/broker/test_befund_bz19_dead_letter_strategy.py` | offen |
+| BZ-20 | `tests/integration/broker/test_befund_bz20_prefetch_per_consumer.py` | offen |
+| BZ-21 | `tests/integration/broker/test_befund_bz21_dlq_destructive_read.py` | offen |
+| BZ-22 | `tests/unit/worker/test_befund_bz22_unique_expiry.py` | offen |
+| BZ-23 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | offen |
+| BZ-24 | `tests/unit/client/test_befund_bz24_registry_less_producer.py` | offen |
+| BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` | offen |
+| BZ-26 | `tests/unit/test_befund_bz26_backoff.py` | behoben (MR 2, 0fcbfe8) |
+| BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` | offen |
+| BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | offen |
 
 ## Entscheidungen (Georg, 2026-10-09)
 
