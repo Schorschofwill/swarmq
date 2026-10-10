@@ -59,7 +59,7 @@ async def test_retry_later_redeclares_deleted_delay_queue(rabbitmq_url: str) -> 
         delivery = await asyncio.wait_for(received.get(), timeout=5)
         await _delete(rabbitmq_url, f"{queue}.DQ")
 
-        await broker.retry_later(delivery, delay_ms=600_000, headers={})
+        await broker.retry_later(delivery, delay_ms=7_200_000, headers={})
 
         assert await _ready_count(rabbitmq_url, f"{queue}.DQ") == 1
     finally:

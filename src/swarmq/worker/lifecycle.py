@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from swarmq.logging import _error_fields, get_logger, sanitize_url
+from swarmq.ready_depth import ready_depth_or_none
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.scheduler.reports import static_definitions
 from swarmq.serialization import decode_result
@@ -525,6 +526,11 @@ class WorkerLifecycle:
                 self._metrics.queue_depth.labels(
                     queue=queue, kind="pending",
                 ).set(depth)
+                # Plan 0.12.0, MR 10: nur die Delay-Queues (Q15: ohne
+                # ``ready_depth`` bleibt die Serie aus).
+                ready = await ready_depth_or_none(self._broker, queue)
+                if ready is not None:
+                    self._metrics.queue_depth.labels(queue=queue, kind="delayed").set(max(0, depth - ready))
                 dlq = await self._broker.dead_letter_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
             except Exception as exc:
@@ -537,6 +543,7 @@ class WorkerLifecycle:
                     queue=queue,
                     **_error_fields(exc),
                 )
+        self._sample_delay_tiers_unavailable()
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
         await self._signal_dispatcher.dispatch(
@@ -545,6 +552,20 @@ class WorkerLifecycle:
             worker_id=worker_id,
             uptime_seconds=uptime,
         )
+
+    def _sample_delay_tiers_unavailable(self) -> None:
+        # Plan 0.12.0, MR 10 (BZ-01): optionale Broker-Faehigkeit (Q15).
+        assert self._metrics is not None
+        count = getattr(self._broker, "delay_tiers_unavailable", None)
+        if count is None:
+            return
+        for queue in self._config.consumed_queues:
+            try:
+                value = count(queue)
+            except Exception:
+                return
+            if isinstance(value, int) and not isinstance(value, bool):
+                self._metrics.delay_tiers_unavailable.labels(queue=queue).set(value)
 
     async def stop(self) -> None:
         """Close broker and backend connections."""

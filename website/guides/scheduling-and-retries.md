@@ -376,7 +376,9 @@ The scheduler leader handles a missing queue like this:
 
 A worker whose own `{queue}.DQ` or `{queue}.XQ` was deleted while it
 ran declares the queue family once on a separate channel and publishes
-the retry or DLQ copy again. A workflow step whose next step goes to a
+the retry or DLQ copy again; a deleted
+[delay tier](../explanation/delivery-semantics.md#delay-tiers)
+`{queue}.DQ.<tier>` is declared again the same way. A workflow step whose next step goes to a
 missing queue fails the workflow at once.
 
 ### Migrating hand-converted UTC crons

@@ -23,7 +23,197 @@
       "durable": true
     }
   },
-  "delay": "per-message expiration (Sekunden) auf {queue}.DQ; kein x-message-ttl",
+  "delay": "per-message expiration (Sekunden) auf der kleinsten Stufe {queue}.DQ.<1s|4s|15s|1m|4m|15m|1h> >= Wartezeit, ueber 1 h auf {queue}.DQ; kein x-message-ttl",
+  "delay_tiers": {
+    "classic": {
+      "golden.DQ.15m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      },
+      "golden.DQ.15s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      },
+      "golden.DQ.1h": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      },
+      "golden.DQ.1m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      },
+      "golden.DQ.1s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      },
+      "golden.DQ.4m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      },
+      "golden.DQ.4s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "classic"
+        },
+        "durable": true
+      }
+    },
+    "quorum": {
+      "golden.DQ.15m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.15s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.1h": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.1m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.1s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.4m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.4s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      }
+    },
+    "quorum_at_least_once": {
+      "golden.DQ.15m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.15s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.1h": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.1m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.1s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.4m": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      },
+      "golden.DQ.4s": {
+        "arguments": {
+          "x-dead-letter-exchange": "",
+          "x-dead-letter-routing-key": "golden",
+          "x-dead-letter-strategy": "at-least-once",
+          "x-overflow": "reject-publish",
+          "x-queue-type": "quorum"
+        },
+        "durable": true
+      }
+    }
+  },
   "quorum": {
     "golden": {
       "arguments": {

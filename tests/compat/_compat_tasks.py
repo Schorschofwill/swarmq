@@ -83,3 +83,17 @@ class CompatPoisonTask(Task):
         if not await _flag(_QUEUE):
             raise RuntimeError("poison until fixed")
         return RUNTIME
+
+
+class CompatSlowRetryTask(Task):
+    """Wie ``compat_flaky``, aber der Retry wartet 10 s (Plan 0.12.0, MR 10):
+    unter 0.12 in der Delay-Stufe ``{queue}.DQ.15s``, unter 0.11 in ``{queue}.DQ``."""
+
+    task_info = TaskInfo(
+        name="compat_slow_retry", queues=[_QUEUE], max_retries=2, retry_backoff="fixed", retry_base_delay=10.0
+    )
+
+    async def run(self) -> str:
+        if await _record("compat_slow_retry", self._task_id) == 1:
+            raise RuntimeError("first attempt fails")
+        return RUNTIME

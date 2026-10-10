@@ -134,8 +134,9 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_retries_total` | counter | `task_name`, `queue` | Retries scheduled. |
 | `swarmq_tasks_rejected_total` | counter | `queue`, `reason` | Messages handed to the broker DLX without diagnostic headers (`TASK_REJECTED`), e.g. `body_too_large`, `undecodable`, `unregistered_task`. |
 | `swarmq_recyclings_total` | counter | `kind`, `reason` | Process recyclings; `kind` is `worker` or `compute_child`. |
-| `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count (`kind="pending"`), sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`. |
+| `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count, sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`: `kind="pending"` is `{queue}` plus all delay queues, `kind="delayed"` (since 0.12) the delay queues only ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `swarmq_dlq_messages` | gauge | `queue` | Messages in `{queue}.XQ`, sampled. |
+| `swarmq_delay_tiers_unavailable` | gauge | `queue` | Delay tiers of the queue the broker refused to declare; their delays use `{queue}.DQ` ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `swarmq_worker_uptime_seconds` | gauge | `worker_id` | Seconds since the worker started, sampled. |
 | `swarmq_scheduler_leader` | gauge | `worker_id` | `1` while this worker holds the scheduler leader lock, else `0`. |
 | `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq below the minimum leader version (currently 0.12), else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |

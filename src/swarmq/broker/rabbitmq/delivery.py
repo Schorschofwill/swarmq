@@ -101,6 +101,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         message_body: bytes,
         delay_ms: int,
         headers: Mapping[str, Any] | None = None,
+        target: str | None = None,
     ) -> None:
         msg = aio_pika.Message(
             body=message_body,
@@ -108,7 +109,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             expiration=delay_ms / 1000,
             headers=dict(headers or {}),
         )
-        await self._publish_with_retry(f"{queue_name}.DQ", msg)
+        await self._publish_with_retry(target or f"{queue_name}.DQ", msg)
 
     async def _publish_to_dead_letter_queue(
         self,
@@ -379,11 +380,17 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             await settle(message.nack(requeue=True), "redeliver")
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
-        await publish_redeclaring_once(
-            self,
-            delivery.queue,
-            lambda: self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers),
-        )
+        target = await self._delay_target(delivery.queue, delay_ms)
+
+        async def publish() -> None:
+            nonlocal target
+            if target not in self._ready_delay_tiers and target != f"{delivery.queue}.DQ":
+                # Die Delay-Stufe (BZ-01, MR 10) war unroutbar und ist verworfen:
+                # beim zweiten Versuch neu deklarieren, sonst ``{queue}.DQ``.
+                target = await self._delay_target(delivery.queue, delay_ms)
+            await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers, target)
+
+        await publish_redeclaring_once(self, delivery.queue, publish)
         await self._ack_after_publish(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:

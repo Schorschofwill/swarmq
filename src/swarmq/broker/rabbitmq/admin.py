@@ -20,6 +20,7 @@ from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_he
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError
 from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+from swarmq.queue_names import delay_tiers
 
 
 def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
@@ -44,6 +45,14 @@ def _message_ttl_s(headers: dict[str, Any]) -> tuple[bool, float | None]:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return False, None
     return True, value / 1000
+
+
+async def _close_quietly(channel: aio_pika.abc.AbstractChannel) -> None:
+    if not channel.is_closed:
+        try:
+            await channel.close()
+        except Exception:
+            pass
 
 
 class RabbitMQAdmin(RabbitMQDelivery):
@@ -411,47 +420,57 @@ class RabbitMQAdmin(RabbitMQDelivery):
             raise BrokerConnectionError(str(exc)) from exc
 
     async def queue_depth(self, queue: str) -> int:
-        """Return the total pending-message count for ``queue`` and its
-        delay companion ``{queue}.DQ`` (R4.7 Autoscaling).
+        """Return the total pending-message count for ``queue``, its delay
+        companion ``{queue}.DQ`` and the delay tiers ``{queue}.DQ.1s`` …
+        ``.1h`` (R4.7 Autoscaling; tiers since 0.12, BZ-01).
 
         Uses AMQP ``declare(passive=True)`` which returns the current
         ``message_count`` without modifying the queue — safe to poll
-        at a 10s cadence. If a queue does not exist yet (worker not
-        started, fresh deployment) the broker raises
-        :class:`ChannelNotFoundEntity` **and closes the channel**
-        (AMQP semantics); we treat that as 0 depth and use a
-        short-lived dedicated channel per call so a missing queue
-        does not poison the publish channel.
+        at a 10s cadence. A queue that does not exist (worker not
+        started, a tier never used) counts as 0; the broker then
+        **closes the channel** (AMQP semantics), so the next name gets a
+        fresh one. Throwaway channels only — a missing queue never
+        poisons the publish channel.
 
         DLQ depth is deliberately excluded: XQ backlog is not
         work-to-do, it's work-that-failed and should not drive
         scale-up.
         """
+        return await self._passive_message_counts((queue, f"{queue}.DQ", *delay_tiers(queue)))
+
+    async def ready_depth(self, queue: str) -> int:
+        """Nachrichten, die in ``queue`` selbst zur Abholung bereitliegen, ohne
+        Delay-Queues und DLQ (Plan 0.12.0, MR 10). Grundlage des Autoscalers:
+        lange Rueckstellungen in den Delay-Stufen sind keine Arbeit fuer jetzt."""
+        return await self._passive_message_counts((queue,))
+
+    async def _passive_message_counts(self, names: tuple[str, ...]) -> int:
+        """Summe der ``message_count`` von ``names`` ueber einen Wegwerf-Channel,
+        der nach NOT_FOUND neu geoeffnet wird (Plan 0.12.0, MR 10)."""
         if self._connection is None or self._connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
         total = 0
-        for name in (queue, f"{queue}.DQ"):
-            # Throwaway channel per queue — a failed passive-declare
-            # closes the channel, so we cannot share one across both
-            # lookups without re-opening in between.
-            channel: aio_pika.abc.AbstractChannel | None = None
-            try:
-                channel = await self._connection.channel()
-                q = await channel.declare_queue(name, passive=True)
+        channel: aio_pika.abc.AbstractChannel | None = None
+        try:
+            for name in names:
+                if channel is None or channel.is_closed:
+                    channel = await self._connection.channel()
+                try:
+                    q = await channel.declare_queue(name, passive=True)
+                except ChannelNotFoundEntity:
+                    # Queue does not exist — counts as 0. The broker closed the
+                    # channel; close it here as well, or a RobustChannel reopens itself.
+                    await _close_quietly(channel)
+                    channel = None
+                    continue
                 result = getattr(q, "declaration_result", None)
                 if result is not None:
                     total += int(getattr(result, "message_count", 0))
-            except ChannelNotFoundEntity:
-                # Queue does not exist yet — counts as 0 depth.
-                continue
-            except Exception as exc:
-                raise BrokerConnectionError(str(exc)) from exc
-            finally:
-                if channel is not None and not channel.is_closed:
-                    try:
-                        await channel.close()
-                    except Exception:
-                        pass
+        except Exception as exc:
+            raise BrokerConnectionError(str(exc)) from exc
+        finally:
+            if channel is not None:
+                await _close_quietly(channel)
         return total
 
     async def dead_letter_depth(self, queue: str) -> int:

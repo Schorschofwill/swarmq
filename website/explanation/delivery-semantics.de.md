@@ -501,6 +501,78 @@ zurückgesetzt, sodass der Task sein volles Retry-Budget zurückbekommt,
 und eine neue Replay-ID lässt ihn am Ausführungsschutz vorbei.
 Der Original-Traceback bleibt in den Headern für die Post-Mortem.
 
+## Delay-Stufen
+
+Ein Retry mit Backoff und jede Rückstellung (Lock- oder
+Rate-Limit-Konflikt, Backend-Ausfall, Ausführungsschutz) wartet in einer
+Delay-Queue: Die Nachricht trägt ihre eigene Ablaufzeit, und nach Ablauf
+leitet RabbitMQ sie per Dead-Lettering zurück nach `{queue}`. RabbitMQ
+lässt eine Nachricht aber nur am **Kopf** einer Queue verfallen. Bis 0.11
+teilten sich alle Wartezeiten einer Queue `{queue}.DQ`; ein Retry, der
+vorne eine Stunde wartete, hielt jede kürzere Rückstellung dahinter fest.
+
+Seit 0.12 nutzt der Worker sieben Delay-Stufen je Queue:
+
+| Stufe | Wartezeiten |
+|---|---|
+| `{queue}.DQ.1s` | bis 1 s |
+| `{queue}.DQ.4s` | bis 4 s |
+| `{queue}.DQ.15s` | bis 15 s |
+| `{queue}.DQ.1m` | bis 1 min |
+| `{queue}.DQ.4m` | bis 4 min |
+| `{queue}.DQ.15m` | bis 15 min |
+| `{queue}.DQ.1h` | bis 1 h |
+| `{queue}.DQ` | über 1 h |
+
+Eine Wartezeit kommt in die kleinste Stufe, deren Grenze sie erreicht.
+Innerhalb einer Stufe kann eine kürzere Wartezeit weiter hinter einer
+längeren warten, benachbarte Stufen liegen aber höchstens Faktor vier
+auseinander: Eine Wartezeit dauert höchstens das Vierfache, mindestens
+aber bis zu einer Sekunde. Wartezeiten über einer Stunde behalten das
+Head-of-Line-Blocking von `{queue}.DQ`.
+
+**Anlage:** Der Worker, der `{queue}` konsumiert, legt eine Stufe beim
+ersten Gebrauch an, mit den Argumenten von `{queue}.DQ` und über dieselbe
+Kette (siehe [vorhandene Queue-Argumente](#vorhandene-queue-argumente)):
+Im Modus `auto` dead-lettert eine neue Stufe at-least-once. Eine Queue
+hat höchstens sieben Stufen, mit `SWARMQ_PRIORITIES` höchstens 21 (sieben
+je Band). Ein Prozess, der die Queue-Familie nicht selbst deklariert hat,
+etwa ein Producer, nutzt `{queue}.DQ` wie in 0.11.
+
+**Ablehnung:** Lehnt der Broker eine Stufe ab (Queue-Limit des vhosts,
+fehlendes Recht, eine vorhandene Queue gleichen Namens mit anderen
+Argumenten), läuft der Worker weiter. Seine Wartezeiten dieser Stufe
+gehen für den Rest des Prozesses an `{queue}.DQ`; er loggt die WARNING
+`delay_tier_unavailable` einmal je Stufe und meldet die Gauge
+`swarmq_delay_tiers_unavailable{queue}`. Ursache beheben und den Worker
+neu starten. Eine Stufe, die während des Laufs gelöscht wird, legt der
+nächste unroutbare Publish an sie einmal neu an; scheitert das, gilt
+`{queue}.DQ`.
+
+**Rechte und Policies:** Die configure- und write-Rechte des
+swarmq-Benutzers müssen `{queue}.DQ.<stufe>` abdecken. Eine Policy für die
+Delay-Queues, etwa die at-least-once-Policy, braucht das Muster
+`\.DQ(\.\w+)?$` statt `\.DQ$`.
+
+**Mischbetrieb und Rollback:** Eine Stufe leitet wie `{queue}.DQ` zurück
+nach `{queue}`; ein 0.11-Worker auf derselben Queue konsumiert also
+Nachrichten, die ein 0.12-Worker zurückgestellt hat. Nach einem Rollback
+auf 0.11.1 bleiben die Stufen bestehen; ihre Nachrichten kehren weiter
+zur Fälligkeit nach `{queue}` zurück. Eine Stufe erst löschen, wenn sie
+leer ist.
+
+**Duplikate:** At-least-once-Dead-Lettering kann eine Nachricht doppelt
+zustellen; der [Ausführungsschutz](#ausfuhrungsschutz) überspringt ein
+solches Duplikat, außer bei Tasks ohne ihn (`FIRE_AND_FORGET`,
+`execution_guard=False`).
+
+**Autoscaling** (`swarmq worker --autoscale`) zählt seit 0.12 nur die
+Nachrichten, die in `{queue}` selbst bereitliegen. Lange Rückstellungen
+in den Stufen skalieren keine Worker hoch; kurze Retries kehren binnen
+Sekunden nach `{queue}` zurück und werden dort gezählt. Die Gauge
+`swarmq_queue_depth{kind="pending"}` behält ihre Bedeutung (`{queue}` plus
+alle Delay-Queues); das neue `kind="delayed"` zählt nur die Delay-Queues.
+
 ## Vorhandene Queue-Argumente
 
 Der Worker deklariert beim Start `{queue}`, `{queue}.DQ` und
@@ -631,17 +703,19 @@ die Queue migrieren:
 
 1. Die Producer der Queue stoppen (auch die Crons des Schedulers, die
    an sie publizieren).
-2. Die Worker `{queue}` und `{queue}.DQ` leeren lassen. `{queue}.DQ`
-   enthält ausstehende Rückstellungen und verzögerte Tasks
+2. Die Worker `{queue}`, `{queue}.DQ` und die
+   [Delay-Stufen](#delay-stufen) `{queue}.DQ.*` leeren lassen. Sie
+   enthalten ausstehende Rückstellungen und verzögerte Tasks
    (`delay`/`eta`), die womöglich erst viel später fällig sind: auf sie
    warten oder sie per Shovel in eine Zwischen-Queue verschieben. Eine
-   `{queue}.DQ` mit Nachrichten nie einfach löschen; sie gingen
-   verloren.
+   Delay-Queue mit Nachrichten nie einfach löschen; die Nachrichten
+   gingen verloren.
 3. Die Worker stoppen.
 4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
-5. Die drei Queues löschen und die Worker mit der neuen Einstellung
-   starten. Sie legen die Queues neu an; danach die verschobenen
-   Nachrichten per Shovel zurückholen.
+5. Die Queues der Familie löschen (`{queue}`, `{queue}.DQ`, die Stufen
+   und `{queue}.XQ`) und die Worker mit der neuen Einstellung starten.
+   Sie legen die Queues neu an; danach die verschobenen Nachrichten per
+   Shovel zurückholen.
 
 ## Was SwarmQ nicht tut
 

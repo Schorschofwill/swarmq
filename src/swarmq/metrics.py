@@ -19,8 +19,11 @@ Metrics (plan §R5.1):
   | dlq | duplicate)
 - ``swarmq_task_duration_seconds{task_name,queue}`` — histogram
 - ``swarmq_tasks_active{queue}`` — gauge of in-flight tasks per queue
-- ``swarmq_queue_depth{queue,kind}`` — gauge (kind: main | delay | dlq)
-  sampled by the worker on a schedule; the exporter reads it.
+- ``swarmq_queue_depth{queue,kind}`` — gauge (kind: pending = main queue
+  plus all delay queues, delayed = delay queues only) sampled by the
+  worker on a schedule; the exporter reads it.
+- ``swarmq_delay_tiers_unavailable{queue}`` — gauge of delay tiers the
+  broker refused to declare (their delays fall back to ``{queue}.DQ``)
 - ``swarmq_worker_uptime_seconds{worker_id}`` — gauge
 - ``swarmq_retries_total{task_name,queue}`` — counter
 - ``swarmq_dlq_messages{queue}`` — gauge (live DLQ depth)
@@ -248,6 +251,14 @@ class Metrics:
                 labelnames=("event",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 10 (BZ-01): vom Broker abgelehnte Delay-Stufen
+            # je Queue; deren Rueckstellungen gehen an ``{queue}.DQ``.
+            self.delay_tiers_unavailable: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_delay_tiers_unavailable",
+                "Delay tiers the broker refused to declare; their delays use the .DQ",
+                labelnames=("queue",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -267,6 +278,7 @@ class Metrics:
             self.scheduler_leader_outdated = noop
             self.consumer_reregistrations_total = noop
             self.execution_guard_events_total = noop
+            self.delay_tiers_unavailable = noop
 
     @property
     def enabled(self) -> bool:

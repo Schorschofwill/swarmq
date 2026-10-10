@@ -1,15 +1,16 @@
 """Aufräumen von Queue-Familien in Integrationstests (Plan 0.12.0, MR 1).
 
 Ersetzt die eigenen Löschlisten (``(q, f"{q}.DQ", f"{q}.XQ")``) der Tests.
-Die Familie kommt aus ``swarmq.queue_names.queue_family``; kommen mit MR 10
-Delay-Stufen hinzu, räumen alle Tests sie ohne Änderung mit auf.
+Die Familie kommt aus ``swarmq.queue_names.queue_family``, dazu die
+Delay-Stufen aus ``delay_tiers`` (MR 10), die ein Worker beim ersten Retry
+anlegt; alle Tests räumen sie ohne Änderung mit auf.
 """
 
 from __future__ import annotations
 
 import aio_pika
 
-from swarmq.queue_names import queue_family
+from swarmq.queue_names import delay_tiers, queue_family
 
 
 async def delete_queue_family(url: str, *queues: str) -> None:
@@ -22,7 +23,7 @@ async def delete_queue_family(url: str, *queues: str) -> None:
     connection = await aio_pika.connect(url)
     try:
         for queue in queues:
-            for name in queue_family(queue):
+            for name in (*queue_family(queue), *delay_tiers(queue)):
                 channel = await connection.channel()
                 try:
                     await channel.queue_delete(name)

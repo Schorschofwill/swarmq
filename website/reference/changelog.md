@@ -37,6 +37,14 @@ All notable changes to SwarmQ. This project follows
   `legacy`; default `auto`): dead-lettering of new quorum queues
   ([configuration](configuration.md),
   [dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)).
+- **Gauge `swarmq_delay_tiers_unavailable{queue}`** and the WARNING
+  `delay_tier_unavailable`: delay tiers the broker refused to declare
+  ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
+- **`swarmq_queue_depth{kind="delayed"}`**: messages in the delay queues
+  only. `kind="pending"` keeps its meaning (`{queue}` plus all delay
+  queues, now including the tiers).
+- **`RabbitMQBroker.ready_depth(queue)`**: messages ready in `{queue}`
+  itself, without delay queues and DLQ.
 
 ### Changed
 
@@ -75,11 +83,39 @@ All notable changes to SwarmQ. This project follows
   by the worker at 19 deliveries, with an error result, instead of
   silently by the broker
   ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)).
+- **Autoscaling counts only the messages ready in the queue itself.**
+  `swarmq worker --autoscale` used the depth of `{queue}` plus
+  `{queue}.DQ`; long deferrals (lock, guard, backend) waiting in the
+  delay queues scaled the workers up for hours. It now uses
+  `ready_depth`; a broker without it (a fake, another broker) keeps the
+  old depth. **Changed behaviour:** a backlog of deferred messages no
+  longer scales up; short retries are counted once they are back in
+  the queue ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
 - Golden file `queue_args.json`: new key `quorum_at_least_once`; the
   existing entries are unchanged.
+- Golden file `queue_args.json`: new key `delay_tiers` (the seven tiers
+  per queue type and mode) and a new description under `delay`; the
+  other existing entries are unchanged.
 
 ### Fixed
 
+- **A short retry or deferral no longer waits behind a long one.**
+  All delays of a queue shared `{queue}.DQ`, and RabbitMQ only expires
+  the message at its head: a retry waiting an hour held back every
+  lock, rate-limit, backend or guard deferral behind it. The worker now
+  uses seven delay tiers `{queue}.DQ.1s` to `{queue}.DQ.1h` and puts a
+  delay into the smallest tier that reaches it; delays over one hour
+  stay in `{queue}.DQ`. A tier is created on first use with the
+  arguments of `{queue}.DQ`; a refusal is not fatal (the delays of that
+  tier use `{queue}.DQ`). **Known limits:** inside a tier a delay can
+  take up to four times as long, at least up to one second; over one
+  hour the head-of-line blocking remains; at-least-once dead-lettering
+  can deliver a duplicate, which runs twice for tasks without the
+  execution guard. A queue has up to seven more queues (21 with
+  `SWARMQ_PRIORITIES`); permissions and delay-queue policies need the
+  pattern `\.DQ(\.\w+)?$`. 0.11 workers keep using `{queue}.DQ`, and
+  messages in a tier return to `{queue}` after a rollback as well
+  ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
 - **New quorum queues dead-letter at-least-once.** Retries and the
   delivery limit move messages by broker dead-lettering, which RabbitMQ
   does at-most-once by default for quorum queues: a leader change could

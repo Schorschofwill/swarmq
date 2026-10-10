@@ -135,8 +135,9 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_retries_total` | Counter | `task_name`, `queue` | Eingeplante Retries. |
 | `swarmq_tasks_rejected_total` | Counter | `queue`, `reason` | Nachrichten, die ohne Diagnose-Header an den Broker-DLX gingen (`TASK_REJECTED`), z. B. `body_too_large`, `undecodable`, `unregistered_task`. |
 | `swarmq_recyclings_total` | Counter | `kind`, `reason` | Prozess-Recyclings; `kind` ist `worker` oder `compute_child`. |
-| `swarmq_queue_depth` | Gauge | `queue`, `kind` | Vom Broker gemeldete Nachrichtenzahl (`kind="pending"`), alle `SWARMQ_METRICS_SAMPLE_INTERVAL` abgetastet. |
+| `swarmq_queue_depth` | Gauge | `queue`, `kind` | Vom Broker gemeldete Nachrichtenzahl, alle `SWARMQ_METRICS_SAMPLE_INTERVAL` abgetastet: `kind="pending"` ist `{queue}` plus alle Delay-Queues, `kind="delayed"` (seit 0.12) nur die Delay-Queues ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
 | `swarmq_dlq_messages` | Gauge | `queue` | Nachrichten in `{queue}.XQ`, abgetastet. |
+| `swarmq_delay_tiers_unavailable` | Gauge | `queue` | Delay-Stufen der Queue, deren Deklaration der Broker abgelehnt hat; ihre Wartezeiten nutzen `{queue}.DQ` ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
 | `swarmq_worker_uptime_seconds` | Gauge | `worker_id` | Sekunden seit Worker-Start, abgetastet. |
 | `swarmq_scheduler_leader` | Gauge | `worker_id` | `1`, solange dieser Worker den Scheduler-Leader-Lock hält, sonst `0`. |
 | `swarmq_scheduler_leader_outdated` | Gauge | `worker_id` | `1`, solange dieser Worker einen Scheduler-Leader mit swarmq unter der Mindestversion für Leader (derzeit 0.12) sieht, sonst `0` ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)). |

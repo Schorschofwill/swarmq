@@ -395,7 +395,9 @@ Der Scheduler-Leader behandelt eine fehlende Queue so:
 Ein Worker, dessen eigene `{queue}.DQ` oder `{queue}.XQ` während des
 Laufs gelöscht wurde, deklariert die Queue-Familie einmal auf einem
 eigenen Channel neu und veröffentlicht die Retry- bzw. DLQ-Kopie
-erneut. Ein Workflow-Schritt, dessen nächster Schritt an eine fehlende
+erneut; eine gelöschte
+[Delay-Stufe](../explanation/delivery-semantics.md#delay-stufen)
+`{queue}.DQ.<stufe>` wird ebenso neu angelegt. Ein Workflow-Schritt, dessen nächster Schritt an eine fehlende
 Queue geht, lässt den Workflow sofort scheitern.
 
 ### Von Hand umgerechnete UTC-Crons umstellen

@@ -38,6 +38,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `legacy`; Standard `auto`): Dead-Lettering neuer Quorum-Queues
   ([Konfiguration](configuration.md),
   [Garantie beim Dead-Lettering](../explanation/delivery-semantics.md#garantie-beim-dead-lettering)).
+- **Gauge `swarmq_delay_tiers_unavailable{queue}`** und die WARNING
+  `delay_tier_unavailable`: Delay-Stufen, deren Deklaration der Broker
+  abgelehnt hat ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)).
+- **`swarmq_queue_depth{kind="delayed"}`**: nur die Nachrichten in den
+  Delay-Queues. `kind="pending"` behält seine Bedeutung (`{queue}` plus
+  alle Delay-Queues, jetzt mit den Stufen).
+- **`RabbitMQBroker.ready_depth(queue)`**: Nachrichten, die in `{queue}`
+  selbst bereitliegen, ohne Delay-Queues und DLQ.
 
 ### Geändert
 
@@ -78,11 +86,42 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Zustellungen mit Fehlerergebnis, statt dass der Broker sie still
   verwirft
   ([effektives Delivery-Limit](../explanation/delivery-semantics.md#effektives-delivery-limit)).
+- **Autoscaling zählt nur die Nachrichten, die in der Queue selbst
+  bereitliegen.** `swarmq worker --autoscale` nutzte die Tiefe von
+  `{queue}` plus `{queue}.DQ`; lange Rückstellungen (Lock, Guard,
+  Backend) in den Delay-Queues skalierten die Worker stundenlang hoch.
+  Es nutzt jetzt `ready_depth`; ein Broker ohne diese Methode (Fake,
+  anderer Broker) behält die bisherige Tiefe. **Geändertes Verhalten:**
+  Ein Rückstand zurückgestellter Nachrichten skaliert nicht mehr hoch;
+  kurze Retries zählen, sobald sie zurück in der Queue sind
+  ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)).
 - Golden-Datei `queue_args.json`: neuer Schlüssel `quorum_at_least_once`;
   die bestehenden Einträge sind unverändert.
+- Golden-Datei `queue_args.json`: neuer Schlüssel `delay_tiers` (die
+  sieben Stufen je Queue-Typ und Modus) und eine neue Beschreibung unter
+  `delay`; die übrigen bestehenden Einträge sind unverändert.
 
 ### Behoben
 
+- **Ein kurzer Retry oder eine kurze Rückstellung wartet nicht mehr
+  hinter einer langen.** Alle Wartezeiten einer Queue teilten sich
+  `{queue}.DQ`, und RabbitMQ lässt nur die Nachricht am Kopf verfallen:
+  Ein Retry, der eine Stunde wartete, hielt jede Lock-, Rate-Limit-,
+  Backend- oder Guard-Rückstellung dahinter fest. Der Worker nutzt jetzt
+  sieben Delay-Stufen `{queue}.DQ.1s` bis `{queue}.DQ.1h` und legt eine
+  Wartezeit in die kleinste Stufe, die sie erreicht; Wartezeiten über
+  einer Stunde bleiben in `{queue}.DQ`. Eine Stufe entsteht beim ersten
+  Gebrauch mit den Argumenten von `{queue}.DQ`; eine Ablehnung ist nicht
+  fatal (die Wartezeiten dieser Stufe nutzen `{queue}.DQ`). **Bekannte
+  Grenzen:** Innerhalb einer Stufe kann eine Wartezeit bis zum
+  Vierfachen dauern, mindestens bis zu einer Sekunde; über einer Stunde
+  bleibt das Head-of-Line-Blocking; at-least-once-Dead-Lettering kann ein
+  Duplikat zustellen, das bei Tasks ohne Ausführungsschutz doppelt
+  läuft. Eine Queue bekommt bis zu sieben weitere Queues (21 mit
+  `SWARMQ_PRIORITIES`); Rechte und Policies der Delay-Queues brauchen das
+  Muster `\.DQ(\.\w+)?$`. 0.11-Worker nutzen weiter `{queue}.DQ`, und
+  Nachrichten in einer Stufe kehren auch nach einem Rollback nach
+  `{queue}` zurück ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)).
 - **Neue Quorum-Queues dead-lettern at-least-once.** Rückstellungen
   und das Delivery-Limit bewegen Nachrichten per Dead-Lettering des
   Brokers, und das tut RabbitMQ bei Quorum-Queues standardmäßig

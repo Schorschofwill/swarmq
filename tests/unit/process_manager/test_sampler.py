@@ -64,3 +64,47 @@ class TestQueueDepthSampler:
             sampler()
         except TimeoutError:
             pass  # heutige Semantik: der Timeout schlägt zum Aufrufer durch
+
+
+class ReadyAdmin(FakeAdmin):
+    """Broker mit ``ready_depth`` (Plan 0.12.0, MR 10): nur die Haupt-Queue."""
+
+    def __init__(self, ready, depths):
+        super().__init__(depths=depths)
+        self.ready = ready
+
+    async def ready_depth(self, queue):
+        return self.ready.get(queue, 0)
+
+
+class TestReadyDepthForAutoscaling:
+    """Plan 0.12.0, MR 10 (Abschnitt 1, F9): der Autoscaler zaehlt nur die
+    Haupt-Queue. Lange Rueckstellungen in den Delay-Stufen skalieren nicht."""
+
+    def test_sums_ready_depth_of_the_main_queues(self):
+        admin = ReadyAdmin(ready={"a": 2, "b": 1}, depths={"a": 50, "b": 70})
+
+        sampler = _make_queue_depth_sampler(lambda: admin, ["a", "b"])
+
+        assert sampler() == 3
+
+    def test_magicmock_broker_falls_back_to_queue_depth(self):
+        # Q15: ein MagicMock hat jedes Attribut; ``ready_depth`` liefert dort
+        # nichts Await-bares. Der Sampler faellt auf ``queue_depth`` zurueck.
+        from unittest.mock import AsyncMock, MagicMock
+
+        admin = MagicMock()
+        admin.connect = AsyncMock()
+        admin.close = AsyncMock()
+        admin.queue_depth = AsyncMock(return_value=5)
+
+        assert _make_queue_depth_sampler(lambda: admin, ["a"])() == 5
+
+    def test_failing_ready_depth_falls_back_to_queue_depth(self):
+        class Failing(FakeAdmin):
+            async def ready_depth(self, queue):
+                raise RuntimeError("not supported")
+
+        admin = Failing(depths={"a": 6})
+
+        assert _make_queue_depth_sampler(lambda: admin, ["a"])() == 6

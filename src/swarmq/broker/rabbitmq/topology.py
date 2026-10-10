@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from swarmq.queue_names import delay_queue_for, is_delay_queue, queue_family
+from swarmq.queue_names import delay_queue_for, delay_tier_for, delay_tiers, is_delay_queue, queue_family
 
 
 def main_queue_arguments(queue: str, queue_type: str, delivery_limit: int) -> dict[str, Any]:
@@ -65,6 +65,8 @@ __all__ = [
     "dead_letter_queue_arguments",
     "delay_queue_arguments",
     "delay_queue_for",
+    "delay_tier_for",
+    "delay_tiers",
     "is_delay_queue",
     "main_queue_arguments",
     "queue_family",

@@ -111,7 +111,8 @@ def queue() -> str:
 @pytest.fixture(autouse=True)
 async def _clean_state(rabbitmq_url: str, queue: str) -> AsyncIterator[None]:
     """Valkey vor und nach jedem Test leeren: Leader-Lock und Crons früherer Tests
-    dürfen den Leaderwechsel nicht stören. Die Queue-Familie danach löschen."""
+    dürfen den Leaderwechsel nicht stören. Die Queue-Familie danach löschen,
+    samt der Delay-Stufen, die 0.12-Worker beim ersten Retry anlegen (MR 10)."""
     await flush_valkey_db(valkey_db_url())
     yield
     await delete_queue_family(rabbitmq_url, queue)

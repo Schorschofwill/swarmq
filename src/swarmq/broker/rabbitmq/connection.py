@@ -136,6 +136,11 @@ class RabbitMQConnection:
         self._declared_arguments: dict[str, dict[str, Any]] = {}
         # Cache: Queue-Familien, die dieser Prozess schon deklariert hat.
         self._declaration_cache: set[str] = set()
+        # Delay-Stufen (BZ-01, MR 10), die dieser Prozess deklariert hat; nur
+        # an sie geht eine Rueckstellung, sonst an ``{queue}.DQ``.
+        self._ready_delay_tiers: set[str] = set()
+        # ... und die, deren Deklaration der Broker abgelehnt hat (nicht fatal).
+        self._unavailable_delay_tiers: set[str] = set()
         # Bestandsqueues ohne at-least-once (BZ-19) fuer die eine Warnung.
         self._at_most_once_queues: set[str] = set()
         self._at_most_once_reported = False

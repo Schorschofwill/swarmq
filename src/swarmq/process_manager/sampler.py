@@ -7,6 +7,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
+from swarmq.ready_depth import ready_depth_or_none
+
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     pass
 
@@ -26,6 +28,13 @@ class SamplerBroker(Protocol):
 
 
 AdminFactory = Callable[[], SamplerBroker]
+
+
+async def _ready_depth(broker: SamplerBroker, queue: str) -> int:
+    """Der Autoscaler zaehlt nur die Haupt-Queue (Plan 0.12.0, MR 10, F9):
+    ``ready_depth``; ohne sie ``queue_depth`` wie bis 0.11 (Q15)."""
+    ready = await ready_depth_or_none(broker, queue)
+    return ready if ready is not None else await broker.queue_depth(queue)
 
 
 def _make_queue_depth_sampler(
@@ -49,7 +58,7 @@ def _make_queue_depth_sampler(
                     await broker.connect()
                     total = 0
                     for q in queues:
-                        total += await broker.queue_depth(q)
+                        total += await _ready_depth(broker, q)
                     return total
             finally:
                 # Close may itself hang under broker failure — bound

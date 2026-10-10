@@ -12,6 +12,7 @@ Bestandsqueue mit den Argumenten aus 0.11, neue Queue mit den Zielargumenten
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import aio_pika
@@ -23,25 +24,21 @@ from swarmq.broker.rabbitmq.topology import (
     at_least_once,
     dead_letter_queue_arguments,
     delay_queue_arguments,
+    delay_queue_for,
+    delay_tier_for,
+    delay_tiers,
     main_queue_arguments,
     queue_family,
 )
 from swarmq.exceptions import MIGRATION_HINT, BrokerConnectionError, QueueArgumentsMismatch
-from swarmq.logging import get_logger
+from swarmq.logging import _error_fields, get_logger
+from swarmq.queue_names import main_queue_of
 
 logger = get_logger(__name__)
 
 #: Wirksames Delivery-Limit einer Quorum-Queue ohne ``x-delivery-limit``
 #: ab RabbitMQ 4 (Spike S1, belegt auf 4.2.9 und 4.3.6).
 _BROKER_DEFAULT_DELIVERY_LIMIT = 20
-
-
-def _family_of(name: str) -> str:
-    """Name der Haupt-Queue zur Haupt-, Delay- oder Dead-Letter-Queue ``name``."""
-    for suffix in (".DQ", ".XQ"):
-        if name.endswith(suffix):
-            return name.removesuffix(suffix)
-    return name
 
 
 def _dead_letters_at_least_once(arguments: dict[str, Any]) -> bool:
@@ -112,6 +109,67 @@ class RabbitMQDeclarations(RabbitMQConnection):
         # Dead-letter queue
         await self._declare_adopting(pub, dead_letter, dead_letter_queue_arguments(self._queue_type))
 
+    async def _delay_target(self, queue_name: str, delay_ms: int) -> str:
+        """Ziel einer Rueckstellung um ``delay_ms`` (BZ-01, MR 10): die
+        kleinste Delay-Stufe ``{queue}.DQ.<stufe>``, deren Obergrenze
+        ``delay_ms`` erreicht. Eine Stufe entsteht beim ersten Gebrauch ueber
+        die Kette; nur ein Prozess, der die Familie selbst deklariert hat (der
+        Worker), nutzt Stufen. Sonst, ueber 1 h und fuer eine nicht
+        verfuegbare Stufe gilt ``{queue}.DQ`` wie bis 0.11."""
+        fallback = delay_queue_for(queue_name, delay_ms)
+        tier = delay_tier_for(queue_name, delay_ms)
+        if tier == fallback or queue_name not in self._declared_arguments:
+            return fallback
+        if tier in self._ready_delay_tiers:
+            return tier
+        if tier in self._unavailable_delay_tiers:
+            return fallback
+        return tier if await self._declare_delay_tier(queue_name, tier, fallback) else fallback
+
+    def delay_tiers_unavailable(self, queue: str) -> int:
+        """Zahl der Delay-Stufen von ``queue``, deren Deklaration der Broker in
+        diesem Prozess abgelehnt hat (BZ-01, MR 10; Gauge des Workers)."""
+        return sum(1 for tier in delay_tiers(queue) if tier in self._unavailable_delay_tiers)
+
+    async def _declare_delay_tier(self, queue_name: str, tier: str, fallback: str) -> bool:
+        """Deklariert die Stufe ``tier`` mit den Argumenten von ``{queue}.DQ``."""
+        delay_args = delay_queue_arguments(queue_name, self._queue_type)
+        wants_at_least_once = self._queue_type == "quorum" and self.dead_letter_strategy != "legacy"
+        target = at_least_once(delay_args) if wants_at_least_once else None
+        pub = await self._ensure_publish_channel()
+        timeout_s = self._effective_publish_timeout()
+        try:
+            # Im Hot-Path von ``retry_later``: gedeckelt durch die Publish-Frist (Q6).
+            async with asyncio.timeout(timeout_s):
+                await self._declare_adopting(pub, tier, delay_args, target)
+        except TimeoutError as exc:
+            raise BrokerConnectionError(f"declaring delay tier {tier!r} did not complete within {timeout_s}s") from exc
+        except (aio_pika.exceptions.AMQPChannelError, QueueArgumentsMismatch) as exc:
+            # Nicht fatal (Plan MR 10): Queue-Limit, Rechte, ein Konflikt mit
+            # einer vorhandenen Queue. Die Rueckstellung geht an ``{queue}.DQ``;
+            # die Stufe bleibt fuer diesen Prozess aus, damit nicht jede
+            # Rueckstellung erneut einen 406 kostet.
+            self._unavailable_delay_tiers.add(tier)
+            logger.warning(
+                "delay_tier_unavailable",
+                queue=queue_name,
+                tier=tier,
+                fallback=fallback,
+                **_error_fields(exc),
+                hint=(
+                    "the delay tier could not be declared; delayed messages of this tier go to the "
+                    ".DQ, where a long delay at its head holds back shorter ones. Check queue limits "
+                    "and permissions for the pattern \\.DQ(\\.\\w+)?$, then restart the worker"
+                ),
+            )
+            return False
+        except (aio_pika.exceptions.AMQPConnectionError, RuntimeError) as exc:
+            # Wie beim Start: ein Verbindungsverlust; das Original bleibt
+            # unbestaetigt und kommt per Redelivery wieder.
+            raise BrokerConnectionError(f"declaring delay tier {tier!r}: the connection was lost: {exc!r}") from exc
+        self._ready_delay_tiers.add(tier)
+        return True
+
     async def _declare_adopting(
         self,
         pub: aio_pika.abc.AbstractChannel,
@@ -174,7 +232,7 @@ class RabbitMQDeclarations(RabbitMQConnection):
         # Cache: dessen Verwerfen (F5) aendert das Limit der Queue nicht
         # (Review MR 8, P2-1).
         arguments = self._declared_arguments.get(queue)
-        if self._queue_type != "quorum" or arguments is None or _family_of(queue) != queue:
+        if self._queue_type != "quorum" or arguments is None or main_queue_of(queue) != queue:
             return None
         limit = arguments.get("x-delivery-limit", _BROKER_DEFAULT_DELIVERY_LIMIT)
         if not isinstance(limit, int) or limit < 0:
@@ -184,8 +242,10 @@ class RabbitMQDeclarations(RabbitMQConnection):
     def invalidate_declaration(self, name: str) -> None:
         """Verwirft den Cache-Eintrag der Familie von ``name`` (Haupt-, Delay-
         oder Dead-Letter-Queue): bei ``UnroutableMessage`` und NOT_FOUND ist
-        die Queue weg, die naechste Deklaration legt sie neu an (Rev. 3 F5)."""
-        self._declaration_cache.discard(_family_of(name))
+        die Queue weg, die naechste Deklaration legt sie neu an (Rev. 3 F5).
+        Eine Delay-Stufe (BZ-01, MR 10) entsteht beim naechsten Gebrauch neu."""
+        self._declaration_cache.discard(main_queue_of(name))
+        self._ready_delay_tiers.discard(name)
 
     def _require_at_least_once(self, name: str, arguments: dict[str, Any]) -> None:
         """Strenger Modus ``at-least-once`` (BZ-19): eine Bestandsqueue ohne

@@ -12,6 +12,8 @@ Test-Liste:
       und Argumente unverändert
 - [x] Rollback auf 0.11.1 (Review MR 8, P2-6): 0.12 legt die Queue an und stoppt,
       0.11.1 allein arbeitet Retry und DLQ ab, Argumente unverändert
+- [x] Rollback mit einer Rückstellung in einer Delay-Stufe (MR 10): 0.12 stellt in
+      ``{queue}.DQ.15s`` zurück und stoppt, 0.11.1 allein führt den Retry nach Ablauf aus
 """
 
 from __future__ import annotations
@@ -150,3 +152,43 @@ async def test_0_11_1_alone_retries_and_dead_letters_on_a_queue_created_by_0_12(
     assert await message_count(rabbitmq_url, queue) == 0
     for name, arguments in _arguments_012(queue).items():
         await _declare_equivalent(rabbitmq_url, name, arguments)
+
+
+async def test_0_11_1_runs_a_retry_that_0_12_left_in_a_delay_tier(
+    start_worker: Callable[..., CompatWorker],
+    python_011: str,
+    python_repo: str,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    """Rollback mit Nachricht in einer Delay-Stufe (Plan 0.12.0, MR 10): 0.11
+    kennt die Stufen nicht, die Stufe leitet aber per Broker-DLX zurück nach
+    ``{queue}``. Nichts geht verloren, nichts läuft doppelt."""
+    tier = f"{queue}.DQ.15s"
+
+    async def consumers(count: int) -> bool:
+        return await consumer_count(rabbitmq_url, queue) == count
+
+    async def deferred_in_tier() -> bool:
+        try:
+            return await message_count(rabbitmq_url, tier) == 1
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            return False
+
+    new = start_worker(python_repo, "repo")
+    assert await wait_until(lambda: consumers(1), timeout=_EVENT_TIMEOUT)
+    swarm = SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue])
+    async with swarm:
+        producer = Client(swarm.broker, swarm.backend)
+        task_id = await producer.schedule("compat_slow_retry", queue=queue)
+        assert await wait_until(deferred_in_tier, timeout=_EVENT_TIMEOUT), "retry never reached the delay tier"
+        new.stop()
+        assert await wait_until(lambda: consumers(0), timeout=_EVENT_TIMEOUT)
+        start_worker(python_011, OLD_VERSION)
+
+        assert await swarm.get_result(task_id, timeout=_EVENT_TIMEOUT + 10) == f"pypi-{OLD_VERSION}"
+
+    runs = [(tid, attempt, runtime) for _, tid, attempt, runtime in await recorded_runs(valkey_url, queue)]
+    assert runs == [(task_id, 1, "repo"), (task_id, 2, f"pypi-{OLD_VERSION}")]
+    assert await message_count(rabbitmq_url, tier) == 0

@@ -398,50 +398,61 @@ class TestRabbitMQBrokerDeclareQueue:
 class TestRabbitMQBrokerGetQueueDepth:
     """R4.7 Autoscaling — passive-declare for queue depth."""
 
-    async def test_sums_main_and_delay_counts(self):
+    async def test_sums_main_delay_queue_and_delay_tiers_over_one_channel(self):
+        # Plan 0.12.0, MR 10 (BZ-01): "pending" bleibt Haupt-Queue plus alle
+        # Delay-Queues, jetzt mit den Delay-Stufen; abgefragt ueber einen
+        # Channel, der nur nach NOT_FOUND neu geoeffnet wird.
+        from swarmq.queue_names import delay_tiers
+
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         conn = AsyncMock(is_closed=False)
         broker._connection = conn
+        chan = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(return_value=chan)
+        counts = {"tasks": 5, "tasks.DQ": 3, "tasks.DQ.1s": 2, "tasks.DQ.1h": 1}
 
-        # Two throwaway channels, one per queue name.
-        chan_main = AsyncMock(is_closed=False)
-        chan_delay = AsyncMock(is_closed=False)
-        conn.channel = AsyncMock(side_effect=[chan_main, chan_delay])
+        async def declare_queue(name, *, passive):
+            q = AsyncMock()
+            q.declaration_result = type("R", (), {"message_count": counts.get(name, 0)})()
+            return q
 
-        q_main = AsyncMock()
-        q_main.declaration_result = type("R", (), {"message_count": 5})()
-        q_delay = AsyncMock()
-        q_delay.declaration_result = type("R", (), {"message_count": 3})()
-        chan_main.declare_queue = AsyncMock(return_value=q_main)
-        chan_delay.declare_queue = AsyncMock(return_value=q_delay)
+        chan.declare_queue = AsyncMock(side_effect=declare_queue)
 
         depth = await broker.queue_depth("tasks")
-        assert depth == 8
-        chan_main.declare_queue.assert_awaited_once_with("tasks", passive=True)
-        chan_delay.declare_queue.assert_awaited_once_with(
-            "tasks.DQ", passive=True,
-        )
-        chan_main.close.assert_awaited()
-        chan_delay.close.assert_awaited()
+        assert depth == 11
+        assert conn.channel.await_count == 1
+        assert [c.args[0] for c in chan.declare_queue.await_args_list] == [
+            "tasks",
+            "tasks.DQ",
+            *delay_tiers("tasks"),
+        ]
+        assert all(c.kwargs == {"passive": True} for c in chan.declare_queue.await_args_list)
+        chan.close.assert_awaited()
 
     async def test_missing_queue_returns_zero(self):
+        # Fehlende Queues (auch nie benutzte Delay-Stufen) zaehlen 0; nach
+        # NOT_FOUND hat der Broker den Channel geschlossen, der naechste
+        # Name bekommt einen neuen.
         import aio_pika.exceptions
 
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         conn = AsyncMock(is_closed=False)
         broker._connection = conn
-        chan_main = AsyncMock(is_closed=True)
-        chan_delay = AsyncMock(is_closed=True)
-        conn.channel = AsyncMock(side_effect=[chan_main, chan_delay])
-        chan_main.declare_queue = AsyncMock(
-            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
-        )
-        chan_delay.declare_queue = AsyncMock(
-            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
-        )
+        opened = []
+
+        async def open_channel():
+            chan = AsyncMock(is_closed=False)
+            chan.declare_queue = AsyncMock(
+                side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
+            )
+            opened.append(chan)
+            return chan
+
+        conn.channel = AsyncMock(side_effect=open_channel)
 
         depth = await broker.queue_depth("tasks")
         assert depth == 0
+        assert len(opened) == 9
 
     async def test_raises_when_not_connected(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")

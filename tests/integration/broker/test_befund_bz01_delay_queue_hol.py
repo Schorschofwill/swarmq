@@ -47,14 +47,6 @@ async def broker_and_queue(rabbitmq_url: str):
     await b.close()
 
 
-@pytest.mark.befund("BZ-01")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-01: eine kurze Rückstellung hängt in {queue}.DQ hinter einer "
-        "früher eingestellten langen fest (TTL verfällt nur am Kopf)"
-    ),
-)
 async def test_short_delay_returns_before_earlier_long_delay(broker_and_queue) -> None:
     broker, queue = broker_and_queue
     first_round: asyncio.Queue[Delivery] = asyncio.Queue()

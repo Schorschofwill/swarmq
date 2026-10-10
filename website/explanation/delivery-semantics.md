@@ -463,6 +463,74 @@ gets its full retry budget back, and a new replay id lets it pass the
 execution guard. The original traceback stays in the
 headers for post-mortem.
 
+## Delay tiers
+
+A retry with backoff and every deferral (lock or rate-limit conflict,
+backend outage, execution guard) waits in a delay queue: the message
+carries its own expiration, and when it expires RabbitMQ dead-letters it
+back to `{queue}`. RabbitMQ only expires the message at the **head** of a
+queue. Up to 0.11 all delays of a queue shared `{queue}.DQ`, so a retry
+waiting an hour at the head held back every shorter deferral behind it.
+
+Since 0.12 the worker uses seven delay tiers per queue:
+
+| Tier | Delays |
+|---|---|
+| `{queue}.DQ.1s` | up to 1 s |
+| `{queue}.DQ.4s` | up to 4 s |
+| `{queue}.DQ.15s` | up to 15 s |
+| `{queue}.DQ.1m` | up to 1 min |
+| `{queue}.DQ.4m` | up to 4 min |
+| `{queue}.DQ.15m` | up to 15 min |
+| `{queue}.DQ.1h` | up to 1 h |
+| `{queue}.DQ` | over 1 h |
+
+A delay goes to the smallest tier whose bound reaches it. Inside a tier
+a shorter delay can still wait behind a longer one, but neighbouring
+tiers are at most a factor of four apart: a delay takes at most four
+times as long as asked, and at least up to one second. Delays over one
+hour keep the head-of-line blocking of `{queue}.DQ`.
+
+**Creation:** the worker that consumes `{queue}` creates a tier on its
+first use, with the arguments of `{queue}.DQ` and through the same chain
+(see [existing queue arguments](#existing-queue-arguments)): in mode
+`auto` a new tier dead-letters at-least-once. A queue has at most seven
+tiers, with `SWARMQ_PRIORITIES` at most 21 (seven per band). A process
+that has not declared the queue family itself, such as a producer, uses
+`{queue}.DQ` as in 0.11.
+
+**Refusal:** if the broker refuses a tier (queue limit of the vhost,
+missing permission, an existing queue of that name with other
+arguments), the worker keeps running. Its delays of that tier go to
+`{queue}.DQ` for the rest of the process, it logs the WARNING
+`delay_tier_unavailable` once per tier and reports the gauge
+`swarmq_delay_tiers_unavailable{queue}`. Fix the cause and restart the
+worker. A tier deleted while the worker runs is declared again on the
+next unroutable publish to it, once; if that fails, `{queue}.DQ` is
+used.
+
+**Permissions and policies:** the configure and write permissions of
+the swarmq user must cover `{queue}.DQ.<tier>`. A policy written for the
+delay queues, for example the at-least-once policy, needs the pattern
+`\.DQ(\.\w+)?$` instead of `\.DQ$`.
+
+**Mixed operation and rollback:** a tier dead-letters back to
+`{queue}` like `{queue}.DQ`, so a 0.11 worker on the same queue consumes
+messages that a 0.12 worker deferred. After a rollback to 0.11.1 the
+tiers stay; their messages still return to `{queue}` when due. Delete a
+tier only when it is empty.
+
+**Duplicates:** at-least-once dead-lettering can deliver a message
+twice; the [execution guard](#execution-guard) skips such a duplicate,
+except for tasks without it (`FIRE_AND_FORGET`, `execution_guard=False`).
+
+**Autoscaling** (`swarmq worker --autoscale`) counts only the messages
+ready in `{queue}` itself (since 0.12). Long deferrals in the tiers do
+not scale workers up; short retries return to `{queue}` within seconds
+and are counted there. The gauge `swarmq_queue_depth{kind="pending"}`
+keeps its meaning (`{queue}` plus all delay queues); the new
+`kind="delayed"` counts the delay queues only.
+
 ## Existing queue arguments
 
 The worker declares `{queue}`, `{queue}.DQ` and `{queue}.XQ` at
@@ -586,14 +654,16 @@ queue at-least-once dead-lettering without a policy, migrate it:
 
 1. Stop the producers of the queue (including the scheduler crons that
    publish to it).
-2. Let the workers drain `{queue}` and `{queue}.DQ`. `{queue}.DQ` holds
-   pending retries and deferred tasks (`delay`/`eta`) that may be due
-   only much later: wait for them, or move them to a temporary queue
-   with a shovel. Never delete a `{queue}.DQ` that still holds
-   messages; they would be lost.
+2. Let the workers drain `{queue}`, `{queue}.DQ` and the
+   [delay tiers](#delay-tiers) `{queue}.DQ.*`. They hold pending
+   retries and deferred tasks (`delay`/`eta`) that may be due only much
+   later: wait for them, or move them to a temporary queue with a
+   shovel. Never delete a delay queue that still holds messages; they
+   would be lost.
 3. Stop the workers.
 4. Move or keep what is in `{queue}.XQ`.
-5. Delete the three queues and start the workers with the new setting.
+5. Delete the queues of the family (`{queue}`, `{queue}.DQ`, the tiers
+   and `{queue}.XQ`) and start the workers with the new setting.
    They create the queues anew; then shovel the moved messages back.
 
 ## What SwarmQ will not do
