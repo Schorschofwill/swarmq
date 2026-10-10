@@ -20,6 +20,12 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **Ein Unique-Task, der über `max_age` abläuft, gibt sein Dedup-Flag
+  frei.** Bisher blieb das Flag bis zum Ende von `unique_for` stehen,
+  und jedes neue `schedule()` mit denselben Argumenten lieferte still
+  die ID des abgelaufenen Tasks. Das Flag wird freigegeben, sobald die
+  abgelaufene Nachricht in der DLQ liegt, geprüft gegen ihre Task-ID
+  ([Wann das Flag freigeben](../guides/locking-and-dedup.md#wann-das-flag-freigeben)).
 - **Workflows hängen nicht mehr bis zu ihrer TTL, wenn ein Schritt
   außerhalb des Retry-Pfads endet.** Ein Schritt, der abläuft
   (`max_age`), am Lock-Template scheitert, die Lock-Konflikt-Grenze

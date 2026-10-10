@@ -251,7 +251,9 @@ async def test_terminal_already_released_does_not_release_twice(broker, backend,
     assert rec.index("broker.dead_letter") < rec.index("backend.release_unique")
 
 
-async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend, rec) -> None:
+async def test_terminal_release_only_frees_dedup_flag_after_expiry_dead_letter(broker, backend, rec) -> None:
+    """BZ-22 (Plan 0.12.0, MR 3): nach dem Dead-Letter eines abgelaufenen
+    Tasks gibt der ``finally`` das Dedup-Flag frei (vorher blieb es stehen)."""
     worker = _worker(broker, backend, rec, ExpiringTask)
     msg = make_message(
         _payload("pipe-expiring"),
@@ -262,7 +264,8 @@ async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend
 
     assert rec.calls.count("broker.dead_letter") == 1  # bestätigt das Original selbst (U8)
     assert "broker.ack" not in rec.calls
-    assert "backend.release_unique" not in rec.calls
+    assert rec.calls.count("backend.release_unique") == 1
+    assert rec.index("broker.dead_letter") < rec.index("backend.release_unique")
 
 
 async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(

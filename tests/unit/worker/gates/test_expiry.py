@@ -113,7 +113,7 @@ class TestCheckMaxAgeExpired:
         ti = TaskInfo(name="t", queues=["q"], max_age=60)
         msg = _expiry_message(int(time.time()) - 120)  # 120s old, limit 60
         handled = await _apply(w, msg, ti, task_id="id-xyz")
-        assert handled == Terminal.never_release()
+        assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         w._broker.dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
         w._broker.ack.assert_not_awaited()
@@ -150,7 +150,7 @@ class TestCheckMaxAgeExpired:
 
         handled = await _apply(w, msg, ti, task_id="id")
 
-        assert handled == Terminal.never_release()
+        assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         w._backend.store_result.assert_not_awaited()
         # DLQ + ack continue regardless.
         w._broker.dead_letter.assert_awaited_once()
@@ -166,7 +166,7 @@ class TestCheckMaxAgeExpired:
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
         msg = _expiry_message(int(time.time()) - 30)
         handled = await _apply(w, msg, ti, task_id="id")
-        assert handled == Terminal.never_release()
+        assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         # DLQ + ack still happen even though store_result failed.
         w._broker.dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
@@ -260,3 +260,26 @@ class TestExpiredWorkflowStep:
         w._broker.redeliver.assert_awaited_once_with(msg)
         w._broker.dead_letter.assert_not_awaited()
         assert expired == []
+
+
+class TestExpiredUniqueRelease:
+    """BZ-22 (Plan 0.12.0, MR 3): Freigabe des Unique-Flags nur nach
+    erfolgreichem Dead-Letter.
+
+    Test-Liste:
+    - [x] Dead-Letter scheitert -> neu zugestellt, Flag bleibt stehen
+          (``never_release``); die Neuzustellung gibt es frei
+    """
+
+    async def test_failed_dead_letter_keeps_the_flag(self):
+        from swarmq.exceptions import BrokerConnectionError
+
+        w = _make_worker()
+        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
+        w._broker.redeliver = AsyncMock()
+        msg = _expiry_message(int(time.time()) - 120)
+
+        handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
+
+        assert handled == Terminal.never_release()
+        w._broker.redeliver.assert_awaited_once_with(msg)

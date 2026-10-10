@@ -40,10 +40,6 @@ class UniqueReport(Task):
 
 
 @pytest.mark.befund("BZ-22")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-22: max_age-Ablauf laesst das Unique-Flag stehen, erneutes schedule() wird bis unique_for verschluckt",
-)
 async def test_expired_unique_task_releases_its_unique_flag(broker, backend, config) -> None:
     registry = TaskRegistry()
     registry.register(UniqueReport)

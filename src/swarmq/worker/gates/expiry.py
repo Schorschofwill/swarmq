@@ -1,9 +1,10 @@
 """Expiry-Gate (R4.4 ``max_age``), Plan U7 — verbatim aus ``pipeline.py``.
 
-Abgelaufen → Fehler-Ergebnis speichern, Signal ``TASK_EXPIRED``, an das
-Dead-Letter-Ziel veröffentlichen, bestätigen (``dead_letter``); Outcome
-``Terminal.never_release()`` (das Dedup-Flag bleibt bewusst stehen — heutiges
-Verhalten). Publish-Fehler → ``redeliver`` (Fallback laut KTD3).
+Abgelaufen → Workflow fehlmarkieren (BZ-13), Fehler-Ergebnis speichern,
+Signal ``TASK_EXPIRED``, an das Dead-Letter-Ziel veröffentlichen, bestätigen
+(``dead_letter``); Outcome ``Terminal.release_only()`` (BZ-22: das Dedup-Flag
+wird im ``finally`` owner-geprueft freigegeben). Publish-Fehler →
+``redeliver`` (Fallback laut KTD3), Outcome ``Terminal.never_release()``.
 """
 
 from __future__ import annotations
@@ -122,4 +123,8 @@ class ExpiryGate:
                 # Double-failure — let the message TTL / broker
                 # redeliver-limit be the safety net.
                 logger.error("task_expired_nack_also_failed", **_error_fields(nack_exc))
-        return Terminal.never_release()
+            return Terminal.never_release()
+        # BZ-22: die Kopie liegt in der DLQ -- das Unique-Flag freigeben
+        # (owner-geprueft im ``finally``), sonst verschluckte es jedes neue
+        # ``schedule()`` bis ``unique_for``.
+        return Terminal.release_only()

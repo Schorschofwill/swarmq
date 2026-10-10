@@ -130,8 +130,8 @@ first task's task_id without enqueueing.
 `unique_until` picks the release point:
 
 - `"completion"` (default) — the flag lives until the task reaches
-  a terminal state (success, DLQ, cancel). This blocks repeat
-  schedules for the entire execution window.
+  a terminal state (success, DLQ, cancel, or expiry through `max_age`).
+  This blocks repeat schedules for the entire execution window.
 - `"start"` — the flag releases the instant a worker picks up the
   message. A follow-up `schedule()` while the task is running will
   enqueue a new one.

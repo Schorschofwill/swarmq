@@ -32,3 +32,8 @@ def test_outcomes_are_immutable() -> None:
 
     with pytest.raises((AttributeError, TypeError)):
         Terminal(True, True).release_unique = False  # type: ignore[misc]
+
+
+def test_release_only_frees_the_flag_without_schedfire_marker() -> None:
+    """BZ-22 (Plan 0.12.0, MR 3): Expiry nach erfolgreichem Dead-Letter."""
+    assert Terminal.release_only() == Terminal(release_unique=True, finalize_schedfire=False)

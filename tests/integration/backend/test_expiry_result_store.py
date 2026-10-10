@@ -90,7 +90,7 @@ async def test_expired_task_error_result_is_stored_and_decodable(backend):
 
     outcome = await gate.apply(msg, ctx)
 
-    assert outcome == Terminal.never_release()  # Expiry ist terminal (U19)
+    assert outcome == Terminal.release_only()  # Expiry ist terminal (U19), gibt frei (BZ-22)
     raw = await backend.get_result(task_id)
     assert raw is not None, (
         "Expiry-Fehlerergebnis fehlt im Store — get_result() eines "

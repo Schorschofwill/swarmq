@@ -134,8 +134,9 @@ kwargs)` die task_id des ersten Tasks zurück, ohne zu enqueuen.
 `unique_until` wählt den Freigabepunkt:
 
 - `"completion"` (Default) — das Flag lebt, bis der Task einen
-  Terminalzustand (Success, DLQ, Cancel) erreicht. Das blockiert
-  erneute Schedules während des gesamten Ausführungsfensters.
+  Terminalzustand (Success, DLQ, Cancel oder Ablauf über `max_age`)
+  erreicht. Das blockiert erneute Schedules während des gesamten
+  Ausführungsfensters.
 - `"start"` — das Flag wird in dem Moment freigegeben, in dem ein
   Worker die Nachricht aufnimmt. Ein Folge-`schedule()` während
   der Task läuft, enqueued einen neuen.

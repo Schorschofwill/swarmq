@@ -20,6 +20,12 @@ All notable changes to SwarmQ. This project follows
 
 ### Fixed
 
+- **A unique task that expires through `max_age` releases its dedup
+  flag.** Before, the flag stayed until `unique_for` ran out, and every
+  new `schedule()` with the same arguments silently returned the ID of
+  the expired task. The flag is released once the expired message is in
+  the DLQ, checked against its task ID
+  ([when to release the flag](../guides/locking-and-dedup.md#when-to-release-the-flag)).
 - **Workflows no longer hang until their TTL when a step ends outside
   the retry path.** A step that expires (`max_age`), fails its lock
   template, hits the lock conflict cap or is not registered in the
