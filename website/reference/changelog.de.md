@@ -226,8 +226,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   erreicht, wird weiter verworfen, ebenso ein wiederholter Cron-Fire;
   eine Wiederholung in-flight beim Versionswechsel kann doppelt laufen;
   Altbestand ohne Generation läuft bei zweimaligem Retry doppelt; nach
-  einem UI-Move zählt die erste Ausführung das rohe `x-death`; eine
-  UI-Wiederholung mit `max_age` kann sofort ablaufen
+  einem UI-Move zählt die erste Ausführung das rohe `x-death`;
+  wiederholte UI-Moves nach erneutem Broker-Dead-Lettering werden
+  übersprungen (`swarmq dlq retry` verwenden, das eine gestempelte, vom
+  Broker erneut dead-gelettete Nachricht oder eine mit einer Replay-ID,
+  die der Worker nicht liest, als neue Generation behandelt); eine solche
+  Nachricht behält ihren ersten `x-swarmq-dead-lettered-at`, `dlq list`
+  kann sie deshalb als abgelaufen verwerfen; eine UI-Wiederholung mit
+  `max_age` kann sofort ablaufen
   ([Ausführungsschutz](../explanation/delivery-semantics.de.md#ausfuhrungsschutz)).
 - **Ein Cron, dessen Task aus dem Code entfernt wurde, feuert nicht
   mehr bis zum Ablauf der Aufräumfrist.** Jeder Fire eines solchen

@@ -28,7 +28,7 @@ from swarmq.headers import (
     HEADER_RETRY_COUNT,
     LOOP_STATE_HEADERS,
 )
-from swarmq.identity import copy_headers
+from swarmq.identity import HEADER_X_DEATH, copy_headers, replay_id_of
 from swarmq.queue_names import delay_tiers
 
 
@@ -49,6 +49,16 @@ def _fresh_generation(headers: dict[str, Any]) -> bool:
     Zeitstempel neu, und die Gleichheit bricht."""
     generation = headers.get(HEADER_DLQ_GENERATION)
     if isinstance(generation, bool) or not isinstance(generation, int):
+        return False
+    # Review MR 12: eine Replay-ID, die der Worker nicht liest (fremder
+    # Producer, > 64 Zeichen), liefe unter der Identitaet des Originals --
+    # dessen Done-Marker verwuerfe das Replay.
+    if replay_id_of(headers) is None:
+        return False
+    # Der Stempel entfernt ``x-death``. Steht es wieder da, hat der Broker die
+    # Nachricht nach dem Stempel erneut dead-gelettert (UI-Move, Lauf,
+    # ``route_via_dlx``): die Generation ist verbraucht (Review MR 12, P2-3).
+    if headers.get(HEADER_X_DEATH):
         return False
     return generation == _dead_lettered_at_ms(headers)
 

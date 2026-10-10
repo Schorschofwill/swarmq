@@ -212,7 +212,10 @@ trägt dieselbe Identität und wird übersprungen. Eine Nachricht, die ein
 bekommt stattdessen bei jedem Retry eine neue ID. "Move messages" in
 der RabbitMQ-UI oder ein Shovel legt die Nachricht mit denselben Headern
 zurück und lässt sie deshalb ebenfalls laufen, setzt aber
-`x-swarmq-enqueued-at` nicht neu.
+`x-swarmq-enqueued-at` nicht neu. Dead-lettert der Broker eine solche
+Wiederholung erneut (`route_via_dlx`, Delivery-Limit), wird ein zweiter
+UI-Move als Duplikat des ersten übersprungen; dafür `swarmq dlq retry`
+verwenden, das ihr eine neue ID gibt.
 
 ### Alle Nachrichten
 

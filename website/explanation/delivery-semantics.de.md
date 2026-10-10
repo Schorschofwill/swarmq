@@ -408,6 +408,18 @@ nicht exactly-once:
   RabbitMQ-UI zählt die erste Ausführung das rohe `x-death` (keine
   Base). Eine UI-Wiederholung eines Tasks mit `max_age` kann sofort
   ablaufen: Nur `dlq retry` setzt `x-swarmq-enqueued-at` neu.
+- **Wiederholte UI-Moves nach erneutem Broker-Dead-Lettering werden
+  übersprungen.** Dead-lettert der Broker eine UI-Wiederholung erneut
+  (`route_via_dlx`, Delivery-Limit), baut er `x-death` mit dem Zähler 1
+  neu auf, und ein UI-Move setzt keine Base; ein zweites "Move messages"
+  dieser Nachricht hat deshalb die Identität der ersten Wiederholung und
+  wird übersprungen. Dafür `swarmq dlq retry` verwenden: Es erkennt das
+  neue `x-death` und gibt der Nachricht eine neue Replay-ID. Dieselbe
+  Nachricht behält den `x-swarmq-dead-lettered-at` ihres ersten
+  Dead-Letterings; `swarmq dlq list` verwirft sie deshalb als abgelaufen,
+  sobald die ab dann gezählte Frist vorbei ist. Eine Replay-ID mit mehr
+  als 64 Zeichen (fremder Producer) liest der Worker nicht; `dlq retry`
+  ersetzt sie.
 - `FIRE_AND_FORGET`-Tasks werden vor der Ausführung bestätigt und
   nicht geschützt. Ein eigenes Backend ohne `execution_guard`-Store
   schaltet den Schutz ab.

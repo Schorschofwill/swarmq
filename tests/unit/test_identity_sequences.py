@@ -23,6 +23,11 @@ Test-Liste:
 7. [x] Retry ueber jede Delay-Stufe und {q}.DQ: n bleibt (Base), die
        Retry-Kopie laeuft unter derselben Identitaet.
 8. [x] 0.11-Replay-ID in-flight: Identitaet byte-gleich zu 0.11 (``task|H``).
+
+Review MR 12 (P2-3):
+9. [x] A2, zweite Runde: nach erneutem ``route_via_dlx`` wird ein zweiter
+       UI-Move uebersprungen (``x-death`` count bleibt 1, keine Base --
+       dokumentierte Grenze); ``dlq retry`` derselben Nachricht laeuft.
 """
 
 from __future__ import annotations
@@ -217,6 +222,24 @@ async def test_a2_worker_dlq_ui_move_route_via_dlx_ui_move() -> None:
     gen = generation_id(TASK)
     assert w.runs == [TASK, f"{TASK}|{gen}", f"{TASK}|{gen}#1"]
     assert await w.run_ok(w.ui_move(dlq)) is False  # das Original des Replays bleibt geschuetzt
+
+
+async def test_a2_second_round_ui_move_is_skipped_dlq_retry_runs() -> None:
+    w = World()
+    assert await w.deliver({}) is True
+    dlq = await w.worker_dlq({})
+    first_replay = w.ui_move(dlq)
+    assert await w.run_ok(first_replay) is True
+    second_replay = w.ui_move(w.broker_dlx(first_replay))
+    assert await w.run_ok(second_replay) is True
+    parked_again = w.broker_dlx(second_replay)  # x-death neu aufgebaut: wieder count 1
+    # Dokumentierte Grenze (Abschnitt 7): der zweite UI-Move hat dieselbe
+    # Identitaet wie der erste und wird verworfen.
+    assert await w.run_ok(w.ui_move(parked_again)) is False
+    # ``dlq retry`` laeuft: x-death zeigt, dass die Generation verbraucht ist.
+    assert await w.run_ok(await w.cli_retry(parked_again)) is True
+    gen = generation_id(TASK)
+    assert w.runs[:3] == [TASK, f"{TASK}|{gen}", f"{TASK}|{gen}#1"] and len(set(w.runs)) == 4
 
 
 async def test_a3_legacy_dlq_without_generation_gets_a_new_id_on_every_cli_retry() -> None:

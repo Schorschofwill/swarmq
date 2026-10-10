@@ -202,7 +202,10 @@ carries the same identity and is skipped. A message a 0.11 worker
 dead-lettered, or old stock without that stamp, gets a fresh id on
 every retry instead. "Move messages" in the RabbitMQ UI or a shovel
 replays the message with the same headers and therefore runs it too,
-but does not restart `x-swarmq-enqueued-at`.
+but does not restart `x-swarmq-enqueued-at`. If the broker
+dead-letters such a replay again (`route_via_dlx`, delivery limit), a
+second UI move of it is skipped as a duplicate of the first; use
+`swarmq dlq retry` for it, which gives it a new id.
 
 ### All messages
 

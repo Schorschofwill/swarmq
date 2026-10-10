@@ -27,7 +27,7 @@ from swarmq.headers import (
     HEADER_REPLAY_ID,
     HEADER_RETRY_COUNT,
 )
-from swarmq.identity import copy_headers
+from swarmq.identity import HEADER_X_DEATH, copy_headers, replay_id_of
 from tests.support.inmemory.clock import FakeClock
 
 _ids = itertools.count(1)
@@ -45,7 +45,13 @@ def _replay_headers(headers: dict[str, Any], now_s: int) -> dict[str, Any]:
     DLQ-Stempel weg, ``x-death`` als Base, frisches Alter; die Replay-ID
     bleibt nur, wenn ``x-swarmq-dlq-gen`` dem Zeitstempel gleicht (frische
     Generation eines 0.12-Workers), sonst neue ``uuid4``."""
-    fresh = HEADER_DLQ_GENERATION in headers and headers[HEADER_DLQ_GENERATION] == headers.get(HEADER_DEAD_LETTERED_AT)
+    fresh = (
+        HEADER_DLQ_GENERATION in headers
+        and headers[HEADER_DLQ_GENERATION] == headers.get(HEADER_DEAD_LETTERED_AT)
+        # Review MR 12: gueltige Replay-ID, kein erneutes Broker-Dead-Lettern.
+        and replay_id_of(headers) is not None
+        and not headers.get(HEADER_X_DEATH)
+    )
     out = {
         k: v for k, v in copy_headers(headers).items()
         if k not in (HEADER_RETRY_COUNT, HEADER_DEAD_LETTERED_AT, HEADER_DLQ_GENERATION)

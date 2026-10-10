@@ -188,8 +188,13 @@ All notable changes to SwarmQ. This project follows
   reaches a 0.11 worker is still skipped, and so is a replayed cron
   fire; a replay in flight during the version switch can run twice;
   old stock without a generation runs twice when retried twice; after a
-  UI move the first execution counts the raw `x-death`; a UI replay
-  with `max_age` can expire at once
+  UI move the first execution counts the raw `x-death`; repeated UI
+  moves after another broker dead-lettering are skipped (use `swarmq
+  dlq retry`, which treats a stamped message the broker dead-lettered
+  again, or one with a replay id the worker does not read, as a new
+  generation); such a message keeps its first
+  `x-swarmq-dead-lettered-at`, so `dlq list` can drop it as expired; a
+  UI replay with `max_age` can expire at once
   ([execution guard](../explanation/delivery-semantics.md#execution-guard)).
 - **Done and completed markers no longer expire behind a long backlog.**
   The execution guard's done marker and the completed marker of a

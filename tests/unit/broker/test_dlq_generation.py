@@ -21,6 +21,15 @@ Test-Liste:
        Zeitstempel abweicht (0.11-Worker hat neu gestempelt).
 6. [x] ``dlq retry`` setzt ``x-swarmq-enqueued-at`` neu (A6) und nimmt
        ``x-death`` als Base mit.
+
+Review MR 12 (Hinweise, P2-3):
+7. [x] Eine ungueltige Replay-ID (> 64 Zeichen, fremder Producer) ist keine
+       frische Generation, auch wenn ``dlq-gen`` passt: neue ID.
+8. [x] Hat der Broker die Nachricht nach dem Stempel erneut dead-gelettert
+       (``x-death`` nach UI-Move und ``route_via_dlx``), ist die Generation
+       verbraucht: neue ID.
+9. [x] ``RetryHandler.dead_letter`` (Worker-Pfad) stempelt die Generation
+       genau dann, wenn der Body eine Task-ID hat.
 """
 
 from __future__ import annotations
@@ -30,8 +39,13 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.config import SwarmQConfig
 from swarmq.contracts import Delivery
 from swarmq.identity import generation_id
+from swarmq.registry import TaskRegistry
+from swarmq.task import TaskInfo
+from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.retry import RetryHandler
 
 _NOW = 1_760_000_000.0
 _AT = "x-swarmq-dead-lettered-at"
@@ -149,3 +163,55 @@ async def test_dlq_retry_restarts_the_age_and_keeps_the_death_count_as_base() ->
     [(_, msg)] = broker.published
     assert msg.headers["x-swarmq-enqueued-at"] == int(_NOW)
     assert "x-death" not in msg.headers and msg.headers["x-swarmq-xdeath-base"] == 2
+
+
+async def test_dlq_retry_does_not_keep_an_invalid_replay_id() -> None:
+    too_long = "x" * 65
+    ttl = {"x-swarmq-dead-letter-ttl-ms": 7_200_000}
+    broker = _dlq_broker(_incoming({_REPLAY: too_long, _AT: _AT_MS, _GEN: _AT_MS, **ttl}))
+    await broker.retry_dead_letter("tasks", "t-1")
+    [(_, msg)] = broker.published
+    assert msg.headers[_REPLAY] != too_long
+
+
+async def test_dlq_retry_after_a_broker_dead_lettering_gets_a_new_replay_id() -> None:
+    """UI-Move einer frisch gestempelten DLQ-Kopie, Lauf, ``route_via_dlx``:
+    die Header (``dlq-gen`` gleich dem Zeitstempel) reisen mit, ``x-death``
+    zeigt das erneute Dead-Lettern. Die Generation ist verbraucht."""
+    gen = generation_id("t-1")
+    deaths = [{"queue": "tasks", "count": 1, "reason": "rejected"}]
+    ttl = {"x-swarmq-dead-letter-ttl-ms": 7_200_000}
+    broker = _dlq_broker(_incoming({_REPLAY: gen, _AT: _AT_MS, _GEN: _AT_MS, "x-death": deaths, **ttl}))
+    await broker.retry_dead_letter("tasks", "t-1")
+    [(_, msg)] = broker.published
+    assert msg.headers[_REPLAY] != gen
+
+
+async def test_the_worker_dead_letter_path_stamps_a_generation_only_with_a_task_id() -> None:
+    """Durch ``RetryHandler.dead_letter`` (der Weg jeder fachlichen DLQ-Kopie)
+    statt ueber den In-Memory-Broker, der nicht stempelt."""
+    broker = _broker()
+    deps = GateDeps(
+        broker=broker,
+        backend=AsyncMock(),
+        config=SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x"),
+        signals=Mock(dispatch=AsyncMock()),
+        registry=TaskRegistry(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
+        extract_valid_workflow_id=lambda _m: None,
+        register_lock=lambda _h, _e: None,
+    )
+    handler = RetryHandler(deps, workflow_advancer=lambda: None, finish=AsyncMock())
+    ctx = GateContext(task_id="t-1", task_name="n", queue="tasks", task_info=TaskInfo(name="n", queues=["tasks"]))
+
+    assert await handler.dead_letter(_delivery({_REPLAY: "r1"}), ctx, "boom", "ValueError") is True
+    stamped = _published(broker).headers
+    assert stamped[_REPLAY] == generation_id("t-1|r1") and stamped[_GEN] == stamped[_AT]
+    assert stamped["x-swarmq-traceback"] == "boom"
+
+    assert await handler.dead_letter(_delivery({_REPLAY: "r1"}, body=b"no task"), ctx, "boom", "ValueError") is True
+    unstamped = _published(broker).headers
+    assert unstamped[_REPLAY] == "r1" and _GEN not in unstamped

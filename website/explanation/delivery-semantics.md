@@ -377,6 +377,17 @@ SwarmQ exactly-once:
   in the RabbitMQ UI the first execution counts the raw `x-death`
   (no base). A UI replay of a task with `max_age` can expire at once:
   only `dlq retry` restarts `x-swarmq-enqueued-at`.
+- **Repeated UI moves after another broker dead-lettering are skipped.**
+  When the broker dead-letters a UI replay again (`route_via_dlx`,
+  delivery limit), it rebuilds `x-death` with a count of 1, and a UI
+  move sets no base, so a second "Move messages" of that message has
+  the identity of the first replay and is skipped. Use `swarmq dlq
+  retry` for it: it sees the new `x-death` and gives the message a new
+  replay id. The same message keeps the `x-swarmq-dead-lettered-at` of
+  its first dead-lettering, so `swarmq dlq list` drops it as expired
+  once the retention counted from then has passed. A replay id longer
+  than 64 characters (a foreign producer) is not read by the worker;
+  `dlq retry` replaces it.
 - `FIRE_AND_FORGET` tasks are acknowledged before they run and are not
   guarded. A backend of your own without an `execution_guard` store
   switches the guard off.

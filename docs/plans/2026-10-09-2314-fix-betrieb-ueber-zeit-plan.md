@@ -707,6 +707,8 @@ Der BZ-16-Nachweis überspringt sich ohne lokalen Broker-Alarm. Abgenommen ist e
 - **KTD11:** Die Gauge steht dauerhaft, solange eine 0.11-App auf demselben Valkey läuft.
 - **BZ-25/05:** Gemischte `hard_timeout` unter einem Semaphor-Namen: Ein Erwerber mit kurzer TTL räumt Member nach seiner eigenen TTL ab. 0.11-Erwerber verkürzen den Key weiter.
 - **BZ-08:** Nach einem UI-Move zählt die erste Ausführung das rohe `x-death` (keine Base).
+- **BZ-08 (Review MR 12, P2-3; Nachtrag):** Wiederholte UI-Moves nach erneutem Broker-Dead-Lettering werden übersprungen (`x-death` count bleibt 1 nach einem UI-Publish ohne Base; ohne Kopie nicht lösbar); `dlq retry` verwenden. `dlq retry` behandelt eine frisch gestempelte Nachricht mit `x-death` (vom Broker erneut dead-gelettert) oder mit ungültiger Replay-ID (> 64 Zeichen) als neue Generation.
+- **BZ-08 (Review MR 12, Hinweis):** `route_via_dlx` nach einem UI-Move trägt den alten `x-swarmq-dead-lettered-at` weiter (`nack` kann keine Header setzen); `dlq list` kann den Eintrag als abgelaufen verwerfen. Dokumentiert, nicht behoben.
 - **BZ-12/08:** Mit `dead_letter_ttl_s = none` sind Replay-Identitäten 7 d geschützt, nicht unbegrenzt.
 - **Delivery-Limit per Policy:** nicht erkennbar und für swarmq-Queues nicht unterstützt.
 
