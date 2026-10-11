@@ -77,6 +77,7 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 | Langsame Tests verschieben, nicht abschwächen | Ein Unit-Test, der dauerhaft über 100 ms braucht (echte Prozesse, Timer, Fork), gehört nach `tests/integration/` oder trägt eine Begründung im Test |
 | Tests sind deterministisch | Kein Test darf manchmal bestehen und manchmal fehlschlagen |
 | Tests sind unabhängig | Kein Test darf von der Ausführungsreihenfolge abhängen |
+| Format, Lint und Typen grün | `ruff format --check`, `ruff check` (alle Regeln, Ausnahmen begründet in `pyproject.toml`), mypy und basedpyright müssen grün sein, bevor committed wird. Die Hooks prüfen das lokal (`uv run prek install --hook-type pre-commit --hook-type pre-push`, siehe `docs/testing/test-strategy.md`). Jede Unterdrückung (`# noqa`, `# type: ignore`, `# pyright: ignore`) nennt Code und Grund |
 
 ### Verbotene Aktionen
 

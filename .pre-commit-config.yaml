@@ -1,0 +1,38 @@
+# Lokale Hooks (Plan 2026-10-11-1200, KTD10), ausgeführt mit prek:
+#   uv sync --extra test --extra reload
+#   uv run prek install --hook-type pre-commit --hook-type pre-push
+#
+# Alle Hooks laufen über ``uv run --frozen``: jede Werkzeugversion kommt aus
+# uv.lock, es gibt keine zweiten rev-Pins, die driften können. Die Befehle
+# sind dieselben wie im CI-Job ``lint-and-types`` (KTD11).
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run --frozen ruff format --check
+        language: system
+        types: [python]
+      - id: ruff-check
+        name: ruff check (src, tests)
+        entry: uv run --frozen ruff check --no-cache
+        language: system
+        types: [python]
+        # benchmarks/, prototypes/ und scripts/ prüft die CI nicht gegen ALL.
+        files: ^(src|tests)/
+      - id: mypy
+        name: mypy (src, tests)
+        entry: uv run --frozen --extra test --extra reload mypy src/swarmq tests
+        language: system
+        pass_filenames: false
+        always_run: true
+        # Wird scharf (pre-push), sobald mypy auf tests/ grün ist (Plan U11).
+        stages: [manual]
+      - id: basedpyright
+        name: basedpyright (src)
+        entry: uv run --frozen --extra test --extra reload basedpyright
+        language: system
+        pass_filenames: false
+        always_run: true
+        # Wird scharf (pre-push), sobald basedpyright auf src/ grün ist (Plan U11).
+        stages: [manual]

@@ -189,6 +189,32 @@ Nur der Wert `1` gibt frei. Die CI ist nicht betroffen: Sie erreicht die
 Dienste über die Service-Hosts `rabbitmq` und `valkey` auf den
 Standardports, und diese Hosts sind nicht lokal.
 
+## Lint, Format und Typen
+
+Plan `docs/plans/2026-10-11-1200-chore-ruff-mypy-ausbau-plan.md`. Die Werkzeuge
+stehen in den Dependency-Groups `lint` (ruff, prek) und `typing` (mypy,
+basedpyright, Stubs); `uv sync` und `uv run` ziehen beide über
+`default-groups` mit.
+
+| Prüfung | Befehl | Umfang |
+|---|---|---|
+| Format | `uv run ruff format --check .` | alle Python-Dateien |
+| Lint | `uv run ruff check src tests` | `select = ["ALL"]`, Ausnahmekatalog in `pyproject.toml` |
+| mypy | `uv run --extra test --extra reload mypy src/swarmq tests` | strict plus Zusatzcodes; Tests ohne Annotationspflicht |
+| basedpyright | `uv run --extra test --extra reload basedpyright` | strict, nur `src/swarmq` |
+
+**Hooks einrichten** (einmal je Klon):
+
+```bash
+uv sync --extra test --extra reload
+uv run prek install --hook-type pre-commit --hook-type pre-push
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+Beim Commit prüfen die Hooks Format und Lint der geänderten Dateien, vor dem
+Push beide Typprüfer. Die Versionen kommen aus `uv.lock`. Reine
+Formatierungs-Commits stehen in `.git-blame-ignore-revs`.
+
 ## Lokale Ausführung
 
 ```bash
