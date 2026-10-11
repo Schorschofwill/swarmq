@@ -43,9 +43,8 @@ from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
 from swarmq.queue_names import delay_tiers
-from swarmq.exceptions import QueueArgumentsMismatch
 from tests.unit.broker.test_declare_chain import FakeRabbit, legacy, make_broker
 
 pytestmark = pytest.mark.timeout(5)
