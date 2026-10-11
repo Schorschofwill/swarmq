@@ -321,6 +321,13 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 18 (BZ-20): Prefetch gilt je Queue-Consumer.
+            self.worker_prefetch_limit: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_worker_prefetch_limit",
+                "Unacked messages this worker may hold: consumed queues x concurrency (prefetch per consumer)",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -344,6 +351,7 @@ class Metrics:
             self.tasks_unknown_deferred_total = noop
             self.scheduler_crons_held = noop
             self.scheduler_queues_orphaned = noop
+            self.worker_prefetch_limit = noop
             self.lock_waits = noop
             self.lock_wait_oldest_seconds = noop
             self.valkey_memory_used_ratio = noop

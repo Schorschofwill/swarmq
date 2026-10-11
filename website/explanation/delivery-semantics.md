@@ -500,6 +500,23 @@ Raise `SWARMQ_CONSUMER_TIMEOUT_S` together with the broker's
 `consumer_timeout` for jobs that run longer than 30 minutes; the
 worker warns at start when a `hard_timeout` exceeds it.
 
+### Prefetch per consumer
+
+`--concurrency N` is the prefetch of **each** consumer, not of the
+worker: a worker that consumes K queues (with priorities each band
+counts) holds up to K × N unacknowledged messages but runs only N at a
+time. Other workers cannot take the held messages, and the last of
+them waits up to K × `hard_timeout` for its ack, which counts against
+`consumer_timeout`. One limit for all consumers of a channel (global
+QoS) does not work with quorum queues: RabbitMQ 4.2 closes the
+connection, 4.3 ignores it. This is a known limit (BZ-20). Since 0.12
+the worker warns at start with `prefetch_exceeds_consumer_timeout`
+when K ≥ 2 and a task's `hard_timeout` × K exceeds
+`SWARMQ_CONSUMER_TIMEOUT_S`, and reports K × N as the gauge
+`swarmq_worker_prefetch_limit{worker_id}`. Remedies: fewer queues per
+worker (separate deployments per queue), a lower `hard_timeout`, or a
+higher `consumer_timeout`.
+
 ## Idempotency expectations
 
 Treat every `run()` call as if it might be the second, third, or

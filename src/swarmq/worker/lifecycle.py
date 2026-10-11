@@ -32,6 +32,7 @@ from swarmq.shutdown_budget import CLEANUP_RESERVE_S
 from swarmq.signals import Signal
 from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout, current_channel
 from swarmq.worker.eviction_gate import enforce_eviction_policy
+from swarmq.worker.prefetch import prefetch_limit, warn_prefetch_over_consumer_timeout
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
     WorkflowStepEnqueuer,
@@ -418,6 +419,13 @@ class WorkerLifecycle:
             await self._start_observability()
             self._warn_priority_tasks_without_routing()
             self._warn_hard_timeout_over_consumer_timeout()
+            # BZ-20 (Plan 0.12.0, MR 18): Prefetch gilt je Queue-Consumer.
+            warn_prefetch_over_consumer_timeout(
+                self._registry,
+                self._config.consumed_queues,
+                self._config.concurrency,
+                self._config.consumer_timeout_s,
+            )
             self._warn_without_delivery_limit()
             await self._start_executor()
             await self._declare_and_consume_queues()
@@ -560,6 +568,10 @@ class WorkerLifecycle:
                     **_error_fields(exc),
                 )
         self._sample_delay_tiers_unavailable()
+        # Plan 0.12.0, MR 18 (BZ-20): hoechstens gehaltene unbestaetigte Nachrichten.
+        self._metrics.worker_prefetch_limit.labels(worker_id=worker_id).set(
+            prefetch_limit(self._config.consumed_queues, self._config.concurrency)
+        )
         # Plan 0.12.0, MR 13 (BZ-05, R11): Lock-Wartezeit je Worker.
         waiting, oldest_s = self._lock_gate.waits.snapshot(now_ms=int(time.time() * 1000))
         self._metrics.lock_waits.labels(worker_id=worker_id).set(waiting)

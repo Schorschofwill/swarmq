@@ -878,6 +878,19 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   gemeldet hat, weil er nur langsam neu startet, kann bis zum erneuten
   Konsumieren als verwaist gelten.
 
+### Hinzugefügt (Prefetch je Consumer, BZ-20)
+
+- **Bekannte Grenze, jetzt gemeldet.** `--concurrency` ist der Prefetch
+  jedes Consumers: Ein Worker, der K Queues konsumiert (jedes
+  Prioritätsband zählt), hält bis zu K × concurrency unbestätigte
+  Nachrichten, und die letzte wartet bis zu K × `hard_timeout` auf ihr
+  Ack. Globales QoS geht mit Quorum-Queues nicht (RabbitMQ 4.2 schließt
+  die Verbindung, 4.3 ignoriert es), es bleibt also eine Grenze. Neu: die
+  Startwarnung `prefetch_exceeds_consumer_timeout` (einmal je Start, wenn
+  K ≥ 2 und `hard_timeout` × K über `SWARMQ_CONSUMER_TIMEOUT_S` liegt) und
+  die Gauge `swarmq_worker_prefetch_limit{worker_id}` (K × concurrency)
+  ([Prefetch je Consumer](../explanation/delivery-semantics.de.md#prefetch-je-consumer)).
+
 ## [0.11.1] — 2026-10-10
 
 Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf

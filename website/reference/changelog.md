@@ -822,6 +822,19 @@ All notable changes to SwarmQ. This project follows
   that is only restarting slowly can count as orphaned until it consumes
   again.
 
+### Added (prefetch per consumer, BZ-20)
+
+- **Known limit, now reported.** `--concurrency` is the prefetch of each
+  consumer: a worker consuming K queues (each priority band counts) holds
+  up to K × concurrency unacknowledged messages, and the last waits up to
+  K × `hard_timeout` for its ack. Global QoS does not work with quorum
+  queues (RabbitMQ 4.2 closes the connection, 4.3 ignores it), so this
+  stays a limit. New: the start warning `prefetch_exceeds_consumer_timeout`
+  (once per start, when K ≥ 2 and `hard_timeout` × K exceeds
+  `SWARMQ_CONSUMER_TIMEOUT_S`) and the gauge
+  `swarmq_worker_prefetch_limit{worker_id}` (K × concurrency)
+  ([prefetch per consumer](../explanation/delivery-semantics.md#prefetch-per-consumer)).
+
 ## [0.11.1] — 2026-10-10
 
 Rollback target before 0.12. **Roll out 0.11.1 to every app first,

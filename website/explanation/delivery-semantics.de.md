@@ -535,6 +535,23 @@ an. Für Liveness `/health` nutzen.
 Brokers anheben, wenn Jobs länger als 30 Minuten laufen; der Worker
 warnt beim Start, wenn ein `hard_timeout` ihn übersteigt.
 
+### Prefetch je Consumer
+
+`--concurrency N` ist der Prefetch **jedes** Consumers, nicht des
+Workers: Ein Worker, der K Queues konsumiert (mit Prioritäten zählt jedes
+Band), hält bis zu K × N unbestätigte Nachrichten, führt aber nur N
+gleichzeitig aus. Andere Worker bekommen die gehaltenen Nachrichten
+nicht, und die letzte davon wartet bis zu K × `hard_timeout` auf ihr
+Ack, was gegen den `consumer_timeout` zählt. Ein Limit für alle
+Consumer eines Channels (globales QoS) geht mit Quorum-Queues nicht:
+RabbitMQ 4.2 schließt die Verbindung, 4.3 ignoriert es. Das ist eine
+bekannte Grenze (BZ-20). Seit 0.12 warnt der Worker beim Start mit
+`prefetch_exceeds_consumer_timeout`, wenn K ≥ 2 ist und das
+`hard_timeout` eines Tasks × K über `SWARMQ_CONSUMER_TIMEOUT_S` liegt,
+und meldet K × N als Gauge `swarmq_worker_prefetch_limit{worker_id}`.
+Abhilfe: weniger Queues je Worker (eigene Deployments je Queue), ein
+kleineres `hard_timeout` oder ein größerer `consumer_timeout`.
+
 ## Idempotenz-Erwartungen
 
 Behandle jeden `run()`-Aufruf so, als könnte es die zweite, dritte

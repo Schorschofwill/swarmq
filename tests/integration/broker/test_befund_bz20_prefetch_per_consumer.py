@@ -9,6 +9,9 @@ bekommen und deren Wartezeit gegen den ``consumer_timeout`` läuft.
 Erwartet (Nutzersicht): ein Worker mit ``concurrency=1`` hält höchstens eine
 unbestätigte Nachricht; alles andere bleibt für andere Worker abholbereit.
 
+Bleibt als dokumentierte Grenze ``xfail`` (Plan 0.12.0, MR 18, Abschnitt 6:
+Begründung umgeschrieben); Folgearbeit: native Quorum-Prioritäten.
+
 Test-Liste:
 - [x] Worker mit concurrency=1 und zwei Queues hält höchstens eine Nachricht (BZ-20)
 """
@@ -47,8 +50,12 @@ async def _ready_total(broker: RabbitMQBroker, queues: list[str]) -> int:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "BZ-20: der Worker setzt prefetch=concurrency je Queue-Consumer und hortet "
-        "bei K Queues bis zu K*concurrency unbestätigte Nachrichten"
+        "BZ-20, Grenze (Plan 0.12.0, MR 18): prefetch=concurrency gilt je "
+        "Queue-Consumer, bei K Queues hortet der Worker bis zu K*concurrency "
+        "unbestätigte Nachrichten; globales QoS geht mit Quorum-Queues nicht "
+        "(Spike S3: 4.2 schliesst die Verbindung, 4.3 wirkungslos). Gemeldet "
+        "per Startwarnung prefetch_exceeds_consumer_timeout und Gauge "
+        "swarmq_worker_prefetch_limit"
     ),
 )
 async def test_worker_holds_at_most_concurrency_unacked_messages(rabbitmq_url: str, valkey_url: str) -> None:

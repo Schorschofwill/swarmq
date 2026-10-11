@@ -69,6 +69,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
         "shutdown", "finalize",  # Plan 0.12.0, MR 0
         "redelivery", "terminal",  # Plan 0.12.0, MR 3 (BZ-29, BZ-13)
         "lock_keeper", "lock_wait_tracker",  # Plan 0.12.0, MR 13 (BZ-25, BZ-05)
+        "prefetch",  # Plan 0.12.0, MR 18 (BZ-20)
     ],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows", "schedule_resolve"],  # U10; Plan 0.12.0, MR 0
     # U11; fire: Plan 0.12.0, MR 0; valkey_watch: MR 14; orphaned_queues: MR 18
