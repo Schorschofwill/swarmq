@@ -95,10 +95,20 @@ Gemessen wird mit den Wanduhren der Worker
 Uhren synchron, ein Versatz bis etwa 60 s wird toleriert. Ein
 Lock-Store, der seine Halter nicht melden kann (fremder Store), loggt
 einmal `lock_observe_unsupported` und wartet bis
-`SWARMQ_LOCK_WAIT_MAX_S`. Die Gauges `swarmq_lock_waits` und
+`SWARMQ_LOCK_WAIT_MAX_S`; ebenso ein Store, dessen `observe` keine
+`LockObservation` liefert. Die Gauges `swarmq_lock_waits` und
 `swarmq_lock_wait_oldest_seconds` zeigen je Worker, wie viele
 Nachrichten er zuletzt zurückgestellt hat und wie lange die älteste
 schon wartet.
+
+Eine neue Wartezeit beginnt, wenn der Broker die Nachricht neu
+zustellt (der Worker starb, nachdem er den Lock erworben hatte, oder
+gab die Nachricht beim Herunterfahren zurück), und auf der Kopie einer
+späteren Ausführung (Retry, `dlq retry`; der Header
+`x-swarmq-lock-wait-gen` hält Retry-Zähler und Replay-ID der wartenden
+Ausführung fest). Eine alte Wartezeit beendet eine neu zugestellte
+Nachricht also nie sofort. Klassische Queues führen keinen
+Zustellzähler; dort setzt eine Neuzustellung die alte Wartezeit fort.
 
 Im Mischbetrieb mit 0.11-Workern derselben App: 0.12 erhöht
 `x-swarmq-lock-conflict-count` nicht mehr, ein 0.11-Worker sieht eine
@@ -124,28 +134,37 @@ wartet.
 ### Locks während der Ausführung
 
 Der Worker hält einen Lock, den er besitzt, so lange am Leben, wie
-der Handler läuft (ab 0.12). Bis zur ursprünglichen Frist `t0 + TTL`
-passiert nichts: Ein Task, der innerhalb seines `hard_timeout` fertig
-wird, kostet keinen zusätzlichen Roundtrip. Erst wenn ein Lock in
-weniger als einem Fenster abliefe (drei Takte; ein Takt ist
-`min(max(TTL / 3, 50 ms), 20 s)`, das Fenster also ab einem
-`hard_timeout` von 30 s 60 s) und der Handler noch läuft, verlängert
-der Worker ihn um ein Fenster, Mutex wie Semaphor-Slot. Ein hart
+der Handler läuft (ab 0.12). Er beginnt ein Fenster vor der
+ursprünglichen Frist `t0 + TTL` mit dem Verlängern (TTL =
+`hard_timeout + 30 s`; das Fenster sind drei Takte, ein Takt ist
+`min(max(TTL / 3, 50 ms), 20 s)`). Davor passiert nichts. Ab einem
+`hard_timeout` von 30 s ist das Fenster 60 s lang, ein Task, der
+innerhalb von `hard_timeout - 30 s` fertig wird, kostet also keinen
+zusätzlichen Roundtrip. Bei kürzerem `hard_timeout` deckt das Fenster
+die ganze TTL: Ein Handler, der länger als etwa ein Drittel seiner TTL
+läuft, wird ab dem ersten Takt verlängert, ein Roundtrip je Takt. Jede
+Verlängerung gibt ein Fenster dazu, Mutex wie Semaphor-Slot. Ein hart
 beendeter Halter (SIGKILL, OOM) hinterlässt den Lock deshalb wie
 bisher bis `t0 + TTL`, oder höchstens ein Fenster länger, wenn er
 beim Überziehen beendet wurde.
 
-Ein Handler, der `hard_timeout + 30 s` überlebt (der Watchdog konnte
-ihn nicht abbrechen: blockierter Event-Loop, Task-Code, der
-`CancelledError` schluckt), behält seinen Lock, und der Worker loggt
-einmal `task_lock_held_past_hard_timeout` (WARNING). Findet die
-Verlängerung den Lock weg oder übernommen (verdrängt durch
-`maxmemory-policy`, Valkey-Datenverlust, Ausfall länger als die TTL),
-loggt der Worker `task_lock_lost` (WARNING, `stage="running"`): Ein
-zweiter Halter kann jetzt parallel laufen. Dieselbe Warnung mit
-`stage="release"` kommt, wenn der Lock bei der Freigabe schon weg
-ist. Eine gescheiterte Verlängerung loggt `lock_extend_failed` und
-wird im nächsten Takt wiederholt.
+Ein Handler, der seinen Abbruch ignoriert (Task-Code, der
+`CancelledError` schluckt), überlebt `hard_timeout + 30 s` und behält
+seinen Lock; der Worker loggt einmal `task_lock_held_past_hard_timeout`
+(WARNING). Ein blockierter Event-Loop behält den Lock nicht: Er
+blockiert auch die Verlängerung, der Lock kann ablaufen, während der
+Handler läuft, und der Worker meldet das als `task_lock_lost`, sobald
+der Loop wieder läuft. Blockierender Code gehört in den
+[CPU-Modus](cpu-mode.md), dort tötet `hard_timeout` den Kindprozess.
+
+Findet die Verlängerung den Lock weg oder übernommen (verdrängt durch
+`maxmemory-policy`, Valkey-Datenverlust oder ein Valkey-Ausfall von
+etwa zwei Takten, sobald die Verlängerungen begonnen haben, bei einem
+Takt von 20 s also etwa 40 s), loggt der Worker `task_lock_lost`
+(WARNING, `stage="running"`): Ein zweiter Halter kann jetzt parallel
+laufen. Dieselbe Warnung mit `stage="release"` kommt, wenn der Lock
+bei der Freigabe schon weg ist. Eine gescheiterte Verlängerung loggt
+`lock_extend_failed` und wird im nächsten Takt wiederholt.
 
 Grenzen: Ein Erwerber mit kurzer TTL räumt weiterhin Semaphor-Slots
 ab, die älter als seine eigene TTL sind; gemischte

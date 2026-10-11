@@ -93,9 +93,18 @@ The wait is measured with the workers' wall clocks
 clocks in sync, a skew of up to about 60 s is tolerated. A lock store
 that cannot report its holders (a third-party store) logs
 `lock_observe_unsupported` once and waits until
-`SWARMQ_LOCK_WAIT_MAX_S`. The gauges `swarmq_lock_waits` and
+`SWARMQ_LOCK_WAIT_MAX_S`; so does a store whose `observe` returns no
+`LockObservation`. The gauges `swarmq_lock_waits` and
 `swarmq_lock_wait_oldest_seconds` show per worker how many messages it
 recently deferred and how long the oldest has waited.
+
+A new wait begins when the broker redelivers the message (the worker
+died after it had acquired the lock, or returned the message at
+shutdown) and on the copy of a later execution (a retry, `dlq retry`;
+the header `x-swarmq-lock-wait-gen` records retry count and replay ID
+of the waiting execution). An old wait therefore never ends a
+redelivered message at once. Classic queues carry no delivery counter;
+there a redelivery continues the old wait.
 
 In mixed operation with 0.11 workers of the same app: 0.12 no longer
 raises `x-swarmq-lock-conflict-count`, so a 0.11 worker never sees a
@@ -118,26 +127,36 @@ message does not wait for hours behind a long holder.
 ### Locks while the task runs
 
 The worker keeps a lock it holds alive for as long as the handler
-runs (from 0.12). Until the original deadline `t0 + TTL` nothing
-happens: a task that finishes within its `hard_timeout` costs no
-extra round trip. Only when a lock would expire in less than one
-window (three ticks; a tick is `min(max(TTL / 3, 50 ms), 20 s)`, so
-the window is 60 s from a `hard_timeout` of 30 s on) and the handler
-is still running, the worker extends it by one window, mutex and
-semaphore slot alike. A holder killed hard (SIGKILL, OOM) therefore
-leaves the lock behind until `t0 + TTL` as before, or at most one
-window longer when it was killed while overrunning.
+runs (from 0.12). It starts extending one window before the original
+deadline `t0 + TTL` (TTL = `hard_timeout + 30 s`; the window is three
+ticks, a tick is `min(max(TTL / 3, 50 ms), 20 s)`). Before that,
+nothing happens. From a `hard_timeout` of 30 s on the window is 60 s,
+so a task that finishes within `hard_timeout - 30 s` costs no extra
+round trip. With a shorter `hard_timeout` the window covers the whole
+TTL: a handler that runs longer than about a third of its TTL is
+extended from the first tick, one round trip per tick. Each extension
+adds one window, mutex and semaphore slot alike. A holder killed hard
+(SIGKILL, OOM) therefore leaves the lock behind until `t0 + TTL` as
+before, or at most one window longer when it was killed while
+overrunning.
 
-A handler that outlives `hard_timeout + 30 s` (the watchdog could not
-cancel it: a blocked event loop, task code that swallows
-`CancelledError`) keeps its lock, and the worker logs
-`task_lock_held_past_hard_timeout` (WARNING) once. If the extension
-finds the lock gone or taken over (evicted by `maxmemory-policy`,
-Valkey data loss, an outage longer than the TTL), the worker logs
-`task_lock_lost` (WARNING, `stage="running"`): a second holder may now
-run in parallel. The same warning with `stage="release"` comes when
-the lock is already gone at release. A failed extension logs
-`lock_extend_failed` and is retried at the next tick.
+A handler that ignores its cancellation (task code that swallows
+`CancelledError`) outlives `hard_timeout + 30 s` and keeps its lock;
+the worker logs `task_lock_held_past_hard_timeout` (WARNING) once.
+A blocked event loop does not keep the lock: it blocks the extension
+as well, the lock can expire while the handler runs, and the worker
+reports that as `task_lock_lost` as soon as the loop runs again. Move
+blocking code into [CPU mode](cpu-mode.md), where `hard_timeout` kills
+the child process.
+
+If the extension finds the lock gone or taken over (evicted by
+`maxmemory-policy`, Valkey data loss, or a Valkey outage of about two
+ticks once the extensions have started, about 40 s with a tick of
+20 s), the worker logs `task_lock_lost` (WARNING, `stage="running"`):
+a second holder may now run in parallel. The same warning with
+`stage="release"` comes when the lock is already gone at release. A
+failed extension logs `lock_extend_failed` and is retried at the next
+tick.
 
 Limits: an acquirer with a short TTL still sweeps semaphore slots
 older than its own TTL, so mixed `hard_timeout` values under one

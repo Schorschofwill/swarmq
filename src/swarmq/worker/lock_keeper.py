@@ -1,13 +1,16 @@
 """Lock-Keeper (Plan 0.12.0, MR 13, BZ-25): gehaltene Task-Locks ueberleben
 einen Handler, der laenger laeuft als seine Lock-TTL.
 
-Die Lock-TTL (``hard_timeout + 30 s``) ist die Absturzfrist. Bis zur
-urspruenglichen Frist ``t0 + TTL`` bleibt alles wie bisher: kein Roundtrip
-(Q7). Erst wenn ein Lock in weniger als einem Fenster ablaeuft und der
-Handler noch lebt, verlaengert der Keeper ihn in kurzen Schritten um ein
-Fenster (Fenster = 3 Takte, Takt = ``min(max(TTL/3, 50 ms), 20 s)``). Ein per
-SIGKILL beendeter Halter hinterlaesst den Lock damit hoechstens wie heute bis
-``t0 + TTL``, bei Ueberziehung hoechstens ein Fenster laenger (R4).
+Die Lock-TTL (``hard_timeout + 30 s``) ist die Absturzfrist. Erst wenn ein
+Lock in weniger als einem Fenster ablaeuft und der Handler noch lebt,
+verlaengert der Keeper ihn in kurzen Schritten um ein Fenster (Fenster = 3
+Takte, Takt = ``min(max(TTL/3, 50 ms), 20 s)``), also ab ``t0 + TTL - Fenster``;
+davor kein Roundtrip (Q7). Ab ``hard_timeout`` 30 s ist das Fenster 60 s:
+ein Task, der binnen ``hard_timeout - 30 s`` endet, kostet nichts. Bei
+kuerzerem ``hard_timeout`` deckt das Fenster die ganze TTL, verlaengert wird
+dann ab dem ersten Takt (Review MR 13, P2-1). Ein per SIGKILL beendeter
+Halter hinterlaesst den Lock damit hoechstens wie heute bis ``t0 + TTL``,
+bei Ueberziehung hoechstens ein Fenster laenger (R4).
 """
 
 from __future__ import annotations
@@ -144,6 +147,12 @@ class LockKeeper:
             return
         if kept.token not in self._kept:
             return  # waehrend des Aufrufs freigegeben
+        if extended is not True and extended is not False:
+            # Q15 (Review MR 13, P2-5): ``AsyncMock``-Store, Protocol-Subklasse
+            # mit leerem Rumpf (``None``) -- nie als Verlaengerung werten.
+            logger.warning("lock_extend_unsupported", **fields, result_type=type(extended).__name__)
+            self._kept.pop(kept.token, None)
+            return
         if extended is False:
             logger.warning(
                 "task_lock_lost",

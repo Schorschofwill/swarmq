@@ -22,10 +22,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   ([Fehlerkatalog](errors.md#lockwaitexceeded)).
 - **`SWARMQ_LOCK_WAIT_MAX_S`** (Standard `21600`): Obergrenze, wie lange
   eine Nachricht auf einen belegten Task-Lock wartet, ab ihrem ersten
-  Konflikt ([Konfiguration](configuration.md)).
+  Konflikt; muss `> 0` und endlich sein ([Konfiguration](configuration.md)).
 - **Header `x-swarmq-lock-conflicts`, `x-swarmq-lock-wait-since`,
-  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since` und
-  `x-swarmq-lock-holder-ttl-ms`**, die Gauges
+  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since`,
+  `x-swarmq-lock-holder-ttl-ms` und `x-swarmq-lock-wait-gen`**, die Gauges
   `swarmq_lock_waits{worker_id}` und
   `swarmq_lock_wait_oldest_seconds{worker_id}`, die Log-Events
   `lock_wait_exceeded`, `lock_observe_unsupported` und
@@ -113,7 +113,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `task_lock_conflict` wird beim ersten Konflikt und danach etwa einmal
   je Minute geloggt; `lock_conflict_dlq_failed` nennt das Feld
   `lock_conflicts` statt `lock_conflict_count`. Die Wartezeit nutzt die
-  Wanduhren der Worker (ein Versatz bis etwa 60 s wird toleriert).
+  Wanduhren der Worker (ein Versatz bis etwa 60 s wird toleriert). Eine
+  neue Wartezeit beginnt, wenn der Broker die Nachricht neu zustellt
+  (ein Worker starb nach dem Acquire oder gab sie beim Herunterfahren
+  zurück), und auf der Kopie einer späteren Ausführung
+  (`x-swarmq-lock-wait-gen`: Retry-Zähler und Replay-ID); klassische
+  Queues führen keinen Zustellzähler, dort setzt eine Neuzustellung die
+  alte Wartezeit fort. Ein Lock-Store, dessen `observe` keine
+  `LockObservation` liefert, gilt als nicht meldefähig.
   Grenzen im Mischbetrieb: Ein 0.11-Worker, der eine Nachricht selbst
   zurückstellt, erhöht weiter den alten Zähler und dead-lettert beim
   10. Konflikt; eine 0.12-Kopie sieht er nie an seinem Deckel
@@ -518,9 +525,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Semaphor-Slot jetzt, solange der Handler läuft, beginnend ein
   Fenster vor dem Ablauf (ein Fenster sind drei Takte von
   `min(max(TTL / 3, 50 ms), 20 s)`); bisher lief der Lock still ab,
-  und ein zweiter Worker bekam ihn. Ein hart beendeter Halter
-  hinterlässt den Lock weiter bis `hard_timeout + 30 s`, höchstens ein
-  Fenster länger. Neue WARNINGs `task_lock_held_past_hard_timeout`,
+  und ein zweiter Worker bekam ihn. Ab einem `hard_timeout` von 30 s
+  kostet ein Task, der innerhalb von `hard_timeout - 30 s` fertig wird,
+  keinen zusätzlichen Roundtrip; bei kürzerem `hard_timeout` deckt das
+  Fenster die ganze TTL, und ein Handler, der länger als etwa ein
+  Drittel davon läuft, wird ab dem ersten Takt verlängert. Ein
+  blockierter Event-Loop blockiert auch die Verlängerung: Der Lock kann
+  ablaufen und wird als `task_lock_lost` gemeldet. Ein hart beendeter
+  Halter hinterlässt den Lock weiter bis `hard_timeout + 30 s`,
+  höchstens ein Fenster länger. Ein Lock-Store, dessen `extend` weder
+  `True` noch `False` liefert, gilt als ohne `extend`. Neue WARNINGs `task_lock_held_past_hard_timeout`,
   `lock_extend_failed` und `lock_extend_unsupported`; neues Lua-Skript
   `lock_extend`, neues `LockStore.extend` (Golden-Datei
   `lua_contract.txt`, additiv)

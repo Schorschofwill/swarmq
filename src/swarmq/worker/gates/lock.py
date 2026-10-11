@@ -13,7 +13,9 @@ die DLQ (``LockWaitExceeded``) geht die Nachricht erst, wenn derselbe Halter
 laenger haelt als die beim Wechsel beobachtete PTTL + 60 s (Stillstand) oder
 ``lock_wait_max_s`` ab dem ersten Konflikt erreicht ist; ``max_age`` bleibt
 die harte Obergrenze (Expiry-Gate davor). Ist der Fingerprint nicht messbar
-(Q15), gilt nur die Obergrenze. Der Legacy-Zaehler
+(Q15), gilt nur die Obergrenze. Eine Neuzustellung durch den Broker und die
+Kopie einer spaeteren Ausfuehrung (``x-swarmq-lock-wait-gen``) beginnen eine
+neue Wartezeit (Review MR 13, P2-4). Der Legacy-Zaehler
 ``x-swarmq-lock-conflict-count`` wird nicht mehr erhoeht (0.11-Worker
 derselben App schickten wartende Kopien sonst ab 10 in die DLQ).
 
@@ -43,6 +45,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from swarmq.contracts.coordination import LockObservation
 from swarmq.exceptions import LockWaitExceeded
 from swarmq.header_text import bounded_header_text
 from swarmq.headers import (
@@ -50,7 +53,11 @@ from swarmq.headers import (
     HEADER_LOCK_HOLDER,
     HEADER_LOCK_HOLDER_SINCE,
     HEADER_LOCK_HOLDER_TTL_MS,
+    HEADER_LOCK_WAIT_GEN,
     HEADER_LOCK_WAIT_SINCE,
+    HEADER_REPLAY_ID,
+    HEADER_RETRY_COUNT,
+    LOCK_WAIT_STATE_HEADERS,
 )
 from swarmq.locking import compute_lock_ttl_ms, lock_key
 from swarmq.logging import _error_fields, get_logger
@@ -67,7 +74,7 @@ from swarmq.worker.lock_wait_tracker import LockWaitTracker
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
-    from swarmq.contracts.coordination import LockObservation, LockStore, LockToken
+    from swarmq.contracts.coordination import LockStore, LockToken
 
 logger = get_logger(__name__)
 
@@ -110,6 +117,22 @@ def _as_int(raw: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value if value >= 0 else default
+
+
+def wait_generation(headers: Any) -> str:
+    """Generation einer Zustellung fuer die Lock-Wartezeit (Review MR 13,
+    P2-4): Retry-Zaehler und Replay-ID -- beide bleiben auf den Kopien der
+    Gates gleich und aendern sich mit jeder neuen Ausfuehrung."""
+    replay = headers.get(HEADER_REPLAY_ID)
+    return f"{_as_int(headers.get(HEADER_RETRY_COUNT), 0)}:{'' if replay is None else replay}"
+
+
+def _wait_state_is_current(headers: Any) -> bool:
+    """Gehoeren die Zustands-Header zur Wartezeit dieser Ausfuehrung? Nicht
+    auf der Kopie einer spaeteren (0.11-Retry-Kopie, ``dlq retry`` von 0.11).
+    Nach einer Neuzustellung durch den Broker entfernt ``republish_headers``
+    sie bereits."""
+    return str(headers.get(HEADER_LOCK_WAIT_GEN, "0:")) == wait_generation(headers)
 
 
 def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any], kwargs: dict[str, Any]) -> str:
@@ -247,6 +270,12 @@ class LockGate:
         (Stillstand des Halters oder ``lock_wait_max_s``)."""
         deps = self._deps
         headers = republish_headers(delivery, ctx)
+        if not _wait_state_is_current(headers):
+            # Review MR 13, P2-4: die Zustands-Header stammen aus einer
+            # frueheren Wartezeit -- eine neue beginnt.
+            for header in LOCK_WAIT_STATE_HEADERS:
+                headers.pop(header, None)
+        headers[HEADER_LOCK_WAIT_GEN] = wait_generation(headers)
         now_ms = int(time.time() * 1000)
         conflicts = _as_int(headers.get(HEADER_LOCK_CONFLICTS), 0) + 1
         headers[HEADER_LOCK_CONFLICTS] = conflicts
@@ -352,21 +381,17 @@ class LockGate:
         self, lock_manager: Any, ctx: GateContext, lock_name: str, max_concurrency: int
     ) -> LockObservation | None:
         """Halter und PTTL lesen; ``None``, wenn nicht messbar (Store ohne
-        ``observe`` -- Q15 -- oder Backend-Fehler)."""
+        ``observe`` -- Q15 --, ein Ergebnis, das keine ``LockObservation``
+        ist -- ``AsyncMock``, Protocol-Subklasse; Review MR 13, P2-5 -- oder
+        Backend-Fehler)."""
         try:
-            return await bounded_backend_call(
+            observation = await bounded_backend_call(
                 self._deps,
                 lock_manager.observe(lock_name, max_concurrency=max_concurrency),
                 what=f"lock observe for {lock_name!r}",
             )
         except (AttributeError, NotImplementedError, TypeError) as exc:
-            if not self._observe_unsupported_logged:
-                self._observe_unsupported_logged = True
-                logger.warning(
-                    "lock_observe_unsupported", lock_name=lock_name, **_error_fields(exc),
-                    hint="the lock store cannot report holders; stalled holders are not detected, "
-                    "only SWARMQ_LOCK_WAIT_MAX_S ends the wait",
-                )
+            self._warn_observe_unsupported(lock_name, **_error_fields(exc))
             return None
         except Exception as exc:
             logger.warning(
@@ -374,6 +399,21 @@ class LockGate:
                 **_error_fields(exc),
             )
             return None
+        if not isinstance(observation, LockObservation):
+            self._warn_observe_unsupported(lock_name, result_type=type(observation).__name__)
+            return None
+        return observation
+
+    def _warn_observe_unsupported(self, lock_name: str, **fields: Any) -> None:
+        """Q15: einmal je Gate melden, dass der Store keine Halter liefert."""
+        if self._observe_unsupported_logged:
+            return
+        self._observe_unsupported_logged = True
+        logger.warning(
+            "lock_observe_unsupported", lock_name=lock_name, **fields,
+            hint="the lock store cannot report holders; stalled holders are not detected, "
+            "only SWARMQ_LOCK_WAIT_MAX_S ends the wait",
+        )
 
     async def _wait_over(
         self, delivery: Any, ctx: GateContext, lock_name: str, conflicts: int, waited_ms: int, reason: str, message: str

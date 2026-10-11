@@ -111,6 +111,24 @@ HEADER_LOCK_WAIT_SINCE = "x-swarmq-lock-wait-since"
 HEADER_LOCK_HOLDER = "x-swarmq-lock-holder"
 HEADER_LOCK_HOLDER_SINCE = "x-swarmq-lock-holder-since"
 HEADER_LOCK_HOLDER_TTL_MS = "x-swarmq-lock-holder-ttl-ms"
+# Generation der Wartezeit (Review MR 13, P2-4): Retry-Zaehler und Replay-ID
+# der Zustellung, deren Konflikt die Wartezeit begann (``"<retry>:<replay>"``).
+# Eine Kopie einer spaeteren Ausfuehrung, die die Zustands-Header noch traegt
+# (0.11 entfernt sie weder in der Retry-Kopie noch bei ``dlq retry``), beginnt
+# eine neue Wartezeit; fehlt der Header, gilt ``"0:"``.
+HEADER_LOCK_WAIT_GEN = "x-swarmq-lock-wait-gen"
+
+# Zustands-Header einer Lock-Wartezeit (ohne ``x-swarmq-lock-name``). Eine
+# Kopie einer vom Broker neu zugestellten Nachricht traegt sie nicht weiter
+# (Review MR 13, P2-4): die Wartezeit endete mit dem Acquire.
+LOCK_WAIT_STATE_HEADERS: tuple[str, ...] = (
+    HEADER_LOCK_CONFLICTS,
+    HEADER_LOCK_WAIT_SINCE,
+    HEADER_LOCK_WAIT_GEN,
+    HEADER_LOCK_HOLDER,
+    HEADER_LOCK_HOLDER_SINCE,
+    HEADER_LOCK_HOLDER_TTL_MS,
+)
 
 # Zustands-Header aller Rueckstellschleifen (Q6): bleiben auf jeder Kopie,
 # die ein Gate vor der Ausfuehrung anlegt; entfernt nur in der fachlichen
@@ -122,4 +140,5 @@ LOOP_STATE_HEADERS: tuple[str, ...] = (
     HEADER_LOCK_HOLDER,
     HEADER_LOCK_HOLDER_SINCE,
     HEADER_LOCK_HOLDER_TTL_MS,
+    HEADER_LOCK_WAIT_GEN,
 )

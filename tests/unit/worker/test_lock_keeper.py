@@ -15,6 +15,10 @@ Test-Liste:
 - [x] ``drop`` nimmt die Lease heraus; der Keeper endet mit der letzten Lease
 - [x] Store ohne ``extend`` (Q15) -> einmal WARNING ``lock_extend_unsupported``,
       Lease faellt heraus
+- [x] Review MR 13, P2-5: ``extend`` liefert weder True noch False
+      (``AsyncMock``-Store, Protocol-Subklasse mit leerem Rumpf -> ``None``)
+      -> nie als Erfolg werten: WARNING ``lock_extend_unsupported``, Lease
+      faellt heraus
 - [x] kein Store -> nichts passiert
 - [x] Schleife: schlaeft den kleinsten Takt, endet mit der letzten Lease,
       verlaengert nach jedem Schlaf die faelligen Leases
@@ -24,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -184,6 +189,42 @@ async def test_store_without_extend_is_reported_once_and_the_lease_dropped(swarm
 
     [entry] = [e for e in swarmq_logs if e["event"] == "lock_extend_unsupported"]
     assert entry["log_level"] == "warning" and entry["lock_name"] == "resource"
+    assert keeper.kept == 0
+
+
+async def test_asyncmock_store_is_not_an_extension(swarmq_logs) -> None:
+    """Review MR 13, P2-5 (Q15): ``AsyncMock().extend`` liefert ein
+    ``MagicMock`` -- das ist keine bestaetigte Verlaengerung."""
+    clock = _Clock()
+    keeper = _keeper(AsyncMock(), clock)
+    keeper.keep(_TOKEN, 90_000, task_id="t1", task_name="locked")
+    clock.now += 31.0
+
+    await keeper.tick_once()
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "lock_extend_unsupported"]
+    assert entry["log_level"] == "warning" and entry["lock_name"] == "resource"
+    assert keeper.kept == 0
+
+
+async def test_protocol_subclass_without_extend_is_not_an_extension(swarmq_logs) -> None:
+    """Review MR 13, P2-5 (Q15): eine Subklasse des ``LockStore``-Protocols
+    erbt ``extend`` mit leerem Rumpf (``None``) -- nie als Erfolg werten."""
+    from swarmq.contracts.coordination import LockStore
+
+    class _SubclassStore(LockStore):
+        pass
+
+    clock = _Clock()
+    keeper = _keeper(_SubclassStore(), clock)
+    keeper.keep(_TOKEN, 90_000, task_id="t1", task_name="locked")
+    clock.now += 31.0
+
+    await keeper.tick_once()
+    await keeper.tick_once()
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "lock_extend_unsupported"]
+    assert entry["log_level"] == "warning" and entry["task_id"] == "t1"
     assert keeper.kept == 0
 
 

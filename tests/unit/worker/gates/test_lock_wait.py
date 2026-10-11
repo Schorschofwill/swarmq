@@ -28,6 +28,9 @@ Test-Liste:
 - [x] Fingerprint nicht messbar (Store ohne ``observe``, Q15): weiter
       zurueckstellen bis zur Obergrenze, einmal WARNING
       ``lock_observe_unsupported``
+- [x] Review MR 13, P2-5: ``AsyncMock``-Store und Protocol-Subklasse ohne
+      eigenes ``observe`` (liefert kein ``LockObservation``) -> nicht messbar,
+      einmal WARNING ``lock_observe_unsupported``, weiter zurueckstellen
 - [x] ``observe`` wirft (Backend-Ausfall): weiter zurueckstellen, WARNING
       ``lock_observe_failed``
 - [x] ``task_lock_conflict`` nur beim ersten Konflikt und dann einmal je
@@ -37,6 +40,14 @@ Test-Liste:
       Obergrenze greift auch mit Kopien aus anderen Gates
 - [x] die fachliche Retry-Kopie entfernt die Lock-Zustands-Header
       (beide Q6-Faelle in ``tests/unit/worker/test_lock_wait_state_headers.py``)
+- [x] Review MR 13, P2-4: eine Neuzustellung durch den Broker
+      (``x-delivery-count`` > 0: SIGKILL/OOM nach erfolgreichem Acquire,
+      Shutdown-Requeue) beginnt eine neue Wartezeit -- der alte
+      ``wait-since`` fuehrt nicht sofort zu ``LockWaitExceeded``
+- [x] Review MR 13, P2-4 (Mischbetrieb): eine fachliche Retry-Kopie eines
+      0.11-Workers behaelt die neuen Header (0.11 kennt sie nicht), zaehlt
+      aber ``x-swarmq-retry-count`` hoch -- auch sie beginnt eine neue
+      Wartezeit; ebenso eine neue Replay-ID (``dlq retry`` von 0.11)
 - [x] Gauges: wartende Konflikte und aeltester Wartender je Worker
       (``tests/unit/worker/test_lock_wait_tracker.py``)
 """
@@ -292,6 +303,45 @@ async def test_magicmock_store_is_treated_as_not_measurable(broker, backend, con
     assert "lock_observe_unsupported" in events and "lock_observe_failed" not in events
 
 
+async def test_asyncmock_store_is_treated_as_not_measurable(broker, backend, config, clock, swarmq_logs) -> None:
+    """Review MR 13, P2-5 (Q15): ein ``AsyncMock``-Store liefert aus
+    ``observe`` ein ``MagicMock`` statt ``LockObservation`` -- das zaehlt als
+    nicht messbar, nicht als Stillstand oder Fehler."""
+    worker = _worker(broker, backend, config)
+    store = AsyncMock()
+    store.acquire = AsyncMock(return_value=None)
+    worker._lock_manager = store
+
+    await worker._handle_message(_message(**_stalled(10 * 3_600_000 - 1, ttl_ms=1)))
+
+    broker.dead_letter.assert_not_awaited()
+    broker.retry_later.assert_awaited_once()
+    events = {e["event"] for e in swarmq_logs}
+    assert "lock_observe_unsupported" in events and "lock_observe_failed" not in events
+
+
+async def test_protocol_subclass_without_observe_warns_unsupported(broker, backend, config, clock, swarmq_logs) -> None:
+    """Review MR 13, P2-5 (Q15): eine Subklasse des ``LockStore``-Protocols
+    erbt ``observe`` mit leerem Rumpf (liefert ``None``) -- nicht messbar,
+    und das wird wie ein fehlendes ``observe`` einmal gemeldet."""
+    from swarmq.contracts.coordination import LockStore
+
+    class _SubclassStore(LockStore):
+        async def acquire(self, name: str, *, owner: str, ttl_ms: int, max_concurrency: int) -> None:
+            return None
+
+    worker = _worker(broker, backend, config)
+    worker._lock_manager = _SubclassStore()  # type: ignore[assignment]
+
+    for _ in range(2):
+        await worker._handle_message(_message(**_stalled(10 * 3_600_000 - 1, ttl_ms=1)))
+
+    broker.dead_letter.assert_not_awaited()
+    assert broker.retry_later.await_count == 2
+    warned = [e for e in swarmq_logs if e["event"] == "lock_observe_unsupported"]
+    assert len(warned) == 1 and warned[0]["log_level"] == "warning"
+
+
 async def test_observe_failure_keeps_waiting(broker, backend, config, clock, swarmq_logs) -> None:
     worker = _worker(broker, backend, config)
     worker._lock_manager.observe = AsyncMock(side_effect=ConnectionError("valkey away"))
@@ -333,3 +383,42 @@ async def test_gate_tracks_waiting_messages_until_acquired(broker, backend, conf
     with patch.object(Locked, "run", AsyncMock(return_value=None)):
         await worker._handle_message(_message(**{HEADER_LOCK_WAIT_SINCE: _NOW_MS - 20_000}))
     assert worker._lock_gate.waits.snapshot(now_ms=_NOW_MS) == (0, 0.0)
+
+
+async def test_broker_redelivery_after_acquire_starts_a_new_wait(broker, backend, config, clock) -> None:
+    """Review MR 13, P2-4: die Kopie hat den Lock erworben und lief; der
+    Worker starb (SIGKILL/OOM) oder gab sie beim Shutdown zurueck. Der
+    Broker stellt sie mit ``x-delivery-count`` neu zu -- ihr ``wait-since``
+    gehoert zur alten Wartezeit und darf nicht sofort in die DLQ fuehren."""
+    worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h2"}), 50_000))
+    stale = {**_stalled(7 * 3_600_000, waited_ms=7 * 3_600_000), "x-delivery-count": 1}
+
+    await worker._handle_message(_message(**stale))
+
+    broker.dead_letter.assert_not_awaited()
+    headers = _copy(broker)
+    assert headers[HEADER_LOCK_WAIT_SINCE] == _NOW_MS
+    assert headers[HEADER_LOCK_CONFLICTS] == 1
+    assert headers[HEADER_LOCK_HOLDER] == holder_fingerprint(frozenset({"h2"}))
+    assert headers[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS
+
+
+@pytest.mark.parametrize("next_generation", [{"x-swarmq-retry-count": 1}, {"x-swarmq-replay-id": "r" * 32}])
+async def test_legacy_copy_of_a_new_generation_starts_a_new_wait(
+    broker, backend, config, clock, next_generation
+) -> None:
+    """Review MR 13, P2-4 (Mischbetrieb): 0.11 entfernt die Lock-Zustands-
+    Header weder in seiner fachlichen Retry-Kopie noch bei ``dlq retry``.
+    Eine Kopie einer spaeteren Ausfuehrung (Retry-Zaehler, Replay-ID) erbt
+    sie unveraendert und darf nicht nach der alten Wartezeit enden."""
+    worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h1"}), 50_000))
+    await worker._handle_message(_message())  # 0.12: erster Konflikt
+    legacy_copy = {**_copy(broker), **next_generation}  # 0.11: Acquire, Lauf, Retry-Kopie
+    clock.time.return_value = _NOW_S + 7 * 3_600
+
+    await worker._handle_message(_message(**legacy_copy))
+
+    broker.dead_letter.assert_not_awaited()
+    headers = _copy(broker)
+    assert headers[HEADER_LOCK_WAIT_SINCE] == _NOW_MS + 7 * 3_600_000
+    assert headers[HEADER_LOCK_CONFLICTS] == 1

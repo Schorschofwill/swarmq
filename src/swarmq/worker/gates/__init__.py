@@ -28,7 +28,12 @@ from swarmq.contracts.coordination import (
     ScheduleStore,
 )
 from swarmq.exceptions import SettleFailedAfterPublish
-from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
+from swarmq.headers import (
+    HEADER_BACKEND_DEFER_COUNT,
+    HEADER_GUARD_DEFER_COUNT,
+    HEADER_SCHEDFIRE_CLAIM,
+    LOCK_WAIT_STATE_HEADERS,
+)
 from swarmq.identity import copy_headers
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
@@ -179,10 +184,18 @@ def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
     und ohne ``x-swarmq-backend-defer-count`` (die Zurueckstellung setzt ihn
     selbst); ``x-death`` geht als ``x-swarmq-xdeath-base`` mit (MR 12). Hielt
     die Zustellung einen Schedfire-Claim, traegt die Kopie dessen Owner-Token
-    -- sie uebernimmt den Claim, falls dessen Freigabe scheitert."""
+    -- sie uebernimmt den Claim, falls dessen Freigabe scheitert. Hat der
+    Broker die Zustellung neu zugestellt, entfaellt die Lock-Wartezeit."""
     # MR 12 (BZ-08): ``x-death`` wird zur Base -- der Broker baut es beim
     # naechsten Dead-Lettern neu auf (Spike S5), die Identitaet bleibt so stabil.
     headers = {key: value for key, value in copy_headers(delivery.headers).items() if key not in _NOT_COPIED}
+    if broker_redelivered(delivery.headers or {}):
+        # Review MR 13, P2-4: eine Neuzustellung durch den Broker (Absturz
+        # nach dem Acquire, Shutdown-Requeue) gehoert nicht mehr zur
+        # Lock-Wartezeit ihrer Kopie; ohne Broker-Zaehler saehe die Kopie
+        # sonst wieder aktuell aus.
+        for header in LOCK_WAIT_STATE_HEADERS:
+            headers.pop(header, None)
     if ctx.schedfire_claim is not None:
         headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim.header_value()
     return headers
@@ -206,9 +219,16 @@ def prior_deferrals(headers: Mapping[str, Any], counter_header: str = HEADER_BAC
     Gates, Absturz, Fallback): die Folge ist unterbrochen, die Zaehlung
     beginnt neu. Klassische Queues fuehren keine solchen Zaehler.
     """
-    if any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS):
+    if broker_redelivered(headers):
         return 0
     return _as_count(headers.get(counter_header))
+
+
+def broker_redelivered(headers: Mapping[str, Any]) -> bool:
+    """Hat der Broker diese Zustellung nach einer frueheren zurueckgegeben
+    (Requeue, Absturz, Shutdown)? Kopien tragen keine Broker-Zaehler; klassische
+    Queues fuehren keine -- dort ist eine Neuzustellung nicht erkennbar."""
+    return any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS)
 
 
 def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict[str, Any], int, int]:

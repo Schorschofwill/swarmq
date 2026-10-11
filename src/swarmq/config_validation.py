@@ -7,6 +7,7 @@ von ``swarmq.config``; die Felder, die es liest, stehen als Stubs unter
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, ClassVar
 
 from swarmq.exceptions import ConfigurationError
@@ -42,6 +43,7 @@ class ConfigValidation:
         execution_guard_ttl_s: float
         execution_guard_done_ttl_s: float | None
         unknown_task_grace_s: float
+        lock_wait_max_s: float
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
@@ -116,11 +118,20 @@ class ConfigValidation:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
 
+        self._validate_finite()
+
         if self.backend_defer_max_delay < self.backend_defer_base_delay:
             msg = (
                 "backend_defer_max_delay must be >= backend_defer_base_delay, "
                 f"got {self.backend_defer_max_delay} < {self.backend_defer_base_delay}"
             )
+            raise ConfigurationError(msg)
+
+    def _validate_finite(self) -> None:
+        """Review MR 13, P2-3: ``inf``/``nan`` bestehen ``<= 0``; das Lock-Gate
+        rechnet ``lock_wait_max_s`` in ganze Millisekunden um."""
+        if not math.isfinite(self.lock_wait_max_s):
+            msg = f"lock_wait_max_s must be a finite number of seconds, got {self.lock_wait_max_s}"
             raise ConfigurationError(msg)
 
     def _validate_logging(self) -> None:

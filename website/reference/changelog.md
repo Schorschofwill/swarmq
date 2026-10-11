@@ -21,11 +21,11 @@ All notable changes to SwarmQ. This project follows
   DLQ copy whose wait for a task lock ended
   ([error catalog](errors.md#lockwaitexceeded)).
 - **`SWARMQ_LOCK_WAIT_MAX_S`** (default `21600`): upper limit for how
-  long a message waits for a held task lock, from its first conflict
-  ([configuration](configuration.md)).
+  long a message waits for a held task lock, from its first conflict;
+  must be `> 0` and finite ([configuration](configuration.md)).
 - **Headers `x-swarmq-lock-conflicts`, `x-swarmq-lock-wait-since`,
-  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since` and
-  `x-swarmq-lock-holder-ttl-ms`**, the gauges
+  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since`,
+  `x-swarmq-lock-holder-ttl-ms` and `x-swarmq-lock-wait-gen`**, the gauges
   `swarmq_lock_waits{worker_id}` and
   `swarmq_lock_wait_oldest_seconds{worker_id}`, the log events
   `lock_wait_exceeded`, `lock_observe_unsupported` and
@@ -111,10 +111,16 @@ All notable changes to SwarmQ. This project follows
   is logged on the first conflict and then about once a minute;
   `lock_conflict_dlq_failed` names the field `lock_conflicts` instead
   of `lock_conflict_count`. The wait uses the workers' wall clocks (a
-  skew of up to about 60 s is tolerated). Limits in mixed operation: a
-  0.11 worker that defers a message itself still raises the old
-  counter and dead-letters at 10; it never sees a 0.12 copy at its cap
-  ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)).
+  skew of up to about 60 s is tolerated). A new wait begins when the
+  broker redelivers the message (a worker died after acquiring the
+  lock, or returned it at shutdown) and on the copy of a later
+  execution (`x-swarmq-lock-wait-gen`: retry count and replay ID);
+  classic queues carry no delivery counter, there a redelivery
+  continues the old wait. A lock store whose `observe` returns no
+  `LockObservation` counts as unable to report holders. Limits in
+  mixed operation: a 0.11 worker that defers a message itself still
+  raises the old counter and dead-letters at 10; it never sees a 0.12
+  copy at its cap ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)).
 
 - **`swarmq dlq retry` keeps the `x-swarmq-replay-id` a 0.12 worker
   stamped** instead of setting a new one, and restarts
@@ -480,9 +486,16 @@ All notable changes to SwarmQ. This project follows
   The worker now extends a held mutex or semaphore slot while the
   handler runs, starting one window before the lock would expire (a
   window is three ticks of `min(max(TTL / 3, 50 ms), 20 s)`); before,
-  the lock expired silently and a second worker acquired it. A holder
+  the lock expired silently and a second worker acquired it. From a
+  `hard_timeout` of 30 s on, a task that finishes within
+  `hard_timeout - 30 s` costs no extra round trip; with a shorter
+  `hard_timeout` the window covers the whole TTL, and a handler that
+  runs longer than about a third of it is extended from the first
+  tick. A blocked event loop blocks the extension as well: the lock can
+  expire and is reported as `task_lock_lost`. A holder
   killed hard still leaves the lock behind until `hard_timeout + 30 s`,
-  at most one window longer. New WARNINGs
+  at most one window longer. A lock store whose `extend` returns
+  neither `True` nor `False` counts as not supporting it. New WARNINGs
   `task_lock_held_past_hard_timeout`, `lock_extend_failed` and
   `lock_extend_unsupported`; new Lua script `lock_extend`, new
   `LockStore.extend` (golden file `lua_contract.txt`, additive)

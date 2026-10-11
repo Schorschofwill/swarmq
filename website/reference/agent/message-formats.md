@@ -59,7 +59,8 @@ means the feature is not active.
 | `x-swarmq-lock-wait-since` | `int` (Unix milliseconds) | Worker (lock conflict) | First lock conflict; `SWARMQ_LOCK_WAIT_MAX_S` is measured from it. |
 | `x-swarmq-lock-holder` | `string` | Worker (lock conflict) | Fingerprint of the lock's holders (the set of owners) at the last change of holder. |
 | `x-swarmq-lock-holder-since` | `int` (Unix milliseconds) | Worker (lock conflict) | When the worker last saw the holders change. |
-| `x-swarmq-lock-holder-ttl-ms` | `int` (milliseconds) | Worker (lock conflict) | Remaining TTL of the lock key at that change; a holder that keeps the lock longer than this plus 60 s counts as stalled. The five lock headers stay on every deferral copy a worker makes before execution and are removed on a retry copy, at dead-lettering and by `dlq retry`. |
+| `x-swarmq-lock-holder-ttl-ms` | `int` (milliseconds) | Worker (lock conflict) | Remaining TTL of the lock key at that change; a holder that keeps the lock longer than this plus 60 s counts as stalled. |
+| `x-swarmq-lock-wait-gen` | `str` (`"<retry count>:<replay ID>"`) | Worker (lock conflict) | Execution the wait belongs to. A message whose retry count or replay ID differs (a copy that a 0.11 worker made of a later execution) starts a new wait. The six lock headers stay on every deferral copy a worker makes before execution and are removed on a retry copy, at dead-lettering and by `dlq retry`; a copy of a message the broker redelivered drops them as well. |
 | `x-swarmq-lock-name` | `string` | Worker (lock conflict) | Rendered lock name the conflicts refer to. |
 | `x-swarmq-rate-limit-count` | `int` | Worker (rate limit) | How often the message bounced off its rate limit. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow the message belongs to (workflow steps only). |
