@@ -73,11 +73,6 @@ def _draining_worker(clock: _VirtualTime, pid: int, events: list[tuple[str, floa
     return proc
 
 
-@pytest.mark.befund("BZ-18")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-18: Supervisor-Shutdown mit Defaults dauert 30 s + 5 s SIGTERM-Phase + Joins, mehr als K8s 30 s",
-)
 def test_default_shutdown_fits_into_kubernetes_termination_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _VirtualTime()
     monkeypatch.setattr(

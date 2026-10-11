@@ -785,6 +785,43 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   es in einer späteren aiormq-Version, warnt swarmq einmal
   (`publish_blocked_state_unreadable`) und publiziert ungeprüft wie bisher.
 
+### Geändert (Shutdown-Budget, BZ-18)
+
+- **`SWARMQ_SHUTDOWN_TIMEOUT` ist das Gesamtbudget ab `SIGTERM`.** Bisher
+  verbrauchte der Drain allein den ganzen Wert, Sperrenfreigabe,
+  Leader-Übergabe, Marker des Ausführungsschutzes und Verbindungsschluss
+  kamen danach; unter dem Supervisor kamen dessen eigenes `SIGTERM` (nach
+  dem vollen Wert) und `SIGKILL` (5 s später) noch dahinter. Das
+  Herunterfahren dauerte mit Defaults also 35 s und mehr, länger als der
+  Kubernetes-Default von 30 s bis `SIGKILL`. Jetzt endet der Drain 5 s vor
+  dem Ende (höchstens die Hälfte des Budgets); der Supervisor schickt
+  `SIGTERM` bei `T - 7 s`, `SIGKILL` bei `T - 2 s` und hat seine Worker
+  bis `T` eingesammelt, sein Worker drainiert bis `T - 7 s`
+  ([Shutdown-Budget](../explanation/delivery-semantics.de.md#shutdown-budget)).
+  `ProcessManager(shutdown_grace_s=...)` bedeutet ebenfalls das
+  Gesamtbudget. Die Publish-Endfrist im Herunterfahren ist das Ende des
+  Drains, für einen eingebetteten Worker wie bisher (unter dem Supervisor
+  2 s früher).
+- **Jeder Aufräumschritt hat ein Zeitlimit** (der Rest des Budgets,
+  mindestens 1 s): Rechen-Pool, abgetrennte Lock-Freigaben (bisher
+  mindestens 5 s), Marker des Ausführungsschutzes, jede Lock-Freigabe,
+  Scheduler-Stopp (danach abgebrochen), DI-Container, Broker-Schluss
+  (beide Verbindungen) und Backend-Schluss. Ein Schritt darüber loggt
+  `shutdown_step_timeout` (neu), das Herunterfahren geht weiter. Auf
+  Tasks, die den Abbruch ignorieren, wird höchstens 1 s gewartet,
+  innerhalb des Budgets.
+- **Der Recycling-Drain bleibt unverändert** (größter `hard_timeout`).
+
+### Upgrade auf 0.12 (Shutdown-Budget)
+
+- **Tasks bekommen weniger Drain-Zeit.** Mit dem Default 30 s drainiert
+  ein eingebetteter Worker 25 s, ein Worker unter dem Supervisor 23 s
+  (bisher 30 s). Kubernetes `terminationGracePeriodSeconds` und Docker
+  `stop_grace_period` auf mindestens `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`
+  setzen (`swarmq check` zeigt `min_grace_period_s`); um langen Tasks den
+  bisherigen Drain zu geben, `SWARMQ_SHUTDOWN_TIMEOUT` zusammen mit der
+  Frist um 7 s anheben.
+
 ### Behoben (Worker-Slots, BZ-27)
 
 - **Ein gesperrter Worker-Slot läuft nach einer Abkühlzeit wieder an.**

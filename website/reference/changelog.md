@@ -734,6 +734,40 @@ All notable changes to SwarmQ. This project follows
   aiormq attribute; if a later aiormq drops it, swarmq warns once
   (`publish_blocked_state_unreadable`) and publishes unchecked as before.
 
+### Changed (shutdown budget, BZ-18)
+
+- **`SWARMQ_SHUTDOWN_TIMEOUT` is the total budget from `SIGTERM`.**
+  Before, the drain alone used the whole value, and lock release, the
+  scheduler handover, execution-guard markers and connection close came
+  after it; under the supervisor its own `SIGTERM` (after the full value)
+  and `SIGKILL` (5 s later) came after that, so the default shutdown took
+  35 s and more, past Kubernetes' default `SIGKILL` at 30 s. Now the
+  drain ends 5 s before the end (at most half the budget), and the
+  supervisor sends `SIGTERM` at `T - 7 s`, `SIGKILL` at `T - 2 s` and has
+  collected its workers by `T`; its worker drains until `T - 7 s`
+  ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)).
+  `ProcessManager(shutdown_grace_s=...)` means the total budget too.
+  The publish deadline in the shutdown is the end of the drain, as
+  before for an embedded worker (under the supervisor 2 s earlier).
+- **Every cleanup step has a time limit** (the rest of the budget, at
+  least 1 s): compute pool, detached lock releases (before: at least
+  5 s), execution-guard markers, each lock release, scheduler stop (then
+  aborted), DI container, broker close (both connections) and backend
+  close. A step that exceeds it logs `shutdown_step_timeout` (new) and
+  the shutdown goes on. Tasks that ignore cancellation are awaited at
+  most 1 s, within the budget.
+- **The recycling drain is unchanged** (largest `hard_timeout`).
+
+### Upgrading to 0.12 (shutdown budget)
+
+- **Tasks get less drain time.** With the default 30 s an embedded worker
+  drains 25 s, a worker under the supervisor 23 s (before 30 s). Set
+  Kubernetes `terminationGracePeriodSeconds` and Docker
+  `stop_grace_period` to at least `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`
+  (`swarmq check` shows `min_grace_period_s`); to give long tasks the
+  old drain, raise `SWARMQ_SHUTDOWN_TIMEOUT` by 7 s together with the
+  grace period.
+
 ### Fixed (worker slots, BZ-27)
 
 - **A locked worker slot runs again after a cooldown.** The supervisor

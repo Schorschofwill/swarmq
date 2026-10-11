@@ -213,6 +213,41 @@ with the same message body.
 
 **Mitigation.** Nothing required. This is the design.
 
+### Shutdown budget
+
+`SWARMQ_SHUTDOWN_TIMEOUT` (default 30 s) is the total budget from
+`SIGTERM` (since 0.12). Kubernetes sends `SIGKILL` after
+`terminationGracePeriodSeconds` (default 30 s), Docker after
+`stop_grace_period` (default 10 s); everything has to be done by then.
+Before 0.12 the drain alone used the whole budget, so lock release,
+scheduler handover and execution-guard markers came after the
+orchestrator's `SIGKILL`.
+
+| Phase | Embedded worker | Under the supervisor (`swarmq worker`) |
+|---|---|---|
+| Drain of in-flight tasks, publish deadline | until `T - 5 s` | until `T - 7 s` |
+| Cancel left-over tasks, release locks, stop the scheduler (handover), close connections | until `T` | until `T - 2 s` |
+| Supervisor: `SIGTERM` to workers still alive | -- | at `T - 7 s` |
+| Supervisor: `SIGKILL`, collect the processes | -- | at `T - 2 s`, done by `T` |
+
+`T` is `SWARMQ_SHUTDOWN_TIMEOUT`; with a short budget each reserve is at
+most half of the rest (`T = 5` embedded: drain 2.5 s). The drain counts
+from `SIGTERM`, so a slow `WORKER_SHUTDOWN` handler (at most 10 s)
+shortens it. Every cleanup step has a time limit (the rest of the budget,
+at least 1 s); a step that exceeds it is logged
+(`shutdown_step_timeout`) and skipped, the lock TTL and the leader-lock
+TTL heal what it left. A recycling worker (`SWARMQ_RECYCLE_*`) keeps its
+own drain (largest `hard_timeout`).
+
+**Set the orchestrator's grace period to at least
+`SWARMQ_SHUTDOWN_TIMEOUT + 15 s`**: Kubernetes
+`terminationGracePeriodSeconds`, Docker/Compose `stop_grace_period`.
+The margin covers `preStop` hooks and signal delivery.
+`swarmq check` prints the value (`min_grace_period_s`). A task that
+runs longer than the drain is cancelled and redelivered (see above);
+raise `SWARMQ_SHUTDOWN_TIMEOUT` together with the grace period if
+long tasks should finish during a deploy.
+
 ## Execution guard
 
 From 0.11.0 the worker checks every delivery against a marker in

@@ -16,10 +16,12 @@ import asyncio
 import contextlib
 import signal
 import uuid
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING
 
 from swarmq.dishka import _Missing, get_registered_container
 from swarmq.logging import _error_fields
+from swarmq.shutdown_budget import ShutdownBudget, shutdown_budget
 from swarmq.signals import Signal
 from swarmq.supervision import current_channel
 from swarmq.worker import lifecycle as _lc
@@ -43,6 +45,7 @@ class WorkerShutdown:
     if TYPE_CHECKING:
         _state: WorkerState
         _torn_down: bool
+        _shutdown_end: float | None  # BZ-18: gesetzt in ``_execute_shutdown``
         _broker: WorkerBroker
         _backend: WorkerBackend
         _config: SwarmQConfig
@@ -77,7 +80,7 @@ class WorkerShutdown:
             except Exception:
                 _lc.logger.exception("health_server_stop_failed")
 
-    async def _drain_in_flight(self) -> None:
+    async def _drain_in_flight(self, drain_until: float | None = None) -> None:
         # 1. DRAINING: stop accepting new messages. cancel_consume now
         # isolates per-consumer failures and raises only after attempting
         # every consumer + clearing its registry; guard it so a partial
@@ -94,7 +97,14 @@ class WorkerShutdown:
             # KTD11/R22: ein Recycling-Drain wartet ohne erzwungenen Abbruch
             # (Frist aus dem groessten hard_timeout), damit ein gesunder
             # Langlaeufer keinen Retry verliert; SIGTERM behaelt shutdown_timeout.
-            drain_timeout = getattr(self, "_drain_timeout_override", None) or self._config.shutdown_timeout
+            # BZ-18 (Plan 0.12.0, MR 17): sonst endet der Drain bei ``drain_until``
+            # (Loop-Zeit), damit Sperren, Leader-Uebergabe und Verbindungsschluss
+            # noch im Gesamtbudget ab SIGTERM liegen.
+            drain_timeout = getattr(self, "_drain_timeout_override", None)
+            if not drain_timeout:
+                drain_timeout = float(self._config.shutdown_timeout)
+                if drain_until is not None:
+                    drain_timeout = max(0.0, drain_until - asyncio.get_running_loop().time())
             _done, pending = await asyncio.wait(
                 tasks_snapshot,
                 timeout=drain_timeout,
@@ -105,7 +115,7 @@ class WorkerShutdown:
                 self._state = WorkerState.SHUTTING_DOWN
                 for task in pending:
                     task.cancel()
-                await asyncio.wait(pending, timeout=1)
+                await asyncio.wait(pending, timeout=min(1.0, self._step_timeout()))
 
     async def _release_leftover_locks(self) -> None:
         # 3b. Await detached lock-release tasks (Phase 3b.3). When a
@@ -115,13 +125,11 @@ class WorkerShutdown:
         # backend.close() — otherwise the detached release would use a
         # closed Valkey client and the lock would stay held until TTL.
         if self._detached_releases:
-            await asyncio.wait(
-                self._detached_releases,
-                timeout=max(5.0, float(self._config.shutdown_timeout)),
-            )
+            # BZ-18: im Budget, nicht mehr mindestens 5 s.
+            await asyncio.wait(self._detached_releases, timeout=self._step_timeout())
         # Nachgeholte Marker-Abschluesse des Ausfuehrungsschutzes: ein letzter,
         # begrenzter Versuch, solange Valkey noch offen ist.
-        await self._execution_guard.drain()
+        await self._bounded_step("execution_guard_drain", self._execution_guard.drain())
 
         # 3c. Release any leftover handler locks. Runs AFTER the
         # asyncio.wait above (so cancelled tasks have had a chance to
@@ -136,7 +144,7 @@ class WorkerShutdown:
                     kept = self._lock_keeper.drop(token)
                     task_fields = {} if kept is None else {"task_id": kept.task_id, "task_name": kept.task_name}
                     try:
-                        released = await self._lock_manager.release(token)
+                        released = await asyncio.wait_for(self._lock_manager.release(token), self._step_timeout())
                     except Exception as exc:
                         # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
                         _lc.logger.warning(
@@ -170,10 +178,14 @@ class WorkerShutdown:
         # the next standby emits SCHEDULER_LEADER (not FAILOVER).
         if self._scheduler is not None:
             try:
-                await self._scheduler.stop()
+                await asyncio.wait_for(self._scheduler.stop(), self._step_timeout())
             except Exception as exc:
                 # KTD11: Leader-Lock und Marker laufen per TTL ab -> WARNING.
                 _lc.logger.warning("scheduler_stop_failed", **_error_fields(exc))
+                if isinstance(exc, TimeoutError):
+                    # BZ-18: keine Wahl-/Poll-Schleife ueberleben lassen.
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(self._scheduler.abort(), self._step_timeout())
 
         # 3e. Close the Dishka APP container (if one was registered). Runs
         # AFTER the in-flight drain + detached-release wait (so live REQUEST
@@ -183,9 +195,26 @@ class WorkerShutdown:
         _di_container = get_registered_container()
         if not isinstance(_di_container, _Missing):
             try:
-                await _di_container.close()
+                await self._bounded_step("di_container_close", _di_container.close())
             except Exception:
                 _lc.logger.exception("dishka_container_close_failed")
+
+    async def _bounded_step(self, step: str, awaitable: Awaitable[object]) -> None:
+        """BZ-18: einen Aufraeumschritt mit Zeitlimit ausfuehren; bei
+        Ueberschreitung WARNING ``shutdown_step_timeout`` und weiter."""
+        timeout = self._step_timeout()
+        try:
+            await asyncio.wait_for(awaitable, timeout)
+        except TimeoutError:
+            _lc.logger.warning("shutdown_step_timeout", step=step, timeout_s=round(timeout, 3))
+
+    def _step_timeout(self) -> float:
+        """BZ-18: Zeitlimit eines Aufraeumschritts -- der Rest bis zum Ende des
+        Budgets, mindestens ``_SHUTDOWN_STEP_MIN_S`` (ein ausgeschoepftes
+        Budget ueberspringt keinen Schritt)."""
+        end = getattr(self, "_shutdown_end", None)
+        remaining = float(self._config.shutdown_timeout) if end is None else end - asyncio.get_running_loop().time()
+        return max(remaining, _lc._SHUTDOWN_STEP_MIN_S)
 
     def _shutdown_publish_budget(self) -> float:
         """Wieviel Zeit ein Publish im Herunterfahren noch bekommt (R12, KTD9).
@@ -198,9 +227,12 @@ class WorkerShutdown:
         alle laufenden Tasks kaemen als Redelivery zurueck statt sauber
         verzoegert oder aussortiert zu werden.
         """
-        grace = max(0.0, float(self._config.shutdown_timeout))
-        reserve = min(_lc._SHUTDOWN_PUBLISH_RESERVE_S, grace / 2.0)
-        return max(0.0, grace - reserve)
+        return self._shutdown_budget().drain_until
+
+    def _shutdown_budget(self) -> ShutdownBudget:
+        """BZ-18: ``shutdown_timeout`` als Gesamtbudget ab SIGTERM; unter dem
+        Supervisor (Kanal gesetzt) endet es mit dessen SIGKILL."""
+        return shutdown_budget(float(self._config.shutdown_timeout), supervised=current_channel() is not None)
 
     def _set_publish_deadline(self, at: float | None) -> None:
         """Setzt die Endfrist, sofern der Broker sie kennt.
@@ -234,15 +266,19 @@ class WorkerShutdown:
             await self._stop_http_surfaces()
             # Ab hier darf kein Publish mehr laenger laufen als das
             # verbleibende Budget. Auch bereits laufende werden nachgezogen.
-            self._set_publish_deadline(started_at + self._shutdown_publish_budget())
-            await self._drain_in_flight()
-            await self._close_executor()
+            budget = self._shutdown_budget()
+            self._shutdown_end = started_at + budget.finish_by
+            self._set_publish_deadline(started_at + budget.drain_until)
+            await self._drain_in_flight(started_at + budget.drain_until)
+            await self._bounded_step("executor_close", self._close_executor())
             await self._release_leftover_locks()
             await self._stop_scheduler_and_di()
             # 4. Close connections
             self._state = WorkerState.SHUTTING_DOWN
-            await self._broker.close()
-            await self._backend.close()
+            # BZ-18: auch der Verbindungsschluss (Broker: zwei Verbindungen,
+            # MR 16) liegt im Budget; das Backend schliesst nach dem Broker.
+            await self._bounded_step("broker_close", self._broker.close())
+            await self._bounded_step("backend_close", self._backend.close())
         finally:
             # Immer zuruecknehmen, auch wenn oben etwas geworfen hat: Ein
             # eingebetteter Nutzer darf ueber dieselbe Instanz weiter Tasks

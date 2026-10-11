@@ -231,6 +231,42 @@ anderen Worker mit demselben Nachrichten-Body.
 
 **Mitigation.** Keine nötig. So ist das Design.
 
+### Shutdown-Budget
+
+`SWARMQ_SHUTDOWN_TIMEOUT` (Default 30 s) ist das Gesamtbudget ab
+`SIGTERM` (seit 0.12). Kubernetes schickt nach
+`terminationGracePeriodSeconds` (Default 30 s) `SIGKILL`, Docker nach
+`stop_grace_period` (Default 10 s); bis dahin muss alles erledigt sein.
+Vor 0.12 verbrauchte der Drain allein das ganze Budget: Sperrenfreigabe,
+Leader-Übergabe und Marker des Ausführungsschutzes kamen erst nach dem
+`SIGKILL` der Orchestrierung.
+
+| Phase | Eingebetteter Worker | Unter dem Supervisor (`swarmq worker`) |
+|---|---|---|
+| Drain laufender Tasks, Publish-Endfrist | bis `T - 5 s` | bis `T - 7 s` |
+| Übrige Tasks abbrechen, Sperren freigeben, Scheduler stoppen (Übergabe), Verbindungen schließen | bis `T` | bis `T - 2 s` |
+| Supervisor: `SIGTERM` an noch lebende Worker | -- | bei `T - 7 s` |
+| Supervisor: `SIGKILL`, Prozesse einsammeln | -- | bei `T - 2 s`, fertig bis `T` |
+
+`T` ist `SWARMQ_SHUTDOWN_TIMEOUT`; bei kurzem Budget ist jede Reserve
+höchstens die Hälfte des Rests (`T = 5` eingebettet: Drain 2,5 s). Der
+Drain zählt ab `SIGTERM`, ein langsamer `WORKER_SHUTDOWN`-Handler
+(höchstens 10 s) verkürzt ihn also. Jeder Aufräumschritt hat ein
+Zeitlimit (der Rest des Budgets, mindestens 1 s); ein Schritt darüber
+wird geloggt (`shutdown_step_timeout`) und übersprungen, Lock-TTL und
+Leader-Lock-TTL heilen, was er hinterlässt. Ein recycelnder Worker
+(`SWARMQ_RECYCLE_*`) behält seinen eigenen Drain (größter
+`hard_timeout`).
+
+**Die Frist der Orchestrierung auf mindestens
+`SWARMQ_SHUTDOWN_TIMEOUT + 15 s` setzen**: Kubernetes
+`terminationGracePeriodSeconds`, Docker/Compose `stop_grace_period`. Der
+Abstand deckt `preStop`-Hooks und die Signalzustellung. `swarmq check`
+gibt den Wert aus (`min_grace_period_s`). Ein Task, der länger läuft als
+der Drain, wird abgebrochen und neu zugestellt (siehe oben); sollen lange
+Tasks während eines Deploys fertig werden, `SWARMQ_SHUTDOWN_TIMEOUT`
+zusammen mit der Frist anheben.
+
 ## Ausführungsschutz
 
 Ab 0.11.0 prüft der Worker jede Zustellung gegen einen Marker in

@@ -41,11 +41,6 @@ pytestmark = pytest.mark.timeout(5)
 _GRACE_S = 0.08
 
 
-@pytest.mark.befund("BZ-18")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-18: der Drain verbraucht die ganze Gnadenfrist, Lock-Freigabe und Leader-Uebergabe kommen erst danach",
-)
 async def test_locks_and_leader_are_released_within_the_grace_period(worker: Any) -> None:
     loop = asyncio.get_running_loop()
     worker._config.shutdown_timeout = _GRACE_S

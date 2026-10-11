@@ -28,6 +28,7 @@ from swarmq.ready_depth import ready_depth_or_none
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.scheduler.reports import static_definitions
 from swarmq.serialization import decode_result
+from swarmq.shutdown_budget import CLEANUP_RESERVE_S
 from swarmq.signals import Signal
 from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout, current_channel
 from swarmq.worker.eviction_gate import enforce_eviction_policy
@@ -57,12 +58,13 @@ logger = get_logger(__name__)
 _LIFECYCLE_DISPATCH_TIMEOUT_S = 10.0
 # Rest der Gnadenfrist, den das Herunterfahren NACH dem Drain noch braucht:
 # Sperren freigeben, Scheduler stoppen, Broker- und Backend-Verbindung
-# schliessen. Ohne diese Reserve faellt die Publish-Endfrist exakt mit der
-# Eskalation des Supervisors zusammen — dessen Gnadenfrist ist derselbe
-# ``shutdown_timeout``, den der Drain bereits als eigenes Limit verbraucht
-# (siehe src/swarmq/process_manager/run.py) — und der Deckel brächte im
-# Herunterfahren gar nichts (Plan 2026-08-28-001, KTD9).
-_SHUTDOWN_PUBLISH_RESERVE_S = 5.0
+# schliessen (Plan 2026-08-28-001, KTD9). Seit BZ-18 (Plan 0.12.0, MR 17)
+# gilt sie fuer Drain und Publish-Endfrist gemeinsam und lebt in
+# ``swarmq.shutdown_budget``; dieser Name bleibt als Alias.
+_SHUTDOWN_PUBLISH_RESERVE_S = CLEANUP_RESERVE_S
+# Untergrenze je Aufraeumschritt im Herunterfahren (BZ-18): auch mit
+# ausgeschoepftem Budget bekommt jeder Schritt diesen Versuch.
+_SHUTDOWN_STEP_MIN_S = 1.0
 
 
 

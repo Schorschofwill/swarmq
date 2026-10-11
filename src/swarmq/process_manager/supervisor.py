@@ -26,6 +26,7 @@ from swarmq.process_manager.restart_budget import RestartBudget
 from swarmq.process_manager.setpoint_store import DEFAULT_SAMPLE_INTERVAL_S, SetpointStoreFactory
 from swarmq.process_manager.slots import SlotState, SlotTable, WorkerInfo
 from swarmq.process_manager.worker_target import block_signals, run_worker_entry, unblock_signals
+from swarmq.shutdown_budget import shutdown_budget
 from swarmq.supervision import (
     FORK_SOURCE_REJECTED_EXIT_CODE,
     RECYCLE_NOACK_EXIT_CODE,
@@ -77,9 +78,11 @@ class ProcessManager(RestartBudget):
     # Parent-loop tick.
     MONITOR_INTERVAL = 0.5
 
-    # Graceful-shutdown phases (defaults — overridable per-instance via
-    # ``shutdown_grace_s`` to align with ``SwarmQConfig.shutdown_timeout``
-    # so a subprocess actually gets its configured drain budget).
+    # Gesamtbudget des Herunterfahrens ab SIGTERM (Default; pro Instanz ueber
+    # ``shutdown_grace_s`` = ``SwarmQConfig.shutdown_timeout``). Seit BZ-18
+    # (Plan 0.12.0, MR 17) liegen Drain, SIGTERM-Phase, SIGKILL und Einsammeln
+    # darin (``swarmq.shutdown_budget``); ``SHUTDOWN_TERM_S`` bleibt die
+    # SIGTERM-Frist ersetzter Worker im laufenden Betrieb.
     SHUTDOWN_GRACE_S = 30.0
     SHUTDOWN_TERM_S = _SHUTDOWN_TERM_S  # lebt seit U3 in ``supervision`` (KTD4)
 
@@ -148,10 +151,10 @@ class ProcessManager(RestartBudget):
         self._worker_args = worker_args
         self._autoscale = autoscale
         self._queue_depth_fn = queue_depth_fn
-        # Per-instance override of the phase-1 shutdown budget.
-        # Without this, any task running longer
-        # than the class default was killed mid-execution regardless
-        # of the configured SwarmQConfig.shutdown_timeout.
+        # Per-instance override of the total shutdown budget (BZ-18: the
+        # whole sequence from SIGTERM, not only phase 1). Without this, any
+        # task running longer than the class default was killed
+        # mid-execution regardless of SwarmQConfig.shutdown_timeout.
         if shutdown_grace_s is not None:
             if shutdown_grace_s <= 0:
                 raise ValueError(
@@ -178,6 +181,8 @@ class ProcessManager(RestartBudget):
         # lazy beim ersten Start ueber ``self._ctx`` angelegt.
         self._locked_slots_shared: Any = None
         self._shutting_down = False
+        # BZ-18: Ende des Gesamtbudgets (monoton), gesetzt beim Herunterfahren.
+        self._shutdown_deadline: float | None = None
         # KTD8: vom Handler hinterlegt und nie geloescht -- ``reexec`` prueft
         # es direkt vor ``execvpe``; geloggt wird es genau einmal.
         self._shutdown_signal: str | None = None
@@ -382,12 +387,12 @@ class ProcessManager(RestartBudget):
             self._start_worker(slot)
 
     @staticmethod
-    def _wait_for_exit(candidates: list[WorkerInfo], grace_s: float) -> None:
-        deadline = time.monotonic() + grace_s
-        while time.monotonic() < deadline:
+    def _wait_for_exit(candidates: list[WorkerInfo], until: float) -> None:
+        """Warten, bis alle beendet sind oder die monotone Zeit ``until`` erreicht ist."""
+        while (now := time.monotonic()) < until:
             if not any(w.process.is_alive() for w in candidates):
                 break
-            time.sleep(0.3)
+            time.sleep(min(0.3, until - now))
 
     def _signal_survivors(self, event: str, action: str) -> list[WorkerInfo]:
         """SIGTERM/SIGKILL an noch lebende Worker; liefert die Adressaten."""
@@ -404,34 +409,46 @@ class ProcessManager(RestartBudget):
         return alive
 
     def _shutdown_all_workers(self) -> None:
-        """Three-phase shutdown: event → SIGTERM → SIGKILL."""
+        """Three-phase shutdown: event → SIGTERM → SIGKILL, im Gesamtbudget.
+
+        BZ-18 (Plan 0.12.0, MR 17): ``shutdown_grace_s`` ist das Gesamtbudget
+        ab SIGTERM (``SWARMQ_SHUTDOWN_TIMEOUT``). Die Eskalation endet bei
+        ``total - 2 s``, das Einsammeln bei ``total`` -- vor dem SIGKILL der
+        Orchestrierung, wenn deren Frist mindestens so lang ist.
+        """
         if not self.workers:
             return
         self.shutdown_event.set()
+        started = time.monotonic()
+        budget = shutdown_budget(self.shutdown_grace_s, supervised=True)
+        self._shutdown_deadline = started + budget.total
 
         # Phase 1: cooperative exit via shutdown_event.
-        self._wait_for_exit(list(self.workers.values()), self.shutdown_grace_s)
+        self._wait_for_exit(list(self.workers.values()), started + budget.sigterm_at)
 
         # Phase 2: SIGTERM.
         alive = self._signal_survivors("shutdown_sigterm_escalation", "terminate")
         if alive:
-            self._wait_for_exit(alive, self.SHUTDOWN_TERM_S)
+            self._wait_for_exit(alive, started + budget.sigkill_at)
 
         # Phase 3: SIGKILL.
         self._signal_survivors("shutdown_sigkill_escalation", "kill")
+        self._join_all(timeout_per_worker=2.0)
 
-        for info in self.workers.values():
+    def _join_all(self, timeout_per_worker: float) -> None:
+        """Prozesse einsammeln, gemeinsam hoechstens bis ``_shutdown_deadline``."""
+        deadline = self._shutdown_deadline
+        for info in list(self.workers.values()):
+            timeout = timeout_per_worker
+            if deadline is not None:
+                timeout = min(timeout, max(0.0, deadline - time.monotonic()))
             try:
-                info.process.join(timeout=2)
+                info.process.join(timeout=timeout)
             except Exception:
                 pass
 
     def _collect_zombies(self) -> None:
-        for info in list(self.workers.values()):
-            try:
-                info.process.join(timeout=1)
-            except Exception:
-                pass
+        self._join_all(timeout_per_worker=1.0)
 
     # ------------------------------------------------------------------
     # Monitor loop + restart
