@@ -40,6 +40,7 @@ from swarmq.task import UniqueUntil
 def _get_backend_factory() -> Callable[[], Coroutine[Any, Any, ValkeyBackend]]:
     """Lazy import of ``_backend_from_env`` (aus ``_shared``; patchbar dort)."""
     from swarmq.cli._shared import _backend_from_env
+
     return _backend_from_env
 
 
@@ -55,7 +56,8 @@ def _last_seen_text(schedule: ScheduleDefinition, last_seen: Mapping[str, int]) 
 
 
 def _format_schedule_table(
-    schedules: list[ScheduleDefinition], last_seen: Mapping[str, int] | None = None,
+    schedules: list[ScheduleDefinition],
+    last_seen: Mapping[str, int] | None = None,
 ) -> str:
     """Plain-text table for terminal output — stable column ordering.
 
@@ -65,30 +67,38 @@ def _format_schedule_table(
     cron (LAST_SEEN, Plan 2026-10-08-1541, KTD8).
     """
     last_seen = last_seen or {}
-    rows = [(
-        "NAME", "CRON", "TASK", "QUEUE", "NEXT_FIRE",
-        "DISABLED", "SOURCE", "LAST_SEEN", "DEDUP", "UNIQUE_UNTIL",
-    )]
-    for s in schedules:
-        next_fire = (
-            datetime.fromtimestamp(s.fire_ts_ms / 1000, tz=UTC).isoformat()
-            if s.fire_ts_ms is not None
-            else "-"
+    rows = [
+        (
+            "NAME",
+            "CRON",
+            "TASK",
+            "QUEUE",
+            "NEXT_FIRE",
+            "DISABLED",
+            "SOURCE",
+            "LAST_SEEN",
+            "DEDUP",
+            "UNIQUE_UNTIL",
         )
+    ]
+    for s in schedules:
+        next_fire = datetime.fromtimestamp(s.fire_ts_ms / 1000, tz=UTC).isoformat() if s.fire_ts_ms is not None else "-"
         dedup_state = f"{s.dedup_hash[:8]}…" if s.dedup_hash else "-"
         unique_until = s.unique_until if s.dedup_hash else "-"
-        rows.append((
-            s.schedule_name,
-            s.cron or "-",
-            s.task_name,
-            s.queue,
-            next_fire,
-            "yes" if s.disabled else "no",
-            s.source,
-            _last_seen_text(s, last_seen),
-            dedup_state,
-            unique_until,
-        ))
+        rows.append(
+            (
+                s.schedule_name,
+                s.cron or "-",
+                s.task_name,
+                s.queue,
+                next_fire,
+                "yes" if s.disabled else "no",
+                s.source,
+                _last_seen_text(s, last_seen),
+                dedup_state,
+                unique_until,
+            )
+        )
     return _render_table(rows, "(no schedules)")
 
 
@@ -101,10 +111,7 @@ async def _run_schedule_list(args: argparse.Namespace) -> None:
         # Letztes Lebenszeichen je Name (KTD8): jüngste Meldung eines Workers.
         last_seen = last_seen_by_name(await backend.schedules.cron_reports())
         if args.format == "json":
-            payload = [
-                {**msgspec.to_builtins(s), "last_seen_ms": last_seen.get(s.schedule_name)}
-                for s in schedules
-            ]
+            payload = [{**msgspec.to_builtins(s), "last_seen_ms": last_seen.get(s.schedule_name)} for s in schedules]
             sys.stdout.write(json.dumps(payload, indent=2, default=str) + "\n")
         else:
             sys.stdout.write(_format_schedule_table(schedules, last_seen) + "\n")
@@ -139,20 +146,17 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
         from croniter import CroniterBadCronError
 
         from swarmq.scheduler.cron_time import next_fire_ms
+
         try:
             fire_ts_ms = next_fire_ms(cron, None, int(time.time() * 1000))
         except (CroniterBadCronError, ValueError) as exc:
-            raise ConfigurationError(
-                f"invalid cron expression: {cron!r} ({exc})"
-            ) from exc
+            raise ConfigurationError(f"invalid cron expression: {cron!r} ({exc})") from exc
         return cron, fire_ts_ms
     # --at <iso-datetime>
     try:
         dt = datetime.fromisoformat(args.at.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise ConfigurationError(
-            f"invalid --at datetime: {args.at!r} ({exc})"
-        ) from exc
+        raise ConfigurationError(f"invalid --at datetime: {args.at!r} ({exc})") from exc
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return None, int(dt.timestamp() * 1000)
@@ -189,8 +193,7 @@ def _render_add_result(
         )
     else:
         sys.stdout.write(
-            f"schedule {args.name!r} already exists; use "
-            f"'schedule remove --permanent' first to replace it\n"
+            f"schedule {args.name!r} already exists; use 'schedule remove --permanent' first to replace it\n"
         )
 
 
@@ -211,7 +214,9 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
     try:
         if unique_for is not None:
             dedup_hash = compute_dedup_hash(
-                args.task, tuple(parsed_args), parsed_kwargs,
+                args.task,
+                tuple(parsed_args),
+                parsed_kwargs,
             )
             # TTL = unique_for + fire_offset, ceiling-div so sub-second
             # deltas still get a full second of padding (same formula
@@ -221,7 +226,9 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
             fire_offset_s = (fire_offset_ms + 999) // 1000
             ttl_ms = (unique_for + int(fire_offset_s)) * 1000
             existing_owner = await backend.claim_unique(
-                dedup_hash, args.name, ttl_ms,
+                dedup_hash,
+                args.name,
+                ttl_ms,
             )
 
         definition = ScheduleDefinition(
@@ -276,20 +283,23 @@ async def _run_schedule_remove(args: argparse.Namespace) -> None:
             action = "disabled"
 
         if args.format == "json":
-            sys.stdout.write(json.dumps({
-                "removed": changed,
-                "permanent": bool(args.permanent),
-                "name": args.name,
-            }) + "\n")
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "removed": changed,
+                        "permanent": bool(args.permanent),
+                        "name": args.name,
+                    }
+                )
+                + "\n"
+            )
             return
 
         if changed:
             verb = "permanently removed" if args.permanent else "disabled"
             sys.stdout.write(f"{verb} schedule {args.name!r}\n")
         else:
-            sys.stdout.write(
-                f"schedule {args.name!r} not found — {action} was a no-op\n"
-            )
+            sys.stdout.write(f"schedule {args.name!r} not found — {action} was a no-op\n")
     finally:
         await backend.close()
 
@@ -347,19 +357,14 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
                     {
                         "name": name,
                         "fire_ts_ms": score,
-                        "fire_at": datetime.fromtimestamp(
-                            score / 1000, tz=UTC
-                        ).isoformat(),
+                        "fire_at": datetime.fromtimestamp(score / 1000, tz=UTC).isoformat(),
                         "task": defn.task_name,
                         "queue": defn.queue,
                         "disabled": defn.disabled,
                     }
                     for name, score, defn in upcoming
                 ],
-                "workers": [
-                    {"worker_id": worker_id, "version": version}
-                    for worker_id, version in workers
-                ],
+                "workers": [{"worker_id": worker_id, "version": version} for worker_id, version in workers],
             }
             sys.stdout.write(json.dumps(payload, indent=2) + "\n")
             return
@@ -367,7 +372,7 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         # Table format
         sys.stdout.write(f"LEADER: {leader or '(none)'}\n")
         sys.stdout.write(f"LEADER_VERSION: {_leader_version_text(leader, leader_info.version)}\n")
-        sys.stdout.write(f"NOW:    {datetime.fromtimestamp(now_ms/1000, tz=UTC).isoformat()}\n")
+        sys.stdout.write(f"NOW:    {datetime.fromtimestamp(now_ms / 1000, tz=UTC).isoformat()}\n")
         sys.stdout.write("UPCOMING:\n")
         if not upcoming:
             sys.stdout.write("  (none in next 24h)\n")
@@ -375,10 +380,7 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
             for name, score, defn in upcoming:
                 fire_at = datetime.fromtimestamp(score / 1000, tz=UTC).isoformat()
                 disabled = " [disabled]" if defn.disabled else ""
-                sys.stdout.write(
-                    f"  {fire_at}  {name}  task={defn.task_name}"
-                    f"  queue={defn.queue}{disabled}\n"
-                )
+                sys.stdout.write(f"  {fire_at}  {name}  task={defn.task_name}  queue={defn.queue}{disabled}\n")
         sys.stdout.write("WORKERS:\n")
         if not workers:
             sys.stdout.write("  (none)\n")
@@ -401,6 +403,4 @@ async def _run_schedule_async(args: argparse.Namespace) -> None:
     elif args.schedule_command == "prune":
         await _run_schedule_prune(args)
     else:  # pragma: no cover — argparse required=True guards this
-        raise ConfigurationError(
-            f"unknown schedule subcommand: {args.schedule_command!r}"
-        )
+        raise ConfigurationError(f"unknown schedule subcommand: {args.schedule_command!r}")

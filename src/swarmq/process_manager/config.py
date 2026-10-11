@@ -84,11 +84,9 @@ class WorkerConfig:
             value = getattr(self, f.name)
             if not isinstance(value, _PICKLE_SAFE_TYPES):
                 raise TypeError(
-                    f"WorkerConfig.{f.name} must be pickle-safe; "
-                    f"got {type(value).__name__}",
+                    f"WorkerConfig.{f.name} must be pickle-safe; got {type(value).__name__}",
                 )
         if self.log_level not in VALID_LOG_LEVELS:
             raise ValueError(
-                f"WorkerConfig.log_level must be one of "
-                f"{VALID_LOG_LEVELS}; got {self.log_level!r}",
+                f"WorkerConfig.log_level must be one of {VALID_LOG_LEVELS}; got {self.log_level!r}",
             )

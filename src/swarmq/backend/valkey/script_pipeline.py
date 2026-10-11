@@ -95,7 +95,8 @@ class ScriptPipeline:
             # Wie valkey-py-Pipelines: Transportfehler wiederholt die
             # Retry-Politik der Verbindung mit dem ganzen Stapel.
             replies = await connection.retry.call_with_retry(
-                lambda: self._exchange(connection, batch), _ignore_failure,
+                lambda: self._exchange(connection, batch),
+                _ignore_failure,
             )
         except Exception as exc:
             _fail(batch, exc)

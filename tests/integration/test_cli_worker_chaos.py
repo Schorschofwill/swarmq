@@ -70,18 +70,40 @@ def test_loop_process_sigkill_kills_the_child_and_the_replacement_finishes_the_t
     tid = asyncio.run(_enqueue(queue, str(pid_file)))
 
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        CPU_FIXTURE_QUEUE=queue, PYTHONUNBUFFERED="1",
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CPU_FIXTURE_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
         # Ausführungsschutz (KTD5, R5): der Ersatz führt die Neuzustellung erst
         # aus, wenn der Running-Marker des getöteten Workers abgelaufen ist;
         # bis dahin stellt er sie zurück (innerhalb des Burst-Fensters).
         SWARMQ_EXECUTION_GUARD_TTL_S="2",
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.e2e._cpu_fixture_tasks",
-         "--queues", queue, "--pool", "cpu", "--concurrency", "1",
-         "--burst", "--burst-idle-timeout", "5", "--log-format", "json"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.e2e._cpu_fixture_tasks",
+            "--queues",
+            queue,
+            "--pool",
+            "cpu",
+            "--concurrency",
+            "1",
+            "--burst",
+            "--burst-idle-timeout",
+            "5",
+            "--log-format",
+            "json",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     lines: list[str] = []
@@ -98,8 +120,8 @@ def test_loop_process_sigkill_kills_the_child_and_the_replacement_finishes_the_t
         for line in lines:
             if '"worker_spawned"' in line:
                 try:
-                    pids.append(int(json.loads(line[line.index("{"):])["pid"]))
-                except (ValueError, KeyError):
+                    pids.append(int(json.loads(line[line.index("{") :])["pid"]))
+                except ValueError, KeyError:
                     continue
         return pids
 

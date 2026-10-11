@@ -90,6 +90,7 @@ class SignalRecorder:
                         payload=dict(payload),
                     ),
                 )
+
         return _handler
 
     @property
@@ -179,10 +180,7 @@ async def assert_no_deadlock(
         if not result:
             return
         await asyncio.sleep(poll_interval_s)
-    raise AssertionError(
-        f"deadlock: lock still held after {max_wait_s}s — lock-TTL "
-        "recovery did not fire"
-    )
+    raise AssertionError(f"deadlock: lock still held after {max_wait_s}s — lock-TTL recovery did not fire")
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +208,7 @@ async def assert_no_data_loss(
     if at_least_once:
         if delivered_count < expected_count:
             raise AssertionError(
-                f"data loss under at-least-once: delivered={delivered_count}, "
-                f"expected>={expected_count}"
+                f"data loss under at-least-once: delivered={delivered_count}, expected>={expected_count}"
             )
     else:
         if delivered_count != expected_count:
@@ -240,10 +237,7 @@ def assert_at_least_once_held(
     the broker / backend; this one is for after-the-fact handler-side
     bookkeeping (e.g. a list of seen task_ids has expected length)."""
     if handler_call_count < expected_min:
-        raise AssertionError(
-            f"silent drop: handler ran {handler_call_count} time(s), "
-            f"expected at least {expected_min}"
-        )
+        raise AssertionError(f"silent drop: handler ran {handler_call_count} time(s), expected at least {expected_min}")
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +249,7 @@ def _broker_port(child: psutil.Process) -> int | None:
     """Port of ``SWARMQ_BROKER_URL`` in the child's environment."""
     try:
         url = child.environ().get("SWARMQ_BROKER_URL")
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except psutil.NoSuchProcess, psutil.AccessDenied:
         return None
     if not url:
         return None
@@ -306,7 +300,7 @@ async def assert_no_reader_leak(
             try:
                 if any("spawn_main" in part for part in child.cmdline()):
                     workers.append(child)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except psutil.NoSuchProcess, psutil.AccessDenied:
                 continue
         return workers
 
@@ -330,10 +324,11 @@ async def assert_no_reader_leak(
             continue
         try:
             conns = [
-                c for c in child.net_connections(kind="tcp")
+                c
+                for c in child.net_connections(kind="tcp")
                 if c.raddr and c.raddr.port == port and c.status == psutil.CONN_ESTABLISHED
             ]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess, psutil.AccessDenied:
             continue
         counted += 1
         if len(conns) > max_broker_connections:
@@ -404,25 +399,15 @@ def assert_faf_stage_invariants(
     """
     if scenario_kind == "stage_none":
         if not observation.stage_executed:
-            raise AssertionError(
-                "FAF-1 (stage_none fallthrough): handler did not run "
-                "despite stage=None"
-            )
+            raise AssertionError("FAF-1 (stage_none fallthrough): handler did not run despite stage=None")
         return
 
     # All fault scenarios: must NOT silently drop.
     if observation.silently_dropped:
-        raise AssertionError(
-            f"FAF-2/3 ({scenario_kind}): message silently dropped "
-            "(no handler, no nack, no DLQ)"
-        )
+        raise AssertionError(f"FAF-2/3 ({scenario_kind}): message silently dropped (no handler, no nack, no DLQ)")
     if not observation.nacked_with_requeue:
-        raise AssertionError(
-            f"FAF-2/3 ({scenario_kind}): expected nack(requeue=True) "
-            "after stage fault, none observed"
-        )
+        raise AssertionError(f"FAF-2/3 ({scenario_kind}): expected nack(requeue=True) after stage fault, none observed")
     if observation.requeue_count > max_requeues:
         raise AssertionError(
-            f"FAF-4 ({scenario_kind}): requeue storm — count "
-            f"{observation.requeue_count} exceeded bound {max_requeues}"
+            f"FAF-4 ({scenario_kind}): requeue storm — count {observation.requeue_count} exceeded bound {max_requeues}"
         )

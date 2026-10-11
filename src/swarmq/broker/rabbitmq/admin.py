@@ -147,7 +147,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """
         try:
             payload = json.loads(body)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None, None, None
         if not isinstance(payload, dict):
             return None, None, None
@@ -639,13 +639,6 @@ class RabbitMQAdmin(RabbitMQDelivery):
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
-
-
-
-
-
-
-
 
     async def _passive_message_count(self, name: str) -> int:
         return await self._throwaway_channel_message_count(name)

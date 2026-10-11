@@ -32,9 +32,7 @@ def test_subprocess_module_exports_expected_helpers() -> None:
         "ensure_fixture_registered",
     }
     actual = {name for name in dir(_subprocess) if not name.startswith("_")}
-    assert expected <= actual, (
-        f"_subprocess missing helpers: {expected - actual}"
-    )
+    assert expected <= actual, f"_subprocess missing helpers: {expected - actual}"
 
 
 def test_spawn_worker_signature_requires_fixture_module() -> None:
@@ -42,13 +40,8 @@ def test_spawn_worker_signature_requires_fixture_module() -> None:
     backend_url — this is the lift's whole point versus the bound original."""
     sig = inspect.signature(_subprocess.spawn_worker)
     required = {"fixture_module", "broker_url", "backend_url"}
-    actual_kwonly = {
-        name for name, p in sig.parameters.items()
-        if p.kind == inspect.Parameter.KEYWORD_ONLY
-    }
-    assert required <= actual_kwonly, (
-        f"spawn_worker missing kwonly params: {required - actual_kwonly}"
-    )
+    actual_kwonly = {name for name, p in sig.parameters.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
+    assert required <= actual_kwonly, f"spawn_worker missing kwonly params: {required - actual_kwonly}"
 
 
 def test_test_worker_shutdown_load_still_importable() -> None:

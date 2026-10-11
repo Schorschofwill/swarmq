@@ -58,6 +58,7 @@ def resolve_format(explicit: str | None) -> str:
         return override
     return "table" if sys.stdout.isatty() else "json"
 
+
 # Eine Quelle fuer CLI, SwarmQConfig und WorkerConfig; CRITICAL gilt
 # ueberall (Plan 2026-10-06, KTD8).
 _VALID_LOG_LEVELS = VALID_LOG_LEVELS
@@ -71,9 +72,7 @@ def _positive_int(raw: str) -> int:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from exc
     if value < 1:
-        raise argparse.ArgumentTypeError(
-            f"must be >= 1 (got {value})"
-        )
+        raise argparse.ArgumentTypeError(f"must be >= 1 (got {value})")
     return value
 
 
@@ -84,9 +83,7 @@ def _positive_float(raw: str) -> float:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"not a number: {raw!r}") from exc
     if value <= 0:
-        raise argparse.ArgumentTypeError(
-            f"must be > 0 (got {value})"
-        )
+        raise argparse.ArgumentTypeError(f"must be > 0 (got {value})")
     return value
 
 
@@ -115,8 +112,7 @@ def _dotted_module_name(raw: str) -> str:
     """
     if not _DOTTED_IDENTIFIER_RE.match(raw):
         raise argparse.ArgumentTypeError(
-            f"--module {raw!r} is not a dotted Python identifier "
-            "(expected: package.module.submodule)"
+            f"--module {raw!r} is not a dotted Python identifier (expected: package.module.submodule)"
         )
     return raw
 
@@ -130,14 +126,9 @@ def _configure_hook(raw: str) -> str:
     Elternprozess und im Forkserver.
     """
     module, sep, attr = raw.partition(":")
-    if (
-        not sep
-        or not _DOTTED_IDENTIFIER_RE.match(module)
-        or not attr.isidentifier()
-    ):
+    if not sep or not _DOTTED_IDENTIFIER_RE.match(module) or not attr.isidentifier():
         raise argparse.ArgumentTypeError(
-            f"--configure {raw!r} is not MODULE:CALLABLE "
-            "(expected: package.module:callable)"
+            f"--configure {raw!r} is not MODULE:CALLABLE (expected: package.module:callable)"
         )
     return raw
 
@@ -152,19 +143,13 @@ def _autoscale_range(raw: str) -> tuple[int, int]:
     """
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     if len(parts) != 2:
-        raise argparse.ArgumentTypeError(
-            f"--autoscale must be MIN,MAX (got {raw!r})"
-        )
+        raise argparse.ArgumentTypeError(f"--autoscale must be MIN,MAX (got {raw!r})")
     try:
         low, high = int(parts[0]), int(parts[1])
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"--autoscale values must be integers (got {raw!r})"
-        ) from exc
+        raise argparse.ArgumentTypeError(f"--autoscale values must be integers (got {raw!r})") from exc
     if low < 1 or high < low:
-        raise argparse.ArgumentTypeError(
-            f"--autoscale requires 1 <= MIN <= MAX (got MIN={low} MAX={high})"
-        )
+        raise argparse.ArgumentTypeError(f"--autoscale requires 1 <= MIN <= MAX (got MIN={low} MAX={high})")
     return low, high
 
 
@@ -190,9 +175,7 @@ def _watch_dir_path(raw: str) -> str:
     """
     p = Path(raw)
     if not p.is_dir():
-        raise argparse.ArgumentTypeError(
-            f"--watch-dir {raw!r} is not an existing directory"
-        )
+        raise argparse.ArgumentTypeError(f"--watch-dir {raw!r} is not an existing directory")
     resolved = str(p.resolve())
     for forbidden in _FORBIDDEN_WATCH_PREFIXES:
         if resolved == forbidden or resolved.startswith(forbidden + "/"):
@@ -214,9 +197,7 @@ def _queue_list(raw: str) -> list[str]:
     """
     queues = [q.strip() for q in raw.split(",") if q.strip()]
     if not queues:
-        raise argparse.ArgumentTypeError(
-            f"--queues must list at least one non-empty name (got {raw!r})"
-        )
+        raise argparse.ArgumentTypeError(f"--queues must list at least one non-empty name (got {raw!r})")
     return queues
 
 
@@ -291,8 +272,5 @@ def _render_table(rows: Sequence[tuple[str, ...]], empty_label: str) -> str:
     if len(rows) <= 1:
         return empty_label
     widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
-    lines = [
-        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
-        for row in rows
-    ]
+    lines = ["  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row)) for row in rows]
     return "\n".join(lines)

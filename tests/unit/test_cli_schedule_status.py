@@ -59,7 +59,9 @@ async def test_json_carries_leader_version(monkeypatch) -> None:
 
 async def test_json_lists_reporting_workers_with_version(monkeypatch) -> None:
     backend = _backend(
-        leader="host:1:aa", version=None, workers={"b:p2": "0.10.0", "a:0": "0.10.1"},
+        leader="host:1:aa",
+        version=None,
+        workers={"b:p2": "0.10.0", "a:0": "0.10.1"},
     )
     data = json.loads(await _status(monkeypatch, backend, "json"))
     assert data["leader_version"] is None
@@ -90,7 +92,6 @@ async def test_table_lists_reporting_workers(monkeypatch) -> None:
     assert output.endswith("WORKERS:\n  a:0  0.10.1\n  b:p2  0.9.9\n")
 
 
-
 async def test_table_without_reporting_workers(monkeypatch) -> None:
     backend = _backend(leader=None, version=None, workers={})
     output = await _status(monkeypatch, backend, "table")
@@ -102,6 +103,7 @@ async def test_table_without_reporting_workers(monkeypatch) -> None:
 async def test_backend_outage_propagates_without_partial_output(monkeypatch, failing, fmt) -> None:
     backend = _backend(leader="a:0", version="0.10.1", workers={"a:0": "0.10.1"})
     getattr(backend.schedules, failing).side_effect = BackendConnectionError("valkey down")
+
     async def _factory() -> MagicMock:
         return backend
 

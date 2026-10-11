@@ -51,7 +51,7 @@ def _unblock_inherited_signals() -> None:
     """
     try:
         _signal.pthread_sigmask(_signal.SIG_UNBLOCK, {_signal.SIGINT, _signal.SIGTERM, _signal.SIGHUP})
-    except (AttributeError, OSError):  # pragma: no cover - Nicht-POSIX
+    except AttributeError, OSError:  # pragma: no cover - Nicht-POSIX
         pass
 
 

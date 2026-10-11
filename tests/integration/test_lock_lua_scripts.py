@@ -70,9 +70,7 @@ async def _server_time_ms(client) -> int:
 
 
 class TestMutexAcquireRelease:
-    async def test_acquire_then_release_then_reacquire(
-        self, valkey_client, acquire_script, release_script, lock_key
-    ):
+    async def test_acquire_then_release_then_reacquire(self, valkey_client, acquire_script, release_script, lock_key):
         token1 = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
         # Acquire: should succeed
@@ -97,22 +95,14 @@ class TestMutexAcquireRelease:
         # Cleanup
         await release_script(keys=[lock_key], args=[token2, 1])
 
-    async def test_acquire_with_zero_ttl_is_refused(
-        self, valkey_client, acquire_script, lock_key
-    ):
+    async def test_acquire_with_zero_ttl_is_refused(self, valkey_client, acquire_script, lock_key):
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[uuid.uuid4().hex, 0, 1, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[uuid.uuid4().hex, 0, 1, now_ms])
         assert int(result) == 0
 
-    async def test_acquire_with_negative_max_concurrency_is_refused(
-        self, valkey_client, acquire_script, lock_key
-    ):
+    async def test_acquire_with_negative_max_concurrency_is_refused(self, valkey_client, acquire_script, lock_key):
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[uuid.uuid4().hex, 60_000, 0, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[uuid.uuid4().hex, 60_000, 0, now_ms])
         assert int(result) == 0
 
 
@@ -124,16 +114,12 @@ class TestSemaphore:
         # First three acquires succeed
         for tok in tokens[:3]:
             now_ms = await _server_time_ms(valkey_client)
-            result = await acquire_script(
-                keys=[lock_key], args=[tok, 60_000, 3, now_ms]
-            )
+            result = await acquire_script(keys=[lock_key], args=[tok, 60_000, 3, now_ms])
             assert int(result) == 1, f"acquire for {tok!r} should succeed"
 
         # Fourth blocks
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[tokens[3], 60_000, 3, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[tokens[3], 60_000, 3, now_ms])
         assert int(result) == 0
 
         # Release one slot
@@ -142,9 +128,7 @@ class TestSemaphore:
 
         # Now fourth can acquire
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[tokens[3], 60_000, 3, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[tokens[3], 60_000, 3, now_ms])
         assert int(result) == 1
 
         # Cleanup
@@ -161,16 +145,12 @@ class TestSemaphore:
         async def one_acquire():
             tok = uuid.uuid4().hex
             now_ms = await _server_time_ms(valkey_client)
-            result = await acquire_script(
-                keys=[lock_key], args=[tok, 60_000, max_concurrency, now_ms]
-            )
+            result = await acquire_script(keys=[lock_key], args=[tok, 60_000, max_concurrency, now_ms])
             return tok, int(result)
 
         results = await asyncio.gather(*(one_acquire() for _ in range(total_calls)))
         winners = [tok for tok, ok in results if ok == 1]
-        assert len(winners) == max_concurrency, (
-            f"expected {max_concurrency} winners, got {len(winners)}"
-        )
+        assert len(winners) == max_concurrency, f"expected {max_concurrency} winners, got {len(winners)}"
 
         # Cleanup
         for tok in winners:
@@ -197,15 +177,11 @@ async def _wait_for_pttl_expiry(client, key: str, deadline_s: float = 2.0) -> No
 
 
 class TestExpiry:
-    async def test_mutex_ttl_releases_lock_automatically(
-        self, valkey_client, acquire_script, lock_key
-    ):
+    async def test_mutex_ttl_releases_lock_automatically(self, valkey_client, acquire_script, lock_key):
         """After TTL expires the next acquire must succeed even without release."""
         token1 = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[token1, 200, 1, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[token1, 200, 1, now_ms])
         assert int(result) == 1
 
         # Wait for the actual TTL expiry signal from Valkey, not a
@@ -214,9 +190,7 @@ class TestExpiry:
 
         token2 = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[token2, 60_000, 1, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[token2, 60_000, 1, now_ms])
         assert int(result) == 1
 
     async def test_semaphore_expired_members_cleaned_on_acquire(
@@ -232,9 +206,7 @@ class TestExpiry:
         stale_tokens = [uuid.uuid4().hex for _ in range(max_concurrency)]
         for tok in stale_tokens:
             now_ms = await _server_time_ms(valkey_client)
-            result = await acquire_script(
-                keys=[lock_key], args=[tok, 200, max_concurrency, now_ms]
-            )
+            result = await acquire_script(keys=[lock_key], args=[tok, 200, max_concurrency, now_ms])
             assert int(result) == 1
 
         # Step 2: wait for the SortedSet's PEXPIRE to fire. We could also
@@ -246,9 +218,7 @@ class TestExpiry:
         # Step 3: a new acquire should clean up the stale members and succeed
         fresh_token = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[fresh_token, 60_000, max_concurrency, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[fresh_token, 60_000, max_concurrency, now_ms])
         assert int(result) == 1
 
         # Verify the set now has only the fresh token
@@ -260,14 +230,10 @@ class TestExpiry:
 
 
 class TestOwnerSafety:
-    async def test_mutex_foreign_release_does_nothing(
-        self, valkey_client, acquire_script, release_script, lock_key
-    ):
+    async def test_mutex_foreign_release_does_nothing(self, valkey_client, acquire_script, release_script, lock_key):
         token1 = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[token1, 60_000, 1, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[token1, 60_000, 1, now_ms])
         assert int(result) == 1
 
         foreign_token = uuid.uuid4().hex
@@ -283,9 +249,7 @@ class TestOwnerSafety:
     ):
         token1 = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[token1, 60_000, 3, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[token1, 60_000, 3, now_ms])
         assert int(result) == 1
 
         foreign_token = uuid.uuid4().hex
@@ -298,27 +262,17 @@ class TestOwnerSafety:
 
 
 class TestNonExistent:
-    async def test_release_nonexistent_mutex_returns_zero_no_crash(
-        self, valkey_client, release_script, lock_key
-    ):
-        result = await release_script(
-            keys=[lock_key], args=[uuid.uuid4().hex, 1]
-        )
+    async def test_release_nonexistent_mutex_returns_zero_no_crash(self, valkey_client, release_script, lock_key):
+        result = await release_script(keys=[lock_key], args=[uuid.uuid4().hex, 1])
         assert int(result) == 0
 
-    async def test_release_nonexistent_semaphore_returns_zero_no_crash(
-        self, valkey_client, release_script, lock_key
-    ):
-        result = await release_script(
-            keys=[lock_key], args=[uuid.uuid4().hex, 3]
-        )
+    async def test_release_nonexistent_semaphore_returns_zero_no_crash(self, valkey_client, release_script, lock_key):
+        result = await release_script(keys=[lock_key], args=[uuid.uuid4().hex, 3])
         assert int(result) == 0
 
 
 class TestForceBypass:
-    async def test_force_release_mutex_returns_two(
-        self, valkey_client, acquire_script, release_script, lock_key
-    ):
+    async def test_force_release_mutex_returns_two(self, valkey_client, acquire_script, release_script, lock_key):
         token = uuid.uuid4().hex
         now_ms = await _server_time_ms(valkey_client)
         await acquire_script(keys=[lock_key], args=[token, 60_000, 1, now_ms])
@@ -329,9 +283,7 @@ class TestForceBypass:
 
         # Lock is gone — new acquire succeeds
         now_ms = await _server_time_ms(valkey_client)
-        result = await acquire_script(
-            keys=[lock_key], args=[uuid.uuid4().hex, 60_000, 1, now_ms]
-        )
+        result = await acquire_script(keys=[lock_key], args=[uuid.uuid4().hex, 60_000, 1, now_ms])
         assert int(result) == 1
 
     async def test_force_release_semaphore_clears_all_holders(
@@ -357,8 +309,6 @@ class TestForceBypass:
             )
             assert int(result) == 1
 
-    async def test_force_release_nonexistent_returns_two_no_crash(
-        self, valkey_client, release_script, lock_key
-    ):
+    async def test_force_release_nonexistent_returns_two_no_crash(self, valkey_client, release_script, lock_key):
         result = await release_script(keys=[lock_key], args=["__force__", 1])
         assert int(result) == 2

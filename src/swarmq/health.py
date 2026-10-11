@@ -213,11 +213,14 @@ class HealthServer:
         liveness_started: float | None = None,
     ) -> None:
         from swarmq._http import AsyncHttpServer
+
         self._checker = checker
         self._started_at = liveness_started or time.monotonic()
         self._server = AsyncHttpServer(
             self._handle_request,
-            host=host, port=port, label="health_server",
+            host=host,
+            port=port,
+            label="health_server",
         )
 
     async def start(self) -> None:
@@ -233,12 +236,15 @@ class HealthServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         from swarmq._http import write_http_response
+
         base_path = path.split("?")[0]
         if base_path == "/health":
-            body = json.dumps({
-                "status": "ok",
-                "uptime_s": round(time.monotonic() - self._started_at, 3),
-            }).encode()
+            body = json.dumps(
+                {
+                    "status": "ok",
+                    "uptime_s": round(time.monotonic() - self._started_at, 3),
+                }
+            ).encode()
             await write_http_response(writer, 200, body, "application/json")
         elif base_path == "/ready":
             snapshot = await self._checker.check_all()

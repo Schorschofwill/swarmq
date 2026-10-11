@@ -286,9 +286,7 @@ async def test_graceful_shutdown(rabbitmq_url: str, valkey_url: str) -> None:
         worker_backend = ValkeyBackend(valkey_url)
         # Build worker directly so we can call _request_shutdown()
         worker_app = SwarmQ(worker_broker, worker_backend, queues=[queue])
-        worker = Worker(
-            worker_broker, worker_backend, worker_app.registry, worker_app.config
-        )
+        worker = Worker(worker_broker, worker_backend, worker_app.registry, worker_app.config)
         worker_task = asyncio.create_task(worker.start())
 
         try:

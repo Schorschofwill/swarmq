@@ -158,6 +158,7 @@ def __dir__() -> list[str]:
     """
     return [*globals(), *_LAZY_SURFACE]
 
+
 # ``__all__`` controls two contracts at once:
 #
 # 1. ruff ``F401`` — each ``from X import Y`` above is treated as a
@@ -264,7 +265,9 @@ def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
         # anderes Arbeitsverzeichnis noch eine spaetere Aenderung wirkt dort.
         path = os.path.abspath(settings.log_config)
         settings = dataclasses.replace(
-            settings, log_config=path, log_config_json=load_log_config(path),
+            settings,
+            log_config=path,
+            log_config_json=load_log_config(path),
         )
     configure_logging(settings)
     return settings
@@ -362,7 +365,9 @@ def _run_worker_command(args: argparse.Namespace) -> int:
 
     try:
         return run_multi_process_worker(
-            args, admin_factory=_admin_factory, setpoint_store_factory=_setpoint_store_factory,
+            args,
+            admin_factory=_admin_factory,
+            setpoint_store_factory=_setpoint_store_factory,
             logging_settings=logging_settings,
         )
     except KeyboardInterrupt:
@@ -406,7 +411,8 @@ def _startup_error_classes() -> tuple[type[BaseException], ...]:
         from valkey.exceptions import TimeoutError as _ValkeyTimeoutError
 
         _valkey_errs: tuple[type[BaseException], ...] = (
-            _ValkeyConnError, _ValkeyTimeoutError,
+            _ValkeyConnError,
+            _ValkeyTimeoutError,
         )
     except ImportError:  # pragma: no cover — valkey is a hard dep, defensive only
         _valkey_errs = ()

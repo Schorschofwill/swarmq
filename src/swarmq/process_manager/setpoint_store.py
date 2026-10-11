@@ -48,7 +48,12 @@ class SetpointStore(Protocol):
     async def read_setpoint(self, group: str) -> SetpointRead: ...
 
     async def write_status(
-        self, group: str, supervisor_id: str, status: Mapping[str, Any], *, ttl_s: float,
+        self,
+        group: str,
+        supervisor_id: str,
+        status: Mapping[str, Any],
+        *,
+        ttl_s: float,
     ) -> None: ...
 
 

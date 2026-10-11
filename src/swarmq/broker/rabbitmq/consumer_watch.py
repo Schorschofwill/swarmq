@@ -206,9 +206,7 @@ class ConsumerWatch:
         """Ein Prüfdurchgang über alle angemeldeten Consumer."""
         for entry in self._entries:
             try:
-                underlay = await asyncio.wait_for(
-                    entry.queue.channel.get_underlay_channel(), timeout=self._timeout_s
-                )
+                underlay = await asyncio.wait_for(entry.queue.channel.get_underlay_channel(), timeout=self._timeout_s)
             except TimeoutError:
                 logger.warning(
                     "consumer_watch_channel_timeout",

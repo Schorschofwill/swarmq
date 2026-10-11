@@ -126,13 +126,19 @@ class TestQueueDropVisibility:
         q: _queue.Queue = _queue.Queue(maxsize=1)
         handler = _StructlogQueueHandler(q)
         rec = _logging.LogRecord(
-            "test", _logging.INFO, __file__, 1, "msg", None, None,
+            "test",
+            _logging.INFO,
+            __file__,
+            1,
+            "msg",
+            None,
+            None,
         )
 
-        handler.enqueue(rec)          # fills the queue
+        handler.enqueue(rec)  # fills the queue
         assert handler.dropped == 0
-        handler.enqueue(rec)          # queue full → dropped
-        handler.enqueue(rec)          # dropped again
+        handler.enqueue(rec)  # queue full → dropped
+        handler.enqueue(rec)  # dropped again
         assert handler.dropped == 2
 
         # Seit Plan 2026-10-06-1811, U3 meldet der Listener die Drops,
@@ -148,7 +154,13 @@ class TestQueueDropVisibility:
         q: _queue.Queue = _queue.Queue(maxsize=10)
         handler = _StructlogQueueHandler(q)
         rec = _logging.LogRecord(
-            "test", _logging.INFO, __file__, 1, "msg", None, None,
+            "test",
+            _logging.INFO,
+            __file__,
+            1,
+            "msg",
+            None,
+            None,
         )
         handler.enqueue(rec)
         assert handler.dropped == 0
@@ -182,9 +194,7 @@ class TestUnformattableRecord:
         try:
             stream = io.StringIO()
             listener.handlers[0].stream = stream  # type: ignore[attr-defined]
-            logging.getLogger("aio_pika.robust_connection").warning(
-                "callback %r failed", *args
-            )
+            logging.getLogger("aio_pika.robust_connection").warning("callback %r failed", *args)
             listener.stop()
             return stream.getvalue().strip().split("\n")[-1]
         finally:
@@ -227,6 +237,8 @@ class TestUnformattableRecord:
         assert data["event"] == "callback 'fine' failed"
         assert data["level"] == "warning"
         assert "log_record_unformattable" not in line
+
+
 class TestSingleListenerPerProcess:
     """U4/KTD8 (R21): genau ein ``QueueListener`` je Prozess.
 
@@ -249,4 +261,3 @@ class TestSingleListenerPerProcess:
             assert len(stdlib_logging.getLogger().handlers) == 1
         finally:
             second.stop()
-

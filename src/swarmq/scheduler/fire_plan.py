@@ -1,6 +1,7 @@
 """Fire-Planung (Plan 2026-10-08-1541, KTD12, R18): nächster Termin vor dem
 Publish, fortgeschriebene Definition nach dem Fire und die Zählung der
 durch Catch-up-Skip verlorenen Termine. Mixin über dem ``SchedulerLoop``."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,7 @@ class SchedulerFirePlan:
     _owner_token: str
 
     if TYPE_CHECKING:
+
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
 
     async def _advanced_definition(
@@ -41,7 +43,10 @@ class SchedulerFirePlan:
         # occurrences that fell between the due score and now (they
         # will never fire) and surface them as a signal.
         skipped_count = self._count_skipped_fires(
-            definition.cron, definition.timezone, score_ms, now_ms,
+            definition.cron,
+            definition.timezone,
+            score_ms,
+            now_ms,
         )
         if skipped_count > 0:
             logger.warning(
@@ -55,11 +60,16 @@ class SchedulerFirePlan:
                 skipped_count=skipped_count,
             )
         return msgspec.structs.replace(
-            definition, fire_ts_ms=next_fire_ts_ms, last_fire_at=now_ms,
+            definition,
+            fire_ts_ms=next_fire_ts_ms,
+            last_fire_at=now_ms,
         )
 
     def _plan_next_fire(
-        self, schedule_name: str, definition: ScheduleDefinition, now_ms: int,
+        self,
+        schedule_name: str,
+        definition: ScheduleDefinition,
+        now_ms: int,
     ) -> int | None:
         """Next fire for a cron, ``-1`` for one-shots — computed BEFORE the
         publish (KTD12, R18). A definition whose next fire cannot be
@@ -87,14 +97,20 @@ class SchedulerFirePlan:
             return None
 
     async def _park_unplannable(
-        self, schedule_name: str, score_ms: int, definition: ScheduleDefinition,
+        self,
+        schedule_name: str,
+        score_ms: int,
+        definition: ScheduleDefinition,
     ) -> None:
         """Take an unplannable entry out of the fire index (``-1``, definition
         kept) — otherwise it would be due again on every tick. A failure stays
         on this entry (R18): the rest of the batch fires."""
         try:
             committed = await self._store.commit_fire(
-                schedule_name, -1, definition, self._owner_token,
+                schedule_name,
+                -1,
+                definition,
+                self._owner_token,
                 fired_ts_ms=score_ms,
             )
         except BackendConnectionError as exc:
@@ -109,7 +125,10 @@ class SchedulerFirePlan:
 
     @staticmethod
     def _count_skipped_fires(
-        cron: str, timezone: str | None, score_ms: int, now_ms: int,
+        cron: str,
+        timezone: str | None,
+        score_ms: int,
+        now_ms: int,
     ) -> int:
         """Count cron occurrences in ``(score_ms, now_ms]`` — fires that
         catch-up-skip will never run.

@@ -118,10 +118,13 @@ async def _running_worker(
         online.set()
 
     if mirror_to is not None:
+
         def _make_forwarder(sig: Signal):
             async def _forward(**payload: Any) -> None:
                 await mirror_to.dispatch(sig, **payload)
+
             return _forward
+
         for _sig in Signal:
             worker_app._signal_dispatcher.connect(_sig, _make_forwarder(_sig))
 
@@ -193,7 +196,9 @@ class TestRetryUniqueCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "hello")
@@ -202,22 +207,16 @@ class TestRetryUniqueCombo:
                 await asyncio.sleep(0.05)
                 tid_dup = await app.schedule(task_name, "hello")
 
-                assert tid == tid_dup, (
-                    "unique flag must block duplicate during retry window"
-                )
+                assert tid == tid_dup, "unique flag must block duplicate during retry window"
 
                 result = await app.get_result(tid, timeout=10)
                 assert result == "ok:hello"
 
         assert call_count >= 2, "task must have been retried at least once"
-        assert len(dup_signals) >= 1, (
-            "TASK_DUPLICATE_DETECTED must fire for the duplicate enqueue"
-        )
+        assert len(dup_signals) >= 1, "TASK_DUPLICATE_DETECTED must fire for the duplicate enqueue"
         assert_at_least_once_held(call_count, expected_min=2)
 
-    async def test_unique_released_after_retry_exhausted(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_unique_released_after_retry_exhausted(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After max_retries is exhausted and the task lands in DLQ, the
         unique flag must be released so a fresh enqueue can succeed.
 
@@ -250,7 +249,9 @@ class TestRetryUniqueCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 1)
@@ -267,14 +268,11 @@ class TestRetryUniqueCombo:
             tid_fresh = await app2.schedule(task_name, 1)
 
         assert tid_fresh != tid, (
-            "unique flag must be released after retry exhaustion → DLQ; "
-            "fresh enqueue must get a new task_id"
+            "unique flag must be released after retry exhaustion → DLQ; fresh enqueue must get a new task_id"
         )
         assert_at_least_once_held(call_count, expected_min=2)
 
-    async def test_duplicate_blocked_during_active_retry(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_duplicate_blocked_during_active_retry(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Duplicate enqueued WHILE a retry attempt is running must be
         deduplicated — the unique flag must not drop between retry attempts."""
         queue = _uq("ru-active")
@@ -313,7 +311,9 @@ class TestRetryUniqueCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "x")
@@ -322,9 +322,7 @@ class TestRetryUniqueCombo:
                 running.clear()
                 # Duplicate during first attempt.
                 tid_dup = await app.schedule(task_name, "x")
-                assert tid == tid_dup, (
-                    "duplicate during active run must be deduplicated"
-                )
+                assert tid == tid_dup, "duplicate during active run must be deduplicated"
                 result = await app.get_result(tid, timeout=10)
                 assert result == "done:x"
 
@@ -372,9 +370,7 @@ class TestRetryUniqueCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(
-                rabbitmq_proxied_url, valkey_url, queue
-            ):
+            async with _running_worker(rabbitmq_proxied_url, valkey_url, queue):
                 tid = await app.schedule(task_name, 7)
 
                 # Wait for the first attempt to fail, then inject a brief
@@ -448,20 +444,18 @@ class TestLockCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, "first")
                 await app.schedule(task_name, "second")
                 await asyncio.wait_for(all_done.wait(), timeout=12.0)
 
-        assert results == ["first", "second"], (
-            "both tasks must complete in order under mutex"
-        )
+        assert results == ["first", "second"], "both tasks must complete in order under mutex"
 
-    async def test_cancel_before_lock_acquired(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_cancel_before_lock_acquired(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task cancelled before the lock is acquired: lock must never be
         taken, successor task runs without waiting for TTL."""
         queue = _uq("lc-pre")
@@ -473,16 +467,24 @@ class TestLockCancelCombo:
 
         class SlowLockedTask(Task):
             task_info = TaskInfo(
-                name=slow_name, queues=[queue], lock=lock_name, hard_timeout=20,
+                name=slow_name,
+                queues=[queue],
+                lock=lock_name,
+                hard_timeout=20,
             )
+
             async def run(self) -> str:
                 await asyncio.sleep(20)
                 return "no"
 
         class FastLockedTask(Task):
             task_info = TaskInfo(
-                name=fast_name, queues=[queue], lock=lock_name, hard_timeout=10,
+                name=fast_name,
+                queues=[queue],
+                lock=lock_name,
+                hard_timeout=10,
             )
+
             async def run(self) -> str:
                 fast_result.append("ran")
                 fast_done.set()
@@ -495,7 +497,10 @@ class TestLockCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.1,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                cancel_poll_interval=0.1,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Schedule slow first so it holds the lock; cancel it
@@ -511,9 +516,7 @@ class TestLockCancelCombo:
         assert result == "yes", "fast task must run after slow cancelled"
         assert fast_result == ["ran"]
 
-    async def test_cancel_during_run_releases_lock(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_cancel_during_run_releases_lock(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Cancel mid-run: TASK_STARTED → TASK_CANCELLED signal sequence,
         and the lock is free for a successor task immediately after.
 
@@ -527,8 +530,12 @@ class TestLockCancelCombo:
 
         class LongLocked(Task):
             task_info = TaskInfo(
-                name=long_name, queues=[queue], lock=lock_name, hard_timeout=30,
+                name=long_name,
+                queues=[queue],
+                lock=lock_name,
+                hard_timeout=30,
             )
+
             async def run(self) -> str:
                 long_started.set()
                 await asyncio.sleep(30)
@@ -536,8 +543,12 @@ class TestLockCancelCombo:
 
         class ShortLocked(Task):
             task_info = TaskInfo(
-                name=short_name, queues=[queue], lock=lock_name, hard_timeout=10,
+                name=short_name,
+                queues=[queue],
+                lock=lock_name,
+                hard_timeout=10,
             )
+
             async def run(self) -> str:
                 return "ok"
 
@@ -553,8 +564,11 @@ class TestLockCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
-                concurrency=2, cancel_poll_interval=0.1,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                concurrency=2,
+                cancel_poll_interval=0.1,
                 mirror_to=app._signal_dispatcher,
             ):
                 long_id = await app.schedule(long_name)
@@ -694,7 +708,9 @@ class TestLockRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 5)
@@ -704,9 +720,7 @@ class TestLockRetryCombo:
         assert result == 6
         assert_at_least_once_held(attempts, expected_min=2)
 
-    async def test_retry_releases_lock_between_attempts(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_retry_releases_lock_between_attempts(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Pin actual behaviour: after a failed attempt, the lock is released
         so another task with the same lock key can run before the retry fires.
 
@@ -757,7 +771,10 @@ class TestLockRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, concurrency=2,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                concurrency=2,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid_a = await app.schedule(task_a_name, 42)
@@ -771,16 +788,12 @@ class TestLockRetryCombo:
                 # B should complete within the retry-delay window (1s).
                 await asyncio.wait_for(b_ran.wait(), timeout=3.0)
                 b_result = await app.get_result(tid_b, timeout=3)
-                assert b_result == "b-ran", (
-                    "lock must be released between retry attempts so B can run"
-                )
+                assert b_result == "b-ran", "lock must be released between retry attempts so B can run"
 
                 a_result = await app.get_result(tid_a, timeout=5)
                 assert a_result == 42
 
-    async def test_lock_ttl_expires_mid_retry_delay(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_lock_ttl_expires_mid_retry_delay(self, rabbitmq_url: str, valkey_url: str) -> None:
         """If the lock TTL were to expire during the retry delay, the
         next attempt should still be able to re-acquire it cleanly.
 
@@ -821,7 +834,9 @@ class TestLockRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "ttl-test")
@@ -875,7 +890,10 @@ class TestLockHardTimeoutCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, concurrency=2,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                concurrency=2,
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, "a")
@@ -884,9 +902,7 @@ class TestLockHardTimeoutCombo:
 
         assert results == ["a", "b"]
 
-    async def test_hard_timeout_releases_lock_via_finally(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_hard_timeout_releases_lock_via_finally(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task exceeds hard_timeout → worker hard-kills the coroutine →
         finally-block releases the lock → successor task can acquire.
 
@@ -934,7 +950,10 @@ class TestLockHardTimeoutCombo:
             await broker.declare_queue(queue)
             # Use concurrency=2 so fast task can be picked up concurrently.
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, concurrency=2,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                concurrency=2,
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(slow_name)
@@ -946,9 +965,7 @@ class TestLockHardTimeoutCombo:
                 await asyncio.wait_for(fast_done.wait(), timeout=15.0)
                 result = await app.get_result(fast_id, timeout=5)
 
-        assert result == "ok", (
-            "successor must acquire lock after hard_timeout releases it"
-        )
+        assert result == "ok", "successor must acquire lock after hard_timeout releases it"
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
@@ -999,9 +1016,7 @@ class TestLockHardTimeoutCombo:
         try:
             wait_for_worker_started(proc_b, timeout=20.0)
             (child_b,) = wait_for_worker_children(proc_b)
-            await wait_for_scheduler_leader(
-                valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0
-            )
+            await wait_for_scheduler_leader(valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0)
             await assert_no_reader_leak(proc_b)
         finally:
             kill_subprocess(proc_b)
@@ -1049,7 +1064,9 @@ class TestProgressCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 5)
@@ -1058,9 +1075,7 @@ class TestProgressCancelCombo:
 
         assert result == "completed"
 
-    async def test_progress_stops_after_cancel(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_progress_stops_after_cancel(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After cancel(), the task is interrupted and no further progress
         updates arrive.  We observe this by checking that progress stops
         incrementing after the TaskCancelledError is raised.
@@ -1093,7 +1108,10 @@ class TestProgressCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.1,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                cancel_poll_interval=0.1,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 20)
@@ -1119,9 +1137,7 @@ class TestProgressCancelCombo:
             timeout_s=2.0,
         )
 
-    async def test_race_progress_update_during_cancel(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_race_progress_update_during_cancel(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Race: progress update and cancel-flag check happen concurrently.
         The task must emit TASK_CANCELLED (not TASK_COMPLETED) regardless
         of which asyncio step wins the race.
@@ -1157,7 +1173,10 @@ class TestProgressCancelCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                cancel_poll_interval=0.05,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 100)
@@ -1183,9 +1202,7 @@ class TestProgressCancelCombo:
         )
         emitted = recorder.emitted_signals
         terminal = {Signal.TASK_CANCELLED, Signal.TASK_COMPLETED}
-        assert any(s in terminal for s in emitted), (
-            f"no terminal signal emitted after task started: {emitted}"
-        )
+        assert any(s in terminal for s in emitted), f"no terminal signal emitted after task started: {emitted}"
 
 
 # ---------------------------------------------------------------------------
@@ -1240,7 +1257,9 @@ class TestResultTtlRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 7)
@@ -1250,9 +1269,7 @@ class TestResultTtlRetryCombo:
         assert result == 21
         assert_at_least_once_held(attempts, expected_min=2)
 
-    async def test_ttl_applies_only_after_completion(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_ttl_applies_only_after_completion(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Enqueue → task fails → retry delay → retry succeeds.
         result_ttl=5 must NOT expire during the retry delay (0.5s retry ×
         2 attempts = at most ~2s total).  If TTL were from enqueue, a
@@ -1291,7 +1308,9 @@ class TestResultTtlRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "ttl-check")
@@ -1300,22 +1319,16 @@ class TestResultTtlRetryCombo:
                 # Fetch result immediately — must be present.
                 result = await app.get_result(tid, timeout=3)
 
-        assert result == "done:ttl-check", (
-            "result must be available immediately after completion"
-        )
+        assert result == "done:ttl-check", "result must be available immediately after completion"
 
         # The total elapsed from enqueue to completion (enqueue → retry →
         # complete) was at least retry_base_delay (0.5s).  If TTL started
         # at enqueue with result_ttl=5, we have 4.5s remaining — fine.
         # The test validates the result WAS accessible despite retry overhead.
         elapsed = time.monotonic() - enqueue_time
-        assert elapsed < 5.0, (
-            "test took too long — reduce retry delays or increase result_ttl"
-        )
+        assert elapsed < 5.0, "test took too long — reduce retry delays or increase result_ttl"
 
-    async def test_ttl_expires_during_retries_result_missing(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_ttl_expires_during_retries_result_missing(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Pathological scenario: result_ttl=1 + many slow retries.
         If TTL were from enqueue, the result would be missing. If TTL
         is from completion, the result is available right after get_result().
@@ -1356,7 +1369,9 @@ class TestResultTtlRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "short-ttl")

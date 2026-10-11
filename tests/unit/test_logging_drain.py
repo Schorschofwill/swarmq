@@ -164,7 +164,9 @@ def _returns_within(func: Callable[[], object], seconds: float = 2.0) -> bool:
 
 
 def _stuck_handler(
-    maxsize: int = 3, *, json: bool = False,
+    maxsize: int = 3,
+    *,
+    json: bool = False,
 ) -> tuple[_StructlogQueueHandler, _Gate]:
     """Listener haengt im ersten Record, die Queue dahinter ist voll."""
     gate = _Gate()
@@ -229,7 +231,9 @@ def test_in_json_mode_the_closing_line_is_valid_json(
     [line] = _notices(capfd.readouterr().err)
     notice = json.loads(line)
     assert (notice["event"], notice["count"], notice["level"]) == (
-        "log_drain_timeout_exceeded", 2, "warning",
+        "log_drain_timeout_exceeded",
+        2,
+        "warning",
     )
 
 
@@ -537,10 +541,13 @@ def _configure_file_mode(drain_timeout: float = 5.0) -> logging.Logger:
         },
         "root": {"handlers": ["q"], "level": "INFO"},
     }
-    configure_logging(LoggingSettings(
-        log_config="logging.json", log_config_json=json.dumps(config),
-        drain_timeout=drain_timeout,
-    ))
+    configure_logging(
+        LoggingSettings(
+            log_config="logging.json",
+            log_config_json=json.dumps(config),
+            drain_timeout=drain_timeout,
+        )
+    )
     return logging.getLogger("swarmq.tests.drain")
 
 
@@ -596,7 +603,8 @@ class _ThreadRecorder(logging.Handler):
 
 
 def test_during_finalization_a_record_is_written_synchronously(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     target = _ThreadRecorder()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
@@ -612,7 +620,8 @@ def test_during_finalization_a_record_is_written_synchronously(
 
 
 def test_a_thread_start_refused_at_shutdown_writes_the_record_synchronously(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     target = _ThreadRecorder()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
@@ -647,7 +656,8 @@ def test_a_freed_file_mode_thread_ends_by_itself_without_a_sentinel(
 
 
 def test_file_mode_writes_synchronously_during_finalization(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
     file_mode_gate.opened.set()
@@ -665,7 +675,8 @@ def test_file_mode_writes_synchronously_during_finalization(
 
 
 def test_file_mode_writes_synchronously_when_the_thread_start_is_refused(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
@@ -740,7 +751,8 @@ def test_a_process_exits_hard_with_its_code_while_an_abandoned_thread_hangs(
     ],
 )
 def test_the_hard_exit_keeps_the_exit_code_the_process_would_have_had(
-    exc: BaseException | None, code: int,
+    exc: BaseException | None,
+    code: int,
 ) -> None:
     from swarmq.logging_drain import exit_code_for
 
@@ -820,8 +832,10 @@ def _raised(exc: BaseException) -> BaseException:
     ],
 )
 def test_the_hard_exit_first_reports_the_exception_on_fd_2(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
-    exc: BaseException, last_line: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    exc: BaseException,
+    last_line: str,
 ) -> None:
     from swarmq.logging_drain import abandon, exit_if_log_thread_stuck
 
@@ -837,7 +851,8 @@ def test_the_hard_exit_first_reports_the_exception_on_fd_2(
 
 
 def test_a_long_exception_report_keeps_its_end_within_pipe_buf(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     import select
 
@@ -888,9 +903,7 @@ def test_after_the_deadline_a_record_left_without_a_listener_counts_as_dropped()
 
 
 def _file_mode_queue_handler() -> logging.handlers.QueueHandler:
-    [handler] = [
-        h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.QueueHandler)
-    ]
+    [handler] = [h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.QueueHandler)]
     return handler
 
 
@@ -928,7 +941,9 @@ def test_file_mode_counts_a_record_left_behind_the_sentinel_after_the_deadline(
 
 @pytest.mark.parametrize("error", [EOFError, OSError])
 def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch, error: type[Exception],
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[Exception],
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
@@ -946,7 +961,8 @@ def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
 
 
 def test_the_closing_line_counts_records_discarded_after_the_deadline(
-    file_mode_gate: _GateState, capfd: pytest.CaptureFixture[str],
+    file_mode_gate: _GateState,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
@@ -990,7 +1006,8 @@ def test_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropp
 
 
 def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropped(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq import logging_queue
 
@@ -1054,7 +1071,8 @@ class _BlockingStream(io.StringIO):
 
 
 def test_a_configured_json_setup_writes_a_json_closing_line_for_given_up_builtin_handlers(
-    capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq.logging import configure_logging, get_logger
     from swarmq.logging_settings import LoggingSettings
@@ -1076,5 +1094,7 @@ def test_a_configured_json_setup_writes_a_json_closing_line_for_given_up_builtin
     [line] = _notices(capfd.readouterr().err)
     notice = json.loads(line)
     assert (notice["event"], notice["count"], notice["level"]) == (
-        "log_drain_timeout_exceeded", 2, "warning",
+        "log_drain_timeout_exceeded",
+        2,
+        "warning",
     )

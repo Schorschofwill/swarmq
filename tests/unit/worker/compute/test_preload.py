@@ -68,7 +68,12 @@ def fresh_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[N
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
     stale = (
-        PRELOAD, FIXTURE_MAIN, FIXTURE_OPTIN_MAIN, FIXTURE_BASICCONFIG_MAIN, FIXTURE_PKG, f"{FIXTURE_PKG}.__main__",
+        PRELOAD,
+        FIXTURE_MAIN,
+        FIXTURE_OPTIN_MAIN,
+        FIXTURE_BASICCONFIG_MAIN,
+        FIXTURE_PKG,
+        f"{FIXTURE_PKG}.__main__",
     )
     for name in stale:
         sys.modules.pop(name, None)

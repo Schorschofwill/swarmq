@@ -39,7 +39,8 @@ async def test_valkey_connection_error_becomes_backend_connection_error():
 
 
 @pytest.mark.parametrize(
-    "error", [valkey.exceptions.TimeoutError("slow"), TimeoutError("slow"), ConnectionRefusedError("slow")],
+    "error",
+    [valkey.exceptions.TimeoutError("slow"), TimeoutError("slow"), ConnectionRefusedError("slow")],
 )
 async def test_timeouts_and_os_errors_become_backend_connection_error(error):
     store = _store(error)

@@ -72,9 +72,7 @@ def _result_dict() -> st.SearchStrategy:
             "task_name": _SAFE_TEXT,
             "value": _json_value(max_leaves=10),
             "error": st.one_of(st.none(), _SAFE_TEXT),
-            "duration_ms": st.floats(
-                min_value=0.0, max_value=1e9, allow_nan=False, allow_infinity=False
-            ),
+            "duration_ms": st.floats(min_value=0.0, max_value=1e9, allow_nan=False, allow_infinity=False),
             "attempt": st.integers(min_value=0, max_value=100),
         }
     )

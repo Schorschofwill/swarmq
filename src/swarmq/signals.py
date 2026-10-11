@@ -219,9 +219,7 @@ class SignalDispatcher:
         """Register ``handler`` to be called when ``signal`` is dispatched."""
         self._handlers.setdefault(signal, []).append(handler)
 
-    def on_signal(
-        self, signal: Signal
-    ) -> Callable[[AsyncHandler], AsyncHandler]:
+    def on_signal(self, signal: Signal) -> Callable[[AsyncHandler], AsyncHandler]:
         """Decorator form of :meth:`connect`.
 
         Example::
@@ -268,7 +266,8 @@ class SignalDispatcher:
             try:
                 if handler_timeout is not None:
                     await asyncio.wait_for(
-                        handler(**kwargs), timeout=handler_timeout,
+                        handler(**kwargs),
+                        timeout=handler_timeout,
                     )
                 else:
                     await handler(**kwargs)

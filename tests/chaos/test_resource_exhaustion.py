@@ -99,7 +99,8 @@ class TestResourceExhaustion:
     # ------------------------------------------------------------------
 
     async def test_prefetch_one_serial_consumption(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """concurrency=1 worker processes 20 × 0.3s tasks serially.
 
@@ -123,7 +124,10 @@ class TestResourceExhaustion:
         broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         backend = ValkeyBackend(chaos_stack.valkey_url)
         app = SwarmQ(
-            broker, backend, queues=[queue], concurrency=1,
+            broker,
+            backend,
+            queues=[queue],
+            concurrency=1,
         )
 
         async with app:
@@ -132,8 +136,10 @@ class TestResourceExhaustion:
             worker_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
             worker_backend = ValkeyBackend(chaos_stack.valkey_url)
             worker_app = SwarmQ(
-                worker_broker, worker_backend,
-                queues=[queue], concurrency=1,
+                worker_broker,
+                worker_backend,
+                queues=[queue],
+                concurrency=1,
             )
             worker_task = asyncio.create_task(worker_app.start_worker())
 
@@ -143,23 +149,19 @@ class TestResourceExhaustion:
                 # and the first batch may bypass the QoS.
                 await asyncio.sleep(0.8)
 
-                task_ids = [
-                    await app.schedule(task_name, i) for i in range(total)
-                ]
+                task_ids = [await app.schedule(task_name, i) for i in range(total)]
 
                 t0 = time.monotonic()
                 results = await app.get_results(
-                    task_ids, timeout=60.0, poll_interval=0.05,
+                    task_ids,
+                    timeout=60.0,
+                    poll_interval=0.05,
                 )
                 elapsed = time.monotonic() - t0
 
                 # No loss: every task produced a result.
-                assert len(results) == total, (
-                    f"expected {total} results, got {len(results)}"
-                )
-                assert set(results) == set(range(total)), (
-                    f"missing / duplicate results: {sorted(results)}"
-                )
+                assert len(results) == total, f"expected {total} results, got {len(results)}"
+                assert set(results) == set(range(total)), f"missing / duplicate results: {sorted(results)}"
 
                 # Strictly serial: wall clock >= total * sleep * 0.95.
                 # The 5% slack absorbs a single message that may have
@@ -181,7 +183,8 @@ class TestResourceExhaustion:
     # ------------------------------------------------------------------
 
     async def test_connection_pool_exhaustion_yields_typed_error(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """100 concurrent SET ops against one ValkeyBackend.
 
@@ -204,7 +207,8 @@ class TestResourceExhaustion:
             async def one_set(idx: int) -> None:
                 await backend.store_result(
                     f"chaos-pool-{idx}-{uuid.uuid4().hex}",
-                    b"x", ttl_ms=5_000,
+                    b"x",
+                    ttl_ms=5_000,
                 )
 
             # Bound the entire gather — a silent hang in pool acquisition
@@ -218,8 +222,7 @@ class TestResourceExhaustion:
                 results = await asyncio.wait_for(_run_all(), timeout=30.0)
             except TimeoutError:
                 pytest.fail(
-                    "Pool exhaustion hung the gather — neither succeeded "
-                    "nor surfaced a typed error within 30s.",
+                    "Pool exhaustion hung the gather — neither succeeded nor surfaced a typed error within 30s.",
                 )
 
             # Classify outcomes.
@@ -232,16 +235,14 @@ class TestResourceExhaustion:
             # a case (BACKEND-layer bug).
             for exc in failures:
                 assert isinstance(exc, BackendConnectionError), (
-                    f"un-translated exception escaped from backend: "
-                    f"{type(exc).__name__}: {exc!r}"
+                    f"un-translated exception escaped from backend: {type(exc).__name__}: {exc!r}"
                 )
 
             # Pin behaviour. Both outcomes are acceptable; log which one
             # so the next reviewer can see what production hits today.
             # (print is captured by pytest -v and visible on failure.)
             print(
-                f"[pool-exhaustion] n={n}, successes={len(successes)}, "
-                f"typed failures={len(failures)}",
+                f"[pool-exhaustion] n={n}, successes={len(successes)}, typed failures={len(failures)}",
             )
 
             # Weakest useful assertion: either the pool queued
@@ -257,7 +258,8 @@ class TestResourceExhaustion:
     # ------------------------------------------------------------------
 
     async def test_channel_limit_exhaustion_typed_error(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Exhaust RabbitMQ's server-side channel_max and expect a typed raise.
 
@@ -306,18 +308,17 @@ class TestResourceExhaustion:
             for i in range(2047):
                 try:
                     ch = await asyncio.wait_for(
-                        connection.channel(), timeout=10.0,
+                        connection.channel(),
+                        timeout=10.0,
                     )
                 except TimeoutError:
                     pytest.fail(
-                        f"channel {i+1}/2047 timed out during "
-                        f"pre-exhaustion ramp-up — broker unhealthy?",
+                        f"channel {i + 1}/2047 timed out during pre-exhaustion ramp-up — broker unhealthy?",
                     )
                 channels.append(ch)
                 open_ok += 1
             assert open_ok == 2047, (
-                f"could only open {open_ok} channels before exhaustion — "
-                f"broker's channel_max lower than expected?"
+                f"could only open {open_ok} channels before exhaustion — broker's channel_max lower than expected?"
             )
 
             # 2048th must fail — bounded wait distinguishes a typed
@@ -336,7 +337,8 @@ class TestResourceExhaustion:
             ):
                 try:
                     ch = await asyncio.wait_for(
-                        connection.channel(), timeout=10.0,
+                        connection.channel(),
+                        timeout=10.0,
                     )
                     # If aio_pika hands us a channel object, record it
                     # so the teardown still closes it cleanly — then
@@ -349,8 +351,7 @@ class TestResourceExhaustion:
                     )
                 except TimeoutError as exc:
                     pytest.fail(
-                        f"2048th channel.open() hung (no typed error "
-                        f"within 10s): {exc!r}",
+                        f"2048th channel.open() hung (no typed error within 10s): {exc!r}",
                     )
         finally:
             for ch in channels:
@@ -358,4 +359,3 @@ class TestResourceExhaustion:
                     await ch.close()
             with contextlib.suppress(Exception):
                 await connection.close()
-

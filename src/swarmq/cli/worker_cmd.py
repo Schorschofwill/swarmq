@@ -119,7 +119,9 @@ async def run_worker_async(args: argparse.Namespace) -> None:
     # ``SwarmQConfig``; seine Logging-Felder sind von den Env-Overrides
     # ausgenommen, ``app.config.log_level`` zeigt also den wirksamen Wert.
     logging_settings = getattr(args, "logging_settings", None) or resolve_logging_settings(
-        args, os.environ, None,
+        args,
+        os.environ,
+        None,
     )
     # CLI > Env > Default: der Supervisor hat die Worker-Optionen aufgeloest;
     # ``resolved_fields`` haelt das Env im Worker davon fern (wie bei den
@@ -163,19 +165,13 @@ async def _run_configure_hook(app: Any, spec: str) -> None:
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        raise ConfigurationError(
-            f"--configure {spec!r}: importing {module_name!r} failed: {exc}"
-        ) from exc
+        raise ConfigurationError(f"--configure {spec!r}: importing {module_name!r} failed: {exc}") from exc
 
     hook = getattr(module, attr_name, None)
     if hook is None:
-        raise ConfigurationError(
-            f"--configure {spec!r}: {module_name!r} has no attribute {attr_name!r}"
-        )
+        raise ConfigurationError(f"--configure {spec!r}: {module_name!r} has no attribute {attr_name!r}")
     if not callable(hook):
-        raise ConfigurationError(
-            f"--configure {spec!r}: {module_name}.{attr_name} is not callable"
-        )
+        raise ConfigurationError(f"--configure {spec!r}: {module_name}.{attr_name} is not callable")
 
     try:
         result = hook(app)
@@ -183,6 +179,5 @@ async def _run_configure_hook(app: Any, spec: str) -> None:
             await result
     except Exception as exc:
         raise ConfigurationError(
-            f"--configure {spec!r}: {module_name}.{attr_name} raised "
-            f"{type(exc).__name__}: {exc}"
+            f"--configure {spec!r}: {module_name}.{attr_name} raised {type(exc).__name__}: {exc}"
         ) from exc

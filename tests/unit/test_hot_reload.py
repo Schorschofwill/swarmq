@@ -36,6 +36,7 @@ class TestSwarmQFilter:
 
     def _change(self):
         from watchfiles import Change
+
         return Change.modified
 
     def test_plain_py_file_accepted(self):
@@ -46,9 +47,7 @@ class TestSwarmQFilter:
         assert self._f()(self._change(), "/x/tasks.pyc") is False
 
     def test_pycache_dir_rejected(self):
-        assert self._f()(
-            self._change(), "/x/__pycache__/tasks.cpython-314.pyc"
-        ) is False
+        assert self._f()(self._change(), "/x/__pycache__/tasks.cpython-314.pyc") is False
 
     def test_vim_probe_4913_rejected(self):
         # Vim writes a probe file named "4913" before saving — no extension.
@@ -148,7 +147,6 @@ class TestResolveWatchDirs:
         finally:
             sys.modules.pop("swarmq_ns_test_pkg", None)
 
-
     def test_installed_package_warns_with_module_name(self, swarmq_logs):
         """Plan 2026-10-06-0831, U9: ``module`` ist ein reserviertes
         LogRecord-Attribut -- das Feld heisst ``module_name``."""
@@ -174,9 +172,12 @@ class TestCheckWatchfilesAvailable:
     def test_missing_raises_configuration_error(self):
         # Simulate missing dep by inserting None into sys.modules — the
         # import statement then raises ImportError on lookup.
-        with patch.dict(sys.modules, {"watchfiles": None}), pytest.raises(
-            ConfigurationError,
-            match=r"pip install 'swarmq\[reload\]'",
+        with (
+            patch.dict(sys.modules, {"watchfiles": None}),
+            pytest.raises(
+                ConfigurationError,
+                match=r"pip install 'swarmq\[reload\]'",
+            ),
         ):
             check_watchfiles_available()
 
@@ -209,6 +210,7 @@ class _FakeWatch:
 class TestFileWatcherLifecycle:
     def _changes(self):
         from watchfiles import Change
+
         return {(Change.modified, "/x/tasks.py")}
 
     def test_construct_requires_at_least_one_dir(self):

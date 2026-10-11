@@ -34,9 +34,7 @@ _TEXT = st.text(
 def _percent_strategy() -> st.SearchStrategy[float]:
     # The writer stores percent with 2-decimal rounding and 0–100 range.
     # Use finite floats; avoid NaN/Inf (they'd break str/float roundtrip).
-    return st.floats(
-        min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False
-    ).map(lambda x: round(x, 2))
+    return st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False).map(lambda x: round(x, 2))
 
 
 # Non-empty text — ``from_hash`` collapses empty-string ``started_at``
@@ -59,9 +57,7 @@ def progress_infos(draw) -> ProgressInfo:
     message = draw(_TEXT)
     updated_at = draw(_TEXT)
     started_at = draw(st.one_of(st.none(), _NONEMPTY_TEXT))
-    eta_seconds = draw(
-        st.one_of(st.none(), st.integers(min_value=0, max_value=10**7))
-    )
+    eta_seconds = draw(st.one_of(st.none(), st.integers(min_value=0, max_value=10**7)))
     return ProgressInfo(
         current=current,
         total=total,
@@ -87,9 +83,7 @@ def _to_hash(info: ProgressInfo, as_bytes: bool = False) -> dict:
     if info.eta_seconds is not None:
         raw["eta_seconds"] = str(info.eta_seconds)
     if as_bytes:
-        return {
-            k.encode("utf-8"): v.encode("utf-8") for k, v in raw.items()
-        }
+        return {k.encode("utf-8"): v.encode("utf-8") for k, v in raw.items()}
     return raw
 
 
@@ -132,9 +126,7 @@ def test_progress_info_from_hash_handles_bytes_keys(info: ProgressInfo) -> None:
 
 @pytest.mark.parametrize("missing_field", ["current", "total", "percent"])
 @given(info=progress_infos())
-def test_progress_info_missing_required_field_raises(
-    missing_field: str, info: ProgressInfo
-) -> None:
+def test_progress_info_missing_required_field_raises(missing_field: str, info: ProgressInfo) -> None:
     """Stripping any required field surfaces ValueError (contract pin)."""
     raw = _to_hash(info, as_bytes=False)
     del raw[missing_field]

@@ -54,8 +54,6 @@ pytestmark = pytest.mark.timeout(5)
 # ---------------------------------------------------------------------------
 
 
-
-
 def _default_payload(
     task_id: str = "abc-123",
     queue: str = "default",
@@ -253,9 +251,7 @@ class TestRequestShutdown:
 
 
 class TestShutdownSequence:
-    async def test_shutdown_cancels_consume_waits_tasks_closes_connections(
-        self, worker, broker, backend
-    ):
+    async def test_shutdown_cancels_consume_waits_tasks_closes_connections(self, worker, broker, backend):
         """Full shutdown: cancel_consume, await tasks, close broker+backend, STOPPED."""
         # Simulate the worker being in RUNNING state, then trigger shutdown
         worker._state = WorkerState.RUNNING
@@ -315,9 +311,7 @@ class TestShutdownSequence:
 
 
 class TestHandleMessageDuringShutdown:
-    async def test_handle_message_nacks_with_requeue_during_shutdown(
-        self, worker, broker
-    ):
+    async def test_handle_message_nacks_with_requeue_during_shutdown(self, worker, broker):
         """After shutdown_event is set, _handle_message nacks with requeue=True."""
         # Set shutdown event before handling message
         worker._shutdown_event.set()
@@ -330,9 +324,7 @@ class TestHandleMessageDuringShutdown:
 
 
 class TestShutdownNoActiveTasks:
-    async def test_no_active_tasks_goes_straight_to_stopped(
-        self, worker, broker, backend
-    ):
+    async def test_no_active_tasks_goes_straight_to_stopped(self, worker, broker, backend):
         """When no tasks are in-flight, shutdown skips wait and reaches STOPPED."""
         worker._state = WorkerState.RUNNING
         assert len(worker._active_tasks) == 0
@@ -375,9 +367,7 @@ class TestShutdownLockDrain:
         assert order == ["guard_drain", "backend_close"]
 
     @pytest.mark.asyncio
-    async def test_leftover_handler_locks_released_before_backend_close(
-        self, worker, broker, backend
-    ):
+    async def test_leftover_handler_locks_released_before_backend_close(self, worker, broker, backend):
         import uuid as _uuid
 
         worker._state = WorkerState.RUNNING
@@ -408,9 +398,7 @@ class TestShutdownLockDrain:
         original_backend_close = backend.close
 
         async def _check_close():
-            close_called_with_pending_releases.append(
-                len(release_calls_before_close) == 3
-            )
+            close_called_with_pending_releases.append(len(release_calls_before_close) == 3)
             return await original_backend_close()
 
         backend.close = _check_close
@@ -427,9 +415,7 @@ class TestShutdownLockDrain:
         assert worker._state is WorkerState.STOPPED
 
     @pytest.mark.asyncio
-    async def test_release_failure_during_drain_logged_but_does_not_crash_shutdown(
-        self, worker, broker, backend
-    ):
+    async def test_release_failure_during_drain_logged_but_does_not_crash_shutdown(self, worker, broker, backend):
         """A LockManager.release that raises must not abort the shutdown
         sequence — log + continue, then proceed to backend.close. The
         TTL is the recovery safety net for any lock that ended up
@@ -438,9 +424,7 @@ class TestShutdownLockDrain:
 
         worker._state = WorkerState.RUNNING
         worker._lock_manager = MagicMock()
-        worker._lock_manager.release = AsyncMock(
-            side_effect=ConnectionError("valkey down")
-        )
+        worker._lock_manager.release = AsyncMock(side_effect=ConnectionError("valkey down"))
 
         h1 = _uuid.uuid4()
         worker._active_handler_locks[h1] = [LockToken(name="res-X", owner="tok-X", max_concurrency=1)]
@@ -456,9 +440,7 @@ class TestShutdownLockDrain:
         assert worker._state is WorkerState.STOPPED
 
     @pytest.mark.asyncio
-    async def test_release_failure_during_drain_is_a_warning_with_error_fields(
-        self, worker, backend, swarmq_logs
-    ):
+    async def test_release_failure_during_drain_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17, KTD11): die TTL heilt den Lock
         selbst -- Degradierung mit automatischer Erholung, also WARNING."""
         import uuid as _uuid
@@ -478,9 +460,7 @@ class TestShutdownLockDrain:
         assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
 
     @pytest.mark.asyncio
-    async def test_scheduler_stop_failure_is_a_warning_with_error_fields(
-        self, worker, backend, swarmq_logs
-    ):
+    async def test_scheduler_stop_failure_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17, KTD11): der Leader-Lock laeuft per
         TTL ab, ein Standby uebernimmt -- WARNING statt ERROR."""
         worker._state = WorkerState.RUNNING
@@ -513,9 +493,7 @@ class TestShutdownLockDrain:
         assert entry["error"] == "cancel_consume: 1 consumer(s) failed to cancel"
 
     @pytest.mark.asyncio
-    async def test_drain_skipped_when_lock_manager_never_initialised(
-        self, worker, broker, backend
-    ):
+    async def test_drain_skipped_when_lock_manager_never_initialised(self, worker, broker, backend):
         """Worker without LockManager (start() never called) must not
         crash in the drain step — the guard `if self._lock_manager is
         not None` short-circuits the empty-registry case."""
@@ -536,9 +514,7 @@ class TestMetricsSampler:
     gauges (queue_depth / dlq_messages / worker_uptime_seconds) and emits
     WORKER_HEARTBEAT."""
 
-    async def test_sample_metrics_once_sets_gauges_and_emits_heartbeat(
-        self, worker, broker
-    ):
+    async def test_sample_metrics_once_sets_gauges_and_emits_heartbeat(self, worker, broker):
         import time as _time
 
         from swarmq.metrics import Metrics
@@ -561,17 +537,9 @@ class TestMetricsSampler:
 
         await worker._sample_metrics_once()
 
-        assert (
-            m.queue_depth.labels(queue="default", kind="pending")._value.get()
-            == 12
-        )
+        assert m.queue_depth.labels(queue="default", kind="pending")._value.get() == 12
         assert m.dlq_messages.labels(queue="default")._value.get() == 3
-        assert (
-            m.worker_uptime_seconds.labels(
-                worker_id=worker._config.worker_identity
-            )._value.get()
-            >= 5
-        )
+        assert m.worker_uptime_seconds.labels(worker_id=worker._config.worker_identity)._value.get() >= 5
         assert len(captured) == 1
         assert captured[0]["uptime_seconds"] >= 5
 
@@ -583,9 +551,7 @@ class TestMetricsSampler:
         if not m.enabled:
             pytest.skip("prometheus_client missing")
         worker._metrics = m
-        broker.queue_depth = AsyncMock(
-            side_effect=BrokerConnectionError("broker down")
-        )
+        broker.queue_depth = AsyncMock(side_effect=BrokerConnectionError("broker down"))
         broker.dead_letter_depth = AsyncMock(return_value=0)
 
         # Per-queue error is logged and skipped; the call must not raise.
@@ -610,7 +576,9 @@ class TestMetricsSampler:
         assert entry["error_type"] == "RuntimeError" and entry["error"] == "channel in weird state"
 
     async def test_sample_metrics_once_survives_arbitrary_error(
-        self, worker, broker,
+        self,
+        worker,
+        broker,
     ):
         """Härtung R2 P2: der per-Queue-Guard fing NUR
         BrokerConnectionError — jeder andere Fehler (TimeoutError,
@@ -623,15 +591,16 @@ class TestMetricsSampler:
         if not m.enabled:
             pytest.skip("prometheus_client missing")
         worker._metrics = m
-        broker.queue_depth = AsyncMock(
-            side_effect=RuntimeError("channel in weird state")
-        )
+        broker.queue_depth = AsyncMock(side_effect=RuntimeError("channel in weird state"))
         broker.dead_letter_depth = AsyncMock(return_value=0)
 
         await worker._sample_metrics_once()  # must not raise
 
     async def test_metrics_sampler_loop_survives_iteration_error(
-        self, worker, broker, monkeypatch,
+        self,
+        worker,
+        broker,
+        monkeypatch,
     ):
         """Eine werfende Iteration darf den Sampler-Loop nicht beenden —
         die nächste Iteration muss laufen."""
@@ -666,9 +635,11 @@ class TestMetricsSampler:
 
         assert len(calls) >= 2, "sampler loop died after one error"
 
-
     async def test_metrics_sampler_iteration_failure_logs_error_fields(
-        self, worker, monkeypatch, swarmq_logs,
+        self,
+        worker,
+        monkeypatch,
+        swarmq_logs,
     ):
         """Plan 2026-10-06-0831, U9 (R17)."""
         from swarmq.metrics import Metrics
@@ -719,10 +690,15 @@ class TestLifecycleSignalTimeout:
     starben hart, Locks blieben bis TTL."""
 
     async def test_shutdown_not_blocked_by_hanging_handler(
-        self, worker, broker, backend, monkeypatch,
+        self,
+        worker,
+        broker,
+        backend,
+        monkeypatch,
     ):
         monkeypatch.setattr(
-            "swarmq.worker.lifecycle._LIFECYCLE_DISPATCH_TIMEOUT_S", 0.1,
+            "swarmq.worker.lifecycle._LIFECYCLE_DISPATCH_TIMEOUT_S",
+            0.1,
         )
 
         @worker._signal_dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
@@ -743,10 +719,10 @@ class TestLifecycleSignalTimeout:
         assert worker._state is WorkerState.STOPPED
 
 
-
 # ---------------------------------------------------------------------------
 # aus test_burst_mode.py
 # ---------------------------------------------------------------------------
+
 
 def _make_burst_worker(*, burst_mode: bool, idle_timeout: float = 0.5) -> Worker:
     cfg = SwarmQConfig(
@@ -852,10 +828,10 @@ class TestBurstMonitor:
         assert not w._shutdown_event.is_set()
 
 
-
 # ---------------------------------------------------------------------------
 # aus test_worker_autowire.py
 # ---------------------------------------------------------------------------
+
 
 def _free_port() -> int:
     s = socket.socket()
@@ -900,7 +876,8 @@ class TestAutoWire:
         w._metrics = Metrics()
         install_signal_collectors(w._signal_dispatcher, w._metrics)
         w._metrics_server = MetricsServer(
-            w._metrics, host=w._config.metrics_host,
+            w._metrics,
+            host=w._config.metrics_host,
             port=w._config.metrics_port,
         )
         await w._metrics_server.start()
@@ -933,14 +910,18 @@ class TestAutoWire:
 
         w._metrics = Metrics()
         w._metrics_server = MetricsServer(
-            w._metrics, host="127.0.0.1", port=port_m,
+            w._metrics,
+            host="127.0.0.1",
+            port=port_m,
         )
         raised = False
         try:
             await w._metrics_server.start()
             checker = HealthChecker(w._broker, w._backend)
             w._health_server = HealthServer(
-                checker, host="127.0.0.1", port=occupied_port,
+                checker,
+                host="127.0.0.1",
+                port=occupied_port,
             )
             try:
                 await w._health_server.start()
@@ -1043,8 +1024,7 @@ async def _collect(sink: list[dict], kwargs: dict) -> None:
 def _pending_scheduler_tasks() -> list[asyncio.Task]:
     names = ("_election_loop", "_poll_loop")
     return [
-        t for t in asyncio.all_tasks()
-        if not t.done() and getattr(t.get_coro(), "__qualname__", "").endswith(names)
+        t for t in asyncio.all_tasks() if not t.done() and getattr(t.get_coro(), "__qualname__", "").endswith(names)
     ]
 
 

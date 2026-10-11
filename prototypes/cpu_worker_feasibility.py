@@ -102,11 +102,7 @@ def child_run_task(
         token = None
         if container is not _MISSING:
             scope = container(
-                context={
-                    TaskContext: TaskContext(
-                        task_id=task_id, task_name=task_name, queue="cpu", retry_count=0
-                    )
-                }
+                context={TaskContext: TaskContext(task_id=task_id, task_name=task_name, queue="cpu", retry_count=0)}
             )
             req = await scope.__aenter__()
             token = request_container.set(req)
@@ -114,9 +110,7 @@ def child_run_task(
             value = await instance.run(*args)
             result_q.put(("ok", value, os.getpid(), tasks.rss_mb()))
         except Exception as exc:
-            result_q.put(
-                ("error", type(exc).__name__, str(exc), traceback.format_exc()[-300:])
-            )
+            result_q.put(("error", type(exc).__name__, str(exc), traceback.format_exc()[-300:]))
         finally:
             if token is not None:
                 request_container.reset(token)
@@ -182,8 +176,7 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
     try:
         import dishka  # noqa: F401
     except ImportError:
-        print("FEHLER: dishka fehlt. Aufruf: uv run --extra dishka python "
-              "prototypes/cpu_worker_feasibility.py")
+        print("FEHLER: dishka fehlt. Aufruf: uv run --extra dishka python prototypes/cpu_worker_feasibility.py")
         return 2
 
     fs = mp.get_context("forkserver")
@@ -200,9 +193,7 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
     fs_ms = bench_start(fs, "forkserver")
     sp_ms = bench_start(sp, "spawn")
     print(f"      Forkserver-Hochlauf einmalig: {boot_ms:.0f}ms")
-    check("A1", fs_ms < sp_ms / 3,
-          f"forkserver {fs_ms:.1f}ms vs spawn {sp_ms:.1f}ms "
-          f"(Faktor {sp_ms / fs_ms:.1f}x)")
+    check("A1", fs_ms < sp_ms / 3, f"forkserver {fs_ms:.1f}ms vs spawn {sp_ms:.1f}ms (Faktor {sp_ms / fs_ms:.1f}x)")
 
     # -- A11 ----------------------------------------------------------------
     print("\nA11 Container im Forkserver kalt (keine geerbten Verbindungen)")
@@ -253,15 +244,23 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
     hb.cancel()
 
     status, value, child_pid, _rss = rq.get()
-    check("A2", ticks > dur_ms / 20,
-          f"{dur_ms:.0f}ms CPU-Arbeit im Kind -> Heartbeat schlug {ticks}x")
-    check("A4", status == "ok" and "db(" in str(value.get("db", "")),
-          f"FromDishka aufgeloest im Kind: {value.get('db') if status == 'ok' else value}")
-    check("A5", status == "ok" and value.get("session_task_id") == "task-abc",
-          f"TaskContext im REQUEST-Scope: {value.get('session_task_id') if status == 'ok' else 'n/a'}")
-    check("A6", len(progress_seen) > 0 and all(pid == child_pid for _, _, pid in progress_seen),
-          f"{len(progress_seen)} Fortschrittsmeldungen aus PID {child_pid} "
-          f"waehrend der Rechnung: {[c for c, _, _ in progress_seen]}")
+    check("A2", ticks > dur_ms / 20, f"{dur_ms:.0f}ms CPU-Arbeit im Kind -> Heartbeat schlug {ticks}x")
+    check(
+        "A4",
+        status == "ok" and "db(" in str(value.get("db", "")),
+        f"FromDishka aufgeloest im Kind: {value.get('db') if status == 'ok' else value}",
+    )
+    check(
+        "A5",
+        status == "ok" and value.get("session_task_id") == "task-abc",
+        f"TaskContext im REQUEST-Scope: {value.get('session_task_id') if status == 'ok' else 'n/a'}",
+    )
+    check(
+        "A6",
+        len(progress_seen) > 0 and all(pid == child_pid for _, _, pid in progress_seen),
+        f"{len(progress_seen)} Fortschrittsmeldungen aus PID {child_pid} "
+        f"waehrend der Rechnung: {[c for c, _, _ in progress_seen]}",
+    )
 
     # -- A10 ----------------------------------------------------------------
     print("\nA10 APP-Scope-Lebensdauer je Rechenkind")
@@ -276,8 +275,7 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
         st, val, _cpid, _crss = rq2.get()  # vor join() leeren, sonst Deadlock
         p.join()
         nos.append(val.get("db_instance_no") if st == "ok" else -1)
-    check("A10", nos == [1, 1],
-          f"Jedes Kind baut sein eigenes APP-Singleton (instance_no je Kind: {nos})")
+    check("A10", nos == [1, 1], f"Jedes Kind baut sein eigenes APP-Singleton (instance_no je Kind: {nos})")
 
     # -- A3 -----------------------------------------------------------------
     print("\nA3  Hard-Timeout: blockierendes Kind ohne await-Punkte")
@@ -290,8 +288,11 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
     p.kill()
     p.join(timeout=5)
     kill_ms = (time.perf_counter() - t0) * 1000
-    check("A3", alive_before and not p.is_alive() and p.exitcode == -9,
-          f"in {kill_ms:.1f}ms beendet, exitcode={p.exitcode}")
+    check(
+        "A3",
+        alive_before and not p.is_alive() and p.exitcode == -9,
+        f"in {kill_ms:.1f}ms beendet, exitcode={p.exitcode}",
+    )
 
     # -- A7 -----------------------------------------------------------------
     print("\nA7  Exception-Weitergabe ueber die Prozessgrenze")
@@ -300,8 +301,7 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
     p.start()
     payload = rq.get()
     p.join()
-    check("A7", payload[0] == "error" and payload[1] == "ValueError",
-          f"{payload[1]}: {payload[2]}")
+    check("A7", payload[0] == "error" and payload[1] == "ValueError", f"{payload[1]}: {payload[2]}")
 
     # -- A8 -----------------------------------------------------------------
     print("\nA8  Leak-Erkennung per RSS nach Taskende")
@@ -316,15 +316,20 @@ async def main() -> int:  # noqa: PLR0915 - linearer Testablauf, bewusst eine Fu
     p.start()
     _unused, fresh_series, _pid = rq2.get()
     p.join()
-    check("A8", growth > 100 and fresh_series[0] < rss_series[-1] - 100,
-          f"RSS im selben Kind {[f'{r:.0f}' for r in rss_series]}MB (+{growth:.0f}MB); "
-          f"frisches Kind startet bei {fresh_series[0]:.0f}MB")
+    check(
+        "A8",
+        growth > 100 and fresh_series[0] < rss_series[-1] - 100,
+        f"RSS im selben Kind {[f'{r:.0f}' for r in rss_series]}MB (+{growth:.0f}MB); "
+        f"frisches Kind startet bei {fresh_series[0]:.0f}MB",
+    )
 
     # -- Zusammenfassung ----------------------------------------------------
     failed = [a for a, ok, _ in _RESULTS if not ok]
     print("\n" + "=" * 72)
-    print(f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Annahmen bestaetigt"
-          + (f" — offen: {', '.join(failed)}" if failed else ""))
+    print(
+        f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Annahmen bestaetigt"
+        + (f" — offen: {', '.join(failed)}" if failed else "")
+    )
     return 1 if failed else 0
 
 

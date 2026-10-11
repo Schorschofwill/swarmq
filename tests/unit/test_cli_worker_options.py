@@ -25,9 +25,14 @@ from swarmq.exceptions import ConfigurationError
 
 def _args(**kw: object) -> argparse.Namespace:
     base: dict[str, object] = {
-        "queues": None, "concurrency": None, "pool": None, "burst": None,
-        "burst_idle_timeout": None, "priorities": None,
-        "metrics_port": None, "health_port": None,
+        "queues": None,
+        "concurrency": None,
+        "pool": None,
+        "burst": None,
+        "burst_idle_timeout": None,
+        "priorities": None,
+        "metrics_port": None,
+        "health_port": None,
     }
     base.update(kw)
     return argparse.Namespace(**base)
@@ -66,14 +71,16 @@ class TestBurst:
     def test_environment_applies_without_flag(self):
         args = _args()
         resolve_worker_options(
-            args, {"SWARMQ_BURST_MODE": "true", "SWARMQ_BURST_IDLE_TIMEOUT": "2.5"},
+            args,
+            {"SWARMQ_BURST_MODE": "true", "SWARMQ_BURST_IDLE_TIMEOUT": "2.5"},
         )
         assert (args.burst, args.burst_idle_timeout) == (True, 2.5)
 
     def test_flags_win_over_environment(self):
         args = _args(burst=True, burst_idle_timeout=9.0)
         resolve_worker_options(
-            args, {"SWARMQ_BURST_MODE": "false", "SWARMQ_BURST_IDLE_TIMEOUT": "2.5"},
+            args,
+            {"SWARMQ_BURST_MODE": "false", "SWARMQ_BURST_IDLE_TIMEOUT": "2.5"},
         )
         assert (args.burst, args.burst_idle_timeout) == (True, 9.0)
 
@@ -94,14 +101,16 @@ class TestPorts:
     def test_environment_applies_without_flag(self):
         args = _args()
         resolve_worker_options(
-            args, {"SWARMQ_METRICS_PORT": "9100", "SWARMQ_HEALTH_PORT": "9200"},
+            args,
+            {"SWARMQ_METRICS_PORT": "9100", "SWARMQ_HEALTH_PORT": "9200"},
         )
         assert (args.metrics_port, args.health_port) == (9100, 9200)
 
     def test_flags_win_over_environment(self):
         args = _args(metrics_port=8000, health_port=8100)
         resolve_worker_options(
-            args, {"SWARMQ_METRICS_PORT": "9100", "SWARMQ_HEALTH_PORT": "9200"},
+            args,
+            {"SWARMQ_METRICS_PORT": "9100", "SWARMQ_HEALTH_PORT": "9200"},
         )
         assert (args.metrics_port, args.health_port) == (8000, 8100)
 
@@ -129,5 +138,7 @@ class TestCliFields:
         resolve_worker_options(args, env)
         resolve_worker_options(args, env)
         assert (args.queues, args.concurrency, args.cli_fields) == (
-            ["a"], 3, frozenset({"concurrency"}),
+            ["a"],
+            3,
+            frozenset({"concurrency"}),
         )

@@ -27,9 +27,14 @@ def _run_mypy(source: str, tmp_path: Path, cache: Path) -> str:
     fixture.write_text(textwrap.dedent(source), encoding="utf-8")
     proc = subprocess.run(
         [
-            sys.executable, "-m", "mypy",
-            "--strict", "--no-error-summary", "--hide-error-context",
-            "--cache-dir", str(cache),
+            sys.executable,
+            "-m",
+            "mypy",
+            "--strict",
+            "--no-error-summary",
+            "--hide-error-context",
+            "--cache-dir",
+            str(cache),
             str(fixture),
         ],
         capture_output=True,

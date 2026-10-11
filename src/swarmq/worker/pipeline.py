@@ -9,7 +9,6 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-
     from swarmq.health import HealthServer
     from swarmq.metrics import Metrics, MetricsServer
 
@@ -79,8 +78,6 @@ from swarmq.workflow_orchestration import (
 logger = get_logger(__name__)
 
 
-
-
 class Worker(WorkerLifecycle, WorkerShutdown):
     def __init__(
         self,
@@ -88,9 +85,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         backend: WorkerBackend,
         registry: TaskRegistry,
         config: SwarmQConfig,
-        middleware_chain: MiddlewareChain
-        | Callable[[], MiddlewareChain]
-        | None = None,
+        middleware_chain: MiddlewareChain | Callable[[], MiddlewareChain] | None = None,
         signal_dispatcher: SignalDispatcher | None = None,
     ) -> None:
         self._broker = broker
@@ -102,12 +97,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         # Storing a factory lets the worker see middleware registered AFTER
         # Worker construction — e.g. when SwarmQ.add_middleware() is called
         # after start_worker() has already built the Worker instance.
-        self._middleware_chain_factory = coerce_middleware_chain_factory(
-            middleware_chain
-        )
-        self._signal_dispatcher = (
-            signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
-        )
+        self._middleware_chain_factory = coerce_middleware_chain_factory(middleware_chain)
+        self._signal_dispatcher = signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         self._semaphore = asyncio.Semaphore(config.concurrency)
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._state = WorkerState.STARTING
@@ -156,7 +147,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         # Handler lebt; endet mit der letzten Lease oder beim Schliessen.
         self._lock_keeper = LockKeeper(lambda: self._lock_manager, op_timeout_s=config.backend_op_timeout)
         gate_deps.keep_lock = lambda token, ttl_ms, ctx: self._lock_keeper.keep(
-            token, ttl_ms, task_id=ctx.task_id, task_name=ctx.task_name)
+            token, ttl_ms, task_id=ctx.task_id, task_name=ctx.task_name
+        )
         self._schedfire_gate = SchedfireGate(gate_deps)
         self._cancel_gate = CancelGate(gate_deps)
         self._expiry_gate = ExpiryGate(gate_deps)
@@ -164,25 +156,29 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         self._lock_gate = LockGate(
             gate_deps,
             dead_letter=lambda d, c, m, t, h, f: self._retry_handler.dead_letter(
-                d, c, m, t, extra_headers=h, on_publish_failure=f),
+                d, c, m, t, extra_headers=h, on_publish_failure=f
+            ),
         )
         # Am Zustelllimit stellt eine gescheiterte Workflow-Fehlmarkierung
         # nicht mehr neu zu (MR 3): auf 4.3 zaehlte der ``nack`` nicht.
         self._delivery_count_gate = DeliveryCountGate(
-            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t, may_redeliver=False))
+            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t, may_redeliver=False)
+        )
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._retry_handler = RetryHandler(
-            gate_deps, workflow_advancer=lambda: self._workflow_advancer, finish=self._result_tail.finish)
+            gate_deps, workflow_advancer=lambda: self._workflow_advancer, finish=self._result_tail.finish
+        )
         gate_deps.fail_workflow = self._retry_handler.fail_workflow  # BZ-13: terminale Gate-Pfade
         # Ausfuehrungsschutz (KTD5): der Store entsteht in start(); Gates,
         # Retry und Ergebnis-Tail sprechen den protokollierenden Wrapper, der
         # die Marker nach dem ausgefuehrten Verb setzt.
         self._guard_store: ExecutionGuardStore | None = None
         self._execution_guard = ExecutionGuard(
-            gate_deps, store=lambda: self._guard_store,
+            gate_deps,
+            store=lambda: self._guard_store,
             dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t),
             on_event=self._count_guard_event,
         )
@@ -234,7 +230,11 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         """``gates.lock.release_acquired_locks`` mit dem Logger dieses Moduls (Q17)."""
         assert self._lock_manager is not None  # Locks existieren nur nach start()
         await release_acquired_locks(
-            self._lock_manager, self._active_handler_locks, handler_id, acquired_locks, log=logger,
+            self._lock_manager,
+            self._active_handler_locks,
+            handler_id,
+            acquired_locks,
+            log=logger,
             drop=self._lock_keeper.drop,
         )
 
@@ -266,7 +266,10 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         return decode.valid_workflow_id(message)
 
     async def _maybe_release_unique(
-        self, message: Any, task_id: str, task_info: TaskInfo | None = None,
+        self,
+        message: Any,
+        task_id: str,
+        task_info: TaskInfo | None = None,
     ) -> None:
         """Siehe ``finalize.maybe_release_unique``."""
         unique_hash = self._extract_valid_unique_hash(message)
@@ -302,7 +305,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         Zustellung honoriert das Flag im Pre-Start-Check)."""
         try:
             return await self._backend.is_cancelled(
-                task_id, op_timeout=self._config.backend_op_timeout,
+                task_id,
+                op_timeout=self._config.backend_op_timeout,
             )
         except BackendConnectionError:
             return False
@@ -357,7 +361,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         effective_unique_until = header_unique_until or task_info.unique_until
         if unique_hash and effective_unique_until == "start":
             await self._backend.release_unique(
-                unique_hash, task_id,
+                unique_hash,
+                task_id,
                 op_timeout=self._config.backend_op_timeout,
             )
 
@@ -395,9 +400,12 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             logger.error("middleware_chain_factory_failed", **_error_fields(exc))
             if not acked_before_execute:
                 await route_via_dlx(
-                    self._gate_deps, message,
-                    reason="middleware_chain_factory", error=str(exc),
-                    task_id=task_id, task_name=task_name,
+                    self._gate_deps,
+                    message,
+                    reason="middleware_chain_factory",
+                    error=str(exc),
+                    task_id=task_id,
+                    task_name=task_name,
                 )
             return None
 
@@ -432,9 +440,14 @@ class Worker(WorkerLifecycle, WorkerShutdown):
     async def _lookup_task_or_route(self, message: Any, ctx: GateContext) -> type[Task] | DeliveryOutcome:
         """``gates.unknown_task.lookup_task_or_route`` mit dem Logger dieses Moduls (Q17)."""
         return await lookup_task_or_route(
-            self._registry, self._gate_deps, message, ctx, log=logger,
+            self._registry,
+            self._gate_deps,
+            message,
+            ctx,
+            log=logger,
             dead_letter=lambda d, c, m, t, h, f: self._retry_handler.dead_letter(
-                d, c, m, t, extra_headers=h, on_publish_failure=f),
+                d, c, m, t, extra_headers=h, on_publish_failure=f
+            ),
         )
 
     def _log_context(self, message: Any, ctx: GateContext) -> Any:
@@ -466,7 +479,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         Pickup bereits freigegeben (No-op), ebenso Nachrichten ohne Header."""
         terminal = outcome if isinstance(outcome, Terminal) else None
         await self._finalize_schedfire(
-            ctx, terminal=terminal is not None and terminal.finalize_schedfire,
+            ctx,
+            terminal=terminal is not None and terminal.finalize_schedfire,
         )
         if terminal is not None and terminal.release_unique:
             await self._maybe_release_unique(message, ctx.task_id, task_info)
@@ -496,13 +510,9 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         Cancel, der ins Pipeline-Ende raste, dem Tail als Cancel dar."""
         task_info = ctx.task_info
         assert task_info is not None
-        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and (
-            execution.is_error or execution.is_cancelled
-        ):
+        if task_info.delivery is DeliveryMode.FIRE_AND_FORGET and (execution.is_error or execution.is_cancelled):
             if execution.is_cancelled:
-                await self._backend.clear_cancel_flag(
-                    ctx.task_id, op_timeout=self._config.backend_op_timeout
-                )
+                await self._backend.clear_cancel_flag(ctx.task_id, op_timeout=self._config.backend_op_timeout)
             return current_outcome
 
         if (
@@ -539,7 +549,11 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             return
         task_id, queue, task_name, args, kwargs = decoded
         ctx = GateContext(
-            task_id=task_id, task_name=task_name, queue=queue, args=args, kwargs=kwargs,
+            task_id=task_id,
+            task_name=task_name,
+            queue=queue,
+            args=args,
+            kwargs=kwargs,
             workflow_id=self._extract_valid_workflow_id(message),
         )
         with self._log_context(message, ctx), contain_delivery_errors():
@@ -624,7 +638,10 @@ class Worker(WorkerLifecycle, WorkerShutdown):
 
             message_dict = self._build_message_dict(ctx, message)
             chain = await self._resolve_chain_or_route(
-                message, acked_before_execute, task_id=task_id, task_name=task_name,
+                message,
+                acked_before_execute,
+                task_id=task_id,
+                task_name=task_name,
             )
             if chain is None:
                 return
@@ -637,10 +654,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             _di_scope = execution.di_scope
             _di_token = execution.di_token
 
-
-            error_outcome = await self._resolve_error_path(
-                message, ctx, execution, message_dict, chain, outcome
-            )
+            error_outcome = await self._resolve_error_path(message, ctx, execution, message_dict, chain, outcome)
             # Der Late-Cancel-Flip mutiert das ExecutionResult — die lokalen
             # Aliase (DI-Teardown im finally) nachziehen.
             is_cancelled = execution.is_cancelled

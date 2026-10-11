@@ -52,7 +52,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=8,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=8,
     )
     online = asyncio.Event()
 
@@ -73,7 +76,9 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 
 
 async def test_schedule_many_mixed_success_and_failure(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """50 tasks total: 30 succeed, 20 raise. get_results must surface
     both outcomes in the correct slots."""
@@ -129,7 +134,9 @@ async def test_schedule_many_mixed_success_and_failure(
 
 
 async def test_schedule_many_mixed_success_and_cancellation(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """Batch of slow tasks; cancel a subset before they run. Cancelled
     slots surface as TaskCancelledError, others complete normally."""
@@ -168,8 +175,7 @@ async def test_schedule_many_mixed_success_and_cancellation(
                 *(client_app.cancel(tid) for tid in cancel_ids),
             )
             assert all(cancel_results), (
-                f"cancel returned False for some task_ids: "
-                f"{list(zip(cancel_ids, cancel_results))}"
+                f"cancel returned False for some task_ids: {list(zip(cancel_ids, cancel_results))}"
             )
 
             # Keep slots must complete normally.
@@ -189,14 +195,13 @@ async def test_schedule_many_mixed_success_and_cancellation(
                     # Raced with completion — tolerated when the
                     # worker picked it up before the cancel landed.
                     pass
-            assert cancelled_count >= 1, (
-                "expected at least one of 4 cancels to land before "
-                "execution completed"
-            )
+            assert cancelled_count >= 1, "expected at least one of 4 cancels to land before execution completed"
 
 
 async def test_schedule_many_with_unique_dedup_returns_winner_ids(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """Batch contains 50 unique tasks + 50 duplicates of them (same
     args). Return value length is 100; duplicate slots point to the
@@ -206,7 +211,9 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
 
     class UniqueTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue], max_retries=0,
+            name=task_name,
+            queues=[queue],
+            max_retries=0,
             unique_for=60,  # seconds
         )
 
@@ -233,9 +240,9 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
             # (task_ids[i - 50]).
             for i in range(50):
                 assert task_ids[i + 50] == task_ids[i], (
-                    f"dup at slot {i+50} did not dedupe to "
+                    f"dup at slot {i + 50} did not dedupe to "
                     f"winner at slot {i}: "
-                    f"dup={task_ids[i+50]!r} winner={task_ids[i]!r}"
+                    f"dup={task_ids[i + 50]!r} winner={task_ids[i]!r}"
                 )
 
             distinct = set(task_ids)
@@ -243,13 +250,19 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
 
             # Every winner should resolve to its arg value.
             for i in range(50):
-                assert await client_app.get_result(
-                    task_ids[i], timeout=10,
-                ) == i
+                assert (
+                    await client_app.get_result(
+                        task_ids[i],
+                        timeout=10,
+                    )
+                    == i
+                )
 
 
 async def test_schedule_many_survives_broker_reconnect_midway(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """Force a broker reconnect mid-batch. Phase-1 U1.1 channel-
     recreate must ensure every publish lands — otherwise the batch

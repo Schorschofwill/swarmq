@@ -185,7 +185,7 @@ def _block_shutdown_signals() -> set[int | signal.Signals] | None:
     ``pthread_sigmask``)."""
     try:
         return signal.pthread_sigmask(signal.SIG_BLOCK, _SHUTDOWN_SIGNALS)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return None
 
 

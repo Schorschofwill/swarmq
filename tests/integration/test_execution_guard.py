@@ -95,7 +95,12 @@ def _body(task_id: str, queue: str, name: str = "guard_counted") -> bytes:
 async def _crash(backend: ValkeyBackend, identity: str) -> None:
     """Claim ohne Freigabe, der Marker läuft nach 100 ms ab."""
     claim = await backend.execution_guard.claim(
-        identity, owner=uuid.uuid4().hex, retry_count=0, ttl_ms=100, state_ttl_ms=600_000, max_orphans=99,
+        identity,
+        owner=uuid.uuid4().hex,
+        retry_count=0,
+        ttl_ms=100,
+        state_ttl_ms=600_000,
+        max_orphans=99,
     )
     assert claim.status == "claimed"
     await asyncio.sleep(0.2)
@@ -108,7 +113,12 @@ async def _wait_for(predicate: Callable[[], bool], timeout: float = 10.0) -> Non
 
 
 async def test_redelivery_after_a_crashed_worker_runs_once_the_marker_expired(
-    rabbitmq_url, valkey_url, queue, guard_backend, runs, _tasks,
+    rabbitmq_url,
+    valkey_url,
+    queue,
+    guard_backend,
+    runs,
+    _tasks,
 ) -> None:
     task_id = uuid.uuid4().hex
     await _crash(guard_backend, task_id)
@@ -121,7 +131,12 @@ async def test_redelivery_after_a_crashed_worker_runs_once_the_marker_expired(
 
 
 async def test_three_crashes_dead_letter_the_execution_as_worker_hung_error(
-    rabbitmq_url, valkey_url, queue, guard_backend, runs, _tasks,
+    rabbitmq_url,
+    valkey_url,
+    queue,
+    guard_backend,
+    runs,
+    _tasks,
 ) -> None:
     task_id = uuid.uuid4().hex
     for _ in range(3):
@@ -148,7 +163,11 @@ async def test_three_crashes_dead_letter_the_execution_as_worker_hung_error(
 
 
 async def test_dlq_retry_runs_again_and_its_redelivery_is_skipped(
-    rabbitmq_url, valkey_url, queue, runs, _tasks,
+    rabbitmq_url,
+    valkey_url,
+    queue,
+    runs,
+    _tasks,
 ) -> None:
     with capture_swarmq_logs() as logs:
         async with _worker(rabbitmq_url, valkey_url, queue) as app:

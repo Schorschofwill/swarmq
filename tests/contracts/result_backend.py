@@ -201,9 +201,7 @@ class ResultBackendContract:
         assert stored is False
         assert await impl.get_workflow_state(wf) == b'{"version": 2, "x": 1}'
 
-    async def test_compare_and_store_workflow_state_missing_version_counts_as_zero(
-        self, impl: ResultBackend
-    ) -> None:
+    async def test_compare_and_store_workflow_state_missing_version_counts_as_zero(self, impl: ResultBackend) -> None:
         """Dokumente aus 0.5.x tragen keine ``version`` -- sie gelten als 0."""
         wf = _id("wf")
         await impl.store_workflow_state(wf, b'{"x": 1}', ttl_ms=60_000)
@@ -230,8 +228,7 @@ class ResultBackendContract:
         wf = _id("wf")
         await impl.store_workflow_state(wf, b'{"version": 0}', ttl_ms=60_000)
         assert (
-            await impl.compare_and_store_workflow_state(wf, b'{"version": 1}', ttl_ms=500, expected_version=0)
-            is True
+            await impl.compare_and_store_workflow_state(wf, b'{"version": 1}', ttl_ms=500, expected_version=0) is True
         )
         assert await impl.get_workflow_state(wf) == b'{"version": 1}'
         await clock.advance(1.0)

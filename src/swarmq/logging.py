@@ -82,12 +82,15 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
             _activate_swarmq_queue_after_app_takeover(**_queue_options(before))
         _queue_core._APP_TAKEOVER_REPORTED = True
         report_app_logging(
-            get_logger(__name__), "logging_reconfigured_by_app", reenabled_loggers=reenabled,
+            get_logger(__name__),
+            "logging_reconfigured_by_app",
+            reenabled_loggers=reenabled,
         )
     if added and not replaced:
         # Neben swarmqs Handler: beide schreiben -- swarmq entfernt nichts.
         report_app_logging(
-            get_logger(__name__), "logging_handlers_added_by_app",
+            get_logger(__name__),
+            "logging_handlers_added_by_app",
             handler_types=[type(handler).__name__ for handler in added],
         )
 
@@ -144,9 +147,7 @@ def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[s
     # im ``--configure``-Hook, der nur im Worker laeuft): ohne Start gingen
     # alle Kindzeilen verloren (R13).
     _start_app_queue_listeners()
-    _activate_swarmq_queue_after_app_takeover(
-        json=settings.format == "json", queue_size=settings.queue_size
-    )
+    _activate_swarmq_queue_after_app_takeover(json=settings.format == "json", queue_size=settings.queue_size)
     return [("logging_reconfigured_by_app", {"reenabled_loggers": _reenable_swarmq_loggers()})]
 
 
@@ -198,7 +199,9 @@ def _start_app_queue_listeners() -> None:
     """Startet geerbte, ungestartete Queue-Listener der App (R13); swarmqs
     eigene Listener starten weiter lazy beim ersten Eintrag (KTD5)."""
     start_queue_listeners(
-        on_drop=_queue_core.count_dropped, skip=(_StructlogQueueHandler,), drain=_stop_listeners,
+        on_drop=_queue_core.count_dropped,
+        skip=(_StructlogQueueHandler,),
+        drain=_stop_listeners,
     )
 
 
@@ -233,9 +236,7 @@ _RESERVED_RECORD_KEYS = frozenset(
 kwargs gehen sie bestimmungsgemaess an die stdlib-Logmethode."""
 
 
-def _guard_reserved_keys(
-    _: Any, __: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
+def _guard_reserved_keys(_: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
     """Benennt LogRecord-Attributnamen in ``swarmq_<key>`` um.
 
     Ohne das wirft ``log.info("evt", name=...)`` im stdlib-``makeRecord``
@@ -270,9 +271,7 @@ _CALLER_STACKLEVEL = 4
 -> stdlib-Logmethode (ermittelt fuer structlog 26.1)."""
 
 
-def _set_caller_stacklevel(
-    logger: Any, __: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
+def _set_caller_stacklevel(logger: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
     """Laesst ``funcName``/``lineno`` auf den Aufrufer zeigen statt auf
     structlogs Weiterleitung.
 
@@ -352,9 +351,7 @@ def _task_log_context(**fields: Any) -> contextlib.AbstractContextManager[None]:
     der App bleiben unberuehrt. ``None``-Werte entfallen: ein fehlendes
     ``workflow_id`` fehlt im Eintrag, statt als ``None`` zu erscheinen.
     """
-    return structlog.contextvars.bound_contextvars(
-        **{key: value for key, value in fields.items() if value is not None}
-    )
+    return structlog.contextvars.bound_contextvars(**{key: value for key, value in fields.items() if value is not None})
 
 
 def configure_logging(settings: LoggingSettings) -> None:
@@ -474,9 +471,7 @@ def _configure_structlog_for_user_code() -> None:
     )
 
 
-def setup_logging(
-    log_level: str = "INFO", log_json: bool = True
-) -> logging.handlers.QueueListener:
+def setup_logging(log_level: str = "INFO", log_json: bool = True) -> logging.handlers.QueueListener:
     """Deprecated: Einstiegspunkte rufen ``configure_logging`` auf (U6).
 
     Baut bei jedem Aufruf neu auf -- ``shutdown_logging()`` und danach
@@ -487,9 +482,7 @@ def setup_logging(
     """
     shutdown_logging()
     structlog.reset_defaults()
-    configure_logging(
-        LoggingSettings(level=log_level, format="json" if log_json else "human")
-    )
+    configure_logging(LoggingSettings(level=log_level, format="json" if log_json else "human"))
     handler = logging.getLogger().handlers[0]
     assert isinstance(handler, _StructlogQueueHandler) and handler.listener is not None
     return handler.listener
@@ -507,8 +500,6 @@ def sanitize_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.password:
         # Replace password in netloc
-        replaced = parsed._replace(
-            netloc=parsed.netloc.replace(f":{parsed.password}@", ":***@", 1)
-        )
+        replaced = parsed._replace(netloc=parsed.netloc.replace(f":{parsed.password}@", ":***@", 1))
         return urlunparse(replaced)
     return url

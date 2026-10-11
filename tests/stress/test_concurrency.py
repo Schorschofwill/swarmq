@@ -49,8 +49,6 @@ _VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
 _VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", "6380"))
 
 
-
-
 @pytest.fixture(autouse=True, scope="session")
 def _check_docker():
     rabbitmq_ok = port_is_open(_RABBITMQ_HOST, _RABBITMQ_PORT)
@@ -62,8 +60,7 @@ def _check_docker():
         if not valkey_ok:
             missing.append(f"Valkey ({_VALKEY_HOST}:{_VALKEY_PORT})")
         pytest.skip(
-            f"Dev stack not available: {', '.join(missing)}. "
-            f"Run docker compose -f tests/fixtures/dev-stack.yml up -d"
+            f"Dev stack not available: {', '.join(missing)}. Run docker compose -f tests/fixtures/dev-stack.yml up -d"
         )
 
 
@@ -106,7 +103,9 @@ def _task_name(prefix: str) -> str:
 
 
 async def test_10_workers_1000_tasks_each_exact_once(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """Publish 1000 tasks, consume across 10 in-process workers, assert
     each task executed exactly once via a Valkey INCR counter. Proves
@@ -141,7 +140,9 @@ async def test_10_workers_1000_tasks_each_exact_once(
 
     try:
         async with SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         ) as client_app:
             await client_app.broker.declare_queue(queue)
 
@@ -150,7 +151,8 @@ async def test_10_workers_1000_tasks_each_exact_once(
                 w_broker = RabbitMQBroker(rabbitmq_url)
                 w_backend = ValkeyBackend(valkey_url)
                 w_app = SwarmQ(
-                    w_broker, w_backend,
+                    w_broker,
+                    w_backend,
                     queues=[queue],
                     concurrency=4,
                 )
@@ -183,13 +185,9 @@ async def test_10_workers_1000_tasks_each_exact_once(
             distinct = await valkey_client.scard(f"{counter_key}:ids")
 
             assert executed == total_tasks, (
-                f"expected {total_tasks} executions, got {executed} "
-                f"(possible duplicates or losses)"
+                f"expected {total_tasks} executions, got {executed} (possible duplicates or losses)"
             )
-            assert distinct == total_tasks, (
-                f"expected {total_tasks} distinct task inputs, "
-                f"got {distinct}"
-            )
+            assert distinct == total_tasks, f"expected {total_tasks} distinct task inputs, got {distinct}"
     finally:
         for t in worker_tasks:
             t.cancel()
@@ -207,7 +205,9 @@ async def test_10_workers_1000_tasks_each_exact_once(
 
 
 async def test_100_parallel_schedule_distinct_task_ids(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """100 concurrent client.schedule() calls (no workers consuming)
     must all return distinct task_ids. Catches any shared-state race
@@ -227,14 +227,10 @@ async def test_100_parallel_schedule_distinct_task_ids(
     async with SwarmQ(broker, backend, queues=[queue]) as app:
         await app.broker.declare_queue(queue)
 
-        tids = await asyncio.gather(
-            *(app.client.schedule(task_name) for _ in range(100))
-        )
+        tids = await asyncio.gather(*(app.client.schedule(task_name) for _ in range(100)))
 
     assert len(tids) == 100
-    assert len(set(tids)) == 100, (
-        f"expected 100 distinct task_ids, got {len(set(tids))}"
-    )
+    assert len(set(tids)) == 100, f"expected 100 distinct task_ids, got {len(set(tids))}"
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +239,9 @@ async def test_100_parallel_schedule_distinct_task_ids(
 
 
 async def test_50_parallel_cancels_one_winner(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """Schedule a slow task, then fire 50 concurrent cancel() calls on
     that task_id. Because cancel() is backed by SET NX PX, exactly one
@@ -273,9 +271,7 @@ async def test_50_parallel_cancels_one_winner(
         await app.broker.declare_queue(queue)
         tid = await app.client.schedule(task_name)
 
-        results = await asyncio.gather(
-            *(app.client.cancel(tid) for _ in range(50))
-        )
+        results = await asyncio.gather(*(app.client.cancel(tid) for _ in range(50)))
 
     winners = [r for r in results if r is True]
     losers = [r for r in results if r is False]
@@ -284,9 +280,7 @@ async def test_50_parallel_cancels_one_winner(
         f"got {len(winners)} (True count). This indicates SETNX is "
         f"not atomic under contention."
     )
-    assert len(losers) == 49, (
-        f"expected 49 losers, got {len(losers)}"
-    )
+    assert len(losers) == 49, f"expected 49 losers, got {len(losers)}"
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +289,9 @@ async def test_50_parallel_cancels_one_winner(
 
 
 async def test_3_scheduler_candidates_no_missed_cron_fires(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """Three SwarmQ apps compete for scheduler leadership; we force
     100 fires via direct zset re-scoring and verify every one was
@@ -315,7 +311,9 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
         # from the zset re-scoring below, and each commit advances the
         # score to a future slot (> now), which the injection loop waits for.
         task_info = TaskInfo(
-            name=task_name, queues=[queue], cron="0 0 1 1 *",
+            name=task_name,
+            queues=[queue],
+            cron="0 0 1 1 *",
         )
 
         async def run(self) -> str:
@@ -323,7 +321,8 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
             return "ok"
 
     cfg = dict(
-        queues=[queue], concurrency=2,
+        queues=[queue],
+        concurrency=2,
         scheduler_poll_interval=0.05,
         scheduler_heartbeat_interval=0.2,
         scheduler_lock_ttl=2.0,
@@ -389,21 +388,20 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
             now_ms = int(time.time() * 1000)
             injected = now_ms - 100
             await valkey_client.zadd(
-                "sq:{sched}:zset", {task_name: injected},
+                "sq:{sched}:zset",
+                {task_name: injected},
             )
             commit_deadline = time.monotonic() + 15.0
             while time.monotonic() < commit_deadline:
                 score = await valkey_client.zscore(
-                    "sq:{sched}:zset", task_name,
+                    "sq:{sched}:zset",
+                    task_name,
                 )
                 if score is not None and score > now_ms:
                     break  # committed: advanced to a future cron slot
                 await asyncio.sleep(0.02)
             else:
-                pytest.fail(
-                    f"leader did not commit forced fire #{fire_no + 1} "
-                    "within 15s"
-                )
+                pytest.fail(f"leader did not commit forced fire #{fire_no + 1} within 15s")
 
         # Give workers a window to drain the final publishes.
         deadline = time.monotonic() + 30
@@ -449,7 +447,9 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
 
 
 async def test_200_parallel_update_progress_throttle_holds(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """Throttle behaviour under high concurrency.
 
@@ -492,8 +492,7 @@ async def test_200_parallel_update_progress_throttle_holds(
                 f"sq:progress:{t._task_id}",
             )
             assert int(after_seq.get(b"current", b"0")) == 1, (
-                "sequential throttle failed — second call within 500ms "
-                "overwrote the first"
+                "sequential throttle failed — second call within 500ms overwrote the first"
             )
 
             # ---- Part B: CONCURRENT — the fix must hold. ----
@@ -509,10 +508,7 @@ async def test_200_parallel_update_progress_throttle_holds(
 
             t0 = time.monotonic()
             total = 200
-            await asyncio.gather(*[
-                t.update_progress(i, total * 2, f"step {i}")
-                for i in range(1, total + 1)
-            ])
+            await asyncio.gather(*[t.update_progress(i, total * 2, f"step {i}") for i in range(1, total + 1)])
             elapsed_ms = (time.monotonic() - t0) * 1000
 
             after_burst = await valkey_client.hgetall(
@@ -543,7 +539,9 @@ async def test_200_parallel_update_progress_throttle_holds(
 
 
 async def test_50_parallel_rate_limit_checks_within_limit(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """50 concurrent RateLimiter.check() calls against a single '5/s'
     key must yield exactly 5 allowed results. Proves the Lua script is
@@ -555,9 +553,7 @@ async def test_50_parallel_rate_limit_checks_within_limit(
     try:
         limiter = RateLimiter(client)
 
-        results = await asyncio.gather(
-            *(limiter.check(rl_key, config) for _ in range(50))
-        )
+        results = await asyncio.gather(*(limiter.check(rl_key, config) for _ in range(50)))
         allowed = [r for r in results if r[0] is True]
         denied = [r for r in results if r[0] is False]
 

@@ -25,12 +25,8 @@ class TaskRegistry:
     def register(self, task_class: type[Task]) -> None:
         name = task_class.task_info.name
         if name in self._tasks:
-            raise ConfigurationError(
-                f"Task {name!r} is already registered"
-            )
-        return_type = inspect.get_annotations(task_class.run, eval_str=True).get(
-            "return", inspect.Parameter.empty
-        )
+            raise ConfigurationError(f"Task {name!r} is already registered")
+        return_type = inspect.get_annotations(task_class.run, eval_str=True).get("return", inspect.Parameter.empty)
         entry = RegistryEntry(
             task_class=task_class,
             task_info=task_class.task_info,

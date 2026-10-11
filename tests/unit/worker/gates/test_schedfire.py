@@ -88,6 +88,7 @@ class TestSchedfireDedup:
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
+
             async def run(self):
                 return "ok"
 
@@ -111,6 +112,7 @@ class TestSchedfireDedup:
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
+
             async def run(self):
                 return "ok"
 
@@ -126,9 +128,7 @@ class TestSchedfireDedup:
         )
         await w._handle_message(msg)
 
-        backend.schedules.is_fire_completed.assert_awaited_once_with(
-            "cron_a:1700000000000"
-        )
+        backend.schedules.is_fire_completed.assert_awaited_once_with("cron_a:1700000000000")
         # Inflight TTL = scheduler_inflight_ttl * 1000 = 300 * 1000
         # (no hard_timeout on NoopTask → config value applies).
         inflight_call = backend.schedules.claim_fire.await_args
@@ -143,7 +143,10 @@ class TestSchedfireDedup:
         assert dedup_call.args[1] == 3_900_000
 
     async def test_inflight_ttl_covers_long_hard_timeout(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Härtung R2 P1-6: die fixe 300s-inflight-TTL war der einzige
         Split-Brain-Schutz — lief sie WÄHREND eines langen Laufs ab
@@ -155,7 +158,9 @@ class TestSchedfireDedup:
 
         class LongTask(Task):
             task_info = TaskInfo(
-                name="long", queues=["default"], hard_timeout=600,
+                name="long",
+                queues=["default"],
+                hard_timeout=600,
             )
 
             async def run(self):
@@ -177,14 +182,13 @@ class TestSchedfireDedup:
         # (600 + 30) * 1000 — outlives the watchdog-bounded runtime.
         assert inflight_call.args[1] == 630_000
 
-    async def test_duplicate_when_completed_marker_set(
-        self, broker, backend, config
-    ):
+    async def test_duplicate_when_completed_marker_set(self, broker, backend, config):
         """Redelivery after a prior successful fire sees the completed
         marker and ack-skips without claiming in-flight."""
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
+
             async def run(self):
                 raise AssertionError("should not run on duplicate")
 
@@ -203,9 +207,7 @@ class TestSchedfireDedup:
         backend.schedules.claim_fire.assert_not_awaited()
         backend.store_result.assert_not_awaited()
 
-    async def test_duplicate_when_inflight_claim_lost(
-        self, broker, backend, config
-    ):
+    async def test_duplicate_when_inflight_claim_lost(self, broker, backend, config):
         """Another worker is running the same fire right now. Ack+skip
         without running. When that worker completes, the completed
         marker blocks future redeliveries; if it crashes, the in-flight
@@ -213,6 +215,7 @@ class TestSchedfireDedup:
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
+
             async def run(self):
                 raise AssertionError("should not run on inflight-claim-lost")
 
@@ -233,14 +236,13 @@ class TestSchedfireDedup:
         # No long-TTL write because we didn't own the run.
         backend.schedules.mark_fire_completed.assert_not_awaited()
 
-    async def test_dedup_backend_error_nacks_for_requeue(
-        self, broker, backend, config
-    ):
+    async def test_dedup_backend_error_nacks_for_requeue(self, broker, backend, config):
         """A Valkey failure during dedup-check must requeue the message
         — we cannot assume either new or duplicate."""
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
+
             async def run(self):
                 raise AssertionError("must not run on backend error")
 
@@ -249,6 +251,7 @@ class TestSchedfireDedup:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         from swarmq.exceptions import BackendConnectionError as BCE
+
         # First stage in the two-marker flow is completed-check;
         # fail it to exercise the nack path.
         backend.schedules.is_fire_completed.side_effect = BCE("valkey down")
@@ -272,15 +275,14 @@ class TestSchedfireDedup:
         # capture above) — not via headers.
         assert "x-swarmq-schedfire-dedup-count" not in msg.headers
 
-    async def test_dedup_backend_error_does_not_touch_existing_headers(
-        self, broker, backend, config
-    ):
+    async def test_dedup_backend_error_does_not_touch_existing_headers(self, broker, backend, config):
         """Unit 9 guard: pre-existing headers on the message (e.g. an
         operator-injected tracking header) pass through unchanged — we
         don't mutate the message object on the nack path at all."""
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_pass", queues=["default"])
+
             async def run(self):
                 raise AssertionError("must not run on backend error")
 
@@ -289,6 +291,7 @@ class TestSchedfireDedup:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         from swarmq.exceptions import BackendConnectionError as BCE
+
         backend.schedules.mark_fire_completed.side_effect = BCE("valkey down")
         original_headers = {
             "x-swarmq-schedfire": "cron_a:1700000000000",
@@ -424,15 +427,14 @@ class TestSchedfireDedup:
         backend.schedules.release_fire_claim.assert_not_awaited()
         broker.ack.assert_awaited_once_with(msg)
 
-    async def test_worker_start_instantiates_scheduler(
-        self, broker, backend, config, monkeypatch
-    ):
+    async def test_worker_start_instantiates_scheduler(self, broker, backend, config, monkeypatch):
         """Worker.start() must construct a SchedulerLoop after the
         backend + lock-manager are ready and call scheduler.start()."""
         from swarmq.worker import lifecycle as worker_mod  # U9: SchedulerLoop lebt im Lifecycle-Modul
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_sched", queues=["default"])
+
             async def run(self):
                 return None
 
@@ -441,20 +443,26 @@ class TestSchedfireDedup:
 
         # Patch SchedulerLoop so we can observe start() was called
         created = []
+
         class _FakeSched:
             def __init__(self, **kwargs):
                 created.append(kwargs)
                 self.started = False
                 self.stopped = False
+
             async def start(self):
                 self.started = True
+
             async def stop(self):
                 self.stopped = True
 
         monkeypatch.setattr(worker_mod, "SchedulerLoop", _FakeSched)
+
         # Patch broker.consume so start() returns from the consume loop
         # — we shut down immediately after start() assembles the pipeline.
-        async def _noop_consume(*a, **kw): return None
+        async def _noop_consume(*a, **kw):
+            return None
+
         broker.consume = AsyncMock(side_effect=_noop_consume)
 
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
@@ -468,15 +476,14 @@ class TestSchedfireDedup:
         assert w._scheduler.started is True
         assert w._scheduler.stopped is True
 
-    async def test_dedup_runs_before_cancel_check(
-        self, broker, backend, config
-    ):
+    async def test_dedup_runs_before_cancel_check(self, broker, backend, config):
         """Duplicate schedfire must ack+skip BEFORE cancel-check is reached.
         This guarantees the pipeline-ordering-discipline documented in
         docs/solutions/logic-errors/worker-pipeline-stage-ack-ordering-*."""
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
+
             async def run(self):
                 return "ok"
 
@@ -485,9 +492,7 @@ class TestSchedfireDedup:
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         backend.schedules.is_fire_completed.return_value = True  # prior fire
-        backend.is_cancelled.side_effect = AssertionError(
-            "cancel-check must not run for a duplicate schedfire"
-        )
+        backend.is_cancelled.side_effect = AssertionError("cancel-check must not run for a duplicate schedfire")
         msg = make_message(
             _default_payload(name="noop", args=[], kwargs={}),
             headers={"x-swarmq-schedfire": "cron_a:1700000000000"},
@@ -537,7 +542,8 @@ class TestSchedfireGateOutcomes:
     async def test_claim_offers_carried_token_for_takeover(self, worker, backend):
         """Liste 4: die Kopie traegt das Token ihres Vorgaengers."""
         msg = make_message(
-            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
         )
         await worker._schedfire_gate.apply(msg, self._ctx())
         kwargs = backend.schedules.claim_fire.await_args.kwargs
@@ -578,7 +584,8 @@ class TestSchedfireGateOutcomes:
 
         backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("reply lost"))
         msg = make_message(
-            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
         )
         await worker._schedfire_gate.apply(msg, self._ctx())
 
@@ -591,7 +598,8 @@ class TestSchedfireGateOutcomes:
 
         backend.is_cancelled.side_effect = BackendConnectionError("valkey down")
         msg = make_message(
-            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-a"},
         )
         await worker._handle_message(msg)
 
@@ -601,7 +609,8 @@ class TestSchedfireGateOutcomes:
     async def test_claim_offers_every_carried_token_for_takeover(self, worker, backend):
         """Liste 15."""
         msg = make_message(
-            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-b, tok-a,"},
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": "tok-b, tok-a,"},
         )
         await worker._schedfire_gate.apply(msg, self._ctx())
 
@@ -613,7 +622,8 @@ class TestSchedfireGateOutcomes:
 
         carried = [f"tok-{n}" for n in range(10_000)]
         msg = make_message(
-            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": ",".join(carried)},
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": ",".join(carried)},
         )
         await worker._schedfire_gate.apply(msg, self._ctx())
 
@@ -628,7 +638,8 @@ class TestSchedfireGateOutcomes:
         backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("reply lost"))
         carried = [f"tok-{n}" for n in range(20)]
         msg = make_message(
-            _default_payload(), headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": ",".join(carried)},
+            _default_payload(),
+            headers={"x-swarmq-schedfire": "s:1", "x-swarmq-schedfire-claim": ",".join(carried)},
         )
         await worker._schedfire_gate.apply(msg, self._ctx())
 
@@ -682,10 +693,13 @@ class TestSchedfireGateOutcomes:
         assert entry["stage"] == "inflight_claim" and entry["schedfire_key"] == "s:1"
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
-
     @pytest.mark.timeout(5)
     async def test_hanging_completed_check_is_deferred_after_backend_op_timeout(
-        self, worker, broker, backend, swarmq_logs,
+        self,
+        worker,
+        broker,
+        backend,
+        swarmq_logs,
     ):
         """Liste 8."""
         worker._gate_deps.config.backend_op_timeout = 0.05
@@ -701,10 +715,13 @@ class TestSchedfireGateOutcomes:
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
         assert entry["stage"] == "completed_check" and entry["error_type"] == "BackendConnectionError"
 
-
     @pytest.mark.timeout(5)
     async def test_hanging_inflight_claim_is_deferred_after_backend_op_timeout(
-        self, worker, broker, backend, swarmq_logs,
+        self,
+        worker,
+        broker,
+        backend,
+        swarmq_logs,
     ):
         """Liste 9."""
         worker._gate_deps.config.backend_op_timeout = 0.05

@@ -89,8 +89,11 @@ class TestProgressInfoFromHash:
 
     def test_frozen_dataclass(self):
         p = ProgressInfo(
-            current=1, total=2, percent=50.0,
-            message="", updated_at="2026-04-17T00:00:00Z",
+            current=1,
+            total=2,
+            percent=50.0,
+            message="",
+            updated_at="2026-04-17T00:00:00Z",
         )
         with pytest.raises((AttributeError, TypeError)):
             p.current = 99  # type: ignore[misc]

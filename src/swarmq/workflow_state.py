@@ -42,9 +42,7 @@ class _WorkflowAlreadyTerminal(Exception):
     Zustand. ``advance()`` faengt sie und endet ohne Schreibung."""
 
 
-def build_initial_workflow_state(
-    workflow_id: str, topology: dict[str, Any]
-) -> dict[str, Any]:
+def build_initial_workflow_state(workflow_id: str, topology: dict[str, Any]) -> dict[str, Any]:
     """The state dict written at apply() time.
 
     Fields:

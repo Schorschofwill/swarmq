@@ -80,7 +80,9 @@ class RetryHandler:
         # Redelivery ohne Retry-Zaehler; das Delivery-Limit begrenzt die Schleife.
         if isinstance(exc, SlotUnavailable):
             logger.warning(
-                "compute_slot_unavailable_redeliver", task_id=ctx.task_id, **_error_fields(exc),
+                "compute_slot_unavailable_redeliver",
+                task_id=ctx.task_id,
+                **_error_fields(exc),
             )
             await redeliver_in_place(deps, delivery, ctx)
             return Redelivered
@@ -162,8 +164,11 @@ class RetryHandler:
             enabled = self._deps.config.dead_letter_terminal_failures
         if not enabled:
             execution = ExecutionResult(
-                result_value=None, is_error=True, is_cancelled=False,
-                error_message=error_message, task_exception=exc,
+                result_value=None,
+                is_error=True,
+                is_cancelled=False,
+                error_message=error_message,
+                task_exception=exc,
             )
             return await self._finish(delivery, ctx, execution)
         await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
@@ -181,8 +186,13 @@ class RetryHandler:
             task_info = None
         at_least_once = task_info is None or task_info.delivery is DeliveryMode.AT_LEAST_ONCE
         return await fail_workflow_step(
-            self._deps, self._workflow_advancer(), delivery, ctx, error_message,
-            redeliver=may_redeliver and at_least_once, log=logger,
+            self._deps,
+            self._workflow_advancer(),
+            delivery,
+            ctx,
+            error_message,
+            redeliver=may_redeliver and at_least_once,
+            log=logger,
         )
 
     async def dead_letter(

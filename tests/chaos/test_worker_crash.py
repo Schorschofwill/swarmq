@@ -129,8 +129,7 @@ def _wait_for_worker_started(proc: subprocess.Popen[str], timeout: float = 30.0)
         if "worker_started" in line:
             return
     raise TimeoutError(
-        "worker did not emit worker_started in time\n"
-        f"--- worker output ---\n{''.join(seen) or '(no output)'}"
+        f"worker did not emit worker_started in time\n--- worker output ---\n{''.join(seen) or '(no output)'}"
     )
 
 
@@ -208,9 +207,7 @@ pytestmark = [pytest.mark.timeout(120)]
 class TestWorkerCrash:
     """All four tests share a single chaos_stack (class-scoped)."""
 
-    async def test_sigkill_inflight_redelivers_no_loss(
-        self, chaos_stack: ChaosStack, _cleanup_tasks
-    ) -> None:
+    async def test_sigkill_inflight_redelivers_no_loss(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
         """Single 5s-sleep task, SIGKILL the worker mid-execution, a
         second worker takes over and the task completes.
 
@@ -262,9 +259,7 @@ class TestWorkerCrash:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
-    async def test_50_inflight_sigkill_no_dlq_entries(
-        self, chaos_stack: ChaosStack, _cleanup_tasks
-    ) -> None:
+    async def test_50_inflight_sigkill_no_dlq_entries(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
         """50 in-flight 3s sleeps, SIGKILL worker A, worker B drains
         all of them, DLQ must stay empty."""
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
@@ -299,9 +294,7 @@ class TestWorkerCrash:
                 _wait_for_worker_started(proc_b)
 
                 results = await app.get_results(task_ids, timeout=60)
-                assert len(results) == N, (
-                    f"expected {N} results, got {len(results)}"
-                )
+                assert len(results) == N, f"expected {N} results, got {len(results)}"
                 assert all(r == "slept:3.0" for r in results)
 
                 proc_b.send_signal(signal.SIGTERM)
@@ -318,9 +311,7 @@ class TestWorkerCrash:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
-    async def test_oom_simulation_via_external_kill(
-        self, chaos_stack: ChaosStack, _cleanup_tasks
-    ) -> None:
+    async def test_oom_simulation_via_external_kill(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
         """OOM-kill simulation.
 
         Real docker ``--memory=20m`` isn't portable through the
@@ -348,9 +339,7 @@ class TestWorkerCrash:
                 baseline = child.memory_info().rss
                 # Allocate ~50MB and hold for 10s — gives us a generous
                 # window to observe the growth and kill externally.
-                tid = await app.schedule(
-                    "chaos_memory_hog", 50, 10.0, queue=queue
-                )
+                tid = await app.schedule("chaos_memory_hog", 50, 10.0, queue=queue)
 
                 # Wait for the worker child to grow above its baseline
                 # (≥ 20 MB): the task is running and holds the memory.
@@ -416,7 +405,9 @@ class TestWorkerCrash:
 
         def _spawn_supervised() -> subprocess.Popen[str]:
             return _spawn_worker(
-                chaos_stack, queue, concurrency=1,
+                chaos_stack,
+                queue,
+                concurrency=1,
                 env_extra=SHORT_EXECUTION_GUARD_ENV,
                 extra_args=["--processes", "2"],
             )
@@ -455,8 +446,7 @@ class TestWorkerCrash:
                         # NON-ZERO exit so the orchestrator's restart
                         # policy takes over — exactly what we simulate.
                         assert proc.returncode != 0, (
-                            "supervisor exited 0 while its workers were "
-                            "crash-looping — exhaustion must be non-zero"
+                            "supervisor exited 0 while its workers were crash-looping — exhaustion must be non-zero"
                         )
                         assert supervisor_runs < 6, (
                             "DLQ not reached after 5 supervisor runs "

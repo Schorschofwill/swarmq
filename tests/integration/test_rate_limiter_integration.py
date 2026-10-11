@@ -49,9 +49,7 @@ def task_name() -> str:
 
 
 class TestCheck:
-    async def test_five_per_second_allows_five_then_blocks(
-        self, valkey_client, task_name
-    ):
+    async def test_five_per_second_allows_five_then_blocks(self, valkey_client, task_name):
         limiter = RateLimiter(valkey_client)
         config = parse_rate_limit("5/s")
 
@@ -83,9 +81,7 @@ class TestCheck:
         allowed_b1, *_ = await limiter.check(task_b, config)
         assert allowed_b1 is True
 
-    async def test_returns_tuple_of_expected_python_types(
-        self, valkey_client, task_name
-    ):
+    async def test_returns_tuple_of_expected_python_types(self, valkey_client, task_name):
         """Guard against silently returning bytes or redis-isms."""
         limiter = RateLimiter(valkey_client)
         config = parse_rate_limit("10/m")

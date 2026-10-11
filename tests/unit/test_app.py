@@ -182,7 +182,9 @@ class TestSwarmQContextManager:
 
     @pytest.mark.anyio()
     async def test_aexit_closes_backend_even_if_broker_close_raises(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         """Härtung R2 P1-4: ``__aexit__`` lief sequenziell ohne
         try/finally — ein werfendes ``broker.close()`` (im Inject-Pfad
@@ -204,7 +206,9 @@ class TestSwarmQContextManager:
 
     @pytest.mark.anyio()
     async def test_aexit_releases_the_log_queue_even_if_backend_close_raises(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         import logging
 
@@ -259,9 +263,7 @@ class TestSwarmQDelegation:
 
         result = await app.get_result("task-id-123", timeout=5, polling=0.1)
 
-        app.client.get_result.assert_awaited_once_with(
-            "task-id-123", timeout=5, polling=0.1
-        )
+        app.client.get_result.assert_awaited_once_with("task-id-123", timeout=5, polling=0.1)
         assert result == 42
 
     @pytest.mark.anyio()
@@ -271,9 +273,7 @@ class TestSwarmQDelegation:
 
         result = await app.run("my_task", "a", timeout=3, polling=0.5, x=10)
 
-        app.client.run.assert_awaited_once_with(
-            "my_task", "a", timeout=3, polling=0.5, x=10
-        )
+        app.client.run.assert_awaited_once_with("my_task", "a", timeout=3, polling=0.5, x=10)
         assert result == "done"
 
 
@@ -375,9 +375,7 @@ class TestSwarmQLogging:
         SwarmQ(broker, backend, log_level="DEBUG", log_json=False)
 
         assert root.handlers == handlers
-        assert (
-            list(swarmq_logger.handlers), swarmq_logger.level, swarmq_logger.propagate
-        ) == swarmq_state
+        assert (list(swarmq_logger.handlers), swarmq_logger.level, swarmq_logger.propagate) == swarmq_state
 
 
 class TestSwarmQStartWorker:
@@ -438,9 +436,7 @@ class TestSwarmQMiddlewareAndSignals:
 
         assert result is None
 
-    def test_multiple_add_middleware_calls_accumulate_in_order(
-        self, broker, backend
-    ):
+    def test_multiple_add_middleware_calls_accumulate_in_order(self, broker, backend):
         from swarmq.middleware import Middleware
 
         app = SwarmQ(broker, backend)
@@ -454,9 +450,7 @@ class TestSwarmQMiddlewareAndSignals:
 
         assert app._middlewares == [mw1, mw2, mw3]
 
-    def test_middleware_chain_property_returns_chain_with_registered_middlewares(
-        self, broker, backend
-    ):
+    def test_middleware_chain_property_returns_chain_with_registered_middlewares(self, broker, backend):
         from swarmq.middleware import Middleware, MiddlewareChain
 
         app = SwarmQ(broker, backend)
@@ -470,9 +464,7 @@ class TestSwarmQMiddlewareAndSignals:
         assert isinstance(chain, MiddlewareChain)
         assert chain._middlewares == [mw1, mw2]
 
-    def test_middleware_chain_property_empty_when_no_middlewares(
-        self, broker, backend
-    ):
+    def test_middleware_chain_property_empty_when_no_middlewares(self, broker, backend):
         from swarmq.middleware import MiddlewareChain
 
         app = SwarmQ(broker, backend)
@@ -482,9 +474,7 @@ class TestSwarmQMiddlewareAndSignals:
         assert isinstance(chain, MiddlewareChain)
         assert chain._middlewares == []
 
-    def test_middleware_chain_property_rebuilds_on_each_access(
-        self, broker, backend
-    ):
+    def test_middleware_chain_property_rebuilds_on_each_access(self, broker, backend):
         from swarmq.middleware import Middleware
 
         app = SwarmQ(broker, backend)
@@ -513,9 +503,7 @@ class TestSwarmQMiddlewareAndSignals:
         registered = app._signal_dispatcher._handlers.get(Signal.TASK_COMPLETED, [])
         assert handler in registered
 
-    def test_on_signal_returns_original_function_unchanged(
-        self, broker, backend
-    ):
+    def test_on_signal_returns_original_function_unchanged(self, broker, backend):
         from swarmq.signals import Signal
 
         app = SwarmQ(broker, backend)
@@ -540,9 +528,7 @@ class TestSwarmQMiddlewareAndSignals:
         # Handler should be registered on the same dispatcher instance
         assert handler in app._signal_dispatcher._handlers[Signal.TASK_STARTED]
 
-    def test_multiple_handlers_on_same_signal_all_registered(
-        self, broker, backend
-    ):
+    def test_multiple_handlers_on_same_signal_all_registered(self, broker, backend):
         from swarmq.signals import Signal
 
         app = SwarmQ(broker, backend)
@@ -561,7 +547,9 @@ class TestSwarmQMiddlewareAndSignals:
 
     @pytest.mark.anyio()
     async def test_add_middleware_after_swarmq_init_fires_in_client(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         """Regression: middleware added AFTER SwarmQ.__init__ must still fire.
 
@@ -624,10 +612,11 @@ class TestSwarmQMiddlewareAndSignals:
         finally:
             Task._registered_tasks[:] = saved
 
-
     @pytest.mark.anyio()
     async def test_add_middleware_after_swarmq_init_visible_to_worker(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         """Regression: middleware added AFTER SwarmQ.__init__ must fire for
         Worker hooks, just like it does for Client hooks.
@@ -666,9 +655,7 @@ class TestSwarmQMiddlewareAndSignals:
                 async def pre_execute(self, message: dict) -> None:
                     self.pre_execute_calls.append(dict(message))
 
-                async def post_execute(
-                    self, message: dict, result: object = None
-                ) -> None:
+                async def post_execute(self, message: dict, result: object = None) -> None:
                     self.post_execute_calls.append((dict(message), result))
 
             spy = Spy()
@@ -688,9 +675,7 @@ class TestSwarmQMiddlewareAndSignals:
             from tests.support.messages import make_message
             from tests.unit.worker.test_worker import _default_payload
 
-            msg = make_message(
-                _default_payload(name="noop", queue="q", args=[])
-            )
+            msg = make_message(_default_payload(name="noop", queue="q", args=[]))
             await worker._handle_message(msg)
 
             assert len(spy.pre_execute_calls) == 1
@@ -725,6 +710,7 @@ class TestSwarmQPublicAPIExports:
 # SwarmQ.cancel — Phase 3b.3 / Unit 5
 # ---------------------------------------------------------------------------
 
+
 class TestSwarmQCancel:
     async def test_cancel_delegates_to_client_with_computed_ttl(self, broker, backend):
         app = SwarmQ(broker, backend, result_ttl=60)
@@ -746,7 +732,9 @@ class TestSwarmQCancel:
         app.client.cancel.assert_awaited_once_with("task-long", ttl_ms=172_800_000)
 
     async def test_cancel_uses_default_result_ttl_when_not_overridden(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         app = SwarmQ(broker, backend)
         app.client.cancel = AsyncMock(return_value=True)
@@ -757,7 +745,9 @@ class TestSwarmQCancel:
         app.client.cancel.assert_awaited_once_with("task-def", ttl_ms=86_400_000)
 
     async def test_cancel_returns_false_when_already_cancelled(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         app = SwarmQ(broker, backend)
         app.client.cancel = AsyncMock(return_value=False)

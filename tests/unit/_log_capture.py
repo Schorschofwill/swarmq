@@ -17,9 +17,10 @@ from contextlib import contextmanager
 from typing import Any
 
 # Attribute, die jeder LogRecord mitbringt -- alles andere ist ein Feld.
-_STANDARD_RECORD_ATTRS = frozenset(
-    vars(logging.LogRecord("", logging.INFO, "", 0, "", (), None))
-) | {"message", "asctime"}
+_STANDARD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", logging.INFO, "", 0, "", (), None))) | {
+    "message",
+    "asctime",
+}
 
 
 class _CollectingHandler(logging.Handler):

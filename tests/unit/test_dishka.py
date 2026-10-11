@@ -47,9 +47,7 @@ def test_missing_is_singleton():
 
 def test_task_context_is_frozen_with_exact_fields():
     """R10/R14: TaskContext is a frozen dataclass with exactly four fields."""
-    ctx = di.TaskContext(
-        task_id="t1", task_name="job", queue="default", retry_count=2
-    )
+    ctx = di.TaskContext(task_id="t1", task_name="job", queue="default", retry_count=2)
     assert ctx.task_id == "t1"
     assert ctx.task_name == "job"
     assert ctx.queue == "default"
@@ -124,9 +122,7 @@ async def test_lifecycle_injection_through_task_subclass():
 
     assert is_dishka_injected(InjectTask.run)
 
-    ctx = di.TaskContext(
-        task_id="abc", task_name="inject_task", queue="q", retry_count=0
-    )
+    ctx = di.TaskContext(task_id="abc", task_name="inject_task", queue="q", retry_count=0)
     req = await container(context={di.TaskContext: ctx}).__aenter__()
     token = di.request_container.set(req)
     try:
@@ -310,17 +306,13 @@ def test_module_imports_without_dishka_and_core_symbols_usable():
     import importlib.util
     from pathlib import Path
 
-    spec = importlib.util.spec_from_file_location(
-        "swarmq._dishka_noimport_probe", Path(di.__file__)
-    )
+    spec = importlib.util.spec_from_file_location("swarmq._dishka_noimport_probe", Path(di.__file__))
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     # Block dishka AND register the probe module under its own name so the
     # frozen+slots dataclass can resolve cls.__module__ during creation
     # (CPython dataclasses does sys.modules[cls.__module__].__dict__).
-    with patch.dict(
-        sys.modules, {"dishka": None, "swarmq._dishka_noimport_probe": mod}
-    ):
+    with patch.dict(sys.modules, {"dishka": None, "swarmq._dishka_noimport_probe": mod}):
         spec.loader.exec_module(mod)
 
     assert mod._HAVE_DISHKA is False

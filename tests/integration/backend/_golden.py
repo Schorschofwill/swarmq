@@ -156,14 +156,22 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     # Cron-Aufraeumen (KTD8): ein deaktiviert entfernter Cron landet im Set.
     await backend.schedules.put("golden-pruned", value_fixtures()["schedule_definition.json"], None)
     await backend.schedules.prune_cron(
-        "golden-pruned", value_fixtures()["schedule_definition.json"], stale_after_ms=None, remember_disabled=True,
+        "golden-pruned",
+        value_fixtures()["schedule_definition.json"],
+        stale_after_ms=None,
+        remember_disabled=True,
     )
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
     # Epoch des Datenbestands (Plan 0.12.0, MR 14, BZ-04).
     await backend.schedules.ensure_epoch("golden-epoch")
     # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
     await backend.execution_guard.claim(
-        TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
+        TASK_ID,
+        owner="golden-owner",
+        retry_count=0,
+        ttl_ms=TTL_MS,
+        state_ttl_ms=TTL_MS,
+        max_orphans=3,
     )
     # Die Stores des Backends selbst (Review MR 15, Hinweis): mit Namensraum
     # belegt die Golden-Datei so auch die Verdrahtung von Locks, Rate-Limit

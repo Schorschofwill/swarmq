@@ -150,17 +150,13 @@ class TestCheckDetectionRobustness:
     def test_worker_with_module_and_check_detects_as_check(self) -> None:
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(
-            ["worker", "--module", "mypkg.tasks", "--check"]
-        ) is True
+        assert _is_check_invocation(["worker", "--module", "mypkg.tasks", "--check"]) is True
 
     def test_worker_task_value_followed_by_check_detects_as_check(self) -> None:
         """``--task foo --check`` — ``--task`` takes ``foo``, ``--check`` is a flag."""
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(
-            ["worker", "--task", "foo", "--check"]
-        ) is True
+        assert _is_check_invocation(["worker", "--task", "foo", "--check"]) is True
 
     def test_dlq_retry_worker_check_is_not_check_invocation(self) -> None:
         """BUG #1: ``swarmq dlq retry worker --check`` — ``worker`` is a
@@ -169,9 +165,7 @@ class TestCheckDetectionRobustness:
         JSON-contract path."""
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(
-            ["dlq", "retry", "worker", "--check"]
-        ) is False
+        assert _is_check_invocation(["dlq", "retry", "worker", "--check"]) is False
 
     def test_worker_task_dash_check_is_not_check_invocation(self) -> None:
         """BUG #2: ``swarmq worker --task --check`` — ``--check`` is the
@@ -180,9 +174,7 @@ class TestCheckDetectionRobustness:
         flag active."""
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(
-            ["worker", "--task", "--check"]
-        ) is False
+        assert _is_check_invocation(["worker", "--task", "--check"]) is False
 
     def test_no_check_flag_is_not_check(self) -> None:
         from swarmq.cli.check_cmd import _is_check_invocation
@@ -207,14 +199,15 @@ class TestCheckDetectionRobustness:
         """
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(
-            ["worker", "--log-level", "DEBUG", "--check"]
-        ) is True
+        assert _is_check_invocation(["worker", "--log-level", "DEBUG", "--check"]) is True
 
     @pytest.mark.parametrize(
         "flag",
         [
-            "--log-config", "--logger-level", "--log-queue-size", "--log-lifecycle-level",
+            "--log-config",
+            "--logger-level",
+            "--log-queue-size",
+            "--log-lifecycle-level",
             "--log-drain-timeout",  # Plan 2026-10-06-1811, U4
         ],
     )
@@ -253,9 +246,7 @@ class TestCheckDetectionRobustness:
         the fallback must NOT misclassify this as a check invocation."""
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(
-            ["dlq", "retry", "worker", "--check=true"]
-        ) is False
+        assert _is_check_invocation(["dlq", "retry", "worker", "--check=true"]) is False
 
     def test_check_detector_accepts_iterator_argv(self) -> None:
         """A generator/iterator argv must not be exhausted by the detector.
@@ -301,9 +292,7 @@ class TestConsoleRendererTTY:
         monkeypatch.setattr(structlog.dev, "ConsoleRenderer", _tap)
         return captured
 
-    def test_console_renderer_gets_colors_false_when_stderr_piped(
-        self, monkeypatch
-    ) -> None:
+    def test_console_renderer_gets_colors_false_when_stderr_piped(self, monkeypatch) -> None:
         """When stderr is not a TTY, ``colors`` must be ``False``."""
         import sys as _sys
 
@@ -319,9 +308,7 @@ class TestConsoleRendererTTY:
         finally:
             listener.stop()
 
-    def test_console_renderer_gets_colors_true_when_stderr_is_tty(
-        self, monkeypatch
-    ) -> None:
+    def test_console_renderer_gets_colors_true_when_stderr_is_tty(self, monkeypatch) -> None:
         """When stderr IS a TTY, ``colors`` must be ``True``."""
         import sys as _sys
 
@@ -373,16 +360,10 @@ class TestConsoleRendererTTY:
             text=True,
             timeout=30,
         )
-        assert result.returncode == 0, (
-            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
-        )
-        assert "\x1b[" not in result.stderr, (
-            f"ANSI escape leaked to piped stderr:\n{result.stderr!r}"
-        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        assert "\x1b[" not in result.stderr, f"ANSI escape leaked to piped stderr:\n{result.stderr!r}"
 
-    def test_json_mode_does_not_instantiate_console_renderer(
-        self, monkeypatch
-    ) -> None:
+    def test_json_mode_does_not_instantiate_console_renderer(self, monkeypatch) -> None:
         """Regression guard: when ``log_json=True``, ``ConsoleRenderer``
         is never touched — the TTY guard is irrelevant there.
         """
@@ -392,9 +373,7 @@ class TestConsoleRendererTTY:
 
         listener = setup_logging(log_level="INFO", log_json=True)
         try:
-            assert not captured, (
-                f"ConsoleRenderer should not be used in JSON mode: {captured}"
-            )
+            assert not captured, f"ConsoleRenderer should not be used in JSON mode: {captured}"
         finally:
             listener.stop()
 
@@ -444,9 +423,7 @@ class TestScheduleStatusUsesPublicAPI:
         )
 
     @pytest.mark.filterwarnings("error::RuntimeWarning")
-    async def test_run_schedule_status_invokes_public_api(
-        self, monkeypatch
-    ) -> None:
+    async def test_run_schedule_status_invokes_public_api(self, monkeypatch) -> None:
         """Mock-based: calling ``_run_schedule_status`` exercises the
         public method on the backend, not the private client.
 
@@ -473,9 +450,7 @@ class TestScheduleStatusUsesPublicAPI:
         from swarmq.contracts import LeaderInfo
 
         fake_backend.schedules = MagicMock()
-        fake_backend.schedules.leader_info = AsyncMock(
-            return_value=LeaderInfo(owner="leader-xyz", version="0.10.0")
-        )
+        fake_backend.schedules.leader_info = AsyncMock(return_value=LeaderInfo(owner="leader-xyz", version="0.10.0"))
         fake_backend.schedules.worker_versions = AsyncMock(return_value={})
 
         async def _factory() -> object:
@@ -576,9 +551,7 @@ class TestFormatResolution:
         monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "json")
         assert resolve_format(None) == "json"
 
-    def test_env_var_invalid_value_falls_back_to_tty_default_on_pipe(
-        self, monkeypatch
-    ) -> None:
+    def test_env_var_invalid_value_falls_back_to_tty_default_on_pipe(self, monkeypatch) -> None:
         import sys as _sys
 
         from swarmq.cli._shared import resolve_format
@@ -588,9 +561,7 @@ class TestFormatResolution:
         # Typo should be ignored silently; pipe → json.
         assert resolve_format(None) == "json"
 
-    def test_env_var_invalid_value_falls_back_to_tty_default_on_tty(
-        self, monkeypatch
-    ) -> None:
+    def test_env_var_invalid_value_falls_back_to_tty_default_on_tty(self, monkeypatch) -> None:
         import sys as _sys
 
         from swarmq.cli._shared import resolve_format
@@ -599,9 +570,7 @@ class TestFormatResolution:
         monkeypatch.setenv("SWARMQ_DEFAULT_FORMAT", "yaml-pls")
         assert resolve_format(None) == "table"
 
-    def test_env_var_empty_string_falls_back_to_tty_default(
-        self, monkeypatch
-    ) -> None:
+    def test_env_var_empty_string_falls_back_to_tty_default(self, monkeypatch) -> None:
         import sys as _sys
 
         from swarmq.cli._shared import resolve_format

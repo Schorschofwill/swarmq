@@ -67,9 +67,7 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 # ---------------------------------------------------------------------------
 
 
-async def test_mutex_serialises_concurrent_tasks(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_mutex_serialises_concurrent_tasks(rabbitmq_url: str, valkey_url: str) -> None:
     """Five tasks with the same lock name and 100ms work each — none of
     their execution intervals may overlap, total wall-clock >= 5 * 100ms.
     """
@@ -81,7 +79,10 @@ async def test_mutex_serialises_concurrent_tasks(
 
     class MutexTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue], lock="resource", hard_timeout=60,
+            name=task_name,
+            queues=[queue],
+            lock="resource",
+            hard_timeout=60,
         )
 
         async def run(self, idx: int) -> int:
@@ -106,9 +107,7 @@ async def test_mutex_serialises_concurrent_tasks(
     assert len(intervals) == total_messages
     intervals.sort(key=lambda iv: iv[0])
     for prev, curr in itertools.pairwise(intervals):
-        assert prev[1] <= curr[0] + 1e-3, (
-            f"mutex overlap detected: prev={prev}, curr={curr}"
-        )
+        assert prev[1] <= curr[0] + 1e-3, f"mutex overlap detected: prev={prev}, curr={curr}"
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +115,7 @@ async def test_mutex_serialises_concurrent_tasks(
 # ---------------------------------------------------------------------------
 
 
-async def test_semaphore_admits_at_most_max_concurrency(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_semaphore_admits_at_most_max_concurrency(rabbitmq_url: str, valkey_url: str) -> None:
     """max_concurrency=2 with 6 tasks @ 200ms each — at any wall-clock
     sample point, no more than 2 are running. Worker concurrency is set
     high enough that the limit must come from the lock, not the worker.
@@ -154,6 +151,7 @@ async def test_semaphore_admits_at_most_max_concurrency(
 
     # Worker concurrency >> max_concurrency so the lock is the only gate.
     import os
+
     os.environ["SWARMQ_CONCURRENCY"] = "10"
     try:
         broker = RabbitMQBroker(rabbitmq_url)
@@ -169,9 +167,7 @@ async def test_semaphore_admits_at_most_max_concurrency(
     finally:
         os.environ.pop("SWARMQ_CONCURRENCY", None)
 
-    assert max_seen == max_concurrency, (
-        f"expected max {max_concurrency} concurrent, saw {max_seen}"
-    )
+    assert max_seen == max_concurrency, f"expected max {max_concurrency} concurrent, saw {max_seen}"
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +175,7 @@ async def test_semaphore_admits_at_most_max_concurrency(
 # ---------------------------------------------------------------------------
 
 
-async def test_format_string_lock_serialises_per_user(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_format_string_lock_serialises_per_user(rabbitmq_url: str, valkey_url: str) -> None:
     """Two tasks for user_id=1 must serialise; tasks for user_id=2
     overlap freely with user_id=1's tasks (different lock names)."""
     queue = _unique_queue()
@@ -225,9 +219,7 @@ async def test_format_string_lock_serialises_per_user(
     for user_id, ivs in intervals_per_user.items():
         ivs.sort(key=lambda iv: iv[0])
         for prev, curr in itertools.pairwise(ivs):
-            assert prev[1] <= curr[0] + 1e-3, (
-                f"user {user_id} mutex overlap: prev={prev}, curr={curr}"
-            )
+            assert prev[1] <= curr[0] + 1e-3, f"user {user_id} mutex overlap: prev={prev}, curr={curr}"
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +227,7 @@ async def test_format_string_lock_serialises_per_user(
 # ---------------------------------------------------------------------------
 
 
-async def test_force_release_recovers_wedged_lock(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_force_release_recovers_wedged_lock(rabbitmq_url: str, valkey_url: str) -> None:
     """Pre-populates the Valkey key as if a crashed worker held the lock,
     then verifies a new worker can acquire after `__force__` release —
     documenting the operator-recovery procedure mentioned in the plan's
@@ -267,9 +257,7 @@ async def test_force_release_recovers_wedged_lock(
     # Pre-wedge the lock with a foreign owner-token + huge TTL.
     client = valkey_asyncio.Valkey.from_url(valkey_url)
     try:
-        await client.set(
-            lock_key("wedged-resource"), "ghost-owner-token", px=600_000
-        )
+        await client.set(lock_key("wedged-resource"), "ghost-owner-token", px=600_000)
 
         # Force-release as an operator would (simulated via LockManager
         # to exercise the same Lua path as a future CLI).
@@ -295,9 +283,7 @@ async def test_force_release_recovers_wedged_lock(
 # ---------------------------------------------------------------------------
 
 
-async def test_lock_released_after_task_exception(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_lock_released_after_task_exception(rabbitmq_url: str, valkey_url: str) -> None:
     """Task A throws → lock freed → Task B can run immediately. The
     finally-block discipline (Unit 5) is the load-bearing guarantee."""
     queue = _unique_queue()

@@ -51,7 +51,11 @@ CONFIG_EXIT_CODE = 78  # EX_CONFIG: ungueltige Konfiguration, kein Neustart
 
 
 def _run_worker(
-    pool: str, mode: str, *extra: str, tmp_path: Path, env_extra: dict[str, str] | None = None,
+    pool: str,
+    mode: str,
+    *extra: str,
+    tmp_path: Path,
+    env_extra: dict[str, str] | None = None,
     task_lines_on_stdout: bool = True,
 ) -> list[str]:
     """Worker starten, einen Task abarbeiten lassen, beenden; liefert alle
@@ -64,10 +68,25 @@ def _run_worker(
     env.update(env_extra or {})
     proc = subprocess.Popen(
         [
-            str(SWARMQ_SCRIPT), "worker", "--module", APP_MODULE, "--queues", queue,
-            "--processes", "1", "--concurrency", "1", "--pool", pool, *extra,
+            str(SWARMQ_SCRIPT),
+            "worker",
+            "--module",
+            APP_MODULE,
+            "--queues",
+            queue,
+            "--processes",
+            "1",
+            "--concurrency",
+            "1",
+            "--pool",
+            pool,
+            *extra,
         ],
-        cwd=str(tmp_path), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     out = _LineCollector(proc)
@@ -115,13 +134,17 @@ def test_basicconfig_has_no_effect_and_json_applies_to_every_task_line(pool: str
 @pytest.mark.parametrize("pool", POOLS)
 def test_the_log_config_file_applies_to_the_task_lines(pool: str, tmp_path: Path) -> None:
     cfg = tmp_path / "logcfg.json"
-    cfg.write_text(json.dumps({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {"f": {"format": "LOGCFG|%(name)s|%(message)s"}},
-        "handlers": {"h": {"class": "logging.StreamHandler", "formatter": "f"}},
-        "root": {"handlers": ["h"], "level": "INFO"},
-    }))
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {"f": {"format": "LOGCFG|%(name)s|%(message)s"}},
+                "handlers": {"h": {"class": "logging.StreamHandler", "formatter": "f"}},
+                "root": {"handlers": ["h"], "level": "INFO"},
+            }
+        )
+    )
 
     lines = _task_lines(_run_worker(pool, "basic", "--log-config", str(cfg), tmp_path=tmp_path))
 
@@ -146,8 +169,13 @@ def test_an_app_queue_listener_started_in_the_configure_hook_gets_the_compute_ch
     app_log = tmp_path / "app.log"
 
     _run_worker(
-        "cpu", "cookbook", "--configure", f"{APP_MODULE}:start_listener",
-        tmp_path=tmp_path, env_extra={"POOLS_APP_LOG": str(app_log)}, task_lines_on_stdout=False,
+        "cpu",
+        "cookbook",
+        "--configure",
+        f"{APP_MODULE}:start_listener",
+        tmp_path=tmp_path,
+        env_extra={"POOLS_APP_LOG": str(app_log)},
+        task_lines_on_stdout=False,
     )
 
     task_lines = [line.split("|", 2)[2] for line in app_log.read_text().splitlines() if "pools_" in line]
@@ -160,7 +188,11 @@ def test_an_app_queue_listener_started_at_import_is_named_by_the_thread_check(tm
     env.update(POOLS_APP_MODE="cookbook_start", POOLS_APP_LOG=str(tmp_path / "app.log"))
     proc = subprocess.Popen(
         [str(SWARMQ_SCRIPT), "worker", "--module", APP_MODULE, "--queues", queue, "--processes", "1", "--pool", "cpu"],
-        cwd=str(tmp_path), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     out = _LineCollector(proc)

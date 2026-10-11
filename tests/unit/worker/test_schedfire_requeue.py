@@ -187,7 +187,11 @@ class StepTask(Task):
 
 def _claimed_ctx(task: type[Task] = StepTask) -> GateContext:
     ctx = GateContext(
-        task_id="abc-123", task_name=task.task_info.name, queue="default", task_info=task.task_info, task_class=task,
+        task_id="abc-123",
+        task_name=task.task_info.name,
+        queue="default",
+        task_info=task.task_info,
+        task_class=task,
     )
     ctx.schedfire_claim = SchedfireClaim(key=FIRE, owner="tok-1")
     return ctx
@@ -202,7 +206,11 @@ def _step_message() -> Any:
 
 def _ok(**overrides: Any) -> ExecutionResult:
     base: dict[str, Any] = dict(
-        result_value="ok", is_error=False, is_cancelled=False, error_message="", task_exception=None,
+        result_value="ok",
+        is_error=False,
+        is_cancelled=False,
+        error_message="",
+        task_exception=None,
     )
     base.update(overrides)
     return ExecutionResult(**base)
@@ -255,7 +263,11 @@ async def test_slot_unavailable_releases_the_claim_first(worker: Worker, broker,
     worker._registry.register(StepTask)
 
     await worker._retry_handler.evaluate(
-        _step_message(), _claimed_ctx(), SlotUnavailable("no ready"), "no ready", {"retry_count": 0},
+        _step_message(),
+        _claimed_ctx(),
+        SlotUnavailable("no ready"),
+        "no ready",
+        {"retry_count": 0},
         MiddlewareChain([]),
     )
 
@@ -297,7 +309,8 @@ async def test_expiry_dead_letter_failure_releases_the_claim_first(worker: Worke
     worker._registry.register(ExpiringTask)
     broker.dead_letter.side_effect = BrokerConnectionError("broker down")
     msg = make_message(
-        _default_payload(name="sfrq-expiring", args=[], kwargs={}), headers={"x-swarmq-schedfire": FIRE},
+        _default_payload(name="sfrq-expiring", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": FIRE},
         enqueued_at=1_000,
     )
 

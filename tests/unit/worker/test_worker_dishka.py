@@ -69,8 +69,6 @@ class DiFailTask(Task):
         raise ValueError("boom")
 
 
-
-
 def _payload(task_id: str, name: str, args: list) -> dict:
     return {
         "task": {"id": task_id, "queue": "default", "name": name},
@@ -92,8 +90,14 @@ def _clear_buffers():
 def broker():
     b = MagicMock(spec=RabbitMQBroker)
     for m in (
-        "connect", "declare_queue", "consume", "ack", "nack", "close",
-        "cancel_consume", "retry_later",
+        "connect",
+        "declare_queue",
+        "consume",
+        "ack",
+        "nack",
+        "close",
+        "cancel_consume",
+        "retry_later",
         "dead_letter",
     ):
         setattr(b, m, AsyncMock())
@@ -103,8 +107,7 @@ def broker():
 @pytest.fixture()
 def backend():
     be = MagicMock(spec=ValkeyBackend)
-    for m in ("connect", "store_result", "notify_result", "close",
-              "clear_cancel_flag"):
+    for m in ("connect", "store_result", "notify_result", "close", "clear_cancel_flag"):
         setattr(be, m, AsyncMock())
     be.is_cancelled = AsyncMock(return_value=False)
     be.set_cancel_flag = AsyncMock(return_value=True)
@@ -119,8 +122,10 @@ def backend():
 @pytest.fixture()
 def config():
     return SwarmQConfig(
-        broker_url="amqp://localhost", backend_url="valkey://localhost",
-        concurrency=10, queues=["default"],
+        broker_url="amqp://localhost",
+        backend_url="valkey://localhost",
+        concurrency=10,
+        queues=["default"],
     )
 
 

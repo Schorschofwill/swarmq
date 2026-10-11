@@ -69,12 +69,17 @@ def _spawn_worker(queue_name: str, env_extra: dict[str, str] | None = None):
     return subprocess.Popen(
         [
             sys.executable,
-            "-m", "swarmq.cli",
+            "-m",
+            "swarmq.cli",
             "worker",
-            "--module", "tests.integration._cli_fixture_tasks",
-            "--queues", queue_name,
-            "--concurrency", "2",
-            "--log-format", "json",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue_name,
+            "--concurrency",
+            "2",
+            "--log-format",
+            "json",
         ],
         cwd=str(REPO_ROOT),
         env=env,
@@ -92,9 +97,7 @@ def _wait_for_worker_started(proc: subprocess.Popen, deadline: float) -> None:
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
             if proc.poll() is not None:
-                raise RuntimeError(
-                    f"worker exited before starting; rc={proc.returncode}"
-                )
+                raise RuntimeError(f"worker exited before starting; rc={proc.returncode}")
             continue
         if "worker_started" in line:
             return
@@ -153,9 +156,12 @@ def test_cli_worker_unknown_module_exits_with_config_code_quickly() -> None:
     env["SWARMQ_BACKEND_URL"] = valkey_db_url()
     proc = subprocess.run(
         [
-            sys.executable, "-m", "swarmq.cli",
+            sys.executable,
+            "-m",
+            "swarmq.cli",
             "worker",
-            "--module", "definitely_no_module_with_this_name_xyz",
+            "--module",
+            "definitely_no_module_with_this_name_xyz",
         ],
         cwd=str(REPO_ROOT),
         env=env,
@@ -179,7 +185,11 @@ def _run_worker_cli(*args: str, env_extra: dict[str, str] | None = None, timeout
     env.update(env_extra or {})
     return subprocess.run(
         [sys.executable, "-m", "swarmq.cli", "worker", *args],
-        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=timeout,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
@@ -193,19 +203,22 @@ def test_configure_hook_middleware_runs_for_every_task() -> None:
     queue = f"cli-hook-{uuid.uuid4().hex[:8]}"
     tids = asyncio.run(_enqueue_hook_tasks(queue, 3))
     proc = _run_worker_cli(
-        "--module", "tests.integration._cli_fixture_tasks",
-        "--configure", "tests.integration._cli_hook_module:setup",
-        "--queues", queue, "--burst", "--burst-idle-timeout", "4",
-        "--log-format", "json",
+        "--module",
+        "tests.integration._cli_fixture_tasks",
+        "--configure",
+        "tests.integration._cli_hook_module:setup",
+        "--queues",
+        queue,
+        "--burst",
+        "--burst-idle-timeout",
+        "4",
+        "--log-format",
+        "json",
         env_extra={"CLI_TEST_QUEUE": queue},
         timeout=90,
     )
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
-    lines = [
-        json.loads(line)
-        for line in (proc.stdout + proc.stderr).splitlines()
-        if line.startswith("{")
-    ]
+    lines = [json.loads(line) for line in (proc.stdout + proc.stderr).splitlines() if line.startswith("{")]
     events = [entry.get("event") for entry in lines]
     assert "hook_called" in events, events[-20:]
     assert events.count("hook_middleware_pre_execute") == 3, events[-20:]
@@ -222,21 +235,34 @@ def test_lifecycle_events_of_one_task_id_in_json_at_debug() -> None:
     queue = f"cli-life-{uuid.uuid4().hex[:8]}"
     [tid] = asyncio.run(_enqueue_hook_tasks(queue, 1, task_name="cli_flaky"))
     proc = _run_worker_cli(
-        "--module", "tests.integration._cli_fixture_tasks",
-        "--queues", queue, "--burst", "--burst-idle-timeout", "4",
-        "--log-format", "json", "--log-level", "DEBUG",
+        "--module",
+        "tests.integration._cli_fixture_tasks",
+        "--queues",
+        queue,
+        "--burst",
+        "--burst-idle-timeout",
+        "4",
+        "--log-format",
+        "json",
+        "--log-level",
+        "DEBUG",
         env_extra={"CLI_TEST_QUEUE": queue},
         timeout=90,
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
     entries = [json.loads(line) for line in proc.stderr.splitlines() if line.startswith("{")]
     lifecycle = [
-        (entry["event"], entry["level"]) for entry in entries
+        (entry["event"], entry["level"])
+        for entry in entries
         if entry.get("logger") == "swarmq.task" and entry.get("task_id") == tid
     ]
     assert lifecycle == [
-        ("task_received", "debug"), ("task_started", "debug"), ("task_failed", "info"),
-        ("task_received", "debug"), ("task_started", "debug"), ("task_succeeded", "info"),
+        ("task_received", "debug"),
+        ("task_started", "debug"),
+        ("task_failed", "info"),
+        ("task_received", "debug"),
+        ("task_started", "debug"),
+        ("task_succeeded", "info"),
     ], proc.stderr[-3000:]
 
 
@@ -258,6 +284,8 @@ async def _results_ok(queue: str, tids: list[str]) -> int:
             if await app.get_result(tid, timeout=10.0) is not None:
                 ok += 1
     return ok
+
+
 def test_config_error_in_the_parent_is_one_structured_line_and_exit_78() -> None:
     """AE8 (U4, R19): ``SWARMQ_QUEUE_TYPE=bogus`` scheitert im Elternprozess
     beim Bau der Konfiguration -- vor jedem Kind. Genau eine JSON-Zeile,
@@ -268,7 +296,10 @@ def test_config_error_in_the_parent_is_one_structured_line_and_exit_78() -> None
     from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
     proc = _run_worker_cli(
-        "--module", "tests.integration._cli_fixture_tasks", "--log-format", "json",
+        "--module",
+        "tests.integration._cli_fixture_tasks",
+        "--log-format",
+        "json",
         env_extra={"SWARMQ_QUEUE_TYPE": "bogus", "CLI_TEST_QUEUE": "cli-cfg-err"},
         timeout=30,
     )
@@ -290,8 +321,12 @@ def test_child_config_error_under_two_processes_ends_the_supervisor_with_78() ->
     from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
     proc = _run_worker_cli(
-        "--module", "json",  # stdlib, registriert keinen Task
-        "--processes", "2", "--log-format", "json",
+        "--module",
+        "json",  # stdlib, registriert keinen Task
+        "--processes",
+        "2",
+        "--log-format",
+        "json",
         timeout=60,
     )
     assert proc.returncode == CONFIG_ERROR_EXIT_CODE, proc.stderr[-3000:]
@@ -313,9 +348,17 @@ def test_json_format_writes_one_worker_started_line_per_worker() -> None:
 
     queue = f"cli-ae3-{uuid.uuid4().hex[:8]}"
     proc = _run_worker_cli(
-        "--module", "tests.integration._cli_fixture_tasks",
-        "--queues", queue, "--processes", "2",
-        "--burst", "--burst-idle-timeout", "2", "--log-format", "json",
+        "--module",
+        "tests.integration._cli_fixture_tasks",
+        "--queues",
+        queue,
+        "--processes",
+        "2",
+        "--burst",
+        "--burst-idle-timeout",
+        "2",
+        "--log-format",
+        "json",
         env_extra={"CLI_TEST_QUEUE": queue},
         timeout=60,
     )
@@ -337,13 +380,20 @@ def test_invalid_log_config_is_one_structured_line_and_exit_78(tmp_path: Path) -
     from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
     bad = tmp_path / "bad.json"
-    bad.write_text(json.dumps({
-        "version": 1,
-        "handlers": {"err": {"class": "logging.StreamHandlr"}},
-        "root": {"handlers": ["err"]},
-    }))
+    bad.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "handlers": {"err": {"class": "logging.StreamHandlr"}},
+                "root": {"handlers": ["err"]},
+            }
+        )
+    )
     proc = _run_worker_cli(
-        "--module", "tests.integration._cli_fixture_tasks", "--log-config", str(bad),
+        "--module",
+        "tests.integration._cli_fixture_tasks",
+        "--log-config",
+        str(bad),
         env_extra={"CLI_TEST_QUEUE": "cli-ae4"},
         timeout=30,
     )

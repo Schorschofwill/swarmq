@@ -15,6 +15,7 @@ class AddTask(Task):
     async def run(self, a: int, b: int) -> int:
         return a + b
 
+
 def _default_payload(
     task_id: str = "abc-123",
     queue: str = "default",

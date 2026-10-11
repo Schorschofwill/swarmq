@@ -76,9 +76,7 @@ class HangingChannel:
 
 
 @contextlib.contextmanager
-def hanging_publish(
-    broker: RabbitMQBroker, *, close_hangs: bool = False
-) -> Iterator[HangingChannel]:
+def hanging_publish(broker: RabbitMQBroker, *, close_hangs: bool = False) -> Iterator[HangingChannel]:
     """Ersetzt den Publish-Kanal durch einen, dessen ``publish`` hängt.
 
     ``close_hangs`` bildet zusätzlich den Fall ab, in dem auch das Schließen

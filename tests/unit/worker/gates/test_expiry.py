@@ -160,6 +160,7 @@ class TestCheckMaxAgeExpired:
     async def test_expired_dlq_route_tolerates_backend_failure(self):
         w = _make_worker()
         from swarmq.exceptions import BackendConnectionError
+
         w._backend.store_result = AsyncMock(
             side_effect=BackendConnectionError("valkey down"),
         )

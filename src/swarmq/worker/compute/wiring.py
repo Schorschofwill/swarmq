@@ -103,7 +103,11 @@ async def start_compute_executor(worker: Any) -> ComputeExecutor | None:
     async def on_recycle(slot: int, reason: str, value: float) -> None:
         await worker._signal_dispatcher.dispatch(
             Signal.WORKER_RECYCLING,
-            worker_id=worker_id, kind="compute_child", slot=slot, reason=reason, value=value,
+            worker_id=worker_id,
+            kind="compute_child",
+            slot=slot,
+            reason=reason,
+            value=value,
             handler_timeout=_RECYCLE_DISPATCH_TIMEOUT_S,  # ein haengender Handler darf den Pool nicht aufhalten
         )
 
@@ -144,7 +148,8 @@ def stop_on_rejected_fork_source(worker: Any, reason: str) -> None:
     eingebettet entscheidet die App."""
     worker._fork_source_rejected = reason
     logger.error(
-        "compute_fork_source_rejected", reason=reason,
+        "compute_fork_source_rejected",
+        reason=reason,
         hint="the worker stops consuming and shuts down; under the swarmq supervisor it exits "
         "with code 71 and is restarted with a fresh forkserver",
     )

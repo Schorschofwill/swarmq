@@ -87,7 +87,6 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
         pass
 
 
-
 async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRobustConnection:
     """``aio_pika.connect_robust``, abbruchsicher: Wird der Aufbau abgebrochen
     (etwa ein abgebrochener Worker-Start), baut aio-pika die angelegte
@@ -108,6 +107,7 @@ async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRo
             with contextlib.suppress(Exception):
                 await connection.close()
         raise
+
 
 class RabbitMQConnection:
     def __init__(
@@ -477,9 +477,7 @@ class RabbitMQConnection:
                     # dann braucht er kein Nachziehen mehr.
                     continue
 
-    async def _discard_publish_channel(
-        self, expected: aio_pika.abc.AbstractChannel | None
-    ) -> None:
+    async def _discard_publish_channel(self, expected: aio_pika.abc.AbstractChannel | None) -> None:
         """Verwirft den Publish-Kanal nach einem Deadline-Bruch (R10, KTD3).
 
         Zwei Feinheiten, ohne die der Verwurf mehr schadet als nuetzt:
@@ -496,9 +494,7 @@ class RabbitMQConnection:
           gibt die offene Confirmation-Future erst dabei frei.
         """
         try:
-            await asyncio.wait_for(
-                self._channel_lock.acquire(), timeout=_CHANNEL_CLOSE_TIMEOUT_S
-            )
+            await asyncio.wait_for(self._channel_lock.acquire(), timeout=_CHANNEL_CLOSE_TIMEOUT_S)
         except TimeoutError:
             # Die Sperre ist belegt. Der Aufrufer steht hier bereits AUSSERHALB
             # seiner Frist — ihn weiter warten zu lassen, waere genau der
@@ -524,9 +520,7 @@ class RabbitMQConnection:
         self._pending_channel_closes.add(task)
         task.add_done_callback(self._pending_channel_closes.discard)
 
-    async def _close_channel_detached(
-        self, channel: aio_pika.abc.AbstractChannel
-    ) -> None:
+    async def _close_channel_detached(self, channel: aio_pika.abc.AbstractChannel) -> None:
         """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer."""
         try:
             async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):

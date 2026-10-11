@@ -201,9 +201,7 @@ class SwarmQSystem:
         """Poll for a task result."""
         if self._client_app is None:
             raise RuntimeError("SwarmQSystem.setup() has not been called")
-        return await self._client_app.get_result(
-            task_id, timeout=timeout, polling=poll_interval
-        )
+        return await self._client_app.get_result(task_id, timeout=timeout, polling=poll_interval)
 
 
 # ------------------------------------------------------------------

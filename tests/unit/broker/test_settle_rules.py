@@ -108,7 +108,6 @@ class TestBrokerCancelledTag:
 
         assert setup.message.settled == [("ack", ["tag-1"])]
 
-
     async def test_ack_is_withheld_when_the_own_cancel_does_not_come_in_time(
         self, setup: Setup, swarmq_logs: list[dict]
     ) -> None:
@@ -180,7 +179,6 @@ class TestClosedChannel:
         with pytest.raises(BrokerConnectionError):
             await setup.broker.ack(setup.delivery)
 
-
     async def test_retry_later_reports_a_failed_ack_after_publish(self, setup: Setup) -> None:
         await setup.broker.consumer_watch.tick()
         setup.underlay.is_closed = True
@@ -190,7 +188,6 @@ class TestClosedChannel:
             await setup.broker.retry_later(setup.delivery, delay_ms=1000, headers={})
 
         setup.broker._publish_with_retry.assert_awaited_once()
-
 
     async def test_dead_letter_reports_a_failed_ack_after_publish(self, setup: Setup) -> None:
         await setup.broker.consumer_watch.tick()

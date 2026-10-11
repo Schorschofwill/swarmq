@@ -82,8 +82,7 @@ def test_swarmq_record_renders_as_json_with_all_fields(logger_name: str) -> None
 
 def test_timestamp_comes_from_record_created() -> None:
     record = logging.makeLogRecord(
-        {"name": "swarmq.x", "levelno": logging.INFO, "levelname": "INFO",
-         "msg": "evt", "created": 0.25}
+        {"name": "swarmq.x", "levelno": logging.INFO, "levelname": "INFO", "msg": "evt", "created": 0.25}
     )
 
     data = json.loads(build_formatter(json=True, colors=False).format(record))
@@ -151,9 +150,13 @@ def test_unformattable_foreign_record_renders_substitute_event() -> None:
     Record auch durch pytests Capture-Handler, der am selben ``__repr__``
     scheitert."""
     record = logging.makeLogRecord(
-        {"name": "aio_pika.robust_connection", "levelno": logging.WARNING,
-         "levelname": "WARNING", "msg": "callback %r failed",
-         "args": (_RaisingRepr(),)}
+        {
+            "name": "aio_pika.robust_connection",
+            "levelno": logging.WARNING,
+            "levelname": "WARNING",
+            "msg": "callback %r failed",
+            "args": (_RaisingRepr(),),
+        }
     )
 
     line = build_formatter(json=True, colors=False).format(record)
@@ -167,9 +170,7 @@ def test_unformattable_foreign_record_renders_substitute_event() -> None:
 
 
 @pytest.mark.parametrize("as_json", [True, False])
-def test_formatter_internal_keys_stay_out_of_output(
-    logger_name: str, as_json: bool
-) -> None:
+def test_formatter_internal_keys_stay_out_of_output(logger_name: str, as_json: bool) -> None:
     """Regression B6: ``_record`` traegt den ganzen LogRecord; mit ihm stand
     die Nutzlast zweimal in jeder Zeile."""
     stream = _render(logger_name, build_formatter(json=as_json, colors=False))
@@ -183,9 +184,7 @@ def test_formatter_internal_keys_stay_out_of_output(
 
 
 @pytest.mark.parametrize(("colors", "has_ansi"), [(False, False), (True, True)])
-def test_text_mode_emits_ansi_only_with_colors(
-    logger_name: str, colors: bool, has_ansi: bool
-) -> None:
+def test_text_mode_emits_ansi_only_with_colors(logger_name: str, colors: bool, has_ansi: bool) -> None:
     """CLI-03: kein ANSI bei umgeleitetem stderr (``colors=False``)."""
     stream = _render(logger_name, build_formatter(json=False, colors=colors))
 
@@ -230,9 +229,7 @@ def _through_setup_logging(emit: Callable[[], None]) -> str:
 
 def test_setup_logging_renders_library_logger_fields() -> None:
     output = _through_setup_logging(
-        lambda: get_logger("swarmq.tests.setup_logging").info(
-            "hello_event", foo="bar", count=3
-        )
+        lambda: get_logger("swarmq.tests.setup_logging").info("hello_event", foo="bar", count=3)
     )
 
     lines = output.strip().split("\n")
@@ -247,9 +244,7 @@ def test_setup_logging_renders_library_logger_fields() -> None:
 
 
 def test_setup_logging_renders_structlog_native_record_once() -> None:
-    output = _through_setup_logging(
-        lambda: structlog.get_logger().info("native_event", foo="bar")
-    )
+    output = _through_setup_logging(lambda: structlog.get_logger().info("native_event", foo="bar"))
 
     lines = output.strip().split("\n")
     assert len(lines) == 1

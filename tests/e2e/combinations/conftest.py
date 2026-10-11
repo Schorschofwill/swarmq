@@ -30,7 +30,8 @@ from ._toxiproxy import (
 )
 
 _TOXIPROXY_HOST = os.environ.get(
-    "SWARMQ_TEST_TOXIPROXY_HOST", DEFAULT_ADMIN_HOST,
+    "SWARMQ_TEST_TOXIPROXY_HOST",
+    DEFAULT_ADMIN_HOST,
 )
 _TOXIPROXY_PORT = int(
     os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)),
@@ -46,10 +47,12 @@ _VALKEY_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_VALKEY_PORT", "63
 # to docker-compose service names; env override lets a non-compose harness
 # (CI service containers without DNS) override to e.g. ``localhost:5672``.
 _RMQ_UPSTREAM = os.environ.get(
-    "SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", "rabbitmq:5672",
+    "SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM",
+    "rabbitmq:5672",
 )
 _VALKEY_UPSTREAM = os.environ.get(
-    "SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM", "valkey:6379",
+    "SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM",
+    "valkey:6379",
 )
 
 
@@ -81,7 +84,8 @@ async def toxiproxy(
             "-f docker-compose.chaos.yml up -d`.",
         )
     async with ToxiproxyClient(
-        host=_TOXIPROXY_HOST, port=_TOXIPROXY_PORT,
+        host=_TOXIPROXY_HOST,
+        port=_TOXIPROXY_PORT,
     ) as tp:
         yield tp
 

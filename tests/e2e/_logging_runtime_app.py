@@ -82,8 +82,12 @@ async def _run(mode: str, queue: str, broker_url: str, backend_url: str) -> dict
         await client.broker.declare_queue(queue)
         task_ids = [await client.schedule(task_name, i, 1, queue=queue) for i in range(3)]
         worker = SwarmQ(
-            RabbitMQBroker(broker_url), ValkeyBackend(backend_url), queues=[queue],
-            burst_mode=True, burst_idle_timeout=0.5, **opt_in,
+            RabbitMQBroker(broker_url),
+            ValkeyBackend(backend_url),
+            queues=[queue],
+            burst_mode=True,
+            burst_idle_timeout=0.5,
+            **opt_in,
         )
         async with worker:
             await asyncio.wait_for(worker.start_worker(), timeout=30.0)

@@ -74,14 +74,16 @@ def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
     Description, also auch fuer die Schreibvorgaenge der Listener (KTD2).
     """
     if json:
-        line = jsonlib.dumps({
-            "event": "log_drain_timeout_exceeded",
-            "count": count,
-            "timeout_s": timeout,
-            "level": "warning",
-            "logger": "swarmq.logging",
-            "timestamp": iso_utc(time.time()),
-        })
+        line = jsonlib.dumps(
+            {
+                "event": "log_drain_timeout_exceeded",
+                "count": count,
+                "timeout_s": timeout,
+                "level": "warning",
+                "logger": "swarmq.logging",
+                "timestamp": iso_utc(time.time()),
+            }
+        )
     else:
         line = (
             f"swarmq: log_drain_timeout_exceeded — {count} log record(s) not written "
@@ -108,9 +110,7 @@ _ABANDONED: list[threading.Thread] = []
 """Aufgegebene Listener-Threads (KTD3); ein haengender bleibt eingetragen,
 bis er endet."""
 
-_STUCK_HANDLERS: weakref.WeakKeyDictionary[logging.Handler, threading.Thread] = (
-    weakref.WeakKeyDictionary()
-)
+_STUCK_HANDLERS: weakref.WeakKeyDictionary[logging.Handler, threading.Thread] = weakref.WeakKeyDictionary()
 """Ziel-Handler aufgegebener Threads und der Thread, der an ihnen haengt;
 der Fork-Hook laesst sie aus (Plan 2026-10-06-1811, KTD10)."""
 
@@ -171,9 +171,7 @@ def _forget(handlers: set[logging.Handler]) -> None:
     with logging._lock:  # type: ignore[attr-defined]
         refs = logging._handlerList  # type: ignore[attr-defined]
         refs[:] = [
-            ref for ref in refs
-            if (h := ref()) is None
-            or (h not in handlers and id(_stream_of(h)) not in streams)
+            ref for ref in refs if (h := ref()) is None or (h not in handlers and id(_stream_of(h)) not in streams)
         ]
 
 
@@ -207,7 +205,10 @@ def exit_if_log_thread_stuck(code: int, exc: BaseException | None = None) -> Non
         return
     with contextlib.suppress(RuntimeError):  # kein Thread mehr startbar
         writer = threading.Thread(
-            target=_flush_and_report, args=(exc,), name="swarmq-log-exit", daemon=True,
+            target=_flush_and_report,
+            args=(exc,),
+            name="swarmq-log-exit",
+            daemon=True,
         )
         writer.start()
         writer.join(FLUSH_BUDGET_S)
@@ -244,7 +245,7 @@ def _exit_report(exc: BaseException) -> bytes:
         text = "".join(traceback.format_exception(exc))
     data = text.encode("utf-8", "replace")
     if len(data) > select.PIPE_BUF:
-        data = _TRUNCATED + data[-(select.PIPE_BUF - len(_TRUNCATED)):]
+        data = _TRUNCATED + data[-(select.PIPE_BUF - len(_TRUNCATED)) :]
     return data
 
 

@@ -14,11 +14,13 @@ class TestValidateModuleImportable:
 
     def test_existing_module_accepted(self):
         from swarmq.process_manager.check import _validate_module_importable
+
         _validate_module_importable("swarmq.cli")  # no raise
 
     def test_nonexistent_module_rejected(self):
         from swarmq.exceptions import ConfigurationError
         from swarmq.process_manager.check import _validate_module_importable
+
         with pytest.raises(ConfigurationError, match="cannot be imported|no loadable"):
             _validate_module_importable("swarmq_does_not_exist_xyz")
 
@@ -27,6 +29,7 @@ class TestValidateModuleImportable:
         pre-flight wraps these as ConfigurationError (not bare ValueError)."""
         from swarmq.exceptions import ConfigurationError
         from swarmq.process_manager.check import _validate_module_importable
+
         # Leading-dot style triggers ValueError on most Python versions.
         with pytest.raises(ConfigurationError):
             _validate_module_importable(".leading.dot")
@@ -47,6 +50,7 @@ class TestValidateModuleImportable:
         monkeypatch.syspath_prepend(str(tmp_path))
         # Sanity: find_spec returns a spec but origin is None.
         import importlib.util as _iu
+
         spec = _iu.find_spec("my_namespace_pkg")
         assert spec is not None
         assert spec.origin is None
@@ -110,12 +114,22 @@ class TestHeadroomPreflight:
     def test_headroom_below_autoscale_upper_bound_is_rejected(self):
         with pytest.raises(ConfigurationError, match="autoscale upper bound 8"):
             check_worker_config(
-                module="json", reload=False, watch_dir=None, processes=1, autoscale=(2, 8), max_processes=4,
+                module="json",
+                reload=False,
+                watch_dir=None,
+                processes=1,
+                autoscale=(2, 8),
+                max_processes=4,
             )
 
     def test_headroom_covering_the_start_values_is_accepted(self):
         result = check_worker_config(
-            module="json", reload=False, watch_dir=None, processes=4, autoscale=(2, 8), max_processes=8,
+            module="json",
+            reload=False,
+            watch_dir=None,
+            processes=4,
+            autoscale=(2, 8),
+            max_processes=8,
         )
         assert result["module"] == "json"
 
@@ -132,14 +146,31 @@ class TestHeadroomPreflight:
     def test_cpu_pool_with_explicit_concurrency_rejects_a_product_above_the_cpus(self, eight_cpus):
         with pytest.raises(ConfigurationError, match="3 x --max-processes 3 = 9"):
             check_worker_config(
-                module="json", reload=False, watch_dir=None, pool="cpu", processes=1, concurrency=3, max_processes=3,
+                module="json",
+                reload=False,
+                watch_dir=None,
+                pool="cpu",
+                processes=1,
+                concurrency=3,
+                max_processes=3,
             )
         check_worker_config(
-            module="json", reload=False, watch_dir=None, pool="cpu", processes=1, concurrency=2, max_processes=4,
+            module="json",
+            reload=False,
+            watch_dir=None,
+            pool="cpu",
+            processes=1,
+            concurrency=2,
+            max_processes=4,
         )
 
     def test_check_payload_slots_follow_the_headroom(self, eight_cpus):
         result = check_worker_config(
-            module="json", reload=False, watch_dir=None, pool="cpu", processes=2, max_processes=8,
+            module="json",
+            reload=False,
+            watch_dir=None,
+            pool="cpu",
+            processes=2,
+            max_processes=8,
         )
         assert result["slots"] == 1

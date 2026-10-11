@@ -33,8 +33,13 @@ from tests.e2e import _cpu_fixture_tasks as fixture  # noqa: E402  (QUEUE brauch
 def _register_fixture_tasks():
     """Die Fixture-Klassen erneut registrieren — andere Tests leeren die Registry."""
     for cls in (
-        fixture.CpuEcho, fixture.CpuFail, fixture.CpuHang, fixture.CpuSubprocess, fixture.CpuSlowOnce,
-        fixture.CpuWeirdError, fixture.CpuBig,
+        fixture.CpuEcho,
+        fixture.CpuFail,
+        fixture.CpuHang,
+        fixture.CpuSubprocess,
+        fixture.CpuSlowOnce,
+        fixture.CpuWeirdError,
+        fixture.CpuBig,
     ):
         if cls not in Task._registered_tasks:
             Task._registered_tasks.append(cls)
@@ -66,8 +71,12 @@ async def _error_message(rabbitmq_url: str, valkey_url: str, tid: str) -> str:
 
 def _app(rabbitmq_url: str, valkey_url: str, **cfg) -> SwarmQ:
     return SwarmQ(
-        RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
-        queues=[_QUEUE], pool="cpu", burst_mode=True, **{"burst_idle_timeout": 2.0, **cfg},
+        RabbitMQBroker(rabbitmq_url),
+        ValkeyBackend(valkey_url),
+        queues=[_QUEUE],
+        pool="cpu",
+        burst_mode=True,
+        **{"burst_idle_timeout": 2.0, **cfg},
     )
 
 

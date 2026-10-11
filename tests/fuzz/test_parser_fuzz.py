@@ -95,10 +95,7 @@ def test_unpack_byte_fuzz_never_unhandled(raw: bytes) -> None:
     except _UNPACK_ALLOWED:
         return
     except BaseException as exc:
-        pytest.fail(
-            f"Client._unpack raised non-typed {type(exc).__name__}: {exc!r} "
-            f"on input {raw!r}"
-        )
+        pytest.fail(f"Client._unpack raised non-typed {type(exc).__name__}: {exc!r} on input {raw!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +118,7 @@ def test_decode_result_byte_fuzz_never_unhandled(raw: bytes) -> None:
     except ResultSerializationError:
         return
     except BaseException as exc:
-        pytest.fail(
-            f"decode_result raised non-typed {type(exc).__name__}: {exc!r} "
-            f"on input {raw!r}"
-        )
+        pytest.fail(f"decode_result raised non-typed {type(exc).__name__}: {exc!r} on input {raw!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +141,7 @@ def test_decode_json_random_bytes_typed_only(raw: bytes) -> None:
     except _DECODE_JSON_ALLOWED:
         return
     except BaseException as exc:
-        pytest.fail(
-            f"decode_json raised non-typed {type(exc).__name__}: {exc!r} "
-            f"on input {raw!r}"
-        )
+        pytest.fail(f"decode_json raised non-typed {type(exc).__name__}: {exc!r} on input {raw!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +150,7 @@ def test_decode_json_random_bytes_typed_only(raw: bytes) -> None:
 
 
 _json_ish = st.text(
-    alphabet=st.sampled_from(
-        list('{}[]",:.0123456789abcdef truefalsenull\\\n\t ')
-    ),
+    alphabet=st.sampled_from(list('{}[]",:.0123456789abcdef truefalsenull\\\n\t ')),
     max_size=256,
 ).map(lambda s: s.encode("utf-8"))
 
@@ -180,7 +169,4 @@ def test_decode_json_junk_ascii_typed_only(raw: bytes) -> None:
     except _DECODE_JSON_ALLOWED:
         return
     except BaseException as exc:
-        pytest.fail(
-            f"decode_json raised non-typed {type(exc).__name__}: {exc!r} "
-            f"on input {raw!r}"
-        )
+        pytest.fail(f"decode_json raised non-typed {type(exc).__name__}: {exc!r} on input {raw!r}")

@@ -124,7 +124,12 @@ async def _defer_with_failed_release(worker: Worker, broker: MagicMock, backend:
 
 
 async def _defer_with_lost_claim_reply(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any, *, written: bool,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
+    msg: Any,
+    *,
+    written: bool,
 ) -> dict:
     """Der Claim-Aufruf endet mit einem Transportfehler -- nachdem Valkey den
     Claim geschrieben hat (``written``) oder bevor er ankam; die Freigabe
@@ -155,7 +160,9 @@ def _copy_of(original: Any, headers: dict) -> MagicMock:
 
 
 async def test_deferred_copy_takes_over_its_own_claim(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -170,7 +177,9 @@ async def test_deferred_copy_takes_over_its_own_claim(
 
 
 async def test_delivery_without_token_stays_a_duplicate(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -186,7 +195,9 @@ async def test_delivery_without_token_stays_a_duplicate(
 
 
 async def test_redelivery_of_the_copy_after_takeover_stays_a_duplicate(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -208,7 +219,9 @@ async def test_redelivery_of_the_copy_after_takeover_stays_a_duplicate(
 
 
 async def test_copy_takes_over_a_claim_whose_reply_was_lost(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -222,13 +235,19 @@ async def test_copy_takes_over_a_claim_whose_reply_was_lost(
 
 
 async def test_copy_of_a_copy_takes_over_when_the_lost_claim_never_arrived(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
     first_headers = await _defer_with_failed_release(worker, broker, backend, original)
     second_headers = await _defer_with_lost_claim_reply(
-        worker, broker, backend, _copy_of(original, first_headers), written=False,
+        worker,
+        broker,
+        backend,
+        _copy_of(original, first_headers),
+        written=False,
     )
     assert not RUNS
 
@@ -239,7 +258,9 @@ async def test_copy_of_a_copy_takes_over_when_the_lost_claim_never_arrived(
 
 
 async def test_failed_release_before_requeue_in_place_sends_a_copy_that_runs_once(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     """Vorher: das Original ging per ``nack`` ohne Token zurueck, der Claim
     blieb stehen -- nach der Erholung bestaetigte sich die Redelivery als

@@ -23,16 +23,18 @@ pytestmark = [pytest.mark.timeout(5)]
 
 def _deps(*, route_fails: bool = False) -> GateDeps:
     broker = MagicMock()
-    broker.route_via_dlx = AsyncMock(
-        side_effect=RuntimeError("broker gone") if route_fails else None
-    )
+    broker.route_via_dlx = AsyncMock(side_effect=RuntimeError("broker gone") if route_fails else None)
     broker.dead_letter = AsyncMock()
     return GateDeps(
-        broker=broker, backend=MagicMock(),
+        broker=broker,
+        backend=MagicMock(),
         config=SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x"),
-        signals=MagicMock(dispatch=AsyncMock()), registry=MagicMock(),
-        rate_limiter=lambda: None, lock_manager=lambda: None,
-        finalize_schedfire=AsyncMock(), maybe_release_unique=AsyncMock(),
+        signals=MagicMock(dispatch=AsyncMock()),
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
         extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
@@ -67,8 +69,12 @@ async def test_signal_carries_queue_reason_and_optional_identity():
 async def test_identity_is_passed_through_when_known():
     deps = _deps()
     await route_via_dlx(
-        deps, _delivery(), reason="unregistered_task",
-        task_id="t1", task_name="nope", error="task not found",
+        deps,
+        _delivery(),
+        reason="unregistered_task",
+        task_id="t1",
+        task_name="nope",
+        error="task not found",
     )
     _args, kwargs = deps.signals.dispatch.await_args
     assert kwargs["task_id"] == "t1"

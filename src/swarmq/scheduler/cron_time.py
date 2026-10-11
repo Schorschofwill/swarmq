@@ -99,9 +99,7 @@ def _iter_fires(cron: str, start: datetime) -> Iterator[datetime]:
 def _in_second_pass(moment: datetime) -> bool:
     """Liegt *moment* im zweiten Durchlauf einer doppelten Wanduhrzeit?"""
     local = datetime.fromtimestamp(moment.timestamp(), moment.tzinfo)
-    ambiguous = (
-        local.replace(fold=0).utcoffset() != local.replace(fold=1).utcoffset()
-    )
+    ambiguous = local.replace(fold=0).utcoffset() != local.replace(fold=1).utcoffset()
     return ambiguous and local.fold == 1
 
 
@@ -127,4 +125,3 @@ def _last_second_of_doubled_phase(moment: datetime) -> datetime:
         else:
             lo = mid
     return datetime.fromtimestamp(hi + shift - 1, zone)
-

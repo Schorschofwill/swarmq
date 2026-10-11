@@ -59,8 +59,7 @@ def _validate_module_importable(module: str) -> ModuleSpec:
     # find_spec liefert einen spec, aber import_module wird scheitern.
     if spec is None or spec.origin is None:
         raise ConfigurationError(
-            f"--module {module!r} resolves to no loadable spec — "
-            "check spelling, PYTHONPATH, and __init__.py presence",
+            f"--module {module!r} resolves to no loadable spec — check spelling, PYTHONPATH, and __init__.py presence",
         )
     # Return the spec so run_multi_process_worker
     # can hand it to resolve_watch_dirs instead of calling find_spec
@@ -94,9 +93,7 @@ class WorkerConfigCheckResult(TypedDict):
     health_ports: list[int] | None
 
 
-def _effective_port(
-    cli_value: int | None, env_name: str, cli_flag: str
-) -> tuple[int | None, str] | None:
+def _effective_port(cli_value: int | None, env_name: str, cli_flag: str) -> tuple[int | None, str] | None:
     """Aufgeloester Port samt Herkunft, oder ``None`` wenn keiner wirkt.
 
     Bildet die Vorrangregel von ``swarmq worker`` nach: CLI > Env > Default,
@@ -233,10 +230,7 @@ def _validate_configure_spec(spec: str) -> None:
     """Form ``MODULE:CALLABLE`` und Auffindbarkeit des Moduls (R11)."""
     module_name, sep, attr_name = spec.partition(":")
     if not sep or not module_name or not attr_name.isidentifier():
-        raise ConfigurationError(
-            f"--configure {spec!r} is not MODULE:CALLABLE "
-            "(expected: package.module:callable)"
-        )
+        raise ConfigurationError(f"--configure {spec!r} is not MODULE:CALLABLE (expected: package.module:callable)")
     _validate_module_importable(module_name)
 
 
@@ -295,7 +289,11 @@ def check_worker_config(
     warnings: list[str] = []
     validate_pool_mode(pool=pool, autoscale=autoscale)
     _validate_headroom(
-        max_processes=max_processes, processes=processes, autoscale=autoscale, pool=pool, concurrency=concurrency,
+        max_processes=max_processes,
+        processes=processes,
+        autoscale=autoscale,
+        pool=pool,
+        concurrency=concurrency,
     )
     slots = effective_concurrency(concurrency, pool, max_processes or processes)
 
@@ -334,7 +332,9 @@ def check_worker_config(
     if reload:
         check_watchfiles_available()
         resolved = resolve_watch_dirs(
-            module, tuple(watch_dir or ()), spec=module_spec,
+            module,
+            tuple(watch_dir or ()),
+            spec=module_spec,
         )
         watch_dirs_result = list(resolved)
 

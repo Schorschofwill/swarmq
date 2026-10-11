@@ -29,8 +29,7 @@ def deadline_broker(broker):
     Form, die ``_publish_with_retry`` nach Ablauf der Frist wirft."""
     broker.publish = AsyncMock(
         side_effect=PublishIndeterminate(
-            "publish to 'math' exceeded the publish deadline of 120.0s; "
-            "delivery is indeterminate"
+            "publish to 'math' exceeded the publish deadline of 120.0s; delivery is indeterminate"
         )
     )
     return broker
@@ -39,9 +38,7 @@ def deadline_broker(broker):
 @pytest.fixture
 def failing_broker(broker):
     """Broker, dessen Publish definitiv nichts gesendet hat."""
-    broker.publish = AsyncMock(
-        side_effect=BrokerConnectionError("connection refused")
-    )
+    broker.publish = AsyncMock(side_effect=BrokerConnectionError("connection refused"))
     return broker
 
 
@@ -52,7 +49,10 @@ class TestDeadlineErrorReachesTheCaller:
             await client.schedule("add", 1, 2, queue="math")
 
     async def test_unique_claim_survives_an_indeterminate_publish(
-        self, client, deadline_broker, backend,
+        self,
+        client,
+        deadline_broker,
+        backend,
     ):
         """Covers AE6. Die Sperre bleibt stehen, weil der Broker die
         Nachricht bereits haben kann. Ein Wiederholversuch laeuft dagegen
@@ -68,7 +68,10 @@ class TestDeadlineErrorReachesTheCaller:
         backend.release_unique.assert_not_awaited()
 
     async def test_unique_claim_is_still_released_on_a_definite_failure(
-        self, client, failing_broker, backend,
+        self,
+        client,
+        failing_broker,
+        backend,
     ):
         """Die Ausnahme gilt nur fuer den unbestimmten Fall. Wo sicher
         nichts gesendet wurde, muss die Sperre weichen — sonst blockierte
@@ -82,7 +85,9 @@ class TestDeadlineErrorReachesTheCaller:
         backend.release_unique.assert_awaited_once()
 
     async def test_indeterminate_is_catchable_as_a_broker_error(
-        self, client, deadline_broker,
+        self,
+        client,
+        deadline_broker,
     ):
         """Der neue Typ ist eine Unterklasse: bestehende Aufrufer und die
         eng gefassten Handler im Ablauf-Gate fangen ihn unveraendert."""

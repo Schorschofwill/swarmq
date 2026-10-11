@@ -42,7 +42,7 @@ class ExpiryGate:
             return Continue
         try:
             enqueued_ts = int(enqueued_at)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             # Malformed header — treat as non-expiring rather than DLQ
             # on a header-shape bug. An expired task with a corrupt
             # header still gets MAX_RETRIES redeliveries + x-delivery-
@@ -86,14 +86,16 @@ class ExpiryGate:
             try:
                 await deps.backend.store_result(
                     ctx.task_id,
-                    encode_result(build_result_dict(
-                        task_id=ctx.task_id,
-                        queue=ctx.queue,
-                        task_name=ctx.task_name,
-                        is_error=True,
-                        is_cancelled=False,
-                        error_message=error_message,
-                    )),
+                    encode_result(
+                        build_result_dict(
+                            task_id=ctx.task_id,
+                            queue=ctx.queue,
+                            task_name=ctx.task_name,
+                            is_error=True,
+                            is_cancelled=False,
+                            error_message=error_message,
+                        )
+                    ),
                     ttl_ms=ttl_ms,
                     op_timeout=deps.config.backend_op_timeout,
                 )

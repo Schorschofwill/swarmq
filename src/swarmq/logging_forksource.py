@@ -45,10 +45,7 @@ class _ForkSourceSentinel(logging.Handler):
         if not isinstance(current, logging.Logger):
             current = logging.getLogger()
         while current is not None:
-            if any(
-                h is not self and not getattr(h, "forwards_to_root", False)
-                for h in current.handlers
-            ):
+            if any(h is not self and not getattr(h, "forwards_to_root", False) for h in current.handlers):
                 return True
             current = current.parent if current.propagate else None
         return False

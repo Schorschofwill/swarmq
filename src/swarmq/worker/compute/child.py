@@ -48,13 +48,13 @@ def rss_mb(proc_root: Path = Path("/proc")) -> float | None:
     """Eigener RSS in MB aus ``/proc/self/status``; ``None`` ohne ``/proc``."""
     try:
         text = (proc_root / "self" / "status").read_text(encoding="ascii")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     for line in text.splitlines():
         if line.startswith("VmRSS:"):
             try:
                 return int(line.split()[1]) / 1024
-            except (IndexError, ValueError):
+            except IndexError, ValueError:
                 return None
     return None
 
@@ -96,7 +96,7 @@ def bind_child_process() -> bool:
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         return int(libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0)) == 0
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
 
 
@@ -135,9 +135,13 @@ def _job_log_context(job: ComputeJob) -> Any:
     from swarmq.logging import _task_log_context
 
     return _task_log_context(
-        task_id=job.task_id, task_name=job.task_name, queue=job.queue,
-        worker_id=job.worker_id, workflow_id=job.workflow_id,
-        attempt=job.retry_count + 1, compute_child=os.getpid(),
+        task_id=job.task_id,
+        task_name=job.task_name,
+        queue=job.queue,
+        worker_id=job.worker_id,
+        workflow_id=job.workflow_id,
+        attempt=job.retry_count + 1,
+        compute_child=os.getpid(),
     )
 
 
@@ -221,14 +225,14 @@ def _run_job_with_sigterm(job: ComputeJob, channel: Any, slot: int | None) -> Re
         task = asyncio.ensure_future(run_job(job, channel, slot=slot))
         try:
             loop.add_signal_handler(signal.SIGTERM, task.cancel)
-        except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
+        except NotImplementedError, RuntimeError:  # pragma: no cover - kein Unix-Loop
             pass
         try:
             return await task
         finally:
             try:
                 loop.remove_signal_handler(signal.SIGTERM)
-            except (NotImplementedError, RuntimeError):  # pragma: no cover
+            except NotImplementedError, RuntimeError:  # pragma: no cover
                 pass
 
     return asyncio.run(_main())
@@ -363,7 +367,7 @@ async def _serve_jobs(slot: int, job_conn: Any, channel: Any) -> None:
 
     try:
         loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
-    except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
+    except NotImplementedError, RuntimeError:  # pragma: no cover - kein Unix-Loop
         pass
     configured = False
     try:

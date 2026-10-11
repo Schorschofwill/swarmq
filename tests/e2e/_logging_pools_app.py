@@ -32,21 +32,23 @@ if _MODE == "basic":
 elif _MODE == "basic_nolevel":
     logging.basicConfig(format=APP_FORMAT)
 elif _MODE in ("cookbook", "cookbook_start"):
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "plain": {"format": "COOKBOOK|%(process)d|%(name)s|%(message)s"},
-            "json": {"()": "swarmq.logging.build_formatter", "json": True, "colors": False},
-        },
-        "handlers": {
-            "file": {"class": "logging.FileHandler", "filename": os.environ["POOLS_APP_LOG"], "formatter": "plain"},
-            "queue_handler": {"class": "logging.handlers.QueueHandler", "handlers": ["file"]},
-            # Damit der Test den Start des Workers samt Feldern auf stderr sieht.
-            "err": {"class": "logging.StreamHandler", "formatter": "json"},
-        },
-        "root": {"level": "INFO", "handlers": ["queue_handler", "err"]},
-    })
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "plain": {"format": "COOKBOOK|%(process)d|%(name)s|%(message)s"},
+                "json": {"()": "swarmq.logging.build_formatter", "json": True, "colors": False},
+            },
+            "handlers": {
+                "file": {"class": "logging.FileHandler", "filename": os.environ["POOLS_APP_LOG"], "formatter": "plain"},
+                "queue_handler": {"class": "logging.handlers.QueueHandler", "handlers": ["file"]},
+                # Damit der Test den Start des Workers samt Feldern auf stderr sieht.
+                "err": {"class": "logging.StreamHandler", "formatter": "json"},
+            },
+            "root": {"level": "INFO", "handlers": ["queue_handler", "err"]},
+        }
+    )
     if _MODE == "cookbook_start":
         # Cookbook wortwoertlich: Start beim Import -- auch im Forkserver.
         _handler = logging.getHandlerByName("queue_handler")

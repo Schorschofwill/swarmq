@@ -723,7 +723,8 @@ async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals, swar
         proc.die()
     await p.aclose()
     reports = [
-        e for e in swarmq_logs
+        e
+        for e in swarmq_logs
         if e["event"] == "logging_reconfigured_by_app" and e["logger"] == "swarmq.worker.compute.pool"
     ]
     assert len(reports) == 1

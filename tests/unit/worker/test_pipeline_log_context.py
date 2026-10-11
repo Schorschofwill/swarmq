@@ -87,7 +87,10 @@ async def test_log_context_carries_the_worker_identity_as_string(broker, backend
     registry = TaskRegistry()
     registry.register(_LoggingTask)
     config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", worker_id="phx", worker_slot=2,
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        worker_id="phx",
+        worker_slot=2,
     )
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
 

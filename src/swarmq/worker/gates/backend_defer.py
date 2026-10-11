@@ -59,8 +59,14 @@ def is_backend_outage(exc: BaseException) -> bool:
 
 
 async def defer_backend_unavailable(
-    deps: GateDeps, delivery: Any, ctx: GateContext, exc: BaseException, *, gate: str,
-    stage: str | None = None, **context: Any,
+    deps: GateDeps,
+    delivery: Any,
+    ctx: GateContext,
+    exc: BaseException,
+    *,
+    gate: str,
+    stage: str | None = None,
+    **context: Any,
 ) -> DeliveryOutcome:
     """Stellt *delivery* mit wachsendem Backoff zurueck; Outcome ``Redelivered``.
 
@@ -82,7 +88,12 @@ async def defer_backend_unavailable(
         # scheiternde Nachricht ins Dead-Letter-Ziel.
         logger.error(
             "task_gate_backend_error",
-            task_id=ctx.task_id, task_name=ctx.task_name, gate=gate, stage=stage, **context, **_error_fields(exc),
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            gate=gate,
+            stage=stage,
+            **context,
+            **_error_fields(exc),
         )
         await redeliver_in_place(deps, delivery, ctx)
         return Redelivered
@@ -97,7 +108,11 @@ async def defer_backend_unavailable(
         # (Duplikat statt Verlust, at-least-once).
         logger.warning(
             "task_defer_failed_redelivered",
-            task_id=ctx.task_id, task_name=ctx.task_name, gate=gate, stage=stage, **context,
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            gate=gate,
+            stage=stage,
+            **context,
             **{f"backend_{key}": value for key, value in _error_fields(exc).items()},
             **_error_fields(publish_exc),
         )
@@ -105,7 +120,13 @@ async def defer_backend_unavailable(
         return Redelivered
     logger.warning(
         "task_deferred_backend_unavailable",
-        task_id=ctx.task_id, task_name=ctx.task_name, gate=gate,
-        defer_count=attempt, delay_ms=delay_ms, stage=stage, **context, **_error_fields(exc),
+        task_id=ctx.task_id,
+        task_name=ctx.task_name,
+        gate=gate,
+        defer_count=attempt,
+        delay_ms=delay_ms,
+        stage=stage,
+        **context,
+        **_error_fields(exc),
     )
     return Redelivered

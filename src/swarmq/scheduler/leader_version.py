@@ -100,6 +100,7 @@ class SchedulerLeaderVersion:
     _last_seen_leader: str | None
 
     if TYPE_CHECKING:
+
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
 
     async def _write_leader_version(self) -> None:
@@ -107,7 +108,8 @@ class SchedulerLeaderVersion:
         kostet nicht die Leader-Rolle; die nächste Verlängerung schreibt neu."""
         try:
             await self._backend.schedules.set_leader_version(
-                self._owner_token, self._version,
+                self._owner_token,
+                self._version,
                 ttl_ms=int(self._config.scheduler_lock_ttl * 1000),
             )
         except Exception as exc:
@@ -146,5 +148,7 @@ class SchedulerLeaderVersion:
             )
         await self._emit(
             Signal.SCHEDULER_LEADER_OUTDATED,
-            leader=owner, leader_version=version, outdated=verdict == "outdated",
+            leader=owner,
+            leader_version=version,
+            outdated=verdict == "outdated",
         )

@@ -108,7 +108,9 @@ class TaskExecutor:
         result.di_scope = di_container(
             context={
                 TaskContext: TaskContext(
-                    task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue,
+                    task_id=ctx.task_id,
+                    task_name=ctx.task_name,
+                    queue=ctx.queue,
                     retry_count=message_dict["retry_count"],
                 )
             }
@@ -154,9 +156,7 @@ class TaskExecutor:
                     self._hard_timeout_watchdog(run_task, task_info.hard_timeout, set_reason_if_unset)
                 )
 
-            await self._await_run_result(
-                run_task, task_instance, ctx, result, fail, cancel_reason
-            )
+            await self._await_run_result(run_task, task_instance, ctx, result, fail, cancel_reason)
         finally:
             # Outer finally: guarantees watchdog + monitor cleanup
             # regardless of which path was taken.
@@ -250,12 +250,13 @@ class TaskExecutor:
             await chain.run_post_execute(message_dict, result=result.result_value)
             await deps.signals.dispatch(
                 Signal.TASK_COMPLETED,
-                task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue, duration_ms=duration_ms,
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
+                queue=ctx.queue,
+                duration_ms=duration_ms,
             )
 
-    async def execute(
-        self, ctx: GateContext, message_dict: MessageContext, chain: MiddlewareChain
-    ) -> ExecutionResult:
+    async def execute(self, ctx: GateContext, message_dict: MessageContext, chain: MiddlewareChain) -> ExecutionResult:
         task_info = ctx.task_info
         assert task_info is not None
         # Pre-execute hooks

@@ -55,9 +55,14 @@ pytestmark = [pytest.mark.timeout(5)]
 
 def _static(**fields) -> ScheduleDefinition:
     base = {
-        "schedule_name": "nightly", "task_name": "nightly", "args": (),
-        "kwargs": {}, "queue": "default", "cron": "0 1 * * *",
-        "fire_ts_ms": None, "source": "static",
+        "schedule_name": "nightly",
+        "task_name": "nightly",
+        "args": (),
+        "kwargs": {},
+        "queue": "default",
+        "cron": "0 1 * * *",
+        "fire_ts_ms": None,
+        "source": "static",
     }
     base.update(fields)
     return ScheduleDefinition(**base)
@@ -65,17 +70,18 @@ def _static(**fields) -> ScheduleDefinition:
 
 class TestFingerprint:
     def test_same_code_fields_give_same_fingerprint(self):
-        assert cron_fingerprint(_static()) == cron_fingerprint(
-            _static(fire_ts_ms=123, disabled=True, last_fire_at=99)
-        )
+        assert cron_fingerprint(_static()) == cron_fingerprint(_static(fire_ts_ms=123, disabled=True, last_fire_at=99))
 
-    @pytest.mark.parametrize("change", [
-        {"cron": "0 3 * * *"},
-        {"timezone": "Europe/Berlin"},
-        {"queue": "other"},
-        {"task_name": "renamed"},
-        {"unique_for": 3600},
-    ])
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"cron": "0 3 * * *"},
+            {"timezone": "Europe/Berlin"},
+            {"queue": "other"},
+            {"task_name": "renamed"},
+            {"unique_for": 3600},
+        ],
+    )
     def test_each_code_field_changes_the_fingerprint(self, change):
         assert cron_fingerprint(_static(**change)) != cron_fingerprint(_static())
 
@@ -117,10 +123,7 @@ class TestStaticDefinitions:
         default = _task(name="default", queues=["q"], cron="0 1 * * *")
         utc = _task(name="utc", queues=["q"], cron="0 1 * * *", timezone="UTC")
 
-        zones = {
-            d.schedule_name: d.timezone
-            for d in static_definitions([own, default, utc], "Europe/Berlin")
-        }
+        zones = {d.schedule_name: d.timezone for d in static_definitions([own, default, utc], "Europe/Berlin")}
 
         assert zones == {"own": "Asia/Tokyo", "default": "Europe/Berlin", "utc": None}
 
@@ -151,10 +154,7 @@ def _report(fp: str, first: int, last: int = _NOW, name: str = "nightly") -> Cro
 
 def _chosen(*reports: CronReport) -> dict[str, str]:
     snapshot = CronReports(now_ms=_NOW, reports=reports)
-    return {
-        c.report.name: c.report.fingerprint
-        for c in choose_reports(snapshot, live_window_ms=_WINDOW)
-    }
+    return {c.report.name: c.report.fingerprint for c in choose_reports(snapshot, live_window_ms=_WINDOW)}
 
 
 class TestChooseReports:
@@ -239,15 +239,21 @@ class TestAdoptReportedCrons:
     @pytest.fixture
     def leader(self, memory, broker, config, lock_manager, signal_dispatcher):
         return _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory),
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
             signal_dispatcher,
         )
 
     @staticmethod
     async def _report(memory, definition: ScheduleDefinition, window_ms: int = 180_000):
         await memory.schedules.report_cron(
-            definition.schedule_name, cron_fingerprint(definition),
-            msgspec.json.encode(definition), live_window_ms=window_ms,
+            definition.schedule_name,
+            cron_fingerprint(definition),
+            msgspec.json.encode(definition),
+            live_window_ms=window_ms,
         )
 
     @staticmethod
@@ -281,7 +287,11 @@ class TestAdoptReportedCrons:
         assert (stored.cron, stored.timezone) == ("0 3 * * *", "Europe/Berlin")
 
     async def test_reports_older_than_three_seen_intervals_are_ignored(
-        self, memory, leader, clock, config,
+        self,
+        memory,
+        leader,
+        clock,
+        config,
     ):
         await self._report(memory, _static())
         await clock.advance(3 * config.scheduler_seen_interval_s + 0.001)
@@ -290,13 +300,20 @@ class TestAdoptReportedCrons:
 
         assert await self._stored(memory) == (None, None)
 
-    @pytest.mark.parametrize("broken", [
-        {"timezone": "Mars/Olympus_Mons"},
-        {"cron": "61 * * * *"},
-        {"cron": None},
-    ])
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            {"timezone": "Mars/Olympus_Mons"},
+            {"cron": "61 * * * *"},
+            {"cron": None},
+        ],
+    )
     async def test_invalid_report_is_not_adopted_and_logged(
-        self, memory, leader, swarmq_logs, broken,
+        self,
+        memory,
+        leader,
+        swarmq_logs,
+        broken,
     ):
         await self._report(memory, _static(**broken))
         await self._report(memory, _static(schedule_name="other", task_name="other"))
@@ -343,12 +360,14 @@ class TestAdoptReportedCrons:
 
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_conflict"]
         assert entry["log_level"] == "warning" and entry["schedule_name"] == "nightly"
-        assert sorted(entry["fingerprints"]) == sorted(
-            cron_fingerprint(_static(queue=q)) for q in ("app-a", "app-b")
-        )
+        assert sorted(entry["fingerprints"]) == sorted(cron_fingerprint(_static(queue=q)) for q in ("app-a", "app-b"))
 
     async def test_long_lived_conflict_emits_signal(
-        self, memory, leader, clock, signal_dispatcher,
+        self,
+        memory,
+        leader,
+        clock,
+        signal_dispatcher,
     ):
         seen: list[dict] = []
 
@@ -365,7 +384,12 @@ class TestAdoptReportedCrons:
         assert len(kw["fingerprints"]) == 2
 
     async def test_short_overlap_neither_logs_nor_signals(
-        self, memory, leader, clock, signal_dispatcher, swarmq_logs,
+        self,
+        memory,
+        leader,
+        clock,
+        signal_dispatcher,
+        swarmq_logs,
     ):
         seen: list[dict] = []
 
@@ -392,7 +416,11 @@ class TestAdoptReportedCrons:
         assert names == {"nightly"}
 
     async def test_unreadable_reports_are_logged_without_raising(
-        self, memory, leader, monkeypatch, swarmq_logs,
+        self,
+        memory,
+        leader,
+        monkeypatch,
+        swarmq_logs,
     ):
         async def _down():
             raise BackendConnectionError("valkey down")
@@ -405,7 +433,11 @@ class TestAdoptReportedCrons:
         assert entry["log_level"] == "warning" and entry["error"] == "valkey down"
 
     async def test_failed_prune_is_logged_without_raising(
-        self, memory, leader, monkeypatch, swarmq_logs,
+        self,
+        memory,
+        leader,
+        monkeypatch,
+        swarmq_logs,
     ):
         async def _down(**_kw):
             raise BackendConnectionError("valkey flap")
@@ -461,7 +493,10 @@ class TestAdoptReportedCrons:
         assert await self._stored(memory) == (off, None)
 
     async def test_healing_does_not_revive_a_schedule_disabled_after_the_read(
-        self, memory, leader, monkeypatch,
+        self,
+        memory,
+        leader,
+        monkeypatch,
     ):
         """Review #4: ``schedule remove`` (HSET disabled + ZREM) landet
         zwischen dem Lesen der Definition und dem Schreiben der Heilung; die
@@ -487,7 +522,11 @@ class TestAdoptReportedCrons:
         assert score is None
 
     async def test_failed_healing_is_logged_and_does_not_stop_the_tick(
-        self, memory, leader, monkeypatch, swarmq_logs,
+        self,
+        memory,
+        leader,
+        monkeypatch,
+        swarmq_logs,
     ):
         stuck = _static()
         await memory.schedules.add("nightly", msgspec.json.encode(stuck), None)
@@ -528,13 +567,24 @@ class TestWorkerReports:
         from swarmq.scheduler import SchedulerLoop
 
         return SchedulerLoop(
-            backend=memory, broker=broker, config=config, lock_manager=locks,
-            store=ScheduleStore(memory), signal_dispatcher=signal_dispatcher,
-            owner_token="standby", worker_id="w-2", static_crons=crons,
+            backend=memory,
+            broker=broker,
+            config=config,
+            lock_manager=locks,
+            store=ScheduleStore(memory),
+            signal_dispatcher=signal_dispatcher,
+            owner_token="standby",
+            worker_id="w-2",
+            static_crons=crons,
         )
 
     async def test_start_reports_every_static_cron(
-        self, memory, broker, config, standby_locks, signal_dispatcher,
+        self,
+        memory,
+        broker,
+        config,
+        standby_locks,
+        signal_dispatcher,
     ):
         crons = [_static(), _static(schedule_name="b", task_name="b", timezone="Asia/Tokyo")]
         worker = self._worker(memory, broker, config, standby_locks, signal_dispatcher, crons)
@@ -550,15 +600,26 @@ class TestWorkerReports:
         )
 
     async def test_unreachable_backend_at_report_does_not_stop_the_worker(
-        self, memory, broker, config, standby_locks, signal_dispatcher,
-        monkeypatch, swarmq_logs,
+        self,
+        memory,
+        broker,
+        config,
+        standby_locks,
+        signal_dispatcher,
+        monkeypatch,
+        swarmq_logs,
     ):
         async def _down(*_a, **_kw):
             raise BackendConnectionError("valkey down")
 
         monkeypatch.setattr(memory.schedules, "report_cron", _down)
         worker = self._worker(
-            memory, broker, config, standby_locks, signal_dispatcher, [_static()],
+            memory,
+            broker,
+            config,
+            standby_locks,
+            signal_dispatcher,
+            [_static()],
         )
 
         await worker.start()
@@ -572,7 +633,13 @@ class TestWorkerReports:
         assert entries[0]["error"] == "valkey down"
 
     async def test_reports_are_repeated_every_seen_interval(
-        self, memory, broker, config, standby_locks, signal_dispatcher, monkeypatch,
+        self,
+        memory,
+        broker,
+        config,
+        standby_locks,
+        signal_dispatcher,
+        monkeypatch,
     ):
         config = dataclasses.replace(config, scheduler_seen_interval_s=0.03)
         calls = 0
@@ -588,7 +655,12 @@ class TestWorkerReports:
 
         monkeypatch.setattr(memory.schedules, "report_cron", _counting)
         worker = self._worker(
-            memory, broker, config, standby_locks, signal_dispatcher, [_static()],
+            memory,
+            broker,
+            config,
+            standby_locks,
+            signal_dispatcher,
+            [_static()],
         )
 
         await worker.start()
@@ -599,11 +671,22 @@ class TestWorkerReports:
 
     @pytest.mark.parametrize("teardown", ["stop", "abort"])
     async def test_teardown_leaves_no_report_task_running(
-        self, memory, broker, config, standby_locks, signal_dispatcher, teardown,
+        self,
+        memory,
+        broker,
+        config,
+        standby_locks,
+        signal_dispatcher,
+        teardown,
     ):
         before = {t for t in asyncio.all_tasks() if not t.done()}
         worker = self._worker(
-            memory, broker, config, standby_locks, signal_dispatcher, [_static()],
+            memory,
+            broker,
+            config,
+            standby_locks,
+            signal_dispatcher,
+            [_static()],
         )
         await worker.start()
 
@@ -626,17 +709,31 @@ class TestLeaderTick:
         from swarmq.scheduler import SchedulerLoop
 
         return SchedulerLoop(
-            backend=memory, broker=broker, config=config, lock_manager=lock_manager,
-            store=ScheduleStore(memory), signal_dispatcher=signal_dispatcher,
-            owner_token="test-owner", worker_id="w-1", static_crons=crons,
+            backend=memory,
+            broker=broker,
+            config=config,
+            lock_manager=lock_manager,
+            store=ScheduleStore(memory),
+            signal_dispatcher=signal_dispatcher,
+            owner_token="test-owner",
+            worker_id="w-1",
+            static_crons=crons,
         )
 
     async def test_new_leader_adopts_reports_of_another_worker(
-        self, memory, broker, config, lock_manager, signal_dispatcher, monkeypatch,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        monkeypatch,
     ):
         foreign = _static(cron="0 3 * * *", timezone="Europe/Berlin")
         await memory.schedules.report_cron(
-            "nightly", cron_fingerprint(foreign), msgspec.json.encode(foreign),
+            "nightly",
+            cron_fingerprint(foreign),
+            msgspec.json.encode(foreign),
             live_window_ms=180_000,
         )
         inserted = asyncio.Event()
@@ -675,7 +772,13 @@ class TestLeaderTick:
         return calls, reached
 
     async def test_selection_does_not_run_at_poll_rate(
-        self, memory, broker, config, lock_manager, signal_dispatcher, monkeypatch,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        monkeypatch,
     ):
         config = dataclasses.replace(config, scheduler_poll_interval=0.01)
         assert config.scheduler_seen_interval_s == 60.0
@@ -692,7 +795,13 @@ class TestLeaderTick:
         assert reads["n"] == 1
 
     async def test_selection_repeats_every_seen_interval(
-        self, memory, broker, config, lock_manager, signal_dispatcher, monkeypatch,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        monkeypatch,
     ):
         config = dataclasses.replace(config, scheduler_seen_interval_s=0.03)
         _, third = self._count(monkeypatch, memory.schedules, "cron_reports", until=3)
@@ -705,14 +814,25 @@ class TestLeaderTick:
             await leader.stop()
 
     async def test_standby_does_not_select(
-        self, memory, broker, config, lock_manager, signal_dispatcher, monkeypatch,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        monkeypatch,
     ):
         config = dataclasses.replace(config, scheduler_seen_interval_s=0.02)
         lock_manager.acquire.return_value = None
         reads, _ = self._count(monkeypatch, memory.schedules, "cron_reports", until=1)
         _, reported = self._count(monkeypatch, memory.schedules, "report_cron", until=4)
         worker = self._leader(
-            memory, broker, config, lock_manager, signal_dispatcher, crons=[_static()],
+            memory,
+            broker,
+            config,
+            lock_manager,
+            signal_dispatcher,
+            crons=[_static()],
         )
 
         await worker.start()
@@ -737,17 +857,30 @@ class TestLeaderTick:
             await leader.stop()
 
     async def test_adopted_foreign_cron_fires_without_registry_warning(
-        self, memory, broker, config, lock_manager, signal_dispatcher, monkeypatch,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        monkeypatch,
         swarmq_logs,
     ):
         foreign = _static(task_name="app_b.nightly")
         await memory.schedules.report_cron(
-            "nightly", cron_fingerprint(foreign), msgspec.json.encode(foreign),
+            "nightly",
+            cron_fingerprint(foreign),
+            msgspec.json.encode(foreign),
             live_window_ms=180_000,
         )
 
         await self._fire_after_adoption(
-            memory, broker, config, lock_manager, signal_dispatcher, monkeypatch,
+            memory,
+            broker,
+            config,
+            lock_manager,
+            signal_dispatcher,
+            monkeypatch,
         )
 
         assert not [e for e in swarmq_logs if e["event"] == "scheduler_task_not_in_local_registry"]

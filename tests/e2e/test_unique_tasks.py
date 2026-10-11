@@ -73,7 +73,9 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 
 
 async def test_submit_button_double_click_dedup(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """Rapid double-schedule with identical args within unique_for window:
     both calls return the same task_id, TASK_DUPLICATE_DETECTED fires
@@ -85,7 +87,8 @@ async def test_submit_button_double_click_dedup(
 
     class OrderTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             unique_for=30,  # completion mode is default
         )
 
@@ -109,10 +112,14 @@ async def test_submit_button_double_click_dedup(
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # Double-click — second schedule arrives before first finishes.
             tid_1 = await client_app.schedule(
-                task_name, user_id=7, order_id=42,
+                task_name,
+                user_id=7,
+                order_id=42,
             )
             tid_2 = await client_app.schedule(
-                task_name, user_id=7, order_id=42,
+                task_name,
+                user_id=7,
+                order_id=42,
             )
 
             assert tid_1 == tid_2, "dup should return the same task_id"
@@ -136,7 +143,9 @@ async def test_submit_button_double_click_dedup(
 
 
 async def test_webhook_idempotency_across_retry_window(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """unique_until=completion holds the flag across retry delays.
 
@@ -151,8 +160,10 @@ async def test_webhook_idempotency_across_retry_window(
 
     class WebhookTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
-            unique_for=60, unique_until="completion",
+            name=task_name,
+            queues=[queue],
+            unique_for=60,
+            unique_until="completion",
         )
 
         async def run(self, event_id: str) -> dict:
@@ -186,9 +197,7 @@ async def test_webhook_idempotency_across_retry_window(
             result_2 = await client_app.get_result(tid_c, timeout=8)
             assert result_2 == {"processed": "e-1"}
 
-    assert len(executions) == 2, (
-        "Expected exactly one execution per completed-release cycle"
-    )
+    assert len(executions) == 2, "Expected exactly one execution per completed-release cycle"
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +206,9 @@ async def test_webhook_idempotency_across_retry_window(
 
 
 async def test_locking_and_unique_combined(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """A task guarded by BOTH a lock (R3.4) and unique_for (R3.5):
 
@@ -212,9 +223,12 @@ async def test_locking_and_unique_combined(
 
     class ReportTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
-            unique_for=15, unique_until="completion",
-            lock="report:{user_id}", max_concurrency=1,
+            name=task_name,
+            queues=[queue],
+            unique_for=15,
+            unique_until="completion",
+            lock="report:{user_id}",
+            max_concurrency=1,
             hard_timeout=10,
         )
 
@@ -266,7 +280,9 @@ async def test_locking_and_unique_combined(
 
 
 async def test_ttl_expiry_race_owner_check_protects_second_task(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """unique_for=1 + task that runs for ~1.5s: flag expires mid-run;
     a second schedule within the window SETNX-succeeds (fresh flag).
@@ -281,7 +297,8 @@ async def test_ttl_expiry_race_owner_check_protects_second_task(
 
     class RaceTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             unique_for=1,  # 1-second TTL
             unique_until="completion",
         )

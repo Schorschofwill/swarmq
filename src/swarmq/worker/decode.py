@@ -39,6 +39,7 @@ def valid_unique_hash(message: Any) -> str | None:
         return None
     return unique_hash
 
+
 def valid_workflow_id(message: Any) -> str | None:
     """Read and validate the workflow-id header from an incoming message.
 
@@ -75,9 +76,7 @@ def attempt_number(message: Any) -> int | None:
     return raw + 1
 
 
-async def decode_and_validate(
-    deps: GateDeps, message: Any
-) -> tuple[str, str, str, list[Any], dict[str, Any]] | None:
+async def decode_and_validate(deps: GateDeps, message: Any) -> tuple[str, str, str, list[Any], dict[str, Any]] | None:
     """Size-Cap + Deserialize + Shape-Validierung; ``None`` = behandelt
     (Oversize/Malformed → DLX-Route ohne Redelivery)."""
     # Size cap BEFORE the decode. msgspec has a built-in recursion-depth
@@ -92,11 +91,10 @@ async def decode_and_validate(
             hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
         )
         await route_via_dlx(
-            deps, message, reason="body_too_large",
-            error=(
-                f"body {len(message.body)} bytes over cap "
-                f"{deps.config.max_message_body_bytes}"
-            ),
+            deps,
+            message,
+            reason="body_too_large",
+            error=(f"body {len(message.body)} bytes over cap {deps.config.max_message_body_bytes}"),
         )
         return None
     try:
@@ -112,19 +110,18 @@ async def decode_and_validate(
         # character-by-character into positional args and run the task
         # with garbage. Treat as malformed: route to DLQ, don't redeliver.
         if not isinstance(args, list):
-            raise TypeError(
-                f"task 'args' must be a list, got {type(args).__name__}"
-            )
+            raise TypeError(f"task 'args' must be a list, got {type(args).__name__}")
         if not isinstance(kwargs, dict):
-            raise TypeError(
-                f"task 'kwargs' must be a dict, got {type(kwargs).__name__}"
-            )
+            raise TypeError(f"task 'kwargs' must be a dict, got {type(kwargs).__name__}")
     except Exception as exc:
         logger.error("deserialize_failed", **_error_fields(exc))
         # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
         # unknown). Accepted limitation — flag self-heals via TTL.
         await route_via_dlx(
-            deps, message, reason="undecodable", error=str(exc),
+            deps,
+            message,
+            reason="undecodable",
+            error=str(exc),
         )
         return None
     return task_id, queue, task_name, args, kwargs

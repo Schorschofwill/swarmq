@@ -34,9 +34,7 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
         except Exception as exc:
             return super().format(self._substitute_record(record, exc))
 
-    def _substitute_record(
-        self, record: logging.LogRecord, exc: Exception
-    ) -> logging.LogRecord:
+    def _substitute_record(self, record: logging.LogRecord, exc: Exception) -> logging.LogRecord:
         """Baut einen structlog-nativen Record mit dem Ersatz-Event.
 
         Die ``foreign_pre_chain`` (Level, Zeitstempel) laeuft hier von
@@ -52,9 +50,7 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
         }
         for proc in self.foreign_pre_chain or ():
             ed = proc(logger, meth_name, ed)
-        args, kwargs = structlog.stdlib.ProcessorFormatter.wrap_for_formatter(
-            logger, meth_name, ed
-        )
+        args, kwargs = structlog.stdlib.ProcessorFormatter.wrap_for_formatter(logger, meth_name, ed)
         substitute = logging.LogRecord(
             record.name,
             record.levelno,
@@ -68,9 +64,7 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
         return substitute
 
 
-def _add_record_timestamp(
-    _: Any, __: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
+def _add_record_timestamp(_: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
     """Zeitstempel aus ``record.created`` statt aus dem Formatierungszeitpunkt.
 
     Gerendert wird im Listener-Thread; staut sich die Queue, laege die Zeit
@@ -87,11 +81,7 @@ def _add_record_timestamp(
 
 def iso_utc(created: float) -> str:
     """``created`` (Epochensekunden) als ISO 8601 in UTC mit Suffix ``Z``."""
-    return (
-        datetime.datetime.fromtimestamp(created, tz=datetime.UTC)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.datetime.fromtimestamp(created, tz=datetime.UTC).isoformat().replace("+00:00", "Z")
 
 
 _EXTRA_ADDER = structlog.stdlib.ExtraAdder()
@@ -125,11 +115,7 @@ def build_formatter(json: bool, colors: bool) -> structlog.stdlib.ProcessorForma
     ``log_record_unformattable`` (R8). In einer dictConfig nutzbar per
     ``{"()": "swarmq.logging.build_formatter", "json": true, "colors": false}``.
     """
-    renderer: Any = (
-        structlog.processors.JSONRenderer()
-        if json
-        else structlog.dev.ConsoleRenderer(colors=colors)
-    )
+    renderer: Any = structlog.processors.JSONRenderer() if json else structlog.dev.ConsoleRenderer(colors=colors)
     return _SafeProcessorFormatter(
         # Ohne ``remove_processors_meta`` rendert der Formatter seine
         # eigenen Arbeitsschluessel mit (B6): ``_record`` traegt den

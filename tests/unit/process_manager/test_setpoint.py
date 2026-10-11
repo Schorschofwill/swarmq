@@ -83,8 +83,12 @@ def _pm(n: int = 2, *, store=None, factory=None, **kw) -> ProcessManager:
     if factory is None and store is not None:
         factory = lambda: store  # noqa: E731
     pm = ProcessManager(
-        num_workers=n, worker_entry=_entry_stub, setpoint_store_factory=factory,
-        supervisor_id="host:p1", group="orders", **kw,
+        num_workers=n,
+        worker_entry=_entry_stub,
+        setpoint_store_factory=factory,
+        supervisor_id="host:p1",
+        group="orders",
+        **kw,
     )
     pm._ctx = MagicMock()
     generations: dict[int, int] = {}
@@ -198,8 +202,14 @@ class TestTick:
     """
 
     def _autoscaled(self, n: int, store: FakeStore, depth: int = 0, **kw) -> ProcessManager:
-        pm = _pm(n=n, store=store, autoscale=kw.pop("autoscale", (2, 4)), queue_depth_fn=lambda: depth,
-                 max_processes=kw.pop("max_processes", 16), **kw)
+        pm = _pm(
+            n=n,
+            store=store,
+            autoscale=kw.pop("autoscale", (2, 4)),
+            queue_depth_fn=lambda: depth,
+            max_processes=kw.pop("max_processes", 16),
+            **kw,
+        )
         pm.SETPOINT_SAMPLE_INTERVAL = 0.0
         pm._start_all_workers()
         return pm

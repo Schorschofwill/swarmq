@@ -68,17 +68,31 @@ def _deps(**cfg: Any) -> GateDeps:
     signals = MagicMock()
     signals.dispatch = AsyncMock()
     return GateDeps(
-        broker=MagicMock(), backend=backend, config=config, signals=signals, registry=MagicMock(),
-        rate_limiter=lambda: None, lock_manager=lambda: None, finalize_schedfire=AsyncMock(),
-        maybe_release_unique=AsyncMock(), extract_valid_workflow_id=lambda _m: None,
+        broker=MagicMock(),
+        backend=backend,
+        config=config,
+        signals=signals,
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
+        extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
 
 
 def _ctx(task_class: type = Plain, **info: Any) -> GateContext:
     task_info = TaskInfo(name=task_class.task_info.name, queues=["q"], **info)
-    return GateContext(task_id="t1", task_name=task_class.task_info.name, queue="q", task_info=task_info,
-                       task_class=task_class, args=[1, 2], kwargs={"k": "v"})
+    return GateContext(
+        task_id="t1",
+        task_name=task_class.task_info.name,
+        queue="q",
+        task_info=task_info,
+        task_class=task_class,
+        args=[1, 2],
+        kwargs={"k": "v"},
+    )
 
 
 @pytest.fixture
@@ -188,7 +202,8 @@ async def test_progress_sink_failure_logs_warning_with_error_type_and_error(setu
     deps.backend.set_progress = AsyncMock(side_effect=ConnectionError("valkey down"))
     await ex.progress_sink(("progress", "t1", {"current": "1"}, 5000))
     [entry] = [
-        e for e in swarmq_logs
+        e
+        for e in swarmq_logs
         if e["logger"] == "swarmq.worker.compute.executor" and e["event"] == "compute_progress_forward_failed"
     ]
     assert entry["log_level"] == "warning"
@@ -268,8 +283,12 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
     from swarmq.logging_settings import LoggingSettings
 
     settings = LoggingSettings(
-        level="DEBUG", level_explicit=True, log_config="/abs/logging.json",
-        log_config_json='{"version": 1}', logger_levels=(("aio_pika", "WARNING"),), queue_size=500,
+        level="DEBUG",
+        level_explicit=True,
+        log_config="/abs/logging.json",
+        log_config_json='{"version": 1}',
+        logger_levels=(("aio_pika", "WARNING"),),
+        queue_size=500,
         drain_timeout=0.75,
     )
     pool = FakePool()
@@ -277,10 +296,15 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
     await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
     job = pool.job
     assert (job.log_level, job.log_level_explicit, job.log_config, job.log_config_json) == (
-        "DEBUG", True, "/abs/logging.json", '{"version": 1}',
+        "DEBUG",
+        True,
+        "/abs/logging.json",
+        '{"version": 1}',
     )
     assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
-        True, (("aio_pika", "WARNING"),), 500,
+        True,
+        (("aio_pika", "WARNING"),),
+        500,
     )
     assert job.log_drain_timeout == 0.75
 
@@ -289,15 +313,21 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
 async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
     pool = FakePool()
     deps = _deps(
-        log_level="WARNING", log_json=False, configure_logging=False,
-        logger_levels=(("aio_pika", "ERROR"),), log_queue_size=200, log_drain_timeout=1.5,
+        log_level="WARNING",
+        log_json=False,
+        configure_logging=False,
+        logger_levels=(("aio_pika", "ERROR"),),
+        log_queue_size=200,
+        log_drain_timeout=1.5,
     )
     ex = ComputeExecutor(deps, pool, worker_id="w1")  # type: ignore[arg-type]
     await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
     job = pool.job
     assert (job.log_level, job.log_json, job.log_config, job.log_config_json) == ("WARNING", False, None, None)
     assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
-        False, (("aio_pika", "ERROR"),), 200,
+        False,
+        (("aio_pika", "ERROR"),),
+        200,
     )
     assert job.log_drain_timeout == 1.5
 
@@ -316,7 +346,9 @@ async def test_embedded_log_config_is_loaded_once_and_travels_as_json(tmp_path):
     job = pool.job
     assert job.log_config == str(path)
     assert json.loads(job.log_config_json) == {
-        "version": 1, "root": {"level": "INFO"}, "disable_existing_loggers": False,
+        "version": 1,
+        "root": {"level": "INFO"},
+        "disable_existing_loggers": False,
     }
 
 

@@ -31,9 +31,7 @@ WorkflowNode = Union["Signature", "Chain", "Group", "Chord"]
 def _coerce_node(obj: Any) -> WorkflowNode:
     if isinstance(obj, (Signature, Chain, Group, Chord)):
         return obj
-    raise WorkflowValidationError(
-        f"expected a Signature/chain/group/chord, got {type(obj).__name__}"
-    )
+    raise WorkflowValidationError(f"expected a Signature/chain/group/chord, got {type(obj).__name__}")
 
 
 def _node_depth(node: WorkflowNode) -> int:
@@ -260,19 +258,14 @@ def chain(*nodes: Any) -> Chain:
 
 def group(*members: Any) -> Group:
     # Accept a single iterable/generator as well as varargs.
-    if len(members) == 1 and not isinstance(
-        members[0], (Signature, Chain, Group, Chord)
-    ):
+    if len(members) == 1 and not isinstance(members[0], (Signature, Chain, Group, Chord)):
         candidate = members[0]
         if hasattr(candidate, "__iter__"):
             members = tuple(candidate)
     if not members:
         raise WorkflowValidationError("group requires at least one member")
     if len(members) > DEFAULT_MAX_GROUP_SIZE:
-        raise WorkflowValidationError(
-            f"group size {len(members)} exceeds max_group_size "
-            f"{DEFAULT_MAX_GROUP_SIZE}"
-        )
+        raise WorkflowValidationError(f"group size {len(members)} exceeds max_group_size {DEFAULT_MAX_GROUP_SIZE}")
     nodes = [_coerce_node(m) for m in members]
     g = Group(nodes)
     _validate(g)
@@ -281,9 +274,7 @@ def group(*members: Any) -> Group:
 
 def chord(header: Any, body: Any) -> Chord:
     if not isinstance(header, Group):
-        raise WorkflowValidationError(
-            "chord header must be a group(...) of header tasks"
-        )
+        raise WorkflowValidationError("chord header must be a group(...) of header tasks")
     ch = Chord(header, _coerce_node(body))
     _validate(ch)
     return ch

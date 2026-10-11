@@ -1,6 +1,5 @@
 """Tests fuer swarmq.worker.compute.child — Kind-Laufzeit ohne echten Fork (U4)."""
 
-
 import asyncio
 import os
 import queue as _queue

@@ -59,8 +59,7 @@ def check_watchfiles_available() -> None:
         import watchfiles  # noqa: F401
     except ImportError as exc:
         raise ConfigurationError(
-            "--reload: watchfiles is not installed. "
-            "Install with:  pip install 'swarmq[reload]'"
+            "--reload: watchfiles is not installed. Install with:  pip install 'swarmq[reload]'"
         ) from exc
 
 
@@ -104,8 +103,7 @@ def resolve_watch_dirs(
             spec = importlib.util.find_spec(module)
         except (ImportError, ValueError) as exc:
             raise ConfigurationError(
-                f"--reload: cannot resolve watch directory for module "
-                f"{module!r} ({exc}). Pass --watch-dir explicitly."
+                f"--reload: cannot resolve watch directory for module {module!r} ({exc}). Pass --watch-dir explicitly."
             ) from exc
     if spec is None or spec.origin is None:
         raise ConfigurationError(

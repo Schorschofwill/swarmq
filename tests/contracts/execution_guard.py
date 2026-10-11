@@ -49,11 +49,22 @@ def _identity() -> str:
     return f"ctr-guard-{uuid.uuid4().hex[:12]}"
 
 
-async def _claim(impl: ExecutionGuardStore, identity: str, owner: str, *, retry_count: int = 0,
-                 ttl_ms: int = TTL, max_orphans: int = 3) -> str:
+async def _claim(
+    impl: ExecutionGuardStore,
+    identity: str,
+    owner: str,
+    *,
+    retry_count: int = 0,
+    ttl_ms: int = TTL,
+    max_orphans: int = 3,
+) -> str:
     claim = await impl.claim(
-        identity, owner=owner, retry_count=retry_count, ttl_ms=ttl_ms,
-        state_ttl_ms=STATE_TTL, max_orphans=max_orphans,
+        identity,
+        owner=owner,
+        retry_count=retry_count,
+        ttl_ms=ttl_ms,
+        state_ttl_ms=STATE_TTL,
+        max_orphans=max_orphans,
     )
     return claim.status
 
@@ -66,7 +77,12 @@ class ExecutionGuardStoreContract:
         identity = _identity()
         await _claim(impl, identity, "a")
         claim = await impl.claim(
-            identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=STATE_TTL, max_orphans=3,
+            identity,
+            owner="a",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=STATE_TTL,
+            max_orphans=3,
         )
         assert claim == GuardClaim("claimed", orphans=0)
 
@@ -89,7 +105,6 @@ class ExecutionGuardStoreContract:
         assert await _claim(impl, identity, "b", retry_count=0) == "superseded"
         assert await _claim(impl, identity, "c", retry_count=1) == "claimed"
 
-
     async def test_superseded_counter_only_grows(self, impl: ExecutionGuardStore) -> None:
         identity = _identity()
         await impl.mark_superseded(identity, owner="a", retry_count=2, state_ttl_ms=STATE_TTL)
@@ -101,7 +116,12 @@ class ExecutionGuardStoreContract:
         await _claim(impl, identity, "a")
         await impl.release(identity, owner="a")
         claim = await impl.claim(
-            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=STATE_TTL, max_orphans=3,
+            identity,
+            owner="b",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=STATE_TTL,
+            max_orphans=3,
         )
         assert claim == GuardClaim("claimed", orphans=0)
 
@@ -112,13 +132,20 @@ class ExecutionGuardStoreContract:
         assert await _claim(impl, identity, "b") == "running"
 
     async def test_expired_running_marker_without_release_counts_an_orphan(
-        self, impl: ExecutionGuardStore, clock: Clock,
+        self,
+        impl: ExecutionGuardStore,
+        clock: Clock,
     ) -> None:
         identity = _identity()
         await _claim(impl, identity, "a", ttl_ms=200)
         await clock.advance(0.4)
         claim = await impl.claim(
-            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=STATE_TTL, max_orphans=3,
+            identity,
+            owner="b",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=STATE_TTL,
+            max_orphans=3,
         )
         assert claim == GuardClaim("claimed", orphans=1)
 
@@ -131,7 +158,12 @@ class ExecutionGuardStoreContract:
             await _claim(impl, identity, owner, ttl_ms=100)
             await clock.advance(0.2)
         claim = await impl.claim(
-            identity, owner="d", retry_count=0, ttl_ms=TTL, state_ttl_ms=STATE_TTL, max_orphans=3,
+            identity,
+            owner="d",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=STATE_TTL,
+            max_orphans=3,
         )
         assert claim == GuardClaim("orphan_limit", orphans=3)
         assert await _claim(impl, identity, "e") == "running"
@@ -144,7 +176,6 @@ class ExecutionGuardStoreContract:
         await clock.advance(0.5)
         assert await _claim(impl, identity, "b") == "running"
 
-
     async def test_renew_after_expiry_fails(self, impl: ExecutionGuardStore, clock: Clock) -> None:
         identity = _identity()
         await _claim(impl, identity, "a", ttl_ms=100)
@@ -152,7 +183,9 @@ class ExecutionGuardStoreContract:
         assert await impl.renew(identity, owner="a", ttl_ms=60_000) is False
 
     async def test_done_and_superseded_markers_expire_after_state_ttl(
-        self, impl: ExecutionGuardStore, clock: Clock,
+        self,
+        impl: ExecutionGuardStore,
+        clock: Clock,
     ) -> None:
         # MR 12: der Abschluss verkuerzt den Zustand nie -- der Claim setzt
         # hier dieselbe kurze TTL.
@@ -166,12 +199,20 @@ class ExecutionGuardStoreContract:
         assert await _claim(impl, superseded, "b") == "claimed"
 
     async def test_running_claim_extends_the_state_to_the_backlog_ttl(
-        self, impl: ExecutionGuardStore, clock: Clock,
+        self,
+        impl: ExecutionGuardStore,
+        clock: Clock,
     ) -> None:
         identity = _identity()
         await impl.claim(identity, owner="a", retry_count=0, ttl_ms=100, state_ttl_ms=200, max_orphans=3)
         claim = await impl.claim(
-            identity, owner="b", retry_count=0, ttl_ms=100, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+            identity,
+            owner="b",
+            retry_count=0,
+            ttl_ms=100,
+            state_ttl_ms=200,
+            max_orphans=3,
+            backlog_ttl_ms=5_000,
         )
         assert claim.status == "running"
         await clock.advance(0.3)  # Running-Marker (100 ms) und Zustand (200 ms) waeren weg
@@ -183,19 +224,33 @@ class ExecutionGuardStoreContract:
         identity = _identity()
         await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
         await impl.claim(
-            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+            identity,
+            owner="b",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=200,
+            max_orphans=3,
+            backlog_ttl_ms=5_000,
         )
         await impl.mark_done(identity, owner="a", state_ttl_ms=200)
         await clock.advance(0.3)  # ueber die Done-TTL des Abschlusses, unter dem Rueckstand
         assert await _claim(impl, identity, "c") == "done"
 
     async def test_release_after_a_running_claim_keeps_the_backlog(
-        self, impl: ExecutionGuardStore, clock: Clock,
+        self,
+        impl: ExecutionGuardStore,
+        clock: Clock,
     ) -> None:
         identity = _identity()
         await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
         await impl.claim(
-            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+            identity,
+            owner="b",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=200,
+            max_orphans=3,
+            backlog_ttl_ms=5_000,
         )
         await impl.release(identity, owner="a")  # z. B. Lock-Konflikt: Kopie per retry_later
         claim = await impl.claim(identity, owner="a2", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
@@ -205,13 +260,21 @@ class ExecutionGuardStoreContract:
         assert await _claim(impl, identity, "c") == "done"
 
     async def test_running_claim_recreates_an_expired_state_with_the_backlog(
-        self, impl: ExecutionGuardStore, clock: Clock,
+        self,
+        impl: ExecutionGuardStore,
+        clock: Clock,
     ) -> None:
         identity = _identity()
         await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
         await clock.advance(0.3)  # der Lauf dauert laenger als die Zustands-TTL
         claim = await impl.claim(
-            identity, owner="b", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3, backlog_ttl_ms=5_000,
+            identity,
+            owner="b",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=200,
+            max_orphans=3,
+            backlog_ttl_ms=5_000,
         )
         assert claim.status == "running"
         await impl.mark_done(identity, owner="a", state_ttl_ms=200)

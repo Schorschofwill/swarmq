@@ -83,8 +83,11 @@ async def _flush_valkey(valkey_url):
 
 @contextlib.asynccontextmanager
 async def _running_worker(
-    rabbitmq_url: str, valkey_url: str, queue: str,
-    *, extra_config: dict[str, Any] | None = None,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+    *,
+    extra_config: dict[str, Any] | None = None,
     register_signals: dict[Signal, Any] | None = None,
 ):
     """Spawn a worker, await WORKER_ONLINE, yield the worker_app.
@@ -128,7 +131,9 @@ async def _running_worker(
 
 
 async def test_signal_worker_online(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """WORKER_ONLINE fires once when the worker reaches ready state."""
     queue = _unique_queue()
@@ -139,7 +144,10 @@ async def test_signal_worker_online(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
     )
 
     @worker_app.on_signal(Signal.WORKER_ONLINE)
@@ -163,7 +171,9 @@ async def test_signal_worker_online(
 
 
 async def test_signal_worker_shutdown(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """WORKER_SHUTDOWN fires at the start of the graceful shutdown sequence.
 
@@ -189,7 +199,10 @@ async def test_signal_worker_shutdown(
 
     async with app:
         worker = Worker(
-            app.broker, app.backend, app.registry, app.config,
+            app.broker,
+            app.backend,
+            app.registry,
+            app.config,
             signal_dispatcher=app._signal_dispatcher,
         )
         task = asyncio.create_task(worker.start())
@@ -209,7 +222,9 @@ async def test_signal_worker_shutdown(
 
 
 async def test_signal_worker_heartbeat(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """WORKER_HEARTBEAT — periodic liveness tick from the metrics sampler.
 
@@ -244,7 +259,10 @@ async def test_signal_worker_heartbeat(
         app.config.metrics_port = _free_port()
         app.config.metrics_sample_interval = 0.2
         worker = Worker(
-            app.broker, app.backend, app.registry, app.config,
+            app.broker,
+            app.backend,
+            app.registry,
+            app.config,
             signal_dispatcher=app._signal_dispatcher,
         )
         task = asyncio.create_task(worker.start())
@@ -270,7 +288,9 @@ async def test_signal_worker_heartbeat(
 
 
 async def test_signal_task_enqueued(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_ENQUEUED fires at client.schedule() time with task_id, task_name, queue."""
     queue = _unique_queue()
@@ -305,7 +325,9 @@ async def test_signal_task_enqueued(
 
 
 async def test_signal_task_started(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_STARTED fires when the worker picks up a message."""
     queue = _unique_queue()
@@ -331,7 +353,9 @@ async def test_signal_task_started(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.TASK_STARTED: _handler},
         ):
             tid = await client_app.schedule(task_name)
@@ -343,7 +367,9 @@ async def test_signal_task_started(
 
 
 async def test_signal_task_completed(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_COMPLETED fires on successful run with duration_ms."""
     queue = _unique_queue()
@@ -369,7 +395,9 @@ async def test_signal_task_completed(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.TASK_COMPLETED: _handler},
         ):
             tid = await client_app.schedule(task_name)
@@ -384,7 +412,9 @@ async def test_signal_task_completed(
 
 
 async def test_signal_task_failed(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_FAILED fires after retries exhaust; kwargs include exception."""
     queue = _unique_queue()
@@ -394,7 +424,8 @@ async def test_signal_task_failed(
 
     class BoomTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             max_retries=1,
             retry_backoff="fixed",
             retry_base_delay=0.1,
@@ -415,7 +446,9 @@ async def test_signal_task_failed(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.TASK_FAILED: _handler},
         ):
             tid = await client_app.schedule(task_name)
@@ -440,7 +473,9 @@ async def test_signal_task_failed(
 
 @pytest.mark.timeout(75)
 async def test_signal_task_retrying(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_RETRYING fires on the retry decision between attempts."""
     queue = _unique_queue()
@@ -450,7 +485,8 @@ async def test_signal_task_retrying(
 
     class RetryOnce(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             max_retries=2,
             retry_backoff="fixed",
             retry_base_delay=0.3,
@@ -476,7 +512,9 @@ async def test_signal_task_retrying(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.TASK_RETRYING: _handler},
         ):
             tid = await client_app.schedule(task_name)
@@ -495,7 +533,9 @@ async def test_signal_task_retrying(
 
 
 async def test_signal_task_cancelled(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_CANCELLED fires when a cancel flag is observed pre-pickup."""
     queue = _unique_queue()
@@ -525,7 +565,9 @@ async def test_signal_task_cancelled(
         await client_app.cancel(tid)
 
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.TASK_CANCELLED: _handler},
         ):
             await asyncio.wait_for(cancelled.wait(), timeout=_EVENT_TIMEOUT)
@@ -536,7 +578,9 @@ async def test_signal_task_cancelled(
 
 
 async def test_signal_task_duplicate_detected(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_DUPLICATE_DETECTED fires when a second schedule() hits the
     dedup flag. existing_task_id, task_name, dedup_hash, source all present."""
@@ -546,7 +590,8 @@ async def test_signal_task_duplicate_detected(
 
     class DupTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             unique_for=60,
         )
 
@@ -579,7 +624,9 @@ async def test_signal_task_duplicate_detected(
 
 
 async def test_signal_task_rate_limited(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_RATE_LIMITED fires when a rate-limited task exceeds its allowance."""
     queue = _unique_queue()
@@ -589,7 +636,8 @@ async def test_signal_task_rate_limited(
 
     class LimitedTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             rate_limit="1/h",  # 1 per hour — second immediate fires limiter
         )
 
@@ -608,7 +656,9 @@ async def test_signal_task_rate_limited(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.TASK_RATE_LIMITED: _handler},
         ):
             # First consumes the 1/h budget; second must be rate-limited.
@@ -627,7 +677,9 @@ async def test_signal_task_rate_limited(
 
 
 async def test_signal_task_locked(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_LOCKED fires when a second task contends for the same lock."""
     queue = _unique_queue()
@@ -640,8 +692,10 @@ async def test_signal_task_locked(
 
     class LongHold(Task):
         task_info = TaskInfo(
-            name=long_name, queues=[queue],
-            lock=lock_name, hard_timeout=30,
+            name=long_name,
+            queues=[queue],
+            lock=lock_name,
+            hard_timeout=30,
         )
 
         async def run(self) -> str:
@@ -650,8 +704,10 @@ async def test_signal_task_locked(
 
     class ShortHold(Task):
         task_info = TaskInfo(
-            name=short_name, queues=[queue],
-            lock=lock_name, hard_timeout=30,
+            name=short_name,
+            queues=[queue],
+            lock=lock_name,
+            hard_timeout=30,
         )
 
         async def run(self) -> str:
@@ -669,7 +725,9 @@ async def test_signal_task_locked(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             extra_config={"concurrency": 2},
             register_signals={Signal.TASK_LOCKED: _handler},
         ):
@@ -688,7 +746,9 @@ async def test_signal_task_locked(
 
 
 async def test_signal_task_expired(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_EXPIRED fires when a message's enqueue age exceeds
     TaskInfo(max_age=...) at consume time (R4.4).
@@ -703,7 +763,9 @@ async def test_signal_task_expired(
 
     class ExpiringTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue], max_retries=0,
+            name=task_name,
+            queues=[queue],
+            max_retries=0,
             max_age=10,
         )
 
@@ -714,6 +776,7 @@ async def test_signal_task_expired(
     # stale enqueued-at header — simulates a message that has been
     # sitting in the queue past its max_age.
     import aio_pika
+
     conn = await aio_pika.connect_robust(rabbitmq_url)
     try:
         ch = await conn.channel()
@@ -746,7 +809,10 @@ async def test_signal_task_expired(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
     )
 
     @worker_app.on_signal(Signal.TASK_EXPIRED)
@@ -777,7 +843,9 @@ async def test_signal_task_expired(
 
 
 async def test_signal_scheduler_leader(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """SCHEDULER_LEADER fires on first-time leader election."""
     queue = _unique_queue()
@@ -791,7 +859,8 @@ async def test_signal_scheduler_leader(
     broker = RabbitMQBroker(rabbitmq_url)
     backend = ValkeyBackend(valkey_url)
     async with SwarmQ(
-        broker, backend,
+        broker,
+        backend,
         queues=[queue],
         concurrency=1,
         scheduler_poll_interval=0.1,
@@ -819,13 +888,15 @@ async def test_signal_scheduler_leader_failover_reference():
     complete without duplicating the multi-worker failover setup."""
     from tests.e2e.test_scheduler import TestCrashFailover
 
-    assert hasattr(
-        TestCrashFailover, "test_failover_signal_fires_on_crash_not_graceful"
-    ), "SCHEDULER_LEADER_FAILOVER reference test missing in test_scheduler.py"
+    assert hasattr(TestCrashFailover, "test_failover_signal_fires_on_crash_not_graceful"), (
+        "SCHEDULER_LEADER_FAILOVER reference test missing in test_scheduler.py"
+    )
 
 
 async def test_signal_scheduler_leader_handover(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """SCHEDULER_LEADER_HANDOVER fires when a leader releases its lock
     during graceful shutdown.
@@ -855,8 +926,10 @@ async def test_signal_scheduler_leader_handover(
     broker = RabbitMQBroker(rabbitmq_url)
     backend = ValkeyBackend(valkey_url)
     app = SwarmQ(
-        broker, backend,
-        queues=[queue], concurrency=1,
+        broker,
+        backend,
+        queues=[queue],
+        concurrency=1,
         scheduler_poll_interval=0.1,
         scheduler_heartbeat_interval=0.2,
         scheduler_lock_ttl=1.0,
@@ -870,7 +943,10 @@ async def test_signal_scheduler_leader_handover(
     async with app:
         await app.broker.declare_queue(queue)
         worker = Worker(
-            app.broker, app.backend, app.registry, app.config,
+            app.broker,
+            app.backend,
+            app.registry,
+            app.config,
             signal_dispatcher=app._signal_dispatcher,
         )
         task = asyncio.create_task(worker.start())
@@ -894,7 +970,9 @@ async def test_signal_scheduler_leader_handover(
 
 
 async def test_signal_scheduler_heartbeat(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """SCHEDULER_HEARTBEAT fires periodically after leader renews its lock."""
     queue = _unique_queue()
@@ -912,8 +990,10 @@ async def test_signal_scheduler_heartbeat(
     broker = RabbitMQBroker(rabbitmq_url)
     backend = ValkeyBackend(valkey_url)
     async with SwarmQ(
-        broker, backend,
-        queues=[queue], concurrency=1,
+        broker,
+        backend,
+        queues=[queue],
+        concurrency=1,
         scheduler_poll_interval=0.1,
         scheduler_heartbeat_interval=0.2,
         scheduler_lock_ttl=1.0,
@@ -935,7 +1015,9 @@ async def test_signal_scheduler_heartbeat(
 
 
 async def test_signal_scheduler_standby(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """SCHEDULER_STANDBY — leader loses its lock and steps down.
 
@@ -1022,7 +1104,9 @@ async def test_signal_worker_recycling_reference():
 
 
 async def test_signal_workflow_step_enqueued(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """WORKFLOW_STEP_ENQUEUED feuert je Workflow-Schritt — im Client fuer die
     Anfangsfront, im Worker fuer jeden Folgeschritt (U11, R16)."""
@@ -1051,14 +1135,18 @@ async def test_signal_workflow_step_enqueued(
             seen.set()
 
     client_app = SwarmQ(
-        RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue],
+        RabbitMQBroker(rabbitmq_url),
+        ValkeyBackend(valkey_url),
+        queues=[queue],
     )
     client_app.on_signal(Signal.WORKFLOW_STEP_ENQUEUED)(_handler)
 
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             register_signals={Signal.WORKFLOW_STEP_ENQUEUED: _handler},
         ):
             handle = await client_app.apply(chain(First.s(), Second.s()))
@@ -1074,7 +1162,9 @@ async def test_signal_workflow_step_enqueued(
 
 
 async def test_signal_task_rejected(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """TASK_REJECTED feuert, wenn der Worker eine Nachricht ohne
     Diagnose-Header ins ``.XQ`` gibt (U6, R12).
@@ -1094,7 +1184,9 @@ async def test_signal_task_rejected(
         seen.set()
 
     async with _running_worker(
-        rabbitmq_url, valkey_url, queue,
+        rabbitmq_url,
+        valkey_url,
+        queue,
         # Gnadenfrist 0 (Plan 0.12.0, MR 11, BZ-06): mit der Standard-Frist
         # wuerde der unbekannte Task 15 min lang zurueckgestellt.
         extra_config={"unknown_task_grace_s": 0},

@@ -99,20 +99,17 @@ from tests.unit.scheduler._helpers import _LEADER_TOKEN, _cron_def, _def, _make_
 pytestmark = [pytest.mark.timeout(5)]
 
 
-
-
 class TestElectionLoop:
     async def test_standby_acquire_success_emits_leader(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
         events: list[tuple[Signal, dict]] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER)
         async def _on_leader(**kwargs):
             events.append((Signal.SCHEDULER_LEADER, kwargs))
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         lock_manager.acquire.return_value = _LEADER_TOKEN
         backend.schedules.take_handover_marker.return_value = False
 
@@ -125,9 +122,7 @@ class TestElectionLoop:
     async def test_standby_acquire_fails_no_state_change(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         lock_manager.acquire.return_value = None
 
         await loop._election_tick()
@@ -141,13 +136,12 @@ class TestElectionLoop:
         """Standby sees the lock held first, then later acquires it
         after TTL-expiry → emit FAILOVER."""
         events: list[Signal] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
         async def _on_fo(**kwargs):
             events.append(Signal.SCHEDULER_LEADER_FAILOVER)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         # First tick: lock held by someone else
         lock_manager.acquire.return_value = None
         await loop._election_tick()
@@ -166,17 +160,18 @@ class TestElectionLoop:
         acquire succeeds AND handover marker was consumed → LEADER
         (clean handover), not FAILOVER."""
         leader_events: list[Signal] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER)
         async def _l(**kw):
             leader_events.append(Signal.SCHEDULER_LEADER)
+
         fo_events: list[Signal] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
         async def _fo(**kw):
             fo_events.append(Signal.SCHEDULER_LEADER_FAILOVER)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         lock_manager.acquire.return_value = None
         await loop._election_tick()
         assert loop._prev_leader_seen is True
@@ -192,13 +187,12 @@ class TestElectionLoop:
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
         hb: list[Signal] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_HEARTBEAT)
         async def _h(**kw):
             hb.append(Signal.SCHEDULER_HEARTBEAT)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         lock_manager.renew.return_value = True
 
@@ -210,9 +204,7 @@ class TestElectionLoop:
     async def test_leader_renew_lost_transitions_to_standby(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         lock_manager.renew.return_value = False
 
@@ -236,9 +228,7 @@ class TestElectionLoop:
         async def _s(**kw):
             standby_events.append(kw)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         lock_manager.renew.side_effect = BackendConnectionError("valkey down")
 
@@ -246,9 +236,7 @@ class TestElectionLoop:
         assert limit >= 1
         for _ in range(limit - 1):
             await loop._election_tick()
-            assert loop.state == "leader", (
-                "must tolerate failures below the threshold"
-            )
+            assert loop.state == "leader", "must tolerate failures below the threshold"
 
         await loop._election_tick()
 
@@ -260,9 +248,7 @@ class TestElectionLoop:
     ):
         """Ein einzelner Renew-Fehler gefolgt von Erfolg setzt den
         Zähler zurück — kein schleichender Step-down über Stunden."""
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         limit = loop._renew_failure_limit
 
@@ -292,9 +278,7 @@ class TestElectionLoop:
             scheduler_heartbeat_interval=10.0,
             scheduler_lock_ttl=30.0,
         )
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         assert loop._renew_failure_limit == 2
 
 
@@ -307,7 +291,9 @@ class TestLeaderVersion:
         await loop._election_tick()
 
         backend.schedules.set_leader_version.assert_awaited_once_with(
-            "test-owner", "0.10.0", ttl_ms=1_000,
+            "test-owner",
+            "0.10.0",
+            ttl_ms=1_000,
         )
 
     async def test_leader_writes_version_after_each_renew(
@@ -321,12 +307,22 @@ class TestLeaderVersion:
 
         assert backend.schedules.set_leader_version.await_count == 2
         backend.schedules.set_leader_version.assert_awaited_with(
-            "test-owner", "0.10.0", ttl_ms=1_000,
+            "test-owner",
+            "0.10.0",
+            ttl_ms=1_000,
         )
 
     @pytest.mark.parametrize("state", ["standby", "leader"])
     async def test_version_write_failure_keeps_leadership(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs, state,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
+        swarmq_logs,
+        state,
     ):
         backend.schedules.set_leader_version.side_effect = BackendConnectionError("valkey down")
         loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
@@ -340,7 +336,14 @@ class TestLeaderVersion:
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
     async def test_outdated_leader_is_reported_once_per_change(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
+        swarmq_logs,
     ):
         """Covers AE9: 0.9.0-Leader (kein Versions-Key)."""
         signals: list[dict] = []
@@ -367,7 +370,14 @@ class TestLeaderVersion:
         ]
 
     async def test_leader_with_same_version_is_not_reported(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
+        swarmq_logs,
     ):
         signals: list[dict] = []
 
@@ -387,7 +397,13 @@ class TestLeaderVersion:
         assert backend.schedules.leader_info.await_count == 3
 
     async def test_becoming_leader_withdraws_the_warning(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         signals: list[dict] = []
 
@@ -407,11 +423,21 @@ class TestLeaderVersion:
         assert loop.state == "leader"
         assert [kw["outdated"] for kw in signals] == [True, False]
         assert signals[-1] == {
-            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.12.0", "outdated": False,
+            "worker_id": "w-1",
+            "leader": "test-owner",
+            "leader_version": "0.12.0",
+            "outdated": False,
         }
 
     async def test_version_check_failure_is_logged(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
+        swarmq_logs,
     ):
         lock_manager.acquire.return_value = None
         backend.schedules.leader_info.side_effect = BackendConnectionError("valkey down")
@@ -425,7 +451,13 @@ class TestLeaderVersion:
         assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
     async def test_report_tick_reports_own_version(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         """Auch ohne statische Crons; TTL = Lebendigkeitsfenster der Meldungen."""
         loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
@@ -433,17 +465,15 @@ class TestLeaderVersion:
         await loop._report_crons()
 
         backend.schedules.report_worker_version.assert_awaited_once_with(
-            "w-1", "0.10.0", ttl_ms=live_window_ms(config.scheduler_seen_interval_s),
+            "w-1",
+            "0.10.0",
+            ttl_ms=live_window_ms(config.scheduler_seen_interval_s),
         )
 
 
 class TestPollLoop:
-    async def test_standby_poll_is_noop(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher
-    ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+    async def test_standby_poll_is_noop(self, backend, broker, config, lock_manager, store, signal_dispatcher):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         # state is "standby" by default — _poll_tick should not even
         # run inside _poll_loop. Cover via direct branch:
         # run the top-level _poll_loop briefly.
@@ -460,9 +490,7 @@ class TestPollLoop:
     async def test_leader_poll_fires_due_schedules(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _def(name="cron_a", cron="*/5 * * * *", fire_ts_ms=1_000)
         store.poll_due.return_value = [("cron_a", 1_000, d)]
@@ -489,9 +517,7 @@ class TestPollLoop:
     async def test_commit_carries_fired_zset_score(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _def(name="cron_a", cron="*/5 * * * *", fire_ts_ms=9_999)
         store.poll_due.return_value = [("cron_a", 1_000, d)]
@@ -506,9 +532,7 @@ class TestPollLoop:
         """Unit 7 / M-11: the schedfire-dedup key must be derived from
         the authoritative zset score returned by poll_due, not from
         definition.fire_ts_ms which can diverge during update_static_schedule."""
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         # Simulate divergence: zset score says 1000, definition thinks 9999.
         # The dedup key must reflect 1000 (what consumers will see on
@@ -522,17 +546,22 @@ class TestPollLoop:
         assert headers["x-swarmq-schedfire"] == "drift:1000"
 
     async def test_unregistered_task_fire_logs_warning(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks, swarmq_logs,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
+        _cleanup_tasks,
+        swarmq_logs,
     ):
         """Härtung R2 P2: ein Schedule, dessen Task umbenannt/entfernt
         wurde, publiziert kommentarlos ins Leere. Warn-only (kein Skip):
         in Multi-Modul-Deployments kann der Task in der Registry eines
         ANDEREN Workers existieren — ein harter Skip wäre dort falsch.
         Die Warnung gibt dem Operator das Signal, das vorher fehlte."""
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _def(name="ghost", cron="*/5 * * * *", fire_ts_ms=1_000)
         store.poll_due.return_value = [("ghost", 1_000, d)]
@@ -541,9 +570,7 @@ class TestPollLoop:
 
         # Publish still happens (warn-only), but the operator sees it.
         broker.publish.assert_awaited_once()
-        warned_events = [
-            e["event"] for e in swarmq_logs if e["log_level"] == "warning"
-        ]
+        warned_events = [e["event"] for e in swarmq_logs if e["log_level"] == "warning"]
         assert "scheduler_task_not_in_local_registry" in warned_events
 
     async def test_fire_skipped_signal_on_missed_cron_fires(
@@ -559,9 +586,7 @@ class TestPollLoop:
         async def _sk(**kw):
             skipped.append(kw)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         # Every-minute cron whose due score lies ~10 minutes in the
         # past → ~9 fires were missed during the downtime.
@@ -587,9 +612,7 @@ class TestPollLoop:
         async def _sk(**kw):
             skipped.append(kw)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         # Due score = the most recent occurrence of a YEARLY cron —
         # deterministic: the interval (score, now] contains no further
@@ -611,12 +634,9 @@ class TestPollLoop:
     async def test_oneshot_commit_uses_neg_one_and_no_def(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
-        d = _def(name="oneshot:abc", cron=None, fire_ts_ms=1_000,
-                 source="cli")
+        d = _def(name="oneshot:abc", cron=None, fire_ts_ms=1_000, source="cli")
         store.poll_due.return_value = [("oneshot:abc", 1_000, d)]
 
         await loop._poll_tick()
@@ -628,9 +648,7 @@ class TestPollLoop:
     async def test_disabled_schedule_is_not_fired(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _def(disabled=True)
         store.poll_due.return_value = [(d.schedule_name, 1_000, d)]
@@ -640,15 +658,11 @@ class TestPollLoop:
         broker.publish.assert_not_awaited()
         store.commit_fire.assert_not_awaited()
 
-    async def test_publish_failure_skips_commit(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher
-    ):
+    async def test_publish_failure_skips_commit(self, backend, broker, config, lock_manager, store, signal_dispatcher):
         """If broker.publish raises, we must NOT commit — re-poll will
         pick the schedule up again and the consumer-dedup handles the
         rare case where publish actually succeeded past a network blip."""
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _def(cron="*/5 * * * *", fire_ts_ms=1_000)
         store.poll_due.return_value = [(d.schedule_name, 1_000, d)]
@@ -663,9 +677,7 @@ class TestPollLoop:
     ):
         """Lost lock mid-batch → commit returns False → transition to
         standby so the remaining items in the batch are skipped."""
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d1 = _def(name="first", cron="*/5 * * * *", fire_ts_ms=1_000)
         d2 = _def(name="second", cron="*/5 * * * *", fire_ts_ms=2_000)
@@ -689,13 +701,12 @@ class TestStop:
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
         events: list[Signal] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)
         async def _h(**kw):
             events.append(Signal.SCHEDULER_LEADER_HANDOVER)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await loop.start()
         loop._state = "leader"
 
@@ -710,13 +721,12 @@ class TestStop:
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
         events: list[Signal] = []
+
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)
         async def _h(**kw):
             events.append(Signal.SCHEDULER_LEADER_HANDOVER)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await loop.start()
         # state stays "standby"
 
@@ -731,20 +741,27 @@ class TestSchedulerUniqueDedup:
     """Scheduler-side SETNX + commit-on-dup for R3.5 cron/delay fires."""
 
     async def test_static_cron_without_unique_for_does_not_call_setnx(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         class PlainCron(Task):
             task_info = TaskInfo(
-                name="plain_task", queues=["default"],
+                name="plain_task",
+                queues=["default"],
                 cron="*/5 * * * *",
             )
-            async def run(self): return None
+
+            async def run(self):
+                return None
 
         backend.claim_unique = AsyncMock()
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _cron_def(name="plain_task", task_name="plain_task")
         store.poll_due.return_value = [("plain_task", 1_000, d)]
@@ -758,21 +775,29 @@ class TestSchedulerUniqueDedup:
         assert "x-swarmq-unique-hash" not in headers
 
     async def test_static_cron_with_unique_for_sets_flag_and_header(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         class UniqueCron(Task):
             task_info = TaskInfo(
-                name="uniq_task", queues=["default"],
+                name="uniq_task",
+                queues=["default"],
                 cron="*/5 * * * *",
-                unique_for=120, unique_until="completion",
+                unique_for=120,
+                unique_until="completion",
             )
-            async def run(self): return None
+
+            async def run(self):
+                return None
 
         backend.claim_unique = AsyncMock(return_value=None)  # NX granted
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _cron_def(name="uniq_task", task_name="uniq_task")
         store.poll_due.return_value = [("uniq_task", 1_000, d)]
@@ -789,27 +814,37 @@ class TestSchedulerUniqueDedup:
         store.commit_fire.assert_awaited_once()
 
     async def test_static_cron_dup_skips_publish_but_commits(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         """Dup path: no publish, but commit_fire MUST advance the zset
         otherwise the scheduler re-polls the same entry forever."""
+
         class UniqueCron(Task):
             task_info = TaskInfo(
-                name="dup_task", queues=["default"],
-                cron="*/5 * * * *", unique_for=60,
+                name="dup_task",
+                queues=["default"],
+                cron="*/5 * * * *",
+                unique_for=60,
             )
-            async def run(self): return None
+
+            async def run(self):
+                return None
 
         received: list[dict] = []
+
         @signal_dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
             received.append(kwargs)
 
         backend.claim_unique = AsyncMock(return_value="t-existing")
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _cron_def(name="dup_task", task_name="dup_task")
         store.poll_due.return_value = [("dup_task", 1_000, d)]
@@ -824,7 +859,13 @@ class TestSchedulerUniqueDedup:
         assert received[0]["task_name"] == "dup_task"
 
     async def test_cli_unique_source_skips_scheduler_setnx(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         """Producer already claimed the flag (Unit 7) — scheduler must not
@@ -833,15 +874,16 @@ class TestSchedulerUniqueDedup:
         persisted alongside dedup_hash so post-deploy TaskInfo changes
         cannot silently flip release semantics)."""
         backend.claim_unique = AsyncMock()
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = ScheduleDefinition(
             schedule_name="oneshot:xyz",
             task_name="deferred_uniq",
-            args=(), kwargs={}, queue="default",
-            cron=None, fire_ts_ms=1_000,
+            args=(),
+            kwargs={},
+            queue="default",
+            cron=None,
+            fire_ts_ms=1_000,
             source="cli_unique",
             dedup_hash="pre-hashed-by-client",
             unique_until="start",
@@ -858,22 +900,29 @@ class TestSchedulerUniqueDedup:
         assert headers["x-swarmq-unique-until"] == "start"
 
     async def test_cli_unique_pre_r35_entry_defaults_until_completion(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         """Legacy entries without unique_until (pre-P1-#5) decode with
         the struct default 'completion'. Ensures backwards-compatibility
         with schedules stored before the persisted field existed."""
         backend.claim_unique = AsyncMock()
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = ScheduleDefinition(
             schedule_name="oneshot:mystery",
             task_name="not_registered_here",
-            args=(), kwargs={}, queue="default",
-            cron=None, fire_ts_ms=1_000,
+            args=(),
+            kwargs={},
+            queue="default",
+            cron=None,
+            fire_ts_ms=1_000,
             source="cli_unique",
             dedup_hash="abc123",
             # unique_until omitted → struct default "completion"
@@ -887,24 +936,31 @@ class TestSchedulerUniqueDedup:
         assert headers["x-swarmq-unique-until"] == "completion"
 
     async def test_setnx_backend_error_skips_publish_and_commit(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         """Valkey hiccup at SETNX → do NOT publish, do NOT commit. Next
         poll tick retries."""
+
         class UniqueCron(Task):
             task_info = TaskInfo(
-                name="flap_task", queues=["default"],
-                cron="*/5 * * * *", unique_for=60,
+                name="flap_task",
+                queues=["default"],
+                cron="*/5 * * * *",
+                unique_for=60,
             )
-            async def run(self): return None
 
-        backend.claim_unique = AsyncMock(
-            side_effect=BackendConnectionError("valkey down")
-        )
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+            async def run(self):
+                return None
+
+        backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _cron_def(name="flap_task", task_name="flap_task")
         store.poll_due.return_value = [("flap_task", 1_000, d)]
@@ -915,17 +971,28 @@ class TestSchedulerUniqueDedup:
         store.commit_fire.assert_not_awaited()
 
     async def test_hash_stable_for_same_args_across_fires(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
         _cleanup_tasks,
     ):
         """Two fires of the same schedule with same args produce the
         same dedup_hash (Valkey sees repeat owner on second attempt)."""
+
         class UniqueCron(Task):
             task_info = TaskInfo(
-                name="repeat_task", queues=["default"],
-                cron="*/1 * * * *", unique_for=60,
+                name="repeat_task",
+                queues=["default"],
+                cron="*/1 * * * *",
+                unique_for=60,
             )
-            async def run(self): return None
+
+            async def run(self):
+                return None
 
         captured: list[str] = []
 
@@ -934,13 +1001,13 @@ class TestSchedulerUniqueDedup:
             return None
 
         backend.claim_unique = AsyncMock(side_effect=setnx_side_effect)
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         loop._state = "leader"
         d = _cron_def(
-            name="repeat_task", task_name="repeat_task",
-            args=(1, 2), kwargs={"x": "y"},
+            name="repeat_task",
+            task_name="repeat_task",
+            args=(1, 2),
+            kwargs={"x": "y"},
         )
         store.poll_due.return_value = [("repeat_task", 1_000, d)]
 
@@ -964,9 +1031,7 @@ class TestAbort:
     async def test_abort_cancels_tasks_without_graceful_release(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         lock_manager.acquire.return_value = _LEADER_TOKEN  # would-be leader
         await loop.start()
         assert loop._election_task is not None
@@ -981,12 +1046,8 @@ class TestAbort:
         # Crash-style abort must NOT perform the graceful lock release.
         lock_manager.release.assert_not_awaited()
 
-    async def test_abort_is_idempotent(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher
-    ):
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+    async def test_abort_is_idempotent(self, backend, broker, config, lock_manager, store, signal_dispatcher):
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await loop.start()
         await loop.abort()
         await loop.abort()  # second call must not raise
@@ -1166,7 +1227,6 @@ class TestSchedulerLoopLogging:
         assert entry["signal"] == Signal.SCHEDULER_HEARTBEAT.value
 
 
-
 def _utc_ms(*args: int) -> int:
     return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
 
@@ -1202,9 +1262,7 @@ class TestSchedulerLoopTimezone:
         assert commit_args.args[1] == _utc_ms(2026, 10, 7, 0, 0)
         assert commit_args.args[2].fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
 
-    async def test_skipped_fires_are_counted_in_definition_timezone(
-        self, loop, store, signal_dispatcher
-    ):
+    async def test_skipped_fires_are_counted_in_definition_timezone(self, loop, store, signal_dispatcher):
         """Zwischen 00:00 und 10:00 UTC liegt kein Termin ``0 9`` in Tokio
         (09:00 UTC waere es in UTC gewesen) -- also nichts uebersprungen."""
         skipped: list[dict] = []
@@ -1234,13 +1292,18 @@ class TestNextFireFailure:
     @staticmethod
     def _batch():
         broken = msgspec.structs.replace(
-            _def(name="broken", fire_ts_ms=1_000), timezone="Europe/Atlantis",
+            _def(name="broken", fire_ts_ms=1_000),
+            timezone="Europe/Atlantis",
         )
         good = _def(name="good", fire_ts_ms=1_000)
         return [("broken", 1_000, broken), ("good", 1_000, good)]
 
     async def test_broken_entry_is_logged_and_rest_of_batch_fires(
-        self, loop, broker, store, swarmq_logs,
+        self,
+        loop,
+        broker,
+        store,
+        swarmq_logs,
     ):
         store.poll_due.return_value = self._batch()
 
@@ -1252,7 +1315,6 @@ class TestNextFireFailure:
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_next_fire_failed"]
         assert entry["schedule_name"] == "broken" and entry["error_type"]
 
-
     async def test_broken_entry_leaves_the_fire_index(self, loop, store):
         """Ohne Folgezeit kein neuer Score: der Eintrag verlaesst den
         Fire-Index (``-1``), die Definition bleibt stehen."""
@@ -1261,14 +1323,16 @@ class TestNextFireFailure:
 
         await loop._poll_tick()
 
-        [broken_commit] = [
-            c for c in store.commit_fire.await_args_list if c.args[0] == "broken"
-        ]
+        [broken_commit] = [c for c in store.commit_fire.await_args_list if c.args[0] == "broken"]
         assert broken_commit.args[1:4] == (-1, batch[0][2], "test-owner")
         assert broken_commit.kwargs["fired_ts_ms"] == 1_000
 
     async def test_park_connection_error_does_not_abort_batch(
-        self, loop, broker, store, swarmq_logs,
+        self,
+        loop,
+        broker,
+        store,
+        swarmq_logs,
     ):
         """Liste 20 (Review-Befund #3): R18-Isolation auch beim Parken."""
         store.poll_due.return_value = self._batch()
@@ -1303,12 +1367,19 @@ class TestTakeoverBetweenPollAndCommit:
     Commit; der faellige Score blieb dabei stehen."""
 
     async def test_commit_does_not_reset_taken_over_definition(
-        self, broker, config, lock_manager, signal_dispatcher,
+        self,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
     ):
         memory = InMemoryBackend(FakeClock())
         await memory.connect()
         await memory.locks.acquire(
-            SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1,
+            SCHEDULER_LOCK_NAME,
+            owner="test-owner",
+            ttl_ms=60_000,
+            max_concurrency=1,
         )
         polled = _def(name="cron_a", fire_ts_ms=1_000)
         taken_over = msgspec.structs.replace(polled, timezone="Asia/Tokyo")
@@ -1319,7 +1390,12 @@ class TestTakeoverBetweenPollAndCommit:
 
         broker.publish.side_effect = _takeover
         loop = _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
+            signal_dispatcher,
         )
         loop._state = "leader"
 
@@ -1328,7 +1404,6 @@ class TestTakeoverBetweenPollAndCommit:
         stored = msgspec.json.decode(await memory.schedules.get("cron_a"), type=ScheduleDefinition)
         assert stored == taken_over
         assert await memory.schedules.fire_ts("cron_a") > 1_000
-
 
 
 class TestRenewRightAfterTakeover:
@@ -1414,19 +1489,31 @@ class TestAdoptDuringFire:
         memory = InMemoryBackend(FakeClock())
         await memory.connect()
         await memory.locks.acquire(
-            SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1,
+            SCHEDULER_LOCK_NAME,
+            owner="test-owner",
+            ttl_ms=60_000,
+            max_concurrency=1,
         )
         polled = _def(name="cron_a", fire_ts_ms=1_000)
         reported = msgspec.structs.replace(
-            polled, cron=self._NEW_CRON, timezone=self._NEW_ZONE,
+            polled,
+            cron=self._NEW_CRON,
+            timezone=self._NEW_ZONE,
         )
         await memory.schedules.add("cron_a", msgspec.json.encode(polled), 1_000)
         await memory.schedules.report_cron(
-            "cron_a", cron_fingerprint(reported), msgspec.json.encode(reported),
+            "cron_a",
+            cron_fingerprint(reported),
+            msgspec.json.encode(reported),
             live_window_ms=live_window_ms(config.scheduler_seen_interval_s),
         )
         loop = _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
+            signal_dispatcher,
         )
         loop._state = "leader"
         adopted = asyncio.Event()
@@ -1449,10 +1536,17 @@ class TestAdoptDuringFire:
         await asyncio.gather(*tasks)
 
     async def test_adoption_waits_for_running_fire(
-        self, broker, config, lock_manager, signal_dispatcher,
+        self,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
     ):
         memory, loop, adopted = await self._setup(
-            broker, config, lock_manager, signal_dispatcher,
+            broker,
+            config,
+            lock_manager,
+            signal_dispatcher,
         )
         published, release = asyncio.Event(), asyncio.Event()
 
@@ -1472,10 +1566,17 @@ class TestAdoptDuringFire:
         self._assert_scored_by_new_cron(await memory.schedules.fire_ts("cron_a"))
 
     async def test_adoption_before_poll_plans_with_new_cron(
-        self, broker, config, lock_manager, signal_dispatcher,
+        self,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
     ):
         memory, loop, adopted = await self._setup(
-            broker, config, lock_manager, signal_dispatcher,
+            broker,
+            config,
+            lock_manager,
+            signal_dispatcher,
         )
         loop._adopt_now.set()
         adopt_task = asyncio.create_task(loop._adopt_loop())

@@ -127,8 +127,7 @@ class ProcessManager(RestartBudget):
             min_w, max_w = autoscale
             if min_w < 1 or max_w < min_w:
                 raise ValueError(
-                    f"invalid autoscale bounds (min={min_w}, max={max_w}); "
-                    "require min >= 1 and max >= min",
+                    f"invalid autoscale bounds (min={min_w}, max={max_w}); require min >= 1 and max >= min",
                 )
             if queue_depth_fn is None:
                 raise ValueError(
@@ -593,14 +592,20 @@ class ProcessManager(RestartBudget):
         """
         if exitcode == CONFIG_ERROR_EXIT_CODE:
             logger.error(
-                "worker_config_error", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+                "worker_config_error",
+                worker_id=info.worker_id,
+                pid=pid,
+                exitcode=exitcode,
                 hint="fix the configuration and start again; no restart attempted",
             )
             self._config_error = True
             return True
         if exitcode == RECYCLE_NOACK_EXIT_CODE:
             logger.warning(
-                "worker_recycle_noack", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+                "worker_recycle_noack",
+                worker_id=info.worker_id,
+                pid=pid,
+                exitcode=exitcode,
             )
         if exitcode == FORK_SOURCE_REJECTED_EXIT_CODE:  # Schluss-Review: frischer Forkserver
             logger.warning("worker_fork_source_rejected", worker_id=info.worker_id, pid=pid, exitcode=exitcode)

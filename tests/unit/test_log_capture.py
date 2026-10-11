@@ -119,11 +119,7 @@ def test_swarmq_logs_fixture_yields_captured_entries(swarmq_logs) -> None:
 
 def test_logging_env_vars_are_removed_for_unit_tests() -> None:
     # ``SWARMQ_LOG`` deckt auch ``SWARMQ_LOGGER_LEVELS`` ab.
-    leaked = [
-        name
-        for name in os.environ
-        if name.startswith("SWARMQ_LOG") or name == "SWARMQ_CONFIGURE_LOGGING"
-    ]
+    leaked = [name for name in os.environ if name.startswith("SWARMQ_LOG") or name == "SWARMQ_CONFIGURE_LOGGING"]
 
     assert leaked == []
 

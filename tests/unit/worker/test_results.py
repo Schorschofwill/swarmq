@@ -82,8 +82,10 @@ class TailFafStoreTask(Task):
     Advance-Seam, hat aber nichts zu bestätigen."""
 
     task_info = TaskInfo(
-        name="tail-faf-store", queues=["default"],
-        delivery=DeliveryMode.FIRE_AND_FORGET, result_ttl=60,
+        name="tail-faf-store",
+        queues=["default"],
+        delivery=DeliveryMode.FIRE_AND_FORGET,
+        result_ttl=60,
     )
 
     async def run(self) -> str:
@@ -375,9 +377,7 @@ def _wf_message(name: str = "tail-task"):
     return make_message(_default_payload(name=name), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"})
 
 
-async def test_advance_backend_error_at_least_once_logs_warning_with_error_fields(
-    broker, backend, config, swarmq_logs
-):
+async def test_advance_backend_error_at_least_once_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
     tail, worker = _tail(broker, backend, config)
     worker._workflow_advancer.advance = AsyncMock(side_effect=WorkflowStateConflict("25 rounds lost"))
 
@@ -400,9 +400,7 @@ async def test_advance_backend_error_fire_and_forget_logs_error(broker, backend,
     assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
 
 
-async def test_advance_broker_error_at_least_once_logs_warning_with_error_fields(
-    broker, backend, config, swarmq_logs
-):
+async def test_advance_broker_error_at_least_once_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
     tail, worker = _tail(broker, backend, config)
     worker._workflow_advancer.advance = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
 

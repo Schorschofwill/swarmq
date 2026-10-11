@@ -70,6 +70,7 @@ async def _bench_channel(
 # Python-level view (asyncio tasks) that faulthandler cannot provide.
 # ---------------------------------------------------------------------------
 
+
 def _dump_all_stacks(signum: int, frame: FrameType | None) -> None:
     try:
         out = sys.stderr
@@ -91,9 +92,7 @@ def _dump_all_stacks(signum: int, frame: FrameType | None) -> None:
         tasks = asyncio.all_tasks(loop) if loop is not None else set()
         out.write(f"\n-- ASYNCIO TASKS ({len(tasks)}) --\n")
         for t in tasks:
-            out.write(
-                f"\nTask {t.get_name()!r} done={t.done()} cancelled={t.cancelled()}\n"
-            )
+            out.write(f"\nTask {t.get_name()!r} done={t.done()} cancelled={t.cancelled()}\n")
             # Task.print_stack() renders the full coroutine call chain; frame-
             # by-frame traceback.print_stack(limit=1) collapsed each await to
             # a single line and hid the async shape we need for debugging.
@@ -147,6 +146,7 @@ _BENCH_HANG_TIMEOUT = 300.0
 # ---------------------------------------------------------------------------
 # Ergebnis-Datenstruktur
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BenchResult:
@@ -317,6 +317,7 @@ def print_result(r: BenchResult) -> None:
 # Payload-Helfer
 # ---------------------------------------------------------------------------
 
+
 def make_payload(size_bytes: int = 256) -> bytes:
     """Erzeugt eine realistische JSON-Task-Message mit Padding."""
     msg = {
@@ -335,6 +336,7 @@ def make_payload(size_bytes: int = 256) -> bytes:
 # ---------------------------------------------------------------------------
 # RabbitMQ-Implementierung
 # ---------------------------------------------------------------------------
+
 
 class RabbitMQBench:
     def __init__(self) -> None:
@@ -368,7 +370,7 @@ class RabbitMQBench:
         try:
             probe_ch = await self.connection.channel()
             await probe_ch.close()
-        except (RuntimeError, aio_pika.exceptions.AMQPError, OSError):
+        except RuntimeError, aio_pika.exceptions.AMQPError, OSError:
             try:
                 await self.connection.close()
             except Exception:
@@ -591,8 +593,13 @@ class RabbitMQBench:
             await asyncio.gather(*consumer_tasks, return_exceptions=True)
 
         return BenchResult(
-            "RabbitMQ", "full_pipeline", n, producers + consumers,
-            dur, n / dur, latencies,
+            "RabbitMQ",
+            "full_pipeline",
+            n,
+            producers + consumers,
+            dur,
+            n / dur,
+            latencies,
             extra={"producers": producers, "consumers": consumers},
         )
 
@@ -604,9 +611,7 @@ class RabbitMQBench:
             _bench_channel(self.connection) as ch_pub,
             _bench_channel(self.connection) as ch_sub,
         ):
-            exchange = await ch_pub.declare_exchange(
-                "bench_results_fanout", aio_pika.ExchangeType.FANOUT
-            )
+            exchange = await ch_pub.declare_exchange("bench_results_fanout", aio_pika.ExchangeType.FANOUT)
             queue = await ch_sub.declare_queue("", exclusive=True)
             await queue.bind(exchange)
 
@@ -663,7 +668,12 @@ class RabbitMQBench:
 
             await queue.cancel(consumer_tag)
         return BenchResult(
-            "RabbitMQ", "ack_after_process", n, 1, dur, n / dur,
+            "RabbitMQ",
+            "ack_after_process",
+            n,
+            1,
+            dur,
+            n / dur,
             extra={"simulated_work_ms": work_ms},
         )
 
@@ -671,6 +681,7 @@ class RabbitMQBench:
 # ---------------------------------------------------------------------------
 # Valkey-Implementierung
 # ---------------------------------------------------------------------------
+
 
 class ValkeyBench:
     def __init__(self) -> None:
@@ -771,9 +782,11 @@ class ValkeyBench:
             nonlocal count
             while not done.is_set():
                 results = await self.client.xreadgroup(  # type: ignore[union-attr]
-                    group, consumer_name,
+                    group,
+                    consumer_name,
                     {stream_key: ">"},
-                    count=10, block=1000,
+                    count=10,
+                    block=1000,
                 )
                 if not results:
                     continue
@@ -941,8 +954,13 @@ class ValkeyBench:
         await asyncio.gather(*consumer_tasks, return_exceptions=True)
 
         return BenchResult(
-            "Valkey", "full_pipeline", n, producers + consumers,
-            dur, n / dur, latencies,
+            "Valkey",
+            "full_pipeline",
+            n,
+            producers + consumers,
+            dur,
+            n / dur,
+            latencies,
             extra={"producers": producers, "consumers": consumers},
         )
 
@@ -1015,9 +1033,11 @@ class ValkeyBench:
             nonlocal count
             while not done.is_set():
                 results = await self.client.xreadgroup(
-                    group, consumer_name,
+                    group,
+                    consumer_name,
                     {stream_key: ">"},
-                    count=1, block=1000,
+                    count=1,
+                    block=1000,
                 )
                 if not results:
                     continue
@@ -1039,7 +1059,12 @@ class ValkeyBench:
         await asyncio.gather(task, return_exceptions=True)
 
         return BenchResult(
-            "Valkey/Stream", "ack_after_process", n, 1, dur, n / dur,
+            "Valkey/Stream",
+            "ack_after_process",
+            n,
+            1,
+            dur,
+            n / dur,
             extra={"simulated_work_ms": work_ms},
         )
 
@@ -1047,6 +1072,7 @@ class ValkeyBench:
 # ---------------------------------------------------------------------------
 # Szenario-Runner
 # ---------------------------------------------------------------------------
+
 
 async def run_scenario(
     name: str,
@@ -1239,6 +1265,7 @@ async def run_scenario(
 # Zusammenfassung
 # ---------------------------------------------------------------------------
 
+
 def print_summary(results: list[BenchResult]) -> None:
     print("\n")
     print("=" * 80)
@@ -1272,6 +1299,7 @@ def print_summary(results: list[BenchResult]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def _positive_int(raw: str) -> int:
     """argparse type function that rejects values below 1.
 
@@ -1283,9 +1311,7 @@ def _positive_int(raw: str) -> int:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from exc
     if value < 1:
-        raise argparse.ArgumentTypeError(
-            f"must be >= 1 (got {value}); use --repeat 1 for a single run"
-        )
+        raise argparse.ArgumentTypeError(f"must be >= 1 (got {value}); use --repeat 1 for a single run")
     return value
 
 
@@ -1294,25 +1320,37 @@ async def main() -> None:
     parser.add_argument("--messages", "-n", type=int, default=50_000, help="Anzahl Messages pro Test (Default: 50000)")
     parser.add_argument("--concurrency", "-c", type=int, default=10, help="Async-Concurrency (Default: 10)")
     parser.add_argument(
-        "--scenario", "-s", type=str, default="all",
+        "--scenario",
+        "-s",
+        type=str,
+        default="all",
         choices=[
-            "all", "enqueue_throughput", "dequeue_throughput", "roundtrip_latency",
-            "concurrent_enqueue", "concurrent_dequeue", "full_pipeline",
-            "payload_sizes", "pubsub_notify", "ack_patterns",
+            "all",
+            "enqueue_throughput",
+            "dequeue_throughput",
+            "roundtrip_latency",
+            "concurrent_enqueue",
+            "concurrent_dequeue",
+            "full_pipeline",
+            "payload_sizes",
+            "pubsub_notify",
+            "ack_patterns",
         ],
         help="Welches Szenario (Default: all)",
     )
     parser.add_argument(
-        "--repeat", "-r", type=_positive_int, default=1,
-        help=(
-            "Wiederhole jedes Szenario N mal und gib Median+Min+Max aus. "
-            "Default 1 = alter Einzel-Run-Modus."
-        ),
+        "--repeat",
+        "-r",
+        type=_positive_int,
+        default=1,
+        help=("Wiederhole jedes Szenario N mal und gib Median+Min+Max aus. Default 1 = alter Einzel-Run-Modus."),
     )
     args = parser.parse_args()
 
     print(f"\nSwarmQ Broker Benchmark")
-    print(f"Messages: {args.messages:,} | Concurrency: {args.concurrency} | Szenario: {args.scenario} | Repeat: {args.repeat}")
+    print(
+        f"Messages: {args.messages:,} | Concurrency: {args.concurrency} | Szenario: {args.scenario} | Repeat: {args.repeat}"
+    )
     print(f"RabbitMQ: {RABBITMQ_URL}")
     print(f"Valkey:   {VALKEY_URL}")
 
@@ -1339,7 +1377,11 @@ async def main() -> None:
         print("Warmup abgeschlossen.\n")
 
         results = await run_scenario(
-            args.scenario, rmq, vk, args.messages, args.concurrency,
+            args.scenario,
+            rmq,
+            vk,
+            args.messages,
+            args.concurrency,
             repeat=args.repeat,
         )
         print_summary(results)
@@ -1351,6 +1393,7 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         import uvloop
+
         uvloop.install()
         print("(uvloop aktiviert)")
     except ImportError:

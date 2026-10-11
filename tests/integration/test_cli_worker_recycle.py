@@ -56,14 +56,35 @@ def test_worker_recycles_by_task_count_without_losing_tasks():
     queue = f"cli-recycle-{uuid.uuid4().hex[:8]}"
     tids = asyncio.run(_enqueue(queue))
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1", SWARMQ_RECYCLE_MAX_TASKS="40",
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
+        SWARMQ_RECYCLE_MAX_TASKS="40",
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._cli_fixture_tasks",
-         "--queues", queue, "--burst", "--burst-idle-timeout", "4", "--log-format", "json",
-         "--metrics-port", "9188"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue,
+            "--burst",
+            "--burst-idle-timeout",
+            "4",
+            "--log-format",
+            "json",
+            "--metrics-port",
+            "9188",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     deadline = time.monotonic() + 150
@@ -110,7 +131,7 @@ def _metrics_ok(port: int, timeout: float = 20.0) -> bool:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=1.0) as resp:
                 if resp.status == 200:
                     return True
-        except (urllib.error.URLError, OSError):
+        except urllib.error.URLError, OSError:
             time.sleep(0.2)
     return False
 
@@ -125,14 +146,34 @@ def test_two_processes_bind_their_own_metrics_port_across_a_recycle():
     queue = f"cli-ports-{uuid.uuid4().hex[:8]}"
     tids = asyncio.run(_enqueue(queue))
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1", SWARMQ_RECYCLE_MAX_TASKS="20",
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
+        SWARMQ_RECYCLE_MAX_TASKS="20",
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._cli_fixture_tasks",
-         "--queues", queue, "--processes", "2", "--log-format", "json",
-         "--metrics-port", "9190"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue,
+            "--processes",
+            "2",
+            "--log-format",
+            "json",
+            "--metrics-port",
+            "9190",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     lines: list[str] = []

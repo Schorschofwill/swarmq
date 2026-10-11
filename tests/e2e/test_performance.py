@@ -141,10 +141,7 @@ async def test_schedule_many_get_results(rabbitmq_url: str, valkey_url: str) -> 
         try:
             await asyncio.sleep(0.5)
 
-            tasks = [
-                (task_name, (i, i * 10), {})
-                for i in range(10)
-            ]
+            tasks = [(task_name, (i, i * 10), {}) for i in range(10)]
             task_ids = await app.schedule_many(tasks, queue=queue)
             assert len(task_ids) == 10
 
@@ -187,7 +184,10 @@ async def test_classic_queue_roundtrip(rabbitmq_url: str, valkey_url: str) -> No
         worker_broker = RabbitMQBroker(rabbitmq_url)
         worker_backend = ValkeyBackend(valkey_url)
         worker_app = SwarmQ(
-            worker_broker, worker_backend, queues=[queue], queue_type="classic",
+            worker_broker,
+            worker_backend,
+            queues=[queue],
+            queue_type="classic",
         )
         worker_task = asyncio.create_task(worker_app.start_worker())
 

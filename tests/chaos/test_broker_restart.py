@@ -47,7 +47,9 @@ def _docker_restart(container: str) -> None:
     """
     subprocess.run(
         ["docker", "restart", container],
-        check=True, capture_output=True, timeout=120,
+        check=True,
+        capture_output=True,
+        timeout=120,
     )
 
 
@@ -86,12 +88,16 @@ class _App:
         self.client_broker = RabbitMQBroker(stack.rabbitmq_url)
         self.client_backend = ValkeyBackend(stack.valkey_url)
         self.client_app = SwarmQ(
-            self.client_broker, self.client_backend, queues=[queue],
+            self.client_broker,
+            self.client_backend,
+            queues=[queue],
         )
         self.worker_broker = RabbitMQBroker(stack.rabbitmq_url)
         self.worker_backend = ValkeyBackend(stack.valkey_url)
         self.worker_app = SwarmQ(
-            self.worker_broker, self.worker_backend, queues=[queue],
+            self.worker_broker,
+            self.worker_backend,
+            queues=[queue],
         )
         self._worker_task: asyncio.Task | None = None
 
@@ -124,7 +130,8 @@ class _App:
 
 class TestBrokerRestart:
     async def test_inflight_tasks_complete_after_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """10 tasks are scheduled; mid-flight RabbitMQ restart; all finish."""
         queue = _unique_queue()
@@ -155,16 +162,16 @@ class TestBrokerRestart:
             # Worker + client must reconnect on their own. Allow a
             # generous window for message redelivery + re-consume.
             results = await app.client_app.get_results(
-                task_ids, timeout=90,
+                task_ids,
+                timeout=90,
             )
-            assert sorted(results) == list(range(10)), (
-                f"not every task completed after restart: got {results!r}"
-            )
+            assert sorted(results) == list(range(10)), f"not every task completed after restart: got {results!r}"
         finally:
             await app.stop()
 
     async def test_quorum_queue_survives_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Quorum queue declaration + message count survive restart."""
         queue = _unique_queue()
@@ -207,8 +214,7 @@ class TestBrokerRestart:
                 passive=True,
             )
             assert declared.declaration_result.message_count == 5, (
-                f"quorum queue lost messages across restart: "
-                f"{declared.declaration_result.message_count} / 5"
+                f"quorum queue lost messages across restart: {declared.declaration_result.message_count} / 5"
             )
             # Drain so the next run leaves no cruft.
             await q.purge()
@@ -216,7 +222,8 @@ class TestBrokerRestart:
             await conn.close()
 
     async def test_publisher_before_and_after_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Long-lived publisher survives a restart (U1.1 channel-recreate)."""
         queue = _unique_queue()
@@ -246,7 +253,8 @@ class TestBrokerRestart:
             import aio_pika
 
             conn = await aio_pika.connect(
-                chaos_stack.rabbitmq_url, timeout=5.0,
+                chaos_stack.rabbitmq_url,
+                timeout=5.0,
             )
             try:
                 ch = await conn.channel()
@@ -263,8 +271,7 @@ class TestBrokerRestart:
                 # Pre + post messages all accounted for (durable queue,
                 # no consumer).
                 assert declared.declaration_result.message_count == 4, (
-                    f"expected 4 messages, got "
-                    f"{declared.declaration_result.message_count}"
+                    f"expected 4 messages, got {declared.declaration_result.message_count}"
                 )
                 q = await ch.get_queue(queue)
                 await q.purge()
@@ -274,7 +281,8 @@ class TestBrokerRestart:
             await broker.close()
 
     async def test_worker_reconnect_without_manual_reset(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Worker picks up a task published AFTER the restart, no resets."""
         queue = _unique_queue()
@@ -302,9 +310,6 @@ class TestBrokerRestart:
             # No manual ``connect()`` / ``start_worker()`` call — the
             # existing worker has to pick this up on its own.
             post_tid = await app.client_app.schedule(task_name, "post")
-            assert (
-                await app.client_app.get_result(post_tid, timeout=60)
-                == "post"
-            )
+            assert await app.client_app.get_result(post_tid, timeout=60) == "post"
         finally:
             await app.stop()

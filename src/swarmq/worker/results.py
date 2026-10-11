@@ -71,7 +71,9 @@ class ResultTail:
         except ResultSerializationError as exc:
             logger.error("result_serialization_failed", **_error_fields(exc))
             result_data = build_error_result_dict(
-                task_id=ctx.task_id, queue=ctx.queue, task_name=ctx.task_name,
+                task_id=ctx.task_id,
+                queue=ctx.queue,
+                task_name=ctx.task_name,
                 error_message=str(exc),
             )
             return encode_result(result_data)
@@ -94,7 +96,8 @@ class ResultTail:
         if wf_id is None and (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
             logger.warning(
                 "workflow_id_header_invalid",
-                task_id=ctx.task_id, task_name=ctx.task_name,
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
             )
         return wf_id
 
@@ -112,9 +115,12 @@ class ResultTail:
         wf_id_faf = self._extract_workflow_id(delivery, ctx)
         if wf_id_faf is not None and advancer is not None:
             outcome = await self._fail_workflow(
-                delivery, ctx, wf_id_faf, advancer, "WorkflowValidationError",
-                f"task {ctx.task_name!r} is FIRE_AND_FORGET and cannot "
-                "advance a workflow",
+                delivery,
+                ctx,
+                wf_id_faf,
+                advancer,
+                "WorkflowValidationError",
+                f"task {ctx.task_name!r} is FIRE_AND_FORGET and cannot advance a workflow",
                 event="workflow_faf_fail_mark_error",
             )
             if outcome is not None:
@@ -131,8 +137,15 @@ class ResultTail:
         return Terminal.release_in_finally()
 
     async def _fail_workflow(
-        self, delivery: Any, ctx: GateContext, wf_id: str, advancer: Any,
-        error_type: str, reason: str, *, event: _FailMarkEvent,
+        self,
+        delivery: Any,
+        ctx: GateContext,
+        wf_id: str,
+        advancer: Any,
+        error_type: str,
+        reason: str,
+        *,
+        event: _FailMarkEvent,
     ) -> DeliveryOutcome | None:
         """Fehlermarkierung eines Workflows nach R25/KTD12 (U10).
 
@@ -181,11 +194,16 @@ class ResultTail:
             # handle.get() in endlicher Zeit wirft. Der AT_LEAST_ONCE-
             # Fehlerpfad mit Exception fail-markt bereits im Dead-Letter;
             # dieser Zweig deckt Cancels und Fehler ohne Exception.
-            reason = "task was cancelled" if execution.is_cancelled else (
-                execution.error_message or "workflow step failed"
+            reason = (
+                "task was cancelled" if execution.is_cancelled else (execution.error_message or "workflow step failed")
             )
             return await self._fail_workflow(
-                delivery, ctx, wf_id, advancer, "TaskError", reason,
+                delivery,
+                ctx,
+                wf_id,
+                advancer,
+                "TaskError",
+                reason,
                 event="workflow_fail_mark_failed",
             )
         step_path = (delivery.headers or {}).get(HEADER_WORKFLOW_STEP, "")
@@ -238,17 +256,21 @@ class ResultTail:
             # instead of hanging, then ack (no infinite redelivery loop).
             logger.error(
                 "workflow_advance_failed",
-                workflow_id=wf_id, **_error_fields(exc),
+                workflow_id=wf_id,
+                **_error_fields(exc),
             )
             return await self._fail_workflow(
-                delivery, ctx, wf_id, advancer, type(exc).__name__, str(exc),
+                delivery,
+                ctx,
+                wf_id,
+                advancer,
+                type(exc).__name__,
+                str(exc),
                 event="workflow_fail_mark_error",
             )
         return None
 
-    async def finish(
-        self, delivery: Any, ctx: GateContext, execution: ExecutionResult
-    ) -> DeliveryOutcome:
+    async def finish(self, delivery: Any, ctx: GateContext, execution: ExecutionResult) -> DeliveryOutcome:
         deps = self._deps
         advancer = self._workflow_advancer()
         task_info = ctx.task_info
@@ -262,7 +284,9 @@ class ResultTail:
         # Store result, then notify; ack comes last.
         try:
             await deps.backend.store_result(
-                ctx.task_id, result_bytes, result_ttl * 1000,
+                ctx.task_id,
+                result_bytes,
+                result_ttl * 1000,
                 op_timeout=deps.config.backend_op_timeout,
             )
         except BackendConnectionError as exc:
@@ -300,4 +324,3 @@ class ResultTail:
         if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
             await deps.broker.ack(delivery)
         return Terminal.release_in_finally()
-

@@ -41,7 +41,9 @@ def last_seen_by_name(snapshot: CronReports) -> dict[str, int]:
 
 
 def plan_prune(
-    definitions: Iterable[ScheduleDefinition], snapshot: CronReports, *,
+    definitions: Iterable[ScheduleDefinition],
+    snapshot: CronReports,
+    *,
     prune_after_ms: int,
 ) -> PrunePlan:
     """Verwaiste und nie gemeldete statische Crons (KTD8). CLI-Definitionen
@@ -84,7 +86,10 @@ async def prune_orphans(store: ScheduleStore, snapshot: CronReports) -> list[str
     for name in plan.orphans:
         payload, definition = definitions[name]
         if await store.prune_cron(
-            name, payload, stale_after_ms=None, remember_disabled=definition.disabled,
+            name,
+            payload,
+            stale_after_ms=None,
+            remember_disabled=definition.disabled,
         ):
             removed.append(name)
     return removed
@@ -119,7 +124,9 @@ class SchedulerCronPrune:
         definitions = decode_definitions(raw)
         prune_after_ms = int(self._config.scheduler_prune_after_s * 1000)
         plan = plan_prune(
-            [d for _, d in definitions.values()], snapshot, prune_after_ms=prune_after_ms,
+            [d for _, d in definitions.values()],
+            snapshot,
+            prune_after_ms=prune_after_ms,
         )
         for name in plan.orphans:
             if self._first_time("candidate", name):
@@ -149,12 +156,16 @@ class SchedulerCronPrune:
             payload, definition = definitions[name]
             try:
                 removed = await self._backend.schedules.prune_cron(
-                    name, payload, stale_after_ms=prune_after_ms,
+                    name,
+                    payload,
+                    stale_after_ms=prune_after_ms,
                     remember_disabled=definition.disabled,
                 )
             except BackendConnectionError as exc:
                 logger.warning(
-                    "scheduler_cron_prune_failed", schedule_name=name, **_error_fields(exc),
+                    "scheduler_cron_prune_failed",
+                    schedule_name=name,
+                    **_error_fields(exc),
                 )
                 continue
             if removed:

@@ -72,9 +72,11 @@ async def _stop_worker(app: SwarmQ, worker_task: asyncio.Task) -> None:
 
 
 class TestPreStartCancelIntegration:
-
     async def test_queued_task_cancel_before_worker_consumes(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """Schedule → cancel() → worker consumes → TaskCancelledError.
 
@@ -86,6 +88,7 @@ class TestPreStartCancelIntegration:
 
         class SlowTask(Task):
             task_info = TaskInfo(name="slow_q", queues=[queue])
+
             async def run(self) -> str:
                 await asyncio.sleep(5)
                 return "should-not-return"
@@ -115,7 +118,10 @@ class TestPreStartCancelIntegration:
             assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
 
     async def test_double_cancel_returns_false_second_time(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """Two back-to-back cancel() calls: first True, second False."""
         queue = _unique_queue()
@@ -133,7 +139,10 @@ class TestPreStartCancelIntegration:
             await backend.clear_cancel_flag(task_id)
 
     async def test_cancel_after_completion_has_no_effect(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """Task runs to completion → cancel() sets a flag with no effect.
 
@@ -147,6 +156,7 @@ class TestPreStartCancelIntegration:
 
         class FastTask(Task):
             task_info = TaskInfo(name="fast", queues=[queue])
+
             async def run(self) -> str:
                 return "completed"
 
@@ -176,7 +186,10 @@ class TestPreStartCancelIntegration:
                 await _stop_worker(app, worker_task)
 
     async def test_cancel_unknown_task_id_harmless(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """cancel() for a task_id that was never scheduled: harmless."""
         broker = RabbitMQBroker(rabbitmq_url)
@@ -189,13 +202,17 @@ class TestPreStartCancelIntegration:
             await backend.clear_cancel_flag(fake_id)
 
     async def test_signal_task_cancelled_dispatched_on_pre_start(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """TASK_CANCELLED signal fires when a queued task is cancelled."""
         queue = _unique_queue()
 
         class TraceTask(Task):
             task_info = TaskInfo(name="trace", queues=[queue])
+
             async def run(self) -> int:
                 await asyncio.sleep(5)
                 return 1
@@ -227,7 +244,10 @@ class TestPreStartCancelIntegration:
             assert captured[0]["task_name"] == "trace"
 
     async def test_cancel_in_retry_delay(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """Task fails, lands in DQ with delay, cancel during delay → TaskCancelledError.
 
@@ -238,9 +258,12 @@ class TestPreStartCancelIntegration:
 
         class FailOnceTask(Task):
             task_info = TaskInfo(
-                name="fail_once", queues=[queue], max_retries=3,
+                name="fail_once",
+                queues=[queue],
+                max_retries=3,
                 retry_base_delay=1.0,  # 1s delay before retry
             )
+
             async def run(self) -> str:
                 raise RuntimeError("first-run-fail")
 
@@ -268,15 +291,18 @@ class TestPreStartCancelIntegration:
 
 
 class TestRunningCancelIntegration:
-
     async def test_running_task_cancel_via_monitor(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """asyncio.sleep(10) task cancelled 500ms in → TaskCancelledError in <2s."""
         queue = _unique_queue()
 
         class LongTask(Task):
             task_info = TaskInfo(name="long_run", queues=[queue])
+
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "should-not-return"
@@ -286,7 +312,10 @@ class TestRunningCancelIntegration:
 
         # Short poll interval for fast test.
         async with SwarmQ(
-            broker, backend, queues=[queue], concurrency=1,
+            broker,
+            backend,
+            queues=[queue],
+            concurrency=1,
             cancel_poll_interval=0.1,
         ) as app:
             await app.broker.declare_queue(queue)
@@ -307,15 +336,21 @@ class TestRunningCancelIntegration:
                 await _stop_worker(app, worker_task)
 
     async def test_hard_timeout_still_works_without_cancel(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """Regression: task exceeds hard_timeout, no cancel → task fails with timeout."""
         queue = _unique_queue()
 
         class TimeoutTask(Task):
             task_info = TaskInfo(
-                name="timeout_task", queues=[queue], hard_timeout=1,
+                name="timeout_task",
+                queues=[queue],
+                hard_timeout=1,
             )
+
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "never"
@@ -324,7 +359,10 @@ class TestRunningCancelIntegration:
         backend = ValkeyBackend(valkey_url)
 
         async with SwarmQ(
-            broker, backend, queues=[queue], concurrency=1,
+            broker,
+            backend,
+            queues=[queue],
+            concurrency=1,
             cancel_poll_interval=0.5,
         ) as app:
             await app.broker.declare_queue(queue)
@@ -334,6 +372,7 @@ class TestRunningCancelIntegration:
                 task_id = await app.schedule("timeout_task")
                 # Expect a TaskError (NOT TaskCancelledError).
                 from swarmq.exceptions import TaskError
+
                 with pytest.raises(TaskError) as excinfo:
                     await app.get_result(task_id, timeout=5)
                 # Cancel-specific exception must NOT be raised.
@@ -343,7 +382,10 @@ class TestRunningCancelIntegration:
                 await _stop_worker(app, worker_task)
 
     async def test_cancel_with_lock_releases_lock_for_successor(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         """Task holds lock, cancel greift, lock is released, next task can acquire."""
         queue = _unique_queue()
@@ -353,9 +395,12 @@ class TestRunningCancelIntegration:
 
         class LockedLongTask(Task):
             task_info = TaskInfo(
-                name="locked_long", queues=[queue],
-                lock=lock_name, hard_timeout=30,
+                name="locked_long",
+                queues=[queue],
+                lock=lock_name,
+                hard_timeout=30,
             )
+
             async def run(self) -> str:
                 order.append("long_started")
                 await asyncio.sleep(10)
@@ -363,9 +408,12 @@ class TestRunningCancelIntegration:
 
         class LockedShortTask(Task):
             task_info = TaskInfo(
-                name="locked_short", queues=[queue],
-                lock=lock_name, hard_timeout=30,
+                name="locked_short",
+                queues=[queue],
+                lock=lock_name,
+                hard_timeout=30,
             )
+
             async def run(self) -> str:
                 order.append("short_ran")
                 return "ok"
@@ -374,7 +422,10 @@ class TestRunningCancelIntegration:
         backend = ValkeyBackend(valkey_url)
 
         async with SwarmQ(
-            broker, backend, queues=[queue], concurrency=2,
+            broker,
+            backend,
+            queues=[queue],
+            concurrency=2,
             cancel_poll_interval=0.1,
         ) as app:
             await app.broker.declare_queue(queue)

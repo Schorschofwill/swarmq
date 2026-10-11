@@ -82,9 +82,7 @@ _container: AsyncContainer | _Missing = _MISSING
 # run task's context) and resets it afterwards. The ``@inject``-wrapped task
 # methods read it via their ``container_getter`` — this keeps the call site
 # ``task_instance.run(*args, **kwargs)`` unchanged.
-request_container: contextvars.ContextVar[AsyncContainer] = contextvars.ContextVar(
-    "swarmq_request_container"
-)
+request_container: contextvars.ContextVar[AsyncContainer] = contextvars.ContextVar("swarmq_request_container")
 
 
 def setup_dishka(container: AsyncContainer) -> None:
@@ -104,8 +102,7 @@ def setup_dishka(container: AsyncContainer) -> None:
         logger.warning(
             "dishka_container_replaced",
             hint=(
-                "setup_dishka() was already called with a different "
-                "container; the previous registration is discarded"
+                "setup_dishka() was already called with a different container; the previous registration is discarded"
             ),
         )
     _container = container
@@ -147,16 +144,13 @@ def _key_resolvable(container: object, key: object) -> bool:
         logger.warning(
             "dishka_resolvability_introspection_unavailable",
             detail=(
-                "dishka registry introspection API not as expected; "
-                "R3b validation degraded to container-presence-only"
+                "dishka registry introspection API not as expected; R3b validation degraded to container-presence-only"
             ),
         )
         return True
 
 
-def _reject_ineffective_fromdishka(
-    registered_tasks: list[type], error_cls: type[Exception]
-) -> None:
+def _reject_ineffective_fromdishka(registered_tasks: list[type], error_cls: type[Exception]) -> None:
     """R18: eine ``FromDishka``-Annotation ohne DependencyKey ist ein Startfehler.
 
     ``FromDishka[X] | None = None`` ergibt keinen Key; die Injektion faellt
@@ -192,9 +186,7 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
     from swarmq.exceptions import ConfigurationError
 
     _reject_ineffective_fromdishka(registered_tasks, ConfigurationError)
-    di_tasks = [
-        t for t in registered_tasks if getattr(t, "_dishka_injected_keys", None)
-    ]
+    di_tasks = [t for t in registered_tasks if getattr(t, "_dishka_injected_keys", None)]
     if not di_tasks:
         return
 
@@ -223,9 +215,7 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
         )
 
 
-def _get_request_container(
-    args: tuple[object, ...], kwargs: dict[str, object]
-) -> AsyncContainer:
+def _get_request_container(args: tuple[object, ...], kwargs: dict[str, object]) -> AsyncContainer:
     """container_getter for wrap_injection: returns the per-task REQUEST
     container set by the worker. Raises a clear error if called outside an
     active request scope (e.g. a FromDishka task invoked directly in a test
@@ -234,8 +224,7 @@ def _get_request_container(
         return request_container.get()
     except LookupError:
         raise RuntimeError(
-            "No active SwarmQ request scope; FromDishka injection only works "
-            "when the task runs through a worker."
+            "No active SwarmQ request scope; FromDishka injection only works when the task runs through a worker."
         ) from None
 
 
@@ -262,8 +251,7 @@ def _collect_method_keys(
         if dep is not None:
             keys.append(dep)
         elif _annotation_mentions_fromdishka(raw_annotations.get(pname)) or (
-            isinstance(raw_annotations.get(pname), str)
-            and "FromDishka" in str(raw_annotations.get(pname))
+            isinstance(raw_annotations.get(pname), str) and "FromDishka" in str(raw_annotations.get(pname))
         ):
             silent.append(f"{name}.{pname}")
     return keys, silent
@@ -331,8 +319,7 @@ def maybe_wrap_task(cls: type) -> None:
         sig = inspect.signature(func)
         raw_annotations = getattr(func, "__annotations__", {})
         if not any(
-            _raw_mentions_fromdishka(param, raw_annotations.get(pname))
-            for pname, param in sig.parameters.items()
+            _raw_mentions_fromdishka(param, raw_annotations.get(pname)) for pname, param in sig.parameters.items()
         ):
             continue
 
@@ -391,8 +378,5 @@ else:
         # Surface a clear error if SwarmQProvider is accessed without dishka,
         # rather than returning a confusing None.
         if name == "SwarmQProvider":
-            raise ImportError(
-                "SwarmQProvider requires the 'dishka' extra: "
-                "pip install 'swarmq[dishka]'"
-            )
+            raise ImportError("SwarmQProvider requires the 'dishka' extra: pip install 'swarmq[dishka]'")
         raise AttributeError(f"module 'swarmq.dishka' has no attribute {name!r}")

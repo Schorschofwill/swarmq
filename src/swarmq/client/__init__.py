@@ -38,9 +38,7 @@ class Client(ClientScheduling, ClientResults, ClientWorkflows):
         broker: ClientBroker,
         backend: ClientBackend,
         registry: TaskRegistry | None = None,
-        middleware_chain: MiddlewareChain
-        | Callable[[], MiddlewareChain]
-        | None = None,
+        middleware_chain: MiddlewareChain | Callable[[], MiddlewareChain] | None = None,
         signal_dispatcher: SignalDispatcher | None = None,
         backend_op_timeout: float | None = None,
     ) -> None:
@@ -61,12 +59,8 @@ class Client(ClientScheduling, ClientResults, ClientWorkflows):
         # Storing a factory lets us see middleware registered AFTER Client
         # construction — e.g. when SwarmQ.add_middleware() is called after
         # the Client has already been built.
-        self._middleware_chain_factory = coerce_middleware_chain_factory(
-            middleware_chain
-        )
-        self._signal_dispatcher = (
-            signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
-        )
+        self._middleware_chain_factory = coerce_middleware_chain_factory(middleware_chain)
+        self._signal_dispatcher = signal_dispatcher if signal_dispatcher is not None else SignalDispatcher()
         # Lazy-init: ScheduleStore requires a
         # connected backend to register its Lua scripts — but Client is
         # constructed before backend.connect(). We defer the construction to

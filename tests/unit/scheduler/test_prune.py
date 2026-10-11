@@ -48,8 +48,13 @@ _DAY_MS = 86_400_000
 
 def _static(name: str = "nightly", **fields) -> ScheduleDefinition:
     base = {
-        "schedule_name": name, "task_name": name, "args": (), "kwargs": {},
-        "queue": "default", "cron": "0 1 * * *", "fire_ts_ms": None,
+        "schedule_name": name,
+        "task_name": name,
+        "args": (),
+        "kwargs": {},
+        "queue": "default",
+        "cron": "0 1 * * *",
+        "fire_ts_ms": None,
         "source": "static",
     }
     base.update(fields)
@@ -67,7 +72,8 @@ def _snapshot(*reports: CronReport) -> CronReports:
 class TestPlanPrune:
     def test_reported_cron_silent_longer_than_prune_after_is_stale(self):
         plan = plan_prune(
-            [_static()], _snapshot(_report(last_seen_ms=_NOW_MS - _DAY_MS - 1)),
+            [_static()],
+            _snapshot(_report(last_seen_ms=_NOW_MS - _DAY_MS - 1)),
             prune_after_ms=_DAY_MS,
         )
 
@@ -75,7 +81,8 @@ class TestPlanPrune:
 
     def test_fresh_report_keeps_the_cron(self):
         plan = plan_prune(
-            [_static()], _snapshot(_report(last_seen_ms=_NOW_MS - _DAY_MS)),
+            [_static()],
+            _snapshot(_report(last_seen_ms=_NOW_MS - _DAY_MS)),
             prune_after_ms=_DAY_MS,
         )
 
@@ -132,7 +139,11 @@ class TestLeaderPrunes:
     @pytest.fixture
     def leader(self, memory, broker, config, lock_manager, signal_dispatcher):
         return _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory),
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
             signal_dispatcher,
         )
 
@@ -140,19 +151,26 @@ class TestLeaderPrunes:
     async def _seed(memory, definition: ScheduleDefinition, *, fire_ts_ms=_NOW_MS + _DAY_MS):
         stored = msgspec.structs.replace(definition, fire_ts_ms=fire_ts_ms)
         await memory.schedules.add(
-            definition.schedule_name, msgspec.json.encode(stored),
+            definition.schedule_name,
+            msgspec.json.encode(stored),
             None if definition.disabled else fire_ts_ms,
         )
 
     @staticmethod
     async def _report(memory, definition: ScheduleDefinition):
         await memory.schedules.report_cron(
-            definition.schedule_name, cron_fingerprint(definition),
-            msgspec.json.encode(definition), live_window_ms=180_000,
+            definition.schedule_name,
+            cron_fingerprint(definition),
+            msgspec.json.encode(definition),
+            live_window_ms=180_000,
         )
 
     async def test_silent_reported_cron_is_removed_with_its_fire_entry(
-        self, memory, leader, clock, swarmq_logs,
+        self,
+        memory,
+        leader,
+        clock,
+        swarmq_logs,
     ):
         await self._seed(memory, _static())
         await self._report(memory, _static())
@@ -166,7 +184,11 @@ class TestLeaderPrunes:
         assert entry["schedule_name"] == "nightly" and entry["log_level"] == "info"
 
     async def test_cron_removed_from_task_is_pruned_after_the_period(
-        self, memory, leader, clock, _cleanup_tasks,
+        self,
+        memory,
+        leader,
+        clock,
+        _cleanup_tasks,
     ):
         """``cron=`` entfernt, Task bleibt: der Worker meldet den Namen nicht
         mehr; nach der Frist verschwindet der Cron."""
@@ -189,7 +211,11 @@ class TestLeaderPrunes:
         assert await memory.schedules.get("nightly") is None
 
     async def test_never_reported_cron_stays_and_is_logged_once_as_candidate(
-        self, memory, leader, clock, swarmq_logs,
+        self,
+        memory,
+        leader,
+        clock,
+        swarmq_logs,
     ):
         await self._seed(memory, _static("legacy"))
         await self._seed(memory, _static("by_cli", source="cli"))
@@ -208,12 +234,23 @@ class TestLeaderPrunes:
     def _loop_with(memory, broker, config, lock_manager, signal_dispatcher, mode):
         config = dataclasses.replace(config, scheduler_prune=mode)
         return _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory),
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
             signal_dispatcher,
         )
 
     async def test_log_mode_only_logs(
-        self, memory, broker, config, lock_manager, signal_dispatcher, clock, swarmq_logs,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        clock,
+        swarmq_logs,
     ):
         leader = self._loop_with(memory, broker, config, lock_manager, signal_dispatcher, "log")
         await self._seed(memory, _static())
@@ -230,7 +267,14 @@ class TestLeaderPrunes:
         assert [e["schedule_name"] for e in entries] == ["nightly"]
 
     async def test_off_mode_does_nothing(
-        self, memory, broker, config, lock_manager, signal_dispatcher, clock, swarmq_logs,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        clock,
+        swarmq_logs,
     ):
         leader = self._loop_with(memory, broker, config, lock_manager, signal_dispatcher, "off")
         await self._seed(memory, _static())
@@ -273,13 +317,24 @@ class TestLeaderPrunes:
         assert "schedule remove --permanent" in entry["hint"]
 
     async def test_reports_outlive_a_period_longer_than_seven_days(
-        self, memory, broker, config, lock_manager, signal_dispatcher, clock,
+        self,
+        memory,
+        broker,
+        config,
+        lock_manager,
+        signal_dispatcher,
+        clock,
     ):
         """Sonst wäre die Meldung vor Ablauf der Frist gelöscht und der Cron
         gälte als nie gemeldet."""
         config = dataclasses.replace(config, scheduler_prune_after_s=10 * _DAY_MS / 1000)
         leader = _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher,
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
+            signal_dispatcher,
         )
         await self._seed(memory, _static())
         await self._report(memory, _static())
@@ -303,7 +358,12 @@ class TestLeaderPrunes:
         assert await memory.schedules.get("broken") == b"{not json"
 
     async def test_failed_removal_is_logged_and_the_tick_goes_on(
-        self, memory, leader, clock, monkeypatch, swarmq_logs,
+        self,
+        memory,
+        leader,
+        clock,
+        monkeypatch,
+        swarmq_logs,
     ):
         real = memory.schedules.prune_cron
 
@@ -327,7 +387,12 @@ class TestLeaderPrunes:
         assert entry["error"] == "valkey flap"
 
     async def test_unreadable_definitions_are_logged_and_reports_still_pruned(
-        self, memory, leader, clock, monkeypatch, swarmq_logs,
+        self,
+        memory,
+        leader,
+        clock,
+        monkeypatch,
+        swarmq_logs,
     ):
         async def _down():
             raise BackendConnectionError("valkey down")

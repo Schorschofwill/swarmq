@@ -36,8 +36,6 @@ class TaskQueueSystem(Protocol):
         """Schedule a task, return task_id."""
         ...
 
-    async def get_result(
-        self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01
-    ) -> Any:
+    async def get_result(self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01) -> Any:
         """Poll for result. poll_interval is set by the scenario."""
         ...

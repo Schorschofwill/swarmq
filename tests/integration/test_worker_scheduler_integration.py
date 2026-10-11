@@ -37,12 +37,16 @@ def _cleanup_tasks():
 
 class TestWorkerSchedulerIntegration:
     async def test_worker_start_emits_leader_signal_and_shutdown_releases(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        _cleanup_tasks,
     ):
         queue = _unique_queue()
 
         class NoopTask(Task):
             task_info = TaskInfo(name=f"sched_noop_{queue}", queues=[queue])
+
             async def run(self):
                 return "ok"
 
@@ -73,8 +77,11 @@ class TestWorkerSchedulerIntegration:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         worker = Worker(
-            broker=broker, backend=backend, registry=registry,
-            config=config, signal_dispatcher=dispatcher,
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            config=config,
+            signal_dispatcher=dispatcher,
         )
 
         # Event barrier for leader signal (Unit 2 / H-5).
@@ -108,7 +115,7 @@ class TestWorkerSchedulerIntegration:
                 worker_task.cancel()
                 try:
                     await worker_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError, Exception:
                     pass
 
         # Handover signal must have fired during shutdown.

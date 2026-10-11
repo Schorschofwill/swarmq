@@ -124,9 +124,7 @@ class TestPreflightCommandAgrees:
     def test_payload_names_both_ranges(self, capsys):
         """R7: der Betreiber liest die Prometheus-Targets direkt aus dem
         Payload ab, statt sie im Kopf auszurechnen."""
-        code, payload = self._run_check(
-            capsys, processes=4, metrics_port=9000, health_port=9100
-        )
+        code, payload = self._run_check(capsys, processes=4, metrics_port=9000, health_port=9100)
 
         assert code == 0
         assert payload["metrics_ports"] == [9000, 9003]
@@ -140,7 +138,11 @@ class TestPreflightCommandAgrees:
 
         _, from_env = self._run_check(capsys, processes=2, concurrency=None, pool=None)
         _, from_flag = self._run_check(
-            capsys, processes=2, concurrency=20, pool=None, health_port=8000,
+            capsys,
+            processes=2,
+            concurrency=20,
+            pool=None,
+            health_port=8000,
         )
 
         assert (from_env["slots"], from_env["health_ports"]) == (5, [9500, 9501])
@@ -154,9 +156,7 @@ class TestPreflightCommandAgrees:
         assert "SWARMQ_METRICS_PORT" in payload["error"]
 
     def test_reports_the_overlap_instead_of_ok(self, capsys):
-        code, payload = self._run_check(
-            capsys, processes=4, metrics_port=9000, health_port=9002
-        )
+        code, payload = self._run_check(capsys, processes=4, metrics_port=9000, health_port=9002)
 
         assert code != 0
         assert payload["ok"] is False
@@ -195,9 +195,7 @@ class TestRealStartPathEnforcesIt:
         from swarmq.process_manager.run import run_multi_process_worker
 
         with pytest.raises(ConfigurationError):
-            run_multi_process_worker(
-                self._args(processes=4, metrics_port=9000, health_port=9002)
-            )
+            run_multi_process_worker(self._args(processes=4, metrics_port=9000, health_port=9002))
 
     def test_start_path_names_the_environment_port(self, monkeypatch):
         """Nach der CLI-Aufloesung steht der Env-Port in ``args``; die Meldung

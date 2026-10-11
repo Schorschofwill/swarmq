@@ -19,11 +19,16 @@ def _handler() -> tuple[RetryHandler, GateDeps]:
     broker.redeliver = AsyncMock()
     broker.publish = AsyncMock()
     deps = GateDeps(
-        broker=broker, backend=MagicMock(),
+        broker=broker,
+        backend=MagicMock(),
         config=SwarmQConfig(broker_url="amqp://x", backend_url="redis://x"),
-        signals=MagicMock(dispatch=AsyncMock()), registry=MagicMock(),
-        rate_limiter=lambda: None, lock_manager=lambda: None, finalize_schedfire=AsyncMock(),
-        maybe_release_unique=AsyncMock(), extract_valid_workflow_id=lambda _m: None,
+        signals=MagicMock(dispatch=AsyncMock()),
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
+        extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
     return RetryHandler(deps, workflow_advancer=lambda: None, finish=AsyncMock()), deps

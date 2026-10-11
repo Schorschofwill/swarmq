@@ -113,7 +113,8 @@ class TestScripts:
         scripts["replan"].return_value = 0
         assert await store.replan_if_unchanged("s", b"read", b"healed", 4_000) is False
         scripts["replan"].assert_awaited_once_with(
-            keys=[DEFS_KEY, ZSET_KEY], args=["s", b"read", b"healed", 4_000],
+            keys=[DEFS_KEY, ZSET_KEY],
+            args=["s", b"read", b"healed", 4_000],
         )
 
     async def test_poll_due_decodes_rows(self) -> None:
@@ -154,8 +155,12 @@ class TestScripts:
         """Liste 4."""
         store, _, scripts = _store()
         await store.commit_fire(
-            "s", next_fire_ts_ms=1_900, payload=b"next", owner="chief",
-            fired_ts_ms=1_000, fired_payload=b"polled",
+            "s",
+            next_fire_ts_ms=1_900,
+            payload=b"next",
+            owner="chief",
+            fired_ts_ms=1_000,
+            fired_payload=b"polled",
         )
         assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000, b"polled"]
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_payload=b"polled")

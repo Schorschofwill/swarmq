@@ -127,11 +127,7 @@ def child_task(
         scope = token = None
         if container is not _MISSING:
             scope = container(
-                context={
-                    TaskContext: TaskContext(
-                        task_id=task_id, task_name=task_name, queue=QUEUE, retry_count=0
-                    )
-                }
+                context={TaskContext: TaskContext(task_id=task_id, task_name=task_name, queue=QUEUE, retry_count=0)}
             )
             token = request_container.set(await scope.__aenter__())
         try:
@@ -204,19 +200,17 @@ async def series_b(fs: Any) -> None:
     p.start()
     _tag, threads, fs_pid = rq.get()
     p.join()
-    check("B1", threads == 1,
-          f"Forkserver (PID {fs_pid}) hatte {threads} Thread(s) beim Fork "
-          f"— numpy/Pillow vorgeladen")
+    check(
+        "B1", threads == 1, f"Forkserver (PID {fs_pid}) hatte {threads} Thread(s) beim Fork — numpy/Pillow vorgeladen"
+    )
 
     payload, _ = await run_child(fs, "proto.numpy", (600,), "b2")
     ok = payload[0] == "ok" and payload[1].get("correct") is True
-    check("B2", ok,
-          f"BLAS im Kind: {payload[1].get('detail') if ok else payload[1:]}")
+    check("B2", ok, f"BLAS im Kind: {payload[1].get('detail') if ok else payload[1:]}")
 
     payload, _ = await run_child(fs, "proto.pillow", (1400,), "b3")
     ok = payload[0] == "ok" and payload[1].get("correct") is True
-    check("B3", ok,
-          f"Pillow im Kind: {payload[1].get('detail') if ok else payload[1:]}")
+    check("B3", ok, f"Pillow im Kind: {payload[1].get('detail') if ok else payload[1:]}")
 
     rq = fs.Queue()
     p = fs.Process(target=child_leak_series, args=(rq, 3))
@@ -229,9 +223,12 @@ async def series_b(fs: Any) -> None:
     _tag, fresh, _pid = rq2.get()
     p.join()
     growth = series[-1] - series[0]
-    check("B4", growth > 100 and fresh[0] < series[-1] - 100,
-          f"NumPy-Leak im selben Kind {[f'{r:.0f}' for r in series]}MB (+{growth:.0f}MB); "
-          f"frisches Kind bei {fresh[0]:.0f}MB")
+    check(
+        "B4",
+        growth > 100 and fresh[0] < series[-1] - 100,
+        f"NumPy-Leak im selben Kind {[f'{r:.0f}' for r in series]}MB (+{growth:.0f}MB); "
+        f"frisches Kind bei {fresh[0]:.0f}MB",
+    )
 
     # B5: haengen IN C-Code (grosse SVD), nicht in Python-Bytecode
     pq, rq = fs.Queue(), fs.Queue()
@@ -243,8 +240,11 @@ async def series_b(fs: Any) -> None:
     p.kill()
     p.join(timeout=5)
     kill_ms = (time.perf_counter() - t0) * 1000
-    check("B5", alive and not p.is_alive() and p.exitcode == -9,
-          f"Kind mitten im BLAS-Aufruf in {kill_ms:.1f}ms beendet, exitcode={p.exitcode}")
+    check(
+        "B5",
+        alive and not p.is_alive() and p.exitcode == -9,
+        f"Kind mitten im BLAS-Aufruf in {kill_ms:.1f}ms beendet, exitcode={p.exitcode}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -266,10 +266,13 @@ async def series_c(fs: Any) -> None:
             await backend.set_progress(task_id, fields, ttl_ms=60_000)
         raw = await backend.get_progress(task_id)
         ok = payload[0] == "ok" and raw is not None and b"current" in raw
-        check("C1", ok,
-              f"{len(progress)} Meldung(en) aus dem Kind in Valkey geschrieben; "
-              f"gelesen: current={raw.get(b'current') if raw else None} "
-              f"total={raw.get(b'total') if raw else None}")
+        check(
+            "C1",
+            ok,
+            f"{len(progress)} Meldung(en) aus dem Kind in Valkey geschrieben; "
+            f"gelesen: current={raw.get(b'current') if raw else None} "
+            f"total={raw.get(b'total') if raw else None}",
+        )
 
         # C2: Cancel ueber echtes Valkey-Flag beendet ein rechnendes Kind
         cancel_id = f"proto-c2-{os.getpid()}"
@@ -289,9 +292,11 @@ async def series_c(fs: Any) -> None:
             await asyncio.sleep(0.05)
         latency_ms = (time.perf_counter() - t0) * 1000
         await backend.clear_cancel_flag(cancel_id)
-        check("C2", killed and p.exitcode == -9,
-              f"Cancel-Flag erkannt und Kind beendet nach {latency_ms:.0f}ms, "
-              f"exitcode={p.exitcode}")
+        check(
+            "C2",
+            killed and p.exitcode == -9,
+            f"Cancel-Flag erkannt und Kind beendet nach {latency_ms:.0f}ms, exitcode={p.exitcode}",
+        )
 
         # C3: Ende-zu-Ende ueber echtes RabbitMQ
         from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -317,9 +322,12 @@ async def series_c(fs: Any) -> None:
             payload, _ = await run_child(fs, msg["task"], tuple(msg["args"]), "c3")
             await broker.cancel_consume()
             ok = payload[0] == "ok" and payload[1].get("correct") is True
-            check("C3", ok,
-                  f"publish -> consume -> Rechenkind (PID {payload[2] if ok else '?'}): "
-                  f"{payload[1].get('detail') if ok else payload[1:]}")
+            check(
+                "C3",
+                ok,
+                f"publish -> consume -> Rechenkind (PID {payload[2] if ok else '?'}): "
+                f"{payload[1].get('detail') if ok else payload[1:]}",
+            )
         finally:
             await broker.close()
     finally:
@@ -345,9 +353,12 @@ async def series_d(fs: Any, rounds: int) -> None:
             pids.add(payload[2])
     dur = time.perf_counter() - t0
     rss_end = rss_mb()
-    check("D1", ok_count == rounds and (rss_end - rss_start) < 40,
-          f"{ok_count}/{rounds} Tasks in {dur:.1f}s, {len(pids)} verschiedene Kinder; "
-          f"Eltern-RSS {rss_start:.0f} -> {rss_end:.0f}MB")
+    check(
+        "D1",
+        ok_count == rounds and (rss_end - rss_start) < 40,
+        f"{ok_count}/{rounds} Tasks in {dur:.1f}s, {len(pids)} verschiedene Kinder; "
+        f"Eltern-RSS {rss_start:.0f} -> {rss_end:.0f}MB",
+    )
 
     # D2: Forkserver toeten und pruefen, ob weitergearbeitet werden kann
     fs_pid = None
@@ -367,9 +378,11 @@ async def series_d(fs: Any, rounds: int) -> None:
         except Exception as exc:
             killed_ok = False
             print(f"      Forkserver-Neuaufbau schlug fehl: {type(exc).__name__}: {exc}", flush=True)
-    check("D2", killed_ok,
-          f"Forkserver (PID {fs_pid}) getoetet — naechster Task "
-          f"{'lief durch' if killed_ok else 'schlug fehl'}")
+    check(
+        "D2",
+        killed_ok,
+        f"Forkserver (PID {fs_pid}) getoetet — naechster Task {'lief durch' if killed_ok else 'schlug fehl'}",
+    )
 
     # D3: Kind mitten im Task toeten -> sauberer Fehlerpfad, kein Haenger
     pq, rq = fs.Queue(), fs.Queue()
@@ -382,17 +395,19 @@ async def series_d(fs: Any, rounds: int) -> None:
     joined_ms = (time.perf_counter() - t0) * 1000
     no_result = rq.empty()
     payload, _ = await run_child(fs, "proto.numpy", (250,), "d3-nach")
-    check("D3", not p.is_alive() and no_result and payload[0] == "ok",
-          f"Kind getoetet (join {joined_ms:.1f}ms, kein Ergebnis in der Queue: {no_result}); "
-          f"Folge-Task {'ok' if payload[0] == 'ok' else 'fehlgeschlagen'}")
+    check(
+        "D3",
+        not p.is_alive() and no_result and payload[0] == "ok",
+        f"Kind getoetet (join {joined_ms:.1f}ms, kein Ergebnis in der Queue: {no_result}); "
+        f"Folge-Task {'ok' if payload[0] == 'ok' else 'fehlgeschlagen'}",
+    )
 
 
 # ---------------------------------------------------------------------------
 
 
 async def main() -> int:
-    print(f"Python {sys.version.split()[0]}  |  Broker {BROKER_URL}  |  Backend {BACKEND_URL}\n",
-          flush=True)
+    print(f"Python {sys.version.split()[0]}  |  Broker {BROKER_URL}  |  Backend {BACKEND_URL}\n", flush=True)
     rounds = int(os.environ.get("PROTO_ROUNDS", "30"))
 
     fs = mp.get_context("forkserver")
@@ -403,14 +418,18 @@ async def main() -> int:
         await series_c(fs)
     except Exception as exc:
         import traceback
+
         traceback.print_exc()
         check("C*", False, f"Infrastruktur-Serie abgebrochen: {type(exc).__name__}: {exc}")
     await series_d(fs, rounds)
 
     failed = [b for b, ok, _ in _RESULTS if not ok]
     print("\n" + "=" * 72, flush=True)
-    print(f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Punkte bestaetigt"
-          + (f" — offen: {', '.join(failed)}" if failed else ""), flush=True)
+    print(
+        f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Punkte bestaetigt"
+        + (f" — offen: {', '.join(failed)}" if failed else ""),
+        flush=True,
+    )
     return 1 if failed else 0
 
 

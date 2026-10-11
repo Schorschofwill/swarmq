@@ -79,7 +79,7 @@ def completed_marker_ttl_ms(config: Any, headers: Any, max_age: int | None) -> i
     enqueued_at = (headers or {}).get(HEADER_ENQUEUED_AT)
     try:
         waited = max(0.0, time.time() - int(enqueued_at)) if enqueued_at is not None else 0.0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         waited = 0.0
     ttl = max(base, 2 * waited + 300.0)
     cap = float(config.execution_guard_backlog_ttl_s)
@@ -113,12 +113,20 @@ class SchedfireGate:
 
         try:
             already_completed = await bounded_backend_call(
-                deps, deps.backend.schedules.is_fire_completed(header_value), what="schedfire completed check",
+                deps,
+                deps.backend.schedules.is_fire_completed(header_value),
+                what="schedfire completed check",
             )
         except BackendConnectionError as exc:
             # KTD11: die Zurueckstellung erholt sich selbst -> eine WARNING-Zeile.
             return await defer_backend_unavailable(
-                deps, delivery, ctx, exc, gate="schedfire", stage="completed_check", schedfire_key=header_value,
+                deps,
+                delivery,
+                ctx,
+                exc,
+                gate="schedfire",
+                stage="completed_check",
+                schedfire_key=header_value,
             )
 
         if already_completed:
@@ -152,7 +160,10 @@ class SchedfireGate:
         # verloren, traegt der Claim ``owner`` (geschrieben) oder noch eines
         # der angebotenen Tokens -- die Kopie bietet alle an.
         ctx.schedfire_claim = SchedfireClaim(
-            key=header_value, owner=owner, candidates=offered, completed_ttl_ms=completed_ttl_ms,
+            key=header_value,
+            owner=owner,
+            candidates=offered,
+            completed_ttl_ms=completed_ttl_ms,
         )
         try:
             claimed = await bounded_backend_call(
@@ -162,7 +173,13 @@ class SchedfireGate:
             )
         except BackendConnectionError as exc:
             return await defer_backend_unavailable(
-                deps, delivery, ctx, exc, gate="schedfire", stage="inflight_claim", schedfire_key=header_value,
+                deps,
+                delivery,
+                ctx,
+                exc,
+                gate="schedfire",
+                stage="inflight_claim",
+                schedfire_key=header_value,
             )
 
         if claimed:

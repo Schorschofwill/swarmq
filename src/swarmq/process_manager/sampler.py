@@ -43,7 +43,8 @@ async def _ready_depth(broker: SamplerBroker, queue: str) -> int:
 
 
 def _make_queue_depth_sampler(
-    admin_factory: AdminFactory, queues: list[str],
+    admin_factory: AdminFactory,
+    queues: list[str],
 ) -> Callable[[], int]:
     """Build a **synchronous** sampler the ProcessManager can call.
 
@@ -72,7 +73,7 @@ def _make_queue_depth_sampler(
                 try:
                     async with asyncio.timeout(1.0):
                         await broker.close()
-                except (TimeoutError, Exception):
+                except TimeoutError, Exception:
                     pass
 
         return asyncio.run(_run())

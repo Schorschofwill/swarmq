@@ -27,8 +27,10 @@ from swarmq.exceptions import BackendConnectionError, BackendResponseError
 
 def _backend(get_side_effect: object) -> tuple[ValkeyBackend, AsyncMock, AsyncMock]:
     client = AsyncMock()
-    client.get = AsyncMock(side_effect=get_side_effect) if isinstance(get_side_effect, list) else AsyncMock(
-        return_value=get_side_effect
+    client.get = (
+        AsyncMock(side_effect=get_side_effect)
+        if isinstance(get_side_effect, list)
+        else AsyncMock(return_value=get_side_effect)
     )
     pubsub = AsyncMock()
     pubsub.get_message = AsyncMock(return_value=None)  # no notification by default
@@ -261,12 +263,8 @@ class TestCompareAndStoreWorkflowState:
 
     async def test_zero_means_conflict_and_script_is_registered_once(self) -> None:
         backend, client, _script = self._backend([1, 0])
-        assert await backend.compare_and_store_workflow_state(
-            "wf-1", b"{}", ttl_ms=5_000, expected_version=0
-        ) is True
-        assert await backend.compare_and_store_workflow_state(
-            "wf-1", b"{}", ttl_ms=5_000, expected_version=0
-        ) is False
+        assert await backend.compare_and_store_workflow_state("wf-1", b"{}", ttl_ms=5_000, expected_version=0) is True
+        assert await backend.compare_and_store_workflow_state("wf-1", b"{}", ttl_ms=5_000, expected_version=0) is False
         client.register_script.assert_called_once()
 
     async def test_before_connect_raises_backend_error(self) -> None:

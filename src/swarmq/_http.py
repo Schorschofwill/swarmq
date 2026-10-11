@@ -138,7 +138,8 @@ class AsyncHttpServer:
     def __init__(
         self,
         handler: Callable[
-            [str, str, asyncio.StreamWriter], Awaitable[None],
+            [str, str, asyncio.StreamWriter],
+            Awaitable[None],
         ],
         *,
         host: str = "127.0.0.1",
@@ -154,19 +155,22 @@ class AsyncHttpServer:
     async def start(self) -> None:
         try:
             self._server = await asyncio.start_server(
-                self._accept, host=self._host, port=self._port,
+                self._accept,
+                host=self._host,
+                port=self._port,
             )
         except OSError as exc:
             # Port conflict / bind failure surfaces
             # as typed RuntimeError with operational context instead
             # of raw OSError.
             raise RuntimeError(
-                f"{self._label} bind failed on {self._host}:{self._port}: "
-                f"{exc.strerror or exc}"
+                f"{self._label} bind failed on {self._host}:{self._port}: {exc.strerror or exc}"
             ) from exc
         logger.info(
             "http_server_started",
-            server=self._label, host=self._host, port=self._port,
+            server=self._label,
+            host=self._host,
+            port=self._port,
         )
 
     async def stop(self) -> None:
@@ -197,7 +201,9 @@ class AsyncHttpServer:
             method, path = parsed
             if method != "GET":
                 await write_http_response(
-                    writer, 405, b"method not allowed\n",
+                    writer,
+                    405,
+                    b"method not allowed\n",
                 )
                 return
             await self._handler(method, path, writer)

@@ -34,9 +34,7 @@ def _client(broker, backend, middleware=None) -> Client:
     registry = TaskRegistry()
     registry.register(WfA)
     chain = MiddlewareChain(list(middleware or []))
-    return Client(
-        broker=broker, backend=backend, registry=registry, middleware_chain=chain
-    )
+    return Client(broker=broker, backend=backend, registry=registry, middleware_chain=chain)
 
 
 def _record_cas(backend, results: list[bool]) -> tuple[AsyncMock, list[bytes]]:
@@ -153,7 +151,9 @@ async def test_apply_runs_pre_enqueue_for_the_whole_frontier_before_persisting(b
     await client.apply(group(WfA.s("a"), WfA.s("b")))
 
     assert calls[:3] == ["pre:/g0", "pre:/g1", "store"] or calls[:3] == [
-        "pre:/g0:at_least_once", "pre:/g1:at_least_once", "store",
+        "pre:/g0:at_least_once",
+        "pre:/g1:at_least_once",
+        "store",
     ]
 
 

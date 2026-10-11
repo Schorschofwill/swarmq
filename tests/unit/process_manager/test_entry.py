@@ -65,7 +65,8 @@ class TestWorkerSubprocessEntry:
 
         monkeypatch.setattr("swarmq.process_manager.supervisor.os.kill", fake_kill)
         monkeypatch.setattr(
-            "swarmq.cli.run_worker_async", fakerun_worker_async,
+            "swarmq.cli.run_worker_async",
+            fakerun_worker_async,
         )
 
         timer = threading.Timer(0.1, shutdown_event.set)
@@ -80,6 +81,7 @@ class TestWorkerSubprocessEntry:
             timer.cancel()
 
         import signal as _signal
+
         assert kills, "shutdown watcher never called os.kill"
         pid, sig = kills[0]
         assert pid == os.getpid()
@@ -125,13 +127,9 @@ class TestWorkerSubprocessEntry:
 
         ns = captured["ns"]
         assert not hasattr(ns, "reload"), (
-            "reload leaked to worker Namespace — "
-            "kwargs.pop('reload') missing in worker_subprocess_entry"
+            "reload leaked to worker Namespace — kwargs.pop('reload') missing in worker_subprocess_entry"
         )
-        assert not hasattr(ns, "watch_dirs"), (
-            "watch_dirs leaked to worker Namespace"
-        )
-
+        assert not hasattr(ns, "watch_dirs"), "watch_dirs leaked to worker Namespace"
 
     def test_slot_reaches_the_worker_namespace(self, monkeypatch):
         """U2 (R3/KTD2): Der Supervisor kennt den Slot bereits und uebergibt
@@ -246,8 +244,7 @@ def _broken_log_config_settings(**kwargs):
     return LoggingSettings(
         log_config="/abs/log.json",
         log_config_json=(
-            '{"version": 1, "disable_existing_loggers": false,'
-            ' "handlers": {"h": {"class": "nope.Missing"}}}'
+            '{"version": 1, "disable_existing_loggers": false, "handlers": {"h": {"class": "nope.Missing"}}}'
         ),
         **kwargs,
     )
@@ -280,7 +277,9 @@ class TestLoggingConfigErrorInTheChild:
 
         with pytest.raises(SystemExit) as exc_info:
             worker_subprocess_entry(
-                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+                0,
+                shutdown_event,
+                _make_test_cfg(logging_settings=_broken_log_config_settings()),
             )
 
         assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
@@ -296,12 +295,12 @@ class TestLoggingConfigErrorInTheChild:
 
         with pytest.raises(SystemExit):
             worker_subprocess_entry(
-                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+                0,
+                shutdown_event,
+                _make_test_cfg(logging_settings=_broken_log_config_settings()),
             )
 
-        line = next(
-            line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line
-        )
+        line = next(line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line)
         assert "LoggingConfigError" in line
         assert "/abs/log.json" in line
 
@@ -415,7 +414,8 @@ class TestEntryLogging:
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
 
         worker_subprocess_entry(
-            0, shutdown_event,
+            0,
+            shutdown_event,
             _make_test_cfg(logging_settings=LoggingSettings(configure=False)),
         )
 
@@ -562,13 +562,16 @@ class TestHardExitAfterTheDrain:
 
         with pytest.raises(SystemExit):
             worker_subprocess_entry(
-                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+                0,
+                shutdown_event,
+                _make_test_cfg(logging_settings=_broken_log_config_settings()),
             )
 
         assert calls[-2:] == ["shutdown_logging", ("exit_if_log_thread_stuck", 78)]
 
     def test_the_fallback_after_a_broken_logging_config_keeps_the_drain_timeout(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         import io
         import sys
@@ -585,7 +588,8 @@ class TestHardExitAfterTheDrain:
         stderr = BlockedStderr()
         monkeypatch.setattr(sys, "stderr", stderr)
         monkeypatch.setattr(
-            "swarmq.process_manager.entry.exit_if_log_thread_stuck", lambda code, exc=None: None,
+            "swarmq.process_manager.entry.exit_if_log_thread_stuck",
+            lambda code, exc=None: None,
         )
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         settings = _broken_log_config_settings(drain_timeout=0.05)

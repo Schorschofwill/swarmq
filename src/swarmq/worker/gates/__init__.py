@@ -205,7 +205,7 @@ def _as_count(raw: Any) -> int:
     """Nicht-negativer Zaehler; ein kaputter Header zaehlt wie keiner."""
     try:
         count = int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
     return max(count, 0)
 
@@ -241,7 +241,9 @@ def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict
     attempt = prior_deferrals(delivery.headers or {}) + 1
     headers[HEADER_BACKEND_DEFER_COUNT] = attempt
     delay_s = backend_defer_delay(
-        attempt, deps.config.backend_defer_base_delay, deps.config.backend_defer_max_delay,
+        attempt,
+        deps.config.backend_defer_base_delay,
+        deps.config.backend_defer_max_delay,
     )
     return headers, attempt, int(delay_s * 1000)
 

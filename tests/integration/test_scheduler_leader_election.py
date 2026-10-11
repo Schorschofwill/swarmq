@@ -27,8 +27,7 @@ from swarmq.signals import Signal, SignalDispatcher
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
 
-async def _make_loop(rabbitmq_url, valkey_url, *, owner_token,
-                     dispatcher, lock_ttl=1.0, version=None):
+async def _make_loop(rabbitmq_url, valkey_url, *, owner_token, dispatcher, lock_ttl=1.0, version=None):
     broker = RabbitMQBroker(rabbitmq_url)
     await broker.connect()
     backend = ValkeyBackend(valkey_url)
@@ -57,7 +56,9 @@ async def _make_loop(rabbitmq_url, valkey_url, *, owner_token,
 
 class TestLeaderElectionIntegration:
     async def test_two_loops_elect_exactly_one_leader(
-        self, rabbitmq_url, valkey_url,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         a_events: list[Signal] = []
         b_events: list[Signal] = []
@@ -65,17 +66,24 @@ class TestLeaderElectionIntegration:
         d_b = SignalDispatcher()
 
         @d_a.on_signal(Signal.SCHEDULER_LEADER)
-        async def _la(**kw): a_events.append(Signal.SCHEDULER_LEADER)
+        async def _la(**kw):
+            a_events.append(Signal.SCHEDULER_LEADER)
+
         @d_b.on_signal(Signal.SCHEDULER_LEADER)
-        async def _lb(**kw): b_events.append(Signal.SCHEDULER_LEADER)
+        async def _lb(**kw):
+            b_events.append(Signal.SCHEDULER_LEADER)
 
         loop_a, br_a, be_a = await _make_loop(
-            rabbitmq_url, valkey_url,
-            owner_token=f"A-{uuid.uuid4().hex[:6]}", dispatcher=d_a,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"A-{uuid.uuid4().hex[:6]}",
+            dispatcher=d_a,
         )
         loop_b, br_b, be_b = await _make_loop(
-            rabbitmq_url, valkey_url,
-            owner_token=f"B-{uuid.uuid4().hex[:6]}", dispatcher=d_b,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"B-{uuid.uuid4().hex[:6]}",
+            dispatcher=d_b,
         )
 
         # Track leader/standby transitions via events.
@@ -112,9 +120,7 @@ class TestLeaderElectionIntegration:
             # SCHEDULER_LEADER emission.
             await asyncio.sleep(0.3)
 
-            leader_count = int(loop_a.state == "leader") + int(
-                loop_b.state == "leader"
-            )
+            leader_count = int(loop_a.state == "leader") + int(loop_b.state == "leader")
             assert leader_count == 1
             assert len(a_events) + len(b_events) == 1
         finally:
@@ -126,7 +132,9 @@ class TestLeaderElectionIntegration:
             await be_b.close()
 
     async def test_leader_kill_causes_failover_signal(
-        self, rabbitmq_url, valkey_url,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         """Simulate A's crash by not releasing the lock. B should
         acquire after the TTL expires and emit FAILOVER."""
@@ -134,19 +142,24 @@ class TestLeaderElectionIntegration:
         d_b = SignalDispatcher()
 
         fo_events: list[Signal] = []
+
         @d_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
         async def _fo(**kw):
             fo_events.append(Signal.SCHEDULER_LEADER_FAILOVER)
 
         lock_ttl = 0.8  # short TTL so the test runs fast
         loop_a, br_a, be_a = await _make_loop(
-            rabbitmq_url, valkey_url,
-            owner_token=f"A-{uuid.uuid4().hex[:6]}", dispatcher=d_a,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"A-{uuid.uuid4().hex[:6]}",
+            dispatcher=d_a,
             lock_ttl=lock_ttl,
         )
         loop_b, br_b, be_b = await _make_loop(
-            rabbitmq_url, valkey_url,
-            owner_token=f"B-{uuid.uuid4().hex[:6]}", dispatcher=d_b,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"B-{uuid.uuid4().hex[:6]}",
+            dispatcher=d_b,
             lock_ttl=lock_ttl,
         )
 
@@ -204,7 +217,9 @@ class TestLeaderElectionIntegration:
             await be_b.close()
 
     async def test_graceful_handover_emits_leader_not_failover(
-        self, rabbitmq_url, valkey_url,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         """A.stop() sets the handover marker; B's next acquire sees it
         and emits LEADER, not FAILOVER."""
@@ -213,18 +228,26 @@ class TestLeaderElectionIntegration:
 
         b_leader: list[Signal] = []
         b_failover: list[Signal] = []
+
         @d_b.on_signal(Signal.SCHEDULER_LEADER)
-        async def _l(**kw): b_leader.append(Signal.SCHEDULER_LEADER)
+        async def _l(**kw):
+            b_leader.append(Signal.SCHEDULER_LEADER)
+
         @d_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
-        async def _fo(**kw): b_failover.append(Signal.SCHEDULER_LEADER_FAILOVER)
+        async def _fo(**kw):
+            b_failover.append(Signal.SCHEDULER_LEADER_FAILOVER)
 
         loop_a, br_a, be_a = await _make_loop(
-            rabbitmq_url, valkey_url,
-            owner_token=f"A-{uuid.uuid4().hex[:6]}", dispatcher=d_a,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"A-{uuid.uuid4().hex[:6]}",
+            dispatcher=d_a,
         )
         loop_b, br_b, be_b = await _make_loop(
-            rabbitmq_url, valkey_url,
-            owner_token=f"B-{uuid.uuid4().hex[:6]}", dispatcher=d_b,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"B-{uuid.uuid4().hex[:6]}",
+            dispatcher=d_b,
         )
 
         # Event for A-becomes-leader and for B-acquires.
@@ -271,7 +294,9 @@ class TestLeaderVersionIntegration:
     """Plan 2026-10-08-1541, U13 (KTD11, AE9) gegen echtes Valkey."""
 
     async def test_leader_writes_its_version_next_to_the_lock(
-        self, rabbitmq_url, valkey_url,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         dispatcher = SignalDispatcher()
         leader_evt = asyncio.Event()
@@ -283,7 +308,10 @@ class TestLeaderVersionIntegration:
 
         owner = f"A-{uuid.uuid4().hex[:6]}"
         loop, broker, backend = await _make_loop(
-            rabbitmq_url, valkey_url, owner_token=owner, dispatcher=dispatcher,
+            rabbitmq_url,
+            valkey_url,
+            owner_token=owner,
+            dispatcher=dispatcher,
             version="0.10.0",
         )
         try:
@@ -297,7 +325,9 @@ class TestLeaderVersionIntegration:
             await backend.close()
 
     async def test_standby_reports_a_leader_without_version(
-        self, rabbitmq_url, valkey_url,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         """Covers AE9: ein 0.9.0-Leader hält das Lock und schreibt keine
         Version; der 0.10.0-Standby meldet ihn."""
@@ -311,23 +341,33 @@ class TestLeaderVersionIntegration:
             outdated_evt.set()
 
         loop, broker, backend = await _make_loop(
-            rabbitmq_url, valkey_url, owner_token=f"B-{uuid.uuid4().hex[:6]}",
-            dispatcher=dispatcher, version="0.10.0",
+            rabbitmq_url,
+            valkey_url,
+            owner_token=f"B-{uuid.uuid4().hex[:6]}",
+            dispatcher=dispatcher,
+            version="0.10.0",
         )
         legacy = f"legacy-{uuid.uuid4().hex[:6]}"
         try:
             await backend.locks.force_release(SCHEDULER_LOCK_NAME, max_concurrency=1)
             token = await backend.locks.acquire(
-                SCHEDULER_LOCK_NAME, owner=legacy, ttl_ms=10_000, max_concurrency=1,
+                SCHEDULER_LOCK_NAME,
+                owner=legacy,
+                ttl_ms=10_000,
+                max_concurrency=1,
             )
             assert token is not None
             await loop.start()
             await asyncio.wait_for(outdated_evt.wait(), timeout=3)
             assert loop.state == "standby"
-            assert outdated == [{
-                "worker_id": loop.owner_token, "leader": legacy,
-                "leader_version": None, "outdated": True,
-            }]
+            assert outdated == [
+                {
+                    "worker_id": loop.owner_token,
+                    "leader": legacy,
+                    "leader_version": None,
+                    "outdated": True,
+                }
+            ]
         finally:
             await loop.stop()
             await backend.locks.force_release(SCHEDULER_LOCK_NAME, max_concurrency=1)

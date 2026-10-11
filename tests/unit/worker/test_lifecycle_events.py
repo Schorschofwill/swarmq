@@ -61,9 +61,15 @@ def _deps(backend: Any = None, **cfg: Any) -> GateDeps:
         backend = MagicMock()
         backend.is_cancelled = AsyncMock(return_value=False)
     return GateDeps(
-        broker=MagicMock(), backend=backend, config=config, signals=MagicMock(dispatch=AsyncMock()),
-        registry=MagicMock(), rate_limiter=lambda: None, lock_manager=lambda: None,
-        finalize_schedfire=AsyncMock(), maybe_release_unique=AsyncMock(),
+        broker=MagicMock(),
+        backend=backend,
+        config=config,
+        signals=MagicMock(dispatch=AsyncMock()),
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
         extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
@@ -71,8 +77,13 @@ def _deps(backend: Any = None, **cfg: Any) -> GateDeps:
 
 def _ctx(task_class: type) -> GateContext:
     return GateContext(
-        task_id="t1", task_name=task_class.task_info.name, queue="q", task_info=task_class.task_info,
-        task_class=task_class, args=[], kwargs={},
+        task_id="t1",
+        task_name=task_class.task_info.name,
+        queue="q",
+        task_info=task_class.task_info,
+        task_class=task_class,
+        args=[],
+        kwargs={},
     )
 
 
@@ -208,9 +219,7 @@ def task_logger_at_warning():
         logging.getLogger("swarmq.task").setLevel(logging.NOTSET)
 
 
-async def test_logger_level_warning_for_swarmq_task_silences_only_the_lifecycle(
-    task_logger_at_warning, swarmq_logs
-):
+async def test_logger_level_warning_for_swarmq_task_silences_only_the_lifecycle(task_logger_at_warning, swarmq_logs):
     await _execute(FailsFireAndForget)
 
     assert _lifecycle(swarmq_logs) == []

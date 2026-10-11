@@ -92,16 +92,15 @@ def _spawn_worker(
 
 
 def _wait_for_worker_started(
-    proc: subprocess.Popen[str], timeout: float = 30.0,
+    proc: subprocess.Popen[str],
+    timeout: float = 30.0,
 ) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
             if proc.poll() is not None:
-                raise RuntimeError(
-                    f"worker exited before starting; rc={proc.returncode}"
-                )
+                raise RuntimeError(f"worker exited before starting; rc={proc.returncode}")
             continue
         if "worker_started" in line:
             return
@@ -154,7 +153,9 @@ async def _wait_amqp_reachable(url: str, timeout: float = 30.0) -> None:
 
 
 async def _drain_queue_count(
-    stack: ChaosStack, queue: str, limit: int = 50,
+    stack: ChaosStack,
+    queue: str,
+    limit: int = 50,
 ) -> int:
     """Non-destructive count: basic_get + nack(requeue=True)."""
     conn = await aio_pika.connect_robust(stack.rabbitmq_url)
@@ -190,7 +191,9 @@ class TestMessageCorruption:
     # ----- 1. Corrupt AMQP headers ------------------------------------------
 
     async def test_corrupt_amqp_headers_dlq_rejection(
-        self, chaos_stack: ChaosStack, _cleanup_tasks,
+        self,
+        chaos_stack: ChaosStack,
+        _cleanup_tasks,
     ) -> None:
         """Raw aio_pika publish with garbage headers + malformed body.
 
@@ -262,9 +265,7 @@ class TestMessageCorruption:
 
                 # Worker still alive -- supervisor AND the same worker child
                 # (a crashed child would have been restarted).
-                assert proc.poll() is None, (
-                    f"worker crashed on corrupt headers; rc={proc.returncode}"
-                )
+                assert proc.poll() is None, f"worker crashed on corrupt headers; rc={proc.returncode}"
                 assert _child_pids(proc) == children, "worker child crashed on corrupt headers"
 
                 # Valid task still processed end-to-end.
@@ -275,9 +276,7 @@ class TestMessageCorruption:
                 # Main queue must be empty of the garbled msg (it was
                 # either acked-and-discarded or dead-lettered).
                 main_count = await _queue_message_count(chaos_stack, queue)
-                assert main_count == 0, (
-                    f"main queue not drained; count={main_count}"
-                )
+                assert main_count == 0, f"main queue not drained; count={main_count}"
 
                 # Pin landing spot. ``_handle_message`` nacks a
                 # deserialize-fail with requeue=False, which routes to
@@ -285,13 +284,12 @@ class TestMessageCorruption:
                 # future refactors that ack-and-discard still pass
                 # while still documenting current behaviour.
                 dlq_count = await _queue_message_count(
-                    chaos_stack, f"{queue}.XQ",
+                    chaos_stack,
+                    f"{queue}.XQ",
                 )
                 # Current behaviour: 1 (routed to DLQ via nack(requeue=False)
                 # + DLX). Document so a future change surfaces here.
-                assert dlq_count in (0, 1), (
-                    f"unexpected DLQ count for corrupt headers: {dlq_count}"
-                )
+                assert dlq_count in (0, 1), f"unexpected DLQ count for corrupt headers: {dlq_count}"
 
                 proc.send_signal(signal.SIGTERM)
                 rc = proc.wait(timeout=30)
@@ -302,7 +300,9 @@ class TestMessageCorruption:
     # ----- 2. Corrupt result blob in Valkey ---------------------------------
 
     async def test_corrupt_result_blob_in_valkey_surfaces_serialization_error(
-        self, chaos_stack: ChaosStack, _cleanup_tasks,
+        self,
+        chaos_stack: ChaosStack,
+        _cleanup_tasks,
     ) -> None:
         """Overwrite a stored result with garbage → get_result raises
         ResultSerializationError, not a generic crash.
@@ -350,7 +350,9 @@ class TestMessageCorruption:
     # ----- 3. Rogue Pub/Sub publisher does not crash watch_progress ---------
 
     async def test_rogue_pubsub_publisher_does_not_crash_watch_progress(
-        self, chaos_stack: ChaosStack, _cleanup_tasks,
+        self,
+        chaos_stack: ChaosStack,
+        _cleanup_tasks,
     ) -> None:
         """Publish garbled bytes to the progress channel while a
         ``watch_progress`` iterator is active.
@@ -418,8 +420,7 @@ class TestMessageCorruption:
                 # The subscriber must still be alive — the task must
                 # not have raised out of the iterator.
                 assert not collect_task.done(), (
-                    f"watch_progress crashed on garbled publish: "
-                    f"{collect_task.exception()!r}"
+                    f"watch_progress crashed on garbled publish: {collect_task.exception()!r}"
                 )
 
                 # Salvo 4: a well-shaped publish must now land.
@@ -433,14 +434,17 @@ class TestMessageCorruption:
                 # Set HASH too so a resubscribe-fallback has something
                 # to read (belt + braces for the regression).
                 await backend.set_progress(
-                    task_id, good_fields, ttl_ms=60_000,
+                    task_id,
+                    good_fields,
+                    ttl_ms=60_000,
                 )
                 # A handful of publishes — the subscriber loop polls
                 # with a 100 ms timeout per iteration so spacing
                 # matters less than salvo count.
                 for _ in range(5):
                     await pub.publish(
-                        channel, json.dumps(good_fields).encode(),
+                        channel,
+                        json.dumps(good_fields).encode(),
                     )
                     await asyncio.sleep(0.15)
             finally:
@@ -450,22 +454,14 @@ class TestMessageCorruption:
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if any(
-                    getattr(info, "message", None) == "mid"
-                    or getattr(info, "current", None) == 5
-                    for info in received
+                    getattr(info, "message", None) == "mid" or getattr(info, "current", None) == 5 for info in received
                 ):
                     break
                 await asyncio.sleep(0.1)
 
-            assert received, (
-                "subscriber saw no events — watch_progress may have "
-                "crashed silently on garbled payloads"
-            )
-            assert any(
-                getattr(info, "current", None) == 5 for info in received
-            ), (
-                f"post-garbage valid update never delivered; "
-                f"received={received!r}"
+            assert received, "subscriber saw no events — watch_progress may have crashed silently on garbled payloads"
+            assert any(getattr(info, "current", None) == 5 for info in received), (
+                f"post-garbage valid update never delivered; received={received!r}"
             )
         finally:
             stop.set()
@@ -477,7 +473,9 @@ class TestMessageCorruption:
     # ----- 4. Corrupt unique-hash header ------------------------------------
 
     async def test_corrupt_unique_hash_header_rejected_or_normalised(
-        self, chaos_stack: ChaosStack, _cleanup_tasks,
+        self,
+        chaos_stack: ChaosStack,
+        _cleanup_tasks,
     ) -> None:
         """Valid task body + garbled ``x-swarmq-unique-hash`` header.
 
@@ -511,15 +509,17 @@ class TestMessageCorruption:
 
         # --- craft a message the worker will accept as a real task ---
         task_id = str(uuid.uuid4())
-        body = json.dumps({
-            "task": {
-                "id": task_id,
-                "queue": queue,
-                "name": "chaos_sleep",
-            },
-            "args": [0.05],
-            "kwargs": {},
-        }).encode()
+        body = json.dumps(
+            {
+                "task": {
+                    "id": task_id,
+                    "queue": queue,
+                    "name": "chaos_sleep",
+                },
+                "args": [0.05],
+                "kwargs": {},
+            }
+        ).encode()
 
         conn = await aio_pika.connect_robust(chaos_stack.rabbitmq_url)
         try:
@@ -551,27 +551,23 @@ class TestMessageCorruption:
                 #  (b) task routed to DLQ → get_result times out
                 try:
                     result = await app.get_result(
-                        task_id, timeout=8, polling=0.1,
+                        task_id,
+                        timeout=8,
+                        polling=0.1,
                     )
                     pinned_outcome = "accepted"
-                    assert result == "slept:0.05", (
-                        f"unexpected result for bad-unique-hash task: "
-                        f"{result!r}"
-                    )
+                    assert result == "slept:0.05", f"unexpected result for bad-unique-hash task: {result!r}"
                 except Exception as exc:
                     # ResultNotReadyError is the expected timeout signal
                     # when the message was routed to DLQ instead.
                     pinned_outcome = "rejected"
-                    assert "not ready" in str(exc).lower() or (
-                        type(exc).__name__ == "ResultNotReadyError"
-                    ), f"unexpected error shape: {type(exc).__name__}: {exc}"
+                    assert "not ready" in str(exc).lower() or (type(exc).__name__ == "ResultNotReadyError"), (
+                        f"unexpected error shape: {type(exc).__name__}: {exc}"
+                    )
 
                 # Worker still alive regardless of outcome -- supervisor AND
                 # the same worker child.
-                assert proc.poll() is None, (
-                    f"worker crashed on bad unique-hash; "
-                    f"rc={proc.returncode}"
-                )
+                assert proc.poll() is None, f"worker crashed on bad unique-hash; rc={proc.returncode}"
                 assert _child_pids(proc) == children, "worker child crashed on bad unique-hash"
 
                 # Document pinned outcome via a marker — future
@@ -579,16 +575,17 @@ class TestMessageCorruption:
                 # a plan update.
                 if pinned_outcome == "rejected":
                     dlq = await _queue_message_count(
-                        chaos_stack, f"{queue}.XQ",
+                        chaos_stack,
+                        f"{queue}.XQ",
                     )
-                    assert dlq >= 1, (
-                        "pinned 'rejected' but nothing in DLQ"
-                    )
+                    assert dlq >= 1, "pinned 'rejected' but nothing in DLQ"
 
                 # Also verify a subsequent valid schedule() completes
                 # normally — no wedging from the bad predecessor.
                 tid2 = await app.schedule(
-                    "chaos_sleep", 0.05, queue=queue,
+                    "chaos_sleep",
+                    0.05,
+                    queue=queue,
                 )
                 r2 = await app.get_result(tid2, timeout=15)
                 assert r2 == "slept:0.05"
@@ -606,7 +603,9 @@ class TestMessageCorruption:
     # ----- 5. Manually-broken progress HASH ---------------------------------
 
     async def test_manually_broken_progress_hash_returns_none(
-        self, chaos_stack: ChaosStack, _cleanup_tasks,
+        self,
+        chaos_stack: ChaosStack,
+        _cleanup_tasks,
     ) -> None:
         """Direct HSET of a malformed progress HASH → ``get_progress``
         returns None, never raises.
@@ -644,10 +643,7 @@ class TestMessageCorruption:
         try:
             # Contract: malformed HASH → None, no exception.
             result = await client.get_progress(task_id)
-            assert result is None, (
-                f"get_progress should swallow malformed HASH and "
-                f"return None; got {result!r}"
-            )
+            assert result is None, f"get_progress should swallow malformed HASH and return None; got {result!r}"
 
             # Also confirm a completely missing task_id still returns
             # None (baseline no-regression for the happy path).

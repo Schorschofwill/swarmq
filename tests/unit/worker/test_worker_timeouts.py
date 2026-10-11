@@ -22,8 +22,6 @@ from tests.support.messages import make_message
 # ---------------------------------------------------------------------------
 
 
-
-
 def _default_payload(
     task_id: str = "abc-123",
     queue: str = "default",
@@ -459,9 +457,7 @@ async def test_watchdog_cancelled_when_task_raises_exception(broker, backend, co
     tasks_after = asyncio.all_tasks()
     orphans = (tasks_after - tasks_before) - {asyncio.current_task()}
     # All orphans (if any) should be done — specifically, no pending watchdog.
-    assert all(t.done() for t in orphans), (
-        f"orphan pending tasks survived _handle_message: {orphans}"
-    )
+    assert all(t.done() for t in orphans), f"orphan pending tasks survived _handle_message: {orphans}"
 
     # Error should still have been surfaced as an error result.
     stored = decode_result(backend.store_result.call_args[0][1])
@@ -505,16 +501,12 @@ async def test_watchdog_cancelled_when_task_soft_timeouts(broker, backend, confi
 
     tasks_after = asyncio.all_tasks()
     orphans = (tasks_after - tasks_before) - {asyncio.current_task()}
-    assert all(t.done() for t in orphans), (
-        f"orphan pending tasks survived _handle_message: {orphans}"
-    )
+    assert all(t.done() for t in orphans), f"orphan pending tasks survived _handle_message: {orphans}"
 
     # Soft-timeout error result should have been stored.
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is True
-    assert "SoftTimeoutError" in stored["error_message"] or "soft timeout" in stored[
-        "error_message"
-    ].lower()
+    assert "SoftTimeoutError" in stored["error_message"] or "soft timeout" in stored["error_message"].lower()
 
 
 @pytest.mark.asyncio
@@ -550,9 +542,7 @@ async def test_watchdog_cancelled_on_success(broker, backend, config):
 
     tasks_after = asyncio.all_tasks()
     orphans = (tasks_after - tasks_before) - {asyncio.current_task()}
-    assert all(t.done() for t in orphans), (
-        f"orphan pending tasks survived _handle_message: {orphans}"
-    )
+    assert all(t.done() for t in orphans), f"orphan pending tasks survived _handle_message: {orphans}"
 
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is False

@@ -123,7 +123,8 @@ def test_window_invariant_under_random_call_sequence(
         try:
             limiter = RateLimiter(client)
             config = RateLimitConfig(
-                max_requests=_LIMIT, window_size_ms=_PERIOD_MS,
+                max_requests=_LIMIT,
+                window_size_ms=_PERIOD_MS,
             )
             task = _fresh_task_name()
             observations: list[tuple[float, bool]] = []
@@ -132,7 +133,8 @@ def test_window_invariant_under_random_call_sequence(
                     await asyncio.sleep(d / 1000.0)
                 t_ms = time.monotonic() * 1000.0
                 allowed, _remaining, _retry = await limiter.check(
-                    task, config,
+                    task,
+                    config,
                 )
                 observations.append((t_ms, allowed))
             return observations
@@ -148,9 +150,7 @@ def test_window_invariant_under_random_call_sequence(
     span = 2 * _PERIOD_MS
     for i, end in enumerate(accepted_ts):
         start = end - span
-        in_span = sum(
-            1 for t in accepted_ts[: i + 1] if t >= start
-        )
+        in_span = sum(1 for t in accepted_ts[: i + 1] if t >= start)
         assert in_span <= 3 * _LIMIT, (
             f"3-period structural bound broken: {in_span} accepted "
             f"in [{start:.1f}, {end:.1f}] ms, 3*limit={3 * _LIMIT}; "
@@ -224,16 +224,7 @@ def test_denial_persistent_until_window_shifts() -> None:
 
     burst, still_denied, allowed_again = asyncio.run(_run())
 
-    assert burst[:_LIMIT] == [True] * _LIMIT, (
-        f"first {_LIMIT} calls must be allowed, got {burst}"
-    )
-    assert burst[_LIMIT] is False, (
-        f"call number {_LIMIT + 1} must be denied, got {burst}"
-    )
-    assert still_denied == [False], (
-        f"zero-sleep retry in the same bucket must stay denied: "
-        f"{still_denied}"
-    )
-    assert allowed_again == [True], (
-        f"after >= 2 periods the counter must accept again: {allowed_again}"
-    )
+    assert burst[:_LIMIT] == [True] * _LIMIT, f"first {_LIMIT} calls must be allowed, got {burst}"
+    assert burst[_LIMIT] is False, f"call number {_LIMIT + 1} must be denied, got {burst}"
+    assert still_denied == [False], f"zero-sleep retry in the same bucket must stay denied: {still_denied}"
+    assert allowed_again == [True], f"after >= 2 periods the counter must accept again: {allowed_again}"

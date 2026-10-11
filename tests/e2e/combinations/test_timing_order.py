@@ -124,10 +124,13 @@ async def _running_worker(
         online.set()
 
     if mirror_to is not None:
+
         def _make_forwarder(sig: Signal):
             async def _forward(**payload: Any) -> None:
                 await mirror_to.dispatch(sig, **payload)
+
             return _forward
+
         for _sig in Signal:
             worker_app._signal_dispatcher.connect(_sig, _make_forwarder(_sig))
 
@@ -272,9 +275,7 @@ class TestCronCatchupUniqueCombo:
 
         assert call_count >= 1
 
-    async def test_catchup_with_unique_blocks_duplicates(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_catchup_with_unique_blocks_duplicates(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Simulate N catchup fires arriving simultaneously: unique_for blocks N-1.
 
         We schedule N copies of the same task. With unique_until=completion,
@@ -325,7 +326,9 @@ class TestCronCatchupUniqueCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Enqueue N fires; first succeeds, rest are deduplicated.
@@ -341,22 +344,17 @@ class TestCronCatchupUniqueCombo:
                 result = await app.get_result(task_ids[0], timeout=10)
 
         assert result == "executed"
-        assert call_count == 1, (
-            f"task must execute exactly once; executed {call_count} times"
-        )
+        assert call_count == 1, f"task must execute exactly once; executed {call_count} times"
         # All n_fires-1 duplicates must share the same task_id.
         assert len(set(task_ids)) == 1, (
             f"all {n_fires} schedules must return the same task_id under unique_for; "
             f"got {len(set(task_ids))} distinct ids"
         )
         assert len(dup_signals) >= n_fires - 1, (
-            f"expected >= {n_fires - 1} TASK_DUPLICATE_DETECTED signals; "
-            f"got {len(dup_signals)}"
+            f"expected >= {n_fires - 1} TASK_DUPLICATE_DETECTED signals; got {len(dup_signals)}"
         )
 
-    async def test_catchup_without_unique_runs_all(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_catchup_without_unique_runs_all(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Control: without unique_for, all N catchup fires execute independently.
 
         Verifies the baseline — if unique_for were missing, all N tasks run.
@@ -389,7 +387,9 @@ class TestCronCatchupUniqueCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 for i in range(n_fires):
@@ -397,14 +397,9 @@ class TestCronCatchupUniqueCombo:
 
                 await asyncio.wait_for(all_done.wait(), timeout=10.0)
 
-        assert call_count == n_fires, (
-            f"all {n_fires} fires must run without unique_for; "
-            f"only {call_count} ran"
-        )
+        assert call_count == n_fires, f"all {n_fires} fires must run without unique_for; only {call_count} ran"
 
-    async def test_unique_released_after_first_catchup_fire(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_unique_released_after_first_catchup_fire(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After the first fire completes (unique_until=completion), the unique
         flag is released and the next fire can proceed.
 
@@ -441,7 +436,9 @@ class TestCronCatchupUniqueCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Fire-1: schedule with arg=1.
@@ -453,9 +450,7 @@ class TestCronCatchupUniqueCombo:
 
                 # Fire-2: now that unique is released, a new schedule succeeds.
                 tid2 = await app.schedule(task_name, 2)
-                assert tid2 != tid1, (
-                    "fire-2 must get a new task_id after unique flag released"
-                )
+                assert tid2 != tid1, "fire-2 must get a new task_id after unique flag released"
                 result2 = await app.get_result(tid2, timeout=8.0)
                 assert result2 == 20
 
@@ -507,7 +502,9 @@ class TestCronCatchupRateLimitCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 0)
@@ -518,9 +515,7 @@ class TestCronCatchupRateLimitCombo:
         assert call_count >= 1
 
     @pytest.mark.timeout(45)
-    async def test_catchup_burst_respects_rate_limit(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_catchup_burst_respects_rate_limit(self, rabbitmq_url: str, valkey_url: str) -> None:
         """N catchup fires with rate_limit=2/s: the burst is throttled.
 
         With rate_limit=2/s and 6 fires, at least some fires must be
@@ -598,18 +593,13 @@ class TestCronCatchupRateLimitCombo:
                 await worker_broker.close()
                 await worker_backend.close()
 
-        assert call_count == n_fires, (
-            f"all {n_fires} fires must eventually complete; only {call_count} did"
-        )
+        assert call_count == n_fires, f"all {n_fires} fires must eventually complete; only {call_count} did"
         assert rate_limited_count >= 1, (
-            "at least one TASK_RATE_LIMITED signal must fire for a 6-task burst "
-            "against a 2/s rate limit"
+            "at least one TASK_RATE_LIMITED signal must fire for a 6-task burst against a 2/s rate limit"
         )
 
     @pytest.mark.timeout(45)
-    async def test_backlog_drains_over_time(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_backlog_drains_over_time(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Rate-limited catchup backlog drains monotonically — no task is
         permanently stuck.
 
@@ -645,7 +635,9 @@ class TestCronCatchupRateLimitCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 for i in range(n_fires):
@@ -658,13 +650,9 @@ class TestCronCatchupRateLimitCombo:
         assert len(completed_at) == n_fires, "all tasks must complete"
         # With rate_limit=1/s, tasks complete over >1s (at least first+second
         # are separated). The drain is bounded by n_fires seconds of wall-clock.
-        assert elapsed >= 1.0, (
-            f"rate-limit must spread execution over >=1s; elapsed={elapsed:.2f}s"
-        )
+        assert elapsed >= 1.0, f"rate-limit must spread execution over >=1s; elapsed={elapsed:.2f}s"
 
-    async def test_signal_sequence_includes_task_rate_limited(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_signal_sequence_includes_task_rate_limited(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Signal recorder captures TASK_RATE_LIMITED for at least one of the
         burst tasks, confirming the rate-limit path fires the signal.
         """
@@ -700,7 +688,9 @@ class TestCronCatchupRateLimitCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 for i in range(n_fires):
@@ -710,8 +700,7 @@ class TestCronCatchupRateLimitCombo:
 
         emitted = recorder.emitted_signals
         assert Signal.TASK_RATE_LIMITED in emitted, (
-            f"TASK_RATE_LIMITED must appear in signal stream; recorded: "
-            f"{[s.value for s in emitted]}"
+            f"TASK_RATE_LIMITED must appear in signal stream; recorded: {[s.value for s in emitted]}"
         )
 
 
@@ -769,7 +758,9 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 7)
@@ -783,9 +774,7 @@ class TestSoftTimeoutCancelRace:
             strict_order=True,
         )
 
-    async def test_cancel_wins_when_set_before_timeout(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_cancel_wins_when_set_before_timeout(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Set cancel flag 0.5s before soft_timeout would fire.
 
         Contract: cancel flag wins → TASK_CANCELLED signal,
@@ -823,7 +812,10 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                cancel_poll_interval=0.05,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
@@ -844,9 +836,7 @@ class TestSoftTimeoutCancelRace:
             f"TASK_FAILED must not fire when cancel wins; emitted={[s.value for s in emitted]}"
         )
 
-    async def test_timeout_wins_when_cancel_set_after_timeout(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_timeout_wins_when_cancel_set_after_timeout(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Set cancel flag after soft_timeout fires.
 
         Contract: soft_timeout fires first → TASK_FAILED (SoftTimeoutError),
@@ -885,7 +875,10 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.05,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                cancel_poll_interval=0.05,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
@@ -907,9 +900,7 @@ class TestSoftTimeoutCancelRace:
             f"TASK_FAILED must fire when soft_timeout wins; emitted={[s.value for s in emitted]}"
         )
 
-    async def test_simultaneous_emit_pins_current_behavior(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_simultaneous_emit_pins_current_behavior(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Both soft_timeout and cancel fire near-simultaneously.
 
         This test does NOT assert a specific winner — the outcome is
@@ -950,7 +941,10 @@ class TestSoftTimeoutCancelRace:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, cancel_poll_interval=0.01,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                cancel_poll_interval=0.01,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
@@ -1023,7 +1017,9 @@ class TestHardTimeoutRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 5)
@@ -1034,9 +1030,7 @@ class TestHardTimeoutRetryCombo:
         assert_at_least_once_held(attempts, expected_min=2)
 
     @pytest.mark.timeout(20)
-    async def test_hard_timeout_triggers_retry(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_hard_timeout_triggers_retry(self, rabbitmq_url: str, valkey_url: str) -> None:
         """hard_timeout fires → TASK_FAILED (or TASK_RETRYING) → retry attempt runs.
 
         Verifies that a hard_timeout does not permanently consume the task
@@ -1073,7 +1067,9 @@ class TestHardTimeoutRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "x")
@@ -1083,9 +1079,7 @@ class TestHardTimeoutRetryCombo:
         assert result == "ok:x"
         assert_at_least_once_held(attempts, expected_min=3)
 
-    async def test_retry_state_consistent_after_hard_kill(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_retry_state_consistent_after_hard_kill(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After hard_timeout, any lock or unique-hash held by the killed
         attempt must be released before retry starts.
 
@@ -1126,7 +1120,9 @@ class TestHardTimeoutRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "state-check")
@@ -1139,9 +1135,7 @@ class TestHardTimeoutRetryCombo:
         assert_at_least_once_held(attempts, expected_min=2)
 
     @pytest.mark.timeout(30)
-    async def test_max_retries_reached_lands_in_dlq(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_max_retries_reached_lands_in_dlq(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After max_retries, the task is permanently failed (lands in DLQ).
 
         A task that always exceeds hard_timeout must eventually be exhausted
@@ -1179,7 +1173,9 @@ class TestHardTimeoutRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
@@ -1264,9 +1260,7 @@ class TestMaxAgeSchedulerCombo:
                     await worker_task
 
     @pytest.mark.timeout(20)
-    async def test_scheduler_skips_expired_tasks_emits_task_expired(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_scheduler_skips_expired_tasks_emits_task_expired(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task with max_age=1 is scheduled, then sits in the queue > 1s before
         the worker picks it up.  Worker must emit TASK_EXPIRED and route to DLQ.
 
@@ -1308,19 +1302,17 @@ class TestMaxAgeSchedulerCombo:
             await asyncio.sleep(1.5)
 
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Worker picks up the already-expired message.
                 await asyncio.wait_for(expired_signal.wait(), timeout=8.0)
 
-        assert call_count == 0, (
-            "expired task must not be executed; run() must not be called"
-        )
+        assert call_count == 0, "expired task must not be executed; run() must not be called"
 
-    async def test_fresh_task_runs_after_expired_skipped(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_fresh_task_runs_after_expired_skipped(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After an expired task is skipped (TASK_EXPIRED), a fresh task for
         the same task_name runs normally — the DLQ routing of expired tasks
         does not block subsequent fresh enqueues.
@@ -1360,7 +1352,9 @@ class TestMaxAgeSchedulerCombo:
             await asyncio.sleep(1.5)
 
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Stale task gets TASK_EXPIRED.
@@ -1372,9 +1366,7 @@ class TestMaxAgeSchedulerCombo:
                 result = await app.get_result(tid_fresh, timeout=5)
 
         assert result == "ok:fresh"
-        assert call_count == 1, (
-            "only the fresh task must execute; stale must be expired"
-        )
+        assert call_count == 1, "only the fresh task must execute; stale must be expired"
 
 
 # ---------------------------------------------------------------------------
@@ -1429,7 +1421,9 @@ class TestRateLimitRetryBackoffCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 5)
@@ -1439,9 +1433,7 @@ class TestRateLimitRetryBackoffCombo:
         assert result == 105
 
     @pytest.mark.timeout(30)
-    async def test_retry_hit_rate_limit_uses_exponential_backoff(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_retry_hit_rate_limit_uses_exponential_backoff(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task fails (exception) → retries with exponential backoff.
         While retrying, other tasks also hit the rate_limit.
 
@@ -1480,7 +1472,9 @@ class TestRateLimitRetryBackoffCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 10)
@@ -1496,13 +1490,10 @@ class TestRateLimitRetryBackoffCombo:
             gap1 = attempt_times[1] - attempt_times[0]
             gap2 = attempt_times[2] - attempt_times[1]
             assert gap2 >= gap1 * 0.8, (  # 20% tolerance
-                f"exponential backoff must increase spacing between retries; "
-                f"gap1={gap1:.3f}s gap2={gap2:.3f}s"
+                f"exponential backoff must increase spacing between retries; gap1={gap1:.3f}s gap2={gap2:.3f}s"
             )
 
-    async def test_no_infinite_loop_bound_via_max_retries(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_no_infinite_loop_bound_via_max_retries(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Rate-limited task that always fails must be bounded by max_retries.
 
         TASK_FAILED (not an infinite rate-limit → retry → rate-limit loop)
@@ -1539,7 +1530,9 @@ class TestRateLimitRetryBackoffCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name)
@@ -1549,9 +1542,7 @@ class TestRateLimitRetryBackoffCombo:
 
         assert_at_least_once_held(attempts, expected_min=2)
 
-    async def test_signal_sequence_for_rate_limited_retry(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_signal_sequence_for_rate_limited_retry(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Signal sequence for a task that is rate-limited then fails+retries.
 
         Expected: TASK_RATE_LIMITED fires ≥1 times; on exception:
@@ -1591,7 +1582,9 @@ class TestRateLimitRetryBackoffCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 for i in range(n_tasks):
@@ -1602,9 +1595,7 @@ class TestRateLimitRetryBackoffCombo:
         assert Signal.TASK_RATE_LIMITED in emitted, (
             "TASK_RATE_LIMITED must appear in signal stream for burst against 1/s limit"
         )
-        assert Signal.TASK_COMPLETED in emitted, (
-            "TASK_COMPLETED must eventually appear — all tasks must drain"
-        )
+        assert Signal.TASK_COMPLETED in emitted, "TASK_COMPLETED must eventually appear — all tasks must drain"
 
 
 # ---------------------------------------------------------------------------
@@ -1674,7 +1665,10 @@ class TestPriorityLockCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, priorities=True,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                priorities=True,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid_h = await app.schedule(task_name_high, "a")
@@ -1687,9 +1681,7 @@ class TestPriorityLockCombo:
         assert r_n == "norm:b"
         assert len(results) == 2
 
-    async def test_high_priority_lock_acquired_first_or_fifo(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_high_priority_lock_acquired_first_or_fifo(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Document current behaviour: high-priority task acquires lock first
         when both are enqueued simultaneously — or FIFO if the broker delivers
         them in arrival order.
@@ -1741,7 +1733,11 @@ class TestPriorityLockCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, priorities=True, concurrency=2,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                priorities=True,
+                concurrency=2,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Schedule high and low simultaneously.
@@ -1751,18 +1747,14 @@ class TestPriorityLockCombo:
                 await app.get_result(tid_h, timeout=5)
                 await app.get_result(tid_l, timeout=5)
 
-        assert set(completion_order) == {"high", "low"}, (
-            "both tasks must complete regardless of ordering"
-        )
+        assert set(completion_order) == {"high", "low"}, "both tasks must complete regardless of ordering"
         # Document observed order — not asserting "high first" strictly.
         # This assertion will catch order changes in future implementations.
         # Current expectation: with weighted prefetch, high tends to go first.
         # If this changes, update this comment and the assertion.
         assert len(completion_order) == 2
 
-    async def test_priority_does_not_starve_low_priority(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_priority_does_not_starve_low_priority(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Continuous stream of high-priority tasks must not permanently starve
         a low-priority task — the low-priority task must complete within the
         test timeout.
@@ -1808,7 +1800,11 @@ class TestPriorityLockCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, priorities=True, concurrency=3,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                priorities=True,
+                concurrency=3,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid_h1 = await app.schedule(task_name_high, 1)
@@ -1878,7 +1874,9 @@ class TestUniqueUntilStartRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, "x")
@@ -1887,9 +1885,7 @@ class TestUniqueUntilStartRetryCombo:
         assert result == "ok:x"
         assert call_count == 1
 
-    async def test_unique_released_at_start_not_completion(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_unique_released_at_start_not_completion(self, rabbitmq_url: str, valkey_url: str) -> None:
         """unique_until=start: the unique flag is released when run() begins.
 
         Proof: schedule first task (long-running), wait for it to start,
@@ -1929,7 +1925,9 @@ class TestUniqueUntilStartRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 # Enqueue first task.
@@ -1951,9 +1949,7 @@ class TestUniqueUntilStartRetryCombo:
                 first_barrier.set()
                 await app.get_result(tid1, timeout=8.0)
 
-    async def test_second_task_can_enter_during_retry_window(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_second_task_can_enter_during_retry_window(self, rabbitmq_url: str, valkey_url: str) -> None:
         """unique_until=start + retry: after first attempt starts (unique released),
         a duplicate can enter.  After first attempt fails and retry fires,
         both the original retry and the "duplicate" may run.
@@ -1995,7 +1991,9 @@ class TestUniqueUntilStartRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid1 = await app.schedule(task_name, "orig")
@@ -2011,15 +2009,10 @@ class TestUniqueUntilStartRetryCombo:
                 await asyncio.wait_for(all_done.wait(), timeout=10.0)
 
         # The key assertion: second enqueue after start got a fresh task_id.
-        assert tid2 != tid1, (
-            "unique_until=start releases the flag at start; second enqueue "
-            "must get a new task_id"
-        )
+        assert tid2 != tid1, "unique_until=start releases the flag at start; second enqueue must get a new task_id"
         assert_at_least_once_held(call_count, expected_min=2)
 
-    async def test_race_detection_via_signal_sequence(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_race_detection_via_signal_sequence(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Signal sequence documents the race window of unique_until=start + retry.
 
         Two tasks with the same args can overlap:
@@ -2072,7 +2065,10 @@ class TestUniqueUntilStartRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, concurrency=4,
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                concurrency=4,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid1 = await app.schedule(task_name, 10)
@@ -2093,9 +2089,7 @@ class TestUniqueUntilStartRetryCombo:
             f"got {started_count} in {[s.value for s in emitted]}"
         )
         # At least one TASK_COMPLETED must fire.
-        assert Signal.TASK_COMPLETED in emitted, (
-            "at least one TASK_COMPLETED must fire after race"
-        )
+        assert Signal.TASK_COMPLETED in emitted, "at least one TASK_COMPLETED must fire after race"
 
 
 # ---------------------------------------------------------------------------

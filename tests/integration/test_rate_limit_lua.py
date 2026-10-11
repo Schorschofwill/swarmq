@@ -83,18 +83,14 @@ class TestHappyPath:
         for expected_remaining in range(max_requests - 1, max_requests - 11, -1):
             now_ms = await _server_time_ms(valkey_client)
             keys = _keys_for(task_name, now_ms, window_size_ms)
-            allowed, remaining, retry = await script(
-                keys=keys, args=[max_requests, window_size_ms, now_ms]
-            )
+            allowed, remaining, retry = await script(keys=keys, args=[max_requests, window_size_ms, now_ms])
             assert allowed == 1
             assert retry == 0
             assert remaining == expected_remaining
 
 
 class TestBoundary:
-    async def test_exactly_at_limit_the_last_call_is_still_allowed(
-        self, valkey_client, script_source, task_name
-    ):
+    async def test_exactly_at_limit_the_last_call_is_still_allowed(self, valkey_client, script_source, task_name):
         script = valkey_client.register_script(script_source)
         max_requests = 3
         window_size_ms = 60_000
@@ -102,54 +98,40 @@ class TestBoundary:
         for _ in range(max_requests):
             now_ms = await _server_time_ms(valkey_client)
             keys = _keys_for(task_name, now_ms, window_size_ms)
-            allowed, _remaining, retry = await script(
-                keys=keys, args=[max_requests, window_size_ms, now_ms]
-            )
+            allowed, _remaining, retry = await script(keys=keys, args=[max_requests, window_size_ms, now_ms])
             assert allowed == 1
             assert retry == 0
 
         now_ms = await _server_time_ms(valkey_client)
         keys = _keys_for(task_name, now_ms, window_size_ms)
-        allowed, remaining, retry = await script(
-            keys=keys, args=[max_requests, window_size_ms, now_ms]
-        )
+        allowed, remaining, retry = await script(keys=keys, args=[max_requests, window_size_ms, now_ms])
         assert allowed == 0
         assert remaining == 0
         assert retry >= 1
 
-    async def test_max_zero_rejects_every_request(
-        self, valkey_client, script_source, task_name
-    ):
+    async def test_max_zero_rejects_every_request(self, valkey_client, script_source, task_name):
         script = valkey_client.register_script(script_source)
         window_size_ms = 60_000
 
         now_ms = await _server_time_ms(valkey_client)
         keys = _keys_for(task_name, now_ms, window_size_ms)
-        allowed, _remaining, retry = await script(
-            keys=keys, args=[0, window_size_ms, now_ms]
-        )
+        allowed, _remaining, retry = await script(keys=keys, args=[0, window_size_ms, now_ms])
         assert allowed == 0
         assert retry >= 1
 
-    async def test_window_zero_returns_zero_tuple_division_guard(
-        self, valkey_client, script_source, task_name
-    ):
+    async def test_window_zero_returns_zero_tuple_division_guard(self, valkey_client, script_source, task_name):
         script = valkey_client.register_script(script_source)
 
         now_ms = await _server_time_ms(valkey_client)
         keys = _keys_for(task_name, now_ms, 1)  # real window just for key derivation
-        allowed, remaining, retry = await script(
-            keys=keys, args=[100, 0, now_ms]
-        )
+        allowed, remaining, retry = await script(keys=keys, args=[100, 0, now_ms])
         assert allowed == 0
         assert remaining == 0
         assert retry == 0
 
 
 class TestAtomicity:
-    async def test_parallel_bursts_respect_limit_exactly(
-        self, valkey_client, script_source, task_name
-    ):
+    async def test_parallel_bursts_respect_limit_exactly(self, valkey_client, script_source, task_name):
         """150 concurrent EVALSHA against max=100 -> exactly 100 allowed.
 
         Single-call atomicity is the only way max_requests can be a hard
@@ -164,24 +146,18 @@ class TestAtomicity:
         async def one_call() -> int:
             now_ms = await _server_time_ms(valkey_client)
             keys = _keys_for(task_name, now_ms, window_size_ms)
-            allowed, _remaining, _retry = await script(
-                keys=keys, args=[max_requests, window_size_ms, now_ms]
-            )
+            allowed, _remaining, _retry = await script(keys=keys, args=[max_requests, window_size_ms, now_ms])
             return int(allowed)
 
         results = await asyncio.gather(*(one_call() for _ in range(total_calls)))
         allowed_count = sum(results)
         denied_count = total_calls - allowed_count
-        assert allowed_count == max_requests, (
-            f"expected {max_requests} allowed, got {allowed_count}"
-        )
+        assert allowed_count == max_requests, f"expected {max_requests} allowed, got {allowed_count}"
         assert denied_count == total_calls - max_requests
 
 
 class TestSlidingBehaviour:
-    async def test_ttl_is_set_on_first_increment(
-        self, valkey_client, script_source, task_name
-    ):
+    async def test_ttl_is_set_on_first_increment(self, valkey_client, script_source, task_name):
         """After the first allowed call the current-window key must have
         a TTL of 2× window size so the next window sees it as 'previous'."""
         script = valkey_client.register_script(script_source)

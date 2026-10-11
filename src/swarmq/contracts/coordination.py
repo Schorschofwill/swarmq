@@ -144,7 +144,11 @@ class ScheduleStore(Protocol):
     async def list_all(self) -> Mapping[str, bytes]: ...
 
     async def replan_if_unchanged(
-        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+        self,
+        name: str,
+        expected: bytes,
+        payload: bytes,
+        fire_ts_ms: int,
     ) -> bool:
         """Heilung eines Eintrags ohne Score, atomar: nur wenn die
         gespeicherte Definition noch genau *expected* ist und der Eintrag
@@ -189,7 +193,11 @@ class ScheduleStore(Protocol):
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 
     async def claim_fire(
-        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        self,
+        fire_key: str,
+        ttl_ms: int,
+        *,
+        owner: str | None = None,
         takeover: str | Sequence[str] | None = None,
     ) -> bool:
         """In-Flight-Claim mit Owner-Token (atomar). ``True``, wenn der Claim
@@ -213,7 +221,12 @@ class ScheduleStore(Protocol):
         Owner-Token liegt (BZ-07)."""
 
     async def report_cron(
-        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+        self,
+        name: str,
+        fingerprint: str,
+        payload: bytes,
+        *,
+        live_window_ms: int,
     ) -> None:
         """Meldet einen statischen Cron (KTD10), atomar und in Backend-Zeit:
         ``last_seen`` und Payload werden gesetzt; ``first_seen`` nur, wenn
@@ -239,7 +252,12 @@ class ScheduleStore(Protocol):
         älter als *max_age_ms* ist; liefert ihre Anzahl."""
 
     async def prune_cron(
-        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+        self,
+        name: str,
+        expected: bytes,
+        *,
+        stale_after_ms: int | None,
+        remember_disabled: bool,
     ) -> bool:
         """Entfernt einen statischen Cron atomar samt Fire-Index-Eintrag
         (KTD8), wenn die Definition noch *expected* ist und: mit
@@ -316,7 +334,14 @@ class ExecutionGuardStore(Protocol):
     """Running-, Done- und Superseded-Marker je Ausführungs-Identität (KTD5)."""
 
     async def claim(
-        self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        self,
+        identity: str,
+        *,
+        owner: str,
+        retry_count: int,
+        ttl_ms: int,
+        state_ttl_ms: int,
+        max_orphans: int,
         backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
         """Atomar: Done- oder Superseded-Marker (Zähler größer als

@@ -28,7 +28,8 @@ def _q() -> str:
 
 
 async def test_injected_connection_and_client_roundtrip_and_caller_reuse(
-    rabbitmq_url, valkey_url,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Full producer roundtrip over injected resources, then caller reuse.
 
@@ -56,7 +57,8 @@ async def test_injected_connection_and_client_roundtrip_and_caller_reuse(
         async with app:
             await broker.declare_queue(queue)
             task_id = await app.client.schedule(
-                f"inject_rt_{queue}", queue=queue,
+                f"inject_rt_{queue}",
+                queue=queue,
             )
             assert task_id
             # Publish really landed on the broker (visible via a
@@ -69,9 +71,7 @@ async def test_injected_connection_and_client_roundtrip_and_caller_reuse(
             assert await backend.get_result(task_id) == b"\x01"
 
         # --- after teardown: borrowed resources belong to the caller ---
-        assert not caller_conn.is_closed, (
-            "swarmq closed the borrowed RabbitMQ connection"
-        )
+        assert not caller_conn.is_closed, "swarmq closed the borrowed RabbitMQ connection"
         # The caller can still open channels / run commands.
         ch = await caller_conn.channel()
         await ch.close()
@@ -91,7 +91,8 @@ async def test_injected_pool_roundtrip_releases_to_pool(rabbitmq_url, valkey_url
     """Pool variant: swarmq acquires from the caller's pool, publishes,
     and releases the checkout on close — the pool itself stays open."""
     caller_pool: aio_pika.pool.Pool = aio_pika.pool.Pool(
-        lambda: aio_pika.connect_robust(rabbitmq_url), max_size=2,
+        lambda: aio_pika.connect_robust(rabbitmq_url),
+        max_size=2,
     )
     caller_client = valkey_asyncio.Valkey.from_url(valkey_url)
     queue = _q()
@@ -110,7 +111,8 @@ async def test_injected_pool_roundtrip_releases_to_pool(rabbitmq_url, valkey_url
         async with app:
             await broker.declare_queue(queue)
             task_id = await app.client.schedule(
-                f"inject_pool_{queue}", queue=queue,
+                f"inject_pool_{queue}",
+                queue=queue,
             )
             assert task_id
 

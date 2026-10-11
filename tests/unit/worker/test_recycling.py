@@ -179,11 +179,11 @@ class TestBindRetryBudget:
 
         monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
         worker_subprocess_entry(
-            worker_id=0, shutdown_event=threading.Event(), cfg=_make_test_cfg(),
+            worker_id=0,
+            shutdown_event=threading.Event(),
+            cfg=_make_test_cfg(),
         )
-        assert captured["ns"].bind_retry_budget_s > max(
-            SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S
-        )
+        assert captured["ns"].bind_retry_budget_s > max(SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S)
 
     def test_embedded_default_stays_short(self):
         """Ohne Supervisor haelt kein Vorgaenger den Port — ein langes Budget

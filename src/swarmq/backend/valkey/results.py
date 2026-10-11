@@ -44,9 +44,7 @@ class ValkeyResults(ValkeyConnection):
         eviction_check: str | None = None,
         namespace: str | None = None,
     ) -> None:
-        super().__init__(
-            url, client=client, pool=pool, keys=keys, eviction_check=eviction_check, namespace=namespace
-        )
+        super().__init__(url, client=client, pool=pool, keys=keys, eviction_check=eviction_check, namespace=namespace)
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
         self._unique_release_script: Any = None
@@ -481,11 +479,6 @@ class ValkeyResults(ValkeyConnection):
     # ------------------------------------------------------------------
     # Aliase der heutigen Namen (KTD10; entfallen in U15)
     # ------------------------------------------------------------------
-
-
-
-
-
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

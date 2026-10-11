@@ -58,11 +58,13 @@ async def test_get_result_timeout_raises(client, backend):
 
 @pytest.mark.asyncio
 async def test_get_result_error_raises_task_error(client, backend):
-    result_data = encode_result({
-        "result": None,
-        "is_error": True,
-        "error_message": "division by zero",
-    })
+    result_data = encode_result(
+        {
+            "result": None,
+            "is_error": True,
+            "error_message": "division by zero",
+        }
+    )
     backend.get_result = AsyncMock(return_value=result_data)
 
     with pytest.raises(TaskError, match="division by zero"):
@@ -71,13 +73,15 @@ async def test_get_result_error_raises_task_error(client, backend):
 
 @pytest.mark.asyncio
 async def test_get_result_cancelled_raises_task_cancelled_error(client, backend):
-    result_data = encode_result({
-        "task": {"id": "cancel-task", "queue": "default", "name": "t"},
-        "result": None,
-        "is_error": False,
-        "is_cancelled": True,
-        "error_message": "",
-    })
+    result_data = encode_result(
+        {
+            "task": {"id": "cancel-task", "queue": "default", "name": "t"},
+            "result": None,
+            "is_error": False,
+            "is_cancelled": True,
+            "error_message": "",
+        }
+    )
     backend.get_result = AsyncMock(return_value=result_data)
 
     with pytest.raises(TaskCancelledError) as excinfo:
@@ -90,13 +94,15 @@ async def test_get_result_cancelled_raises_task_cancelled_error(client, backend)
 @pytest.mark.asyncio
 async def test_get_result_cancelled_takes_priority_over_error(client, backend):
     """When both is_cancelled=True and is_error=True, TaskCancelledError wins."""
-    result_data = encode_result({
-        "task": {"id": "dual", "queue": "default", "name": "t"},
-        "result": None,
-        "is_error": True,
-        "is_cancelled": True,
-        "error_message": "some error",
-    })
+    result_data = encode_result(
+        {
+            "task": {"id": "dual", "queue": "default", "name": "t"},
+            "result": None,
+            "is_error": True,
+            "is_cancelled": True,
+            "error_message": "some error",
+        }
+    )
     backend.get_result = AsyncMock(return_value=result_data)
 
     with pytest.raises(TaskCancelledError):
@@ -106,12 +112,14 @@ async def test_get_result_cancelled_takes_priority_over_error(client, backend):
 @pytest.mark.asyncio
 async def test_get_result_legacy_result_without_is_cancelled_key(client, backend):
     """Backward-compat: results stored before R3.6 have no is_cancelled key."""
-    result_data = encode_result({
-        "task": {"id": "legacy", "queue": "default", "name": "t"},
-        "result": 99,
-        "is_error": False,
-        # no is_cancelled key
-    })
+    result_data = encode_result(
+        {
+            "task": {"id": "legacy", "queue": "default", "name": "t"},
+            "result": 99,
+            "is_error": False,
+            # no is_cancelled key
+        }
+    )
     backend.get_result = AsyncMock(return_value=result_data)
 
     result = await client.get_result("legacy", timeout=1)
@@ -213,7 +221,8 @@ async def test_get_results_timeout_raises(client, backend):
 
 @pytest.mark.asyncio
 async def test_cancel_calls_backend_set_cancel_flag_and_returns_bool(
-    client, backend,
+    client,
+    backend,
 ):
     backend.set_cancel_flag = AsyncMock(return_value=True)
 
@@ -251,9 +260,7 @@ async def test_cancel_rejects_empty_task_id(client):
 async def test_cancel_propagates_backend_errors(client, backend):
     from swarmq.exceptions import BackendConnectionError
 
-    backend.set_cancel_flag = AsyncMock(
-        side_effect=BackendConnectionError("valkey down")
-    )
+    backend.set_cancel_flag = AsyncMock(side_effect=BackendConnectionError("valkey down"))
 
     with pytest.raises(BackendConnectionError):
         await client.cancel("task-abc")
@@ -283,32 +290,53 @@ class TestClientProgress:
 
     @staticmethod
     def _valid_payload(current: int = 5, total: int = 10) -> bytes:
-        return json.dumps({
-            "current": str(current), "total": str(total),
-            "percent": f"{current / total * 100:.2f}",
-            "message": "live", "updated_at": "2026-04-17T10:31Z",
-            "started_at": "2026-04-17T10:29Z", "eta_seconds": "3",
-        }).encode("utf-8")
+        return json.dumps(
+            {
+                "current": str(current),
+                "total": str(total),
+                "percent": f"{current / total * 100:.2f}",
+                "message": "live",
+                "updated_at": "2026-04-17T10:31Z",
+                "started_at": "2026-04-17T10:29Z",
+                "eta_seconds": "3",
+            }
+        ).encode("utf-8")
 
     async def test_get_progress_returns_none_on_empty_hash(
-        self, progress_backend, broker, registry,
+        self,
+        progress_backend,
+        broker,
+        registry,
     ):
         progress_backend.get_progress = AsyncMock(return_value=None)
         client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
+            broker=broker,
+            backend=progress_backend,
+            registry=registry,
         )
         assert await client.get_progress("task-x") is None
 
     async def test_get_progress_decodes_populated_hash(
-        self, progress_backend, broker, registry,
+        self,
+        progress_backend,
+        broker,
+        registry,
     ):
-        progress_backend.get_progress = AsyncMock(return_value={
-            b"current": b"3", b"total": b"10", b"percent": b"30.00",
-            b"message": b"three", b"updated_at": b"2026-04-17T10:30Z",
-            b"started_at": b"2026-04-17T10:29Z", b"eta_seconds": b"7",
-        })
+        progress_backend.get_progress = AsyncMock(
+            return_value={
+                b"current": b"3",
+                b"total": b"10",
+                b"percent": b"30.00",
+                b"message": b"three",
+                b"updated_at": b"2026-04-17T10:30Z",
+                b"started_at": b"2026-04-17T10:29Z",
+                b"eta_seconds": b"7",
+            }
+        )
         client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
+            broker=broker,
+            backend=progress_backend,
+            registry=registry,
         )
         info = await client.get_progress("task-x")
         assert info is not None
@@ -319,15 +347,22 @@ class TestClientProgress:
         assert info.eta_seconds == 7
 
     async def test_get_progress_returns_none_on_malformed_hash(
-        self, progress_backend, broker, registry,
+        self,
+        progress_backend,
+        broker,
+        registry,
     ):
         # Missing required fields — from_hash would raise ValueError,
         # but the client layer treats it as "nothing observable".
-        progress_backend.get_progress = AsyncMock(return_value={
-            b"message": b"partial",
-        })
+        progress_backend.get_progress = AsyncMock(
+            return_value={
+                b"message": b"partial",
+            }
+        )
         client = Client(
-            broker=broker, backend=progress_backend, registry=registry,
+            broker=broker,
+            backend=progress_backend,
+            registry=registry,
         )
         assert await client.get_progress("task-x") is None
 
@@ -345,10 +380,14 @@ class TestClientProgress:
         return backend
 
     async def test_watch_progress_decodes_backend_payloads(
-        self, progress_backend, broker, registry,
+        self,
+        progress_backend,
+        broker,
+        registry,
     ):
         self._streaming_backend(
-            progress_backend, [self._valid_payload(3, 10), self._valid_payload(10, 10)],
+            progress_backend,
+            [self._valid_payload(3, 10), self._valid_payload(10, 10)],
         )
         client = Client(broker=broker, backend=progress_backend, registry=registry)
         observed = [info async for info in client.watch_progress("task-x")]
@@ -356,13 +395,17 @@ class TestClientProgress:
         progress_backend.watch_progress.assert_called_once_with("task-x")
 
     async def test_watch_progress_drops_malformed_payloads(
-        self, progress_backend, broker, registry,
+        self,
+        progress_backend,
+        broker,
+        registry,
     ):
         # A malformed publish must not crash the iterator — drop and
         # continue until the next valid message arrives.
         bad_payload = json.dumps({"current": "oops", "total": "1"}).encode()
         self._streaming_backend(
-            progress_backend, [b"not-json-at-all", bad_payload, self._valid_payload(10, 10)],
+            progress_backend,
+            [b"not-json-at-all", bad_payload, self._valid_payload(10, 10)],
         )
         client = Client(broker=broker, backend=progress_backend, registry=registry)
         observed = [info async for info in client.watch_progress("task-x")]

@@ -153,11 +153,16 @@ class TestBuildParser:
         ns = parser.parse_args(
             [
                 "worker",
-                "--module", "myapp.tasks",
-                "--queues", "a,b",
-                "--concurrency", "5",
-                "--log-level", "DEBUG",
-                "--log-format", "json",
+                "--module",
+                "myapp.tasks",
+                "--queues",
+                "a,b",
+                "--concurrency",
+                "5",
+                "--log-level",
+                "DEBUG",
+                "--log-format",
+                "json",
             ]
         )
         assert ns.queues == ["a", "b"]
@@ -185,16 +190,12 @@ class TestBuildParser:
     def test_log_level_invalid_choice_rejected(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args(
-                ["worker", "--module", "m", "--log-level", "VERBOSE"]
-            )
+            parser.parse_args(["worker", "--module", "m", "--log-level", "VERBOSE"])
 
     def test_log_format_invalid_choice_rejected(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args(
-                ["worker", "--module", "m", "--log-format", "jsonl"]
-            )
+            parser.parse_args(["worker", "--module", "m", "--log-format", "jsonl"])
 
     def test_unknown_subcommand_rejected(self):
         parser = cli._build_parser()
@@ -238,14 +239,14 @@ class TestMainErrorRendering:
     ) -> tuple[int, str]:
         # Seit R20 (Plan 2026-09-03-001) laeuft ``worker`` immer ueber den
         # Supervisor; gemockt wird deshalb dessen Einstieg.
-        with patch(
-            "swarmq.process_manager.run.run_multi_process_worker", side_effect=side_effect
-        ):
+        with patch("swarmq.process_manager.run.run_multi_process_worker", side_effect=side_effect):
             rc = cli.main(
                 [
                     "worker",
-                    "--module", "myapp",
-                    "--log-level", log_level,
+                    "--module",
+                    "myapp",
+                    "--log-level",
+                    log_level,
                 ]
             )
         captured = capsys.readouterr()
@@ -258,33 +259,25 @@ class TestMainErrorRendering:
         mehr als roher stderr-Text."""
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
-        rc, err = self._run_main_with_mocked_run(
-            "INFO", ModuleNotFoundError("No module named 'myapp'"), capsys
-        )
+        rc, err = self._run_main_with_mocked_run("INFO", ModuleNotFoundError("No module named 'myapp'"), capsys)
         assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" not in err
 
     def test_configuration_error_exits_with_the_config_code(self, capsys):
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
-        rc, err = self._run_main_with_mocked_run(
-            "INFO", ConfigurationError("no tasks registered"), capsys
-        )
+        rc, err = self._run_main_with_mocked_run("INFO", ConfigurationError("no tasks registered"), capsys)
         assert rc == CONFIG_ERROR_EXIT_CODE
         assert "Traceback" not in err
 
     def test_broker_connection_error_renders_one_line(self, capsys):
-        rc, err = self._run_main_with_mocked_run(
-            "INFO", BrokerConnectionError("amqp unreachable"), capsys
-        )
+        rc, err = self._run_main_with_mocked_run("INFO", BrokerConnectionError("amqp unreachable"), capsys)
         assert rc == 1
         assert "amqp unreachable" in err
         assert "Traceback" not in err
 
     def test_backend_connection_error_renders_one_line(self, capsys):
-        rc, err = self._run_main_with_mocked_run(
-            "INFO", BackendConnectionError("valkey unreachable"), capsys
-        )
+        rc, err = self._run_main_with_mocked_run("INFO", BackendConnectionError("valkey unreachable"), capsys)
         assert rc == 1
         assert "valkey unreachable" in err
         assert "Traceback" not in err
@@ -292,9 +285,7 @@ class TestMainErrorRendering:
     def test_debug_log_level_includes_traceback(self, capsys):
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
-        rc, err = self._run_main_with_mocked_run(
-            "DEBUG", ConfigurationError("boom"), capsys
-        )
+        rc, err = self._run_main_with_mocked_run("DEBUG", ConfigurationError("boom"), capsys)
         assert rc == CONFIG_ERROR_EXIT_CODE
         assert "boom" in err
         assert "Traceback" in err
@@ -316,9 +307,7 @@ class TestMainErrorRendering:
         assert "Traceback" in err
 
     def test_keyboard_interrupt_exits_zero(self, capsys):
-        with patch(
-            "swarmq.process_manager.run.run_multi_process_worker", side_effect=KeyboardInterrupt()
-        ):
+        with patch("swarmq.process_manager.run.run_multi_process_worker", side_effect=KeyboardInterrupt()):
             rc = cli.main(["worker", "--module", "myapp"])
         assert rc == 0
 
@@ -344,9 +333,7 @@ class TestRunWorkerAsync:
             await cli.run_worker_async(ns)
 
     @pytest.mark.asyncio
-    async def test_no_tasks_registered_raises_configuration_error(
-        self, monkeypatch
-    ):
+    async def test_no_tasks_registered_raises_configuration_error(self, monkeypatch):
         # Import a known-empty stdlib module that registers nothing.
         ns = argparse.Namespace(
             module="json",  # stdlib, no Task subclasses
@@ -375,10 +362,17 @@ class TestRunWorkerAsync:
 
     def _hook_args(self, configure):
         return argparse.Namespace(
-            module="json", queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human", burst=False,
-            burst_idle_timeout=60.0, priorities=False,
-            metrics_port=None, health_port=None, configure=configure,
+            module="json",
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=60.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            configure=configure,
         )
 
     @staticmethod
@@ -408,6 +402,7 @@ class TestRunWorkerAsync:
 
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_hook_probe", queues=["default"])
 
             async def run(self) -> None:
@@ -434,6 +429,7 @@ class TestRunWorkerAsync:
     async def test_async_configure_hook_is_awaited(self, monkeypatch):
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_hook_probe_async", queues=["default"])
 
             async def run(self) -> None:
@@ -455,14 +451,13 @@ class TestRunWorkerAsync:
         assert awaited == ["done"], "ein nicht abgewarteter Hook lief nie"
 
     @pytest.mark.asyncio
-    async def test_failing_hook_is_a_configuration_error_naming_module_and_callable(
-        self, monkeypatch
-    ):
+    async def test_failing_hook_is_a_configuration_error_naming_module_and_callable(self, monkeypatch):
         """R10: Ein Fehler im Hook ist ein Konfigurationsfehler -- ein
         Neustart wuerde ihn reproduzieren (Exit 78 kommt aus U4)."""
 
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_hook_probe_fail", queues=["default"])
 
             async def run(self) -> None:
@@ -488,6 +483,7 @@ class TestRunWorkerAsync:
     async def test_missing_callable_is_a_configuration_error(self, monkeypatch):
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_hook_probe_missing", queues=["default"])
 
             async def run(self) -> None:
@@ -505,6 +501,7 @@ class TestRunWorkerAsync:
     async def test_missing_hook_module_is_a_configuration_error(self, monkeypatch):
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_hook_probe_nomod", queues=["default"])
 
             async def run(self) -> None:
@@ -515,9 +512,7 @@ class TestRunWorkerAsync:
         self._fake_app(monkeypatch, {})
 
         with pytest.raises(ConfigurationError, match="definitely_no_hook_module_xyz"):
-            await cli.run_worker_async(
-                self._hook_args("definitely_no_hook_module_xyz:setup")
-            )
+            await cli.run_worker_async(self._hook_args("definitely_no_hook_module_xyz:setup"))
 
     @pytest.mark.asyncio
     async def test_worker_slot_reaches_the_app_config(self, monkeypatch):
@@ -526,6 +521,7 @@ class TestRunWorkerAsync:
 
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_slot_probe", queues=["default"])
 
             async def run(self) -> None:
@@ -553,10 +549,17 @@ class TestRunWorkerAsync:
         monkeypatch.setattr("swarmq.app.SwarmQ", _FakeApp)
 
         ns = argparse.Namespace(
-            module="json", queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human", burst=False,
-            burst_idle_timeout=60.0, priorities=False,
-            metrics_port=None, health_port=None, worker_slot=4,
+            module="json",
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=60.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            worker_slot=4,
         )
         await cli.run_worker_async(ns)
         assert built["kwargs"]["worker_slot"] == 4
@@ -572,6 +575,7 @@ class TestRunWorkerAsync:
 
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_settings_probe", queues=["default"])
 
             async def run(self) -> None:
@@ -610,6 +614,7 @@ class TestRunWorkerAsync:
 
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_precedence_probe", queues=["default"])
 
             async def run(self) -> None:
@@ -618,9 +623,13 @@ class TestRunWorkerAsync:
         monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         for name, value in {
-            "SWARMQ_CONCURRENCY": "5", "SWARMQ_QUEUES": "envq", "SWARMQ_POOL": "cpu",
-            "SWARMQ_BURST_MODE": "false", "SWARMQ_BURST_IDLE_TIMEOUT": "1.0",
-            "SWARMQ_PRIORITIES": "false", "SWARMQ_METRICS_PORT": "9100",
+            "SWARMQ_CONCURRENCY": "5",
+            "SWARMQ_QUEUES": "envq",
+            "SWARMQ_POOL": "cpu",
+            "SWARMQ_BURST_MODE": "false",
+            "SWARMQ_BURST_IDLE_TIMEOUT": "1.0",
+            "SWARMQ_PRIORITIES": "false",
+            "SWARMQ_METRICS_PORT": "9100",
             "SWARMQ_HEALTH_PORT": "9200",
         }.items():
             monkeypatch.setenv(name, value)
@@ -642,12 +651,11 @@ class TestRunWorkerAsync:
         assert (cfg.metrics_port, cfg.health_port) == (8000, 8100)
 
     @pytest.mark.asyncio
-    async def test_missing_broker_url_raises_configuration_error(
-        self, monkeypatch
-    ):
+    async def test_missing_broker_url_raises_configuration_error(self, monkeypatch):
         # Register a task so the no-tasks branch is not the one that fires.
         class _Probe(Task):
             from swarmq.task import TaskInfo
+
             task_info = TaskInfo(name="cli_probe", queues=["default"])
 
             async def run(self) -> None:
@@ -688,14 +696,23 @@ class TestScheduleParser:
 
     def test_add_with_cron(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "add", "mycron",
-            "--cron", "*/5 * * * *",
-            "--task", "mytask",
-            "--args", '[1, 2]',
-            "--kwargs", '{"k": 1}',
-            "--queue", "high",
-        ])
+        ns = parser.parse_args(
+            [
+                "schedule",
+                "add",
+                "mycron",
+                "--cron",
+                "*/5 * * * *",
+                "--task",
+                "mytask",
+                "--args",
+                "[1, 2]",
+                "--kwargs",
+                '{"k": 1}',
+                "--queue",
+                "high",
+            ]
+        )
         assert ns.name == "mycron"
         assert ns.cron == "*/5 * * * *"
         assert ns.at is None
@@ -705,29 +722,49 @@ class TestScheduleParser:
 
     def test_add_with_at(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "add", "one",
-            "--at", "2026-05-01T03:00:00Z",
-            "--task", "mytask",
-        ])
+        ns = parser.parse_args(
+            [
+                "schedule",
+                "add",
+                "one",
+                "--at",
+                "2026-05-01T03:00:00Z",
+                "--task",
+                "mytask",
+            ]
+        )
         assert ns.at == "2026-05-01T03:00:00Z"
         assert ns.cron is None
 
     def test_add_rejects_both_cron_and_at(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args([
-                "schedule", "add", "x", "--task", "t",
-                "--cron", "* * * * *",
-                "--at", "2026-01-01T00:00:00Z",
-            ])
+            parser.parse_args(
+                [
+                    "schedule",
+                    "add",
+                    "x",
+                    "--task",
+                    "t",
+                    "--cron",
+                    "* * * * *",
+                    "--at",
+                    "2026-01-01T00:00:00Z",
+                ]
+            )
 
     def test_add_requires_task(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args([
-                "schedule", "add", "x", "--cron", "* * * * *",
-            ])
+            parser.parse_args(
+                [
+                    "schedule",
+                    "add",
+                    "x",
+                    "--cron",
+                    "* * * * *",
+                ]
+            )
 
     def test_remove_without_permanent(self):
         parser = cli._build_parser()
@@ -743,17 +780,34 @@ class TestScheduleParser:
     def test_add_format_json(self):
         """Unit 4 / M-2: agent-parseable output."""
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "add", "x", "--cron", "* * * * *",
-            "--task", "t", "--format", "json",
-        ])
+        ns = parser.parse_args(
+            [
+                "schedule",
+                "add",
+                "x",
+                "--cron",
+                "* * * * *",
+                "--task",
+                "t",
+                "--format",
+                "json",
+            ]
+        )
         assert ns.format == "json"
 
     def test_add_format_defaults_to_table(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "add", "x", "--cron", "* * * * *", "--task", "t",
-        ])
+        ns = parser.parse_args(
+            [
+                "schedule",
+                "add",
+                "x",
+                "--cron",
+                "* * * * *",
+                "--task",
+                "t",
+            ]
+        )
         # Plan 2026-04-23-001 Unit 5: parser default is None;
         # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
         assert ns.format is None
@@ -773,9 +827,7 @@ class TestScheduleParser:
 
     def test_status_with_limit_and_json(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "status", "--limit", "50", "--format", "json"
-        ])
+        ns = parser.parse_args(["schedule", "status", "--limit", "50", "--format", "json"])
         assert ns.limit == 50
         assert ns.format == "json"
 
@@ -787,45 +839,57 @@ class TestScheduleHandlerValidation:
             await cli._backend_from_env()
 
     async def test_schedule_add_rejects_invalid_cron(self, monkeypatch):
-        monkeypatch.setenv(
-            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
-        )
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         ns = argparse.Namespace(
-            name="bad", cron="not-a-cron", at=None, task="t",
-            args="[]", kwargs="{}", queue="default",
+            name="bad",
+            cron="not-a-cron",
+            at=None,
+            task="t",
+            args="[]",
+            kwargs="{}",
+            queue="default",
         )
         with pytest.raises(ConfigurationError, match="invalid cron"):
             await cli._run_schedule_add(ns)
 
     async def test_schedule_add_rejects_invalid_args_json(self, monkeypatch):
-        monkeypatch.setenv(
-            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
-        )
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         ns = argparse.Namespace(
-            name="x", cron="* * * * *", at=None, task="t",
-            args="not json", kwargs="{}", queue="default",
+            name="x",
+            cron="* * * * *",
+            at=None,
+            task="t",
+            args="not json",
+            kwargs="{}",
+            queue="default",
         )
         with pytest.raises(ConfigurationError, match="--args"):
             await cli._run_schedule_add(ns)
 
     async def test_schedule_add_rejects_non_array_args(self, monkeypatch):
-        monkeypatch.setenv(
-            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
-        )
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         ns = argparse.Namespace(
-            name="x", cron="* * * * *", at=None, task="t",
-            args='{"oops": 1}', kwargs="{}", queue="default",
+            name="x",
+            cron="* * * * *",
+            at=None,
+            task="t",
+            args='{"oops": 1}',
+            kwargs="{}",
+            queue="default",
         )
         with pytest.raises(ConfigurationError, match="JSON array"):
             await cli._run_schedule_add(ns)
 
     async def test_schedule_add_rejects_invalid_at(self, monkeypatch):
-        monkeypatch.setenv(
-            "SWARMQ_BACKEND_URL", "valkey://localhost:6379/0"
-        )
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         ns = argparse.Namespace(
-            name="x", cron=None, at="not-a-datetime", task="t",
-            args="[]", kwargs="{}", queue="default",
+            name="x",
+            cron=None,
+            at="not-a-datetime",
+            task="t",
+            args="[]",
+            kwargs="{}",
+            queue="default",
         )
         with pytest.raises(ConfigurationError, match="--at"):
             await cli._run_schedule_add(ns)
@@ -833,36 +897,62 @@ class TestScheduleHandlerValidation:
 
 # ---- R3.5 ce-review P3 #23: CLI surface for dedup ------------------
 
+
 class TestScheduleAddUniqueFor:
     """Argparse coverage for --unique-for / --unique-until on schedule add."""
 
     def test_unique_for_defaults_to_none(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "add", "test",
-            "--cron", "* * * * *", "--task", "t",
-        ])
+        ns = parser.parse_args(
+            [
+                "schedule",
+                "add",
+                "test",
+                "--cron",
+                "* * * * *",
+                "--task",
+                "t",
+            ]
+        )
         assert ns.unique_for is None
         assert ns.unique_until == "completion"
 
     def test_unique_for_accepts_positive_int(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "schedule", "add", "test",
-            "--cron", "* * * * *", "--task", "t",
-            "--unique-for", "60", "--unique-until", "start",
-        ])
+        ns = parser.parse_args(
+            [
+                "schedule",
+                "add",
+                "test",
+                "--cron",
+                "* * * * *",
+                "--task",
+                "t",
+                "--unique-for",
+                "60",
+                "--unique-until",
+                "start",
+            ]
+        )
         assert ns.unique_for == 60
         assert ns.unique_until == "start"
 
     def test_unique_for_rejects_zero(self, capsys):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args([
-                "schedule", "add", "test",
-                "--cron", "* * * * *", "--task", "t",
-                "--unique-for", "0",
-            ])
+            parser.parse_args(
+                [
+                    "schedule",
+                    "add",
+                    "test",
+                    "--cron",
+                    "* * * * *",
+                    "--task",
+                    "t",
+                    "--unique-for",
+                    "0",
+                ]
+            )
 
 
 class TestInspectCommand:
@@ -875,9 +965,13 @@ class TestInspectCommand:
 
     def test_inspect_table_default(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "inspect", "--module", "some.module",
-        ])
+        ns = parser.parse_args(
+            [
+                "inspect",
+                "--module",
+                "some.module",
+            ]
+        )
         assert ns.module == "some.module"
         # Plan 2026-04-23-001 Unit 5: parser default is None;
         # resolve_format in main() maps that to 'table' on TTY / 'json' on pipe.
@@ -885,9 +979,15 @@ class TestInspectCommand:
 
     def test_inspect_json_format(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "inspect", "--module", "some.module", "--format", "json",
-        ])
+        ns = parser.parse_args(
+            [
+                "inspect",
+                "--module",
+                "some.module",
+                "--format",
+                "json",
+            ]
+        )
         assert ns.format == "json"
 
     async def test_inspect_module_without_tasks_raises(self, monkeypatch):
@@ -922,10 +1022,18 @@ class TestDlqParser:
 
     def test_dlq_list_overrides(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "dlq", "list",
-            "--queue", "work", "--limit", "50", "--format", "json",
-        ])
+        ns = parser.parse_args(
+            [
+                "dlq",
+                "list",
+                "--queue",
+                "work",
+                "--limit",
+                "50",
+                "--format",
+                "json",
+            ]
+        )
         assert ns.queue == "work"
         assert ns.limit == 50
         assert ns.format == "json"
@@ -937,10 +1045,17 @@ class TestDlqParser:
 
     def test_dlq_inspect_accepts_task_id(self):
         parser = cli._build_parser()
-        ns = parser.parse_args([
-            "dlq", "inspect", "abc-123", "--queue", "q",
-            "--scan-limit", "500",
-        ])
+        ns = parser.parse_args(
+            [
+                "dlq",
+                "inspect",
+                "abc-123",
+                "--queue",
+                "q",
+                "--scan-limit",
+                "500",
+            ]
+        )
         assert ns.task_id == "abc-123"
         assert ns.queue == "q"
         assert ns.scan_limit == 500
@@ -1000,12 +1115,14 @@ class TestDlqHandlerValidation:
     async def test_retry_without_task_or_all_exits_2(self, monkeypatch):
         """Review P3 #12: bad argument shape exits 2 (argparse convention),
         not 1 (runtime error)."""
-        monkeypatch.setenv(
-            "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
-        )
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/")
         ns = argparse.Namespace(
-            task_id=None, all=False, queue="default",
-            limit=10_000, scan_limit=1000, format="table",
+            task_id=None,
+            all=False,
+            queue="default",
+            limit=10_000,
+            scan_limit=1000,
+            format="table",
         )
         with pytest.raises(SystemExit) as excinfo:
             await cli._run_dlq_retry(ns)
@@ -1013,16 +1130,19 @@ class TestDlqHandlerValidation:
 
     @pytest.mark.timeout(5)
     async def test_retry_with_both_task_and_all_exits_2(self, monkeypatch):
-        monkeypatch.setenv(
-            "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
-        )
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/")
         ns = argparse.Namespace(
-            task_id="t-1", all=True, queue="default",
-            limit=10_000, scan_limit=1000, format="table",
+            task_id="t-1",
+            all=True,
+            queue="default",
+            limit=10_000,
+            scan_limit=1000,
+            format="table",
         )
         with pytest.raises(SystemExit) as excinfo:
             await cli._run_dlq_retry(ns)
         assert excinfo.value.code == 2
+
 
 class TestDlqFormatter:
     """Pure-function table formatter — no broker / no argparse."""
@@ -1031,16 +1151,20 @@ class TestDlqFormatter:
         assert cli._format_dlq_list_table([]) == "(DLQ empty)"
 
     def test_full_row_with_retry_and_traceback(self):
-        rendered = cli._format_dlq_list_table([{
-            "task_id": "abc-123",
-            "task_name": "add",
-            "queue": "work",
-            "headers": {
-                "x-swarmq-retry-count": 3,
-                "x-swarmq-traceback": "RuntimeError: boom\nmore lines",
-            },
-            "body_size": 128,
-        }])
+        rendered = cli._format_dlq_list_table(
+            [
+                {
+                    "task_id": "abc-123",
+                    "task_name": "add",
+                    "queue": "work",
+                    "headers": {
+                        "x-swarmq-retry-count": 3,
+                        "x-swarmq-traceback": "RuntimeError: boom\nmore lines",
+                    },
+                    "body_size": 128,
+                }
+            ]
+        )
         lines = rendered.splitlines()
         # Header row + data row.
         assert len(lines) == 2
@@ -1051,34 +1175,44 @@ class TestDlqFormatter:
         assert "128" in lines[1]
 
     def test_malformed_task_id_renders_placeholder(self):
-        rendered = cli._format_dlq_list_table([{
-            "task_id": None,
-            "task_name": None,
-            "queue": "work",
-            "headers": {},
-            "body_size": 10,
-        }])
+        rendered = cli._format_dlq_list_table(
+            [
+                {
+                    "task_id": None,
+                    "task_name": None,
+                    "queue": "work",
+                    "headers": {},
+                    "body_size": 10,
+                }
+            ]
+        )
         assert "(malformed)" in rendered
 
     def test_traceback_bytes_decoded(self):
-        rendered = cli._format_dlq_list_table([{
-            "task_id": "t",
-            "task_name": "n",
-            "queue": "q",
-            "headers": {
-                "x-swarmq-traceback": b"ValueError: bad input",
-            },
-            "body_size": 8,
-        }])
+        rendered = cli._format_dlq_list_table(
+            [
+                {
+                    "task_id": "t",
+                    "task_name": "n",
+                    "queue": "q",
+                    "headers": {
+                        "x-swarmq-traceback": b"ValueError: bad input",
+                    },
+                    "body_size": 8,
+                }
+            ]
+        )
         assert "ValueError: bad input" in rendered
 
 
 class TestDlqNormaliseHeaders:
     def test_bytes_values_decoded(self):
-        result = cli._normalise_headers_for_json({
-            "x-swarmq-traceback": b"err",
-            "x-swarmq-retry-count": 3,
-        })
+        result = cli._normalise_headers_for_json(
+            {
+                "x-swarmq-traceback": b"err",
+                "x-swarmq-retry-count": 3,
+            }
+        )
         assert result["x-swarmq-traceback"] == "err"
         assert result["x-swarmq-retry-count"] == 3
 
@@ -1111,17 +1245,22 @@ class TestDlqHandlerOrchestration:
         async def fake_from_env():
             return broker
 
-        monkeypatch.setenv(
-            "SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/"
-        )
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5672/")
         monkeypatch.setattr(cli._shared, "_broker_from_env", fake_from_env)
         return broker
 
     @pytest.mark.timeout(5)
     async def test_list_json_output_wraps_envelope(self, mock_broker, capsys):
         mock_broker.list_dead_letters.return_value = (
-            [{"task_id": "t-1", "task_name": "add", "queue": "q",
-              "headers": {"x-swarmq-retry-count": 3}, "body_size": 128}],
+            [
+                {
+                    "task_id": "t-1",
+                    "task_name": "add",
+                    "queue": "q",
+                    "headers": {"x-swarmq-retry-count": 3},
+                    "body_size": 128,
+                }
+            ],
             1,
         )
         ns = argparse.Namespace(queue="q", limit=100, format="json")
@@ -1137,11 +1276,12 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_list_table_truncated_hint_when_at_limit(
-        self, mock_broker, capsys,
+        self,
+        mock_broker,
+        capsys,
     ):
         mock_broker.list_dead_letters.return_value = (
-            [{"task_id": f"t-{i}", "task_name": "x", "queue": "q",
-              "headers": {}, "body_size": 10} for i in range(2)],
+            [{"task_id": f"t-{i}", "task_name": "x", "queue": "q", "headers": {}, "body_size": 10} for i in range(2)],
             2,
         )
         ns = argparse.Namespace(queue="q", limit=2, format="table")
@@ -1152,13 +1292,22 @@ class TestDlqHandlerOrchestration:
     @pytest.mark.timeout(5)
     async def test_inspect_found_json_adds_found_true(self, mock_broker, capsys):
         mock_broker.inspect_dead_letter.return_value = (
-            {"task_id": "t-1", "task_name": "add", "queue": "q",
-             "headers": {}, "body": {"task": {"id": "t-1"}},
-             "body_raw": '{"task":{"id":"t-1"}}', "body_size": 20},
+            {
+                "task_id": "t-1",
+                "task_name": "add",
+                "queue": "q",
+                "headers": {},
+                "body": {"task": {"id": "t-1"}},
+                "body_raw": '{"task":{"id":"t-1"}}',
+                "body_size": 20,
+            },
             1,
         )
         ns = argparse.Namespace(
-            task_id="t-1", queue="q", scan_limit=1000, format="json",
+            task_id="t-1",
+            queue="q",
+            scan_limit=1000,
+            format="json",
         )
         await cli._run_dlq_inspect(ns)
         payload = json.loads(capsys.readouterr().out)
@@ -1167,11 +1316,16 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_inspect_not_found_raises_dlq_not_found(
-        self, mock_broker, capsys,
+        self,
+        mock_broker,
+        capsys,
     ):
         mock_broker.inspect_dead_letter.return_value = (None, 5)
         ns = argparse.Namespace(
-            task_id="missing", queue="q", scan_limit=1000, format="json",
+            task_id="missing",
+            queue="q",
+            scan_limit=1000,
+            format="json",
         )
         with pytest.raises(cli._DLQNotFound):
             await cli._run_dlq_inspect(ns)
@@ -1182,22 +1336,34 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_inspect_table_body_raw_fallback_for_malformed(
-        self, mock_broker, capsys,
+        self,
+        mock_broker,
+        capsys,
     ):
         mock_broker.inspect_dead_letter.return_value = (
-            {"task_id": None, "task_name": None, "queue": "q",
-             "headers": {}, "body": None, "body_raw": "not-json",
-             "body_size": 8},
+            {
+                "task_id": None,
+                "task_name": None,
+                "queue": "q",
+                "headers": {},
+                "body": None,
+                "body_raw": "not-json",
+                "body_size": 8,
+            },
             1,
         )
         ns = argparse.Namespace(
-            task_id=None, queue="q", scan_limit=1000, format="table",
+            task_id=None,
+            queue="q",
+            scan_limit=1000,
+            format="table",
         )
         # Passing task_id=None happens to be what you'd hit if you tried
         # to inspect a malformed DLQ message; this test pins the
         # body_raw fallback branch.
         mock_broker.inspect_dead_letter.return_value = (
-            mock_broker.inspect_dead_letter.return_value[0], 1,
+            mock_broker.inspect_dead_letter.return_value[0],
+            1,
         )
         await cli._run_dlq_inspect(ns)
         out = capsys.readouterr().out
@@ -1207,8 +1373,12 @@ class TestDlqHandlerOrchestration:
     async def test_retry_single_success_json_shape(self, mock_broker, capsys):
         mock_broker.retry_dead_letter.return_value = (True, 3)
         ns = argparse.Namespace(
-            task_id="t-1", all=False, queue="q",
-            limit=10_000, scan_limit=1000, format="json",
+            task_id="t-1",
+            all=False,
+            queue="q",
+            limit=10_000,
+            scan_limit=1000,
+            format="json",
         )
         await cli._run_dlq_retry(ns)
         payload = json.loads(capsys.readouterr().out)
@@ -1218,12 +1388,18 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_retry_single_not_found_exits_via_sentinel(
-        self, mock_broker, capsys,
+        self,
+        mock_broker,
+        capsys,
     ):
         mock_broker.retry_dead_letter.return_value = (False, 1000)
         ns = argparse.Namespace(
-            task_id="missing", all=False, queue="q",
-            limit=10_000, scan_limit=1000, format="json",
+            task_id="missing",
+            all=False,
+            queue="q",
+            limit=10_000,
+            scan_limit=1000,
+            format="json",
         )
         with pytest.raises(cli._DLQNotFound):
             await cli._run_dlq_retry(ns)
@@ -1233,12 +1409,18 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_retry_all_json_reports_skipped_malformed(
-        self, mock_broker, capsys,
+        self,
+        mock_broker,
+        capsys,
     ):
         mock_broker.retry_all_dead_letters.return_value = (4, 5)
         ns = argparse.Namespace(
-            task_id=None, all=True, queue="q",
-            limit=10_000, scan_limit=1000, format="json",
+            task_id=None,
+            all=True,
+            queue="q",
+            limit=10_000,
+            scan_limit=1000,
+            format="json",
         )
         await cli._run_dlq_retry(ns)
         payload = json.loads(capsys.readouterr().out)
@@ -1249,12 +1431,18 @@ class TestDlqHandlerOrchestration:
 
     @pytest.mark.timeout(5)
     async def test_retry_all_table_warns_about_skipped_malformed(
-        self, mock_broker, capsys,
+        self,
+        mock_broker,
+        capsys,
     ):
         mock_broker.retry_all_dead_letters.return_value = (3, 4)
         ns = argparse.Namespace(
-            task_id=None, all=True, queue="q",
-            limit=10_000, scan_limit=1000, format="table",
+            task_id=None,
+            all=True,
+            queue="q",
+            limit=10_000,
+            scan_limit=1000,
+            format="table",
         )
         await cli._run_dlq_retry(ns)
         out = capsys.readouterr().out
@@ -1280,15 +1468,21 @@ class TestDlqHandlerOrchestration:
 
         # list
         ns = argparse.Namespace(
-            dlq_command="list", queue="q", limit=10, format="json",
+            dlq_command="list",
+            queue="q",
+            limit=10,
+            format="json",
         )
         await cli._run_dlq_async(ns)
         mock_broker.list_dead_letters.assert_awaited_once()
 
         # inspect not-found raises sentinel; swallow for this smoke.
         ns = argparse.Namespace(
-            dlq_command="inspect", task_id="x", queue="q",
-            scan_limit=10, format="json",
+            dlq_command="inspect",
+            task_id="x",
+            queue="q",
+            scan_limit=10,
+            format="json",
         )
         with pytest.raises(cli._DLQNotFound):
             await cli._run_dlq_async(ns)
@@ -1296,15 +1490,22 @@ class TestDlqHandlerOrchestration:
 
         # retry --all
         ns = argparse.Namespace(
-            dlq_command="retry", task_id=None, all=True, queue="q",
-            limit=10, scan_limit=10, format="json",
+            dlq_command="retry",
+            task_id=None,
+            all=True,
+            queue="q",
+            limit=10,
+            scan_limit=10,
+            format="json",
         )
         await cli._run_dlq_async(ns)
         mock_broker.retry_all_dead_letters.assert_awaited_once()
 
         # purge
         ns = argparse.Namespace(
-            dlq_command="purge", queue="q", format="json",
+            dlq_command="purge",
+            queue="q",
+            format="json",
         )
         await cli._run_dlq_async(ns)
         mock_broker.purge_dead_letters.assert_awaited_once()
@@ -1368,7 +1569,10 @@ class TestConsoleEntryHardExit:
 
     @pytest.mark.parametrize(("exc", "code"), [(RuntimeError("boom"), 1), (SystemExit(4), 4)])
     def test_console_main_checks_for_the_hard_exit_when_main_raises(
-        self, monkeypatch, exc, code,
+        self,
+        monkeypatch,
+        exc,
+        code,
     ):
         calls: list[object] = []
 

@@ -55,9 +55,7 @@ async def test_expired_task_error_result_is_stored_and_decodable(backend):
     broker.redeliver = AsyncMock()
     registry = TaskRegistry()
     registry.register(ExpiringTask)
-    config = SwarmQConfig(
-        broker_url="amqp://unused", backend_url="valkey://unused", result_ttl=60
-    )
+    config = SwarmQConfig(broker_url="amqp://unused", backend_url="valkey://unused", result_ttl=60)
     deps = GateDeps(
         broker=broker,
         backend=backend,
@@ -93,8 +91,7 @@ async def test_expired_task_error_result_is_stored_and_decodable(backend):
     assert outcome == Terminal.release_only()  # Expiry ist terminal (U19), gibt frei (BZ-22)
     raw = await backend.get_result(task_id)
     assert raw is not None, (
-        "Expiry-Fehlerergebnis fehlt im Store — get_result() eines "
-        "abgelaufenen Tasks würde bis zum Timeout hängen"
+        "Expiry-Fehlerergebnis fehlt im Store — get_result() eines abgelaufenen Tasks würde bis zum Timeout hängen"
     )
     data = decode_result(raw)
     assert data["is_error"] is True

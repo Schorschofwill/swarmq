@@ -54,7 +54,9 @@ class RateLimitGate:
                 what="rate limit check",
             )
             allowed, remaining, retry_after_ms = (
-                decision.allowed, decision.remaining, decision.retry_after_ms,
+                decision.allowed,
+                decision.remaining,
+                decision.retry_after_ms,
             )
         except Exception as exc:
             # The limiter is the only side-effect-free decision-point we

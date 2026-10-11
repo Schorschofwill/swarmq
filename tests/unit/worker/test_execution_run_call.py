@@ -40,17 +40,29 @@ def _deps() -> GateDeps:
     signals = MagicMock()
     signals.dispatch = AsyncMock()
     return GateDeps(
-        broker=MagicMock(), backend=backend, config=config, signals=signals, registry=MagicMock(),
-        rate_limiter=lambda: None, lock_manager=lambda: None, finalize_schedfire=AsyncMock(),
-        maybe_release_unique=AsyncMock(), extract_valid_workflow_id=lambda _m: None,
+        broker=MagicMock(),
+        backend=backend,
+        config=config,
+        signals=signals,
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
+        extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
 
 
 def _ctx(task_class: type, *args: Any, **kwargs: Any) -> GateContext:
     return GateContext(
-        task_id="t1", task_name=task_class.task_info.name, queue="q", task_info=task_class.task_info,
-        task_class=task_class, args=list(args), kwargs=kwargs,
+        task_id="t1",
+        task_name=task_class.task_info.name,
+        queue="q",
+        task_info=task_class.task_info,
+        task_class=task_class,
+        args=list(args),
+        kwargs=kwargs,
     )
 
 

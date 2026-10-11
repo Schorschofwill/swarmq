@@ -201,11 +201,7 @@ def isolated_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(logging, "_handlerList", [])
     monkeypatch.setattr(logging, "_handlers", weakref.WeakValueDictionary())
     loggers = logging.Logger.manager.loggerDict
-    saved = {
-        name: (lg.disabled, lg.level)
-        for name, lg in loggers.items()
-        if isinstance(lg, logging.Logger)
-    }
+    saved = {name: (lg.disabled, lg.level) for name, lg in loggers.items() if isinstance(lg, logging.Logger)}
     FILE_RECORDS.clear()
     logger_class = logging.getLoggerClass()
     structlog_config = structlog.get_config()
@@ -266,7 +262,10 @@ def test_builtin_renders_user_structlog_events_like_swarmq_events(
     user, lib = (json.loads(line) for line in _lines(stderr))
     assert user.keys() == lib.keys()
     assert (user["event"], user["logger"], user["level"], user["a"]) == (
-        "x", "user", "info", 1,
+        "x",
+        "user",
+        "info",
+        1,
     )
 
 
@@ -336,9 +335,7 @@ def test_builtin_queue_size_comes_from_settings(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.parametrize(("tty", "ansi"), [(False, False), (True, True)])
-def test_text_mode_uses_ansi_only_on_a_tty(
-    monkeypatch: pytest.MonkeyPatch, tty: bool, ansi: bool
-) -> None:
+def test_text_mode_uses_ansi_only_on_a_tty(monkeypatch: pytest.MonkeyPatch, tty: bool, ansi: bool) -> None:
     stderr = _stderr(monkeypatch, tty=tty)
     configure_logging(LoggingSettings(format="human"))
 
@@ -367,9 +364,7 @@ def test_logger_level_overrides_set_the_named_logger_level(
     _stderr(monkeypatch)
 
     configure_logging(
-        LoggingSettings(
-            logger_levels=(("swarmq.tests.noisy", "ERROR"), ("swarmq.tests.chatty", "DEBUG"))
-        )
+        LoggingSettings(logger_levels=(("swarmq.tests.noisy", "ERROR"), ("swarmq.tests.chatty", "DEBUG")))
     )
 
     assert logging.getLogger("swarmq.tests.noisy").level == logging.ERROR
@@ -453,9 +448,7 @@ def test_logger_level_overrides_win_over_the_config_file(
         },
     )
 
-    configure_logging(
-        LoggingSettings(log_config=path, logger_levels=(("swarmq.tests.noisy", "ERROR"),))
-    )
+    configure_logging(LoggingSettings(log_config=path, logger_levels=(("swarmq.tests.noisy", "ERROR"),)))
 
     assert logging.getLogger("swarmq.tests.noisy").level == logging.ERROR
 
@@ -471,9 +464,7 @@ def test_file_mode_uses_the_preloaded_json_without_reading_the_file(
         }
     )
 
-    configure_logging(
-        LoggingSettings(log_config=str(tmp_path / "gone.json"), log_config_json=preloaded)
-    )
+    configure_logging(LoggingSettings(log_config=str(tmp_path / "gone.json"), log_config_json=preloaded))
     logging.getLogger("swarmq.tests.preloaded").warning("evt_preloaded")
 
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_preloaded"]
@@ -544,9 +535,7 @@ def test_handler_typo_raises_logging_config_error_with_path_and_cause(
     assert "err" in str(excinfo.value)
 
 
-def test_yaml_without_pyyaml_raises_with_install_hint(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_yaml_without_pyyaml_raises_with_install_hint(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from swarmq.exceptions import LoggingConfigError
 
     path = tmp_path / "log.yaml"
@@ -560,9 +549,7 @@ def test_yaml_without_pyyaml_raises_with_install_hint(
     assert "pip install pyyaml" in str(excinfo.value).lower()
 
 
-def test_yaml_is_loaded_with_pyyaml(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_yaml_is_loaded_with_pyyaml(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # PyYAML ist keine Abhaengigkeit von swarmq; ein Ersatzmodul haelt den
     # Test unabhaengig davon, ob es zufaellig installiert ist.
     fake_yaml = types.ModuleType("yaml")
@@ -753,7 +740,8 @@ def test_a_raising_filter_does_not_kill_the_file_mode_listener(
 
 
 def test_stopping_a_file_mode_listener_reports_held_back_handler_errors(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq.logging import shutdown_logging
     from swarmq.logging_file import RateLimitedReport
@@ -790,7 +778,8 @@ def test_a_dead_file_mode_listener_thread_restarts_on_the_next_record(
 
 
 def test_a_full_bounded_file_mode_queue_counts_the_drop_without_a_traceback(
-    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -923,13 +912,12 @@ class GateRecordingHandler(RecordingHandler):
 
 def _wait_for_file_record(msg: str) -> bool:
     with GATE_SEEN:
-        return GATE_SEEN.wait_for(
-            lambda: msg in [r.getMessage() for r in FILE_RECORDS], timeout=1
-        )
+        return GATE_SEEN.wait_for(lambda: msg in [r.getMessage() for r in FILE_RECORDS], timeout=1)
 
 
 def test_stopping_a_file_mode_listener_reports_held_back_drops(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq.logging import shutdown_logging
     from swarmq.logging_file import RateLimitedReport

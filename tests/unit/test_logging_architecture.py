@@ -39,9 +39,7 @@ _PKG = "swarmq"
 # Noch nicht migrierte Module (U9). Darf nur schrumpfen -- seit U9 leer.
 _NOT_YET_MIGRATED: frozenset[str] = frozenset()
 
-_LEVEL_METHODS = frozenset(
-    {"debug", "info", "warning", "warn", "error", "exception", "critical", "fatal", "msg"}
-)
+_LEVEL_METHODS = frozenset({"debug", "info", "warning", "warn", "error", "exception", "critical", "fatal", "msg"})
 _SNAKE_CASE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 
 
@@ -181,7 +179,13 @@ def test_non_literal_or_non_snake_case_event_names_are_reported():
         """
     )
     assert [p.split(": ")[0] for p in bad_event_names(source)] == [
-        "3", "4", "5", "6", "7", "8", "10",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "10",
     ]
 
 

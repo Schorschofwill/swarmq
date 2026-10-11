@@ -35,7 +35,7 @@ class SlotDecision:
 def _affinity_count() -> int:
     try:
         return len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return os.cpu_count() or 1
 
 
@@ -43,7 +43,7 @@ def _cgroup_quota(path: Path) -> int | None:
     """CPU-Quote aus ``cpu.max`` (``"<quota> <period>"`` oder ``"max <period>"``)."""
     try:
         parts = path.read_text(encoding="ascii").split()
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     if len(parts) != 2 or parts[0] == "max":
         return None

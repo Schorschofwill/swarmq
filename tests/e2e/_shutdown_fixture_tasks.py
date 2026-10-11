@@ -47,14 +47,10 @@ class ShutdownSleepTask(Task):
         # after the test completes.
         if self._backend is not None and self._task_id is not None:
             try:
-                await self._backend._client.incr(
-                    f"exec_count:{self._task_id}"
-                )
+                await self._backend._client.incr(f"exec_count:{self._task_id}")
                 # Expire the counter so stray counters from prior runs
                 # don't bloat the DB.
-                await self._backend._client.expire(
-                    f"exec_count:{self._task_id}", 300
-                )
+                await self._backend._client.expire(f"exec_count:{self._task_id}", 300)
             except Exception:
                 # Best-effort — counter failures must not affect the
                 # shutdown behaviour we're actually measuring.

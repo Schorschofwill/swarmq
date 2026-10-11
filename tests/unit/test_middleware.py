@@ -26,6 +26,7 @@ from swarmq.middleware import Middleware, MiddlewareChain
 # 1. Middleware base class has 6 async no-op methods
 # ---------------------------------------------------------------------------
 
+
 async def test_middleware_base_class_has_six_async_no_op_methods():
     """Base Middleware exposes 6 async hooks which are callable no-ops."""
     mw = Middleware()
@@ -59,6 +60,7 @@ async def test_middleware_base_class_has_six_async_no_op_methods():
 # 2. MiddlewareChain with empty list -> all run_* methods are no-ops
 # ---------------------------------------------------------------------------
 
+
 async def test_empty_chain_all_run_methods_are_no_ops():
     """Empty chain returns None for every run_* method without raising."""
     chain = MiddlewareChain([])
@@ -71,14 +73,13 @@ async def test_empty_chain_all_run_methods_are_no_ops():
     assert await chain.run_pre_execute(message) is None
     assert await chain.run_post_execute(message, result="ok") is None
     assert await chain.run_on_error(message, exception=exc) is None
-    assert await chain.run_on_retry(
-        message, exception=exc, retry_count=1, delay=0.5
-    ) is None
+    assert await chain.run_on_retry(message, exception=exc, retry_count=1, delay=0.5) is None
 
 
 # ---------------------------------------------------------------------------
 # Helper: recording middleware for order-based tests
 # ---------------------------------------------------------------------------
+
 
 class _RecordingMiddleware(Middleware):
     """Records hook invocations to a shared list as (label, hook_name) tuples."""
@@ -118,6 +119,7 @@ class _RecordingMiddleware(Middleware):
 # 3. pre_execute order: 3 middlewares registered -> called in registration order
 # ---------------------------------------------------------------------------
 
+
 async def test_run_pre_execute_calls_in_registration_order():
     calls: list[tuple[str, str]] = []
     a = _RecordingMiddleware("A", calls)
@@ -137,6 +139,7 @@ async def test_run_pre_execute_calls_in_registration_order():
 # ---------------------------------------------------------------------------
 # 4. post_execute reverse order: 3 middlewares -> called in reverse (C, B, A)
 # ---------------------------------------------------------------------------
+
 
 async def test_run_post_execute_calls_in_reverse_order():
     calls: list[tuple[str, str]] = []
@@ -158,6 +161,7 @@ async def test_run_post_execute_calls_in_reverse_order():
 # 5. on_error reverse order
 # ---------------------------------------------------------------------------
 
+
 async def test_run_on_error_calls_in_reverse_order():
     calls: list[tuple[str, str]] = []
     a = _RecordingMiddleware("A", calls)
@@ -178,6 +182,7 @@ async def test_run_on_error_calls_in_reverse_order():
 # 6. on_retry receives retry_count and delay
 # ---------------------------------------------------------------------------
 
+
 async def test_run_on_retry_forwards_retry_count_and_delay():
     calls: list = []
     a = _RecordingMiddleware("A", calls)
@@ -185,9 +190,7 @@ async def test_run_on_retry_forwards_retry_count_and_delay():
 
     chain = MiddlewareChain([a, b])
     exc = RuntimeError("boom")
-    await chain.run_on_retry(
-        {"task": {"id": "t1"}}, exception=exc, retry_count=3, delay=2.5
-    )
+    await chain.run_on_retry({"task": {"id": "t1"}}, exception=exc, retry_count=3, delay=2.5)
 
     # Reverse order and payload carries retry_count + delay.
     assert calls == [
@@ -199,6 +202,7 @@ async def test_run_on_retry_forwards_retry_count_and_delay():
 # ---------------------------------------------------------------------------
 # 7. Error in post_execute-hook -> logged, next hook still runs
 # ---------------------------------------------------------------------------
+
 
 class _RaisingMiddleware(Middleware):
     """Always raises inside a named hook."""
@@ -236,11 +240,9 @@ async def test_error_in_post_execute_is_swallowed_and_next_hook_runs(swarmq_logs
     ]
     # The raiser's failure must have been logged at error level with the hook name.
     errors = [e for e in captured if e.get("log_level") == "error"]
-    assert any(
-        e.get("event") == "middleware_hook_failed"
-        and e.get("hook") == "post_execute"
-        for e in errors
-    ), f"expected middleware_hook_failed log, got: {captured}"
+    assert any(e.get("event") == "middleware_hook_failed" and e.get("hook") == "post_execute" for e in errors), (
+        f"expected middleware_hook_failed log, got: {captured}"
+    )
 
 
 @pytest.mark.timeout(5)
@@ -260,6 +262,7 @@ async def test_middleware_hook_failure_logs_error_fields(swarmq_logs):
 # ---------------------------------------------------------------------------
 # 8. Error in pre_enqueue -> propagates (raises)
 # ---------------------------------------------------------------------------
+
 
 async def test_error_in_pre_enqueue_propagates():
     calls: list[tuple[str, str]] = []
@@ -281,6 +284,7 @@ async def test_error_in_pre_enqueue_propagates():
 # 10. U11: workflow_step_message_context liefert einen MessageContext mit
 #     festem delivery_mode="at_least_once" und den Workflow-Schluesseln
 # ---------------------------------------------------------------------------
+
 
 async def test_integration_counter_tracks_full_hook_lifecycle():
     """Walk through every chain method and verify counters + per-hook ordering."""
@@ -316,9 +320,7 @@ async def test_integration_counter_tracks_full_hook_lifecycle():
             "on_error",
             "on_retry",
         ):
-            assert pairs[(label, hook)] == 1, (
-                f"{label}.{hook} should be invoked exactly once"
-            )
+            assert pairs[(label, hook)] == 1, f"{label}.{hook} should be invoked exactly once"
 
     # Forward hooks: pre_enqueue, pre_execute -> A, B, C.
     pre_enqueue_order = [c[0] for c in calls if c[1] == "pre_enqueue"]
@@ -341,9 +343,13 @@ async def test_workflow_step_message_context_pins_delivery_mode_and_workflow_key
     from swarmq.middleware import workflow_step_message_context
 
     ctx = workflow_step_message_context(
-        task_id="t1", task_name="echo", queue="default",
-        args=[1, 2], kwargs={"k": "v"},
-        workflow_id="wf-1", step_path="/1/g0",
+        task_id="t1",
+        task_name="echo",
+        queue="default",
+        args=[1, 2],
+        kwargs={"k": "v"},
+        workflow_id="wf-1",
+        step_path="/1/g0",
     )
     assert ctx["delivery_mode"] == "at_least_once"
     assert ctx["task_id"] == "t1"

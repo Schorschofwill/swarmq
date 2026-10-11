@@ -175,7 +175,12 @@ def child_process(monkeypatch: pytest.MonkeyPatch, events: list[Any]) -> Iterato
 
 def _job(task_id: str = "t1", **fields: Any) -> ComputeJob:
     return ComputeJob(
-        task_id=task_id, task_name="logging_task", queue="q", args=(task_id,), kwargs={}, **fields,
+        task_id=task_id,
+        task_name="logging_task",
+        queue="q",
+        args=(task_id,),
+        kwargs={},
+        **fields,
     )
 
 
@@ -194,12 +199,14 @@ def _register_logging_task() -> None:
             return "ok"
 
 
-_FILE_CONFIG = json.dumps({
-    "version": 1,
-    "disable_existing_loggers": False,
-    "handlers": {"collect": {"()": _COLLECTING}},
-    "root": {"level": "INFO", "handlers": ["collect"]},
-})
+_FILE_CONFIG = json.dumps(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"collect": {"()": _COLLECTING}},
+        "root": {"level": "INFO", "handlers": ["collect"]},
+    }
+)
 
 
 @pytest.mark.timeout(5)
@@ -251,7 +258,8 @@ def _kinds(events: list[Any]) -> list[str]:
 @pytest.mark.timeout(5)
 @pytest.mark.usefixtures("flush_spy")
 def test_child_once_flushes_the_task_log_before_sending_the_result(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
     _register_logging_task()
@@ -277,7 +285,8 @@ def test_child_once_ends_with_logging_shutdown(events: list[Any]) -> None:
 @pytest.mark.timeout(5)
 @pytest.mark.usefixtures("flush_spy")
 def test_child_loop_flushes_each_jobs_log_before_its_result(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
     import multiprocessing as mp
@@ -292,9 +301,14 @@ def test_child_loop_flushes_each_jobs_log_before_its_result(
 
     assert _kinds(events) == [
         "ready",
-        "stderr:task_line j1", "flush", "result:j1",
-        "stderr:task_line j2", "flush", "result:j2",
-        "flush", "logging.shutdown",
+        "stderr:task_line j1",
+        "flush",
+        "result:j1",
+        "stderr:task_line j2",
+        "flush",
+        "result:j2",
+        "flush",
+        "logging.shutdown",
     ]
     job_r.close()
     job_w.close()
@@ -302,9 +316,11 @@ def test_child_loop_flushes_each_jobs_log_before_its_result(
 
 @pytest.mark.timeout(5)
 def test_builtin_child_takes_level_and_format_from_the_job(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
+
     class Levels(Task):
         task_info = TaskInfo(name="logging_task", queues=["q"])
 
@@ -322,7 +338,6 @@ def test_builtin_child_takes_level_and_format_from_the_job(
     assert not lines[0].startswith("{")  # human, nicht JSON
 
 
-
 @pytest.mark.timeout(5)
 def test_inherited_app_root_handlers_win_and_the_child_reports_it(events: list[Any]) -> None:
     _forkserver_root()
@@ -336,7 +351,6 @@ def test_inherited_app_root_handlers_win_and_the_child_reports_it(events: list[A
     assert [r.getMessage() for r in RECORDS] == ["task_line t1"]
     reports = [e for e in events if isinstance(e, tuple) and e[0] == "logging_reconfigured_by_app"]
     assert reports == [("logging_reconfigured_by_app", {"reenabled_loggers": 0})]
-
 
 
 @pytest.mark.timeout(5)
@@ -356,10 +370,10 @@ def test_app_structlog_configuration_from_the_preload_survives_the_child_setup(
     assert structlog.get_config()["processors"] == [app_processor]
 
 
-
 @pytest.mark.timeout(5)
 def test_child_reenables_swarmq_loggers_the_app_disabled_and_counts_them(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
     _register_logging_task()
@@ -367,7 +381,8 @@ def test_child_reenables_swarmq_loggers_the_app_disabled_and_counts_them(
     muted = logging.getLogger("swarmq.tests.child_muted")
     monkeypatch.setattr(muted, "disabled", True)  # dictConfig der App beim Vorladen
     disabled = sum(
-        1 for name, lg in logging.Logger.manager.loggerDict.items()
+        1
+        for name, lg in logging.Logger.manager.loggerDict.items()
         if isinstance(lg, logging.Logger) and lg.disabled and name.startswith("swarmq")
     )
 
@@ -376,7 +391,6 @@ def test_child_reenables_swarmq_loggers_the_app_disabled_and_counts_them(
     assert not muted.disabled
     reports = [e[1] for e in events if isinstance(e, tuple) and e[0] == "logging_reconfigured_by_app"]
     assert reports == [{"reenabled_loggers": disabled}]
-
 
 
 @pytest.mark.timeout(5)
@@ -397,7 +411,6 @@ def test_user_structlog_reaches_the_inherited_app_handlers(events: list[Any]) ->
     assert [(r.getMessage(), r.__dict__.get("tag")) for r in RECORDS] == [("user_evt", "t1")]
 
 
-
 @pytest.mark.timeout(5)
 def test_inherited_app_handlers_in_file_mode_leave_structlog_unconfigured(events: list[Any]) -> None:
     _forkserver_root()
@@ -410,10 +423,10 @@ def test_inherited_app_handlers_in_file_mode_leave_structlog_unconfigured(events
     assert not structlog.is_configured()
 
 
-
 @pytest.mark.timeout(5)
 def test_inherited_app_handlers_still_get_the_logger_levels_of_the_job(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
     _register_logging_task()
@@ -424,7 +437,6 @@ def test_inherited_app_handlers_still_get_the_logger_levels_of_the_job(
     child.child_once(_job(logger_levels=(("app.child_noisy", "ERROR"),)), _Channel(events), 0)
 
     assert noisy.level == logging.ERROR
-
 
 
 class _ThreadRecordingHandler(logging.Handler):
@@ -461,8 +473,11 @@ def test_swarmq_logs_reach_inherited_app_handlers_via_the_queue_before_the_resul
     child.child_once(_job(), _Channel(events), 0)
 
     assert _kinds(events)[-5:] == [
-        f"app:swarmq_in_task@{LISTENER_THREAD_NAME}", "flush", "result:t1",
-        "flush", "logging.shutdown",
+        f"app:swarmq_in_task@{LISTENER_THREAD_NAME}",
+        "flush",
+        "result:t1",
+        "flush",
+        "logging.shutdown",
     ]
 
 
@@ -535,14 +550,17 @@ class _BlockedStderr(io.StringIO):
 
 @pytest.mark.timeout(5)
 def test_a_blocked_stderr_delays_the_result_at_most_by_the_drain_timeout(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
     _register_logging_task()
     stderr = _BlockedStderr()
     monkeypatch.setattr("sys.stderr", stderr)
     monkeypatch.setattr(
-        child, "exit_if_log_thread_stuck", lambda code, exc=None: events.append(("exit", code)),
+        child,
+        "exit_if_log_thread_stuck",
+        lambda code, exc=None: events.append(("exit", code)),
         raising=False,
     )
     done = threading.Event()
@@ -574,7 +592,8 @@ class _BrokenChannel(_Channel):
 
 @pytest.mark.timeout(5)
 def test_the_hard_exit_gets_the_exception_the_child_ends_with(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _forkserver_root()
     _register_logging_task()
@@ -610,7 +629,8 @@ def _reports(events: list[Any]) -> list[tuple[str, Any]]:
 
 @pytest.mark.timeout(5)
 def test_basicconfig_next_to_the_sentinel_has_no_effect_and_the_child_configures(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _sentinel_root()
     _register_logging_task()
@@ -628,7 +648,8 @@ def test_basicconfig_next_to_the_sentinel_has_no_effect_and_the_child_configures
 
 @pytest.mark.timeout(5)
 def test_a_handler_added_next_to_the_sentinel_is_kept_and_reported(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _sentinel_root()
     _register_logging_task()
@@ -659,12 +680,14 @@ def test_with_the_sentinel_the_log_config_of_the_job_applies(events: list[Any]) 
 
 def _app_dictconfig(handlers: dict[str, Any], root_handlers: list[str]) -> None:
     """dictConfig der App beim Vorladen im Forkserver: ersetzt Root."""
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "handlers": handlers,
-        "root": {"level": "WARNING", "handlers": root_handlers},
-    })
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": handlers,
+            "root": {"level": "WARNING", "handlers": root_handlers},
+        }
+    )
 
 
 @pytest.mark.timeout(5)
@@ -712,14 +735,16 @@ def test_without_swarmq_setup_an_inherited_sentinel_is_removed(events: list[Any]
 
 @pytest.mark.timeout(5)
 def test_next_to_the_sentinel_disabled_swarmq_loggers_are_reenabled_and_reported(
-    events: list[Any], monkeypatch: pytest.MonkeyPatch,
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _sentinel_root()
     _register_logging_task()
     muted = logging.getLogger("swarmq.tests.child_muted_u9")
     monkeypatch.setattr(muted, "disabled", True)  # dictConfig der App ohne Root
     disabled = sum(
-        1 for name, lg in logging.Logger.manager.loggerDict.items()
+        1
+        for name, lg in logging.Logger.manager.loggerDict.items()
         if isinstance(lg, logging.Logger) and lg.disabled and name.startswith("swarmq")
     )
 
@@ -746,7 +771,8 @@ def test_an_unstarted_app_queue_listener_next_to_the_sentinel_is_started(events:
 
 @pytest.mark.timeout(5)
 def test_the_log_config_of_the_job_does_not_close_an_app_handler_next_to_the_sentinel(
-    events: list[Any], tmp_path: Any,
+    events: list[Any],
+    tmp_path: Any,
 ) -> None:
     root = _sentinel_root()
     _register_logging_task()
@@ -793,7 +819,8 @@ def _app_replaces_root() -> list[tuple[str, Any]]:
 
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize(
-    "preload", [_app_basicconfig, _app_adds_a_handler, _app_replaces_root],
+    "preload",
+    [_app_basicconfig, _app_adds_a_handler, _app_replaces_root],
     ids=["only-sentinel", "handler-next-to-it", "sentinel-replaced"],
 )
 def test_the_forked_compute_child_tells_the_same_cases_apart(preload: Any) -> None:

@@ -47,12 +47,8 @@ from swarmq.scheduler import cron_time, next_fire_times
 BERLIN = "Europe/Berlin"
 
 
-def _iso(cron: str, start: datetime, *, timezone: str | None = None,
-         count: int) -> list[str]:
-    return [
-        d.isoformat()
-        for d in next_fire_times(cron, start, timezone=timezone, count=count)
-    ]
+def _iso(cron: str, start: datetime, *, timezone: str | None = None, count: int) -> list[str]:
+    return [d.isoformat() for d in next_fire_times(cron, start, timezone=timezone, count=count)]
 
 
 class TestNextFireTimes:
@@ -149,9 +145,7 @@ class TestNextFireTimes:
         sonst 3600 croniter-Schritte (Laufzeit, keine Iterationsgrenze)."""
         start = datetime(2026, 10, 25, 2, 59, 58, tzinfo=ZoneInfo(BERLIN))
 
-        with patch.object(
-            cron_time, "croniter", wraps=cron_time.croniter
-        ) as spy:
+        with patch.object(cron_time, "croniter", wraps=cron_time.croniter) as spy:
             result = _iso("* 2 * * * *", start, timezone=BERLIN, count=3)
 
         assert result == [
@@ -255,7 +249,6 @@ class TestNextFireTimes:
         assert old[4] != new[4]
         assert new[4].isoformat() == "2026-10-25T03:00:00+01:00"
 
-
     def test_invalid_expression_raises_croniter_error(self) -> None:
         start = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
 
@@ -276,9 +269,7 @@ class TestNextFireMs:
         ref_ms = int(start.timestamp() * 1000)
 
         expected = next_fire_times("30 2 * * *", start, timezone=BERLIN)[0]
-        assert cron_time.next_fire_ms("30 2 * * *", BERLIN, ref_ms) == int(
-            expected.timestamp() * 1000
-        )
+        assert cron_time.next_fire_ms("30 2 * * *", BERLIN, ref_ms) == int(expected.timestamp() * 1000)
 
     def test_lord_howe_half_hour_spring_gap_with_star_hour(self) -> None:
         """R8: croniter-Verhalten in der 30-Minuten-Luecke festgeschrieben --

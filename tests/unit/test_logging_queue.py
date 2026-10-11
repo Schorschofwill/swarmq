@@ -137,9 +137,7 @@ def test_prepare_passes_record_through_and_listener_thread_formats():
     try:
         raise ValueError("boom")
     except ValueError:
-        record = logging.LogRecord(
-            "test", logging.ERROR, __file__, 1, "msg", None, sys.exc_info()
-        )
+        record = logging.LogRecord("test", logging.ERROR, __file__, 1, "msg", None, sys.exc_info())
 
     prepared = handler.prepare(record)
     assert prepared is record
@@ -351,9 +349,7 @@ def test_concurrent_first_record_and_start_run_exactly_one_listener(
         threading.Thread(target=handler.handle, args=(_record(),)),
         threading.Thread(target=handler.listener.start),
     ]
-    monkeypatch.setattr(
-        "swarmq.logging_queue.threading", types.SimpleNamespace(Thread=_GatedThread)
-    )
+    monkeypatch.setattr("swarmq.logging_queue.threading", types.SimpleNamespace(Thread=_GatedThread))
     for writer in writers:
         writer.start()
     for writer in writers:
@@ -627,9 +623,7 @@ class _Blocked(types.SimpleNamespace):
     recorder: _RecordingHandler
 
 
-def _blocked_listener_with_full_queue(
-    monkeypatch: pytest.MonkeyPatch, *, json_mode: bool = False
-) -> _Blocked:
+def _blocked_listener_with_full_queue(monkeypatch: pytest.MonkeyPatch, *, json_mode: bool = False) -> _Blocked:
     """Listener haengt im ``write`` auf ``sys.stderr``, die Queue ist voll.
     Hinter dem Stream sammelt ein zweiter Ziel-Handler die Records."""
     stream = _BlockingStream()
@@ -637,9 +631,7 @@ def _blocked_listener_with_full_queue(
     target = logging.StreamHandler(stream)
     target.setFormatter(build_formatter(json_mode, colors=False))
     recorder = _RecordingHandler()
-    handler = _StructlogQueueHandler(
-        queue.Queue(maxsize=1), target, recorder, json=json_mode
-    )
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target, recorder, json=json_mode)
     log = logging.Logger("swarmq.tests.u3")
     log.addHandler(handler)
     log.warning("first")
@@ -717,7 +709,10 @@ def test_a_drop_with_closed_stderr_neither_raises_nor_goes_uncounted(
     blocker = _BlockingHandler()
     recorder = _RecordingHandler()
     handler = _StructlogQueueHandler(
-        queue.Queue(maxsize=1), blocker, recorder, logging.StreamHandler(sys.stderr),
+        queue.Queue(maxsize=1),
+        blocker,
+        recorder,
+        logging.StreamHandler(sys.stderr),
     )
     log = logging.Logger("swarmq.tests.u3")
     log.addHandler(handler)
@@ -778,12 +773,8 @@ class _GateHandler(_RecordingHandler):
 
     def __init__(self) -> None:
         super().__init__()
-        self.entered: collections.defaultdict[str, threading.Event] = (
-            collections.defaultdict(threading.Event)
-        )
-        self.release: collections.defaultdict[str, threading.Event] = (
-            collections.defaultdict(threading.Event)
-        )
+        self.entered: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
+        self.release: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
         self.seen = threading.Condition()
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -797,9 +788,7 @@ class _GateHandler(_RecordingHandler):
 
     def wait_for(self, msg: str) -> bool:
         with self.seen:
-            return self.seen.wait_for(
-                lambda: msg in [r.getMessage() for r in self.records], timeout=1
-            )
+            return self.seen.wait_for(lambda: msg in [r.getMessage() for r in self.records], timeout=1)
 
 
 def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:

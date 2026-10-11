@@ -366,9 +366,7 @@ async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43
         async def run(self) -> str:
             return "quick"
 
-    app = SwarmQ(
-        broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2, consumer_watch_interval_s=0.5
-    )
+    app = SwarmQ(broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2, consumer_watch_interval_s=0.5)
     try:
         async with rabbitmq43.consumer_timeout_policy(queue, CONSUMER_TIMEOUT_MS), app:
             await app.broker.declare_queue(queue)  # sonst geht der Publish ins Leere
@@ -466,9 +464,7 @@ async def test_43_late_ack_waits_for_own_cancel_and_wakes_no_zombie(rabbitmq43, 
 
 
 @pytest.mark.timeout(30)
-async def test_42_late_ack_after_channel_close_is_contained_and_new_channel_stays_open(
-    rabbitmq42, broker_consumer_on
-):
+async def test_42_late_ack_after_channel_close_is_contained_and_new_channel_stays_open(rabbitmq42, broker_consumer_on):
     c = await broker_consumer_on(rabbitmq42)
     await c.broker.publish(c.queue, b"A")
     first = await c.next_delivery()
@@ -531,8 +527,12 @@ async def test_long_task_runs_exactly_once_across_the_consumer_timeout(any_rabbi
                 return "quick"
 
         app = SwarmQ(
-            broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2,
-            consumer_watch_interval_s=0.5, execution_guard_ttl_s=2.0,
+            broker,
+            ValkeyBackend(valkey_url),
+            queues=[queue],
+            concurrency=2,
+            consumer_watch_interval_s=0.5,
+            execution_guard_ttl_s=2.0,
         )
         try:
             async with node.consumer_timeout_policy(queue, CONSUMER_TIMEOUT_MS), app:

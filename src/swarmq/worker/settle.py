@@ -35,7 +35,8 @@ def contain_delivery_errors() -> Iterator[None]:
         yield
     except BrokerConnectionError as exc:
         logger.warning(
-            "delivery_settle_failed", **_error_fields(exc),
+            "delivery_settle_failed",
+            **_error_fields(exc),
             hint="delivery not settled; the broker redelivers the unacknowledged message",
         )
     except Exception as exc:

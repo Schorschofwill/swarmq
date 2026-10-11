@@ -104,9 +104,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         with _LISTENER_LOCK:
             if self.running:
                 return
-            self._thread = thread = threading.Thread(
-                target=self._serve, name=LISTENER_THREAD_NAME, daemon=True
-            )
+            self._thread = thread = threading.Thread(target=self._serve, name=LISTENER_THREAD_NAME, daemon=True)
             thread.start()
 
     def _serve(self) -> None:
@@ -252,7 +250,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
             return
         try:
             self.queue.put_nowait(record)
-        except (queue.Full, queue.ShutDown):
+        except queue.Full, queue.ShutDown:
             self._drop()
 
     def _in_reserve(self) -> bool:
@@ -386,7 +384,10 @@ _OPTIN_TAKEOVER = False
 
 
 def _enable_log_queue(
-    level: str | int, *, json: bool = False, queue_size: int = 10_000,
+    level: str | int,
+    *,
+    json: bool = False,
+    queue_size: int = 10_000,
     drain_timeout: float | None = None,
 ) -> bool:
     """Leitet ``swarmq.*`` ueber eine eigene Hintergrund-Queue (R5, KTD10).
@@ -480,8 +481,10 @@ def _finish_draining(draining: _Draining, deadline: Deadline, timeout: float) ->
 def _finish_in_background(draining: _Draining, deadline: Deadline, timeout: float) -> None:
     """:func:`_finish_draining` in einem eigenen Thread."""
     threading.Thread(
-        target=_finish_draining, args=(draining, deadline, timeout),
-        name="swarmq-log-drain", daemon=True,
+        target=_finish_draining,
+        args=(draining, deadline, timeout),
+        name="swarmq-log-drain",
+        daemon=True,
     ).start()
 
 
@@ -594,7 +597,9 @@ def _drain(deadline: Deadline, seconds: float) -> None:
     if given_up or file_given_up or lost:
         handlers = [*(d.handler for d in given_up), *(h for h, _ in discarded)]
         write_drain_notice(
-            lost, seconds, json=any(h is not None and h.json for h in handlers),
+            lost,
+            seconds,
+            json=any(h is not None and h.json for h in handlers),
         )
 
 
@@ -627,7 +632,9 @@ class _Draining:
     """Ein geschlossener Listener, dessen Thread seine alte Queue leert."""
 
     def __init__(
-        self, listener: _SwarmqQueueListener, thread: threading.Thread,
+        self,
+        listener: _SwarmqQueueListener,
+        thread: threading.Thread,
         handler: _StructlogQueueHandler | None,
     ) -> None:
         self.listener = listener
@@ -670,8 +677,10 @@ class _Draining:
 
 
 def _close(
-    listener: _SwarmqQueueListener, handler: _StructlogQueueHandler | None,
-    *, swap: bool = True,
+    listener: _SwarmqQueueListener,
+    handler: _StructlogQueueHandler | None,
+    *,
+    swap: bool = True,
 ) -> _Draining | None:
     """Schliesst die Queue eines laufenden Listeners, ohne zu blockieren
     (``Queue.shutdown``). Zuvor bekommt sein Handler eine frische Queue und

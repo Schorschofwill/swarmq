@@ -32,9 +32,7 @@ def _unique_queue() -> str:
 # ---------------------------------------------------------------------------
 
 
-async def test_middleware_pre_and_post_execute_fire(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_middleware_pre_and_post_execute_fire(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_mw_ok_{uuid.uuid4().hex[:8]}"
 
@@ -107,9 +105,7 @@ async def test_middleware_pre_and_post_execute_fire(
 # ---------------------------------------------------------------------------
 
 
-async def test_middleware_on_error_fires_for_failing_task(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_middleware_on_error_fires_for_failing_task(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_mw_err_{uuid.uuid4().hex[:8]}"
 
@@ -123,9 +119,7 @@ async def test_middleware_on_error_fires_for_failing_task(
             raise ValueError("boom")
 
     class ErrorTrackingMiddleware(Middleware):
-        async def on_error(
-            self, message: dict, exception: BaseException
-        ) -> None:
+        async def on_error(self, message: dict, exception: BaseException) -> None:
             captured.append((dict(message), exception))
             on_error_called.set()
 
@@ -167,9 +161,7 @@ async def test_middleware_on_error_fires_for_failing_task(
 # ---------------------------------------------------------------------------
 
 
-async def test_signal_task_completed_handler_receives_kwargs(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_signal_task_completed_handler_receives_kwargs(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_sig_ok_{uuid.uuid4().hex[:8]}"
 
@@ -227,9 +219,7 @@ async def test_signal_task_completed_handler_receives_kwargs(
 # ---------------------------------------------------------------------------
 
 
-async def test_pre_enqueue_exception_prevents_enqueue(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_pre_enqueue_exception_prevents_enqueue(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_mw_block_{uuid.uuid4().hex[:8]}"
 
@@ -271,9 +261,7 @@ async def test_pre_enqueue_exception_prevents_enqueue(
             # If the enqueue was truly prevented, the worker never executes.
             # Wait a short moment and assert the run() method never fired.
             await asyncio.sleep(0.5)
-            assert not worker_received.is_set(), (
-                "Task was enqueued despite pre_enqueue raising"
-            )
+            assert not worker_received.is_set(), "Task was enqueued despite pre_enqueue raising"
         finally:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

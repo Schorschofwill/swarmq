@@ -59,6 +59,7 @@ class TaskIQRabbitMQSystem:
 
         try:
             import redis.asyncio as aioredis
+
             conn = aioredis.from_url("redis://localhost:6389/1")
             await conn.flushdb()
             await conn.aclose()
@@ -93,7 +94,7 @@ class TaskIQRabbitMQSystem:
 
         try:
             await asyncio.wait_for(self._worker_task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError, asyncio.CancelledError:
             self._worker_task.cancel()
             try:
                 await self._worker_task
@@ -111,9 +112,7 @@ class TaskIQRabbitMQSystem:
         result_handle = await task_func.kiq(**payload)
         return result_handle.task_id
 
-    async def get_result(
-        self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01
-    ) -> Any:
+    async def get_result(self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01) -> Any:
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
             is_ready = await broker.result_backend.is_result_ready(task_id)

@@ -55,7 +55,9 @@ def run_multi_process_worker(
     # Konfigurationsfehler, den der Aufrufer danach loggte, blieb in der
     # Queue eines gestoppten Listeners liegen und erreichte niemanden.
     return _run_multi_process_worker_configured(
-        args, admin_factory=admin_factory, setpoint_store_factory=setpoint_store_factory,
+        args,
+        admin_factory=admin_factory,
+        setpoint_store_factory=setpoint_store_factory,
         logging_settings=logging_settings or resolve_logging_settings(args, os.environ, None),
     )
 
@@ -138,20 +140,21 @@ def _run_multi_process_worker_configured(
         if admin_factory is None:
             # U21 (KTD6): die Broker-Implementierung kommt als Factory aus
             # der CLI; ohne Factory kann der Autoscale-Sampler nicht messen.
-            raise ConfigurationError(
-                "--autoscale requires a broker admin factory (CLI wiring)"
-            )
+            raise ConfigurationError("--autoscale requires a broker admin factory (CLI wiring)")
         queue_depth_fn = _make_queue_depth_sampler(admin_factory, list(args.queues))
 
     # Resolve SwarmQConfig.shutdown_timeout once in the parent and pass it
     # as the total shutdown budget from SIGTERM (BZ-18, Plan 0.12.0, MR 17);
     # the worker subprocess derives its drain from the same value.
     from swarmq.config import SwarmQConfig
+
     # Mit den aufgeloesten Settings ueberspringt SwarmQConfig die Logging-Env:
     # ein ungueltiges SWARMQ_LOG_FORMAT, das ``--log-format`` schon
     # ueberstimmt hat, braeche sonst hier mit 78 ab.
     sq_config = SwarmQConfig(
-        broker_url=broker_url, backend_url=backend_url, logging_settings=logging_settings,
+        broker_url=broker_url,
+        backend_url=backend_url,
+        logging_settings=logging_settings,
     )
     shutdown_grace_s = float(sq_config.shutdown_timeout)
 

@@ -23,9 +23,9 @@ from swarmq.contracts import LockToken
 from swarmq.exceptions import BackendConnectionError, BackendResponseError
 
 
-def _make_lock_manager_with_scripts(acquire_returns=None, release_returns=None,
-                                    renew_returns=None,
-                                    time_returns=(1, 0)):
+def _make_lock_manager_with_scripts(
+    acquire_returns=None, release_returns=None, renew_returns=None, time_returns=(1, 0)
+):
     """Build a LockManager whose register_script returns mockable scripts."""
     client = MagicMock()
     client.time = AsyncMock(return_value=time_returns)
@@ -33,9 +33,7 @@ def _make_lock_manager_with_scripts(acquire_returns=None, release_returns=None,
     release_script = AsyncMock(return_value=release_returns)
     renew_script = AsyncMock(return_value=renew_returns)
     # register_script is sync and called 3x in __init__ (acquire, release, renew)
-    client.register_script = MagicMock(
-        side_effect=[acquire_script, release_script, renew_script]
-    )
+    client.register_script = MagicMock(side_effect=[acquire_script, release_script, renew_script])
     return LockManager(client), acquire_script, release_script, renew_script
 
 
@@ -94,7 +92,6 @@ class TestLockManagerOutageVersusErrorReply:
 
         with pytest.raises(BackendResponseError, match="lock acquire failed"):
             await manager.acquire("name", "tok", 60_000, 1)
-
 
     async def test_acquire_transport_error_is_a_plain_outage(self):
         """Liste 2."""
@@ -162,25 +159,19 @@ class TestLockManagerRenew:
 
     @pytest.mark.asyncio
     async def test_renew_returns_true_on_one(self):
-        manager, _, _, renew_script = _make_lock_manager_with_scripts(
-            renew_returns=1
-        )
+        manager, _, _, renew_script = _make_lock_manager_with_scripts(renew_returns=1)
         assert await manager.renew("name", "tok", 30_000) is True
         renew_script.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_renew_returns_false_on_zero(self):
-        manager, _, _, _renew_script = _make_lock_manager_with_scripts(
-            renew_returns=0
-        )
+        manager, _, _, _renew_script = _make_lock_manager_with_scripts(renew_returns=0)
         # Foreign owner OR key absent → script returns 0 → renew returns False
         assert await manager.renew("name", "tok", 30_000) is False
 
     @pytest.mark.asyncio
     async def test_renew_passes_lock_key_and_args(self):
-        manager, _, _, renew_script = _make_lock_manager_with_scripts(
-            renew_returns=1
-        )
+        manager, _, _, renew_script = _make_lock_manager_with_scripts(renew_returns=1)
         await manager.renew("leader", "owner-42", 5_000)
         renew_script.assert_awaited_once_with(
             keys=["sq:lock:leader"],
@@ -189,18 +180,14 @@ class TestLockManagerRenew:
 
     @pytest.mark.asyncio
     async def test_renew_wraps_runtime_error(self):
-        manager, _, _, renew_script = _make_lock_manager_with_scripts(
-            renew_returns=1
-        )
+        manager, _, _, renew_script = _make_lock_manager_with_scripts(renew_returns=1)
         renew_script.side_effect = RuntimeError("connection reset")
         with pytest.raises(BackendConnectionError, match="lock renew failed"):
             await manager.renew("name", "tok", 30_000)
 
     @pytest.mark.asyncio
     async def test_renew_passes_through_existing_backend_connection_error(self):
-        manager, _, _, renew_script = _make_lock_manager_with_scripts(
-            renew_returns=1
-        )
+        manager, _, _, renew_script = _make_lock_manager_with_scripts(renew_returns=1)
         original = BackendConnectionError("inner")
         renew_script.side_effect = original
         with pytest.raises(BackendConnectionError) as exc_info:

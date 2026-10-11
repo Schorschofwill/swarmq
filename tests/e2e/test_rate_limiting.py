@@ -26,9 +26,7 @@ def _unique_queue() -> str:
     return f"e2e-rl-{uuid.uuid4().hex[:12]}"
 
 
-async def test_rate_limited_task_delays_but_never_drops(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_rate_limited_task_delays_but_never_drops(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_rl_{uuid.uuid4().hex[:8]}"
     total_messages = 8
@@ -40,9 +38,7 @@ async def test_rate_limited_task_delays_but_never_drops(
     rate_limited_count = 0
 
     class RateLimitedEchoTask(Task):
-        task_info = TaskInfo(
-            name=task_name, queues=[queue], rate_limit=rate_limit
-        )
+        task_info = TaskInfo(name=task_name, queues=[queue], rate_limit=rate_limit)
 
         async def run(self, idx: int) -> int:
             executed_task_ids.append(idx)
@@ -100,6 +96,5 @@ async def test_rate_limited_task_delays_but_never_drops(
     # Exact count depends on scheduler timing; the lower bound
     # (total - limit_per_window) is safe.
     assert rate_limited_count >= total_messages - 3, (
-        f"expected at least {total_messages - 3} rate-limit hits, "
-        f"saw {rate_limited_count}"
+        f"expected at least {total_messages - 3} rate-limit hits, saw {rate_limited_count}"
     )

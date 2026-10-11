@@ -62,13 +62,9 @@ def _parse_port(raw: str, env_var: str) -> int:
     try:
         port = int(raw)
     except ValueError as exc:
-        raise ConfigurationError(
-            f"{env_var} must be an integer, got {raw!r}"
-        ) from exc
+        raise ConfigurationError(f"{env_var} must be an integer, got {raw!r}") from exc
     if not 1 <= port <= 65535:
-        raise ConfigurationError(
-            f"{env_var} must be in 1..65535, got {port}"
-        )
+        raise ConfigurationError(f"{env_var} must be in 1..65535, got {port}")
     return port
 
 
@@ -82,9 +78,7 @@ def _parse_int(raw: str, env_var: str) -> int:
     try:
         return int(raw)
     except ValueError as exc:
-        raise ConfigurationError(
-            f"{env_var} must be an integer, got {raw!r}"
-        ) from exc
+        raise ConfigurationError(f"{env_var} must be an integer, got {raw!r}") from exc
 
 
 def _parse_float(raw: str, env_var: str) -> float:
@@ -92,18 +86,14 @@ def _parse_float(raw: str, env_var: str) -> float:
     try:
         return float(raw)
     except ValueError as exc:
-        raise ConfigurationError(
-            f"{env_var} must be a number, got {raw!r}"
-        ) from exc
+        raise ConfigurationError(f"{env_var} must be a number, got {raw!r}") from exc
 
 
 def _parse_log_format(raw: str, env_var: str) -> bool:
     """``human``/``json`` als Wert fuer ``log_json`` (KTD8)."""
     log_format = raw.strip().lower()
     if log_format not in VALID_LOG_FORMATS:
-        raise ConfigurationError(
-            f"{env_var} must be one of {list(VALID_LOG_FORMATS)}, got {raw!r}"
-        )
+        raise ConfigurationError(f"{env_var} must be one of {list(VALID_LOG_FORMATS)}, got {raw!r}")
     return log_format == "json"
 
 
@@ -414,10 +404,18 @@ class SwarmQConfig(ConfigValidation):
     #: setzt. ``log_queue`` gehoert nicht dazu: ``LoggingSettings`` kennt den
     #: eingebetteten Opt-in nicht, ``SWARMQ_LOG_QUEUE`` bleibt also die einzige
     #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
-    _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset({
-        "log_level", "log_json", "log_config", "configure_logging",
-        "logger_levels", "log_queue_size", "log_lifecycle_level", "log_drain_timeout",
-    })
+    _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "log_level",
+            "log_json",
+            "log_config",
+            "configure_logging",
+            "logger_levels",
+            "log_queue_size",
+            "log_lifecycle_level",
+            "log_drain_timeout",
+        }
+    )
 
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
         ("SWARMQ_BROKER_URL", "broker_url", "str"),
@@ -636,7 +634,8 @@ class SwarmQConfig(ConfigValidation):
 
         if self.execution_guard_done_ttl_s is None:
             self.execution_guard_done_ttl_s = max(
-                max(self.retry_max_delay, self.consumer_timeout_s) + 300.0, self.execution_guard_ttl_s,
+                max(self.retry_max_delay, self.consumer_timeout_s) + 300.0,
+                self.execution_guard_ttl_s,
             )
 
         self._validate_core()
@@ -644,8 +643,6 @@ class SwarmQConfig(ConfigValidation):
         self._validate_scheduler_prune()
         self._validate_execution_guard()
         try:
-            self.scheduler_timezone = normalize_timezone(
-                self.scheduler_timezone, "scheduler_timezone"
-            )
+            self.scheduler_timezone = normalize_timezone(self.scheduler_timezone, "scheduler_timezone")
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc

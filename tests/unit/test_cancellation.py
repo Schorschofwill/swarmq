@@ -40,8 +40,12 @@ class TestReasonConstants:
 class TestBuildResultDict:
     def test_success_shape(self):
         d = build_result_dict(
-            task_id="t1", queue="q", task_name="add",
-            is_error=False, is_cancelled=False, result=42,
+            task_id="t1",
+            queue="q",
+            task_name="add",
+            is_error=False,
+            is_cancelled=False,
+            result=42,
         )
         assert d == {
             "task": {"id": "t1", "queue": "q", "name": "add"},
@@ -53,8 +57,11 @@ class TestBuildResultDict:
 
     def test_error_shape(self):
         d = build_result_dict(
-            task_id="t1", queue="q", task_name="add",
-            is_error=True, is_cancelled=False,
+            task_id="t1",
+            queue="q",
+            task_name="add",
+            is_error=True,
+            is_cancelled=False,
             error_message="boom",
         )
         assert d["is_error"] is True
@@ -63,8 +70,11 @@ class TestBuildResultDict:
 
     def test_cancelled_shape(self):
         d = build_result_dict(
-            task_id="t1", queue="q", task_name="add",
-            is_error=False, is_cancelled=True,
+            task_id="t1",
+            queue="q",
+            task_name="add",
+            is_error=False,
+            is_cancelled=True,
         )
         assert d["is_cancelled"] is True
         assert d["is_error"] is False
@@ -73,8 +83,11 @@ class TestBuildResultDict:
         """Client._unpack relies on .get() for pre-R3.6 forward-compat,
         but the five keys must still always be present in worker output."""
         d = build_result_dict(
-            task_id="t", queue="q", task_name="n",
-            is_error=False, is_cancelled=False,
+            task_id="t",
+            queue="q",
+            task_name="n",
+            is_error=False,
+            is_cancelled=False,
         )
         required = {"task", "is_error", "is_cancelled", "error_message", "result"}
         assert set(d) == required
@@ -83,7 +96,9 @@ class TestBuildResultDict:
 class TestBuildCancelResultDict:
     def test_canonical_cancel_shape(self):
         d = build_cancel_result_dict(
-            task_id="abc", queue="default", task_name="send",
+            task_id="abc",
+            queue="default",
+            task_name="send",
         )
         assert d == {
             "task": {"id": "abc", "queue": "default", "name": "send"},
@@ -97,7 +112,9 @@ class TestBuildCancelResultDict:
 class TestBuildErrorResultDict:
     def test_canonical_error_shape(self):
         d = build_error_result_dict(
-            task_id="abc", queue="default", task_name="send",
+            task_id="abc",
+            queue="default",
+            task_name="send",
             error_message="RuntimeError: boom",
         )
         assert d == {
@@ -110,7 +127,10 @@ class TestBuildErrorResultDict:
 
     def test_empty_error_message_allowed(self):
         d = build_error_result_dict(
-            task_id="t", queue="q", task_name="n", error_message="",
+            task_id="t",
+            queue="q",
+            task_name="n",
+            error_message="",
         )
         assert d["is_error"] is True
         assert d["error_message"] == ""

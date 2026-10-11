@@ -115,7 +115,7 @@ def _as_int(raw: Any, default: int) -> int:
     """Nicht-negativer Header-Wert; ein kaputter Header zaehlt wie keiner."""
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
     return value if value >= 0 else default
 
@@ -210,7 +210,10 @@ class LockGate:
                 **_error_fields(exc),
             )
             await self._dead_letter(
-                delivery, ctx, str(exc), type(exc).__name__,
+                delivery,
+                ctx,
+                str(exc),
+                type(exc).__name__,
                 {"x-swarmq-lock-render-error": bounded_header_text(str(exc))},
                 lambda publish_exc: self._render_dlx_fallback(delivery, ctx, publish_exc, empty=False),
             )
@@ -229,7 +232,11 @@ class LockGate:
             )
             error_message = f"lock template {task_info.lock!r} rendered to empty string"
             await self._dead_letter(
-                delivery, ctx, error_message, "ValueError", {"x-swarmq-lock-render-error": error_message},
+                delivery,
+                ctx,
+                error_message,
+                "ValueError",
+                {"x-swarmq-lock-render-error": error_message},
                 lambda publish_exc: self._render_dlx_fallback(delivery, ctx, publish_exc, empty=True),
             )
             return Redelivered
@@ -258,10 +265,19 @@ class LockGate:
                 # Zurueckstellung loggt die eine WARNING-Zeile. Eine
                 # Fehlerantwort (WRONGTYPE ...) nimmt den alten Weg unten.
                 return await defer_backend_unavailable(
-                    deps, delivery, ctx, exc, gate="lock", stage="acquire", lock_name=lock_name,
+                    deps,
+                    delivery,
+                    ctx,
+                    exc,
+                    gate="lock",
+                    stage="acquire",
+                    lock_name=lock_name,
                 )
             logger.error(
-                "lock_acquire_failed", task_id=ctx.task_id, task_name=ctx.task_name, lock_name=lock_name,
+                "lock_acquire_failed",
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
+                lock_name=lock_name,
                 **_error_fields(exc),
             )
             await redeliver_in_place(deps, delivery, ctx)
@@ -406,7 +422,10 @@ class LockGate:
             return None
         except Exception as exc:
             logger.warning(
-                "lock_observe_failed", task_id=ctx.task_id, task_name=ctx.task_name, lock_name=lock_name,
+                "lock_observe_failed",
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
+                lock_name=lock_name,
                 **_error_fields(exc),
             )
             return None
@@ -421,7 +440,9 @@ class LockGate:
             return
         self._observe_unsupported_logged = True
         logger.warning(
-            "lock_observe_unsupported", lock_name=lock_name, **fields,
+            "lock_observe_unsupported",
+            lock_name=lock_name,
+            **fields,
             hint="the lock store cannot report holders; stalled holders are not detected, "
             "only SWARMQ_LOCK_WAIT_MAX_S ends the wait",
         )
@@ -443,7 +464,10 @@ class LockGate:
             waited_ms=waited_ms,
         )
         await self._dead_letter(
-            delivery, ctx, message, LOCK_WAIT_EXCEEDED_ERROR_TYPE,
+            delivery,
+            ctx,
+            message,
+            LOCK_WAIT_EXCEEDED_ERROR_TYPE,
             {"x-swarmq-lock-name": lock_name},
             lambda publish_exc: self._conflict_dlx_fallback(delivery, ctx, publish_exc, lock_name, conflicts),
         )
@@ -469,8 +493,12 @@ class LockGate:
         )
         # Terminal DLX fallback — route first, then release.
         await route_via_dlx(
-            self._deps, delivery, reason="dlq_publish_failed",
-            task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc),
+            self._deps,
+            delivery,
+            reason="dlq_publish_failed",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            error=str(exc),
         )
         await self._deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
 
@@ -492,8 +520,12 @@ class LockGate:
         else:
             logger.error("lock_render_dlq_failed", **fields)
         await route_via_dlx(
-            deps, delivery, reason="dlq_publish_failed",
-            task_id=ctx.task_id, task_name=ctx.task_name, error=str(exc),
+            deps,
+            delivery,
+            reason="dlq_publish_failed",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            error=str(exc),
         )
         await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
 
@@ -548,9 +580,7 @@ async def release_acquired_locks(
         kept = drop(token) if drop is not None else None
         # Task-Felder aus der Lease (Review MR 13, Hinweis); im Handler setzt
         # sie zusaetzlich der Log-Kontext.
-        task_fields = {
-            field: getattr(kept, field) for field in ("task_id", "task_name") if hasattr(kept, field)
-        }
+        task_fields = {field: getattr(kept, field) for field in ("task_id", "task_name") if hasattr(kept, field)}
         try:
             released = await lock_manager.release(token)
         except Exception as exc:

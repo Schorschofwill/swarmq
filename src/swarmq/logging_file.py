@@ -77,9 +77,7 @@ class RateLimitedReport:
             return False
         self._last_report = now
         self.reported = count
-        report = logging.LogRecord(
-            "swarmq.logging", logging.WARNING, __file__, 0, self.event, None, None
-        )
+        report = logging.LogRecord("swarmq.logging", logging.WARNING, __file__, 0, self.event, None, None)
         report.count = count
         self._emit(report)
         return True
@@ -203,8 +201,11 @@ class DictConfigProbe:
     def __init__(self, raw: str) -> None:
         self._proc: subprocess.Popen[str] = subprocess.Popen(
             [sys.executable, "-c", _DICT_CONFIG_PROBE],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
         assert self._proc.stdin is not None
         try:
@@ -299,7 +300,9 @@ Kind zurueck (Plan 2026-10-06-1811, KTD10)."""
 
 
 def start_queue_listeners(
-    on_drop: Callable[[], None], *, skip: tuple[type[logging.Handler], ...] = (),
+    on_drop: Callable[[], None],
+    *,
+    skip: tuple[type[logging.Handler], ...] = (),
     drain: Callable[[], None] | None = None,
 ) -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
@@ -482,9 +485,7 @@ class _ListenerState:
     lesen laesst sie sich nicht mehr."""
 
 
-_STATES: weakref.WeakKeyDictionary[logging.handlers.QueueListener, _ListenerState] = (
-    weakref.WeakKeyDictionary()
-)
+_STATES: weakref.WeakKeyDictionary[logging.handlers.QueueListener, _ListenerState] = weakref.WeakKeyDictionary()
 
 
 def _state(listener: logging.handlers.QueueListener) -> _ListenerState:
@@ -558,9 +559,9 @@ def _offer_sentinel(listener: logging.handlers.QueueListener, timeout: float) ->
 def _qsize(queue_: Any) -> int:
     try:
         return int(queue_.qsize())
-    except (NotImplementedError, AttributeError):  # etwa ``multiprocessing`` auf macOS
+    except NotImplementedError, AttributeError:  # etwa ``multiprocessing`` auf macOS
         return 0
-    except (EOFError, OSError):  # Proxy eines beendeten Managers
+    except EOFError, OSError:  # Proxy eines beendeten Managers
         return 0
 
 
@@ -617,7 +618,7 @@ def discard_pending(queue_: Any) -> int:
     while True:
         try:
             queue_.get_nowait()
-        except (queue.Empty, queue.ShutDown, EOFError, OSError):
+        except queue.Empty, queue.ShutDown, EOFError, OSError:
             return count
         count += 1
 
@@ -668,7 +669,7 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
             raise queue.Empty
         try:
             return dequeue(block)
-        except (EOFError, OSError):
+        except EOFError, OSError:
             _state(listener).closed = True
             raise queue.Empty from None
 

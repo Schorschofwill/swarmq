@@ -62,7 +62,9 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 
 
 async def test_watch_progress_streams_updates(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """A 10-step task emits progress; watch_progress yields at least
     three events (throttling-bounded); the final event shows percent
@@ -114,8 +116,7 @@ async def test_watch_progress_streams_updates(
     # Throttling means we get at most ~3 intermediate events across
     # a 1.2s task with a 500ms window, plus the final 100% flush.
     assert len(observed) >= 2, (
-        f"expected at least two progress events (mid-run + final); "
-        f"got {len(observed)}: {observed!r}"
+        f"expected at least two progress events (mid-run + final); got {len(observed)}: {observed!r}"
     )
     final = observed[-1]
     assert final.current == 10
@@ -125,7 +126,9 @@ async def test_watch_progress_streams_updates(
 
 
 async def test_get_progress_polling_sees_terminal_state(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """After the task completes, one-shot get_progress returns the
     final HASH state (until TTL expires)."""
@@ -161,13 +164,17 @@ async def test_get_progress_polling_sees_terminal_state(
 
 
 async def test_get_progress_none_for_unknown_task(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """Never-written task_id returns None (not an error)."""
     client_broker = RabbitMQBroker(rabbitmq_url)
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(
-        client_broker, client_backend, queues=["dummy"],
+        client_broker,
+        client_backend,
+        queues=["dummy"],
     )
     async with client_app:
         info = await client_app.client.get_progress("never-existed")
@@ -175,7 +182,9 @@ async def test_get_progress_none_for_unknown_task(
 
 
 async def test_final_flush_bypasses_throttle_for_fast_task(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
+    _cleanup_tasks,
 ):
     """A task that finishes in <500ms still emits the final update,
     per the force-flush rule on current == total."""

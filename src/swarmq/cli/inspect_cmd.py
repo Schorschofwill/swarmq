@@ -20,22 +20,33 @@ from swarmq.task import Task
 
 def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
     """Plain-text rendering for 'swarmq inspect'. Shows one row per task."""
-    rows = [(
-        "TASK", "QUEUES", "DELIVERY", "RETRIES",
-        "RATE_LIMIT", "LOCK", "UNIQUE_FOR", "UNIQUE_UNTIL", "CRON",
-    )]
+    rows = [
+        (
+            "TASK",
+            "QUEUES",
+            "DELIVERY",
+            "RETRIES",
+            "RATE_LIMIT",
+            "LOCK",
+            "UNIQUE_FOR",
+            "UNIQUE_UNTIL",
+            "CRON",
+        )
+    ]
     for e in entries:
-        rows.append((
-            e["name"],
-            ",".join(e["queues"]),
-            e["delivery"],
-            str(e["max_retries"]),
-            e["rate_limit"] or "-",
-            e["lock"] or "-",
-            "-" if e["unique_for"] is None else str(e["unique_for"]),
-            e["unique_until"] if e["unique_for"] is not None else "-",
-            e["cron"] or "-",
-        ))
+        rows.append(
+            (
+                e["name"],
+                ",".join(e["queues"]),
+                e["delivery"],
+                str(e["max_retries"]),
+                e["rate_limit"] or "-",
+                e["lock"] or "-",
+                "-" if e["unique_for"] is None else str(e["unique_for"]),
+                e["unique_until"] if e["unique_for"] is not None else "-",
+                e["cron"] or "-",
+            )
+        )
     return _render_table(rows, "(no tasks registered)")
 
 
@@ -56,24 +67,26 @@ async def _run_inspect_async(args: argparse.Namespace) -> None:
     entries: list[dict[str, Any]] = []
     for task_class in Task._registered_tasks:
         ti = task_class.task_info
-        entries.append({
-            "name": ti.name,
-            "class": f"{task_class.__module__}.{task_class.__qualname__}",
-            "queues": list(ti.queues),
-            "delivery": ti.delivery.value,
-            "max_retries": ti.max_retries,
-            "retry_backoff": ti.retry_backoff,
-            "retry_base_delay": ti.retry_base_delay,
-            "soft_timeout": ti.soft_timeout,
-            "hard_timeout": ti.hard_timeout,
-            "result_ttl": ti.result_ttl,
-            "rate_limit": ti.rate_limit,
-            "lock": ti.lock,
-            "max_concurrency": ti.max_concurrency,
-            "cron": ti.cron,
-            "unique_for": ti.unique_for,
-            "unique_until": ti.unique_until,
-        })
+        entries.append(
+            {
+                "name": ti.name,
+                "class": f"{task_class.__module__}.{task_class.__qualname__}",
+                "queues": list(ti.queues),
+                "delivery": ti.delivery.value,
+                "max_retries": ti.max_retries,
+                "retry_backoff": ti.retry_backoff,
+                "retry_base_delay": ti.retry_base_delay,
+                "soft_timeout": ti.soft_timeout,
+                "hard_timeout": ti.hard_timeout,
+                "result_ttl": ti.result_ttl,
+                "rate_limit": ti.rate_limit,
+                "lock": ti.lock,
+                "max_concurrency": ti.max_concurrency,
+                "cron": ti.cron,
+                "unique_for": ti.unique_for,
+                "unique_until": ti.unique_until,
+            }
+        )
     entries.sort(key=lambda e: e["name"])
 
     if args.format == "json":

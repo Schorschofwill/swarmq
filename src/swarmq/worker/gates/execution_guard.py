@@ -121,7 +121,10 @@ class ExecutionGuard:
         if store is None:
             return Continue
         lease = GuardLease(
-            execution_identity(delivery, ctx.task_id), uuid.uuid4().hex, retry_count_of(delivery.headers), ctx.task_id,
+            execution_identity(delivery, ctx.task_id),
+            uuid.uuid4().hex,
+            retry_count_of(delivery.headers),
+            ctx.task_id,
             state_ttl_ms=self._lease_state_ttl_ms(delivery.headers, ctx.task_info.max_age),
             backlog_ttl_ms=self._backlog_ttl_ms(ctx.task_info.max_age),
         )
@@ -151,7 +154,10 @@ class ExecutionGuard:
             # freigeben -- Unique-Flag und Schedfire-Marker gehoeren dem
             # Original bzw. der Retry-Kopie.
             logger.info(
-                "duplicate_delivery_skipped", task_id=ctx.task_id, task_name=ctx.task_name, reason=claim.status,
+                "duplicate_delivery_skipped",
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
+                reason=claim.status,
             )
             self._event("duplicate_skipped")
             await self._deps.broker.ack(delivery)
@@ -174,8 +180,11 @@ class ExecutionGuard:
         den Marker, ihr Dead-Letter setzt den Done-Marker)."""
         limit = self._deps.config.execution_guard_max_orphans
         logger.error(
-            "execution_guard_orphan_limit", task_id=ctx.task_id, task_name=ctx.task_name,
-            orphans=orphans, max_orphans=limit,
+            "execution_guard_orphan_limit",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            orphans=orphans,
+            max_orphans=limit,
         )
         message = (
             f"{WORKER_HUNG_ERROR_TYPE}: execution expired {orphans} times without release "
@@ -200,15 +209,20 @@ class ExecutionGuard:
         except Exception as exc:
             # Broker gestoert: der alte Weg, Requeue an derselben Stelle.
             logger.warning(
-                "execution_guard_defer_failed_redelivered", task_id=ctx.task_id, task_name=ctx.task_name,
+                "execution_guard_defer_failed_redelivered",
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
                 **_error_fields(exc),
             )
             await redeliver_in_place(self._deps, delivery, ctx)
             return Redelivered
         self._event("deferred")
         logger.info(
-            "execution_guard_deferred", task_id=ctx.task_id, task_name=ctx.task_name,
-            defer_count=attempt, delay_ms=delay_ms,
+            "execution_guard_deferred",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            defer_count=attempt,
+            delay_ms=delay_ms,
         )
         self._report_stall(ctx, attempt)
         return Redelivered
@@ -224,8 +238,11 @@ class ExecutionGuard:
         if not _nominal_defer_total(attempt - 1, base, cap) < limit <= _nominal_defer_total(attempt, base, cap):
             return
         logger.warning(
-            "execution_guard_defer_stalled", task_id=ctx.task_id, task_name=ctx.task_name,
-            defer_count=attempt, consumer_timeout_s=limit,
+            "execution_guard_defer_stalled",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            defer_count=attempt,
+            consumer_timeout_s=limit,
             hint=(
                 "the same execution has been running elsewhere for longer than consumer_timeout_s; "
                 "the redelivery keeps being deferred -- check for a hung task"
@@ -323,7 +340,10 @@ class ExecutionGuard:
             await bounded_backend_call(self._deps, call(), what=f"execution guard {marker}")
         except Exception as exc:
             logger.warning(
-                "execution_guard_finish_failed", identity=lease.identity, marker=marker, **_error_fields(exc),
+                "execution_guard_finish_failed",
+                identity=lease.identity,
+                marker=marker,
+                **_error_fields(exc),
             )
             self._in_background(self._retry_mark(lease, marker, call))
 
@@ -343,7 +363,10 @@ class ExecutionGuard:
                 if not last:
                     continue
                 logger.warning(
-                    "execution_guard_finish_gave_up", identity=lease.identity, marker=marker, attempts=attempt,
+                    "execution_guard_finish_gave_up",
+                    identity=lease.identity,
+                    marker=marker,
+                    attempts=attempt,
                     hint=(
                         "the running marker expires by its TTL and counts as an orphan; "
                         "without the done marker a redelivery runs the task again"
@@ -369,7 +392,9 @@ class ExecutionGuard:
         assert store is not None
         ttl_ms = self._finish_ttl_ms(lease, extended)
         await self._mark(
-            lease, "done", lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=ttl_ms),
+            lease,
+            "done",
+            lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=ttl_ms),
         )
 
     async def release(self, lease: GuardLease) -> None:
@@ -387,7 +412,10 @@ class ExecutionGuard:
             lease,
             "superseded",
             lambda: store.mark_superseded(
-                lease.identity, owner=lease.owner, retry_count=retry_count, state_ttl_ms=ttl_ms,
+                lease.identity,
+                owner=lease.owner,
+                retry_count=retry_count,
+                state_ttl_ms=ttl_ms,
             ),
         )
 
@@ -419,7 +447,8 @@ class ExecutionGuard:
         results = await asyncio.gather(
             *(
                 bounded_backend_call(
-                    self._deps, store.renew(lease.identity, owner=lease.owner, ttl_ms=ttl_ms),
+                    self._deps,
+                    store.renew(lease.identity, owner=lease.owner, ttl_ms=ttl_ms),
                     what="execution guard renew",
                 )
                 for lease in leases
@@ -432,7 +461,9 @@ class ExecutionGuard:
                     raise renewed
                 # Der naechste Takt versucht es erneut; die TTL deckt drei Takte.
                 logger.warning(
-                    "execution_guard_renew_failed", task_id=lease.task_id, identity=lease.identity,
+                    "execution_guard_renew_failed",
+                    task_id=lease.task_id,
+                    identity=lease.identity,
                     **_error_fields(renewed),
                 )
                 continue
@@ -440,7 +471,9 @@ class ExecutionGuard:
                 # Weg oder fremd (und nicht eben vom Verb abgeschlossen): eine andere Zustellung kann jetzt parallel
                 # laufen (Event-Loop hing, Valkey-Ausfall laenger als die TTL).
                 logger.warning(
-                    "execution_guard_lease_lost", task_id=lease.task_id, identity=lease.identity,
+                    "execution_guard_lease_lost",
+                    task_id=lease.task_id,
+                    identity=lease.identity,
                     hint="running marker expired or taken over; a redelivery may run in parallel",
                 )
                 self._lost.add(lease.owner)

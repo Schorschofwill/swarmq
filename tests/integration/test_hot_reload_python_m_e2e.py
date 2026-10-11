@@ -76,24 +76,44 @@ _CONSOLE_SCRIPT = [str(Path(sys.executable).parent / "swarmq")]
     ids=["python-m-ohne-pythonpath", "python-m-mit-pythonpath", "konsolen-skript"],
 )
 def test_sighup_reexec_starts_workers_again(
-    tmp_path: Path, launcher: list[str], pythonpath: str | None,
+    tmp_path: Path,
+    launcher: list[str],
+    pythonpath: str | None,
 ) -> None:
     pytest.importorskip("watchfiles")
     queue = f"reload-m-{uuid.uuid4().hex[:8]}"
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1",
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
     )
     env.pop("PYTHONPATH", None)
     if pythonpath is not None:
         env["PYTHONPATH"] = pythonpath
     proc = subprocess.Popen(
-        [*launcher, "worker",
-         "--module", "tests.integration._cli_fixture_tasks", "--queues", queue,
-         "--processes", "1", "--reload", "--watch-dir", str(tmp_path),
-         "--log-format", "json"],
-        cwd=str(REPO_ROOT), env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+        [
+            *launcher,
+            "worker",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue,
+            "--processes",
+            "1",
+            "--reload",
+            "--watch-dir",
+            str(tmp_path),
+            "--log-format",
+            "json",
+        ],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
     )
     lines: list[str] = []
 
@@ -108,7 +128,9 @@ def test_sighup_reexec_starts_workers_again(
         # der SIGHUP-Handler sicher installiert.
         _wait_until(
             lambda: _count(lines, "worker_started") >= 1 and _count(lines, "hot_reload_enabled") >= 1,
-            60.0, "first worker start with armed reload", lines,
+            60.0,
+            "first worker start with armed reload",
+            lines,
         )
         proc.send_signal(signal.SIGHUP)
         # Marke ist der zweite process_manager_start, nicht
@@ -117,14 +139,18 @@ def test_sighup_reexec_starts_workers_again(
         # Listener diese letzte Zeile schreibt.
         _wait_until(
             lambda: _count(lines, "process_manager_start") >= 2 or proc.poll() is not None,
-            30.0, "process_manager_start of the re-exec'd supervisor", lines,
+            30.0,
+            "process_manager_start of the re-exec'd supervisor",
+            lines,
         )
         starts = [i for i, line in enumerate(lines) if '"process_manager_start"' in line]
         assert len(starts) >= 2, f"no re-exec; rc={proc.returncode}:\n{''.join(lines[-40:])}"
         mark = starts[1]
         _wait_until(
             lambda: _count(lines, "worker_started", mark) >= 1 or proc.poll() is not None,
-            60.0, "worker_started after re-exec", lines,
+            60.0,
+            "worker_started after re-exec",
+            lines,
         )
         tail = "".join(lines[mark:])
         assert proc.poll() is None, f"supervisor exited after re-exec rc={proc.returncode}:\n{tail}"

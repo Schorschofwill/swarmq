@@ -50,7 +50,10 @@ def _console_script() -> list[str] | None:
 
 
 def _spawn_cpu_worker(
-    queue: str, module: str, launcher: list[str], extra_env: dict[str, str] | None = None,
+    queue: str,
+    module: str,
+    launcher: list[str],
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     env = dict(os.environ, **(extra_env or {}))
     env["SWARMQ_BROKER_URL"] = rabbitmq_amqp_url()
@@ -63,12 +66,27 @@ def _spawn_cpu_worker(
     # Forkserver, Rechenkinder) sterben, sonst halten Enkel die stdout-Pipe offen.
     return subprocess.Popen(
         [
-            *launcher, "worker",
-            "--module", module,
-            "--queues", queue, "--pool", "cpu", "--concurrency", "2",
-            "--burst", "--burst-idle-timeout", "3", "--log-format", "json",
+            *launcher,
+            "worker",
+            "--module",
+            module,
+            "--queues",
+            queue,
+            "--pool",
+            "cpu",
+            "--concurrency",
+            "2",
+            "--burst",
+            "--burst-idle-timeout",
+            "3",
+            "--log-format",
+            "json",
         ],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
     )
 
 

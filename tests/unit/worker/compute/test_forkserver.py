@@ -64,9 +64,7 @@ class TestEnvironment:
             assert env[var] == "1"
         assert env["MALLOC_TRIM_THRESHOLD_"] == "131072"
         assert env["MALLOC_ARENA_MAX"] == "2"
-        assert set(result.applied) == set(fsmod.THREAD_LIMIT_VARS) | {
-            "MALLOC_TRIM_THRESHOLD_", "MALLOC_ARENA_MAX"
-        }
+        assert set(result.applied) == set(fsmod.THREAD_LIMIT_VARS) | {"MALLOC_TRIM_THRESHOLD_", "MALLOC_ARENA_MAX"}
         assert result.kept_from_operator == {}
 
     def test_operator_values_are_kept(self):
@@ -123,8 +121,10 @@ class TestStartForkserver:
         ctx = _fake_ctx([])
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
         handle = fsmod.start_forkserver(
-            ["a", "swarmq.worker.compute.preload", "b"], context_factory=lambda name: ctx,
-            available_methods=["forkserver"], proc_root=_status(tmp_path, 42, 1),
+            ["a", "swarmq.worker.compute.preload", "b"],
+            context_factory=lambda name: ctx,
+            available_methods=["forkserver"],
+            proc_root=_status(tmp_path, 42, 1),
         )
         ctx.set_forkserver_preload.assert_called_once_with(["swarmq.worker.compute.preload", "a", "b"])
         assert handle.preload == ("swarmq.worker.compute.preload", "a", "b")
@@ -134,8 +134,10 @@ class TestStartForkserver:
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
         with pytest.raises(ConfigurationError, match="has 5 threads"):
             fsmod.start_forkserver(
-                ["m"], context_factory=lambda name: ctx,
-                available_methods=["forkserver"], proc_root=_status(tmp_path, 42, 5),
+                ["m"],
+                context_factory=lambda name: ctx,
+                available_methods=["forkserver"],
+                proc_root=_status(tmp_path, 42, 5),
             )
 
     def test_swarmq_listener_thread_is_blamed_on_the_opt_in_queue(self, monkeypatch, tmp_path):
@@ -144,7 +146,9 @@ class TestStartForkserver:
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
         with pytest.raises(ConfigurationError) as info:
             fsmod.start_forkserver(
-                ["m"], context_factory=lambda name: _fake_ctx([]), available_methods=["forkserver"],
+                ["m"],
+                context_factory=lambda name: _fake_ctx([]),
+                available_methods=["forkserver"],
                 proc_root=_tasks(tmp_path, 42, "python3", LISTENER_THREAD_NAME),
             )
         message = str(info.value)
@@ -157,7 +161,9 @@ class TestStartForkserver:
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
         with pytest.raises(ConfigurationError) as info:
             fsmod.start_forkserver(
-                ["m"], context_factory=lambda name: _fake_ctx([]), available_methods=["forkserver"],
+                ["m"],
+                context_factory=lambda name: _fake_ctx([]),
+                available_methods=["forkserver"],
                 proc_root=_tasks(tmp_path, 42, "python3", "Thread-1 (_moni"),
             )
         message = str(info.value)
@@ -168,7 +174,9 @@ class TestStartForkserver:
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
         with pytest.raises(ConfigurationError) as info:
             fsmod.start_forkserver(
-                ["m"], context_factory=lambda name: _fake_ctx([]), available_methods=["forkserver"],
+                ["m"],
+                context_factory=lambda name: _fake_ctx([]),
+                available_methods=["forkserver"],
                 proc_root=_tasks(tmp_path, 42, "python3", "OpenBLAS-1"),
             )
         message = str(info.value)
@@ -179,8 +187,10 @@ class TestStartForkserver:
         ctx = _fake_ctx([])
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
         handle = fsmod.start_forkserver(
-            ["m"], context_factory=lambda name: ctx,
-            available_methods=["forkserver"], proc_root=tmp_path,
+            ["m"],
+            context_factory=lambda name: ctx,
+            available_methods=["forkserver"],
+            proc_root=tmp_path,
         )
         assert handle.threads is None
 
@@ -195,8 +205,11 @@ class TestStartForkserver:
         root = _status(tmp_path, 42, 1)
         _status(root, 77, 1)
         handle = fsmod.start_forkserver(
-            ["m"], context_factory=lambda name: ctx,
-            available_methods=["forkserver"], proc_root=root, ensure_running=lambda: None,
+            ["m"],
+            context_factory=lambda name: ctx,
+            available_methods=["forkserver"],
+            proc_root=root,
+            ensure_running=lambda: None,
         )
         assert handle.restarted() is False
         assert handle.restarted() is True
@@ -211,8 +224,11 @@ class TestStartForkserver:
         root = _status(tmp_path, 42, 1)
         _tasks(root, 77, "python3", LISTENER_THREAD_NAME)
         handle = fsmod.start_forkserver(
-            ["m"], context_factory=lambda name: _fake_ctx([]),
-            available_methods=["forkserver"], proc_root=root, ensure_running=lambda: None,
+            ["m"],
+            context_factory=lambda name: _fake_ctx([]),
+            available_methods=["forkserver"],
+            proc_root=root,
+            ensure_running=lambda: None,
         )
 
         with pytest.raises(fsmod.ForkSourceUnsafe, match="has 2 threads"):
@@ -222,7 +238,6 @@ class TestStartForkserver:
         assert entry["log_level"] == "error"
         assert entry["threads"] == 2
         assert entry["thread_names"] == ["python3", LISTENER_THREAD_NAME]
-
 
     def test_restart_check_restarts_a_dead_forkserver_before_comparing(self, monkeypatch, tmp_path):
         current = {"pid": 42}
@@ -234,8 +249,11 @@ class TestStartForkserver:
         root = _status(tmp_path, 42, 1)
         _tasks(root, 77, "python3", "openblas")
         handle = fsmod.start_forkserver(
-            ["m"], context_factory=lambda name: _fake_ctx([]),
-            available_methods=["forkserver"], proc_root=root, ensure_running=ensure_running,
+            ["m"],
+            context_factory=lambda name: _fake_ctx([]),
+            available_methods=["forkserver"],
+            proc_root=root,
+            ensure_running=ensure_running,
         )
 
         with pytest.raises(fsmod.ForkSourceUnsafe, match="has 2 threads"):

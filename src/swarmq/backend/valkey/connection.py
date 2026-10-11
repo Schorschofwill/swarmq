@@ -50,9 +50,7 @@ _OUTAGE_REPLIES: tuple[type[Exception], ...] = (OutOfMemoryError, ReadOnlyError,
 # kennt MASTERDOWN, MISCONF (Persistenz scheitert, z. B. Platte voll),
 # CLUSTERDOWN und TRYAGAIN nicht und liefert einen einfachen
 # ``ResponseError`` mit dem Praefix im Text.
-_OUTAGE_REPLY_PREFIXES = frozenset(
-    {"OOM", "READONLY", "LOADING", "TRYAGAIN", "CLUSTERDOWN", "MASTERDOWN", "MISCONF"}
-)
+_OUTAGE_REPLY_PREFIXES = frozenset({"OOM", "READONLY", "LOADING", "TRYAGAIN", "CLUSTERDOWN", "MASTERDOWN", "MISCONF"})
 
 
 def _is_outage_reply(exc: BaseException) -> bool:

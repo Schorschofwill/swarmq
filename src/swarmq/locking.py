@@ -87,6 +87,7 @@ def compute_lock_ttl_ms(hard_timeout: int | None) -> int:
     seconds = hard_timeout + _LOCK_TTL_BUFFER_SECONDS
     return int(seconds * 1000)
 
+
 SCHEDULER_LOCK_NAME = "{sched}:leader"
 """Logical lock name — LockManager's automatic ``sq:lock:`` prefix
 yields the final Valkey key ``sq:lock:{sched}:leader``.

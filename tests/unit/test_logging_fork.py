@@ -164,7 +164,9 @@ def isolated_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def _configure_file_mode(
-    tmp_path: pathlib.Path, handler: str = "RecordingHandler", **queue_handler: object,
+    tmp_path: pathlib.Path,
+    handler: str = "RecordingHandler",
+    **queue_handler: object,
 ) -> logging.handlers.QueueHandler:
     config = {
         "version": 1,
@@ -197,7 +199,8 @@ def _wait_for_message(message: str, timeout: float = 2.0) -> bool:
     ids=["queue.Queue", "queue.SimpleQueue"],
 )
 def test_the_child_does_not_replay_records_inherited_in_the_file_mode_queue(
-    tmp_path: pathlib.Path, queue_config: dict[str, object],
+    tmp_path: pathlib.Path,
+    queue_config: dict[str, object],
 ) -> None:
     _configure_file_mode(tmp_path, "BlockingHandler", **queue_config)
     log = logging.getLogger("app")
@@ -214,7 +217,8 @@ def test_the_child_does_not_replay_records_inherited_in_the_file_mode_queue(
 
 
 def test_a_multiprocessing_queue_is_kept_in_the_child(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
     inherited = handler.queue
@@ -433,7 +437,8 @@ def test_fork_does_not_deadlock_with_a_thread_holding_the_logging_lock(
 
 
 def test_the_child_can_fork_again_without_hook_errors(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_file_mode(tmp_path)
     hook_errors: list[object] = []

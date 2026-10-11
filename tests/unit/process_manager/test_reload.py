@@ -259,8 +259,11 @@ def signal_mask():
 
 def _pm(**kwargs):
     defaults = {
-        "workers": {}, "_reload_requested": True, "_shutdown_signal": None,
-        "_startup_argv": ["-m", "swarmq.cli"], "_startup_env": {},
+        "workers": {},
+        "_reload_requested": True,
+        "_shutdown_signal": None,
+        "_startup_argv": ["-m", "swarmq.cli"],
+        "_startup_env": {},
         "_log_shutdown_signal": lambda: None,
     }
     return SimpleNamespace(**{**defaults, **kwargs})
@@ -268,8 +271,10 @@ def _pm(**kwargs):
 
 def test_execvpe_runs_with_sigterm_and_sigint_blocked(signal_mask):
     seen: list[set[signal.Signals]] = []
-    with patch("swarmq.process_manager.reload.shutdown_logging"), \
-         patch("swarmq.process_manager.reload.os.execvpe", side_effect=lambda *a: seen.append(_blocked())):
+    with (
+        patch("swarmq.process_manager.reload.shutdown_logging"),
+        patch("swarmq.process_manager.reload.os.execvpe", side_effect=lambda *a: seen.append(_blocked())),
+    ):
         reexec(_pm(), 0)
 
     [mask] = seen
@@ -292,8 +297,10 @@ def test_without_execvpe_the_mask_is_restored_and_a_held_sigterm_delivered(signa
 
 def test_a_failed_execvpe_restores_the_mask(signal_mask):
     before = _blocked()
-    with patch("swarmq.process_manager.reload.shutdown_logging"), \
-         patch("swarmq.process_manager.reload.os.execvpe", side_effect=OSError("gone")):
+    with (
+        patch("swarmq.process_manager.reload.shutdown_logging"),
+        patch("swarmq.process_manager.reload.os.execvpe", side_effect=OSError("gone")),
+    ):
         assert reexec(_pm(), 0) == 1
 
     assert _blocked() == before

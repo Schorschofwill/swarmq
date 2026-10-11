@@ -37,7 +37,6 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module 'swarmq.app' has no attribute {name!r}")
 
 
-
 class SwarmQ:
     """Main SwarmQ application entry point."""
 
@@ -112,9 +111,7 @@ class SwarmQ:
         """
         self._middlewares.append(middleware)
 
-    def on_signal(
-        self, signal: Signal
-    ) -> Callable[[AsyncHandler], AsyncHandler]:
+    def on_signal(self, signal: Signal) -> Callable[[AsyncHandler], AsyncHandler]:
         """Return a decorator that registers a handler for ``signal``."""
         return self._signal_dispatcher.on_signal(signal)
 
@@ -151,7 +148,8 @@ class SwarmQ:
                     # Plan 2026-10-06-1811, KTD4: in O(1) abhaengen, dann
                     # leeren, ohne den Event-Loop anzuhalten.
                     await _await_log_queue_drained(
-                        _disable_log_queue(), self.config.log_drain_timeout,
+                        _disable_log_queue(),
+                        self.config.log_drain_timeout,
                     )
 
     async def schedule_many(
@@ -164,7 +162,8 @@ class SwarmQ:
     ) -> list[str]:
         """Forward to :meth:`Client.schedule_many` including R3.5 dedup kwargs."""
         return await self.client.schedule_many(
-            tasks, queue=queue,
+            tasks,
+            queue=queue,
             unique_for=unique_for,
             unique_until=unique_until,
         )
@@ -176,15 +175,15 @@ class SwarmQ:
         poll_interval: float = 0.005,
     ) -> list[Any]:
         return await self.client.get_results(
-            task_ids, timeout=timeout, poll_interval=poll_interval,
+            task_ids,
+            timeout=timeout,
+            poll_interval=poll_interval,
         )
 
     async def schedule(self, task_name: str, *args: Any, **kwargs: Any) -> str:
         return await self.client.schedule(task_name, *args, **kwargs)
 
-    async def get_result(
-        self, task_id: str, timeout: float = 10, polling: float = 0.2
-    ) -> Any:
+    async def get_result(self, task_id: str, timeout: float = 10, polling: float = 0.2) -> Any:
         return await self.client.get_result(task_id, timeout=timeout, polling=polling)
 
     async def run(
@@ -195,9 +194,7 @@ class SwarmQ:
         polling: float = 0.2,
         **kwargs: Any,
     ) -> Any:
-        return await self.client.run(
-            task_name, *args, timeout=timeout, polling=polling, **kwargs
-        )
+        return await self.client.run(task_name, *args, timeout=timeout, polling=polling, **kwargs)
 
     async def get_progress(self, task_id: str) -> ProgressInfo | None:
         """Forward to :meth:`Client.get_progress`."""
@@ -226,15 +223,11 @@ class SwarmQ:
         ttl_ms = max(_DEFAULT_CANCEL_FLAG_TTL_MS, self.config.result_ttl * 1000)
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
 
-    async def apply(
-        self, workflow: Signature | Chain | Group | Chord
-    ) -> WorkflowHandle:
+    async def apply(self, workflow: Signature | Chain | Group | Chord) -> WorkflowHandle:
         """Start a workflow (chain/group/chord) fire-and-forget; return a
         reattachable :class:`WorkflowHandle` (R10). Workflow state TTL is
         derived from ``config.result_ttl`` so it outlives the retry horizon."""
-        return await self.client.apply(
-            workflow, state_ttl_ms=self.config.result_ttl * 1000
-        )
+        return await self.client.apply(workflow, state_ttl_ms=self.config.result_ttl * 1000)
 
     async def workflow(self, workflow_id: str) -> WorkflowHandle:
         """Reattach to a workflow by id (R14); raises WorkflowNotFound when

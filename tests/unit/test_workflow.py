@@ -54,9 +54,7 @@ class Notify(Task):
 
 
 class FafTask(Task):
-    task_info = TaskInfo(
-        name="faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET
-    )
+    task_info = TaskInfo(name="faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
     async def run(self, x: int) -> int:
         return x

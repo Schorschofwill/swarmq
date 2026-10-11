@@ -142,9 +142,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             health_port=cli_value(args, "health_port"),
             pool=resolve_pool(args),
             concurrency=getattr(args, "concurrency", None),
-            recycling=bool(
-                os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")
-            ),
+            recycling=bool(os.environ.get("SWARMQ_RECYCLE_RSS_MB") or os.environ.get("SWARMQ_RECYCLE_MAX_TASKS")),
             configure=getattr(args, "configure", None),
             # Kontrollkanal (U3): derselbe Spielraum-Check wie beim Start.
             max_processes=getattr(args, "max_processes", None),
@@ -234,18 +232,14 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
 
     try:
         parsed, _ = detector.parse_known_args(argv_list)
-    except (argparse.ArgumentError, SystemExit, ValueError):
+    except argparse.ArgumentError, SystemExit, ValueError:
         # Detector could not decide — defer to the outer parser.
         # ``False`` means ``main()`` takes the non-check branch; if
         # the user really meant ``--check``, they will get argparse's
         # default error. This is the conservative fallback.
         parsed = None
 
-    if (
-        parsed is not None
-        and getattr(parsed, "command", None) == "worker"
-        and getattr(parsed, "check", False)
-    ):
+    if parsed is not None and getattr(parsed, "command", None) == "worker" and getattr(parsed, "check", False):
         return True
 
     # Fallback heuristic for the ``--check=VALUE`` form (CLI-04

@@ -192,6 +192,7 @@ def test_config_queue_type_env_var_overrides_default(monkeypatch):
 
 # --- cancel_poll_interval -------------------------------------------------
 
+
 def test_config_cancel_poll_interval_default():
     cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
     assert cfg.cancel_poll_interval == 1.0
@@ -735,8 +736,11 @@ class TestPortsPerSlot:
 
     def test_slot_is_added_to_the_base_port(self):
         cfg = SwarmQConfig(
-            broker_url="amqp://x", backend_url="valkey://x",
-            metrics_port=9000, health_port=9100, worker_slot=3,
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            metrics_port=9000,
+            health_port=9100,
+            worker_slot=3,
         )
         assert cfg.metrics_port == 9003
         assert cfg.health_port == 9103
@@ -748,13 +752,18 @@ class TestPortsPerSlot:
 
     def test_without_a_slot_the_base_port_is_bound(self):
         cfg = SwarmQConfig(
-            broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000,
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            metrics_port=9000,
         )
         assert cfg.metrics_port == 9000
 
     def test_slot_zero_keeps_the_base_port(self):
         cfg = SwarmQConfig(
-            broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000, worker_slot=0,
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            metrics_port=9000,
+            worker_slot=0,
         )
         assert cfg.metrics_port == 9000
 
@@ -857,9 +866,7 @@ class TestLoggingFields:
             self._cfg(**kwargs)
 
     def test_logger_level_pairs_are_validated_and_normalised(self):
-        assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (
-            ("aiormq", "ERROR"),
-        )
+        assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (("aiormq", "ERROR"),)
         with pytest.raises(ConfigurationError, match=r"logger_levels.*'LOUD'"):
             self._cfg(logger_levels=(("aio_pika", "LOUD"),))
 
@@ -890,8 +897,12 @@ class TestLoggingFields:
         monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "5")
         monkeypatch.setenv("SWARMQ_LOG_DRAIN_TIMEOUT", "9")
         settings = LoggingSettings(
-            format="human", configure=False, queue_size=7, lifecycle_level="INFO",
-            logger_levels=(("aio_pika", "ERROR"),), drain_timeout=0.25,
+            format="human",
+            configure=False,
+            queue_size=7,
+            lifecycle_level="INFO",
+            logger_levels=(("aio_pika", "ERROR"),),
+            drain_timeout=0.25,
         )
 
         cfg = self._cfg(logging_settings=settings)
@@ -909,7 +920,10 @@ class TestLoggingFields:
         ],
     )
     def test_invalid_logging_env_is_ignored_with_resolved_settings(
-        self, monkeypatch, env_name, raw,
+        self,
+        monkeypatch,
+        env_name,
+        raw,
     ):
         """Review #5: ``--log-format json`` ueberstimmt im Supervisor ein
         ``SWARMQ_LOG_FORMAT=jsonl``. Parste der Worker das Env trotzdem,
@@ -939,8 +953,10 @@ class TestLoggingFields:
 def test_resolved_field_is_not_overridden_by_env(monkeypatch):
     monkeypatch.setenv("SWARMQ_CONCURRENCY", "5")
     cfg = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x",
-        concurrency=20, resolved_fields=("concurrency",),
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        concurrency=20,
+        resolved_fields=("concurrency",),
     )
     assert cfg.concurrency == 20
 
@@ -1065,7 +1081,12 @@ def test_consumer_watch_fields_must_be_positive(field):
 def test_consumed_queues_expand_priorities():
     assert _cfg(queues=["a", "b"]).consumed_queues == ["a", "b"]
     assert _cfg(queues=["a", "b"], priorities=True).consumed_queues == [
-        "a.high", "a", "a.low", "b.high", "b", "b.low",
+        "a.high",
+        "a",
+        "a.low",
+        "b.high",
+        "b",
+        "b.low",
     ]
 
 
@@ -1092,7 +1113,6 @@ def test_dead_letter_ttl_from_env(monkeypatch, raw, expected):
 def test_dead_letter_ttl_must_be_positive_or_none(value):
     with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
         _cfg(dead_letter_ttl_s=value)
-
 
 
 def test_dead_letter_ttl_zero_from_env_is_a_configuration_error(monkeypatch):

@@ -144,8 +144,10 @@ class ComputeExecutor(TaskExecutor):
                 # Bereits bestaetigt, kein Redelivery moeglich: Infrastrukturfehler,
                 # kein Task-Fehler — eigene Meldung, damit er nicht als solcher untergeht.
                 logger.error(
-                    "compute_slot_unavailable_fire_and_forget_dropped", task_id=ctx.task_id,
-                    **_error_fields(exc), hint="fire-and-forget messages are acked before dispatch; "
+                    "compute_slot_unavailable_fire_and_forget_dropped",
+                    task_id=ctx.task_id,
+                    **_error_fields(exc),
+                    hint="fire-and-forget messages are acked before dispatch; "
                     "the message is lost — check the forkserver and /ready",
                 )
             else:

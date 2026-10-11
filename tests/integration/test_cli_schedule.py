@@ -46,9 +46,7 @@ def _ns_list(format="table"):
 
 
 def _ns_remove(name, permanent=False, format="table"):
-    return argparse.Namespace(
-        name=name, permanent=permanent, format=format
-    )
+    return argparse.Namespace(name=name, permanent=permanent, format=format)
 
 
 def _ns_status(limit=10, format="table"):
@@ -82,6 +80,7 @@ class TestAddThenList:
         with redirect_stdout(buf):
             await cli._run_schedule_list(_ns_list(format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert any(entry["schedule_name"] == name for entry in data)
 
@@ -89,9 +88,7 @@ class TestAddThenList:
 class TestAddWithAt:
     async def test_add_at_is_one_shot(self, _env, valkey_url):
         name = f"one-{uuid.uuid4().hex[:8]}"
-        await cli._run_schedule_add(_ns_add(
-            name=name, cron=None, at="2027-01-01T00:00:00Z"
-        ))
+        await cli._run_schedule_add(_ns_add(name=name, cron=None, at="2027-01-01T00:00:00Z"))
 
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
@@ -100,6 +97,7 @@ class TestAddWithAt:
             import msgspec
 
             from swarmq.scheduler import ScheduleDefinition
+
             d = msgspec.json.decode(raw, type=ScheduleDefinition)
             assert d.cron is None
             assert d.source == "cli"
@@ -108,9 +106,7 @@ class TestAddWithAt:
 
 
 class TestRemove:
-    async def test_remove_without_permanent_sets_disabled(
-        self, _env, valkey_url
-    ):
+    async def test_remove_without_permanent_sets_disabled(self, _env, valkey_url):
         name = f"d-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
         await cli._run_schedule_remove(_ns_remove(name))
@@ -122,14 +118,13 @@ class TestRemove:
             import msgspec
 
             from swarmq.scheduler import ScheduleDefinition
+
             d = msgspec.json.decode(raw, type=ScheduleDefinition)
             assert d.disabled is True
         finally:
             await client.aclose()
 
-    async def test_remove_permanent_deletes_entries(
-        self, _env, valkey_url
-    ):
+    async def test_remove_permanent_deletes_entries(self, _env, valkey_url):
         name = f"p-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
         await cli._run_schedule_remove(_ns_remove(name, permanent=True))
@@ -156,6 +151,7 @@ class TestStatus:
         with redirect_stdout(buf):
             await cli._run_schedule_status(_ns_status(format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert data["leader"] is None
         assert data["upcoming"] == []
@@ -169,6 +165,7 @@ class TestStatus:
             with redirect_stdout(buf):
                 await cli._run_schedule_status(_ns_status(format="json"))
             import json
+
             data = json.loads(buf.getvalue())
             assert data["leader"] == "w1:42:abcdef12"
         finally:
@@ -217,6 +214,7 @@ class TestAddRemoveJsonOutput:
         with redirect_stdout(buf):
             await cli._run_schedule_add(_ns_add(name=name, format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert data == {"inserted": True, "name": name, "already_exists": False}
 
@@ -229,6 +227,7 @@ class TestAddRemoveJsonOutput:
         with redirect_stdout(buf):
             await cli._run_schedule_add(_ns_add(name=name, format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert data == {"inserted": False, "name": name, "already_exists": True}
 
@@ -238,10 +237,9 @@ class TestAddRemoveJsonOutput:
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            await cli._run_schedule_remove(
-                _ns_remove(name, permanent=True, format="json")
-            )
+            await cli._run_schedule_remove(_ns_remove(name, permanent=True, format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert data == {"removed": True, "permanent": True, "name": name}
 
@@ -252,16 +250,13 @@ class TestAddRemoveJsonOutput:
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            await cli._run_schedule_remove(
-                _ns_remove(name, permanent=True, format="json")
-            )
+            await cli._run_schedule_remove(_ns_remove(name, permanent=True, format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert data == {"removed": False, "permanent": True, "name": name}
 
-    async def test_remove_disable_json_reports_removed_bool(
-        self, _env, valkey_url
-    ):
+    async def test_remove_disable_json_reports_removed_bool(self, _env, valkey_url):
         """Non-permanent remove also reports a removed-bool in JSON
         mode. True when an entry was disabled, False on no-op."""
         name = f"dis-{uuid.uuid4().hex[:8]}"
@@ -269,10 +264,9 @@ class TestAddRemoveJsonOutput:
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            await cli._run_schedule_remove(
-                _ns_remove(name, permanent=False, format="json")
-            )
+            await cli._run_schedule_remove(_ns_remove(name, permanent=False, format="json"))
         import json
+
         data = json.loads(buf.getvalue())
         assert data == {"removed": True, "permanent": False, "name": name}
 
@@ -287,11 +281,18 @@ class TestPruneOrphans:
 
         from swarmq.scheduler import ScheduleDefinition
 
-        return msgspec.json.encode(ScheduleDefinition(
-            schedule_name=name, task_name=name, args=(), kwargs={},
-            queue="default", cron="0 1 * * *", fire_ts_ms=4_000_000_000_000,
-            source="static",
-        ))
+        return msgspec.json.encode(
+            ScheduleDefinition(
+                schedule_name=name,
+                task_name=name,
+                args=(),
+                kwargs={},
+                queue="default",
+                cron="0 1 * * *",
+                fire_ts_ms=4_000_000_000_000,
+                source="static",
+            )
+        )
 
     async def test_prune_orphans_removes_only_unreported_static_crons(self, _env, valkey_url):
         import json
@@ -317,9 +318,13 @@ class TestPruneOrphans:
 
             buf = io.StringIO()
             with redirect_stdout(buf):
-                await cli._run_schedule_async(argparse.Namespace(
-                    schedule_command="prune", orphans=True, format="json",
-                ))
+                await cli._run_schedule_async(
+                    argparse.Namespace(
+                        schedule_command="prune",
+                        orphans=True,
+                        format="json",
+                    )
+                )
             assert json.loads(buf.getvalue()) == {"removed": [legacy]}
             assert await client.hget("sq:{sched}:defs", legacy) is None
             assert await client.zscore("sq:{sched}:zset", legacy) is None

@@ -44,8 +44,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="swarmq",
         description=(
-            "SwarmQ — Python task queue on RabbitMQ + Valkey. "
-            "Run a worker against tasks defined in a Python module."
+            "SwarmQ — Python task queue on RabbitMQ + Valkey. Run a worker against tasks defined in a Python module."
         ),
     )
     parser.add_argument(
@@ -170,10 +169,7 @@ def _add_worker_parser(subparsers: Any) -> None:
         action="store_const",
         const=False,
         default=None,
-        help=(
-            "Do not set up logging in any swarmq process. "
-            "Overrides SWARMQ_CONFIGURE_LOGGING."
-        ),
+        help=("Do not set up logging in any swarmq process. Overrides SWARMQ_CONFIGURE_LOGGING."),
     )
     worker.add_argument(
         "--logger-level",
@@ -190,10 +186,7 @@ def _add_worker_parser(subparsers: Any) -> None:
         "--log-queue-size",
         default=None,
         metavar="N",
-        help=(
-            "Capacity of the in-process log queue (default: 10000). "
-            "Overrides SWARMQ_LOG_QUEUE_SIZE."
-        ),
+        help=("Capacity of the in-process log queue (default: 10000). Overrides SWARMQ_LOG_QUEUE_SIZE."),
     )
     worker.add_argument(
         "--log-drain-timeout",

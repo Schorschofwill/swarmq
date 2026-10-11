@@ -37,7 +37,9 @@ def _cleanup_tasks():
 
 
 async def test_burst_exits_when_queue_empty(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """Worker started against an empty queue with --burst exits within
     the idle-timeout window."""
@@ -53,7 +55,8 @@ async def test_burst_exits_when_queue_empty(
     broker = RabbitMQBroker(rabbitmq_url)
     backend = ValkeyBackend(valkey_url)
     app = SwarmQ(
-        broker, backend,
+        broker,
+        backend,
         queues=[queue],
         burst_mode=True,
         burst_idle_timeout=1.0,
@@ -66,13 +69,13 @@ async def test_burst_exits_when_queue_empty(
         elapsed = time.monotonic() - t0
 
     # Should exit within burst_idle_timeout + start-up overhead.
-    assert 1.0 <= elapsed <= 5.0, (
-        f"burst exit took {elapsed:.2f}s; expected ~1s + startup"
-    )
+    assert 1.0 <= elapsed <= 5.0, f"burst exit took {elapsed:.2f}s; expected ~1s + startup"
 
 
 async def test_burst_drains_queue_then_exits(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """Pre-populate a queue, start worker with --burst, verify all
     tasks completed and worker exited."""
@@ -120,7 +123,9 @@ async def test_burst_drains_queue_then_exits(
 
 
 async def test_burst_waits_for_inflight_before_exit(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
+    _cleanup_tasks,
 ):
     """A slow task picked up just before the idle window must complete
     before the burst worker exits — graceful-drain semantics."""

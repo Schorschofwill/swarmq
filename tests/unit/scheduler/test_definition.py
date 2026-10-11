@@ -110,9 +110,7 @@ class TestParseSchedfireKey:
 
     def test_name_with_internal_colons_kept_intact(self):
         """P1-4: rsplit keeps multi-colon prefixes like oneshot:<uuid>."""
-        assert parse_schedfire_key(
-            "oneshot:abc-def-123:1234567890"
-        ) == ("oneshot:abc-def-123", 1234567890)
+        assert parse_schedfire_key("oneshot:abc-def-123:1234567890") == ("oneshot:abc-def-123", 1234567890)
 
     def test_no_colon_raises(self):
         with pytest.raises(ValueError):

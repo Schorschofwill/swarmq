@@ -82,8 +82,7 @@ def test_no_bare_async_for_on_queue_variable() -> None:
     assert not offenders, (
         "bench.py contains `async for <msg> in queue:` not wrapped in "
         "`async with queue.iterator() as it:` — this is the exact leak "
-        "pattern that hung full_pipeline. Offenders: "
-        + ", ".join(f"line {ln} over {expr!r}" for ln, expr in offenders)
+        "pattern that hung full_pipeline. Offenders: " + ", ".join(f"line {ln} over {expr!r}" for ln, expr in offenders)
     )
 
 
@@ -121,9 +120,7 @@ def test_all_channel_opens_use_bench_channel() -> None:
         def visit_Await(self, node: ast.Await) -> None:
             call = node.value
             if (  # noqa: SIM102
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr == "channel"
+                isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "channel"
             ):
                 # Two legitimate exceptions:
                 # * `_bench_channel` itself IS the wrapper — its own
@@ -139,6 +136,5 @@ def test_all_channel_opens_use_bench_channel() -> None:
     assert not offenders, (
         "bench.py opens a channel via `await ...channel()` outside "
         "`async with _bench_channel(conn)` — this reintroduces the "
-        "channel leak. Offenders: "
-        + ", ".join(f"line {ln}: {expr}" for ln, expr in offenders)
+        "channel leak. Offenders: " + ", ".join(f"line {ln}: {expr}" for ln, expr in offenders)
     )

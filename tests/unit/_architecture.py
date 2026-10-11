@@ -37,10 +37,7 @@ def iter_modules(src_root: Path, package: str) -> dict[str, Path]:
 
 
 def module_line_counts(src_root: Path, package: str) -> dict[str, int]:
-    return {
-        name: sum(1 for _ in path.open(encoding="utf-8"))
-        for name, path in iter_modules(src_root, package).items()
-    }
+    return {name: sum(1 for _ in path.open(encoding="utf-8")) for name, path in iter_modules(src_root, package).items()}
 
 
 _DYNAMIC_IMPORT_FUNCS = frozenset({"import_module", "__import__"})
@@ -93,9 +90,7 @@ def build_import_graph(src_root: Path, package: str) -> dict[str, set[str]]:
                 targets.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 base = (
-                    _resolve_relative(name, is_package, node.level, node.module)
-                    if node.level
-                    else (node.module or "")
+                    _resolve_relative(name, is_package, node.level, node.module) if node.level else (node.module or "")
                 )
                 for alias in node.names:
                     candidate = f"{base}.{alias.name}" if base else alias.name
@@ -140,10 +135,7 @@ def find_import_cycles(
         pruned[src] = {
             dst
             for dst in dsts
-            if not any(
-                _matches(src, a_src, package) and _matches(dst, a_dst, package)
-                for a_src, a_dst in allow
-            )
+            if not any(_matches(src, a_src, package) and _matches(dst, a_dst, package) for a_src, a_dst in allow)
         }
     # Tarjan
     index: dict[str, int] = {}
@@ -220,11 +212,7 @@ def purity_violations(
     roots = modules_of(graph, core_pkg)
     hull = transitive_hull(graph, roots, skip=alias_modules)
     forbidden = list(forbidden_prefixes)
-    return {
-        name
-        for name in hull
-        if any(name == f or name.startswith(f + ".") for f in forbidden)
-    }
+    return {name for name in hull if any(name == f or name.startswith(f + ".") for f in forbidden)}
 
 
 # ---------------------------------------------------------------------------
@@ -325,14 +313,10 @@ def bare_keyspace_calls(src_root: Path, package: str, *, exempt_modules: Iterabl
 # Patch-Pfade in Tests
 # ---------------------------------------------------------------------------
 
-_PATCH_RE = re.compile(
-    r"""(?:\bpatch(?:\.object)?\s*\(|monkeypatch\.setattr\s*\()\s*["']([\w.]+)["']"""
-)
+_PATCH_RE = re.compile(r"""(?:\bpatch(?:\.object)?\s*\(|monkeypatch\.setattr\s*\()\s*["']([\w.]+)["']""")
 
 
-def stale_patch_targets(
-    tests_root: Path, split_modules: Mapping[str, Iterable[str]]
-) -> list[tuple[Path, str]]:
+def stale_patch_targets(tests_root: Path, split_modules: Mapping[str, Iterable[str]]) -> list[tuple[Path, str]]:
     """Patch-Ziele der Form ``<fassade>.<attr>``, deren Modul bereits aufgeteilt ist.
 
     ``split_modules`` bildet jede Fassade auf ihre Submodule ab. Ein Ziel
@@ -359,9 +343,7 @@ def stale_patch_targets(
     return hits
 
 
-def object_patch_targets(
-    tests_root: Path, split_modules: Mapping[str, Iterable[str]]
-) -> list[tuple[Path, str]]:
+def object_patch_targets(tests_root: Path, split_modules: Mapping[str, Iterable[str]]) -> list[tuple[Path, str]]:
     """Objekt-Patches auf Fassaden-Module (U6-Guard-Lücke, Follow-Up 0.2.x).
 
     ``monkeypatch.setattr(modulobjekt, "name", …)`` und
@@ -398,10 +380,7 @@ def object_patch_targets(
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            is_setattr = (
-                isinstance(func, ast.Attribute)
-                and func.attr == "setattr"
-            )
+            is_setattr = isinstance(func, ast.Attribute) and func.attr == "setattr"
             is_patch_object = (
                 isinstance(func, ast.Attribute)
                 and func.attr == "object"
@@ -471,12 +450,9 @@ def _test_method_count(tree: ast.Module, class_name: str) -> int:
             own = sum(
                 1
                 for item in node.body
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and item.name.startswith("test_")
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test_")
             )
-            inherited = sum(
-                _test_method_count(tree, base.id) for base in node.bases if isinstance(base, ast.Name)
-            )
+            inherited = sum(_test_method_count(tree, base.id) for base in node.bases if isinstance(base, ast.Name))
             return (own + inherited) * _parametrize_multiplier(node.decorator_list)
     return 0
 
@@ -492,8 +468,10 @@ def collect_contract_bindings(tests_root: Path, contracts_pkg: str = "tests.cont
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         aliases: dict[str, str] = {}  # lokaler Name → voller gepunkteter Name
         for node in tree.body:
-            if isinstance(node, ast.ImportFrom) and node.module and (
-                node.module == contracts_pkg or node.module.startswith(contracts_pkg + ".")
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module == contracts_pkg or node.module.startswith(contracts_pkg + "."))
             ):
                 for alias in node.names:
                     aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"

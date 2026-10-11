@@ -59,11 +59,18 @@ def test_compute_job_carries_the_child_logging_settings_across_pickle():
     dem bisherigen Verhalten (eingebaute Einrichtung)."""
     plain = env.ComputeJob("t1", "task", "q", (), {})
     assert (
-        plain.log_config_json, plain.configure_logging, plain.logger_levels, plain.log_queue_size,
+        plain.log_config_json,
+        plain.configure_logging,
+        plain.logger_levels,
+        plain.log_queue_size,
     ) == (None, True, (), 10_000)
 
     job = env.ComputeJob(
-        "t1", "task", "q", (), {},
+        "t1",
+        "task",
+        "q",
+        (),
+        {},
         log_level="CRITICAL",
         log_config_json='{"version": 1}',
         configure_logging=False,

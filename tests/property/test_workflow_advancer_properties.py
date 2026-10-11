@@ -47,11 +47,13 @@ async def _seed_enqueued(driver: Driver) -> None:
     await driver.backend.store_workflow_state(driver.wf_id, encode_json(state), 60_000)
     for step_path, sig in frontier:
         tid = step_tasks[step_path]
-        body = encode_json({
-            "task": {"id": tid, "queue": "default", "name": sig.task_name},
-            "args": list(sig.args),
-            "kwargs": {},
-        })
+        body = encode_json(
+            {
+                "task": {"id": tid, "queue": "default", "name": sig.task_name},
+                "args": list(sig.args),
+                "kwargs": {},
+            }
+        )
         driver.published.append(
             ("default", body, {"x-swarmq-workflow-step": step_path}),
         )
@@ -78,13 +80,19 @@ async def _drain_random(driver: Driver, data: st.DataObject) -> list[str]:
         assert raw is not None
         result_value = decode_result(raw)["result"]
         await driver.advancer.advance(
-            driver.wf_id, step_path, task_id, result_value,
+            driver.wf_id,
+            step_path,
+            task_id,
+            result_value,
         )
         if data.draw(st.booleans(), label="redeliver"):
             # At-least-once redelivery of the SAME completion — must be
             # a no-op (publish-then-mark idempotency).
             await driver.advancer.advance(
-                driver.wf_id, step_path, task_id, result_value,
+                driver.wf_id,
+                step_path,
+                task_id,
+                result_value,
             )
     raise AssertionError("advancer kept re-publishing steps (runaway)")
 
@@ -96,7 +104,8 @@ async def _drain_random(driver: Driver, data: st.DataObject) -> list[str]:
 def test_chord_body_fires_exactly_once_with_ordered_results(n_members, data):
     async def _run() -> None:
         wf = chord(
-            group(*(Echo.s(i) for i in range(n_members))), Echo.s(),
+            group(*(Echo.s(i) for i in range(n_members))),
+            Echo.s(),
         )
         driver = Driver(wf)
         await _seed_enqueued(driver)
@@ -164,9 +173,7 @@ def test_standalone_group_aggregates_in_definition_order(n_members, data):
 
 @given(
     shapes=st.lists(
-        st.sampled_from(
-            ["leaf", "chain", "group", "chord", "chain-group", "chord-group"]
-        ),
+        st.sampled_from(["leaf", "chain", "group", "chord", "chain-group", "chord-group"]),
         min_size=2,
         max_size=4,
     ),
@@ -205,9 +212,7 @@ def test_group_with_composite_members_aggregates_in_definition_order(shapes, dat
                 expected.append([[i], [-i]])
             else:
                 # dasselbe hinter einer Chord-Ebene (Body ist eine Gruppe).
-                members.append(
-                    chord(group(Echo.si(i)), group(Echo.si(-i), Echo.si(i)))
-                )
+                members.append(chord(group(Echo.si(i)), group(Echo.si(-i), Echo.si(i))))
                 expected.append([[-i], [i]])
 
         driver = Driver(group(*members))

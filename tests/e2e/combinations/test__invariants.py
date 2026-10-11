@@ -32,14 +32,20 @@ async def test_signal_sequence_happy_path() -> None:
     """Dispatcher emits the expected signals in order — strict prefix match."""
     dispatcher = SignalDispatcher()
     recorder = SignalRecorder.attach(
-        dispatcher, signals=[Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+        dispatcher,
+        signals=[Signal.TASK_STARTED, Signal.TASK_COMPLETED],
     )
     await dispatcher.dispatch(Signal.TASK_STARTED, task_id="t1", task_name="x")
     await dispatcher.dispatch(
-        Signal.TASK_COMPLETED, task_id="t1", task_name="x", duration_ms=12,
+        Signal.TASK_COMPLETED,
+        task_id="t1",
+        task_name="x",
+        duration_ms=12,
     )
     await assert_signal_sequence(
-        recorder, [Signal.TASK_STARTED, Signal.TASK_COMPLETED], timeout_s=1.0,
+        recorder,
+        [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+        timeout_s=1.0,
     )
 
 
@@ -51,7 +57,9 @@ async def test_signal_sequence_wrong_order_fails() -> None:
     await dispatcher.dispatch(Signal.TASK_STARTED, task_id="t", task_name="x")
     with pytest.raises(AssertionError, match="signal sequence mismatch"):
         await assert_signal_sequence(
-            recorder, [Signal.TASK_STARTED, Signal.TASK_COMPLETED], timeout_s=0.3,
+            recorder,
+            [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+            timeout_s=0.3,
         )
 
 
@@ -61,7 +69,9 @@ async def test_signal_sequence_timeout() -> None:
     recorder = SignalRecorder.attach(dispatcher)
     with pytest.raises(AssertionError, match="signal sequence mismatch|incomplete"):
         await assert_signal_sequence(
-            recorder, [Signal.TASK_STARTED], timeout_s=0.2,
+            recorder,
+            [Signal.TASK_STARTED],
+            timeout_s=0.2,
         )
 
 
@@ -72,8 +82,10 @@ async def test_signal_sequence_non_strict_set_membership() -> None:
     await dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t", task_name="x", duration_ms=1)
     await dispatcher.dispatch(Signal.TASK_STARTED, task_id="t", task_name="x")
     await assert_signal_sequence(
-        recorder, [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
-        timeout_s=1.0, strict_order=False,
+        recorder,
+        [Signal.TASK_STARTED, Signal.TASK_COMPLETED],
+        timeout_s=1.0,
+        strict_order=False,
     )
 
 
@@ -100,6 +112,7 @@ async def test_no_deadlock_times_out() -> None:
 
 async def test_no_deadlock_supports_async_check() -> None:
     """Lock-check may be async; awaited result is the truthiness signal."""
+
     async def _check() -> bool:
         return False  # already released
 
@@ -210,7 +223,9 @@ def test_faf_requeue_storm_caught() -> None:
     )
     with pytest.raises(AssertionError, match="requeue storm"):
         assert_faf_stage_invariants(
-            obs, scenario_kind="backend_fault", max_requeues=10,
+            obs,
+            scenario_kind="backend_fault",
+            max_requeues=10,
         )
 
 

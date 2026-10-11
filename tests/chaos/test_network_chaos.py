@@ -119,7 +119,10 @@ class TestNetworkChaos:
     """Grouped so the class-scoped ``chaos_stack`` amortises startup."""
 
     async def test_500ms_latency_on_valkey_no_spurious_retry(
-        self, chaos_stack, toxiproxy, _cleanup_tasks,
+        self,
+        chaos_stack,
+        toxiproxy,
+        _cleanup_tasks,
     ):
         """500ms latency on Valkey — task completes exactly once.
 
@@ -143,9 +146,7 @@ class TestNetworkChaos:
             task_info = TaskInfo(name=task_name, queues=[queue])
 
             async def run(self) -> int:
-                call_counter[self._task_id] = (
-                    call_counter.get(self._task_id, 0) + 1
-                )
+                call_counter[self._task_id] = call_counter.get(self._task_id, 0) + 1
                 return call_counter[self._task_id]
 
         await toxiproxy.add_latency("vkey", latency_ms=500)
@@ -153,13 +154,17 @@ class TestNetworkChaos:
         client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         client_backend = ValkeyBackend(chaos_stack.valkey_url)
         client_app = SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         )
 
         async with client_app:
             await client_broker.declare_queue(queue)
             async with _running_worker(
-                chaos_stack.rabbitmq_url, chaos_stack.valkey_url, queue,
+                chaos_stack.rabbitmq_url,
+                chaos_stack.valkey_url,
+                queue,
             ):
                 tid = await client_app.schedule(task_name)
                 # Task body is ~O(200ms) of Valkey ops × 500ms latency;
@@ -171,12 +176,14 @@ class TestNetworkChaos:
                 # run bumping the counter for the same task_id).
                 await asyncio.sleep(1.5)
                 assert call_counter.get(tid, 0) == 1, (
-                    f"task executed {call_counter.get(tid, 0)} times — "
-                    "500ms latency triggered spurious retry"
+                    f"task executed {call_counter.get(tid, 0)} times — 500ms latency triggered spurious retry"
                 )
 
     async def test_bandwidth_limit_on_rabbitmq(
-        self, chaos_stack, toxiproxy, _cleanup_tasks,
+        self,
+        chaos_stack,
+        toxiproxy,
+        _cleanup_tasks,
     ):
         """50 kbps bandwidth cap on RabbitMQ — all 5 tasks complete.
 
@@ -201,25 +208,27 @@ class TestNetworkChaos:
         client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         client_backend = ValkeyBackend(chaos_stack.valkey_url)
         client_app = SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         )
 
         async with client_app:
             await client_broker.declare_queue(queue)
             async with _running_worker(
-                chaos_stack.rabbitmq_url, chaos_stack.valkey_url, queue,
+                chaos_stack.rabbitmq_url,
+                chaos_stack.valkey_url,
+                queue,
             ):
-                tids = [
-                    await client_app.schedule(task_name, i)
-                    for i in range(5)
-                ]
+                tids = [await client_app.schedule(task_name, i) for i in range(5)]
                 results = await client_app.get_results(tids, timeout=45)
-                assert results == list(range(5)), (
-                    f"bandwidth-limited run lost results: {results!r}"
-                )
+                assert results == list(range(5)), f"bandwidth-limited run lost results: {results!r}"
 
     async def test_packet_loss_via_slicer_recovers(
-        self, chaos_stack, toxiproxy, _cleanup_tasks,
+        self,
+        chaos_stack,
+        toxiproxy,
+        _cleanup_tasks,
     ):
         """TCP frame slicing on RabbitMQ — aio_pika reassembles.
 
@@ -240,31 +249,35 @@ class TestNetworkChaos:
                 return x * 2
 
         await toxiproxy.add_slicer(
-            "rmq", average_size=64, size_variation=32,
+            "rmq",
+            average_size=64,
+            size_variation=32,
         )
 
         client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         client_backend = ValkeyBackend(chaos_stack.valkey_url)
         client_app = SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         )
 
         async with client_app:
             await client_broker.declare_queue(queue)
             async with _running_worker(
-                chaos_stack.rabbitmq_url, chaos_stack.valkey_url, queue,
+                chaos_stack.rabbitmq_url,
+                chaos_stack.valkey_url,
+                queue,
             ):
-                tids = [
-                    await client_app.schedule(task_name, i)
-                    for i in range(5)
-                ]
+                tids = [await client_app.schedule(task_name, i) for i in range(5)]
                 results = await client_app.get_results(tids, timeout=30)
-                assert results == [i * 2 for i in range(5)], (
-                    f"slicer run lost/corrupted results: {results!r}"
-                )
+                assert results == [i * 2 for i in range(5)], f"slicer run lost/corrupted results: {results!r}"
 
     async def test_full_down_then_recover(
-        self, chaos_stack, toxiproxy, _cleanup_tasks,
+        self,
+        chaos_stack,
+        toxiproxy,
+        _cleanup_tasks,
     ):
         """Full RabbitMQ proxy down, then up, then schedule succeeds.
 
@@ -292,7 +305,9 @@ class TestNetworkChaos:
         client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         client_backend = ValkeyBackend(chaos_stack.valkey_url)
         client_app = SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         )
 
         async with client_app:
@@ -300,14 +315,20 @@ class TestNetworkChaos:
             # Start the worker FIRST while the proxy is healthy, then
             # drop the proxy to exercise the worker's reconnect path.
             async with _running_worker(
-                chaos_stack.rabbitmq_url, chaos_stack.valkey_url, queue,
+                chaos_stack.rabbitmq_url,
+                chaos_stack.valkey_url,
+                queue,
             ):
                 # Happy-path baseline to make sure the stack is wired
                 # correctly before we start disrupting it.
                 baseline = await client_app.schedule(task_name, 0)
-                assert await client_app.get_result(
-                    baseline, timeout=15,
-                ) == 100
+                assert (
+                    await client_app.get_result(
+                        baseline,
+                        timeout=15,
+                    )
+                    == 100
+                )
 
                 # Drop the proxy completely.
                 await toxiproxy.down("rmq")
@@ -329,17 +350,15 @@ class TestNetworkChaos:
                 await toxiproxy.up("rmq")
                 await asyncio.sleep(3.0)
 
-                tids = [
-                    await client_app.schedule(task_name, i)
-                    for i in range(5)
-                ]
+                tids = [await client_app.schedule(task_name, i) for i in range(5)]
                 results = await client_app.get_results(tids, timeout=30)
-                assert results == [i + 100 for i in range(5)], (
-                    f"post-recovery run lost results: {results!r}"
-                )
+                assert results == [i + 100 for i in range(5)], f"post-recovery run lost results: {results!r}"
 
     async def test_partial_partition_worker_sees_broker_not_backend(
-        self, chaos_stack, toxiproxy, _cleanup_tasks,
+        self,
+        chaos_stack,
+        toxiproxy,
+        _cleanup_tasks,
     ):
         """Valkey proxy down, RabbitMQ healthy — surfaced failure mode.
 
@@ -379,19 +398,27 @@ class TestNetworkChaos:
         client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         client_backend = ValkeyBackend(chaos_stack.valkey_url)
         client_app = SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         )
 
         async with client_app:
             await client_broker.declare_queue(queue)
             async with _running_worker(
-                chaos_stack.rabbitmq_url, chaos_stack.valkey_url, queue,
+                chaos_stack.rabbitmq_url,
+                chaos_stack.valkey_url,
+                queue,
             ):
                 # Baseline: healthy stack produces a result.
                 baseline = await client_app.schedule(task_name, 1)
-                assert await client_app.get_result(
-                    baseline, timeout=15,
-                ) == 7
+                assert (
+                    await client_app.get_result(
+                        baseline,
+                        timeout=15,
+                    )
+                    == 7
+                )
 
                 # Schedule, immediately partition Valkey.
                 at_risk = await client_app.schedule(task_name, 5)
@@ -403,6 +430,7 @@ class TestNetworkChaos:
                     BackendConnectionError,
                     ResultNotReadyError,
                 )
+
                 with pytest.raises(
                     (ResultNotReadyError, BackendConnectionError, Exception),
                 ):
@@ -417,12 +445,19 @@ class TestNetworkChaos:
                 # semantics — we deliberately do not assert on it, only
                 # on the forward-progress invariant.
                 fresh = await client_app.schedule(task_name, 2)
-                assert await client_app.get_result(
-                    fresh, timeout=30,
-                ) == 14
+                assert (
+                    await client_app.get_result(
+                        fresh,
+                        timeout=30,
+                    )
+                    == 14
+                )
 
     async def test_pubsub_disconnect_resubscribe_via_watch_progress(
-        self, chaos_stack, toxiproxy, _cleanup_tasks,
+        self,
+        chaos_stack,
+        toxiproxy,
+        _cleanup_tasks,
     ):
         """Pub/Sub disconnect + resubscribe — d2d23f2 end-to-end regression.
 
@@ -479,7 +514,9 @@ class TestNetworkChaos:
             from swarmq.client import Client
 
             client = Client(
-                dummy_broker, client_backend, registry=None,
+                dummy_broker,
+                client_backend,
+                registry=None,
             )
 
             watch_ready = asyncio.Event()
@@ -515,19 +552,21 @@ class TestNetworkChaos:
                 # wired (not strictly required for the regression but
                 # catches fixture-setup regressions clearly).
                 pre_fields = {
-                    "current": "1", "total": "10",
-                    "percent": "10.00", "message": "pre-outage",
+                    "current": "1",
+                    "total": "10",
+                    "percent": "10.00",
+                    "message": "pre-outage",
                     "updated_at": "2026-04-17T00:00:00+00:00",
                 }
                 await pub_backend.publish_progress(
-                    task_id, json.dumps(pre_fields).encode("utf-8"),
+                    task_id,
+                    json.dumps(pre_fields).encode("utf-8"),
                 )
                 try:
                     await asyncio.wait_for(watch_ready.wait(), timeout=5.0)
                 except TimeoutError:
                     pytest.fail(
-                        "subscriber never received pre-outage payload — "
-                        "watch_progress never bound to the channel"
+                        "subscriber never received pre-outage payload — watch_progress never bound to the channel"
                     )
 
                 # Drop Valkey for 4s. The subscriber's pub/sub socket
@@ -560,8 +599,10 @@ class TestNetworkChaos:
                 # partition and its retry state settles as the path
                 # reopens.
                 post_fields = {
-                    "current": "10", "total": "10",
-                    "percent": "100.00", "message": "post-recovery",
+                    "current": "10",
+                    "total": "10",
+                    "percent": "100.00",
+                    "message": "post-recovery",
                     "updated_at": "2026-04-17T00:00:01+00:00",
                 }
                 # Publish repeatedly — the watcher's restart loop may
@@ -571,15 +612,14 @@ class TestNetworkChaos:
                 deadline = asyncio.get_running_loop().time() + 15.0
                 while asyncio.get_running_loop().time() < deadline:
                     await pub_backend.publish_progress(
-                        task_id, json.dumps(post_fields).encode("utf-8"),
+                        task_id,
+                        json.dumps(post_fields).encode("utf-8"),
                     )
                     await asyncio.sleep(0.5)
                     if any(i.message == "post-recovery" for i in received):
                         break
 
-                assert any(
-                    i.message == "post-recovery" for i in received
-                ), (
+                assert any(i.message == "post-recovery" for i in received), (
                     "subscriber did not receive post-recovery publish — "
                     "resubscribe fix regressed (received messages: "
                     f"{[i.message for i in received]!r})"
@@ -588,7 +628,8 @@ class TestNetworkChaos:
                 stop_flag.set()
                 watch_task.cancel()
                 with contextlib.suppress(
-                    asyncio.CancelledError, Exception,
+                    asyncio.CancelledError,
+                    Exception,
                 ):
                     await watch_task
         finally:

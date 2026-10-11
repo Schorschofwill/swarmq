@@ -82,9 +82,7 @@ async def test_chain_roundtrip(rabbitmq_url, valkey_url):
     async with app:
         await broker.declare_queue(queue)
         async with _worker(rabbitmq_url, valkey_url, queue):
-            handle = await app.apply(
-                chain(Step1.s("seed"), Step2.s(), Step3.s())
-            )
+            handle = await app.apply(chain(Step1.s("seed"), Step2.s(), Step3.s()))
             result = await handle.get(timeout=20)
             assert result == "seed-1-2-3"
 
@@ -110,9 +108,7 @@ async def test_chord_roundtrip(rabbitmq_url, valkey_url):
     async with app:
         await broker.declare_queue(queue)
         async with _worker(rabbitmq_url, valkey_url, queue):
-            handle = await app.apply(
-                chord(group(Dl.s(1), Dl.s(2), Dl.s(3)), Merge.s())
-            )
+            handle = await app.apply(chord(group(Dl.s(1), Dl.s(2), Dl.s(3)), Merge.s()))
             result = await handle.get(timeout=20)
             # Merge receives [10, 20, 30] in definition order → 60.
             assert result == 60
@@ -159,7 +155,8 @@ async def test_workflow_cancel_stops_chain(rabbitmq_url, valkey_url):
 
 
 async def test_workflow_cancel_stops_enqueued_group_members(
-    rabbitmq_url, valkey_url,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Härtung R2 B6/P1-10: group/chord-Member werden alle bei apply()
     eingereiht — cancel() musste sie am Pickup stoppen, vorher liefen
@@ -254,9 +251,7 @@ async def test_chord_header_failure_does_not_fire_body(rabbitmq_url, valkey_url)
     async with app:
         await broker.declare_queue(queue)
         async with _worker(rabbitmq_url, valkey_url, queue):
-            handle = await app.apply(
-                chord(group(Ok.s(1), HeaderBoom.s(2), Ok.s(3)), Body.s())
-            )
+            handle = await app.apply(chord(group(Ok.s(1), HeaderBoom.s(2), Ok.s(3)), Body.s()))
             with pytest.raises(TaskError):
                 await handle.get(timeout=20)
             # Once get() raises, the workflow is terminal. The failed header
@@ -295,9 +290,7 @@ async def test_group_with_composite_member_roundtrip(rabbitmq_url, valkey_url):
     async with app:
         await broker.declare_queue(queue)
         async with _worker(rabbitmq_url, valkey_url, queue):
-            handle = await app.apply(
-                group(Double.s(1), chain(Double.s(2), AddOne.s()))
-            )
+            handle = await app.apply(group(Double.s(1), chain(Double.s(2), AddOne.s())))
             result = await handle.get(timeout=20)
             # Glied 0: 1*2 = 2. Glied 1: 2*2 = 4, dann +1 = 5.
             # Bis 0.3.0 kam hier [2] zurueck — das Kettenglied fehlte.
@@ -392,7 +385,9 @@ async def test_workflow_steps_run_through_middleware_and_signals(rabbitmq_url, v
     async with app:
         await broker.declare_queue(queue)
         async with _worker(
-            rabbitmq_url, valkey_url, queue,
+            rabbitmq_url,
+            valkey_url,
+            queue,
             middleware=[Counting()],
             on_signal={
                 Signal.WORKFLOW_STEP_ENQUEUED: _on_step,

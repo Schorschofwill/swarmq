@@ -108,14 +108,21 @@ print(json.dumps(children))
 """
 
 
-def _run(tmp_path: Path, *, maxsize: int = 0, burst: int = 0, rounds: int = 1) -> tuple[
-    list[list[int]], list[str], str,
+def _run(
+    tmp_path: Path, *, maxsize: int = 0, burst: int = 0, rounds: int = 1
+) -> tuple[
+    list[list[int]],
+    list[str],
+    str,
 ]:
     """Fuehrt das Skript aus: Kinder mit Exit-Code, Zeilen der Datei, stderr."""
     log_file = tmp_path / "out.log"
     proc = subprocess.run(
         [sys.executable, "-c", _SCRIPT, str(log_file), str(maxsize), str(burst), str(rounds)],
-        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 10,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_HANG_DEADLINE_S + 10,
     )
     assert proc.returncode == 0, proc.stderr
     children = json.loads(proc.stdout)
@@ -234,12 +241,16 @@ print(json.dumps({{"child": [pid, code], "shutdown_s": time.monotonic() - starte
 
 @pytest.mark.parametrize("mode", ["process", "raw_fork"])
 def test_a_multiprocessing_queue_keeps_the_parent_listener_as_its_only_consumer(
-    tmp_path: Path, mode: str,
+    tmp_path: Path,
+    mode: str,
 ) -> None:
     log_file = tmp_path / "out.log"
     proc = subprocess.run(
         [sys.executable, "-c", _MP_SCRIPT, str(log_file), mode],
-        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 10,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_HANG_DEADLINE_S + 10,
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -322,7 +333,10 @@ def test_a_manager_queue_gets_its_own_connection_in_a_raw_forked_child(tmp_path:
     # und den Forkserver, die sonst die Pipes offen und verwaist zurueckblieben.
     proc = subprocess.Popen(
         [sys.executable, "-c", _MANAGER_SCRIPT, str(log_file), str(lines)],
-        cwd=_REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        cwd=_REPO,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
         start_new_session=True,
     )
     try:
@@ -374,13 +388,17 @@ for i in range(lines):
 
 @pytest.mark.parametrize("late", ["no_late", "late"])
 def test_a_multiprocessing_queue_ends_without_traceback_at_interpreter_exit(
-    tmp_path: Path, late: str,
+    tmp_path: Path,
+    late: str,
 ) -> None:
     log_file = tmp_path / "out.log"
     lines = 2000
     proc = subprocess.run(
         [sys.executable, "-c", _EXIT_SCRIPT, str(log_file), str(lines), late],
-        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 10,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_HANG_DEADLINE_S + 10,
     )
 
     assert proc.returncode == 0, proc.stderr[-3000:]

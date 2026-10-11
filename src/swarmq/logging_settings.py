@@ -61,30 +61,50 @@ def resolve_logging_settings(
     """
     sources = _Sources(cli, env, config or {})
     log_format = sources.pick(
-        "log_format", "--log-format",
+        "log_format",
+        "--log-format",
         "SWARMQ_LOG_FORMAT" if env.get("SWARMQ_LOG_FORMAT") else "SWARMQ_LOG_JSON",
-        "log_json", default="human",
-        env_value=_env_format(env), config_value=_config_format(config),
+        "log_json",
+        default="human",
+        env_value=_env_format(env),
+        config_value=_config_format(config),
     )
     level = sources.pick("log_level", "--log-level", "SWARMQ_LOG_LEVEL", "log_level", "INFO")
     queue_size = sources.pick(
-        "log_queue_size", "--log-queue-size", "SWARMQ_LOG_QUEUE_SIZE", "log_queue_size", 10_000,
+        "log_queue_size",
+        "--log-queue-size",
+        "SWARMQ_LOG_QUEUE_SIZE",
+        "log_queue_size",
+        10_000,
     )
     lifecycle_level = sources.pick(
-        "log_lifecycle_level", "--log-lifecycle-level",
-        "SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "DEBUG",
+        "log_lifecycle_level",
+        "--log-lifecycle-level",
+        "SWARMQ_LOG_LIFECYCLE_LEVEL",
+        "log_lifecycle_level",
+        "DEBUG",
     )
     drain_timeout = sources.pick(
-        "log_drain_timeout", "--log-drain-timeout",
-        "SWARMQ_LOG_DRAIN_TIMEOUT", "log_drain_timeout", 5.0,
+        "log_drain_timeout",
+        "--log-drain-timeout",
+        "SWARMQ_LOG_DRAIN_TIMEOUT",
+        "log_drain_timeout",
+        5.0,
     )
     log_config = sources.pick(
-        "log_config", "--log-config", "SWARMQ_LOG_CONFIG", "log_config", None,
+        "log_config",
+        "--log-config",
+        "SWARMQ_LOG_CONFIG",
+        "log_config",
+        None,
     )
     raw_configure = env.get("SWARMQ_CONFIGURE_LOGGING")
     configure = sources.pick(
-        "configure_logging", "--no-configure-logging", "SWARMQ_CONFIGURE_LOGGING",
-        "configure_logging", default=True,
+        "configure_logging",
+        "--no-configure-logging",
+        "SWARMQ_CONFIGURE_LOGGING",
+        "configure_logging",
+        default=True,
         env_value=_parse_bool(raw_configure) if raw_configure else None,
     )
     _check_combinations(log_config, log_format, configure)
@@ -209,7 +229,9 @@ def _positive_seconds(picked: _Picked) -> float:
 
 
 def _logger_levels(
-    cli: object | None, env: Mapping[str, str], config: Mapping[str, object] | None,
+    cli: object | None,
+    env: Mapping[str, str],
+    config: Mapping[str, object] | None,
 ) -> tuple[tuple[str, str], ...]:
     # Eigene Aufloesung: Die drei Quellen liefern verschiedene Formen
     # (Liste von ``NAME=LEVEL``, CSV, Paare).
@@ -240,7 +262,8 @@ def validate_logger_levels(pairs: object, source: str) -> tuple[tuple[str, str],
 
 
 def parse_logger_levels(
-    entries: Iterable[str], source: str,
+    entries: Iterable[str],
+    source: str,
 ) -> tuple[tuple[str, str], ...]:
     """``NAME=LEVEL``-Eintraege als pickle-sicheres Tupel von Paaren."""
     pairs: list[tuple[str, str]] = []

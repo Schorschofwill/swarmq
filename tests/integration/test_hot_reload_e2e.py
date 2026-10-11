@@ -28,9 +28,7 @@ from swarmq.hot_reload import FileWatcher
 _ARM_POLL_TIMEOUT_S = 0.3
 
 
-def _wait_for_armed_watcher(
-    watch_dir: Path, triggered: threading.Event, timeout: float = 5.0
-) -> None:
+def _wait_for_armed_watcher(watch_dir: Path, triggered: threading.Event, timeout: float = 5.0) -> None:
     """Prove the watcher is armed by repeatedly touching a probe file
     until ``triggered`` fires.
 
@@ -70,9 +68,7 @@ def _wait_for_armed_watcher(
             time.sleep(_ARM_POLL_TIMEOUT_S)
             triggered.clear()
             return
-    raise AssertionError(
-        f"watcher never armed after {attempt} probe writes in {timeout}s"
-    )
+    raise AssertionError(f"watcher never armed after {attempt} probe writes in {timeout}s")
 
 
 @pytest.mark.integration
@@ -90,9 +86,7 @@ def test_py_file_write_triggers_callback(tmp_path: Path) -> None:
     try:
         _wait_for_armed_watcher(tmp_path, triggered)
         (tmp_path / "my_task.py").write_text("# reload me\n")
-        assert triggered.wait(timeout=3.0), (
-            "trigger did not fire within 3s of .py write"
-        )
+        assert triggered.wait(timeout=3.0), "trigger did not fire within 3s of .py write"
     finally:
         watcher.stop(timeout=2.0)
 
@@ -118,9 +112,7 @@ def test_pyc_write_is_ignored(tmp_path: Path) -> None:
         _wait_for_armed_watcher(tmp_path, triggered)
         (tmp_path / "cached.pyc").write_bytes(b"\x00" * 16)
         # Debounce + margin — trigger must NOT fire.
-        assert not triggered.wait(timeout=1.0), (
-            "trigger fired on .pyc write — PythonFilter failed"
-        )
+        assert not triggered.wait(timeout=1.0), "trigger fired on .pyc write — PythonFilter failed"
     finally:
         watcher.stop(timeout=2.0)
 
@@ -141,9 +133,7 @@ def test_vim_probe_4913_is_ignored(tmp_path: Path) -> None:
     try:
         _wait_for_armed_watcher(tmp_path, triggered)
         (tmp_path / "4913").write_text("")
-        assert not triggered.wait(timeout=1.0), (
-            "trigger fired on 4913 probe-file — SwarmQFilter failed"
-        )
+        assert not triggered.wait(timeout=1.0), "trigger fired on 4913 probe-file — SwarmQFilter failed"
     finally:
         watcher.stop(timeout=2.0)
 
@@ -187,7 +177,8 @@ def _restore_sighup():
 @pytest.mark.integration
 @pytest.mark.timeout(20)
 def test_full_pipeline_file_write_triggers_execvpe(
-    tmp_path: Path, _restore_sighup,
+    tmp_path: Path,
+    _restore_sighup,
 ) -> None:
     """R5.3 ce-review #9: end-to-end pipeline.
 
@@ -264,13 +255,17 @@ def test_full_pipeline_file_write_triggers_execvpe(
             time.sleep(0.25)
 
     writer = threading.Thread(
-        target=_write_retrying, name="e2e-file-writer", daemon=True,
+        target=_write_retrying,
+        name="e2e-file-writer",
+        daemon=True,
     )
 
-    with patch("swarmq.process_manager.supervisor.os.execvpe", side_effect=_fake_execvpe), \
-         patch.object(pm, "_start_all_workers"), \
-         patch.object(pm, "_shutdown_all_workers"), \
-         patch.object(pm, "_collect_zombies"):
+    with (
+        patch("swarmq.process_manager.supervisor.os.execvpe", side_effect=_fake_execvpe),
+        patch.object(pm, "_start_all_workers"),
+        patch.object(pm, "_shutdown_all_workers"),
+        patch.object(pm, "_collect_zombies"),
+    ):
         writer.start()
         # pm.run() blocks on the main thread; the writer fires while
         # we're parked in _short_monitor. Signal handler installed by
@@ -285,9 +280,5 @@ def test_full_pipeline_file_write_triggers_execvpe(
     writer.join(timeout=2.0)
 
     # Supervisor observed the SIGHUP and reached execvpe.
-    assert pm._reload_requested is True, (
-        "_reload_requested was not set — SIGHUP handler did not fire"
-    )
-    assert execvpe_called.is_set(), (
-        "execvpe was not reached — reload pipeline broke before execvpe"
-    )
+    assert pm._reload_requested is True, "_reload_requested was not set — SIGHUP handler did not fire"
+    assert execvpe_called.is_set(), "execvpe was not reached — reload pipeline broke before execvpe"

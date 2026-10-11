@@ -32,8 +32,8 @@ class ProxyConfig:
     """Declarative description of a Toxiproxy proxy."""
 
     name: str
-    listen: str            # host:port the proxy listens on (e.g. "0.0.0.0:5673")
-    upstream: str          # service:port toxiproxy forwards to (e.g. "rabbitmq:5672")
+    listen: str  # host:port the proxy listens on (e.g. "0.0.0.0:5673")
+    upstream: str  # service:port toxiproxy forwards to (e.g. "rabbitmq:5672")
     enabled: bool = True
 
 
@@ -65,7 +65,8 @@ class ToxiproxyClient:
 
     async def __aenter__(self) -> ToxiproxyClient:
         self._client = httpx.AsyncClient(
-            base_url=self._base_url, timeout=self._timeout,
+            base_url=self._base_url,
+            timeout=self._timeout,
         )
         return self
 
@@ -128,7 +129,8 @@ class ToxiproxyClient:
         """Disabling a proxy drops all current connections and refuses new ones.
         Re-enabling restores it. Useful for hard network-partition simulation."""
         resp = await self._http.post(
-            f"/proxies/{name}", json={"enabled": enabled},
+            f"/proxies/{name}",
+            json={"enabled": enabled},
         )
         resp.raise_for_status()
 
@@ -163,7 +165,8 @@ class ToxiproxyClient:
         if name is not None:
             payload["name"] = name
         resp = await self._http.post(
-            f"/proxies/{proxy_name}/toxics", json=payload,
+            f"/proxies/{proxy_name}/toxics",
+            json=payload,
         )
         resp.raise_for_status()
         return resp.json()["name"]

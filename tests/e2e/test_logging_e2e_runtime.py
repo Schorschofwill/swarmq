@@ -99,8 +99,7 @@ class _LineCollector:
                 if self._eof or remaining <= 0:
                     raise AssertionError(
                         "expected log line not seen "
-                        f"({'process ended' if self._eof else 'timeout'}); tail:\n"
-                        + "\n".join(self.lines[-40:])
+                        f"({'process ended' if self._eof else 'timeout'}); tail:\n" + "\n".join(self.lines[-40:])
                     )
                 self._cond.wait(timeout=remaining)
 
@@ -114,14 +113,16 @@ class _LineCollector:
 
 def _log_config(tag: str, *, handler_class: str = "logging.StreamHandler") -> str:
     """dictConfig mit erkennbarem Praefix je Konfigurationsstand."""
-    return json.dumps({
-        "version": 1,
-        "formatters": {"plain": {"format": f"{tag}|%(name)s|%(message)s"}},
-        "handlers": {
-            "err": {"class": handler_class, "stream": "ext://sys.stderr", "formatter": "plain"},
-        },
-        "root": {"level": "INFO", "handlers": ["err"]},
-    })
+    return json.dumps(
+        {
+            "version": 1,
+            "formatters": {"plain": {"format": f"{tag}|%(name)s|%(message)s"}},
+            "handlers": {
+                "err": {"class": handler_class, "stream": "ext://sys.stderr", "formatter": "plain"},
+            },
+            "root": {"level": "INFO", "handlers": ["err"]},
+        }
+    )
 
 
 def _worker_env(queue: str) -> dict[str, str]:
@@ -166,13 +167,25 @@ def reload_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_
     watch_dir.mkdir()
     proc = subprocess.Popen(
         [
-            str(SWARMQ_SCRIPT), "worker",
-            "--module", FIXTURE_MODULE, "--queues", queue, "--concurrency", "2",
-            "--reload", "--watch-dir", str(watch_dir),
-            "--log-config", str(cfg),
+            str(SWARMQ_SCRIPT),
+            "worker",
+            "--module",
+            FIXTURE_MODULE,
+            "--queues",
+            queue,
+            "--concurrency",
+            "2",
+            "--reload",
+            "--watch-dir",
+            str(watch_dir),
+            "--log-config",
+            str(cfg),
         ],
-        cwd=str(REPO_ROOT), env=_worker_env(queue),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(REPO_ROOT),
+        env=_worker_env(queue),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     collector = _LineCollector(proc)
@@ -243,7 +256,11 @@ def _run_embedded_app(mode: str) -> dict[str, Any]:
     env.pop("SWARMQ_LOG_QUEUE", None)
     proc = subprocess.run(
         [sys.executable, "-m", APP_MODULE, mode, queue, rabbitmq_amqp_url(), valkey_db_url()],
-        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=90,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
     )
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
     # Die App schreibt alles in ihren eigenen Handler; auf stderr landet
@@ -331,8 +348,14 @@ def test_embedded_app_without_log_queue_logs_in_caller_thread_and_leaves_logging
 
 def _run_check(*args: str) -> tuple[int, dict[str, Any]]:
     env = dict(os.environ)
-    for key in ("SWARMQ_LOG_FORMAT", "SWARMQ_LOG_JSON", "SWARMQ_LOG_CONFIG", "SWARMQ_CONFIGURE_LOGGING",
-                "SWARMQ_LOG_QUEUE_SIZE", "SWARMQ_LOGGER_LEVELS"):
+    for key in (
+        "SWARMQ_LOG_FORMAT",
+        "SWARMQ_LOG_JSON",
+        "SWARMQ_LOG_CONFIG",
+        "SWARMQ_CONFIGURE_LOGGING",
+        "SWARMQ_LOG_QUEUE_SIZE",
+        "SWARMQ_LOGGER_LEVELS",
+    ):
         env.pop(key, None)
     # Kein Broker noetig: unerreichbare Adressen, --check fasst sie nicht an.
     env["SWARMQ_BROKER_URL"] = "amqp://guest:guest@127.0.0.1:1/"
@@ -340,7 +363,11 @@ def _run_check(*args: str) -> tuple[int, dict[str, Any]]:
     env["CLI_TEST_QUEUE"] = "logrt-check"
     proc = subprocess.run(
         [sys.executable, "-m", "swarmq.cli", "worker", "--module", FIXTURE_MODULE, "--check", *args],
-        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=60,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     [line] = proc.stdout.splitlines()
     return proc.returncode, json.loads(line)

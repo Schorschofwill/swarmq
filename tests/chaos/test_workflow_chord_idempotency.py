@@ -95,9 +95,7 @@ def _cleanup_tasks():
 class TestChordIdempotency:
     """One chaos_stack per class (amortised ~10s startup)."""
 
-    async def test_header_redelivery_fires_body_exactly_once(
-        self, chaos_stack: ChaosStack, _cleanup_tasks
-    ) -> None:
+    async def test_header_redelivery_fires_body_exactly_once(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
         """SIGKILL the worker mid-fan-in so unacked header members redeliver
         to a successor. The chord body must still fire exactly once and the
         workflow must complete with the correct aggregate."""

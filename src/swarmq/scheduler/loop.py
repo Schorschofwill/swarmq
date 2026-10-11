@@ -3,6 +3,7 @@
 und Handover-Marker. Seit U12 (Plan 2026-10-08-1541) meldet jeder Loop die
 statischen Crons seines Workers; der Leader übernimmt die Meldungen aller
 Worker im Meldetakt. Der Cron-Sync lebt als Mixin in ``sync.py``."""
+
 from __future__ import annotations
 
 import asyncio
@@ -55,6 +56,7 @@ class SchedulerBackend(Protocol):
 
     @property
     def schedules(self) -> ContractScheduleStore: ...
+
 
 _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 """Minimum TTL for the handover marker (5s). The actual TTL used is
@@ -146,9 +148,7 @@ class SchedulerLoop(
         self._owner_token = owner_token or _make_owner_token()
         # LockStore-Vertrag (U11): Token deterministisch aus Name+Owner —
         # acquire liefert denselben Token, renew/release nehmen ihn.
-        self._lock_token = LockToken(
-            name=SCHEDULER_LOCK_NAME, owner=self._owner_token, max_concurrency=1
-        )
+        self._lock_token = LockToken(name=SCHEDULER_LOCK_NAME, owner=self._owner_token, max_concurrency=1)
         self._worker_id = worker_id or self._owner_token
         # Statische Crons dieses Workers (eigene Registry, Zone aufgelöst);
         # gemeldet beim Start und danach im Meldetakt (KTD10).
@@ -193,11 +193,7 @@ class SchedulerLoop(
         self._renew_failures = 0
         self._renew_failure_limit = max(
             1,
-            int(
-                config.scheduler_lock_ttl
-                / config.scheduler_heartbeat_interval
-            )
-            - 1,
+            int(config.scheduler_lock_ttl / config.scheduler_heartbeat_interval) - 1,
         )
 
     # ---- lifecycle ------------------------------------------------------
@@ -243,9 +239,7 @@ class SchedulerLoop(
                     _HANDOVER_MARKER_TTL_MS_FLOOR,
                     int(self._config.scheduler_heartbeat_interval * 2 * 1000),
                 )
-                await self._backend.schedules.set_handover_marker(
-                    self._owner_token, marker_ttl_ms
-                )
+                await self._backend.schedules.set_handover_marker(self._owner_token, marker_ttl_ms)
             except BackendConnectionError as exc:
                 logger.warning(
                     "scheduler_handover_marker_failed",
@@ -258,9 +252,7 @@ class SchedulerLoop(
             try:
                 await self._lock_manager.release(self._lock_token)
             except BackendConnectionError as exc:
-                logger.warning(
-                    "scheduler_lock_release_failed", **_error_fields(exc)
-                )
+                logger.warning("scheduler_lock_release_failed", **_error_fields(exc))
 
         # Idempotent — the leader path above already set this; this
         # call covers the standby path where the
@@ -288,7 +280,9 @@ class SchedulerLoop(
 
     async def _cancel_sub_tasks(self) -> None:
         tasks = (
-            self._election_task, self._poll_task, self._report_task,
+            self._election_task,
+            self._poll_task,
+            self._report_task,
             self._adopt_task,
         )
         for task in tasks:
@@ -298,7 +292,7 @@ class SchedulerLoop(
             if task is not None:
                 try:
                     await task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError, Exception:
                     pass
         self._election_task = None
         self._poll_task = None
@@ -329,7 +323,9 @@ class SchedulerLoop(
                     live_window_ms=live_window,
                 )
             await self._backend.schedules.report_worker_version(
-                self._worker_id, self._version, ttl_ms=live_window,
+                self._worker_id,
+                self._version,
+                ttl_ms=live_window,
             )
         except Exception as exc:
             # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
@@ -357,9 +353,7 @@ class SchedulerLoop(
                         async with self._fire_lock:
                             await self.adopt_reported_crons()
                     except Exception as exc:
-                        logger.warning(
-                            "scheduler_cron_adopt_failed", **_error_fields(exc)
-                        )
+                        logger.warning("scheduler_cron_adopt_failed", **_error_fields(exc))
                     finally:
                         # BZ-11: der Poll wartet nur auf den ersten Versuch
                         # der Amtszeit, nicht auf dessen Gelingen (fail-open).
@@ -381,9 +375,7 @@ class SchedulerLoop(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.warning(
-                        "scheduler_election_tick_error", **_error_fields(exc)
-                    )
+                    logger.warning("scheduler_election_tick_error", **_error_fields(exc))
                 await self._sleep_until_stop(interval)
         except asyncio.CancelledError:
             return
@@ -460,9 +452,7 @@ class SchedulerLoop(
         try:
             had_handover = await self._take_handover_marker()
         except BackendConnectionError as exc:
-            logger.warning(
-                "scheduler_handover_marker_read_failed", **_error_fields(exc)
-            )
+            logger.warning("scheduler_handover_marker_read_failed", **_error_fields(exc))
             had_handover = False
 
         # BZ-07: die Übernahme (Handover-Marker) kann dauern; direkt danach
@@ -518,9 +508,7 @@ class SchedulerLoop(
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
-                        logger.warning(
-                            "scheduler_poll_tick_error", **_error_fields(exc)
-                        )
+                        logger.warning("scheduler_poll_tick_error", **_error_fields(exc))
                 await self._sleep_until_stop(interval)
         except asyncio.CancelledError:
             return
@@ -564,17 +552,13 @@ class SchedulerLoop(
     async def _sleep_until_stop(self, seconds: float) -> None:
         """Sleep for *seconds*, but short-circuit on stop."""
         try:
-            await asyncio.wait_for(
-                self._stop_event.wait(), timeout=seconds
-            )
+            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
         except TimeoutError:
             return
 
     async def _emit(self, signal: Signal, **extra: Any) -> None:
         try:
-            await self._signals.dispatch(
-                signal, worker_id=self._worker_id, **extra
-            )
+            await self._signals.dispatch(signal, worker_id=self._worker_id, **extra)
         except Exception as exc:
             logger.warning(
                 "scheduler_signal_dispatch_error",

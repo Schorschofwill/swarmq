@@ -59,7 +59,13 @@ class CancelGate:
                 )
             except BackendConnectionError as exc:
                 return await defer_backend_unavailable(
-                    deps, delivery, ctx, exc, gate="cancel", stage="workflow_cancel_check", workflow_id=wf_id,
+                    deps,
+                    delivery,
+                    ctx,
+                    exc,
+                    gate="cancel",
+                    stage="workflow_cancel_check",
+                    workflow_id=wf_id,
                 )
             if not wf_cancelled:
                 return Continue
@@ -95,7 +101,9 @@ class CancelGate:
             store_cancel_result = result_ttl > 0
             if store_cancel_result and workflow_cancel:
                 existing = await bounded_backend_call(
-                    deps, deps.backend.get_result(task_id), what="cancel existing result read",
+                    deps,
+                    deps.backend.get_result(task_id),
+                    what="cancel existing result read",
                 )
                 store_cancel_result = existing is None
             if store_cancel_result:
@@ -107,7 +115,9 @@ class CancelGate:
                 )
                 try:
                     await bounded_backend_call(
-                        deps, deps.backend.notify_result(task_id), what="cancel result notification",
+                        deps,
+                        deps.backend.notify_result(task_id),
+                        what="cancel result notification",
                     )
                 except Exception as exc:
                     logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
@@ -134,7 +144,12 @@ class CancelGate:
             # Zweig erneut durchlaeuft. Flag stays in Valkey (that's what
             # triggers the re-cancel on the deferred copy).
             return await defer_backend_unavailable(
-                deps, delivery, ctx, exc, gate="cancel", stage="cancel_store_result",
+                deps,
+                delivery,
+                ctx,
+                exc,
+                gate="cancel",
+                stage="cancel_store_result",
             )
 
         # Signal AFTER the broker ack so a handler that raises doesn't

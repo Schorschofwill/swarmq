@@ -86,8 +86,6 @@ class ValkeyBackend(ValkeyResults):
     # Aliase der heutigen Namen (KTD10; entfallen in U15)
     # ------------------------------------------------------------------
 
-
-
     def _sched_fired_key(self, schedfire_key: str) -> str:
         return self._keys.sched_fired(schedfire_key)
 
@@ -96,20 +94,6 @@ class ValkeyBackend(ValkeyResults):
 
     def _sched_handover_key(self, owner_token: str) -> str:
         return self._keys.sched_handover(owner_token)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     async def get_scheduler_leader(self) -> str | None:
         """Return the current scheduler-lock holder, or ``None`` if unlocked.

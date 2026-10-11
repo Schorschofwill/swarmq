@@ -50,7 +50,7 @@ def _count(headers: Mapping[str, Any], name: str) -> int | None:
         return None
     try:
         return int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -106,8 +106,11 @@ class DeliveryCountGate:
             return Continue
         logger.error(
             "delivery_limit_reached_dead_letter",
-            task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue,
-            delivery_count=count, delivery_limit=limit,
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            queue=ctx.queue,
+            delivery_count=count,
+            delivery_limit=limit,
         )
         await self._dead_letter(delivery, ctx, message, error_type)
         return Terminal.already_released()

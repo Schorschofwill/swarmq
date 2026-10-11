@@ -139,17 +139,37 @@ async def test_claim_follows_the_pre_pipeline_gates_and_precedes_rate_limit_and_
 
     await worker._handle_message(make_message(_payload("guard-counted")))
 
-    order = [c for c in rec.calls if c in ("backend.is_cancelled", "guard.claim", "rate_limiter.check",
-                                           "lock_manager.acquire", "broker.ack", "guard.mark_done")]
+    order = [
+        c
+        for c in rec.calls
+        if c
+        in (
+            "backend.is_cancelled",
+            "guard.claim",
+            "rate_limiter.check",
+            "lock_manager.acquire",
+            "broker.ack",
+            "guard.mark_done",
+        )
+    ]
     assert order == [
-        "backend.is_cancelled", "guard.claim", "rate_limiter.check", "lock_manager.acquire",
-        "broker.ack", "guard.mark_done",
+        "backend.is_cancelled",
+        "guard.claim",
+        "rate_limiter.check",
+        "lock_manager.acquire",
+        "broker.ack",
+        "guard.mark_done",
     ]
 
 
 async def _status(guard_backend: InMemoryBackend, identity: str = "t-1", retry_count: int = 0) -> str:
     claim = await guard_backend.execution_guard.claim(
-        identity, owner="probe", retry_count=retry_count, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=99,
+        identity,
+        owner="probe",
+        retry_count=retry_count,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=99,
     )
     return claim.status
 
@@ -163,7 +183,6 @@ async def test_unhandled_exception_frees_running_without_done(broker, backend, r
     await worker._handle_message(make_message(_payload("guard-counted")))
 
     assert await _status(guard_backend) == "claimed"
-
 
 
 async def test_cancelled_delivery_frees_running_without_done(broker, backend, rec, guard_backend) -> None:
@@ -234,12 +253,20 @@ class ExpiringTask(Task):
 
 
 async def test_expired_copy_of_a_running_original_is_deferred_not_dead_lettered(
-    broker, backend, rec, guard_backend,
+    broker,
+    backend,
+    rec,
+    guard_backend,
 ) -> None:
     """Sonst läge eine Kopie in der DLQ, während das Original noch läuft und
     gleich erfolgreich abschließt."""
     await guard_backend.execution_guard.claim(
-        "t-1", owner="original", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3,
+        "t-1",
+        owner="original",
+        retry_count=0,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=3,
     )
     worker = _worker(broker, backend, rec, guard_backend.execution_guard, ExpiringTask)
 
@@ -326,7 +353,8 @@ async def test_shutdown_nack_comes_before_any_claim(broker, backend, rec, guard_
 async def test_rate_limit_requeue_frees_running_before_the_copy(broker, backend, rec, guard_backend) -> None:
     worker = _worker(broker, backend, rec, guard_backend.execution_guard, CountedTask)
     worker._rate_limiter.check = rec.spy(
-        "rate_limiter.check", RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
+        "rate_limiter.check",
+        RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
     )
     seen: list[str] = []
 

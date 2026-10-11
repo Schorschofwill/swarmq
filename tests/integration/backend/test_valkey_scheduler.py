@@ -61,9 +61,7 @@ class TestPollIndexHygiene:
 class TestZsetRoundtrip:
     # Seit U15 über den ``schedules``-Store-Vertrag: ``put`` indiziert,
     # ``poll_due`` liest fällige Einträge, ``remove`` räumt zset+hash.
-    async def test_put_then_poll_due_returns_member(
-        self, backend, schedule_name
-    ):
+    async def test_put_then_poll_due_returns_member(self, backend, schedule_name):
         await backend.schedules.put(schedule_name, b"def", 1_700_000_000_000)
         rows = await backend.schedules.poll_due(1_700_000_000_000, limit=100)
         assert schedule_name in [name for name, _, _ in rows]
@@ -134,9 +132,7 @@ class TestSchedfireDedup:
         # After expiry the key is gone, SETNX succeeds again
         assert await backend.schedules.mark_fire_completed(key, 60_000) is True
 
-    async def test_clear_inflight_lets_next_caller_reclaim(
-        self, backend, schedule_name
-    ):
+    async def test_clear_inflight_lets_next_caller_reclaim(self, backend, schedule_name):
         # P0-B: clearing the in-flight claim (non-terminal outcome) must
         # NOT write the completed marker and must let the next delivery
         # re-claim the slot.
@@ -151,9 +147,7 @@ class TestSchedfireDedup:
         # A redelivery / retry can now re-claim and run.
         assert await backend.schedules.claim_fire(key, 60_000) is True
 
-    async def test_clear_inflight_is_idempotent_when_absent(
-        self, backend, schedule_name
-    ):
+    async def test_clear_inflight_is_idempotent_when_absent(self, backend, schedule_name):
         # Deleting a non-existent in-flight key is a harmless no-op
         # (covers the "claim already expired via short TTL" race).
         key = f"{schedule_name}:1700000000000"
@@ -195,8 +189,6 @@ class TestHandoverMarker:
     async def test_get_and_del_clears_multiple_markers(self, backend):
         """If two leaders left markers back-to-back, clean up all of them."""
         for _ in range(3):
-            await backend.schedules.set_handover_marker(
-                uuid.uuid4().hex, 5_000
-            )
+            await backend.schedules.set_handover_marker(uuid.uuid4().hex, 5_000)
         assert await backend.schedules.take_handover_marker() is True
         assert await backend.schedules.take_handover_marker() is False

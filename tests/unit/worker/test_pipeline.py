@@ -204,9 +204,7 @@ async def test_faf_acks_exactly_once_and_no_verb_after_failure(broker, backend, 
 async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(broker, backend, rec) -> None:
     backend.store_result = rec.spy("backend.store_result", exc=BackendConnectionError("down"))
     worker = _worker(broker, backend, rec, PlainTask)
-    msg = make_message(
-        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
-    )
+    msg = make_message(_payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH})
 
     await worker._handle_message(msg)
 
@@ -218,13 +216,9 @@ async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(br
     assert "backend.schedules.mark_fire_completed" not in rec.calls
 
 
-async def test_terminal_release_in_finally_releases_after_ack_and_writes_completed_marker(
-    broker, backend, rec
-) -> None:
+async def test_terminal_release_in_finally_releases_after_ack_and_writes_completed_marker(broker, backend, rec) -> None:
     worker = _worker(broker, backend, rec, PlainTask)
-    msg = make_message(
-        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
-    )
+    msg = make_message(_payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH})
 
     await worker._handle_message(msg)
 
@@ -274,9 +268,7 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
     chain = MagicMock()
     chain.run_pre_execute = AsyncMock(side_effect=RuntimeError("hook exploded"))
     worker = _worker(broker, backend, rec, PlainTask, middleware_chain=lambda: chain)
-    msg = make_message(
-        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
-    )
+    msg = make_message(_payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH})
 
     await worker._handle_message(msg)
 
@@ -400,6 +392,7 @@ class TestRejectReasons:
     async def test_broken_middleware_chain_factory_carries_the_identity(self, broker, backend):
         """B14, zweiter Weg mit dekodiertem Body: Auch hier stehen Kennung und
         Name fest, bevor die Kette gebaut wird."""
+
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok-id", queues=["default"])
 
@@ -424,6 +417,7 @@ class TestRejectReasons:
 
     async def test_broken_middleware_chain_factory_logs_error_fields(self, broker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17)."""
+
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok-log", queues=["default"])
 
@@ -445,6 +439,7 @@ class TestRejectReasons:
         assert entry["logger"] == "swarmq.worker.pipeline"
         assert entry["log_level"] == "error"
         assert entry["error_type"] == "RuntimeError" and entry["error"] == "factory exploded"
+
 
 class _LockedForLog(Task):
     task_info = TaskInfo(name="locked_for_log", queues=["default"], lock="resource", hard_timeout=60)
@@ -557,7 +552,10 @@ async def test_workflow_step_publisher_runs_middleware_then_signals():
     registry = TaskRegistry()
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
     worker = Worker(
-        broker=broker, backend=backend, registry=registry, config=config,
+        broker=broker,
+        backend=backend,
+        registry=registry,
+        config=config,
         middleware_chain=MiddlewareChain([_EnqueueRecorder(calls)]),
     )
 
@@ -567,8 +565,14 @@ async def test_workflow_step_publisher_runs_middleware_then_signals():
     worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
 
     step = WorkflowStep(
-        workflow_id="wf-1", step_path="/1", task_id="t1", task_name="echo",
-        queue="default", args=[1], kwargs={}, headers={"x-swarmq-workflow-step": "/1"},
+        workflow_id="wf-1",
+        step_path="/1",
+        task_id="t1",
+        task_name="echo",
+        queue="default",
+        args=[1],
+        kwargs={},
+        headers={"x-swarmq-workflow-step": "/1"},
     )
     publisher = WorkflowStepEnqueuer(
         publish=worker._publish_workflow_step,

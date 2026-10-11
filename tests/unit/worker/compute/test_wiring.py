@@ -48,8 +48,11 @@ def _worker(pool: str = "cpu", **cfg):
     dispatcher = MagicMock()
     dispatcher.dispatch = AsyncMock()
     return SimpleNamespace(
-        _config=config, _registry=_Registry({"t": _T}), _gate_deps=MagicMock(config=config),
-        _signal_dispatcher=dispatcher, _executor="original",
+        _config=config,
+        _registry=_Registry({"t": _T}),
+        _gate_deps=MagicMock(config=config),
+        _signal_dispatcher=dispatcher,
+        _executor="original",
     )
 
 
@@ -57,7 +60,11 @@ def test_preload_modules_are_the_task_modules():
     # Unter pytest ist __main__ ein Konsolenskript (per Pfad geladen) -> "__main__".
     # U8 (KTD10): das Preload-Modul kommt zuerst, das Hauptmodul bleibt enthalten.
     assert wiring.preload_modules(_Registry({"t": _T})) == [
-        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+        "swarmq.worker.compute.preload",
+        "__main__",
+        "swarmq.logging",
+        "swarmq.worker.compute.child",
+        __name__,
     ]
 
 
@@ -84,7 +91,11 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     executor = await wiring.start_compute_executor(w)
     assert isinstance(executor, ComputeExecutor) and w._executor is executor
     assert seen["preload"] == [
-        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+        "swarmq.worker.compute.preload",
+        "__main__",
+        "swarmq.logging",
+        "swarmq.worker.compute.child",
+        __name__,
     ]
     assert seen["kw"] == {"thread_limit": 1, "malloc_trim_threshold": 131072, "malloc_arena_max": 2}
     assert w._compute_handle is handle
@@ -160,7 +171,10 @@ def test_preload_includes_the_child_runtime_modules():
     registry = SimpleNamespace(get_all=lambda: {"demo": Demo})
     preload = preload_modules(registry)
     assert preload[:4] == [
-        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child",
+        "swarmq.worker.compute.preload",
+        "__main__",
+        "swarmq.logging",
+        "swarmq.worker.compute.child",
     ]
     assert preload.count("__main__") == 1 and "tests.demo_tasks" in preload
 

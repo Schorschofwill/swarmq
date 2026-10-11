@@ -64,7 +64,8 @@ def no_jitter(monkeypatch):
     """Zufallsquelle des Jitters auf 1,0: die Wartezeit ist exakt pruefbar.
     Das Jitter-Band prueft ``test_gate_deferral_delay_is_jittered``."""
     monkeypatch.setattr(
-        gates_module, "backend_defer_delay",
+        gates_module,
+        "backend_defer_delay",
         functools.partial(backend_defer_delay, uniform=lambda low, high: 1.0),
     )
 
@@ -77,7 +78,11 @@ async def test_first_deferral_publishes_to_delay_queue_with_base_delay(worker, b
     msg = make_message(_default_payload())
 
     outcome = await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     assert outcome is Redelivered
@@ -90,8 +95,13 @@ async def test_error_reply_is_requeued_in_place_not_deferred(worker, broker, swa
     msg = make_message(_default_payload())
 
     outcome = await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendResponseError("WRONGTYPE"), gate="schedfire",
-        stage="inflight_claim", schedfire_key="s:1",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendResponseError("WRONGTYPE"),
+        gate="schedfire",
+        stage="inflight_claim",
+        schedfire_key="s:1",
     )
 
     assert outcome is Redelivered
@@ -114,7 +124,11 @@ async def test_deferral_keeps_all_headers_and_sets_defer_count(worker, broker):
     msg = make_message(_default_payload(), headers=dict(original))
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     headers = broker.retry_later.await_args.kwargs["headers"]
@@ -131,7 +145,11 @@ async def test_deferral_drops_broker_delivery_counters(worker, broker):
     )
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     headers = broker.retry_later.await_args.kwargs["headers"]
@@ -144,13 +162,16 @@ async def test_followup_deferral_increments_count_and_doubles_delay(worker, brok
     msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 3})
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     kwargs = broker.retry_later.await_args.kwargs
     assert kwargs["headers"][HEADER_BACKEND_DEFER_COUNT] == 4
     assert kwargs["delay_ms"] == 8000
-
 
 
 async def test_gate_deferral_delay_is_jittered(worker, broker, monkeypatch):
@@ -161,8 +182,11 @@ async def test_gate_deferral_delay_is_jittered(worker, broker, monkeypatch):
     delays = set()
     for _ in range(20):
         await defer_backend_unavailable(
-            worker._gate_deps, make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 3}),
-            _ctx(), BackendConnectionError("down"), gate="cancel",
+            worker._gate_deps,
+            make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 3}),
+            _ctx(),
+            BackendConnectionError("down"),
+            gate="cancel",
         )
         delays.add(broker.retry_later.await_args.kwargs["delay_ms"])
 
@@ -178,7 +202,11 @@ async def test_broker_redelivered_message_restarts_the_defer_count(worker, broke
     msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 5, counter: 1})
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     kwargs = broker.retry_later.await_args.kwargs
@@ -191,7 +219,11 @@ async def test_followup_deferral_delay_is_capped_by_config(worker, broker):
     msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 9})
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     assert broker.retry_later.await_args.kwargs["delay_ms"] == 5000
@@ -202,7 +234,11 @@ async def test_malformed_defer_count_counts_as_first_deferral(worker, broker, ra
     msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: raw})
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("down"),
+        gate="cancel",
     )
 
     kwargs = broker.retry_later.await_args.kwargs
@@ -214,7 +250,11 @@ async def test_deferral_logs_warning_with_attempt_delay_and_error(worker, broker
     msg = make_message(_default_payload(), headers={HEADER_BACKEND_DEFER_COUNT: 1})
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("valkey down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("valkey down"),
+        gate="cancel",
     )
 
     [entry] = [e for e in swarmq_logs if e["event"] == "task_deferred_backend_unavailable"]
@@ -237,7 +277,11 @@ async def test_failed_deferral_publish_falls_back_to_redeliver(worker, broker, s
     msg = make_message(_default_payload())
 
     outcome = await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("valkey down"), gate="cancel",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("valkey down"),
+        gate="cancel",
     )
 
     assert outcome is Redelivered
@@ -254,8 +298,13 @@ async def test_deferral_event_carries_stage_and_gate_context(worker, broker, swa
     msg = make_message(_default_payload())
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("valkey down"),
-        gate="cancel", stage="workflow_cancel_check", workflow_id="wf-1",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("valkey down"),
+        gate="cancel",
+        stage="workflow_cancel_check",
+        workflow_id="wf-1",
     )
 
     [entry] = [e for e in swarmq_logs if e["event"] == "task_deferred_backend_unavailable"]
@@ -270,8 +319,13 @@ async def test_failed_deferral_log_keeps_stage_context_and_backend_error(worker,
     msg = make_message(_default_payload())
 
     await defer_backend_unavailable(
-        worker._gate_deps, msg, _ctx(), BackendConnectionError("valkey down"),
-        gate="schedfire", stage="completed_check", schedfire_key="s:1",
+        worker._gate_deps,
+        msg,
+        _ctx(),
+        BackendConnectionError("valkey down"),
+        gate="schedfire",
+        stage="completed_check",
+        schedfire_key="s:1",
     )
 
     [entry] = [e for e in swarmq_logs if e["event"] == "task_defer_failed_redelivered"]

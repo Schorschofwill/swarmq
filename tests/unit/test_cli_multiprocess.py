@@ -26,13 +26,15 @@ class TestAutoscaleRangeParser:
 
     def test_rejects_min_below_one(self):
         with pytest.raises(
-            argparse.ArgumentTypeError, match="1 <= MIN <= MAX",
+            argparse.ArgumentTypeError,
+            match="1 <= MIN <= MAX",
         ):
             _autoscale_range("0,3")
 
     def test_rejects_max_below_min(self):
         with pytest.raises(
-            argparse.ArgumentTypeError, match="1 <= MIN <= MAX",
+            argparse.ArgumentTypeError,
+            match="1 <= MIN <= MAX",
         ):
             _autoscale_range("5,2")
 
@@ -121,21 +123,30 @@ class TestReloadFlag:
         d1.mkdir()
         d2.mkdir()
         parser = _build_parser()
-        args = parser.parse_args([
-            "worker", "--module=x",
-            "--reload",
-            "--watch-dir", str(d1),
-            "--watch-dir", str(d2),
-        ])
+        args = parser.parse_args(
+            [
+                "worker",
+                "--module=x",
+                "--reload",
+                "--watch-dir",
+                str(d1),
+                "--watch-dir",
+                str(d2),
+            ]
+        )
         assert args.watch_dir == [str(d1.resolve()), str(d2.resolve())]
 
     def test_watch_dir_invalid_path_exits(self):
         parser = _build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args([
-                "worker", "--module=x",
-                "--watch-dir", "/definitely/not/existing/path/xyz",
-            ])
+            parser.parse_args(
+                [
+                    "worker",
+                    "--module=x",
+                    "--watch-dir",
+                    "/definitely/not/existing/path/xyz",
+                ]
+            )
 
 
 class TestMainRouting:
@@ -149,8 +160,10 @@ class TestMainRouting:
 
     def test_default_routes_to_supervisor(self):
         """R20 (Plan 2026-09-03-001): auch --processes 1 laeuft unter dem Supervisor."""
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp:
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp,
+        ):
             rc = main(["worker", "--module=ignore.me"])
             rmp.assert_called_once()
             ns = rmp.call_args[0][0]
@@ -162,12 +175,17 @@ class TestMainRouting:
         """CLI > Env > Default: ohne Flag gilt im Supervisor (Gruppenschluessel,
         Autoscale-Sampler, Slots) das Env, wie im Worker."""
         env = self._env() | {
-            "SWARMQ_QUEUES": "envq", "SWARMQ_CONCURRENCY": "5",
-            "SWARMQ_BURST_MODE": "true", "SWARMQ_BURST_IDLE_TIMEOUT": "2.5",
-            "SWARMQ_PRIORITIES": "true", "SWARMQ_METRICS_PORT": "9100",
+            "SWARMQ_QUEUES": "envq",
+            "SWARMQ_CONCURRENCY": "5",
+            "SWARMQ_BURST_MODE": "true",
+            "SWARMQ_BURST_IDLE_TIMEOUT": "2.5",
+            "SWARMQ_PRIORITIES": "true",
+            "SWARMQ_METRICS_PORT": "9100",
         }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp:
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp,
+        ):
             main(["worker", "--module=ignore.me"])
         ns = rmp.call_args.args[0]
         assert (ns.queues, ns.concurrency, ns.burst, ns.burst_idle_timeout) == (["envq"], 5, True, 2.5)
@@ -175,24 +193,40 @@ class TestMainRouting:
 
     def test_supervisor_flags_win_over_environment(self):
         env = self._env() | {
-            "SWARMQ_QUEUES": "envq", "SWARMQ_CONCURRENCY": "5",
-            "SWARMQ_BURST_IDLE_TIMEOUT": "2.5", "SWARMQ_METRICS_PORT": "9100",
+            "SWARMQ_QUEUES": "envq",
+            "SWARMQ_CONCURRENCY": "5",
+            "SWARMQ_BURST_IDLE_TIMEOUT": "2.5",
+            "SWARMQ_METRICS_PORT": "9100",
         }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp:
-            main([
-                "worker", "--module=ignore.me", "--queues", "cliq", "--concurrency", "20",
-                "--burst-idle-timeout", "7", "--metrics-port", "8000",
-            ])
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as rmp,
+        ):
+            main(
+                [
+                    "worker",
+                    "--module=ignore.me",
+                    "--queues",
+                    "cliq",
+                    "--concurrency",
+                    "20",
+                    "--burst-idle-timeout",
+                    "7",
+                    "--metrics-port",
+                    "8000",
+                ]
+            )
         ns = rmp.call_args.args[0]
         assert (ns.queues, ns.concurrency, ns.burst_idle_timeout, ns.metrics_port) == (["cliq"], 20, 7.0, 8000)
 
     def test_processes_gt_one_routes_to_supervisor(self):
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.run_multi_process_worker",
-                 return_value=0,
-             ) as rmp:
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.run_multi_process_worker",
+                return_value=0,
+            ) as rmp,
+        ):
             rc = main(["worker", "--module=ignore.me", "--processes", "3"])
             rmp.assert_called_once()
             ns = rmp.call_args.args[0]
@@ -207,10 +241,14 @@ class TestMainRouting:
         with patch(
             "swarmq.process_manager.run.run_multi_process_worker",
         ) as rmp:
-            rc = main([
-                "worker", "--module=json",
-                "--reload", "--check",
-            ])
+            rc = main(
+                [
+                    "worker",
+                    "--module=json",
+                    "--reload",
+                    "--check",
+                ]
+            )
         assert rc == 0
         rmp.assert_not_called()  # supervisor NOT started
         out = capsys.readouterr().out
@@ -223,10 +261,13 @@ class TestMainRouting:
         """--check returns 1 with JSON error when --module unresolvable."""
         import json
 
-        rc = main([
-            "worker", "--module=nope.xyz.unresolvable",
-            "--check",
-        ])
+        rc = main(
+            [
+                "worker",
+                "--module=nope.xyz.unresolvable",
+                "--check",
+            ]
+        )
         assert rc == 1
         out = capsys.readouterr().out
         payload = json.loads(out)
@@ -274,32 +315,39 @@ class TestMainRouting:
         stdout payload."""
         import json
 
-        rc = main([
-            "worker", "--module=json",
-            "--watch-dir", "/definitely/not/existing/path/xyz",
-            "--check",
-        ])
+        rc = main(
+            [
+                "worker",
+                "--module=json",
+                "--watch-dir",
+                "/definitely/not/existing/path/xyz",
+                "--check",
+            ]
+        )
         assert rc == 1
         payload = json.loads(capsys.readouterr().out)
         assert payload["ok"] is False
         assert payload["error_type"] == "ArgparseError"
-        assert "watch-dir" in payload["error"].lower() or \
-               "not an existing directory" in payload["error"]
+        assert "watch-dir" in payload["error"].lower() or "not an existing directory" in payload["error"]
 
     def test_check_warns_on_reload_burst_combo(self, capsys):
         """R5.3 ce-review pass 2 #25: --reload + --burst emits a
         structured warning in the JSON payload."""
         import json
 
-        rc = main([
-            "worker", "--module=json", "--reload", "--burst", "--check",
-        ])
+        rc = main(
+            [
+                "worker",
+                "--module=json",
+                "--reload",
+                "--burst",
+                "--check",
+            ]
+        )
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["ok"] is True
-        assert any(
-            "reload_burst_conflict" in w for w in payload["warnings"]
-        )
+        assert any("reload_burst_conflict" in w for w in payload["warnings"])
 
     def test_check_rejects_proc_watch_dir(self, capsys):
         """R5.3 ce-review pass 2 #22 / ADV-01: pseudo-filesystem paths
@@ -307,11 +355,16 @@ class TestMainRouting:
         JSON error contract."""
         import json
 
-        rc = main([
-            "worker", "--module=json", "--reload",
-            "--watch-dir", "/proc",
-            "--check",
-        ])
+        rc = main(
+            [
+                "worker",
+                "--module=json",
+                "--reload",
+                "--watch-dir",
+                "/proc",
+                "--check",
+            ]
+        )
         assert rc == 1
         payload = json.loads(capsys.readouterr().out)
         assert payload["ok"] is False
@@ -343,11 +396,13 @@ class TestMainRouting:
         """R5.3 ce-review #1: --reload (without --processes or --autoscale)
         must activate the multi-process supervisor — otherwise the flag is
         a silent no-op and R-1 is not met."""
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.run_multi_process_worker",
-                 return_value=0,
-             ) as rmp:
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.run_multi_process_worker",
+                return_value=0,
+            ) as rmp,
+        ):
             rc = main(["worker", "--module=ignore.me", "--reload"])
             rmp.assert_called_once()
             ns = rmp.call_args.args[0]
@@ -356,11 +411,13 @@ class TestMainRouting:
             assert rc == 0
 
     def test_autoscale_routes_to_supervisor(self):
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.run_multi_process_worker",
-                 return_value=0,
-             ) as rmp:
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.run_multi_process_worker",
+                return_value=0,
+            ) as rmp,
+        ):
             main(["worker", "--module=ignore.me", "--autoscale", "2,5"])
             rmp.assert_called_once()
             ns = rmp.call_args.args[0]
@@ -371,17 +428,15 @@ class TestMainRouting:
         from swarmq.exceptions import ConfigurationError
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.run_multi_process_worker",
-                 side_effect=ConfigurationError("boom"),
-             ):
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.run_multi_process_worker",
+                side_effect=ConfigurationError("boom"),
+            ),
+        ):
             rc = main(["worker", "--module=x", "--processes", "2"])
             assert rc == CONFIG_ERROR_EXIT_CODE
-
-
-
-
 
 
 class TestSupervisorConfigErrorExitCode:
@@ -397,11 +452,22 @@ class TestSupervisorConfigErrorExitCode:
         import argparse
 
         ns = argparse.Namespace(
-            module="json", queues=["default"], concurrency=None,
-            log_level="INFO", log_format="human", burst=False,
-            burst_idle_timeout=5.0, priorities=False, metrics_port=None,
-            health_port=None, processes=1, autoscale=None, reload=False,
-            watch_dir=None, check=False, pool="io",
+            module="json",
+            queues=["default"],
+            concurrency=None,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            processes=1,
+            autoscale=None,
+            reload=False,
+            watch_dir=None,
+            check=False,
+            pool="io",
         )
         for k, v in over.items():
             setattr(ns, k, v)
@@ -453,8 +519,7 @@ class TestHeadroomExitCode:
     def test_max_processes_below_processes_exits_78(self):
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager") as PM:
+        with patch.dict(os.environ, self._env(), clear=False), patch("swarmq.process_manager.run.ProcessManager") as PM:
             rc = main(["worker", "--module=json", "--processes", "8", "--max-processes", "4"])
         assert rc == CONFIG_ERROR_EXIT_CODE
         PM.assert_not_called()
@@ -462,8 +527,7 @@ class TestHeadroomExitCode:
     def test_max_processes_below_autoscale_upper_bound_exits_78(self):
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager") as PM:
+        with patch.dict(os.environ, self._env(), clear=False), patch("swarmq.process_manager.run.ProcessManager") as PM:
             rc = main(["worker", "--module=json", "--autoscale", "2,8", "--max-processes", "4"])
         assert rc == CONFIG_ERROR_EXIT_CODE
         PM.assert_not_called()
@@ -547,11 +611,15 @@ class TestCheckValidatesLogging:
         import json
 
         bad = tmp_path / "bad.json"
-        bad.write_text(json.dumps({
-            "version": 1,
-            "handlers": {"err": {"class": "logging.StreamHandlr"}},
-            "root": {"handlers": ["err"]},
-        }))
+        bad.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "handlers": {"err": {"class": "logging.StreamHandlr"}},
+                    "root": {"handlers": ["err"]},
+                }
+            )
+        )
         rc, payload = self._check(capsys, "--log-config", str(bad))
         assert rc == 1
         assert payload["ok"] is False
