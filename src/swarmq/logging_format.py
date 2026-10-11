@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from typing import Any
+from typing import Any, override
 
 import structlog
 
@@ -28,6 +28,7 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
     denselben Renderer wie jede andere Zeile.
     """
 
+    @override
     def format(self, record: logging.LogRecord) -> str:
         try:
             return super().format(record)

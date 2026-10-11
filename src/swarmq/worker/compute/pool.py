@@ -136,6 +136,9 @@ class SlotPool:
         self._threads: dict[int, threading.Thread] = {}
         self._closing = False
         self._background: set[asyncio.Task[None]] = set()
+        # Weiterleitungen von Fortschritt: starke Referenz, sonst sammelt gc einen
+        # Task ein, dessen Sink auf ein sonst unreferenziertes Future wartet.
+        self._progress_forwards: set[asyncio.Task[None]] = set()
         self.stats = PoolStats()
         self.consecutive_unavailable = 0  # Handshake-Fehler in Folge; 0 nach jedem Ready
         # Diagnose (Messnachweis M0): (Dauer process.start(), Zeit bis Ready) je Spawn in ms.
@@ -510,7 +513,9 @@ class SlotPool:
         async def _forward() -> None:
             await sink(msg)
 
-        self._loop.create_task(_forward())
+        task = self._loop.create_task(_forward())
+        self._progress_forwards.add(task)
+        task.add_done_callback(self._progress_forwards.discard)
 
     # ------------------------------------------------------------------ Recycling und Kill
 

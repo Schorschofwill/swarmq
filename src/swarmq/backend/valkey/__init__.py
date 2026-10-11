@@ -13,7 +13,7 @@ Die heutigen Schedule-/Schedfire-Methodennamen bleiben als Aliase, die an
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from swarmq.backend.valkey.chords import ChordManager
 from swarmq.backend.valkey.execution_guard import ValkeyExecutionGuardStore
@@ -65,11 +65,13 @@ class ValkeyBackend(ValkeyResults):
             self._execution_guard = ValkeyExecutionGuardStore(self.client, keys=self._keys)
         return self._execution_guard
 
+    @override
     async def close(self) -> None:
         await super().close()
         # Die Stores halten den alten Client; nach close() neu aufbauen.
         self._drop_stores()
 
+    @override
     def reconcile_namespace(self, configured: str | None) -> str | None:
         keys = self._keys
         effective = super().reconcile_namespace(configured)

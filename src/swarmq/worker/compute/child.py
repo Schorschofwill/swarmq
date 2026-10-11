@@ -202,7 +202,7 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
         envelope = error_envelope(job.task_id, exc, **meta)
     finally:
         if token is not None:
-            request_container.reset(token)
+            token.var.reset(token)  # dieselbe ContextVar wie request_container
         if scope is not None:
             et = type(caught) if caught is not None else None
             tb = caught.__traceback__ if caught is not None else None

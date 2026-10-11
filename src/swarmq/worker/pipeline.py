@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 if TYPE_CHECKING:
     from swarmq.health import HealthServer
@@ -218,6 +218,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         if self._metrics is not None:
             self._metrics.count_execution_guard_event(event)
 
+    @override
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current message."""
         return self._middleware_chain_factory()
@@ -238,6 +239,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             drop=self._lock_keeper.drop,
         )
 
+    @override
     async def _on_message(self, message: Any) -> None:
         """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
         # R4.5 Burst-Mode: every delivered message resets the idle clock.
@@ -277,6 +279,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             message, task_id, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
         )
 
+    @override
     async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict[str, Any]) -> PublishReceipt:
         """Publish a next workflow step. Thin adapter so the advancer stays
         broker-agnostic; broker.publish runs on aio_pika's publisher-confirms
@@ -285,6 +288,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         ``WorkflowAdvancer.mark_enqueued`` verlangt (publish-then-mark, AE5)."""
         return await self._broker.publish(queue, body, headers=headers)
 
+    @override
     def _resolve_workflow_queue(self, task_name: str) -> str:
         """Resolve the target queue for a workflow step from the registry,
         applying the priority suffix the same way Client does."""

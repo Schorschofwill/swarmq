@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, override
 
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
 from swarmq.exceptions import SoftTimeoutError
@@ -124,6 +124,7 @@ class ComputeExecutor(TaskExecutor):
             **self._log_fields,
         )
 
+    @override
     async def execute(self, ctx: GateContext, message_dict: Any, chain: Any) -> ExecutionResult:
         task_info = ctx.task_info
         assert task_info is not None

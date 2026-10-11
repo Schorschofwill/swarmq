@@ -17,7 +17,7 @@ execution and would never reach the worker advancement seam (U5).
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any, Union, override
 
 from swarmq.exceptions import WorkflowValidationError
 
@@ -127,6 +127,7 @@ class Signature:
     def __or__(self, other: WorkflowNode) -> Chain:
         return chain(self, other)
 
+    @override
     def __repr__(self) -> str:
         flag = "si" if self.immutable else "s"
         return f"Signature({self.task_name!r}.{flag}{self.args!r})"
@@ -152,6 +153,7 @@ class Chain:
     def __or__(self, other: WorkflowNode) -> Chain:
         return chain(*self.steps, other)
 
+    @override
     def __repr__(self) -> str:
         return f"Chain({self.steps!r})"
 
@@ -185,6 +187,7 @@ class Group:
     def __or__(self, body: WorkflowNode) -> Chord:
         return chord(self, body)
 
+    @override
     def __repr__(self) -> str:
         return f"Group({self.members!r})"
 
@@ -213,6 +216,7 @@ class Chord:
         _validate(node)
         return node
 
+    @override
     def __repr__(self) -> str:
         return f"Chord(header={self.header!r}, body={self.body!r})"
 

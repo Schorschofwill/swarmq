@@ -7,7 +7,7 @@ re-exportiert ihn unveraendert. Mixin ueber dem Client-Zustand.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, override
 
 from swarmq.exceptions import TaskNotFoundError
 from swarmq.logging import get_logger
@@ -45,6 +45,7 @@ class _MissingType:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    @override
     def __repr__(self) -> str:
         return "<_MISSING>"
 

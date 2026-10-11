@@ -174,7 +174,6 @@ def reexec(pm: Any, retcode: int) -> int:
     except OSError as exc:
         logger.error("reload_execvp_failed", **_error_fields(exc))
         return 1
-    return retcode
 
 
 _SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)

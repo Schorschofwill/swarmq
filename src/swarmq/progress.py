@@ -44,7 +44,7 @@ class ProgressInfo:
     @classmethod
     def from_hash(
         cls,
-        raw: Mapping[bytes, bytes] | Mapping[str, str],
+        raw: Mapping[bytes, bytes] | Mapping[str, str] | None,
     ) -> ProgressInfo | None:
         """Decode a Valkey HGETALL response into a ProgressInfo.
 

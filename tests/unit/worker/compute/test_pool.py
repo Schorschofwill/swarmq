@@ -8,12 +8,14 @@ Sentinel als Pipe-Leseende, Signale per gepatchtem ``os.kill``/``os.killpg``.
 from __future__ import annotations
 
 import asyncio
+import gc
 import itertools
 import os
 import pickle
 import queue as _queue
 import signal
 import threading
+import weakref
 from typing import Any, ClassVar
 
 import pytest
@@ -515,6 +517,37 @@ async def test_progress_messages_reach_the_sink(ctx, signals):
     proc.channel.send(("progress", "a", {"current": "1"}, 1000))
     await _settle(lambda: bool(seen))
     assert seen == [("progress", "a", {"current": "1"}, 1000)]
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_progress_forward_survives_gc_while_the_sink_waits(ctx, signals):
+    """Ein Weiterleitungs-Task, dessen Sink auf ein sonst unreferenziertes Future
+    wartet, haengt nur an der schwachen Taskliste der Loop -- ohne starke
+    Referenz raeumt ``gc`` ihn ab, und der Fortschritt kommt nie an."""
+    waiting: list[weakref.ref[asyncio.Future[None]]] = []
+    delivered: list[tuple[Any, ...]] = []
+
+    async def sink(msg: tuple[Any, ...]) -> None:
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiting.append(weakref.ref(fut))
+        await fut
+        delivered.append(msg)
+
+    p = await _make_pool(ctx, slots=1, progress_sink=sink)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+    await _settle(lambda: bool(waiting))
+    gc.collect()
+    fut = waiting[0]()
+    assert fut is not None, "der wartende Weiterleitungs-Task wurde eingesammelt"
+    fut.set_result(None)
+    await _settle(lambda: bool(delivered))
+    assert delivered == [("progress", "a", {"current": "1"}, 1000)]
     proc.channel.send(("result", _result("a", 0)))
     await t1
     await p.aclose()

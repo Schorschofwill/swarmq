@@ -13,7 +13,7 @@ import socket
 import sys
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
@@ -343,6 +343,7 @@ class ProcessManager(RestartBudget):
     # Worker lifecycle
     # ------------------------------------------------------------------
 
+    @override
     def _start_worker(self, slot: int) -> WorkerInfo:
         """Spawn one worker subprocess for ``slot`` and register it."""
         if self._locked_slots_shared is None:  # BZ-27: ein Wert fuer alle Kanaele
@@ -367,10 +368,12 @@ class ProcessManager(RestartBudget):
         return self._slots.state(slot)
 
     @property
+    @override
     def _exhausted_slots(self) -> int:
         """Gesperrte Slots (Budget erschoepft); Begruendung bei ``SlotTable.lock``."""
         return self._slots.locked()
 
+    @override
     def _refresh_slot(self, slot: int) -> None:
         """Slot-Zustand aus den Prozessen ableiten, die ihn noch halten."""
         holders = sum(1 for w in self.workers.values() if w.worker_id == slot)
@@ -613,11 +616,13 @@ class ProcessManager(RestartBudget):
 
     # ---- Uhr und Logger fuer ``restart_budget.py`` (Plan 0.12.0, MR 0, Q17)
 
+    @override
     def _monotonic(self) -> float:
         """Liest ``time`` dieses Moduls, damit ``patch("…supervisor.time")`` greift."""
         return time.monotonic()
 
     @property
+    @override
     def _log(self) -> Any:
         """Logger ``swarmq.process_manager.supervisor`` (Name und Patch-Pfad bleiben)."""
         return logger

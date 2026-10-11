@@ -15,7 +15,7 @@ import importlib
 import pickle
 import traceback
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, override
 
 
 class RemoteTaskError(RuntimeError):
@@ -40,6 +40,7 @@ class UnpicklableResult:
     def __init__(self, reason: str) -> None:
         self.reason = reason
 
+    @override
     def __repr__(self) -> str:
         return f"UnpicklableResult({self.reason!r})"
 

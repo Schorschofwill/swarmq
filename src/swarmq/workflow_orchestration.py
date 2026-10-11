@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from swarmq.contracts import PublishReceipt
 from swarmq.contracts.coordination import ChordStore
@@ -288,6 +288,7 @@ class WorkflowAdvancer(WorkflowFailure):
         except _WorkflowAlreadyTerminal:
             return
 
+    @override
     async def _reconcile(self, wf_id: str, local: dict[str, Any]) -> None:
         """Konfliktbehandlung (R23): den frischen Zustand lesen und die lokalen
         Aenderungen hineinmergen statt den Advance zu wiederholen -- publiziert

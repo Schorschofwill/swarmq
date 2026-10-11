@@ -12,7 +12,7 @@ import socket
 import time
 import uuid
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, override
 
 import msgspec
 
@@ -39,7 +39,7 @@ from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.stepdown import SchedulerStepdown
 from swarmq.scheduler.sync import SchedulerCronSync
 from swarmq.scheduler.unowned import SchedulerUnowned
-from swarmq.scheduler.unroutable import SchedulerUnroutable
+from swarmq.scheduler.unroutable import SchedulerUnroutable, _SchedulerState
 from swarmq.scheduler.valkey_watch import SchedulerValkeyWatch
 
 logger = get_logger(__name__)
@@ -64,8 +64,6 @@ _HANDOVER_MARKER_TTL_MS_FLOOR = 5_000
 observes the marker on its next election tick — otherwise every
 clean handover would time out before the successor polls and emit
 FAILOVER instead of LEADER."""
-
-_SchedulerState = Literal["standby", "leader", "stopped"]
 
 
 def _make_owner_token() -> str:
@@ -540,11 +538,13 @@ class SchedulerLoop(
 
     # ---- helpers --------------------------------------------------------
 
+    @override
     def _wall_time(self) -> float:
         """Wanduhr fuer ``fire.py``; liest ``time`` dieses Moduls (Q17)."""
         return time.time()
 
     @property
+    @override
     def _log(self) -> Any:
         """Logger fuer ``fire.py``: Name und Patch-Pfad bleiben ``swarmq.scheduler.loop`` (Q17)."""
         return logger
@@ -556,6 +556,7 @@ class SchedulerLoop(
         except TimeoutError:
             return
 
+    @override
     async def _emit(self, signal: Signal, **extra: Any) -> None:
         try:
             await self._signals.dispatch(signal, worker_id=self._worker_id, **extra)

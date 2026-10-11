@@ -87,7 +87,7 @@ class ResultTail:
         if result_ttl is None:
             result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else self._deps.config.result_ttl
         if result_ttl is None:
-            result_ttl = 86400
+            result_ttl = 86400  # type: ignore[unreachable]  # Fallback fuer untypisiert gesetztes config.result_ttl=None
         return result_ttl
 
     def _extract_workflow_id(self, delivery: Any, ctx: GateContext) -> str | None:

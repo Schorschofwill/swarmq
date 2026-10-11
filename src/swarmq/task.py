@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 
 from croniter import CroniterBadCronError, croniter
 
@@ -295,6 +295,7 @@ class Task:
     # class-level instance would be shared across all Task instances).
     _progress_lock: asyncio.Lock | None = None
 
+    @override
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         if hasattr(cls, "task_info"):

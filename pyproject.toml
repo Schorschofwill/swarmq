@@ -138,6 +138,22 @@ markers = [
 # (warn_unused_ignores meldet tote Suppressions).
 strict = true
 warn_unused_ignores = true
+# Plan 2026-10-11-1200 (KTD6): Zusatzcodes jenseits von --strict, das Set
+# von Litestar plus die für async-Code wichtigen (unused-awaitable).
+warn_unreachable = true
+enable_error_code = [
+    "ignore-without-code",
+    "truthy-bool",
+    "truthy-iterable",
+    "redundant-expr",
+    "redundant-self",
+    "possibly-undefined",
+    "unused-awaitable",
+    "deprecated",
+    "exhaustive-match",
+    "mutable-override",
+    "explicit-override",
+]
 packages = ["swarmq"]
 mypy_path = "src"
 

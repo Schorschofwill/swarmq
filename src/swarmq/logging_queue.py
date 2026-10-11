@@ -19,7 +19,7 @@ import queue
 import sys
 import threading
 import weakref
-from typing import Any
+from typing import Any, override
 
 from swarmq.logging_drain import (
     Deadline,
@@ -64,7 +64,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
 
     # typeshed kennt nur die oeffentliche Schnittstelle; ``_thread``,
     # ``_monitor`` und ``_sentinel`` sind seit 3.2 unveraendert.
-    queue: _ListenerQueue
+    queue: _ListenerQueue  # type: ignore[mutable-override]  # stdlib-Attribut, nur im Konstruktor gesetzt
     _thread: threading.Thread | None
     _sentinel: None
     _monitor: Any
@@ -99,6 +99,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         thread = self._thread
         return thread is not None and thread.is_alive()
 
+    @override
     def start(self) -> None:
         """Idempotent: unter 3.14 wirft der Basis-``start`` beim zweiten Mal."""
         with _LISTENER_LOCK:
@@ -113,6 +114,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         2026-10-06-1811, KTD2)."""
         self._reports.serve(self._monitor)
 
+    @override
     def stop(self) -> None:
         """Wie der Basis-``stop``, aber auf dem eigenen Thread: Zwischen dem
         Ende des Threads und dem Vergessen kann ein Eintrag (``running`` ist
@@ -128,6 +130,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
             if self._thread is thread:
                 self._thread = None
 
+    @override
     def handle(self, record: logging.LogRecord) -> None:
         """Faengt jede ``Exception`` pro Record (Plan 2026-10-06-1811, KTD1):
         Der stdlib-``_monitor`` faengt nichts, ein werfender Handler, Filter
@@ -138,6 +141,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     def _dispatch(self, record: logging.LogRecord) -> None:
         super().handle(record)
 
+    @override
     def dequeue(self, block: bool) -> Any:
         """Eine per ``Queue.shutdown`` geschlossene, leere Queue beendet den
         Thread wie ``queue.Empty`` statt mit einer Ausnahme."""
@@ -146,6 +150,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         except queue.ShutDown:
             raise queue.Empty from None
 
+    @override
     def enqueue_sentinel(self) -> None:
         """Blockierend: Bei voller Queue wuerde ``put_nowait`` werfen; der
         laufende Listener schafft Platz. Eine geschlossene Queue braucht
@@ -198,8 +203,8 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     Der Listener startet lazy beim ersten Eintrag.
     """
 
-    queue: _LogQueue
-    listener: _SwarmqQueueListener | None
+    queue: _LogQueue  # type: ignore[mutable-override]  # stdlib-Attribut, nur im Konstruktor gesetzt
+    listener: _SwarmqQueueListener | None  # type: ignore[mutable-override]  # nur intern gesetzt
 
     def __init__(
         self,
@@ -216,10 +221,12 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         self._abandoned: threading.Thread | None = None
         _HANDLERS.add(self)
 
+    @override
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """Pass the record through without formatting."""
         return record
 
+    @override
     def enqueue(self, record: logging.LogRecord) -> None:
         abandoned = self._abandoned
         if abandoned is not None:
@@ -321,10 +328,12 @@ class _OptinQueueListener(_SwarmqQueueListener):
     also die Elternkette von ``swarmq`` -- ohne Schnappschuss.
     """
 
+    @override
     def fork_targets(self) -> list[logging.Handler]:
         """Die Root-Handler: an sie gibt der Thread weiter."""
         return list(logging.getLogger().handlers)
 
+    @override
     def _dispatch(self, record: logging.LogRecord) -> None:
         context = record.__dict__.pop(_CONTEXT_ATTR, None)
         if context is None:
@@ -363,6 +372,7 @@ class _OptinQueueHandler(_StructlogQueueHandler):
         super().__init__(queue_, json=json)
         self.listener = _OptinQueueListener(queue_)
 
+    @override
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """Haengt den Kontext des Aufrufers an (O(1)): Filter der App, die
         Kontextvariablen lesen, arbeiten im Listener wie im Aufrufer."""

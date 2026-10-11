@@ -40,6 +40,7 @@ from swarmq.signals import Signal
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
     from swarmq.contracts.coordination import LockStore, LockToken
+    from swarmq.scheduler.unroutable import _SchedulerState
 
 # Mindestzahl Publish-Fehler in einer Serie vor dem Ruecktritt.
 _MIN_FAILURES_FOR_STEPDOWN = 2
@@ -102,7 +103,7 @@ class SchedulerStepdown:
         _config: SwarmQConfig
         _lock_manager: LockStore
         _lock_token: LockToken
-        _state: str
+        _state: _SchedulerState
         _prev_leader_seen: bool
 
         @property

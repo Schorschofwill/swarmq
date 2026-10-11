@@ -161,7 +161,7 @@ class ConsumerWatch:
                 await asyncio.wait_for(self._wake.wait(), timeout=interval_s)
             self._wake.clear()
             if self._stopping:
-                return
+                return  # type: ignore[unreachable]  # stop() setzt _stopping waehrend des await
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 - gescheiterter Takt darf Waechter nicht beenden

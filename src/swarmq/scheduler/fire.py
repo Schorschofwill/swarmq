@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
     from swarmq.contracts import Publisher
     from swarmq.scheduler.definition import ScheduleStore
+    from swarmq.scheduler.unroutable import _SchedulerState
     from swarmq.signals import SignalDispatcher
 
 
@@ -36,7 +37,7 @@ class SchedulerFire:
         _store: ScheduleStore
         _signals: SignalDispatcher
         _owner_token: str
-        _state: str
+        _state: _SchedulerState
         _reported_names: frozenset[str]
 
         @property

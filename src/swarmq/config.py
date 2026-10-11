@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass, field
-from typing import ClassVar, cast
+from typing import ClassVar, cast, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from swarmq.config_validation import ConfigValidation
@@ -533,6 +533,7 @@ class SwarmQConfig(ConfigValidation):
     CPU_DEFAULT_RECYCLE_RSS_MB: ClassVar[int] = 250
     CPU_DEFAULT_RECYCLE_MAX_TASKS: ClassVar[int] = 1000
 
+    @override
     def _apply_pool_defaults(self) -> None:
         if self.pool != "cpu":
             return

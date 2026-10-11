@@ -6,7 +6,7 @@ re-exportiert keine gepatchten Namen — Patches zielen auf die Submodule
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from swarmq.middleware import MiddlewareChain, coerce_middleware_chain_factory
 from swarmq.registry import TaskRegistry
@@ -67,6 +67,7 @@ class Client(ClientScheduling, ClientResults, ClientWorkflows):
         # the first schedule(delay=|eta=) call.
         self._schedule_store: ScheduleStore | None = None
 
+    @override
     def _get_chain(self) -> MiddlewareChain:
         """Return a live MiddlewareChain for the current schedule() call."""
         return self._middleware_chain_factory()

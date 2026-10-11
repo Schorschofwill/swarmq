@@ -23,7 +23,7 @@ from __future__ import annotations
 import contextvars
 import inspect
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, override
 
 from swarmq.logging import get_logger
 
@@ -67,6 +67,7 @@ class _Missing:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    @override
     def __repr__(self) -> str:
         return "<swarmq.dishka.MISSING>"
 
